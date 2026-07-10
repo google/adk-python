@@ -20,15 +20,17 @@ callback/error semantics have at least one downstream implementation.
 An :class:`OptimizationRunContext` is an optional, one-shot, caller-owned
 object attached to a single ``AgentOptimizer.optimize(...)`` run. It records
 every *logical* optimizer-owned model invocation (control-plane metadata only,
-never prompt or response content), enforces configured call/token budgets, and
-carries a cooperative cancellation signal that instrumented optimizers observe
-between logical model invocations.
+never prompt or response content), enforces configured call/token budgets,
+carries a cooperative cancellation signal, and owns an explicit terminal
+state machine: every governed run finalizes exactly once as ``completed``,
+``budget_exceeded``, ``cancelled``, or ``failed`` (first terminal transition
+wins).
 
 The ledger records provider-reported usage truthfully: missing token counters
-stay ``None`` and are classified via :class:`UsageCoverage`, never coerced to
-zero. The final :class:`OptimizationRunSnapshot` is readable from the context
-on success *and* failure, so a governance caller can persist the attempt in a
-``finally`` block without parsing logs.
+stay ``None`` and are classified via usage coverage, never coerced to zero.
+Snapshots are immutable values; the final snapshot is readable from the
+context on success *and* failure, so a governance caller can persist the
+attempt in a ``finally`` block without parsing logs.
 """
 
 from __future__ import annotations
@@ -41,7 +43,14 @@ from typing import Literal
 from typing import Optional
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
+
+# Initially defined optimizer stages. The stage field is an extensible string
+# so third-party optimizers can record their own stages without an ADK
+# release; these constants cover the built-in optimizers.
+STAGE_CANDIDATE_GENERATION = "candidate_generation"
+STAGE_REFLECTION = "reflection"
 
 
 class UsageCoverage(str, enum.Enum):
@@ -55,13 +64,6 @@ class UsageCoverage(str, enum.Enum):
 
   UNREPORTED = "unreported"
   """No token counter was supplied."""
-
-
-class ModelCallStage(str, enum.Enum):
-  """Which optimizer stage issued the logical model invocation."""
-
-  CANDIDATE_GENERATION = "candidate_generation"
-  REFLECTION = "reflection"
 
 
 class ModelCallState(str, enum.Enum):
@@ -100,14 +102,18 @@ class TokenBudgetStatus(str, enum.Enum):
 
 
 class ModelCallEvent(BaseModel):
-  """Control-plane record of one logical model invocation.
+  """Immutable control-plane record of one logical model invocation.
 
   Prompt and response content are deliberately not part of this event;
-  content capture remains an explicit evaluator/sampler concern.
+  content capture remains an explicit evaluator/sampler concern. Error
+  metadata is structured and sanitized: a short provider error code and the
+  exception type name, never raw exception or payload text.
   """
 
+  model_config = ConfigDict(frozen=True)
+
   sequence: int
-  stage: ModelCallStage
+  stage: str
   requested_model: Optional[str] = None
   returned_model_version: Optional[str] = None
   start_time: float
@@ -120,47 +126,33 @@ class ModelCallEvent(BaseModel):
   tool_use_tokens: Optional[int] = None
   total_tokens: Optional[int] = None
   usage_coverage: Optional[UsageCoverage] = None
-  error_message: Optional[str] = None
-
-
-class OptimizationRunSnapshot(BaseModel):
-  """Immutable view of the run ledger at a point in time."""
-
-  events: list[ModelCallEvent] = Field(default_factory=list)
-  started_calls: int = 0
-  completed_calls: int = 0
-  cumulative_total_tokens: int = 0
-  """Sum of provider-reported authoritative totals (verified calls only)."""
-
-  usage_coverage: UsageCoverage = UsageCoverage.UNREPORTED
-  """VERIFIED only if every completed call was verified; PARTIAL if any call
-  reported any counter; UNREPORTED otherwise."""
-
-  token_budget_status: Optional[TokenBudgetStatus] = None
-  """Only set when a reported-token limit is configured."""
-
-  cancel_requested: bool = False
-  cancel_reason: Optional[str] = None
-  run_status: Optional[RunStatus] = None
-  """Terminal run status; ``None`` while the run is still in progress."""
+  error_code: Optional[str] = None
+  error_type: Optional[str] = None
 
 
 class OptimizationBudgets(BaseModel):
-  """Configured ceilings for optimizer-owned logical model invocations."""
+  """Configured ceilings for optimizer-owned logical model invocations.
+
+  Immutable by construction, so limits cannot change mid-run.
+  """
+
+  model_config = ConfigDict(frozen=True)
 
   max_model_calls: Optional[int] = Field(
       default=None,
+      ge=0,
       description=(
           "Maximum number of logical optimizer-owned model invocations that"
-          " may start. Checked before each call; a preflight rejection does"
-          " not create a model-call event."
+          " may start. Checked before each call via atomic slot admission; a"
+          " rejected reservation is not a call event."
       ),
   )
   max_provider_reported_tokens: Optional[int] = Field(
       default=None,
+      ge=0,
       description=(
           "Ceiling on cumulative provider-reported authoritative total"
-          " tokens. Checked after each terminal response is committed; an"
+          " tokens. Checked after each terminal response is committed; the"
           " over-budget final call is committed first, then the run"
           " terminates. Deliberately not a hard bound on billing or physical"
           " tokens: when any call's usage is partial or unreported,"
@@ -171,12 +163,45 @@ class OptimizationBudgets(BaseModel):
       default="raise",
       description=(
           "Terminal behavior on budget exhaustion. Both modes stop scheduling"
-          " immediately after the final in-flight call settles. 'raise' raises"
-          " OptimizationBudgetExceeded; 'return_partial' lets the optimizer"
-          " return its best-so-far result marked terminal_status="
-          "'budget_exceeded' (never an unmarked success)."
+          " immediately after the final in-flight call settles. 'raise'"
+          " raises OptimizationBudgetExceeded; 'return_partial' lets the"
+          " optimizer return its best-so-far result while the caller-owned"
+          " snapshot (run_status='budget_exceeded') remains the authoritative"
+          " record."
       ),
   )
+
+
+class OptimizationRunSnapshot(BaseModel):
+  """Immutable view of the run ledger at a point in time."""
+
+  model_config = ConfigDict(frozen=True)
+
+  events: tuple[ModelCallEvent, ...] = ()
+  budgets: OptimizationBudgets = Field(default_factory=OptimizationBudgets)
+  started_calls: int = 0
+  completed_calls: int = 0
+  cumulative_total_tokens: int = 0
+  """Sum of provider-reported authoritative totals (verified calls only)."""
+
+  usage_coverage: UsageCoverage = UsageCoverage.UNREPORTED
+  """VERIFIED only if every closed call was verified; PARTIAL if any call
+  reported any counter; UNREPORTED otherwise."""
+
+  token_budget_status: Optional[TokenBudgetStatus] = None
+  """Only set when a reported-token limit is configured."""
+
+  cancel_requested: bool = False
+  cancel_reason: Optional[str] = None
+  run_status: Optional[RunStatus] = None
+  """Terminal run status; ``None`` only while the run is still in progress."""
+
+  terminal_sequence: Optional[int] = None
+  """Sequence of the logical invocation that triggered the terminal state,
+  when one did."""
+
+  terminal_error_code: Optional[str] = None
+  terminal_error_type: Optional[str] = None
 
 
 class OptimizationRunContextError(Exception):
@@ -196,11 +221,17 @@ class OptimizationCancelledError(OptimizationRunContextError):
 
 
 class OptimizationProviderError(OptimizationRunContextError):
-  """A governed run terminated on an in-band provider error.
+  """A governed run terminated on a provider failure.
 
-  Usage reported before the error is preserved on the snapshot; a governed
-  run must not silently succeed past an in-band ``LlmResponse.error_code``.
+  Usage reported before the failure is preserved on the snapshot. Provider
+  failure takes precedence over a simultaneous token overshoot: both the
+  committed usage and the token-compliance evidence are preserved, but the
+  run terminates ``failed`` and this error is raised.
   """
+
+
+class OptimizationRunFinalizedError(Exception):
+  """A terminal context was used where an in-progress context is required."""
 
 
 class UnsupportedOptimizationContextError(Exception):
@@ -211,12 +242,50 @@ class ContextAlreadyAttachedError(Exception):
   """A one-shot context was attached to more than one optimization run."""
 
 
-class _CallHandle:
-  """Opaque handle for one in-flight logical model invocation."""
+class _CallRecord:
+  """Mutable internal record for one logical model invocation."""
 
-  def __init__(self, event: ModelCallEvent):
-    self._event = event
-    self._closed = False
+  __slots__ = (
+      "sequence",
+      "stage",
+      "requested_model",
+      "returned_model_version",
+      "start_time",
+      "end_time",
+      "state",
+      "usage",
+      "error_code",
+      "error_type",
+      "closed",
+  )
+
+  def __init__(self, sequence: int, stage: str, requested_model):
+    self.sequence = sequence
+    self.stage = stage
+    self.requested_model = requested_model
+    self.returned_model_version = None
+    self.start_time = time.monotonic()
+    self.end_time = None
+    self.state: Optional[ModelCallState] = None
+    self.usage: dict[str, Optional[int]] = {}
+    self.error_code: Optional[str] = None
+    self.error_type: Optional[str] = None
+    self.closed = False
+
+
+class _CallHandle:
+  """Opaque handle for one in-flight logical model invocation.
+
+  Bound to exactly one context; committing it into a different context is a
+  typed misuse error.
+  """
+
+  def __init__(self, context: "OptimizationRunContext", record: _CallRecord):
+    self._context = context
+    self._record = record
+
+
+_UNATTACHED = object()
 
 
 class OptimizationRunContext:
@@ -224,40 +293,57 @@ class OptimizationRunContext:
 
   Instrumented optimizers call :meth:`begin_model_call` immediately before a
   logical ``BaseLlm.generate_content_async()`` invocation and
-  :meth:`end_model_call` with the terminal response, in-band error, or raised
-  provider error. Governance callers own the context, may call
-  :meth:`request_cancel` from any thread, and read :meth:`snapshot` at any
-  time, including after a failure.
+  :meth:`end_model_call` with the terminal outcome. Every governed run must
+  finalize exactly once (first terminal transition wins): optimizers call
+  :meth:`finalize_success` on a normal return; budget/cancel/provider
+  terminals are committed by the corresponding ledger operations or by
+  :meth:`finalize_cancelled` / :meth:`finalize_failed` on exceptional exits.
+  Governance callers own the context, may call :meth:`request_cancel` from
+  any thread, and read :meth:`snapshot` at any time, including after failure.
   """
 
   def __init__(self, budgets: Optional[OptimizationBudgets] = None):
+    # OptimizationBudgets is frozen; keep a private reference and never
+    # expose a mutable path to it.
     self._budgets = budgets or OptimizationBudgets()
     self._lock = threading.Lock()
-    self._events: list[ModelCallEvent] = []
+    self._records: list[_CallRecord] = []
     self._started_calls = 0
     self._completed_calls = 0
     self._cumulative_total_tokens = 0
     self._cancel_requested = False
     self._cancel_reason: Optional[str] = None
     self._run_status: Optional[RunStatus] = None
-    self._attached_owner: Optional[object] = None
+    self._terminal_sequence: Optional[int] = None
+    self._terminal_error_code: Optional[str] = None
+    self._terminal_error_type: Optional[str] = None
+    self._attached_owner: object = _UNATTACHED
 
   @property
   def budgets(self) -> OptimizationBudgets:
+    """The configured (immutable) budgets."""
     return self._budgets
 
   def attach(self, owner: object) -> None:
     """Binds the context to one optimization run; reuse is rejected."""
     with self._lock:
-      if self._attached_owner is not None:
+      if self._attached_owner is not _UNATTACHED:
         raise ContextAlreadyAttachedError(
             "OptimizationRunContext is one-shot: it is already attached to an"
             " optimization run and cannot be reused or shared."
         )
       self._attached_owner = owner
 
+  # --- cancellation ---------------------------------------------------------
+
   def request_cancel(self, reason: str = "requested") -> None:
-    """Thread-safe, idempotent cooperative cancellation signal."""
+    """Thread-safe, idempotent cooperative cancellation signal.
+
+    Requesting cancellation does not itself finalize the run; the terminal
+    ``cancelled`` transition is committed when the signal is observed at a
+    documented boundary (or via :meth:`finalize_cancelled`), and never
+    overwrites an earlier terminal state.
+    """
     with self._lock:
       if not self._cancel_requested:
         self._cancel_requested = True
@@ -269,55 +355,137 @@ class OptimizationRunContext:
       return self._cancel_requested
 
   def raise_if_cancelled(self) -> None:
-    """Raises ``OptimizationCancelledError`` if cancellation was requested."""
+    """Raises ``OptimizationCancelledError`` if cancellation was requested.
+
+    First terminal wins: if the run already terminated for another reason,
+    this re-raises that terminal outcome instead of overwriting it.
+    """
+    with self._lock:
+      if self._run_status is not None:
+        error = self._terminal_error_locked()
+      elif self._cancel_requested:
+        self._transition_locked(RunStatus.CANCELLED)
+        error = OptimizationCancelledError(
+            f"Optimization cancelled: {self._cancel_reason}",
+            self._snapshot_locked(),
+        )
+      else:
+        return
+    raise error
+
+  # --- terminal transitions -------------------------------------------------
+
+  def finalize_success(self) -> None:
+    """Marks a normal optimizer return ``completed`` (first terminal wins)."""
+    with self._lock:
+      self._transition_locked(RunStatus.COMPLETED)
+
+  def finalize_cancelled(self, reason: str = "cancelled") -> None:
+    """Commits the ``cancelled`` terminal (e.g. on native task cancellation).
+
+    Closes any open call event as ``cancelled`` first, so the final snapshot
+    carries no open invocations. First terminal wins.
+    """
     with self._lock:
       if not self._cancel_requested:
-        return
-      self._run_status = RunStatus.CANCELLED
-      snapshot = self._snapshot_locked()
-      reason = self._cancel_reason
-    raise OptimizationCancelledError(
-        f"Optimization cancelled: {reason}", snapshot
+        self._cancel_requested = True
+        self._cancel_reason = reason
+      for record in self._records:
+        if not record.closed:
+          record.closed = True
+          record.end_time = time.monotonic()
+          record.state = ModelCallState.CANCELLED
+      self._transition_locked(RunStatus.CANCELLED)
+
+  def finalize_failed(
+      self,
+      *,
+      error_code: Optional[str] = None,
+      error_type: Optional[str] = None,
+  ) -> None:
+    """Commits the ``failed`` terminal for a non-provider-call failure path.
+
+    First terminal wins. Error metadata must be sanitized identifiers (a
+    short code and an exception type name), never raw payload text.
+    """
+    with self._lock:
+      self._transition_locked(
+          RunStatus.FAILED, error_code=error_code, error_type=error_type
+      )
+
+  def _transition_locked(
+      self,
+      status: RunStatus,
+      *,
+      sequence: Optional[int] = None,
+      error_code: Optional[str] = None,
+      error_type: Optional[str] = None,
+  ) -> bool:
+    """First-terminal-wins transition; returns True if this call won."""
+    if self._run_status is not None:
+      return False
+    self._run_status = status
+    self._terminal_sequence = sequence
+    self._terminal_error_code = error_code
+    self._terminal_error_type = error_type
+    return True
+
+  def _terminal_error_locked(self) -> Exception:
+    """The typed error corresponding to an existing terminal state."""
+    snapshot = self._snapshot_locked()
+    if self._run_status == RunStatus.BUDGET_EXCEEDED:
+      return OptimizationBudgetExceeded(
+          "Optimization budget exhausted.", snapshot
+      )
+    if self._run_status == RunStatus.CANCELLED:
+      return OptimizationCancelledError(
+          f"Optimization cancelled: {self._cancel_reason}", snapshot
+      )
+    if self._run_status == RunStatus.FAILED:
+      return OptimizationProviderError(
+          f"Optimization failed: {self._terminal_error_code}", snapshot
+      )
+    return OptimizationRunFinalizedError(
+        f"OptimizationRunContext already finalized as {self._run_status.value}."
     )
+
+  # --- the ledger -----------------------------------------------------------
 
   def begin_model_call(
       self,
-      stage: ModelCallStage,
+      stage: str,
       requested_model: Optional[str] = None,
   ) -> _CallHandle:
-    """Reserves and records the start of one logical model invocation.
+    """Atomically admits and records the start of one logical invocation.
 
-    Checks cancellation and the logical-call budget *before* the invocation
-    starts. A preflight rejection does not create a model-call event and does
-    not increment the started-call count; it records the run-level control
-    state and raises.
+    Under one lock acquisition: rejects a terminal context, observes
+    cancellation, checks the logical-call budget, reserves the slot, assigns
+    the sequence ID, and creates the ledger entry. A preflight rejection is
+    not a call event and does not increment the started-call count.
     """
     with self._lock:
-      if self._cancel_requested:
-        self._run_status = RunStatus.CANCELLED
-        snapshot = self._snapshot_locked()
-        reason = self._cancel_reason
-        raise OptimizationCancelledError(
-            f"Optimization cancelled: {reason}", snapshot
+      if self._run_status is not None:
+        error = self._terminal_error_locked()
+      elif self._cancel_requested:
+        self._transition_locked(RunStatus.CANCELLED)
+        error = OptimizationCancelledError(
+            f"Optimization cancelled: {self._cancel_reason}",
+            self._snapshot_locked(),
         )
-      max_calls = self._budgets.max_model_calls
-      if max_calls is not None and self._started_calls >= max_calls:
-        # Atomic slot admission: the rejected reservation is not a call
-        # event; the run status records why the run ended.
-        self._run_status = RunStatus.BUDGET_EXCEEDED
-        snapshot = self._snapshot_locked()
-        raise OptimizationBudgetExceeded(
-            f"Logical model-call budget exhausted ({max_calls}).", snapshot
-        )
-      self._started_calls += 1
-      event = ModelCallEvent(
-          sequence=self._started_calls,
-          stage=stage,
-          requested_model=requested_model,
-          start_time=time.monotonic(),
-      )
-      self._events.append(event)
-      return _CallHandle(event)
+      else:
+        max_calls = self._budgets.max_model_calls
+        if max_calls is not None and self._started_calls >= max_calls:
+          self._transition_locked(RunStatus.BUDGET_EXCEEDED)
+          error = OptimizationBudgetExceeded(
+              f"Logical model-call budget exhausted ({max_calls}).",
+              self._snapshot_locked(),
+          )
+        else:
+          self._started_calls += 1
+          record = _CallRecord(self._started_calls, stage, requested_model)
+          self._records.append(record)
+          return _CallHandle(self, record)
+    raise error
 
   def end_model_call(
       self,
@@ -325,62 +493,109 @@ class OptimizationRunContext:
       *,
       usage_metadata: Any = None,
       returned_model_version: Optional[str] = None,
-      error_message: Optional[str] = None,
+      error_code: Optional[str] = None,
+      error_type: Optional[str] = None,
   ) -> None:
     """Commits the terminal outcome of one logical model invocation.
 
-    Token usage is committed before budget enforcement: if the new cumulative
-    total crosses the hard ceiling, the completed call is persisted first and
-    ``OptimizationBudgetExceeded`` is raised immediately afterwards, so an
-    over-budget final call can never produce an unmarked success. A terminal
-    provider error closes the call as ``provider_error``, preserves any
-    reported usage, and re-raising the primary error remains the caller's
-    responsibility.
+    Ownership and close are validated atomically under the context lock: a
+    handle from another context is a typed misuse error, and a concurrent
+    double-close commits exactly once.
+
+    Provider failure takes precedence over token overshoot: usage is
+    committed either way, but a call ending in a provider error transitions
+    the run to ``failed`` and raises ``OptimizationProviderError``. A clean
+    over-budget final call is committed with call status ``completed`` while
+    the run transitions to ``budget_exceeded`` and
+    ``OptimizationBudgetExceeded`` is raised. Error metadata must be
+    sanitized identifiers, never raw exception/payload text.
     """
-    if handle._closed:
-      return
-    handle._closed = True
-    event = handle._event
+    record = handle._record
     with self._lock:
-      event.end_time = time.monotonic()
-      event.returned_model_version = returned_model_version
-      _apply_usage(event, usage_metadata)
-      if error_message is not None:
-        event.state = ModelCallState.PROVIDER_ERROR
-        event.error_message = error_message
-      else:
-        event.state = ModelCallState.COMPLETED
+      if handle._context is not self:
+        raise OptimizationRunFinalizedError(
+            "Call handle belongs to a different OptimizationRunContext."
+        )
+      if record.closed:
+        return
+      record.closed = True
+      record.end_time = time.monotonic()
+      record.returned_model_version = returned_model_version
+      record.usage = _extract_usage(usage_metadata)
       self._completed_calls += 1
-      if event.total_tokens is not None:
-        self._cumulative_total_tokens += event.total_tokens
-      max_tokens = self._budgets.max_provider_reported_tokens
-      over_budget = (
-          max_tokens is not None
-          and self._cumulative_total_tokens > max_tokens
-      )
-      if over_budget:
-        self._run_status = RunStatus.BUDGET_EXCEEDED
-        snapshot = self._snapshot_locked()
-    if over_budget:
-      raise OptimizationBudgetExceeded(
-          f"Token budget exhausted ({max_tokens}).", snapshot
-      )
+      total = record.usage.get("total_tokens")
+      if total is not None:
+        self._cumulative_total_tokens += total
+
+      error: Optional[Exception] = None
+      if error_code is not None or error_type is not None:
+        record.state = ModelCallState.PROVIDER_ERROR
+        record.error_code = error_code
+        record.error_type = error_type
+        # Provider failure is primary even when the same terminal response
+        # also crossed the token ceiling; both usage and token-compliance
+        # evidence are preserved on the snapshot.
+        if self._transition_locked(
+            RunStatus.FAILED,
+            sequence=record.sequence,
+            error_code=error_code,
+            error_type=error_type,
+        ):
+          error = OptimizationProviderError(
+              f"Provider failure on call {record.sequence}: {error_code}",
+              self._snapshot_locked(),
+          )
+      else:
+        record.state = ModelCallState.COMPLETED
+        max_tokens = self._budgets.max_provider_reported_tokens
+        if (
+            max_tokens is not None
+            and self._cumulative_total_tokens > max_tokens
+        ):
+          if self._transition_locked(
+              RunStatus.BUDGET_EXCEEDED, sequence=record.sequence
+          ):
+            error = OptimizationBudgetExceeded(
+                f"Token budget exhausted ({max_tokens}).",
+                self._snapshot_locked(),
+            )
+    if error is not None:
+      raise error
+
+  # --- snapshots --------------------------------------------------------------
 
   def snapshot(self) -> OptimizationRunSnapshot:
     with self._lock:
       return self._snapshot_locked()
 
   def _snapshot_locked(self) -> OptimizationRunSnapshot:
-    completed = [
-        e for e in self._events if e.state is not None
-    ]
-    if completed and all(
-        e.usage_coverage == UsageCoverage.VERIFIED for e in completed
-    ):
+    events = tuple(
+        ModelCallEvent(
+            sequence=r.sequence,
+            stage=r.stage,
+            requested_model=r.requested_model,
+            returned_model_version=r.returned_model_version,
+            start_time=r.start_time,
+            end_time=r.end_time,
+            state=r.state,
+            prompt_tokens=r.usage.get("prompt_tokens"),
+            output_tokens=r.usage.get("output_tokens"),
+            reasoning_tokens=r.usage.get("reasoning_tokens"),
+            cached_tokens=r.usage.get("cached_tokens"),
+            tool_use_tokens=r.usage.get("tool_use_tokens"),
+            total_tokens=r.usage.get("total_tokens"),
+            usage_coverage=_coverage_of(r) if r.closed else None,
+            error_code=r.error_code,
+            error_type=r.error_type,
+        )
+        for r in self._records
+    )
+    closed = [r for r in self._records if r.closed]
+    coverages = [_coverage_of(r) for r in closed]
+    if coverages and all(c == UsageCoverage.VERIFIED for c in coverages):
       run_coverage = UsageCoverage.VERIFIED
     elif any(
-        e.usage_coverage in (UsageCoverage.VERIFIED, UsageCoverage.PARTIAL)
-        for e in completed
+        c in (UsageCoverage.VERIFIED, UsageCoverage.PARTIAL) for c in coverages
     ):
       run_coverage = UsageCoverage.PARTIAL
     else:
@@ -392,13 +607,14 @@ class OptimizationRunContext:
           > self._budgets.max_provider_reported_tokens
       ):
         token_status = TokenBudgetStatus.EXCEEDED
-      elif run_coverage == UsageCoverage.VERIFIED:
+      elif not closed or run_coverage == UsageCoverage.VERIFIED:
         token_status = TokenBudgetStatus.WITHIN_LIMIT
       else:
         # Missing totals are never proof of compliance.
         token_status = TokenBudgetStatus.INDETERMINATE
     return OptimizationRunSnapshot(
-        events=[e.model_copy(deep=True) for e in self._events],
+        events=events,
+        budgets=self._budgets,
         started_calls=self._started_calls,
         completed_calls=self._completed_calls,
         cumulative_total_tokens=self._cumulative_total_tokens,
@@ -407,45 +623,37 @@ class OptimizationRunContext:
         cancel_requested=self._cancel_requested,
         cancel_reason=self._cancel_reason,
         run_status=self._run_status,
+        terminal_sequence=self._terminal_sequence,
+        terminal_error_code=self._terminal_error_code,
+        terminal_error_type=self._terminal_error_type,
     )
 
 
-def _apply_usage(event: ModelCallEvent, usage_metadata: Any) -> None:
-  """Copies provider-reported token counters onto the event, truthfully.
-
-  Missing counters stay ``None``. Coverage: ``verified`` iff the provider
-  supplied ``total_token_count``; ``partial`` if any other counter was
-  supplied; ``unreported`` otherwise.
-  """
+def _extract_usage(usage_metadata: Any) -> dict[str, Optional[int]]:
+  """Copies provider-reported token counters, truthfully (no zero-coercion)."""
   if usage_metadata is None:
-    event.usage_coverage = UsageCoverage.UNREPORTED
-    return
+    return {}
 
   def _get(name: str) -> Optional[int]:
     value = getattr(usage_metadata, name, None)
     return int(value) if isinstance(value, (int, float)) else None
 
-  event.prompt_tokens = _get("prompt_token_count")
-  event.output_tokens = _get("candidates_token_count")
-  event.reasoning_tokens = _get("thoughts_token_count")
-  event.cached_tokens = _get("cached_content_token_count")
-  event.tool_use_tokens = _get("tool_use_prompt_token_count")
-  event.total_tokens = _get("total_token_count")
-  if event.total_tokens is not None:
-    event.usage_coverage = UsageCoverage.VERIFIED
-  elif any(
-      v is not None
-      for v in (
-          event.prompt_tokens,
-          event.output_tokens,
-          event.reasoning_tokens,
-          event.cached_tokens,
-          event.tool_use_tokens,
-      )
-  ):
-    event.usage_coverage = UsageCoverage.PARTIAL
-  else:
-    event.usage_coverage = UsageCoverage.UNREPORTED
+  return {
+      "prompt_tokens": _get("prompt_token_count"),
+      "output_tokens": _get("candidates_token_count"),
+      "reasoning_tokens": _get("thoughts_token_count"),
+      "cached_tokens": _get("cached_content_token_count"),
+      "tool_use_tokens": _get("tool_use_prompt_token_count"),
+      "total_tokens": _get("total_token_count"),
+  }
+
+
+def _coverage_of(record: _CallRecord) -> UsageCoverage:
+  if record.usage.get("total_tokens") is not None:
+    return UsageCoverage.VERIFIED
+  if any(v is not None for v in record.usage.values()):
+    return UsageCoverage.PARTIAL
+  return UsageCoverage.UNREPORTED
 
 
 class OptimizerCapabilities(BaseModel):
@@ -457,6 +665,8 @@ class OptimizerCapabilities(BaseModel):
   seam, so a governance wrapper can reject an incompatible optimizer at
   preflight instead of discovering opacity after spend occurs.
   """
+
+  model_config = ConfigDict(frozen=True)
 
   accepts_run_context: bool = False
   """``optimize`` accepts a run context at all. When ``False``, callers must

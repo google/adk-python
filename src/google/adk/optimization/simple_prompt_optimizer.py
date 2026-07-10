@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import random
+from typing import Optional
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.evaluation._retry_options_utils import add_default_retry_options_if_not_present
@@ -203,7 +204,18 @@ class SimplePromptOptimizer(
       self,
       initial_agent: Agent,
       sampler: Sampler[UnstructuredSamplingResult],
+      *,
+      run_context=None,
   ) -> OptimizerResult[AgentWithScores]:
+    if run_context is not None:
+      from .run_context import UnsupportedOptimizationContextError
+
+      raise UnsupportedOptimizationContextError(
+          "SimplePromptOptimizer does not support OptimizationRunContext in"
+          " this release; check optimizer.capabilities before passing a"
+          " context."
+      )
+
     train_example_ids = sampler.get_train_example_ids()
 
     if self._config.batch_size > len(train_example_ids):

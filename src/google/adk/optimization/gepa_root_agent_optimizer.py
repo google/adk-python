@@ -333,6 +333,8 @@ class GEPARootAgentOptimizer(
       self,
       initial_agent: Agent,
       sampler: Sampler[UnstructuredSamplingResult],
+      *,
+      run_context=None,
   ) -> GEPARootAgentOptimizerResult:
     """Runs the GEPARootAgentOptimizer.
 
@@ -346,6 +348,14 @@ class GEPARootAgentOptimizer(
       The final result of the optimization process, containing the optimized
       agent instance, its scores on the validation examples, and other metrics.
     """
+    if run_context is not None:
+      from .run_context import UnsupportedOptimizationContextError
+
+      raise UnsupportedOptimizationContextError(
+          "GEPARootAgentOptimizer does not support OptimizationRunContext in"
+          " this release; check optimizer.capabilities before passing a"
+          " context."
+      )
     if initial_agent.sub_agents:
       logger.warning(
           "The GEPARootAgentOptimizer will not optimize prompts for sub-agents."
