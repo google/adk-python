@@ -447,7 +447,7 @@ class GeminiContextCacheManager:
 
     with tracer.start_as_current_span("create_cache") as span:
       # Prepare cache contents (first N contents + system instruction + tools)
-      cache_contents = llm_request.contents[:cache_contents_count]
+      cache_contents = llm_request.contents[:cache_contents_count] or None
 
       cache_config = types.CreateCachedContentConfig(
           contents=cache_contents,
