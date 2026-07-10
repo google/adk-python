@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from typing import Callable
 
@@ -21,11 +22,31 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.base_toolset import ToolPredicate
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.utils import _mtls_utils
 import google.auth
-import google.auth.transport.requests
-import httpx
+from google.auth.transport import mtls
+from google.auth.transport import requests as requests_auth
+import requests
 
 API_REGISTRY_URL = "https://cloudapiregistry.googleapis.com"
+API_REGISTRY_MTLS_URL = "https://cloudapiregistry.mtls.googleapis.com"
+
+
+def _get_api_registry_url(client_cert_source: Any | None = None) -> str:
+  """Returns the base URL based on mTLS configuration and cert availability."""
+  use_mtls_endpoint_str = os.getenv(
+      "GOOGLE_API_USE_MTLS_ENDPOINT", _mtls_utils.MtlsEndpoint.AUTO.value
+  ).lower()
+  try:
+    use_mtls_endpoint = _mtls_utils.MtlsEndpoint(use_mtls_endpoint_str)
+  except ValueError:
+    use_mtls_endpoint = _mtls_utils.MtlsEndpoint.AUTO
+  if (use_mtls_endpoint is _mtls_utils.MtlsEndpoint.ALWAYS) or (
+      use_mtls_endpoint is _mtls_utils.MtlsEndpoint.AUTO
+      and client_cert_source is not None
+  ):
+    return API_REGISTRY_MTLS_URL
+  return API_REGISTRY_URL
 
 
 class ApiRegistry:
@@ -53,13 +74,32 @@ class ApiRegistry:
     self._mcp_servers: dict[str, dict[str, Any]] = {}
     self._header_provider = header_provider
 
-    url = f"{API_REGISTRY_URL}/v1beta/projects/{self.api_registry_project_id}/locations/{self.location}/mcpServers"
+    use_client_cert = _mtls_utils.use_client_cert_effective()
+    client_cert_source = None
+    if use_client_cert:
+      client_cert_source = (
+          mtls.default_client_cert_source()
+          if mtls.has_default_client_cert_source()
+          else None
+      )
+    base_url = _get_api_registry_url(client_cert_source)
+
+    url = f"{base_url}/v1beta/projects/{self.api_registry_project_id}/locations/{self.location}/mcpServers"
 
     try:
-      headers = self._get_auth_headers()
-      headers["Content-Type"] = "application/json"
+      quota_project_id = getattr(self._credentials, "quota_project_id", None)
+      headers = {
+          "Content-Type": "application/json",
+      }
+      if quota_project_id:
+        headers["x-goog-user-project"] = quota_project_id
+
       page_token = None
-      with httpx.Client() as client:
+      with requests_auth.AuthorizedSession(
+          credentials=self._credentials
+      ) as session:
+        if use_client_cert:
+          session.configure_mtls_channel(client_cert_source)
         while True:
           params = {
               # Include all the apis including disabled ones. API registry no longer supports enabling APIs.
@@ -68,7 +108,7 @@ class ApiRegistry:
           if page_token:
             params["pageToken"] = page_token
 
-          response = client.get(url, headers=headers, params=params)
+          response = session.get(url, headers=headers, params=params)
           response.raise_for_status()
           data = response.json()
           mcp_servers_list = data.get("mcpServers", [])
@@ -80,7 +120,7 @@ class ApiRegistry:
           page_token = data.get("nextPageToken")
           if not page_token:
             break
-    except (httpx.HTTPError, ValueError) as e:
+    except (requests.exceptions.RequestException, ValueError) as e:
       # Handle error in fetching or parsing tool definitions
       raise RuntimeError(
           f"Error fetching MCP servers from API Registry: {e}"

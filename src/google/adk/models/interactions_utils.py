@@ -84,6 +84,7 @@ if TYPE_CHECKING:
 
   from ..tools._remote_mcp_server import RemoteMcpServer
 
+from ..utils._google_client_headers import merge_tracking_headers
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
@@ -1475,6 +1476,7 @@ async def _create_interactions(
     *,
     create_kwargs: dict[str, Any],
     stream: bool,
+    extra_headers: dict[str, str] | None = None,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Issue ``interactions.create`` and convert the response(s) to LlmResponses.
 
@@ -1485,8 +1487,12 @@ async def _create_interactions(
   Args:
     api_client: The Google GenAI client.
     create_kwargs: Keyword arguments passed verbatim to
-      ``api_client.aio.interactions.create`` (excluding ``stream``).
+      ``api_client.aio.interactions.create`` (excluding ``stream`` and
+      ``extra_headers``).
     stream: Whether to stream the response.
+    extra_headers: Optional per-request HTTP headers forwarded to
+      ``interactions.create`` (e.g. ADK tracking headers merged with any
+      user-supplied headers). ``None`` sends no extra headers.
 
   Yields:
     LlmResponse objects converted from interaction responses.
@@ -1496,7 +1502,7 @@ async def _create_interactions(
 
   if stream:
     responses = await api_client.aio.interactions.create(
-        **create_kwargs, stream=True
+        **create_kwargs, stream=True, extra_headers=extra_headers
     )
     state = _StreamState()
     async for event in responses:
@@ -1515,7 +1521,7 @@ async def _create_interactions(
         yield llm_response
   else:
     interaction = await api_client.aio.interactions.create(
-        **create_kwargs, stream=False
+        **create_kwargs, stream=False, extra_headers=extra_headers
     )
     logger.info('Interaction response received.')
     logger.debug(build_interactions_response_log(interaction))
@@ -1596,7 +1602,17 @@ async def generate_content_via_interactions(
       'previous_interaction_id': previous_interaction_id,
   }
 
+  # Re-merge tracking headers into any request-time headers (idempotent) so the
+  # interactions path forwards user-supplied headers instead of dropping them.
+  config_headers = None
+  if llm_request.config and llm_request.config.http_options:
+    config_headers = llm_request.config.http_options.headers
+  extra_headers = merge_tracking_headers(config_headers)
+
   async for llm_response in _create_interactions(
-      api_client, create_kwargs=create_kwargs, stream=stream
+      api_client,
+      create_kwargs=create_kwargs,
+      stream=stream,
+      extra_headers=extra_headers,
   ):
     yield llm_response

@@ -30,7 +30,7 @@ execution flow).
 implicit "current span" context. In a concurrent asyncio.Task
 runtime, implicit context can be unreliable across concurrent
 nodes. All tracing operations (attributes, logs, child spans)
-should go through `ctx._span`.
+should go through `ctx._span`. When attaching or detaching OTel context explicitly (e.g., using `context.attach()` and `context.detach()`), **always pair them inside a `try...finally` block** to prevent context leaks across requests.
 
 **Span lifecycle:**
 

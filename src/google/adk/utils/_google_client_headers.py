@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from google.genai import types
+
 from ._client_labels_utils import get_client_labels
 
 
@@ -29,6 +31,16 @@ def get_tracking_headers() -> dict[str, str]:
       "x-goog-api-client": header_value,
       "user-agent": header_value,
   }
+
+
+def get_tracking_http_options() -> types.HttpOptions:
+  """Returns HttpOptions carrying ADK tracking headers for a genai Client.
+
+  Use this when constructing a google.genai Client so its outbound calls are
+  attributable to ADK by Google's server-side usage pipeline, matching
+  models/google_llm.py.
+  """
+  return types.HttpOptions(headers=get_tracking_headers())
 
 
 def merge_tracking_headers(headers: dict[str, str] | None) -> dict[str, str]:

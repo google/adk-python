@@ -649,13 +649,12 @@ class TestDeriveScheduler:
 
   def test_derive_scheduler_with_parent_no_scheduler(self):
     from google.adk.agents.context import _derive_scheduler
-    from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 
     mock_parent = MagicMock()
     mock_parent._workflow_scheduler = None
 
     scheduler = _derive_scheduler(mock_parent)
-    assert isinstance(scheduler, DynamicNodeScheduler)
+    assert scheduler is None
 
 
 class TestContextGetInvocationContext:
@@ -779,10 +778,10 @@ class TestContextRunNodeTransferLoop:
     )
     child_ctx_b.output = "b_output"
 
-    # Mock the scheduler boundary
-    root_ctx._workflow_scheduler = AsyncMock(
-        side_effect=[child_ctx_a, child_ctx_b]
-    )
+    # Keep a strong reference to mock_scheduler so it doesn't get garbage
+    # collected immediately (Context._workflow_scheduler uses weakref internally).
+    mock_scheduler = AsyncMock(side_effect=[child_ctx_a, child_ctx_b])
+    root_ctx._workflow_scheduler = mock_scheduler
 
     # Act
     result = await root_ctx.run_node(agent_a, node_input="a_input")
