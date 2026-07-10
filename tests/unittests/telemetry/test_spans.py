@@ -41,8 +41,6 @@ from google.adk.telemetry.tracing import use_inference_span
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
-from mcp import ClientSession as McpClientSession
-from mcp import ListToolsResult as McpListToolsResult
 from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
@@ -155,6 +153,7 @@ async def test_trace_agent_invocation(mock_span_fixture):
 @pytest.mark.asyncio
 async def test_trace_call_llm(monkeypatch, mock_span_fixture):
   """Test trace_call_llm sets all telemetry attributes correctly with normal content."""
+  mock_span_fixture.is_recording.return_value = True
   monkeypatch.setattr(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
@@ -220,6 +219,56 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       expected_calls, any_order=True
   )
   mock_span_fixture.set_attributes.assert_called_once_with(expected_usage_attrs)
+  mock_span_fixture.is_recording.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'use_current_span',
+    [False, True],
+    ids=['explicit_span', 'current_span'],
+)
+async def test_trace_call_llm_skips_non_recording_span(
+    monkeypatch, use_current_span
+):
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model='gemini-pro')
+  llm_response = LlmResponse(turn_complete=True)
+  span = mock.MagicMock()
+  span.is_recording.return_value = False
+  get_current_span = mock.Mock(return_value=span)
+  get_telemetry_config = mock.Mock()
+  serialize_request = mock.Mock(wraps=safe_json_serialize)
+  serialize_response = mock.Mock(wraps=llm_response.model_dump_json)
+  monkeypatch.setattr('opentelemetry.trace.get_current_span', get_current_span)
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing._telemetry_config_from_invocation_context',
+      get_telemetry_config,
+  )
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing.safe_json_serialize', serialize_request
+  )
+  monkeypatch.setattr(LlmResponse, 'model_dump_json', serialize_response)
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      llm_request,
+      llm_response,
+      span=None if use_current_span else span,
+  )
+
+  if use_current_span:
+    get_current_span.assert_called_once_with()
+  else:
+    get_current_span.assert_not_called()
+  get_telemetry_config.assert_not_called()
+  serialize_request.assert_not_called()
+  serialize_response.assert_not_called()
+  span.is_recording.assert_called_once_with()
+  span.set_attribute.assert_not_called()
+  span.set_attributes.assert_not_called()
 
 
 @pytest.mark.asyncio
