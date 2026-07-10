@@ -25,6 +25,8 @@ from google.adk.optimization.run_context import OptimizationBudgets
 from google.adk.optimization.run_context import OptimizationCancelledError
 from google.adk.optimization.run_context import OptimizationRunContext
 from google.adk.optimization.run_context import OptimizerCapabilities
+from google.adk.optimization.run_context import RunStatus
+from google.adk.optimization.run_context import TokenBudgetStatus
 from google.adk.optimization.run_context import UsageCoverage
 import pytest
 
@@ -64,28 +66,45 @@ class TestCallBudget:
     # The rejected reservation is not a call event and did not start a call.
     assert snap.started_calls == 2
     assert len(snap.events) == 2
-    assert snap.terminal_control_state == "call_budget_rejected"
+    assert snap.run_status == RunStatus.BUDGET_EXCEEDED
 
 
 class TestTokenBudget:
 
   def test_overshoot_commits_then_raises(self):
-    ctx = OptimizationRunContext(OptimizationBudgets(max_total_tokens=100))
+    ctx = OptimizationRunContext(
+        OptimizationBudgets(max_provider_reported_tokens=100)
+    )
     h = ctx.begin_model_call(ModelCallStage.REFLECTION)
     with pytest.raises(OptimizationBudgetExceeded) as exc:
       ctx.end_model_call(h, usage_metadata=_usage(total_token_count=150))
     snap = exc.value.snapshot
-    # The over-budget final call is committed before the raise.
+    # The over-budget final call is committed before the raise; the CALL
+    # status stays completed while the RUN status becomes budget_exceeded.
     assert snap.completed_calls == 1
     assert snap.events[0].state == ModelCallState.COMPLETED
     assert snap.cumulative_total_tokens == 150
-    assert snap.terminal_control_state == "budget_exceeded"
+    assert snap.run_status == RunStatus.BUDGET_EXCEEDED
+    assert snap.token_budget_status == TokenBudgetStatus.EXCEEDED
 
-  def test_unreported_usage_does_not_consume_token_budget(self):
-    ctx = OptimizationRunContext(OptimizationBudgets(max_total_tokens=10))
+  def test_unreported_usage_is_indeterminate_not_compliant(self):
+    ctx = OptimizationRunContext(
+        OptimizationBudgets(max_provider_reported_tokens=10)
+    )
     h = ctx.begin_model_call(ModelCallStage.REFLECTION)
     ctx.end_model_call(h, usage_metadata=None)  # no raise
-    assert ctx.snapshot().cumulative_total_tokens == 0
+    snap = ctx.snapshot()
+    assert snap.cumulative_total_tokens == 0
+    # Missing totals are never proof of compliance.
+    assert snap.token_budget_status == TokenBudgetStatus.INDETERMINATE
+
+  def test_all_verified_under_limit_is_within_limit(self):
+    ctx = OptimizationRunContext(
+        OptimizationBudgets(max_provider_reported_tokens=100)
+    )
+    h = ctx.begin_model_call(ModelCallStage.REFLECTION)
+    ctx.end_model_call(h, usage_metadata=_usage(total_token_count=40))
+    assert ctx.snapshot().token_budget_status == TokenBudgetStatus.WITHIN_LIMIT
 
 
 class TestUsageClassification:
@@ -142,7 +161,7 @@ class TestCancellation:
       ctx.begin_model_call(ModelCallStage.REFLECTION)
     assert "deadline" in str(exc.value)
     assert exc.value.snapshot.cancel_reason == "deadline"
-    assert exc.value.snapshot.terminal_control_state == "cancelled"
+    assert exc.value.snapshot.run_status == RunStatus.CANCELLED
 
   def test_raise_if_cancelled_noop_when_not_cancelled(self):
     OptimizationRunContext().raise_if_cancelled()
@@ -160,15 +179,17 @@ class TestCancellation:
     with pytest.raises(OptimizationBudgetExceeded):
       ctx.begin_model_call(ModelCallStage.CANDIDATE_GENERATION)
     # A governance caller can persist the attempt from a finally block.
-    assert ctx.snapshot().terminal_control_state == "call_budget_rejected"
+    assert ctx.snapshot().run_status == RunStatus.BUDGET_EXCEEDED
 
 
 class TestCapabilitiesDefaults:
 
   def test_conservative_defaults(self):
     caps = OptimizerCapabilities()
+    assert not caps.accepts_run_context
     assert not caps.model_calls_observable
-    assert not caps.call_limits_enforceable
+    assert not caps.logical_call_limits_enforceable
+    assert not caps.reported_token_limits_enforceable
     assert not caps.cooperative_cancellation
     assert not caps.sampler_usage_included
 
@@ -183,15 +204,11 @@ class TestCapabilitiesDefaults:
     assert _Impl().capabilities == OptimizerCapabilities()
 
 
-class TestResultTerminalStatus:
+class TestResultShapeUnchanged:
 
-  def test_default_none(self):
-    from google.adk.optimization.data_types import AgentWithScores
+  def test_optimizer_result_has_no_run_context_fields(self):
+    # The caller-owned snapshot is authoritative for run status; the public
+    # OptimizerResult schema stays untouched for observable equivalence.
     from google.adk.optimization.data_types import OptimizerResult
 
-    result = OptimizerResult(optimized_agents=[])
-    assert result.terminal_status is None
-    result = OptimizerResult(
-        optimized_agents=[], terminal_status="budget_exceeded"
-    )
-    assert result.terminal_status == "budget_exceeded"
+    assert "terminal_status" not in OptimizerResult.model_fields

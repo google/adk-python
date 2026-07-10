@@ -75,17 +75,6 @@ class OptimizerResult(BaseModel, Generic[AgentWithScoresT]):
       ),
   )
 
-  terminal_status: Optional[str] = Field(
-      default=None,
-      description=(
-          "Run-context terminal status (experimental). None or 'completed'"
-          " for a normal run; 'budget_exceeded' when an OptimizationRunContext"
-          " configured on_budget_exceeded='return_partial' stopped the run,"
-          " so a governed partial result is never mistaken for an unmarked"
-          " success."
-      ),
-  )
-
 
 class UnstructuredSamplingResult(SamplingResult):
   """Evaluation result providing per-example unstructured evaluation data."""

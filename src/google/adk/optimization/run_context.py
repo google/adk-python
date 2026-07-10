@@ -65,12 +65,38 @@ class ModelCallStage(str, enum.Enum):
 
 
 class ModelCallState(str, enum.Enum):
-  """Terminal state of one logical model invocation."""
+  """Terminal state of one logical model invocation (call status).
+
+  Budget exhaustion is a *run* status, not a call status: the triggering
+  successful call remains ``completed`` while the run becomes
+  ``budget_exceeded``.
+  """
 
   COMPLETED = "completed"
   PROVIDER_ERROR = "provider_error"
   CANCELLED = "cancelled"
+
+
+class RunStatus(str, enum.Enum):
+  """Terminal status of the optimization run (run status)."""
+
+  COMPLETED = "completed"
   BUDGET_EXCEEDED = "budget_exceeded"
+  CANCELLED = "cancelled"
+  FAILED = "failed"
+
+
+class TokenBudgetStatus(str, enum.Enum):
+  """Compliance of actual token usage with the configured reported-token limit.
+
+  ``indeterminate`` whenever any completed call's usage coverage is partial or
+  unreported: missing totals are never interpreted as proof that actual usage
+  stayed below the ceiling. Downstream policy may fail closed on that state.
+  """
+
+  WITHIN_LIMIT = "within_limit"
+  EXCEEDED = "exceeded"
+  INDETERMINATE = "indeterminate"
 
 
 class ModelCallEvent(BaseModel):
@@ -110,12 +136,13 @@ class OptimizationRunSnapshot(BaseModel):
   """VERIFIED only if every completed call was verified; PARTIAL if any call
   reported any counter; UNREPORTED otherwise."""
 
+  token_budget_status: Optional[TokenBudgetStatus] = None
+  """Only set when a reported-token limit is configured."""
+
   cancel_requested: bool = False
   cancel_reason: Optional[str] = None
-  terminal_control_state: Optional[str] = None
-  """Run-level control outcome (e.g. ``call_budget_rejected``,
-  ``budget_exceeded``, ``cancelled``); ``None`` while running or on a
-  normal completion."""
+  run_status: Optional[RunStatus] = None
+  """Terminal run status; ``None`` while the run is still in progress."""
 
 
 class OptimizationBudgets(BaseModel):
@@ -129,12 +156,15 @@ class OptimizationBudgets(BaseModel):
           " not create a model-call event."
       ),
   )
-  max_total_tokens: Optional[int] = Field(
+  max_provider_reported_tokens: Optional[int] = Field(
       default=None,
       description=(
-          "Hard ceiling on cumulative provider-reported total tokens."
-          " Checked after each terminal response is committed; an over-budget"
-          " final call is committed first, then the run terminates."
+          "Ceiling on cumulative provider-reported authoritative total"
+          " tokens. Checked after each terminal response is committed; an"
+          " over-budget final call is committed first, then the run"
+          " terminates. Deliberately not a hard bound on billing or physical"
+          " tokens: when any call's usage is partial or unreported,"
+          " actual-token compliance is indeterminate."
       ),
   )
   on_budget_exceeded: Literal["raise", "return_partial"] = Field(
@@ -163,6 +193,14 @@ class OptimizationBudgetExceeded(OptimizationRunContextError):
 
 class OptimizationCancelledError(OptimizationRunContextError):
   """The run stopped because the context's cancellation was requested."""
+
+
+class OptimizationProviderError(OptimizationRunContextError):
+  """A governed run terminated on an in-band provider error.
+
+  Usage reported before the error is preserved on the snapshot; a governed
+  run must not silently succeed past an in-band ``LlmResponse.error_code``.
+  """
 
 
 class UnsupportedOptimizationContextError(Exception):
@@ -201,7 +239,7 @@ class OptimizationRunContext:
     self._cumulative_total_tokens = 0
     self._cancel_requested = False
     self._cancel_reason: Optional[str] = None
-    self._terminal_control_state: Optional[str] = None
+    self._run_status: Optional[RunStatus] = None
     self._attached_owner: Optional[object] = None
 
   @property
@@ -235,7 +273,7 @@ class OptimizationRunContext:
     with self._lock:
       if not self._cancel_requested:
         return
-      self._terminal_control_state = "cancelled"
+      self._run_status = RunStatus.CANCELLED
       snapshot = self._snapshot_locked()
       reason = self._cancel_reason
     raise OptimizationCancelledError(
@@ -256,7 +294,7 @@ class OptimizationRunContext:
     """
     with self._lock:
       if self._cancel_requested:
-        self._terminal_control_state = "cancelled"
+        self._run_status = RunStatus.CANCELLED
         snapshot = self._snapshot_locked()
         reason = self._cancel_reason
         raise OptimizationCancelledError(
@@ -264,7 +302,9 @@ class OptimizationRunContext:
         )
       max_calls = self._budgets.max_model_calls
       if max_calls is not None and self._started_calls >= max_calls:
-        self._terminal_control_state = "call_budget_rejected"
+        # Atomic slot admission: the rejected reservation is not a call
+        # event; the run status records why the run ended.
+        self._run_status = RunStatus.BUDGET_EXCEEDED
         snapshot = self._snapshot_locked()
         raise OptimizationBudgetExceeded(
             f"Logical model-call budget exhausted ({max_calls}).", snapshot
@@ -313,13 +353,13 @@ class OptimizationRunContext:
       self._completed_calls += 1
       if event.total_tokens is not None:
         self._cumulative_total_tokens += event.total_tokens
-      max_tokens = self._budgets.max_total_tokens
+      max_tokens = self._budgets.max_provider_reported_tokens
       over_budget = (
           max_tokens is not None
           and self._cumulative_total_tokens > max_tokens
       )
       if over_budget:
-        self._terminal_control_state = "budget_exceeded"
+        self._run_status = RunStatus.BUDGET_EXCEEDED
         snapshot = self._snapshot_locked()
     if over_budget:
       raise OptimizationBudgetExceeded(
@@ -345,15 +385,28 @@ class OptimizationRunContext:
       run_coverage = UsageCoverage.PARTIAL
     else:
       run_coverage = UsageCoverage.UNREPORTED
+    token_status = None
+    if self._budgets.max_provider_reported_tokens is not None:
+      if (
+          self._cumulative_total_tokens
+          > self._budgets.max_provider_reported_tokens
+      ):
+        token_status = TokenBudgetStatus.EXCEEDED
+      elif run_coverage == UsageCoverage.VERIFIED:
+        token_status = TokenBudgetStatus.WITHIN_LIMIT
+      else:
+        # Missing totals are never proof of compliance.
+        token_status = TokenBudgetStatus.INDETERMINATE
     return OptimizationRunSnapshot(
         events=[e.model_copy(deep=True) for e in self._events],
         started_calls=self._started_calls,
         completed_calls=self._completed_calls,
         cumulative_total_tokens=self._cumulative_total_tokens,
         usage_coverage=run_coverage,
+        token_budget_status=token_status,
         cancel_requested=self._cancel_requested,
         cancel_reason=self._cancel_reason,
-        terminal_control_state=self._terminal_control_state,
+        run_status=self._run_status,
     )
 
 
@@ -405,11 +458,20 @@ class OptimizerCapabilities(BaseModel):
   preflight instead of discovering opacity after spend occurs.
   """
 
+  accepts_run_context: bool = False
+  """``optimize`` accepts a run context at all. When ``False``, callers must
+  omit the keyword entirely (protects pre-existing third-party overrides)."""
+
   model_calls_observable: bool = False
   """Optimizer-owned logical model invocations are recorded on the context."""
 
-  call_limits_enforceable: bool = False
-  """Configured logical-invocation limits stop the next call from starting."""
+  logical_call_limits_enforceable: bool = False
+  """Configured logical-invocation limits stop the next call from starting
+  (hard: atomic slot admission)."""
+
+  reported_token_limits_enforceable: bool = False
+  """Reported-token ceilings terminate the run reactively after the
+  triggering call commits. Not a bound on unreported usage."""
 
   cooperative_cancellation: bool = False
   """``request_cancel`` is observed at the documented boundaries."""
