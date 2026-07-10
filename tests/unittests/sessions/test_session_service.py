@@ -2076,9 +2076,7 @@ async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
 
   service = DatabaseSessionService(db_url)
   try:
-    session = await service.create_session(
-        app_name=app_name, user_id=user_id
-    )
+    session = await service.create_session(app_name=app_name, user_id=user_id)
     event = Event(author='user', timestamp=time.time())
     await service.append_event(session, event)
   finally:
