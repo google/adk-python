@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# NOT WORKING YET
-
 from google.adk import Agent
 from google.adk import Event
 from google.adk import Workflow

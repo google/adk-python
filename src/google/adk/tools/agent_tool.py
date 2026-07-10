@@ -112,6 +112,13 @@ class AgentTool(BaseTool):
   The agent's input schema is used to define the tool's input parameters, and
   the agent's output is returned as the tool's result.
 
+  Note:
+    To expose an agent as an inline tool of a parent ``LlmAgent``, prefer
+    setting ``mode='single_turn'`` on the sub-agent and attaching it via
+    ``sub_agents=[...]`` instead of wrapping it with ``AgentTool``. The
+    framework then exposes the sub-agent as a tool automatically and runs it
+    inline in the parent's session. See the single-turn mode guide for details.
+
   Attributes:
     agent: The agent to wrap.
     skip_summarization: Whether to skip summarization of the agent output.

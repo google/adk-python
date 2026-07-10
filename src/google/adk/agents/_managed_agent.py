@@ -19,6 +19,7 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
+from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
@@ -44,6 +45,8 @@ from ..telemetry import tracer
 from ..tools._remote_mcp_server import RemoteMcpServer
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
+from ..utils._google_client_headers import get_tracking_http_options
+from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .base_agent import BaseAgent
@@ -144,6 +147,15 @@ class ManagedAgent(BaseAgent):
   """Server-side tools: ADK built-in tools, raw types.Tool configs, or
   RemoteMcpServer specs for server-side remote MCP."""
 
+  mode: Literal['single_turn'] | None = None
+  """Composition mode.
+
+  Only ``single_turn`` is supported: the agent runs as an inline single-turn
+  tool of a parent ``LlmAgent`` (the recommended replacement for ``AgentTool``),
+  preserving its internal events in the shared session. ``None`` (default)
+  leaves the agent usable as an LLM-transfer target.
+  """
+
   _api_client: Optional[Client] = PrivateAttr(default=None)
 
   def __init__(
@@ -171,10 +183,15 @@ class ManagedAgent(BaseAgent):
 
       if is_enterprise_mode_enabled():
         self._api_client = Client(
-            enterprise=True, location=_MANAGED_AGENT_LOCATION
+            enterprise=True,
+            location=_MANAGED_AGENT_LOCATION,
+            http_options=get_tracking_http_options(),
         )
       else:
-        self._api_client = Client(enterprise=False)
+        self._api_client = Client(
+            enterprise=False,
+            http_options=get_tracking_http_options(),
+        )
     return self._api_client
 
   async def _resolve_backend_tools(
@@ -334,6 +351,16 @@ class ManagedAgent(BaseAgent):
     if prev_interaction_id:
       create_kwargs['previous_interaction_id'] = prev_interaction_id
 
+    # Request-time header merge, parity with google_llm.generate_content_async:
+    # combine any RunConfig headers with ADK tracking headers, non-destructively.
+    run_config = ctx.run_config
+    run_config_headers = (
+        run_config.http_options.headers
+        if run_config is not None and run_config.http_options is not None
+        else None
+    )
+    extra_headers = merge_tracking_headers(run_config_headers)
+
     logger.info(
         'Sending request via interactions API, agent: %s, stream: %s, '
         'previous_interaction_id: %s, environment: %s',
@@ -358,7 +385,10 @@ class ManagedAgent(BaseAgent):
       with tracer.start_as_current_span('managed_agent_interaction'):
         async with Aclosing(
             _create_interactions(
-                self.api_client, create_kwargs=create_kwargs, stream=True
+                self.api_client,
+                create_kwargs=create_kwargs,
+                stream=True,
+                extra_headers=extra_headers,
             )
         ) as agen:
           async for llm_response in agen:
