@@ -410,6 +410,89 @@ _SENSITIVE_KEYS = frozenset({
     "password",
 })
 
+# Written in place of event content when a configured content_formatter
+# raises: the formatter is a privacy/redaction boundary, so failure must
+# never fall back to the unformatted payload (#6356 P1-1).
+_FORMATTER_FAILED_SENTINEL = "[FORMATTER_FAILED]"
+
+
+def _sanitize_json_blob(value: str, seen: set[int]) -> tuple[str, bool]:
+  """Redacts sensitive keys inside a JSON-encoded string blob.
+
+  Values such as cached credential JSON often reach attributes as opaque
+  strings, bypassing dict-key redaction (#6356 P1-2 / #5112). When a string
+  looks like a JSON object AND mentions a sensitive key name, parse it,
+  redact recursively, and re-serialize. Returns ``(value, changed)``;
+  strings that do not parse are returned unchanged.
+  """
+  stripped = value.lstrip()
+  if not stripped.startswith("{"):
+    return value, False
+  lowered = value.lower()
+  if not any(key in lowered for key in _SENSITIVE_KEYS):
+    return value, False
+  try:
+    parsed = json.loads(value)
+  except (TypeError, ValueError):
+    return value, False
+  if not isinstance(parsed, dict):
+    return value, False
+  # Redact only (max_len=-1): length truncation is applied by the caller on
+  # the re-serialized string, keeping single responsibility per pass.
+  sanitized, _ = _recursive_smart_truncate(parsed, -1, seen)
+  return json.dumps(sanitized), True
+
+
+def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
+  """Validates runtime settings at construction time (#6356 P2).
+
+  Invalid values used to be accepted silently and only misbehave at
+  runtime — notably ``max_retries < 0`` skips the write loop entirely, so
+  every batch is dropped without a single attempt.
+
+  Raises:
+      ValueError: If any batch, queue, duration, or retry setting is
+        invalid.
+  """
+  if config.batch_size < 1:
+    raise ValueError(f"batch_size must be >= 1, got {config.batch_size}.")
+  if config.batch_flush_interval <= 0:
+    raise ValueError(
+        f"batch_flush_interval must be > 0, got {config.batch_flush_interval}."
+    )
+  if config.shutdown_timeout <= 0:
+    raise ValueError(
+        f"shutdown_timeout must be > 0, got {config.shutdown_timeout}."
+    )
+  if config.queue_max_size < 1:
+    raise ValueError(
+        f"queue_max_size must be >= 1, got {config.queue_max_size}."
+    )
+  if config.max_content_length != -1 and config.max_content_length < 1:
+    raise ValueError(
+        "max_content_length must be -1 (unlimited) or >= 1, got"
+        f" {config.max_content_length}."
+    )
+  retry = config.retry_config
+  if retry.max_retries < 0:
+    raise ValueError(
+        f"retry_config.max_retries must be >= 0, got {retry.max_retries}."
+    )
+  if retry.initial_delay <= 0:
+    raise ValueError(
+        f"retry_config.initial_delay must be > 0, got {retry.initial_delay}."
+    )
+  if retry.multiplier < 1:
+    raise ValueError(
+        f"retry_config.multiplier must be >= 1, got {retry.multiplier}."
+    )
+  if retry.max_delay < retry.initial_delay:
+    raise ValueError(
+        "retry_config.max_delay must be >= initial_delay, got"
+        f" max_delay={retry.max_delay} initial_delay={retry.initial_delay}."
+    )
+
+
 # Cloud Platform OAuth scope. Assembled from parts so this module does not
 # embed a bare Google APIs host literal: the file-content compliance scan
 # rejects such host literals on changed files unless an accompanying mTLS
@@ -456,6 +539,7 @@ def _recursive_smart_truncate(
 
   try:
     if isinstance(obj, str):
+      obj, _ = _sanitize_json_blob(obj, seen)
       if max_len != -1 and len(obj) > max_len:
         return obj[:max_len] + "...[TRUNCATED]", True
       return obj, False
@@ -1644,9 +1728,21 @@ class HybridContentParser:
     return text, False
 
   async def _parse_content_object(
-      self, content: types.Content | types.Part
+      self,
+      content: types.Content | types.Part,
+      *,
+      trace_id: Optional[str] = None,
+      span_id: Optional[str] = None,
   ) -> tuple[str, list[dict[str, Any]], bool]:
-    """Parses a Content or Part object into summary text and content parts."""
+    """Parses a Content or Part object into summary text and content parts.
+
+    ``trace_id``/``span_id`` are call-local: GCS object paths are built from
+    these arguments so concurrent parses on the shared parser instance can
+    never use another event's identity (#6356 P1-3). They fall back to the
+    constructor values for backward compatibility.
+    """
+    trace_id = trace_id if trace_id is not None else self.trace_id
+    span_id = span_id if span_id is not None else self.span_id
     content_parts = []
     is_truncated = False
     summary_text = []
@@ -1673,7 +1769,7 @@ class HybridContentParser:
       elif hasattr(part, "inline_data") and part.inline_data:
         if self.offloader:
           ext = mimetypes.guess_extension(part.inline_data.mime_type) or ".bin"
-          path = f"{datetime.now().date()}/{self.trace_id}/{self.span_id}_p{idx}{ext}"
+          path = f"{datetime.now().date()}/{trace_id}/{span_id}_p{idx}{ext}"
           try:
             uri = await self.offloader.upload_content(
                 part.inline_data.data, part.inline_data.mime_type, path
@@ -1712,7 +1808,7 @@ class HybridContentParser:
 
         if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
           # Text is too big, treat as file
-          path = f"{datetime.now().date()}/{self.trace_id}/{self.span_id}_p{idx}.txt"
+          path = f"{datetime.now().date()}/{trace_id}/{span_id}_p{idx}.txt"
           try:
             uri = await self.offloader.upload_content(
                 part.text, "text/plain", path
@@ -1760,8 +1856,23 @@ class HybridContentParser:
 
     return summary_str, content_parts, is_truncated
 
-  async def parse(self, content: Any) -> tuple[Any, list[dict[str, Any]], bool]:
-    """Parses content into JSON payload and content parts, potentially offloading to GCS."""
+  async def parse(
+      self,
+      content: Any,
+      *,
+      trace_id: Optional[str] = None,
+      span_id: Optional[str] = None,
+  ) -> tuple[Any, list[dict[str, Any]], bool]:
+    """Parses content into JSON payload and content parts, potentially offloading to GCS.
+
+    ``trace_id``/``span_id`` identify the calling event for GCS object paths.
+    Pass them per call — the parser instance is shared across concurrent
+    events, so relying on the mutable instance fields lets one event's await
+    resume with another event's identity and overwrite its objects (#6356
+    P1-3). The instance fields remain only as a backward-compatible default.
+    """
+    trace_id = trace_id if trace_id is not None else self.trace_id
+    span_id = span_id if span_id is not None else self.span_id
     json_payload = {}
     content_parts = []
     is_truncated = False
@@ -1779,7 +1890,9 @@ class HybridContentParser:
       )
       for c in contents:
         role = getattr(c, "role", "unknown")
-        summary, parts, trunc = await self._parse_content_object(c)
+        summary, parts, trunc = await self._parse_content_object(
+            c, trace_id=trace_id, span_id=span_id
+        )
         if trunc:
           is_truncated = True
         content_parts.extend(parts)
@@ -1797,14 +1910,18 @@ class HybridContentParser:
             is_truncated = True
           json_payload["system_prompt"] = truncated_si
         else:
-          summary, parts, trunc = await self._parse_content_object(si)
+          summary, parts, trunc = await self._parse_content_object(
+              si, trace_id=trace_id, span_id=span_id
+          )
           if trunc:
             is_truncated = True
           content_parts.extend(parts)
           json_payload["system_prompt"] = summary
 
     elif isinstance(content, (types.Content, types.Part)):
-      summary, parts, trunc = await self._parse_content_object(content)
+      summary, parts, trunc = await self._parse_content_object(
+          content, trace_id=trace_id, span_id=span_id
+      )
       return {"text_summary": summary}, parts, trunc
 
     elif isinstance(content, (dict, list)):
@@ -2460,8 +2577,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     self._visual_builder = _is_visual_builder.get()
 
+    _validate_runtime_config(self.config)
+
     self._started = False
     self._startup_error: Optional[Exception] = None
+    self._setup_failures = 0
+    self._setup_retry_at = 0.0
+    # Plugin-level loss accounting (#6356 P2): counts drops that happen
+    # before/outside any BatchProcessor (setup unavailable, formatter
+    # failure). Merged into get_drop_stats() and survives shutdown.
+    self._local_drop_counts: dict[str, int] = {}
     self._is_shutting_down = False
     self._setup_lock = None
     self._credentials = credentials
@@ -2651,7 +2776,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         Per-reason drop counts summed over every active loop's processor.
         Empty if no processor has been created yet.
     """
-    totals: dict[str, int] = {}
+    totals: dict[str, int] = dict(self._local_drop_counts)
     for state in list(self._loop_state_by_loop.values()):
       for reason, count in state.batch_processor.get_drop_stats().items():
         totals[reason] = totals.get(reason, 0) + count
@@ -2777,29 +2902,35 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
       tbl.clustering_fields = self.config.clustering_fields
       tbl.labels = {_SCHEMA_VERSION_LABEL_KEY: _SCHEMA_VERSION}
-      table_ready = False
       try:
         self.client.create_table(tbl)
-        table_ready = True
       except cloud_exceptions.Conflict:
         # Another process created it concurrently — still usable.
-        table_ready = True
+        pass
       except Exception as e:
+        # Fail setup (#6356 P1-4): returning normally here used to let the
+        # plugin mark itself started against a missing table and silently
+        # lose every subsequent row. Raise so _ensure_started records the
+        # failure, keeps _started=False, and retries on a later event.
         logger.error(
             "Could not create table %s: %s",
             self.full_table_id,
             e,
             exc_info=True,
         )
-      if table_ready and self.config.create_views:
+        raise
+      if self.config.create_views:
         self._create_analytics_views()
     except Exception as e:
+      # Fail setup (#6356 P1-4): swallowing control-plane errors here let
+      # the plugin mark itself started against a missing/unready table.
       logger.error(
-          "Error checking for table %s: %s",
+          "Error ensuring table %s is ready: %s",
           self.full_table_id,
           e,
           exc_info=True,
       )
+      raise
 
   @staticmethod
   def _schema_fields_match(
@@ -3137,8 +3268,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.parser = None
     self._started = False
     self._startup_error = None
+    self._setup_failures = 0
+    self._setup_retry_at = 0.0
     self._is_shutting_down = False
     self._init_pid = os.getpid()
+
+  def _count_local_drop(self, reason: str) -> None:
+    """Counts a row lost before/outside any BatchProcessor (#6356 P2)."""
+    self._local_drop_counts[reason] = self._local_drop_counts.get(reason, 0) + 1
 
   async def __aenter__(self) -> BigQueryAgentAnalyticsPlugin:
     await self._ensure_started()
@@ -3148,7 +3285,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     await self.shutdown()
 
   async def _ensure_started(self, **kwargs) -> None:
-    """Ensures that the plugin is started and initialized."""
+    """Ensures that the plugin is started and initialized.
+
+    Setup failures no longer poison the plugin permanently (#6356 P1-4):
+    the failure is recorded, ``_started`` stays False, and a later event
+    retries after a bounded exponential backoff. Attempts are coalesced
+    through the setup lock, so failure mode costs at most one setup RPC
+    per backoff window — not one per event.
+    """
+    # Disabled mode must have zero side effects (#6356 P2): no ADC lookup,
+    # client creation, table RPCs, or background tasks from any entry point
+    # (before_run_callback, __aenter__, _log_event all route through here).
+    if not self.config.enabled:
+      return
     # _init_pid == 0 means the plugin was unpickled and has never been
     # initialized in this process (the pickle sentinel set by
     # __getstate__).  Skip the fork reset in that case — no fork
@@ -3164,17 +3313,34 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         self._setup_lock = asyncio.Lock()
       async with self._setup_lock:
         if not self._started:
+          if (
+              self._startup_error is not None
+              and time.monotonic() < self._setup_retry_at
+          ):
+            # Still inside the backoff window from a previous failure.
+            return
           try:
             await self._lazy_setup(**kwargs)
             self._started = True
             self._startup_error = None
+            self._setup_failures = 0
+            self._setup_retry_at = 0.0
             # Record the current PID so fork detection works for
             # the rest of this instance's lifetime.
             if self._init_pid == 0:
               self._init_pid = os.getpid()
           except Exception as e:
             self._startup_error = e
-            logger.error("Failed to initialize BigQuery Plugin: %s", e)
+            self._setup_failures += 1
+            backoff = min(60.0, 2.0 ** min(self._setup_failures, 6))
+            self._setup_retry_at = time.monotonic() + backoff
+            logger.error(
+                "Failed to initialize BigQuery Plugin (attempt %d, next"
+                " retry in %.0fs): %s",
+                self._setup_failures,
+                backoff,
+                e,
+            )
 
   @staticmethod
   def _resolve_ids(
@@ -3561,6 +3727,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if not self._started:
       await self._ensure_started()
       if not self._started:
+        # Setup unavailable (failed and inside its retry backoff): the row
+        # is lost — record it so the loss is observable (#6356 P1-4).
+        self._count_local_drop("setup_unavailable")
         return
 
     if event_data is None:
@@ -3570,8 +3739,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self.config.content_formatter:
       try:
         raw_content = self.config.content_formatter(raw_content, event_type)
-      except Exception as e:
-        logger.warning("Content formatter failed: %s", e)
+      except Exception:
+        # Fail CLOSED (#6356 P1-1): the formatter is a redaction/privacy
+        # boundary, so its failure must never fall back to the unformatted
+        # payload. Keep the event's non-content metadata, replace content
+        # with a sentinel, and log without the original payload.
+        logger.warning(
+            "Content formatter failed for event %s; writing sentinel"
+            " instead of original content.",
+            event_type,
+            exc_info=True,
+        )
+        raw_content = _FORMATTER_FAILED_SENTINEL
+        self._count_local_drop("formatter_failed")
 
     trace_id, span_id, parent_span_id = self._resolve_ids(
         event_data, callback_context
@@ -3590,11 +3770,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if {"content", "content_parts"} <= self._denied_columns:
       content_json, content_parts, parser_truncated = None, [], False
     else:
-      # Update parser's trace/span IDs for GCS pathing (reuse instance)
-      self.parser.trace_id = trace_id or "no_trace"
-      self.parser.span_id = span_id or "no_span"
+      # Pass trace/span per call: the parser instance is shared, so storing
+      # request identity on it lets concurrent events overwrite each other's
+      # GCS object paths (#6356 P1-3).
       content_json, content_parts, parser_truncated = await self.parser.parse(
-          raw_content
+          raw_content,
+          trace_id=trace_id or "no_trace",
+          span_id=span_id or "no_span",
       )
     is_truncated = is_truncated or parser_truncated
 
@@ -3608,6 +3790,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self._custom_metadata_exact or self._custom_metadata_prefixes:
       meta_truncated = self._capture_custom_metadata(event_data, attributes)
       is_truncated = is_truncated or meta_truncated
+
+    # Final safety pass (#6356 P1-2): sanitize the COMPLETE assembled
+    # attributes tree immediately before serialization. Producer-local
+    # sanitization above remains as an optimization, but this pass is the
+    # mandatory boundary — it covers values copied in directly (state_delta
+    # via extra_attributes, custom_tags, labels, generic extra attributes),
+    # nested structures, `temp:`-scoped keys, and JSON-encoded blobs.
+    attributes, attrs_truncated = _recursive_smart_truncate(
+        attributes, self.config.max_content_length
+    )
+    is_truncated = is_truncated or attrs_truncated
 
     # Serialize attributes to JSON string
     try:
