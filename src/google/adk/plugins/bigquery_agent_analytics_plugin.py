@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import collections.abc
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
 import dataclasses
@@ -439,18 +440,40 @@ def _sanitize_json_blob(
   stripped = value.lstrip()
   if not stripped.startswith(("{", "[")):
     return value, False
+
+  # json.loads silently keeps only the LAST duplicate member, so a blob like
+  # {"access_token":"SECRET","access_token":"x"} can compare equal after
+  # sanitization while the raw string still carries the secret (#6360 review
+  # round 2 P1-1). Track duplicates while parsing and always reserialize
+  # such blobs.
+  saw_duplicate_key = False
+
+  def _pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    nonlocal saw_duplicate_key
+    result = {}
+    for k, v in pairs:
+      if k in result:
+        saw_duplicate_key = True
+      result[k] = v
+    return result
+
   try:
-    parsed = json.loads(value)
+    parsed = json.loads(value, object_pairs_hook=_pairs_hook)
+    if not isinstance(parsed, (dict, list)):
+      return value, False
+    # Redact only (max_len=-1): length truncation is applied by the caller
+    # on the re-serialized string, keeping single responsibility per pass.
+    sanitized, _ = _recursive_smart_truncate(parsed, -1, seen, depth + 1)
+    if sanitized == parsed and not saw_duplicate_key:
+      return value, False
+    return json.dumps(sanitized), True
   except (TypeError, ValueError):
     return value, False
-  if not isinstance(parsed, (dict, list)):
-    return value, False
-  # Redact only (max_len=-1): length truncation is applied by the caller on
-  # the re-serialized string, keeping single responsibility per pass.
-  sanitized, _ = _recursive_smart_truncate(parsed, -1, seen, depth + 1)
-  if sanitized == parsed:
-    return value, False
-  return json.dumps(sanitized), True
+  except (RecursionError, MemoryError):
+    # A blob too deep/large to inspect cannot be verified secret-free.
+    # Fail CLOSED to a sentinel instead of passing it through unexamined
+    # (#6360 review round 2 P2-5).
+    return "[UNPARSEABLE_JSON_BLOB]", True
 
 
 def _require_count(name: str, value: Any, minimum: int) -> None:
@@ -568,7 +591,7 @@ def _recursive_smart_truncate(
 
   # Track compound objects to detect cycles
   is_compound = (
-      isinstance(obj, (dict, list, tuple))
+      isinstance(obj, (dict, list, tuple, collections.abc.Mapping))
       or (dataclasses.is_dataclass(obj) and not isinstance(obj, type))
       or hasattr(obj, "model_dump")
       or hasattr(obj, "dict")
@@ -584,7 +607,10 @@ def _recursive_smart_truncate(
       if max_len != -1 and len(obj) > max_len:
         return obj[:max_len] + "...[TRUNCATED]", True
       return obj, False
-    elif isinstance(obj, dict):
+    elif isinstance(obj, collections.abc.Mapping):
+      # Covers dict plus mapping views (MappingProxyType, UserDict, ...):
+      # stringifying them in the fallback branch would bypass key redaction
+      # (#6360 review round 2 P1-3). Always emits a plain sanitized dict.
       truncated_any = False
       # Use dict comprehension for potentially slightly better performance,
       # but explicit loop is fine for clarity given recursive nature.
@@ -1324,6 +1350,7 @@ class BatchProcessor:
         "retry_exhausted": 0,
         "non_retryable": 0,
         "unexpected_error": 0,
+        "shutdown_timeout": 0,
     }
 
   async def flush(self) -> None:
@@ -1490,6 +1517,16 @@ class BatchProcessor:
 
       except asyncio.TimeoutError:
         continue
+      except asyncio.CancelledError:
+        # Cancelled mid-write by the shutdown timeout: the in-flight batch
+        # is lost — count it (#6360 review round 2 P2-4).
+        if batch:
+          self._dropped["shutdown_timeout"] += len(batch)
+          logger.warning(
+              "%d in-flight row(s) dropped by shutdown cancellation.",
+              len(batch),
+          )
+        raise
       except asyncio.CancelledError:
         logger.info("Batch writer task cancelled.")
         break
@@ -1668,6 +1705,23 @@ class BatchProcessor:
           await self._batch_processor_task
         except asyncio.CancelledError:
           pass
+        # Rows still queued after the timeout are lost: count them so the
+        # loss is observable instead of silent (#6360 review round 2 P2-4).
+        # The worker counts its own in-flight batch on cancellation.
+        drained = 0
+        try:
+          while True:
+            item = self._queue.get_nowait()
+            if item is not _SHUTDOWN_SENTINEL:
+              drained += 1
+            self._queue.task_done()
+        except asyncio.QueueEmpty:
+          pass
+        if drained:
+          self._dropped["shutdown_timeout"] += drained
+          logger.warning(
+              "%d queued row(s) dropped by shutdown timeout.", drained
+          )
       except Exception as e:
         logger.error("Error during BatchProcessor shutdown: %s", e)
 
@@ -1742,7 +1796,14 @@ class GCSOffloader:
       self, data: bytes | str, content_type: str, path: str
   ) -> str:
     blob = self.bucket.blob(path)
-    blob.upload_from_string(data, content_type=content_type)
+    # if_generation_match=0: create-only. Object names are unique by
+    # construction, so on the (astronomically unlikely) collision this
+    # fails the upload — surfaced as [UPLOAD FAILED] — instead of silently
+    # rebinding an existing BigQuery row to another event's bytes (#6360
+    # review round 2 P2-8).
+    blob.upload_from_string(
+        data, content_type=content_type, if_generation_match=0
+    )
     return f"gs://{self.bucket.name}/{path}"
 
 
@@ -1796,7 +1857,7 @@ class HybridContentParser:
     """
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
-    parse_uid = parse_uid or uuid.uuid4().hex[:8]
+    parse_uid = parse_uid or uuid.uuid4().hex
     content_parts = []
     is_truncated = False
     summary_text = []
@@ -1936,7 +1997,7 @@ class HybridContentParser:
     # Unique per parse() call: disambiguates GCS object names across the
     # multiple Content objects of one request and across concurrent events
     # (#6360 review P1-2).
-    parse_uid = uuid.uuid4().hex[:8]
+    parse_uid = uuid.uuid4().hex
     json_payload = {}
     content_parts = []
     is_truncated = False
@@ -2685,6 +2746,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           loop,
           id(loop),
       )
+      # Preserve the dead processor's loss accounting before discarding it
+      # (#6360 review round 2 P2-6), mirroring shutdown().
+      state = self._loop_state_by_loop[loop]
+      for reason, count in state.batch_processor.get_drop_stats().items():
+        self._local_drop_counts[reason] = (
+            self._local_drop_counts.get(reason, 0) + count
+        )
       del self._loop_state_by_loop[loop]
 
   # API Compatibility: These class-level attributes mask the dynamic
@@ -3144,6 +3212,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           e,
           exc_info=True,
       )
+      # The table is verifiably missing required fields at this point;
+      # swallowing the failure would let _ensure_started mark the plugin
+      # ready against a table every later write can fail on, with no
+      # readiness retry (#6360 review round 2 P1-2).
+      raise
 
   def _project_view_columns(self, extra_cols: list[str]) -> list[str]:
     """Drops derived view expressions that reference a denied column.
@@ -3310,6 +3383,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_setup_failures", 0)
     state.setdefault("_setup_retry_at", 0.0)
     self.__dict__.update(state)
+    # Pickles from older code bypass __init__, so re-validate the restored
+    # configuration: e.g. a legacy retry_config with max_retries=NaN would
+    # otherwise skip the write loop silently (#6360 review round 2 P2-7).
+    _validate_runtime_config(self.config)
 
   def _reset_runtime_state(self) -> None:
     """Resets all runtime state after a fork.

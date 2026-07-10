@@ -5123,8 +5123,13 @@ class TestSchemaAutoUpgrade:
     plugin._ensure_schema_exists()
     plugin.client.update_table.assert_not_called()
 
-  def test_upgrade_error_is_logged_not_raised(self):
-    """Schema upgrade errors are logged, not propagated."""
+  def test_upgrade_error_propagates_when_fields_missing(self):
+    """Schema upgrade failure raises when required fields are missing.
+
+    Swallowing it let _ensure_started mark the plugin ready against a
+    table every later write can fail on, with no readiness retry (#6360
+    review round 2 P1-2).
+    """
     plugin = self._make_plugin(auto_schema_upgrade=True)
     existing = mock.MagicMock(spec=bigquery.Table)
     existing.schema = [
@@ -5133,8 +5138,8 @@ class TestSchemaAutoUpgrade:
     existing.labels = {}
     plugin.client.get_table.return_value = existing
     plugin.client.update_table.side_effect = Exception("boom")
-    # Should not raise
-    plugin._ensure_schema_exists()
+    with pytest.raises(Exception, match="boom"):
+      plugin._ensure_schema_exists()
 
   def test_upgrade_preserves_existing_columns(self):
     """Existing columns are never dropped or altered during upgrade."""
@@ -7653,8 +7658,10 @@ class TestSchemaUpgradeNestedFields:
     plugin.client.get_table.return_value = existing
     plugin.client.update_table.side_effect = Exception("network error")
 
-    # Should not raise.
-    plugin._ensure_schema_exists()
+    # Raises so setup is not marked ready against a table with missing
+    # fields (#6360 review round 2 P1-2).
+    with pytest.raises(Exception, match="network error"):
+      plugin._ensure_schema_exists()
 
     # The label is set on the table object before update_table is
     # called, but since update_table failed the label was never
@@ -10106,3 +10113,163 @@ class TestIssue6356Hardening:
         bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
             PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
         )
+
+  def test_json_blob_duplicate_keys_always_reserialized(self):
+    """Duplicate JSON members must not defeat the changed-blob check.
+
+    json.loads keeps only the last duplicate, so sanitized == parsed can
+    hold while the raw string still carries an earlier secret member
+    (#6360 review round 2 P1-1).
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    blob = '{"access_token": "SECRET-DUP", "access_token": "[REDACTED]"}'
+    out, _ = truncate({"blob": blob}, 10000)
+    assert "SECRET-DUP" not in json.dumps(out)
+    assert json.loads(out["blob"])["access_token"] == "[REDACTED]"
+
+  def test_mapping_views_are_redacted(self):
+    """Mapping types beyond dict must be walked, not stringified.
+
+    MappingProxyType/UserDict used to hit the stringify fallback, leaking
+    sensitive members (#6360 review round 2 P1-3).
+    """
+    import collections
+    from types import MappingProxyType
+
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    proxy = MappingProxyType({"access_token": "SECRET-PROXY"})
+    userdict = collections.UserDict({"refresh_token": "SECRET-USERDICT"})
+    out, _ = truncate({"proxy": proxy, "userdict": userdict}, 10000)
+    dumped = json.dumps(out)
+    assert "SECRET-PROXY" not in dumped
+    assert "SECRET-USERDICT" not in dumped
+    assert out["proxy"]["access_token"] == "[REDACTED]"
+    assert out["userdict"]["refresh_token"] == "[REDACTED]"
+
+  def test_deep_json_blob_fails_closed(self):
+    """A blob too deep to parse becomes a sentinel, not a pass-through.
+
+    json.loads raises RecursionError before the bounded traversal ever
+    runs; the row keeps flowing with the blob replaced (#6360 review
+    round 2 P2-5).
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    deep = "[" * 10000 + "]" * 10000
+    out, _ = truncate({"blob": deep}, 500 * 1024)
+    assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]"
+
+  @pytest.mark.asyncio
+  async def test_shutdown_timeout_counts_lost_rows(self):
+    """Rows stranded by a shutdown timeout are counted, not silent.
+
+    In-flight batch rows are counted by the cancelled worker and queued
+    rows by the drain in shutdown() (#6360 review round 2 P2-4).
+    """
+    write_started = asyncio.Event()
+
+    async def hung_writer(batch):
+      write_started.set()
+      await asyncio.sleep(3600)
+
+    processor = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=mock.MagicMock(),
+        write_stream="stream",
+        batch_size=1,
+        flush_interval=0.05,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=0.1,
+    )
+    with mock.patch.object(
+        processor, "_write_rows_with_retry", side_effect=hung_writer
+    ):
+      await processor.start()
+      await processor.append({"row": 1})
+      await write_started.wait()  # row 1 is in-flight in the hung writer
+      await processor.append({"row": 2})  # row 2 stays queued
+      await processor.shutdown(timeout=0.1)
+
+    stats = processor.get_drop_stats()
+    assert stats.get("shutdown_timeout") == 2
+
+  @pytest.mark.asyncio
+  async def test_stale_loop_cleanup_preserves_drop_stats(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Closed-loop cleanup folds processor counters before deletion
+    (#6360 review round 2 P2-6)."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    dead_loop = mock.MagicMock()
+    dead_loop.is_closed.return_value = True
+    state = mock.MagicMock()
+    state.batch_processor.get_drop_stats.return_value = {"write_failed": 7}
+    plugin._loop_state_by_loop[dead_loop] = state
+
+    plugin._cleanup_stale_loop_states()
+
+    assert plugin._loop_state_by_loop == {}
+    assert plugin.get_drop_stats().get("write_failed") == 7
+
+  def test_setstate_validates_restored_config(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Legacy pickles with invalid runtime config fail at restore, not as
+    a silent write-loop skip (#6360 review round 2 P2-7)."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    state = plugin.__getstate__()
+    state["config"].retry_config.max_retries = float("nan")
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    with pytest.raises(ValueError):
+      restored.__setstate__(state)
+
+  @pytest.mark.asyncio
+  async def test_gcs_uploads_use_full_uid_and_create_only(self):
+    """Object names carry the full 128-bit uid; uploads are create-only.
+
+    32 random bits reach ~50% birthday collision around 77k parses; a
+    collision must fail the upload instead of rebinding an existing row
+    to another event's bytes (#6360 review round 2 P2-8).
+    """
+    uploaded: list[str] = []
+
+    class _FakeOffloader:
+
+      async def upload_content(self, data, mime, path):
+        uploaded.append(path)
+        return f"gs://bucket/{path}"
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=_FakeOffloader(), trace_id="t", span_id="s"
+    )
+    await parser.parse(
+        types.Content(
+            parts=[types.Part.from_bytes(data=b"a", mime_type="image/png")]
+        ),
+        trace_id="trace-y",
+        span_id="span-y",
+    )
+    assert len(uploaded) == 1
+    # .../{span}_{32-hex-uid}_c{n}_p{idx}.png
+    uid_segment = uploaded[0].split("span-y_")[1].split("_c")[0]
+    assert len(uid_segment) == 32
+
+    # And the sync upload path passes create-only semantics.
+    bucket = mock.MagicMock()
+    offloader = bigquery_agent_analytics_plugin.GCSOffloader.__new__(
+        bigquery_agent_analytics_plugin.GCSOffloader
+    )
+    offloader.bucket = bucket
+    offloader._upload_sync(b"data", "image/png", "p")
+    _, kwargs = bucket.blob.return_value.upload_from_string.call_args
+    assert kwargs.get("if_generation_match") == 0
