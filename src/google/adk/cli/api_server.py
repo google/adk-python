@@ -742,7 +742,10 @@ class ApiServer:
       return self.runner_dict[app_name]
 
     # Create new runner
-    agent_or_app = self.agent_loader.load_agent(app_name)
+    try:
+      agent_or_app = self.agent_loader.load_agent(app_name)
+    except ValueError as ve:
+      raise HTTPException(status_code=404, detail=str(ve)) from ve
 
     if self.default_llm_model:
       from .cli import _override_default_llm_model
@@ -1162,7 +1165,10 @@ class ApiServer:
                 " mode."
             ),
         )
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      try:
+        agent_or_app = self.agent_loader.load_agent(app_name)
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
         return AppInfo(
