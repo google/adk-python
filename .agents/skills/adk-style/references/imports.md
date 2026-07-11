@@ -27,4 +27,3 @@ if TYPE_CHECKING:
 ```
 
 This works because `from __future__ import annotations` makes all annotations strings (deferred evaluation), so the import is never needed at runtime.
-
