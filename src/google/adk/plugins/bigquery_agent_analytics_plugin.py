@@ -40,6 +40,7 @@ os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
 
 import random
 import re
+import threading
 import time
 from types import MappingProxyType
 from typing import Any
@@ -467,12 +468,16 @@ def _sanitize_json_blob(
     if sanitized == parsed and not saw_duplicate_key:
       return value, False
     return json.dumps(sanitized), True
-  except (TypeError, ValueError):
+  except json.JSONDecodeError:
+    # Not JSON at all — nothing to inspect; the outer string handling
+    # (length truncation) still applies.
     return value, False
-  except (RecursionError, MemoryError):
-    # A blob too deep/large to inspect cannot be verified secret-free.
-    # Fail CLOSED to a sentinel instead of passing it through unexamined
-    # (#6360 review round 2 P2-5).
+  except (TypeError, ValueError, RecursionError, MemoryError):
+    # Syntactically valid JSON that Python cannot materialize — e.g.
+    # integers over sys.get_int_max_str_digits() raise a plain ValueError
+    # (#6360 review round 3 P1-1) — or a blob too deep/large to inspect
+    # (round 2 P2-5). Either way it cannot be verified secret-free: fail
+    # CLOSED to a sentinel instead of passing it through unexamined.
     return "[UNPARSEABLE_JSON_BLOB]", True
 
 
@@ -1518,18 +1523,21 @@ class BatchProcessor:
       except asyncio.TimeoutError:
         continue
       except asyncio.CancelledError:
-        # Cancelled mid-write by the shutdown timeout: the in-flight batch
-        # is lost — count it (#6360 review round 2 P2-4).
+        # Cancelled (e.g. by the shutdown timeout): the in-flight batch is
+        # lost — count it (#6360 review round 2 P2-4) — then exit the
+        # worker, preserving the original swallow-and-break semantics.
         if batch:
           self._dropped["shutdown_timeout"] += len(batch)
           logger.warning(
               "%d in-flight row(s) dropped by shutdown cancellation.",
               len(batch),
           )
-        raise
-      except asyncio.CancelledError:
         logger.info("Batch writer task cancelled.")
-        break
+        # Re-raise: asyncio.wait_for treats a task that SUPPRESSES
+        # cancellation as a normal completion, so shutdown()'s timeout
+        # branch (which drains and counts the remaining queue) would never
+        # run if this swallowed the cancellation.
+        raise
       except Exception as e:
         logger.error("Error in batch writer loop: %s", e, exc_info=True)
         # Avoid sleeping if we are shutting down or if the task was cancelled
@@ -1746,6 +1754,21 @@ class BatchProcessor:
         await self._batch_processor_task
       except asyncio.CancelledError:
         pass
+    # Same loss accounting as shutdown(): rows still queued after the
+    # timeout are counted, not silently discarded (#6360 review round 3
+    # P2). The cancelled worker counts its own in-flight batch.
+    drained = 0
+    try:
+      while True:
+        item = self._queue.get_nowait()
+        if item is not _SHUTDOWN_SENTINEL:
+          drained += 1
+        self._queue.task_done()
+    except asyncio.QueueEmpty:
+      pass
+    if drained:
+      self._dropped["shutdown_timeout"] += drained
+      logger.warning("%d queued row(s) dropped by close timeout.", drained)
 
 
 # ==============================================================================
@@ -2724,7 +2747,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # failure). Merged into get_drop_stats() and survives shutdown.
     self._local_drop_counts: dict[str, int] = {}
     self._is_shutting_down = False
-    self._setup_lock = None
+    self._setup_locks_guard = threading.Lock()
+    self._setup_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
     self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
@@ -2741,6 +2765,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """Removes entries for event loops that have been closed."""
     stale = [loop for loop in self._loop_state_by_loop if loop.is_closed()]
     for loop in stale:
+      # Atomic claim (#6360 review round 3 P2): dict.pop is atomic under
+      # the GIL, so exactly one concurrent cleanup folds a given
+      # processor's counters — read-fold-delete raced, double-counting and
+      # raising KeyError.
+      state = self._loop_state_by_loop.pop(loop, None)
+      if state is None:
+        continue
       logger.warning(
           "Cleaning up stale loop state for closed loop %s (id=%s).",
           loop,
@@ -2748,12 +2779,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
       # Preserve the dead processor's loss accounting before discarding it
       # (#6360 review round 2 P2-6), mirroring shutdown().
-      state = self._loop_state_by_loop[loop]
       for reason, count in state.batch_processor.get_drop_stats().items():
         self._local_drop_counts[reason] = (
             self._local_drop_counts.get(reason, 0) + count
         )
-      del self._loop_state_by_loop[loop]
 
   # API Compatibility: These class-level attributes mask the dynamic
   # properties from static analysis tools (preventing "breaking changes"),
@@ -3212,11 +3241,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           e,
           exc_info=True,
       )
-      # The table is verifiably missing required fields at this point;
-      # swallowing the failure would let _ensure_started mark the plugin
-      # ready against a table every later write can fail on, with no
-      # readiness retry (#6360 review round 2 P1-2).
-      raise
+      if new_fields or updated_records:
+        # The table is verifiably missing required fields; swallowing the
+        # failure would let _ensure_started mark the plugin ready against
+        # a table every later write can fail on, with no readiness retry
+        # (#6360 review round 2 P1-2).
+        raise
+      # Label-only refresh failed (e.g. a labels policy): the table schema
+      # itself is write-compatible, so readiness must not be blocked —
+      # the stale label is retried on the next run (#6360 review round 3
+      # P1-2).
 
   def _project_view_columns(self, extra_cols: list[str]) -> list[str]:
     """Drops derived view expressions that reference a denied column.
@@ -3359,7 +3393,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   def __getstate__(self):
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
-    state["_setup_lock"] = None
+    state["_setup_locks_guard"] = None
+    state["_setup_locks"] = {}
     state["client"] = None
     state["_loop_state_by_loop"] = {}
     state["_write_stream_name"] = None
@@ -3382,7 +3417,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_local_drop_counts", {})
     state.setdefault("_setup_failures", 0)
     state.setdefault("_setup_retry_at", 0.0)
+    state.pop("_setup_lock", None)  # replaced by per-loop locks
+    state.setdefault("_setup_locks", {})
     self.__dict__.update(state)
+    self._setup_locks_guard = threading.Lock()
     # Pickles from older code bypass __init__, so re-validate the restored
     # configuration: e.g. a legacy retry_config with max_retries=NaN would
     # otherwise skip the write loop silently (#6360 review round 2 P2-7).
@@ -3429,7 +3467,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           pass
 
     # Clear all runtime state.
-    self._setup_lock = None
+    self._setup_locks_guard = threading.Lock()
+    self._setup_locks = {}
     self.client = None
     self._loop_state_by_loop = {}
     self._write_stream_name = None
@@ -3442,6 +3481,21 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._setup_retry_at = 0.0
     self._is_shutting_down = False
     self._init_pid = os.getpid()
+
+  def _get_setup_lock(self) -> asyncio.Lock:
+    """Returns the setup lock for the CURRENT event loop.
+
+    asyncio.Lock is loop-bound: sharing one across loops/threads is not
+    thread-safe (#6360 review round 3 P2). The dict itself is guarded by a
+    threading.Lock so concurrent loops can mint their locks safely.
+    """
+    loop = asyncio.get_running_loop()
+    with self._setup_locks_guard:
+      lock = self._setup_locks.get(loop)
+      if lock is None:
+        lock = asyncio.Lock()
+        self._setup_locks[loop] = lock
+      return lock
 
   def _count_local_drop(self, reason: str) -> None:
     """Counts a row lost before/outside any BatchProcessor (#6356 P2)."""
@@ -3478,10 +3532,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self._init_pid != 0 and os.getpid() != self._init_pid:
       self._reset_runtime_state()
     if not self._started:
-      # Kept original lock name as it was not explicitly changed.
-      if self._setup_lock is None:
-        self._setup_lock = asyncio.Lock()
-      async with self._setup_lock:
+      # Per-loop coalescing: asyncio locks are loop-bound, so one shared
+      # lock across loops/threads raises "Non-thread-safe operation" and
+      # can strand waiters on other loops (#6360 review round 3 P2).
+      # _get_setup_lock hands each event loop its own lock; _lazy_setup
+      # re-checks _started inside, so a rare cross-loop overlap costs at
+      # most one duplicate idempotent setup RPC.
+      async with self._get_setup_lock():
         if not self._started:
           if (
               self._startup_error is not None

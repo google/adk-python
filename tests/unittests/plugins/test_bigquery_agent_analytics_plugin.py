@@ -2559,7 +2559,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     pickled = pickle.dumps(plugin)
     unpickled = pickle.loads(pickled)
     assert unpickled.project_id == PROJECT_ID
-    assert unpickled._setup_lock is None
+    assert unpickled._setup_locks == {}
     assert unpickled._executor is None
     # Start the plugin
     await plugin._ensure_started()
@@ -2570,7 +2570,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       unpickled_started = pickle.loads(pickled_started)
       assert unpickled_started.project_id == PROJECT_ID
       # Runtime objects should be None after unpickling
-      assert unpickled_started._setup_lock is None
+      assert unpickled_started._setup_locks == {}
       assert unpickled_started._executor is None
       assert not unpickled_started._loop_state_by_loop
     finally:
@@ -6058,7 +6058,7 @@ class TestForkSafety:
     plugin._executor = mock.MagicMock()
     plugin.offloader = mock.MagicMock()
     plugin.parser = mock.MagicMock()
-    plugin._setup_lock = mock.MagicMock()
+    plugin._setup_locks = {mock.MagicMock(): mock.MagicMock()}
     # Keep pure-data fields
     plugin._schema = ["kept"]
     plugin.arrow_schema = "kept_arrow"
@@ -6073,7 +6073,7 @@ class TestForkSafety:
     assert plugin._executor is None
     assert plugin.offloader is None
     assert plugin.parser is None
-    assert plugin._setup_lock is None
+    assert plugin._setup_locks == {}
     # Pure-data fields are preserved
     assert plugin._schema == ["kept"]
     assert plugin.arrow_schema == "kept_arrow"
@@ -10273,3 +10273,143 @@ class TestIssue6356Hardening:
     offloader._upload_sync(b"data", "image/png", "p")
     _, kwargs = bucket.blob.return_value.upload_from_string.call_args
     assert kwargs.get("if_generation_match") == 0
+
+  def test_unmaterializable_json_blob_fails_closed(self):
+    """Valid JSON that Python cannot materialize becomes a sentinel.
+
+    Integers over the interpreter digit limit raise a plain ValueError
+    from json.loads on syntactically valid JSON; returning the raw string
+    would leak members the sanitizer never inspected (#6360 review round 3
+    P1-1).
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    blob = '{"access_token": "SECRET-BIGINT", "n": ' + "9" * 5000 + "}"
+    out, _ = truncate({"blob": blob}, 500 * 1024)
+    assert "SECRET-BIGINT" not in json.dumps(out)
+    assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]"
+
+  def test_label_only_upgrade_failure_does_not_block_readiness(self):
+    """A label-only update_table failure must not fail setup.
+
+    The table schema is write-compatible; only the governance label is
+    stale. Blocking readiness turned every event into setup_unavailable
+    although writes would succeed (#6360 review round 3 P1-2).
+    """
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        auto_schema_upgrade=True,
+    )
+    with mock.patch("google.cloud.bigquery.Client"):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=config,
+      )
+    plugin.client = mock.MagicMock()
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema()
+    existing = mock.MagicMock(spec=bigquery.Table)
+    # Identical schema: no new fields, no updated records.
+    existing.schema = list(plugin._schema)
+    existing.labels = {}  # stale version label only
+    plugin.client.get_table.return_value = existing
+    plugin.client.update_table.side_effect = Exception("labels forbidden")
+
+    # Does not raise; the stale label is retried on the next run.
+    plugin._ensure_schema_exists()
+    plugin.client.update_table.assert_called_once()
+
+  def test_ensure_started_coalesces_across_event_loops(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """_ensure_started must be safe when called from multiple loops.
+
+    One shared asyncio.Lock is loop-bound: a second thread's loop raised
+    'Non-thread-safe operation' and could strand waiters (#6360 review
+    round 3 P2). Per-loop locks make each loop coalesce independently.
+    """
+    _ = mock_auth_default, mock_bq_client
+    import threading
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    setup_calls = []
+
+    async def fake_lazy_setup(**kwargs):
+      setup_calls.append(threading.get_ident())
+      await asyncio.sleep(0.05)
+
+    errors: list[BaseException] = []
+
+    def run_in_fresh_loop():
+      try:
+        with mock.patch.object(
+            plugin, "_lazy_setup", side_effect=fake_lazy_setup
+        ):
+          asyncio.run(plugin._ensure_started())
+      except BaseException as e:  # noqa: BLE001 - collecting for assertion
+        errors.append(e)
+
+    threads = [threading.Thread(target=run_in_fresh_loop) for _ in range(2)]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join(timeout=10)
+    assert not errors, f"cross-loop startup raised: {errors}"
+
+  def test_concurrent_stale_cleanup_folds_once(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Repeated/concurrent cleanups fold a processor's counters exactly once.
+
+    Read-fold-delete raced: two cleanups produced doubled counts and a
+    KeyError; the pop-claim makes folding idempotent (#6360 review round 3
+    P2).
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    dead_loop = mock.MagicMock()
+    dead_loop.is_closed.return_value = True
+    state = mock.MagicMock()
+    state.batch_processor.get_drop_stats.return_value = {"write_failed": 7}
+    plugin._loop_state_by_loop[dead_loop] = state
+
+    plugin._cleanup_stale_loop_states()
+    plugin._cleanup_stale_loop_states()  # second pass: nothing left to claim
+
+    assert plugin.get_drop_stats().get("write_failed") == 7
+
+  @pytest.mark.asyncio
+  async def test_close_counts_lost_rows_like_shutdown(self):
+    """close() shares shutdown()'s drain/accounting for stranded rows
+    (#6360 review round 3 P2)."""
+    write_started = asyncio.Event()
+
+    async def hung_writer(batch):
+      write_started.set()
+      await asyncio.sleep(3600)
+
+    processor = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=mock.MagicMock(),
+        write_stream="stream",
+        batch_size=1,
+        flush_interval=0.05,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=0.1,
+    )
+    with mock.patch.object(
+        processor, "_write_rows_with_retry", side_effect=hung_writer
+    ):
+      await processor.start()
+      await processor.append({"row": 1})
+      await write_started.wait()
+      await processor.append({"row": 2})
+      await processor.close()
+
+    assert processor.get_drop_stats().get("shutdown_timeout") == 2
+    assert processor._queue.empty()
