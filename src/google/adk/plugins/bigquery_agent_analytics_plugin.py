@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import collections.abc
+from concurrent.futures import Future as ConcurrentFuture
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
 import dataclasses
@@ -425,7 +426,7 @@ _MAX_SANITIZE_DEPTH = 50
 
 
 def _sanitize_json_blob(
-    value: str, seen: set[int], depth: int = 0
+    value: str, seen: set[int], depth: int = 0, max_len: int = -1
 ) -> tuple[str, bool]:
   """Redacts sensitive keys inside a JSON-encoded string blob.
 
@@ -441,6 +442,14 @@ def _sanitize_json_blob(
   stripped = value.lstrip()
   if not stripped.startswith(("{", "[")):
     return value, False
+
+  # Enforce the configured content limit BEFORE materializing: json.loads
+  # runs synchronously on the callback path and can allocate far beyond
+  # the limit for a multi-megabyte attribute (#6360 review round 4 P1-2).
+  # Truncating the raw JSON prefix instead could both retain a secret and
+  # emit invalid JSON, so over-limit container blobs fail closed.
+  if max_len != -1 and len(value) > max_len:
+    return "[UNPARSEABLE_JSON_BLOB]", True
 
   # json.loads silently keeps only the LAST duplicate member, so a blob like
   # {"access_token":"SECRET","access_token":"x"} can compare equal after
@@ -468,16 +477,14 @@ def _sanitize_json_blob(
     if sanitized == parsed and not saw_duplicate_key:
       return value, False
     return json.dumps(sanitized), True
-  except json.JSONDecodeError:
-    # Not JSON at all — nothing to inspect; the outer string handling
-    # (length truncation) still applies.
-    return value, False
   except (TypeError, ValueError, RecursionError, MemoryError):
-    # Syntactically valid JSON that Python cannot materialize — e.g.
-    # integers over sys.get_int_max_str_digits() raise a plain ValueError
-    # (#6360 review round 3 P1-1) — or a blob too deep/large to inspect
-    # (round 2 P2-5). Either way it cannot be verified secret-free: fail
-    # CLOSED to a sentinel instead of passing it through unexamined.
+    # Container-shaped but unparseable — malformed JSON / trailing garbage
+    # (a one-character suffix on valid credential JSON must not bypass
+    # redaction, #6360 review round 4 P1-1), integers over the interpreter
+    # digit limit (round 3 P1-1), or a blob too deep/large to inspect
+    # (round 2 P2-5). None of these can be verified secret-free — and a
+    # raw-substring fallback is bypassable via JSON string escapes — so
+    # fail CLOSED to a sentinel.
     return "[UNPARSEABLE_JSON_BLOB]", True
 
 
@@ -532,15 +539,26 @@ def _validate_runtime_config(config: "BigQueryLoggerConfig") -> None:
     )
   retry = config.retry_config
   _require_count("retry_config.max_retries", retry.max_retries, 0)
+  # Delays are finite and NON-NEGATIVE: zero-delay immediate retries are
+  # long-supported (asyncio.sleep(0) is valid) and existing configs use
+  # max_retries=0, initial_delay=0, max_delay=0 (#6360 review round 4 P2).
   initial_delay = _require_finite(
-      "retry_config.initial_delay", retry.initial_delay, 0
+      "retry_config.initial_delay", retry.initial_delay, -1
   )
+  if initial_delay < 0:
+    raise ValueError(
+        f"retry_config.initial_delay must be >= 0, got {retry.initial_delay}."
+    )
   multiplier = _require_finite("retry_config.multiplier", retry.multiplier, 0)
   if multiplier < 1:
     raise ValueError(
         f"retry_config.multiplier must be >= 1, got {retry.multiplier}."
     )
-  max_delay = _require_finite("retry_config.max_delay", retry.max_delay, 0)
+  max_delay = _require_finite("retry_config.max_delay", retry.max_delay, -1)
+  if max_delay < 0:
+    raise ValueError(
+        f"retry_config.max_delay must be >= 0, got {retry.max_delay}."
+    )
   if max_delay < initial_delay:
     raise ValueError(
         "retry_config.max_delay must be >= initial_delay, got"
@@ -584,11 +602,11 @@ def _recursive_smart_truncate(
   # manufacture NEW objects on each duck-typed access (e.g. anything whose
   # model_dump()/dict()/to_dict() returns a fresh wrapper — unittest Mocks
   # being the canonical case). Without this cap such graphs recurse
-  # unboundedly. Like "[CIRCULAR_REFERENCE]", this is a structural
-  # sentinel rather than content truncation, so it does not flip
-  # is_truncated.
+  # unboundedly. The replacement discards real payload, so it reports
+  # truncation (#6360 review round 4 P2) — unlike "[CIRCULAR_REFERENCE]",
+  # which replaces a back-reference, not data.
   if depth >= _MAX_SANITIZE_DEPTH:
-    return "[MAX_DEPTH_EXCEEDED]", False
+    return "[MAX_DEPTH_EXCEEDED]", True
 
   obj_id = id(obj)
   if obj_id in seen:
@@ -608,7 +626,10 @@ def _recursive_smart_truncate(
 
   try:
     if isinstance(obj, str):
-      obj, _ = _sanitize_json_blob(obj, seen, depth)
+      obj, blob_replaced = _sanitize_json_blob(obj, seen, depth, max_len)
+      if blob_replaced and obj == "[UNPARSEABLE_JSON_BLOB]":
+        # The original string was discarded wholesale.
+        return obj, True
       if max_len != -1 and len(obj) > max_len:
         return obj[:max_len] + "...[TRUNCATED]", True
       return obj, False
@@ -641,31 +662,44 @@ def _recursive_smart_truncate(
         if trunc:
           truncated_any = True
         new_list.append(val)
-      return type(obj)(new_list), truncated_any
+      if type(obj) is tuple or type(obj) is list:
+        return type(obj)(new_list), truncated_any
+      # Tuple/list subclasses (e.g. namedtuples) may require positional
+      # constructor fields; reconstructing raised TypeError and the safe
+      # callback dropped the whole row (#6360 review round 4 P2). JSON
+      # does not preserve the subclass identity anyway — emit a plain
+      # list.
+      return new_list, truncated_any
     elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
       # Manually iterate fields to preserve 'seen' context, avoiding dataclasses.asdict recursion
       as_dict = {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
       return _recursive_smart_truncate(as_dict, max_len, seen, depth + 1)
     elif hasattr(obj, "model_dump") and callable(obj.model_dump):
-      # Pydantic v2
+      # Pydantic v2. Only recurse if the conversion made PROGRESS toward a
+      # JSON-native container: Mock-like objects answer every duck-typed
+      # probe with another Mock-like object, and recursing on those churns
+      # to the depth cap (falsely flagging truncation) instead of settling
+      # at the stringify fallback.
       try:
-        return _recursive_smart_truncate(
-            obj.model_dump(), max_len, seen, depth + 1
-        )
+        dumped = obj.model_dump()
+        if isinstance(dumped, (dict, list)):
+          return _recursive_smart_truncate(dumped, max_len, seen, depth + 1)
       except Exception:
         pass
     elif hasattr(obj, "dict") and callable(obj.dict):
-      # Pydantic v1
+      # Pydantic v1 (same progress requirement as above).
       try:
-        return _recursive_smart_truncate(obj.dict(), max_len, seen, depth + 1)
+        dumped = obj.dict()
+        if isinstance(dumped, (dict, list)):
+          return _recursive_smart_truncate(dumped, max_len, seen, depth + 1)
       except Exception:
         pass
     elif hasattr(obj, "to_dict") and callable(obj.to_dict):
-      # Common pattern for custom objects
+      # Common pattern for custom objects (same progress requirement).
       try:
-        return _recursive_smart_truncate(
-            obj.to_dict(), max_len, seen, depth + 1
-        )
+        dumped = obj.to_dict()
+        if isinstance(dumped, (dict, list)):
+          return _recursive_smart_truncate(dumped, max_len, seen, depth + 1)
       except Exception:
         pass
     elif obj is None or isinstance(obj, (int, float, bool)):
@@ -2747,8 +2781,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # failure). Merged into get_drop_stats() and survives shutdown.
     self._local_drop_counts: dict[str, int] = {}
     self._is_shutting_down = False
-    self._setup_locks_guard = threading.Lock()
-    self._setup_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+    # Guards _setup_future/_started/_setup_* transitions across threads;
+    # held only for pointer swaps, never across an await.
+    self._setup_guard = threading.Lock()
+    self._setup_future: Optional["ConcurrentFuture[None]"] = None
+    # Guards ownership changes of _loop_state_by_loop (#6360 review round
+    # 4 P2): unsynchronized iteration raced concurrent insertion.
+    self._loop_states_guard = threading.Lock()
     self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
@@ -2763,13 +2802,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   def _cleanup_stale_loop_states(self) -> None:
     """Removes entries for event loops that have been closed."""
-    stale = [loop for loop in self._loop_state_by_loop if loop.is_closed()]
+    # Snapshot under the guard (#6360 review round 4 P2): iterating the
+    # live dict raced concurrent insertion ("dictionary changed size
+    # during iteration"). is_closed() is evaluated on the snapshot,
+    # outside the lock.
+    with self._loop_states_guard:
+      candidates = list(self._loop_state_by_loop)
+    stale = [loop for loop in candidates if loop.is_closed()]
     for loop in stale:
-      # Atomic claim (#6360 review round 3 P2): dict.pop is atomic under
-      # the GIL, so exactly one concurrent cleanup folds a given
-      # processor's counters — read-fold-delete raced, double-counting and
-      # raising KeyError.
-      state = self._loop_state_by_loop.pop(loop, None)
+      # Atomic claim (#6360 review round 3 P2): exactly one concurrent
+      # cleanup folds a given processor's counters — read-fold-delete
+      # raced, double-counting and raising KeyError.
+      with self._loop_states_guard:
+        state = self._loop_state_by_loop.pop(loop, None)
       if state is None:
         continue
       logger.warning(
@@ -2916,7 +2961,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     await batch_processor.start()
 
     state = _LoopState(write_client, batch_processor)
-    self._loop_state_by_loop[loop] = state
+    with self._loop_states_guard:
+      self._loop_state_by_loop[loop] = state
 
     atexit.register(self._atexit_cleanup, weakref.proxy(batch_processor))
 
@@ -3393,8 +3439,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   def __getstate__(self):
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
-    state["_setup_locks_guard"] = None
-    state["_setup_locks"] = {}
+    state["_setup_guard"] = None
+    state["_setup_future"] = None
+    state["_loop_states_guard"] = None
     state["client"] = None
     state["_loop_state_by_loop"] = {}
     state["_write_stream_name"] = None
@@ -3417,10 +3464,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_local_drop_counts", {})
     state.setdefault("_setup_failures", 0)
     state.setdefault("_setup_retry_at", 0.0)
-    state.pop("_setup_lock", None)  # replaced by per-loop locks
-    state.setdefault("_setup_locks", {})
+    state.pop("_setup_lock", None)  # replaced by cross-loop future
+    state.pop("_setup_locks", None)
+    state.pop("_setup_locks_guard", None)
     self.__dict__.update(state)
-    self._setup_locks_guard = threading.Lock()
+    self._setup_guard = threading.Lock()
+    self._setup_future = None
+    self._loop_states_guard = threading.Lock()
     # Pickles from older code bypass __init__, so re-validate the restored
     # configuration: e.g. a legacy retry_config with max_retries=NaN would
     # otherwise skip the write loop silently (#6360 review round 2 P2-7).
@@ -3467,8 +3517,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           pass
 
     # Clear all runtime state.
-    self._setup_locks_guard = threading.Lock()
-    self._setup_locks = {}
+    self._setup_guard = threading.Lock()
+    self._setup_future = None
+    self._loop_states_guard = threading.Lock()
     self.client = None
     self._loop_state_by_loop = {}
     self._write_stream_name = None
@@ -3481,21 +3532,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._setup_retry_at = 0.0
     self._is_shutting_down = False
     self._init_pid = os.getpid()
-
-  def _get_setup_lock(self) -> asyncio.Lock:
-    """Returns the setup lock for the CURRENT event loop.
-
-    asyncio.Lock is loop-bound: sharing one across loops/threads is not
-    thread-safe (#6360 review round 3 P2). The dict itself is guarded by a
-    threading.Lock so concurrent loops can mint their locks safely.
-    """
-    loop = asyncio.get_running_loop()
-    with self._setup_locks_guard:
-      lock = self._setup_locks.get(loop)
-      if lock is None:
-        lock = asyncio.Lock()
-        self._setup_locks[loop] = lock
-      return lock
 
   def _count_local_drop(self, reason: str) -> None:
     """Counts a row lost before/outside any BatchProcessor (#6356 P2)."""
@@ -3531,43 +3567,78 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # different process.
     if self._init_pid != 0 and os.getpid() != self._init_pid:
       self._reset_runtime_state()
-    if not self._started:
-      # Per-loop coalescing: asyncio locks are loop-bound, so one shared
-      # lock across loops/threads raises "Non-thread-safe operation" and
-      # can strand waiters on other loops (#6360 review round 3 P2).
-      # _get_setup_lock hands each event loop its own lock; _lazy_setup
-      # re-checks _started inside, so a rare cross-loop overlap costs at
-      # most one duplicate idempotent setup RPC.
-      async with self._get_setup_lock():
-        if not self._started:
-          if (
-              self._startup_error is not None
-              and time.monotonic() < self._setup_retry_at
-          ):
-            # Still inside the backoff window from a previous failure.
-            return
-          try:
-            await self._lazy_setup(**kwargs)
-            self._started = True
-            self._startup_error = None
-            self._setup_failures = 0
-            self._setup_retry_at = 0.0
-            # Record the current PID so fork detection works for
-            # the rest of this instance's lifetime.
-            if self._init_pid == 0:
-              self._init_pid = os.getpid()
-          except Exception as e:
-            self._startup_error = e
-            self._setup_failures += 1
-            backoff = min(60.0, 2.0 ** min(self._setup_failures, 6))
-            self._setup_retry_at = time.monotonic() + backoff
-            logger.error(
-                "Failed to initialize BigQuery Plugin (attempt %d, next"
-                " retry in %.0fs): %s",
-                self._setup_failures,
-                backoff,
-                e,
-            )
+    if self._started:
+      return
+
+    # Cross-loop coalescing of the SHARED initialization (#6360 review
+    # round 4 P1-3): _lazy_setup mutates process-wide state (client,
+    # executor, parser, schema, views, retry bookkeeping), so exactly one
+    # caller may run it at a time — across event loops and threads, which
+    # a per-loop asyncio.Lock cannot provide and a shared one cannot
+    # survive. A concurrent.futures.Future is claimed under a briefly-held
+    # threading.Lock (never held across an await); the owner runs setup,
+    # every other caller awaits the same future via asyncio.wrap_future
+    # from its own loop. Loop-local writer state stays separate in
+    # _get_loop_state().
+    setup_future: Optional["ConcurrentFuture[None]"] = None
+    is_owner = False
+    with self._setup_guard:
+      if self._started:
+        return
+      if self._setup_future is not None:
+        setup_future = self._setup_future
+      elif (
+          self._startup_error is not None
+          and time.monotonic() < self._setup_retry_at
+      ):
+        # Still inside the backoff window from a previous failure.
+        return
+      else:
+        setup_future = ConcurrentFuture()
+        self._setup_future = setup_future
+        is_owner = True
+
+    assert setup_future is not None  # every fall-through branch assigns it
+
+    if not is_owner:
+      try:
+        await asyncio.wrap_future(setup_future)
+      except Exception:
+        # The owner already recorded the failure and backoff; waiters
+        # degrade the same way the owner does (row counted as
+        # setup_unavailable by the caller).
+        pass
+      return
+
+    try:
+      await self._lazy_setup(**kwargs)
+    except Exception as e:
+      with self._setup_guard:
+        self._startup_error = e
+        self._setup_failures += 1
+        backoff = min(60.0, 2.0 ** min(self._setup_failures, 6))
+        self._setup_retry_at = time.monotonic() + backoff
+        self._setup_future = None
+      logger.error(
+          "Failed to initialize BigQuery Plugin (attempt %d, next"
+          " retry in %.0fs): %s",
+          self._setup_failures,
+          backoff,
+          e,
+      )
+      setup_future.set_exception(e)
+    else:
+      with self._setup_guard:
+        self._started = True
+        self._startup_error = None
+        self._setup_failures = 0
+        self._setup_retry_at = 0.0
+        self._setup_future = None
+        # Record the current PID so fork detection works for
+        # the rest of this instance's lifetime.
+        if self._init_pid == 0:
+          self._init_pid = os.getpid()
+      setup_future.set_result(None)
 
   @staticmethod
   def _resolve_ids(

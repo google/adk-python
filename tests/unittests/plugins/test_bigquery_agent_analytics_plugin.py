@@ -2559,7 +2559,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     pickled = pickle.dumps(plugin)
     unpickled = pickle.loads(pickled)
     assert unpickled.project_id == PROJECT_ID
-    assert unpickled._setup_locks == {}
+    assert unpickled._setup_future is None
     assert unpickled._executor is None
     # Start the plugin
     await plugin._ensure_started()
@@ -2570,7 +2570,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       unpickled_started = pickle.loads(pickled_started)
       assert unpickled_started.project_id == PROJECT_ID
       # Runtime objects should be None after unpickling
-      assert unpickled_started._setup_locks == {}
+      assert unpickled_started._setup_future is None
       assert unpickled_started._executor is None
       assert not unpickled_started._loop_state_by_loop
     finally:
@@ -6058,7 +6058,7 @@ class TestForkSafety:
     plugin._executor = mock.MagicMock()
     plugin.offloader = mock.MagicMock()
     plugin.parser = mock.MagicMock()
-    plugin._setup_locks = {mock.MagicMock(): mock.MagicMock()}
+    plugin._setup_future = mock.MagicMock()
     # Keep pure-data fields
     plugin._schema = ["kept"]
     plugin.arrow_schema = "kept_arrow"
@@ -6073,7 +6073,7 @@ class TestForkSafety:
     assert plugin._executor is None
     assert plugin.offloader is None
     assert plugin.parser is None
-    assert plugin._setup_locks == {}
+    assert plugin._setup_future is None
     # Pure-data fields are preserved
     assert plugin._schema == ["kept"]
     assert plugin.arrow_schema == "kept_arrow"
@@ -9747,7 +9747,7 @@ class TestIssue6356Hardening:
         dict(queue_max_size=0),
         dict(max_content_length=0),
         dict(retry_config=retry(max_retries=-1)),
-        dict(retry_config=retry(initial_delay=0.0)),
+        dict(retry_config=retry(initial_delay=-1.0)),
         dict(retry_config=retry(multiplier=0.5)),
         dict(retry_config=retry(initial_delay=5.0, max_delay=1.0)),
     ]
@@ -10413,3 +10413,264 @@ class TestIssue6356Hardening:
 
     assert processor.get_drop_stats().get("shutdown_timeout") == 2
     assert processor._queue.empty()
+
+  def test_malformed_container_blobs_fail_closed(self):
+    """Container-shaped strings that fail to parse become the sentinel.
+
+    One trailing character on valid credential JSON must not bypass
+    redaction, including with escaped keys (#6360 review round 4 P1-1).
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    cases = [
+        '{"access\\u005ftoken":"SECRET-TRAIL"} trailing',
+        '{"access_token":"SECRET-MALFORMED"',
+        '[{"api_key":"SECRET-ARRAY"}, oops]',
+    ]
+    for blob in cases:
+      out, _ = truncate({"blob": blob}, 10000)
+      assert "SECRET" not in json.dumps(out), blob
+      assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]", blob
+
+  def test_over_limit_blob_never_parsed(self):
+    """json.loads must not run for container blobs over the content limit.
+
+    Materializing a multi-megabyte attribute blocks the callback loop and
+    allocates far beyond the configured limit (#6360 review round 4 P1-2).
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    big_blob = '{"k": "' + "x" * 5000 + '"}'
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin.json,
+        "loads",
+        side_effect=AssertionError("json.loads must not be called"),
+    ):
+      out, truncated = truncate({"blob": big_blob}, 100)
+    assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert truncated
+
+  def test_shared_setup_runs_exactly_once_across_loops(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Concurrent loops coalesce onto ONE shared setup (#6360 round 4 P1-3).
+
+    Per-loop locks let both loops run _lazy_setup, which mutates shared
+    clients/executor/parser state across awaits and is not idempotent.
+    """
+    _ = mock_auth_default, mock_bq_client
+    import threading
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    setup_calls = []
+    release = threading.Event()
+
+    async def slow_setup(**kwargs):
+      setup_calls.append(threading.get_ident())
+      await asyncio.get_running_loop().run_in_executor(None, release.wait)
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def run_in_fresh_loop():
+      try:
+        with mock.patch.object(plugin, "_lazy_setup", side_effect=slow_setup):
+          barrier.wait(timeout=5)
+          asyncio.run(plugin._ensure_started())
+      except BaseException as e:  # noqa: BLE001
+        errors.append(e)
+
+    threads = [threading.Thread(target=run_in_fresh_loop) for _ in range(2)]
+    for t in threads:
+      t.start()
+    import time as time_module
+
+    time_module.sleep(0.3)  # both loops reach the coalescing point
+    release.set()
+    for t in threads:
+      t.join(timeout=10)
+
+    assert not errors, f"cross-loop startup raised: {errors}"
+    assert len(setup_calls) == 1, f"shared setup ran {len(setup_calls)} times"
+    assert plugin._started is True
+    assert plugin._startup_error is None
+    assert plugin._setup_future is None
+
+  def test_failed_shared_setup_is_consistent_across_loops(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A failing owner leaves consistent shared state for every waiter."""
+    _ = mock_auth_default, mock_bq_client
+    import threading
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+
+    async def failing_setup(**kwargs):
+      await asyncio.sleep(0.05)
+      raise RuntimeError("setup boom")
+
+    errors: list[BaseException] = []
+
+    def run_in_fresh_loop():
+      try:
+        with mock.patch.object(
+            plugin, "_lazy_setup", side_effect=failing_setup
+        ):
+          asyncio.run(plugin._ensure_started())
+      except BaseException as e:  # noqa: BLE001
+        errors.append(e)
+
+    threads = [threading.Thread(target=run_in_fresh_loop) for _ in range(2)]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join(timeout=10)
+
+    assert not errors  # _ensure_started never raises to callers
+    assert plugin._started is False
+    assert plugin._startup_error is not None
+    assert plugin._setup_future is None  # cleared for the next retry window
+
+  @pytest.mark.asyncio
+  async def test_namedtuple_attribute_does_not_drop_row(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """A namedtuple in attributes serializes as a list, not a TypeError.
+
+    Reconstructing tuple subclasses positionally raised in the final pass
+    and the safe callback dropped the entire row (#6360 review round 4 P2).
+    """
+    _ = mock_auth_default, mock_bq_client
+    import collections
+
+    Point = collections.namedtuple("Point", ["x", "y"])
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin._log_event(
+          "STATE_DELTA",
+          callback_context,
+          event_data=bigquery_agent_analytics_plugin.EventData(
+              extra_attributes={"point": Point(1, 2)},
+          ),
+      )
+      await asyncio.sleep(0.01)
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      attrs = json.loads(log_entry["attributes"])
+      assert attrs["point"] == [1, 2]
+
+  def test_setup_future_leaves_no_loop_references(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Repeated fresh-loop startups retain no per-loop setup structures.
+
+    The per-loop lock map kept strong references to every closed loop
+    (#6360 review round 4 P2); the cross-loop future replaces it.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+
+    async def noop_setup(**kwargs):
+      return None
+
+    for _ in range(4):
+      plugin._started = False
+      with mock.patch.object(plugin, "_lazy_setup", side_effect=noop_setup):
+        asyncio.run(plugin._ensure_started())
+      assert plugin._setup_future is None
+    assert not hasattr(plugin, "_setup_locks")
+
+  def test_cleanup_survives_concurrent_insertion(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Cleanup snapshots keys, so insertion during is_closed() cannot raise
+    'dictionary changed size during iteration' (#6360 review round 4 P2)."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    dead_loop = mock.MagicMock()
+    state = mock.MagicMock()
+    state.batch_processor.get_drop_stats.return_value = {"write_failed": 7}
+
+    def is_closed_and_mutate():
+      # Simulates another thread inserting mid-scan.
+      plugin._loop_state_by_loop[mock.MagicMock()] = mock.MagicMock()
+      return True
+
+    dead_loop.is_closed.side_effect = is_closed_and_mutate
+    plugin._loop_state_by_loop[dead_loop] = state
+
+    plugin._cleanup_stale_loop_states()  # must not raise
+    assert plugin.get_drop_stats().get("write_failed") == 7
+
+  @pytest.mark.asyncio
+  async def test_depth_capped_payload_flags_row_truncated(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """A real payload cut off by the depth cap marks the ROW as truncated
+    (#6360 review round 4 P2)."""
+    _ = mock_auth_default, mock_bq_client
+    deep: dict = {"leaf": "payload"}
+    for _ in range(60):
+      deep = {"level": deep}
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin._log_event(
+          "STATE_DELTA",
+          callback_context,
+          event_data=bigquery_agent_analytics_plugin.EventData(
+              extra_attributes={"deep": deep},
+          ),
+      )
+      await asyncio.sleep(0.01)
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      assert "[MAX_DEPTH_EXCEEDED]" in log_entry["attributes"]
+      assert log_entry["is_truncated"] is True
+
+  def test_zero_delay_retry_config_still_constructs(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Long-supported zero-delay retry configs must not be rejected
+    (#6360 review round 4 P2)."""
+    _ = mock_auth_default, mock_bq_client
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(
+            max_retries=0, initial_delay=0, max_delay=0
+        )
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+    assert plugin.config.retry_config.max_retries == 0
