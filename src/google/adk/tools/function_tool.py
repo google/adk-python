@@ -18,9 +18,6 @@ import inspect
 import logging
 from typing import Any
 from typing import Callable
-from typing import get_args
-from typing import get_origin
-from typing import get_type_hints
 from typing import Optional
 from typing import Union
 
@@ -88,6 +85,7 @@ class FunctionTool(BaseTool):
     self._context_param_name = find_context_parameter(func) or 'tool_context'
     self._ignore_params = [self._context_param_name, 'input_stream']
     self._require_confirmation = require_confirmation
+    self._type_adapter_cache: dict[Any, pydantic.TypeAdapter] = {}
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -104,118 +102,103 @@ class FunctionTool(BaseTool):
     return function_decl
 
   def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
-    """Preprocess and convert function arguments before invocation.
+    """Backward-compatible wrapper that returns only processed args.
 
-    Currently handles:
+    Existing callers (including upstream's thread-pool sync path in
+    `flows/llm_flows/functions.py`) still get a single dict. Use
+    `_preprocess_args_with_validation` directly when validation errors should
+    surface to the LLM instead of being silently dropped.
+    """
+    args_to_call, _ = self._preprocess_args_with_validation(args)
+    return args_to_call
+
+  def _preprocess_args_with_validation(
+      self, args: dict[str, Any]
+  ) -> tuple[dict[str, Any], list[str]]:
+    """Preprocess, validate, and convert function arguments before invocation.
+
+    Handles:
     - Converting JSON dictionaries to Pydantic model instances where expected
-
-    Future extensions could include:
-    - Type coercion for other complex types
-    - Validation and sanitization
-    - Custom conversion logic
+    - Validating and coercing primitive types (int, float, str, bool)
+    - Validating enum values
+    - Validating container types (list[int], dict[str, float], etc.)
 
     Args:
       args: Raw arguments from the LLM tool call
 
     Returns:
-      Processed arguments ready for function invocation
+      A tuple of (processed_args, validation_errors). If validation_errors is
+      non-empty, the caller should return the errors to the LLM instead of
+      invoking the function.
     """
     signature = inspect.signature(self.func)
     converted_args = args.copy()
-    try:
-      type_hints = get_type_hints(self.func)
-    except (TypeError, NameError):
-      # NameError: unresolved forward refs (e.g. recursive type aliases).
-      # TypeError: non-function callables.
-      if hasattr(self.func, '__call__'):
-        try:
-          type_hints = get_type_hints(self.func.__call__)
-        except (TypeError, NameError):
-          type_hints = {}
-      else:
-        type_hints = {}
+    validation_errors = []
 
     for param_name, param in signature.parameters.items():
-      if param_name in args:
-        target_type = type_hints.get(param_name, param.annotation)
-        if target_type != inspect.Parameter.empty:
+      if (
+          param_name not in args
+          or param.annotation is inspect.Parameter.empty
+          or param_name in self._ignore_params
+      ):
+        continue
 
-          # Handle Optional[PydanticModel] types
-          if get_origin(param.annotation) is Union:
-            union_args = get_args(param.annotation)
-            # Find the non-None type in Optional[T] (which is Union[T, None])
-            non_none_types = [
-                arg for arg in union_args if arg is not type(None)
-            ]
-            if len(non_none_types) == 1:
-              target_type = non_none_types[0]
-            elif len(non_none_types) > 1 and all(
-                inspect.isclass(t) and issubclass(t, pydantic.BaseModel)
-                for t in non_none_types
-            ):
-              if args[param_name] is None or isinstance(
-                  args[param_name], tuple(non_none_types)
-              ):
-                continue
-              try:
-                converted_args[param_name] = pydantic.TypeAdapter(
-                    param.annotation
-                ).validate_python(args[param_name])
-              except Exception as e:
-                logger.warning(
-                    f"Failed to convert argument '{param_name}' to"
-                    f' {param.annotation}: {e}'
-                )
-              continue
+      target_type = param.annotation
 
-          # Check if the target type is a Pydantic model
-          if inspect.isclass(target_type) and issubclass(
-              target_type, pydantic.BaseModel
-          ):
-            # Skip conversion if the value is None and the parameter is Optional
-            if args[param_name] is None:
-              continue
+      # Validate and coerce using TypeAdapter. Handles primitives, enums,
+      # Pydantic models, Optional[T], T | None, and container types natively.
+      try:
+        try:
+          adapter = self._type_adapter_cache[target_type]
+        except TypeError:
+          adapter = pydantic.TypeAdapter(target_type)
+        except KeyError:
+          adapter = pydantic.TypeAdapter(target_type)
+          self._type_adapter_cache[target_type] = adapter
+        converted_args[param_name] = adapter.validate_python(args[param_name])
+      except pydantic.ValidationError as e:
+        validation_errors.append(
+            f"Parameter '{param_name}': expected type"
+            f" '{getattr(target_type, '__name__', target_type)}', validation"
+            f' error: {e}'
+        )
+      except (TypeError, NameError) as e:
+        # TypeAdapter could not handle this annotation (e.g. a forward
+        # reference string). Skip validation but log a warning.
+        logger.warning(
+            "Skipping validation for parameter '%s' due to unhandled"
+            " annotation type '%s': %s",
+            param_name,
+            target_type,
+            e,
+        )
 
-            # Convert to Pydantic model if it's not already the correct type
-            if not isinstance(args[param_name], target_type):
-              try:
-                converted_args[param_name] = target_type.model_validate(
-                    args[param_name]
-                )
-              except Exception as e:
-                logger.warning(
-                    f"Failed to convert argument '{param_name}' to Pydantic"
-                    f' model {target_type.__name__}: {e}'
-                )
-                # Keep the original value if conversion fails
-                pass
-          # Handle list[BaseModel] types
-          elif is_list_of_basemodel(target_type) and isinstance(
-              args[param_name], list
-          ):
-            item_type = get_list_inner_type(target_type)
-            try:
-              converted_args[param_name] = [
-                  item_type.model_validate(item)
-                  if isinstance(item, dict)
-                  else item
-                  for item in args[param_name]
-              ]
-            except Exception as e:
-              logger.warning(
-                  f"Failed to convert argument '{param_name}' to"
-                  f' list[{item_type.__name__}]: {e}'
-              )
-              pass
+    return converted_args, validation_errors
 
-    return converted_args
+  def _build_validation_error_response(
+      self, validation_errors: list[str]
+  ) -> dict[str, str]:
+    """Formats validation errors into an error dict for the LLM."""
+    validation_errors_str = '\n'.join(validation_errors)
+    return {
+        'error': (
+            f'Invoking `{self.name}()` failed due to argument validation'
+            f' errors:\n{validation_errors_str}\nYou could retry calling'
+            ' this tool with corrected argument types.'
+        )
+    }
 
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    # Preprocess arguments (includes Pydantic model conversion)
-    args_to_call = self._preprocess_args(args)
+    # Preprocess arguments (includes Pydantic model conversion and type
+    # validation). Validation errors are returned to the LLM so it can
+    # self-correct and retry with proper argument types.
+    args_to_call, validation_errors = self._preprocess_args_with_validation(args)
+
+    if validation_errors:
+      return self._build_validation_error_response(validation_errors)
 
     signature = inspect.signature(self.func)
     valid_params = {param for param in signature.parameters}

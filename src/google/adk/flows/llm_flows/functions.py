@@ -191,7 +191,11 @@ async def _call_tool_in_thread_pool(
     if isinstance(tool, FunctionTool):
       # For sync FunctionTool, call the underlying function directly.
       def run_sync_tool():
-        args_to_call = tool._preprocess_args(args)
+        args_to_call, validation_errors = tool._preprocess_args_with_validation(
+            args
+        )
+        if validation_errors:
+          return tool._build_validation_error_response(validation_errors)
         signature = inspect.signature(tool.func)
         valid_params = {param for param in signature.parameters}
         if tool._context_param_name in valid_params:
