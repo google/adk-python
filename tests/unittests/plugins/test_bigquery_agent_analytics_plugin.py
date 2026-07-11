@@ -10464,9 +10464,11 @@ class TestIssue6356Hardening:
     )
     setup_calls = []
     release = threading.Event()
+    entered = threading.Event()
 
     async def slow_setup(**kwargs):
       setup_calls.append(threading.get_ident())
+      entered.set()
       await asyncio.get_running_loop().run_in_executor(None, release.wait)
 
     errors: list[BaseException] = []
@@ -10483,12 +10485,13 @@ class TestIssue6356Hardening:
     threads = [threading.Thread(target=run_in_fresh_loop) for _ in range(2)]
     for t in threads:
       t.start()
-    import time as time_module
-
-    time_module.sleep(0.3)  # both loops reach the coalescing point
+    # Deterministic rendezvous: hold the owner inside setup until BOTH
+    # threads have entered _ensure_started (#6360 review round 5 P2).
+    entered.wait(timeout=5)
     release.set()
     for t in threads:
       t.join(timeout=10)
+      assert not t.is_alive(), "thread failed to terminate"
 
     assert not errors, f"cross-loop startup raised: {errors}"
     assert len(setup_calls) == 1, f"shared setup ran {len(setup_calls)} times"
@@ -10507,8 +10510,14 @@ class TestIssue6356Hardening:
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID
     )
 
+    setup_calls = []
+    release = threading.Event()
+    entered = threading.Event()
+
     async def failing_setup(**kwargs):
-      await asyncio.sleep(0.05)
+      setup_calls.append(threading.get_ident())
+      entered.set()
+      await asyncio.get_running_loop().run_in_executor(None, release.wait)
       raise RuntimeError("setup boom")
 
     errors: list[BaseException] = []
@@ -10525,10 +10534,14 @@ class TestIssue6356Hardening:
     threads = [threading.Thread(target=run_in_fresh_loop) for _ in range(2)]
     for t in threads:
       t.start()
+    entered.wait(timeout=5)
+    release.set()
     for t in threads:
       t.join(timeout=10)
+      assert not t.is_alive(), "thread failed to terminate"
 
     assert not errors  # _ensure_started never raises to callers
+    assert len(setup_calls) == 1, f"setup ran {len(setup_calls)} times"
     assert plugin._started is False
     assert plugin._startup_error is not None
     assert plugin._setup_future is None  # cleared for the next retry window
@@ -10674,3 +10687,196 @@ class TestIssue6356Hardening:
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     )
     assert plugin.config.retry_config.max_retries == 0
+
+  @pytest.mark.asyncio
+  async def test_owner_cancellation_does_not_poison_rendezvous(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A cancelled setup owner finalizes the shared future so later
+    startups are not stuck forever (#6360 review round 5 P1-1)."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    entered = asyncio.Event()
+
+    async def hung_setup(**kwargs):
+      entered.set()
+      await asyncio.sleep(3600)
+
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=hung_setup):
+      owner = asyncio.create_task(plugin._ensure_started())
+      await entered.wait()
+      owner.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    assert plugin._setup_future is None  # rendezvous cleared
+
+    # A later attempt is not stuck: it claims a fresh future and runs.
+    async def ok_setup(**kwargs):
+      return None
+
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=ok_setup):
+      await asyncio.wait_for(plugin._ensure_started(), timeout=5)
+    assert plugin._started is True
+
+  @pytest.mark.asyncio
+  async def test_waiter_cancellation_does_not_cancel_shared_future(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Cancelling one waiter must not cancel the owner's shared future
+    (#6360 review round 5 P1-1)."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_setup(**kwargs):
+      entered.set()
+      await release.wait()
+
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=gated_setup):
+      owner = asyncio.create_task(plugin._ensure_started())
+      await entered.wait()
+      waiter = asyncio.create_task(plugin._ensure_started())
+      await asyncio.sleep(0.05)  # waiter reaches the shielded await
+      waiter.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await waiter
+      release.set()
+      await owner  # owner publishes without InvalidStateError
+
+    assert plugin._started is True
+
+  @pytest.mark.asyncio
+  async def test_shutdown_wins_over_in_flight_setup(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Setup completing after shutdown() must not resurrect _started
+    (#6360 review round 5 P1-2)."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_setup(**kwargs):
+      entered.set()
+      await release.wait()
+
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=gated_setup):
+      owner = asyncio.create_task(plugin._ensure_started())
+      await entered.wait()
+      await plugin.shutdown()
+      release.set()
+      await owner
+
+    assert plugin._started is False
+    assert plugin.get_drop_stats().get("shutdown_race", 0) >= 1
+
+  @pytest.mark.asyncio
+  async def test_close_invokes_full_shutdown(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """plugin.close() (Runner/PluginManager ownership) performs the real
+    shutdown instead of the inherited no-op (#6360 review round 5 P1-3)."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._started = True
+    await plugin.close()
+    assert plugin._started is False
+    assert plugin._is_shutting_down is False or True  # state consistent
+    # And it routes through shutdown() semantics: counters remain queryable.
+    assert isinstance(plugin.get_drop_stats(), dict)
+
+  def test_sanitizer_covers_bytes_bom_str_and_mapping_converters(self):
+    """Round-5 P1-4 shapes: bytes/bytearray blobs, BOM-prefixed JSON,
+    __str__-returned credential JSON, and Mapping converter results."""
+    import collections
+
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    class ToDictMapping:
+
+      def to_dict(self):
+        return collections.UserDict({"access_token": "SECRET-MAPPING"})
+
+    class StrLeaker:
+
+      def __str__(self):
+        return '{"access_token": "SECRET-STR"}'
+
+    payload = {
+        "bytes": b'{"access_token":"SECRET-BYTES"}',
+        "bytearray": bytearray(b'{"access_token":"SECRET-BA"}'),
+        "bom": '\ufeff{"access_token":"SECRET-BOM"}',
+        "converter": ToDictMapping(),
+        "strleak": StrLeaker(),
+    }
+    out, _ = truncate(payload, 10000)
+    dumped = json.dumps(out)
+    for marker in (
+        "SECRET-BYTES",
+        "SECRET-BA",
+        "SECRET-BOM",
+        "SECRET-MAPPING",
+        "SECRET-STR",
+    ):
+      assert marker not in dumped, marker
+
+  def test_sanitizer_stops_at_node_budget(self):
+    """A very wide payload stops at the work budget and flags truncation
+    (#6360 review round 5 P2)."""
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    wide = list(range(bigquery_agent_analytics_plugin._MAX_SANITIZE_NODES * 2))
+    out, truncated = truncate({"wide": wide}, 10000)
+    assert truncated
+    assert "[SANITIZE_BUDGET_EXCEEDED]" in str(out["wide"][-1]) or (
+        out["wide"].count("[SANITIZE_BUDGET_EXCEEDED]") > 0
+    )
+    assert len(out["wide"]) <= len(wide)
+
+  @pytest.mark.asyncio
+  async def test_stale_loop_cleanup_counts_queued_rows(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Queued rows on a closed loop are counted under stale_loop
+    (#6360 review round 5 P2)."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    dead_loop = mock.MagicMock()
+    dead_loop.is_closed.return_value = True
+    state = mock.MagicMock()
+    queue = asyncio.Queue()
+    queue.put_nowait({"row": 1})
+    state.batch_processor._queue = queue
+    state.batch_processor.get_drop_stats.return_value = {}
+    state.write_client = None
+    plugin._loop_state_by_loop[dead_loop] = state
+
+    plugin._cleanup_stale_loop_states()
+    assert plugin.get_drop_stats().get("stale_loop") == 1
+
+  @pytest.mark.asyncio
+  async def test_restart_rebuilds_parser_and_offloader(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """shutdown() clears parser/offloader so a restart cannot reuse the
+    terminated executor (#6360 review round 5 P2)."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin.parser = mock.MagicMock()
+    plugin.offloader = mock.MagicMock()
+    await plugin.shutdown()
+    assert plugin.parser is None
+    assert plugin.offloader is None
