@@ -17,20 +17,20 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
-from google.adk.optimization.run_context import ContextAlreadyAttachedError
-from google.adk.optimization.run_context import ModelCallState
-from google.adk.optimization.run_context import OptimizationBudgetExceeded
-from google.adk.optimization.run_context import OptimizationBudgets
-from google.adk.optimization.run_context import OptimizationCancelledError
-from google.adk.optimization.run_context import OptimizationProviderError
-from google.adk.optimization.run_context import OptimizationRunContext
-from google.adk.optimization.run_context import OptimizationRunFinalizedError
-from google.adk.optimization.run_context import OptimizerCapabilities
-from google.adk.optimization.run_context import RunStatus
-from google.adk.optimization.run_context import STAGE_CANDIDATE_GENERATION
-from google.adk.optimization.run_context import STAGE_REFLECTION
-from google.adk.optimization.run_context import TokenBudgetStatus
-from google.adk.optimization.run_context import UsageCoverage
+from google.adk.optimization import ContextAlreadyAttachedError
+from google.adk.optimization import ModelCallState
+from google.adk.optimization import OptimizationBudgetExceeded
+from google.adk.optimization import OptimizationBudgets
+from google.adk.optimization import OptimizationCancelledError
+from google.adk.optimization import OptimizationProviderError
+from google.adk.optimization import OptimizationRunContext
+from google.adk.optimization import OptimizationRunFinalizedError
+from google.adk.optimization import OptimizerCapabilities
+from google.adk.optimization import RunStatus
+from google.adk.optimization import STAGE_CANDIDATE_GENERATION
+from google.adk.optimization import STAGE_REFLECTION
+from google.adk.optimization import TokenBudgetStatus
+from google.adk.optimization import UsageCoverage
 import pydantic
 import pytest
 
@@ -386,7 +386,7 @@ class TestBuiltInsRejectContextInContractsPr:
   async def test_simple_prompt_optimizer_rejects_context(self):
     from unittest import mock
 
-    from google.adk.optimization.run_context import UnsupportedOptimizationContextError
+    from google.adk.optimization import UnsupportedOptimizationContextError
     from google.adk.optimization.sampler import Sampler
     from google.adk.optimization.simple_prompt_optimizer import SimplePromptOptimizer
     from google.adk.optimization.simple_prompt_optimizer import SimplePromptOptimizerConfig
@@ -498,7 +498,7 @@ class TestTerminalCompleteness:
 class TestFailureTypes:
 
   def test_finalize_failed_is_generic_not_provider(self):
-    from google.adk.optimization.run_context import OptimizationFailedError
+    from google.adk.optimization import OptimizationFailedError
 
     ctx = OptimizationRunContext()
     ctx.finalize_failed(error_code="SAMPLER_CRASH", error_type="ValueError")
@@ -526,3 +526,185 @@ class TestDurableTimestamps:
     event = ctx.snapshot().events[0]
     after = _time.time()
     assert before <= event.start_time <= event.end_time <= after
+
+
+class TestSuccessInvariantBoundary:
+  """Round-3: finalize_success is an invariant boundary, not a status setter."""
+
+  def test_success_with_open_call_commits_failed(self):
+    from google.adk.optimization import OptimizationFailedError
+
+    ctx = OptimizationRunContext()
+    ctx.begin_model_call(STAGE_REFLECTION)  # left open
+    with pytest.raises(OptimizationFailedError):
+      ctx.finalize_success()
+    snap = ctx.snapshot()
+    assert snap.run_status == RunStatus.FAILED
+    assert snap.terminal_error_code == "OPEN_MODEL_CALLS"
+
+  def test_success_after_budget_terminal_reraises(self):
+    ctx = OptimizationRunContext(
+        OptimizationBudgets(max_provider_reported_tokens=10)
+    )
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    with pytest.raises(OptimizationBudgetExceeded):
+      ctx.end_model_call(h, usage_metadata=_usage(total_token_count=50))
+    with pytest.raises(OptimizationBudgetExceeded):
+      ctx.finalize_success()  # cannot swallow the committed terminal
+    assert ctx.snapshot().run_status == RunStatus.BUDGET_EXCEEDED
+
+  def test_success_after_provider_terminal_reraises(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    with pytest.raises(OptimizationProviderError):
+      ctx.end_model_call(h, error_code="INTERNAL")
+    with pytest.raises(OptimizationProviderError):
+      ctx.finalize_success()
+
+  def test_success_after_cancel_terminal_reraises(self):
+    ctx = OptimizationRunContext()
+    ctx.finalize_cancelled("x")
+    with pytest.raises(OptimizationCancelledError):
+      ctx.finalize_success()
+
+  def test_success_idempotent_only_when_completed(self):
+    ctx = OptimizationRunContext()
+    ctx.finalize_success()
+    ctx.finalize_success()  # idempotent
+    assert ctx.snapshot().run_status == RunStatus.COMPLETED
+
+
+class TestLedgerFieldNormalization:
+  """Round-3: every event field normalized before mutation."""
+
+  def test_malformed_model_version_cannot_corrupt_snapshots(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    ctx.end_model_call(
+        h,
+        usage_metadata=_usage(total_token_count=3),
+        returned_model_version=123,  # non-string from a custom BaseLlm
+    )
+    snap = ctx.snapshot()  # must not raise
+    assert snap.events[0].returned_model_version == "123"
+
+  def test_fractional_usage_is_unreported_not_truncated(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    ctx.end_model_call(h, usage_metadata=_usage(total_token_count=1.9))
+    event = ctx.snapshot().events[0]
+    assert event.total_tokens is None
+    assert event.usage_coverage == UsageCoverage.UNREPORTED
+
+  def test_integral_float_zero_and_large_int_accepted(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    ctx.end_model_call(
+        h,
+        usage_metadata=_usage(
+            total_token_count=2.0,
+            prompt_token_count=0,
+            candidates_token_count=10**12,
+        ),
+    )
+    event = ctx.snapshot().events[0]
+    assert event.total_tokens == 2
+    assert event.prompt_tokens == 0
+    assert event.output_tokens == 10**12
+
+
+class TestLocalCallAbort:
+
+  def test_abort_settles_as_failed_not_provider(self):
+    from google.adk.optimization import OptimizationFailedError
+
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    with pytest.raises(OptimizationFailedError):
+      ctx.abort_model_call(
+          h, error_code="SCHEDULING_FAILURE", error_type="RuntimeError"
+      )
+    snap = ctx.snapshot()
+    assert snap.events[0].state == ModelCallState.ABORTED
+    assert snap.run_status == RunStatus.FAILED
+    assert snap.completed_calls == 1  # settled
+
+
+class TestConcurrencyRaces:
+  """Round-3: the RFC-required concurrent attachment and admission races."""
+
+  def test_concurrent_attach_exactly_one_wins(self):
+    ctx = OptimizationRunContext()
+    results: list[bool] = []
+
+    def try_attach():
+      try:
+        ctx.attach(owner=object())
+        results.append(True)
+      except ContextAlreadyAttachedError:
+        results.append(False)
+
+    threads = [threading.Thread(target=try_attach) for _ in range(16)]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join()
+    assert results.count(True) == 1
+
+  def test_concurrent_admission_admits_exactly_k(self):
+    k = 3
+    ctx = OptimizationRunContext(OptimizationBudgets(max_model_calls=k))
+    admitted: list[int] = []
+    rejected: list[Exception] = []
+
+    def try_admit():
+      try:
+        h = ctx.begin_model_call(STAGE_REFLECTION)
+        admitted.append(h._record.sequence)
+      except OptimizationBudgetExceeded as e:
+        rejected.append(e)
+
+    threads = [threading.Thread(target=try_admit) for _ in range(16)]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join()
+    assert len(admitted) == k
+    assert sorted(admitted) == [1, 2, 3]  # unique sequence ids
+    assert len(rejected) == 16 - k
+    assert all(
+        e.snapshot.run_status == RunStatus.BUDGET_EXCEEDED for e in rejected
+    )
+
+  def test_success_racing_last_settlement_never_completes_with_open_call(
+      self,
+  ):
+    from google.adk.optimization import OptimizationFailedError
+
+    for _ in range(20):
+      ctx = OptimizationRunContext()
+      h = ctx.begin_model_call(STAGE_REFLECTION)
+      outcomes: list[str] = []
+
+      def settle(handle=h, context=ctx):
+        context.end_model_call(handle, usage_metadata=None)
+
+      def finish(context=ctx, sink=outcomes):
+        try:
+          context.finalize_success()
+          sink.append("completed")
+        except OptimizationFailedError:
+          sink.append("failed_open")
+
+      t1 = threading.Thread(target=settle)
+      t2 = threading.Thread(target=finish)
+      t2.start()
+      t1.start()
+      t1.join()
+      t2.join()
+      snap = ctx.snapshot()
+      if "completed" in outcomes:
+        # Success was only recordable because the call had already settled.
+        assert snap.events[0].state is not None
+      else:
+        assert snap.run_status == RunStatus.FAILED

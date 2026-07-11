@@ -79,6 +79,10 @@ class ModelCallState(str, enum.Enum):
   COMPLETED = "completed"
   PROVIDER_ERROR = "provider_error"
   CANCELLED = "cancelled"
+  ABORTED = "aborted"
+  """The invocation was admitted but aborted locally (request construction,
+  scheduling, or other optimizer-side failure) before or during execution --
+  distinct from a provider failure and from cancellation."""
 
 
 class RunStatus(str, enum.Enum):
@@ -276,18 +280,20 @@ class _CallRecord:
       "closed",
   )
 
-  def __init__(self, sequence: int, stage: str, requested_model):
-    self.sequence = sequence
-    self.stage = stage
-    self.requested_model = requested_model
-    self.returned_model_version = None
-    self.start_time = time.time()
-    self.end_time = None
+  def __init__(
+      self, sequence: int, stage: str, requested_model: Optional[str]
+  ) -> None:
+    self.sequence: int = sequence
+    self.stage: str = stage
+    self.requested_model: Optional[str] = requested_model
+    self.returned_model_version: Optional[str] = None
+    self.start_time: float = time.time()
+    self.end_time: Optional[float] = None
     self.state: Optional[ModelCallState] = None
     self.usage: dict[str, Optional[int]] = {}
     self.error_code: Optional[str] = None
     self.error_type: Optional[str] = None
-    self.closed = False
+    self.closed: bool = False
 
 
 class _CallHandle:
@@ -297,9 +303,11 @@ class _CallHandle:
   typed misuse error.
   """
 
-  def __init__(self, context: "OptimizationRunContext", record: _CallRecord):
-    self._context = context
-    self._record = record
+  def __init__(
+      self, context: "OptimizationRunContext", record: _CallRecord
+  ) -> None:
+    self._context: "OptimizationRunContext" = context
+    self._record: _CallRecord = record
 
 
 _UNATTACHED = object()
@@ -319,7 +327,7 @@ class OptimizationRunContext:
   any thread, and read :meth:`snapshot` at any time, including after failure.
   """
 
-  def __init__(self, budgets: Optional[OptimizationBudgets] = None):
+  def __init__(self, budgets: Optional[OptimizationBudgets] = None) -> None:
     # OptimizationBudgets is frozen; keep a private reference and never
     # expose a mutable path to it.
     self._budgets = budgets or OptimizationBudgets()
@@ -394,19 +402,38 @@ class OptimizationRunContext:
   # --- terminal transitions -------------------------------------------------
 
   def finalize_success(self) -> None:
-    """Marks a normal optimizer return ``completed`` (first terminal wins).
+    """Commits ``completed`` -- and enforces that success is actually possible.
 
-    Defensive: a pending cancellation observed here commits ``cancelled``
-    and raises the typed error -- a cancelled run can never be recorded as a
-    success, no matter how late the signal arrived.
+    This is an invariant boundary, not a status setter:
+
+    - idempotent only when the run is already ``completed``; any other
+      existing terminal re-raises its typed outcome so a caller cannot
+      swallow a committed budget/provider/cancel terminal into success;
+    - a pending cancellation commits ``cancelled`` and raises;
+    - an open (unsettled) call makes success impossible: the run commits
+      ``failed`` (``OPEN_MODEL_CALLS``) and raises
+      ``OptimizationFailedError``. Already-admitted calls may still settle
+      later and will observe that terminal.
     """
     with self._lock:
       if self._run_status is not None:
-        return
-      if self._cancel_requested:
+        if self._run_status == RunStatus.COMPLETED:
+          return
+        error = self._terminal_error_locked()
+      elif self._cancel_requested:
         self._transition_locked(RunStatus.CANCELLED)
         error = OptimizationCancelledError(
             f"Optimization cancelled: {self._cancel_reason}",
+            self._snapshot_locked(),
+        )
+      elif any(not r.closed for r in self._records):
+        self._transition_locked(
+            RunStatus.FAILED,
+            error_code="OPEN_MODEL_CALLS",
+            error_type="OptimizationRunFinalizedError",
+        )
+        error = OptimizationFailedError(
+            "Cannot finalize success with unsettled model calls.",
             self._snapshot_locked(),
         )
       else:
@@ -581,7 +608,9 @@ class OptimizationRunContext:
       was_terminal = self._run_status is not None
       record.closed = True
       record.end_time = time.time()
-      record.returned_model_version = returned_model_version
+      record.returned_model_version = _sanitize_optional_str(
+          returned_model_version, _MODEL_VERSION_MAX_LEN
+      )
       record.usage = usage
       self._settled_calls += 1
       total = usage.get("total_tokens")
@@ -626,6 +655,51 @@ class OptimizationRunContext:
       if error is None and was_terminal and not cancelled:
         # Another call already terminated the run; the settling caller must
         # observe that terminal instead of continuing.
+        error = self._terminal_error_locked()
+    if error is not None:
+      raise error
+
+  def abort_model_call(
+      self,
+      handle: _CallHandle,
+      *,
+      error_code: Optional[str] = None,
+      error_type: Optional[str] = None,
+  ) -> None:
+    """Settles an admitted call that failed locally (non-provider).
+
+    Closes the record as ``aborted``, transitions the run to ``failed`` with
+    sanitized metadata, and raises ``OptimizationFailedError`` -- truthfully
+    distinct from provider failures and from cancellation. Idempotent on an
+    already-settled handle; foreign handles are a typed misuse error.
+    """
+    clean_code = _sanitize_error_meta(error_code) or "LOCAL_CALL_ABORT"
+    clean_type = _sanitize_error_meta(error_type)
+    record = handle._record
+    with self._lock:
+      if handle._context is not self:
+        raise OptimizationRunFinalizedError(
+            "Call handle belongs to a different OptimizationRunContext."
+        )
+      error: Optional[Exception] = None
+      if not record.closed:
+        record.closed = True
+        record.end_time = time.time()
+        record.state = ModelCallState.ABORTED
+        record.error_code = clean_code
+        record.error_type = clean_type
+        self._settled_calls += 1
+        if self._transition_locked(
+            RunStatus.FAILED,
+            sequence=record.sequence,
+            error_code=clean_code,
+            error_type=clean_type,
+        ):
+          error = OptimizationFailedError(
+              f"Local failure on call {record.sequence}: {clean_code}",
+              self._snapshot_locked(),
+          )
+      if error is None and self._run_status is not None:
         error = self._terminal_error_locked()
     if error is not None:
       raise error
@@ -701,6 +775,17 @@ _ERROR_META_MAX_LEN = 128
 _ERROR_META_SAFE = re.compile(r"[^A-Za-z0-9_.:-]")
 
 
+_MODEL_VERSION_MAX_LEN = 256
+
+
+def _sanitize_optional_str(value: Any, max_len: int) -> Optional[str]:
+  """Bounded optional-string normalization for ledger fields."""
+  if value is None:
+    return None
+  text = str(value).strip()
+  return text[:max_len] if text else None
+
+
 def _sanitize_error_meta(value: Any) -> Optional[str]:
   """Normalizes error metadata to a bounded, single-token identifier.
 
@@ -731,6 +816,10 @@ def _extract_usage(usage_metadata: Any) -> dict[str, Optional[int]]:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
       return None
     if not math.isfinite(value) or value < 0:
+      return None
+    if isinstance(value, float) and not value.is_integer():
+      # Token counters are integral evidence; silent truncation is not
+      # truthful normalization -- fractional values are "not reported".
       return None
     return int(value)
 

@@ -33,11 +33,11 @@ from ..models.registry import LLMRegistry
 from ..tools.skill_toolset import SkillToolset
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._run_context import OptimizationRunContext
 from .agent_optimizer import AgentOptimizer
 from .data_types import AgentWithScores
 from .data_types import OptimizerResult
 from .data_types import UnstructuredSamplingResult
-from .run_context import OptimizationRunContext
 from .sampler import Sampler
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -351,7 +351,7 @@ class GEPARootAgentOptimizer(
       agent instance, its scores on the validation examples, and other metrics.
     """
     if run_context is not None:
-      from .run_context import UnsupportedOptimizationContextError
+      from ._run_context import UnsupportedOptimizationContextError
 
       raise UnsupportedOptimizationContextError(
           "GEPARootAgentOptimizer does not support OptimizationRunContext in"

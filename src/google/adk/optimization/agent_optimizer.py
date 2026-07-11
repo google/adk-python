@@ -20,11 +20,11 @@ from typing import Generic
 from typing import Optional
 
 from ..agents.llm_agent import Agent
+from ._run_context import OptimizationRunContext
+from ._run_context import OptimizerCapabilities
 from .data_types import AgentWithScoresT
 from .data_types import OptimizerResult
 from .data_types import SamplingResultT
-from .run_context import OptimizationRunContext
-from .run_context import OptimizerCapabilities
 from .sampler import Sampler
 
 
