@@ -31,6 +31,7 @@ from google.genai.interactions import ToolParam
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
+from typing_extensions import override
 
 from ..events.event import Event
 from ..flows.llm_flows.interactions_processor import _find_previous_interaction_state
@@ -47,9 +48,11 @@ from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
 from ..utils._google_client_headers import get_tracking_http_options
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils.content_utils import to_user_content
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .base_agent import BaseAgent
+from .context import Context
 from .invocation_context import InvocationContext
 from .readonly_context import ReadonlyContext
 from .run_config import StreamingMode
@@ -310,6 +313,30 @@ class ManagedAgent(BaseAgent):
         error_message=error_message,
         turn_complete=True,
     )
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Event, None]:
+    """Runs the ManagedAgent as a node, threading node_input into user_content.
+
+    When invoked as a single-turn tool (``mode='single_turn'``), the parent's
+    tool-call argument arrives as ``node_input``; surface it as the agent's
+    ``user_content`` so ``_run_async_impl`` sends it to the interactions API.
+    When ``node_input`` is ``None`` (classic agent-tree run), behavior is
+    identical to ``BaseAgent._run_impl``.
+    """
+    parent_context = ctx.get_invocation_context()
+    if node_input is not None:
+      parent_context = parent_context.model_copy(
+          update={'user_content': to_user_content(node_input)}
+      )
+    async for event in self.run_async(parent_context=parent_context):
+      if event.author:
+        ctx.event_author = event.author
+      if not event.node_info.path and event.author == self.name:
+        event.node_info.path = ctx.node_path
+      yield event
 
   async def _run_async_impl(
       self, ctx: InvocationContext

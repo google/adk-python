@@ -245,7 +245,6 @@ class Workflow(BaseNode):
     try:
       await self._run_loop(loop_state, ctx)
     finally:
-      ctx._workflow_scheduler = None
       await self._cleanup_all_tasks(loop_state)
 
     if loop_state.error_shut_down:

@@ -649,12 +649,13 @@ class TestDeriveScheduler:
 
   def test_derive_scheduler_with_parent_no_scheduler(self):
     from google.adk.agents.context import _derive_scheduler
+    from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 
     mock_parent = MagicMock()
     mock_parent._workflow_scheduler = None
 
     scheduler = _derive_scheduler(mock_parent)
-    assert scheduler is None
+    assert isinstance(scheduler, DynamicNodeScheduler)
 
 
 class TestContextGetInvocationContext:

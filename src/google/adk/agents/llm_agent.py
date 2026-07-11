@@ -1119,18 +1119,19 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     if self.sub_agents:
       for sub_agent in self.sub_agents:
-        if isinstance(sub_agent, LlmAgent):
-          mode = getattr(sub_agent, 'mode', None)
-          if mode is None:
-            try:
-              sub_agent.mode = 'chat'
-              mode = 'chat'
-            except (AttributeError, TypeError):
-              continue
-          if mode == 'single_turn':
-            self.tools.append(_SingleTurnAgentTool(sub_agent))
-          elif mode == 'task':
-            self.tools.append(_TaskAgentTool(sub_agent))
+        # `mode` is defined by whichever agent classes declare the field; any
+        # agent that defines `mode` participates here. A sub-agent that does not
+        # declare `mode` returns None and is never wrapped (it stays an
+        # LLM-transfer target).
+        mode = getattr(sub_agent, 'mode', None)
+        # LlmAgent sub-agents default to chat mode (unchanged behavior).
+        if isinstance(sub_agent, LlmAgent) and mode is None:
+          sub_agent.mode = 'chat'
+          mode = 'chat'
+        if mode == 'single_turn':
+          self.tools.append(_SingleTurnAgentTool(sub_agent))
+        elif mode == 'task':
+          self.tools.append(_TaskAgentTool(sub_agent))
 
   @classmethod
   @experimental(FeatureName.AGENT_CONFIG)
