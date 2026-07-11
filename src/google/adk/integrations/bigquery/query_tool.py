@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import types
+from typing import Any
 from typing import Callable
 from typing import Optional
 import uuid
@@ -30,6 +32,76 @@ from .config import BigQueryToolConfig
 from .config import WriteMode
 
 BIGQUERY_SESSION_INFO_KEY = "bigquery_session_info"
+_FIELD_PATH_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*"
+)
+
+
+def _validate_table_id(
+    table_id: str, *, project_id: str, argument_name: str
+) -> str:
+  """Validate that an input is a BigQuery table identifier, not a query."""
+  if not isinstance(table_id, str):
+    raise ValueError(f"{argument_name} must be a BigQuery table ID.")
+
+  normalized_table_id = table_id.strip()
+  if not normalized_table_id:
+    raise ValueError(f"{argument_name} must be a non-empty BigQuery table ID.")
+
+  trimmed_upper_table_id = normalized_table_id.upper()
+  if trimmed_upper_table_id.startswith(
+      "SELECT"
+  ) or trimmed_upper_table_id.startswith("WITH"):
+    raise ValueError(
+        f"{argument_name} must be a BigQuery table ID. SQL query statements"
+        " are not supported by this tool."
+    )
+
+  try:
+    bigquery.TableReference.from_string(
+        normalized_table_id, default_project=project_id
+    )
+  except ValueError as ex:
+    raise ValueError(
+        f"{argument_name} must be a valid BigQuery table ID."
+    ) from ex
+
+  return normalized_table_id
+
+
+def _quote_field_path(field_path: str, *, argument_name: str) -> str:
+  """Quote a BigQuery field path for safe use in ORDER BY clauses."""
+  if not isinstance(field_path, str) or not _FIELD_PATH_RE.fullmatch(
+      field_path
+  ):
+    raise ValueError(
+        f"{argument_name} must be a valid BigQuery column name or field path."
+    )
+
+  return ".".join(f"`{part}`" for part in field_path.split("."))
+
+
+def _make_query_job_config(
+    *,
+    dry_run: bool = False,
+    create_session: bool = False,
+    connection_properties: Optional[list[Any]] = None,
+    labels: Optional[dict[str, str]] = None,
+    query_parameters: Optional[list[Any]] = None,
+) -> bigquery.QueryJobConfig:
+  """Build a QueryJobConfig without passing unset optional fields."""
+  kwargs: dict[str, Any] = {}
+  if dry_run:
+    kwargs["dry_run"] = True
+  if create_session:
+    kwargs["create_session"] = True
+  if connection_properties:
+    kwargs["connection_properties"] = connection_properties
+  if labels is not None:
+    kwargs["labels"] = labels
+  if query_parameters is not None:
+    kwargs["query_parameters"] = query_parameters
+  return bigquery.QueryJobConfig(**kwargs)
 
 
 def _execute_sql(
@@ -40,6 +112,7 @@ def _execute_sql(
     tool_context: ToolContext,
     dry_run: bool = False,
     caller_id: Optional[str] = None,
+    query_parameters: Optional[list[Any]] = None,
 ) -> dict:
   try:
     # Validate compute project if applicable
@@ -81,8 +154,10 @@ def _execute_sql(
       dry_run_query_job = bq_client.query(
           query,
           project=project_id,
-          job_config=bigquery.QueryJobConfig(
-              dry_run=True, labels=bq_job_labels
+          job_config=_make_query_job_config(
+              dry_run=True,
+              labels=bq_job_labels,
+              query_parameters=query_parameters,
           ),
       )
       if dry_run_query_job.statement_type != "SELECT":
@@ -102,8 +177,11 @@ def _execute_sql(
         session_creator_job = bq_client.query(
             "SELECT 1",
             project=project_id,
-            job_config=bigquery.QueryJobConfig(
-                dry_run=True, create_session=True, labels=bq_job_labels
+            job_config=_make_query_job_config(
+                dry_run=True,
+                create_session=True,
+                labels=bq_job_labels,
+                query_parameters=query_parameters,
             ),
         )
         bq_session_id = session_creator_job.session_info.session_id
@@ -124,10 +202,11 @@ def _execute_sql(
       dry_run_query_job = bq_client.query(
           query,
           project=project_id,
-          job_config=bigquery.QueryJobConfig(
+          job_config=_make_query_job_config(
               dry_run=True,
               connection_properties=bq_connection_properties,
               labels=bq_job_labels,
+              query_parameters=query_parameters,
           ),
       )
       if (
@@ -148,18 +227,20 @@ def _execute_sql(
       dry_run_job = bq_client.query(
           query,
           project=project_id,
-          job_config=bigquery.QueryJobConfig(
+          job_config=_make_query_job_config(
               dry_run=True,
               connection_properties=bq_connection_properties,
               labels=bq_job_labels,
+              query_parameters=query_parameters,
           ),
       )
       return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
 
     # Finally execute the query, fetch the result, and return it
-    job_config = bigquery.QueryJobConfig(
+    job_config = _make_query_job_config(
         connection_properties=bq_connection_properties,
         labels=bq_job_labels,
+        query_parameters=query_parameters,
     )
     if settings.maximum_bytes_billed:
       job_config.maximum_bytes_billed = settings.maximum_bytes_billed
@@ -169,9 +250,9 @@ def _execute_sql(
         project=project_id,
         max_results=settings.max_query_result_rows,
     )
-    rows = []
+    rows: list[dict[str, Any]] = []
     for row in row_iterator:
-      row_values = {}
+      row_values: dict[str, Any] = {}
       for key, val in row.items():
         try:
           # if the json serialization of the value succeeds, use it as is
@@ -181,7 +262,7 @@ def _execute_sql(
         row_values[key] = val
       rows.append(row_values)
 
-    result = {"status": "SUCCESS", "rows": rows}
+    result: dict[str, Any] = {"status": "SUCCESS", "rows": rows}
     if (
         settings.max_query_result_rows is not None
         and len(rows) == settings.max_query_result_rows
@@ -781,9 +862,8 @@ def forecast(
   Args:
       project_id (str): The GCP project id in which the query should be
         executed.
-      history_data (str): The table id of the BigQuery table containing the
-        history time series data or a query statement that select the history
-        data.
+      history_data (str): The table ID of the BigQuery table containing the
+        history time series data.
       timestamp_col (str): The name of the column containing the timestamp for
         each data point.
       data_col (str): The name of the column containing the numerical values to
@@ -827,16 +907,11 @@ def forecast(
             ]
           }
 
-      Forecast multiple time series using a SQL query as input:
+      Forecast multiple time series from a BigQuery table:
 
-          >>> history_query = (
-          ...     "SELECT unique_id, timestamp, value "
-          ...     "FROM `my-project.my-dataset.my-timeseries-table` "
-          ...     "WHERE timestamp > '1980-01-01'"
-          ... )
           >>> forecast(
           ...     project_id="my-gcp-project",
-          ...     history_data=history_query,
+          ...     history_data="my-project.my_dataset.my_timeseries_table",
           ...     timestamp_col="timestamp",
           ...     data_col="value",
           ...     id_cols=["unique_id"],
@@ -890,13 +965,23 @@ def forecast(
   """
   model = "TimesFM 2.0"
   confidence_level = 0.95
-  trimmed_upper_history_data = history_data.strip().upper()
-  if trimmed_upper_history_data.startswith(
-      "SELECT"
-  ) or trimmed_upper_history_data.startswith("WITH"):
-    history_data_source = f"({history_data})"
-  else:
-    history_data_source = f"TABLE `{history_data}`"
+  try:
+    history_data = _validate_table_id(
+        history_data, project_id=project_id, argument_name="history_data"
+    )
+  except ValueError as ex:
+    return {"status": "ERROR", "error_details": str(ex)}
+
+  history_data_source = f"TABLE `{history_data}`"
+  query_parameters = [
+      bigquery.ScalarQueryParameter("data_col", "STRING", data_col),
+      bigquery.ScalarQueryParameter("timestamp_col", "STRING", timestamp_col),
+      bigquery.ScalarQueryParameter("model", "STRING", model),
+      bigquery.ScalarQueryParameter("horizon", "INT64", horizon),
+      bigquery.ScalarQueryParameter(
+          "confidence_level", "FLOAT64", confidence_level
+      ),
+  ]
 
   if id_cols:
     if not all(isinstance(item, str) for item in id_cols):
@@ -904,28 +989,30 @@ def forecast(
           "status": "ERROR",
           "error_details": "All elements in id_cols must be strings.",
       }
-    id_cols_str = "[" + ", ".join([f"'{col}'" for col in id_cols]) + "]"
+    query_parameters.append(
+        bigquery.ArrayQueryParameter("id_cols", "STRING", id_cols)
+    )
 
     query = f"""
   SELECT * FROM AI.FORECAST(
     {history_data_source},
-    data_col => '{data_col}',
-    timestamp_col => '{timestamp_col}',
-    model => '{model}',
-    id_cols => {id_cols_str},
-    horizon => {horizon},
-    confidence_level => {confidence_level}
+    data_col => @data_col,
+    timestamp_col => @timestamp_col,
+    model => @model,
+    id_cols => @id_cols,
+    horizon => @horizon,
+    confidence_level => @confidence_level
   )
   """
   else:
     query = f"""
   SELECT * FROM AI.FORECAST(
     {history_data_source},
-    data_col => '{data_col}',
-    timestamp_col => '{timestamp_col}',
-    model => '{model}',
-    horizon => {horizon},
-    confidence_level => {confidence_level}
+    data_col => @data_col,
+    timestamp_col => @timestamp_col,
+    model => @model,
+    horizon => @horizon,
+    confidence_level => @confidence_level
   )
   """
   return _execute_sql(
@@ -935,6 +1022,7 @@ def forecast(
       settings=settings,
       tool_context=tool_context,
       caller_id="forecast",
+      query_parameters=query_parameters,
   )
 
 
@@ -955,8 +1043,8 @@ def analyze_contribution(
   Args:
       project_id (str): The GCP project id in which the query should be
         executed.
-      input_data (str): The data that contain the test and control data to
-        analyze. Can be a fully qualified BigQuery table ID or a SQL query.
+      input_data (str): The BigQuery table ID that contains the test and
+        control data to analyze.
       dimension_id_cols (list[str]): The column names of the dimension columns.
       contribution_metric (str): The name of the column that contains the metric
         to analyze. Provides the expression to use to calculate the metric you
@@ -1016,38 +1104,14 @@ def analyze_contribution(
             ]
           }
 
-      Analyze the contribution of different dimensions to the total sales using
-      a SQL query as input:
-
-          >>> analyze_contribution(
-          ...     project_id="my-gcp-project",
-          ...     input_data="SELECT store_id, product_category, total_sales, "
-          ...     "is_test FROM `my-project.my-dataset.my-sales-table` "
-          ...     "WHERE transaction_date > '2025-01-01'"
-          ...     dimension_id_cols=["store_id", "product_category"],
-          ...     contribution_metric="SUM(total_sales)",
-          ...     is_test_col="is_test"
-          ... )
-          The return is:
-          {
-            "status": "SUCCESS",
-            "rows": [
-              {
-                "store_id": "S2",
-                "product_category": "Groceries",
-                "contributors": ["S2", "Groceries"],
-                "metric_test": 250,
-                "metric_control": 200,
-                "difference": 50,
-                "relative_difference": 0.25,
-                "unexpected_difference": 10,
-                "relative_unexpected_difference": 0.041,
-                "apriori_support": 0.22
-              },
-              ...
-            ]
-          }
   """
+  try:
+    input_data = _validate_table_id(
+        input_data, project_id=project_id, argument_name="input_data"
+    )
+  except ValueError as ex:
+    return {"status": "ERROR", "error_details": str(ex)}
+
   if not all(isinstance(item, str) for item in dimension_id_cols):
     return {
         "status": "ERROR",
@@ -1059,15 +1123,14 @@ def analyze_contribution(
       f"contribution_analysis_model_{str(uuid.uuid4()).replace('-', '_')}"
   )
 
-  id_cols_str = "[" + ", ".join([f"'{col}'" for col in dimension_id_cols]) + "]"
   options = [
       "MODEL_TYPE = 'CONTRIBUTION_ANALYSIS'",
-      f"CONTRIBUTION_METRIC = '{contribution_metric}'",
-      f"IS_TEST_COL = '{is_test_col}'",
-      f"DIMENSION_ID_COLS = {id_cols_str}",
+      "CONTRIBUTION_METRIC = @contribution_metric",
+      "IS_TEST_COL = @is_test_col",
+      "DIMENSION_ID_COLS = @dimension_id_cols",
   ]
 
-  options.append(f"TOP_K_INSIGHTS_BY_APRIORI_SUPPORT = {top_k_insights}")
+  options.append("TOP_K_INSIGHTS_BY_APRIORI_SUPPORT = @top_k_insights")
 
   upper_pruning = pruning_method.upper()
   if upper_pruning not in ["NO_PRUNING", "PRUNE_REDUNDANT_INSIGHTS"]:
@@ -1075,17 +1138,21 @@ def analyze_contribution(
         "status": "ERROR",
         "error_details": f"Invalid pruning_method: {pruning_method}",
     }
-  options.append(f"PRUNING_METHOD = '{upper_pruning}'")
+  options.append("PRUNING_METHOD = @pruning_method")
 
   options_str = ", ".join(options)
-
-  trimmed_upper_input_data = input_data.strip().upper()
-  if trimmed_upper_input_data.startswith(
-      "SELECT"
-  ) or trimmed_upper_input_data.startswith("WITH"):
-    input_data_source = f"({input_data})"
-  else:
-    input_data_source = f"SELECT * FROM `{input_data}`"
+  input_data_source = f"SELECT * FROM `{input_data}`"
+  query_parameters = [
+      bigquery.ScalarQueryParameter(
+          "contribution_metric", "STRING", contribution_metric
+      ),
+      bigquery.ScalarQueryParameter("is_test_col", "STRING", is_test_col),
+      bigquery.ArrayQueryParameter(
+          "dimension_id_cols", "STRING", dimension_id_cols
+      ),
+      bigquery.ScalarQueryParameter("top_k_insights", "INT64", top_k_insights),
+      bigquery.ScalarQueryParameter("pruning_method", "STRING", upper_pruning),
+  ]
 
   create_model_query = f"""
   CREATE TEMP MODEL {model_name}
@@ -1117,6 +1184,7 @@ def analyze_contribution(
         settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="analyze_contribution",
+        query_parameters=query_parameters,
     )
     if result["status"] != "SUCCESS":
       return result
@@ -1157,18 +1225,16 @@ def detect_anomalies(
   Args:
       project_id (str): The GCP project id in which the query should be
         executed.
-      history_data (str): The table id of the BigQuery table containing the
-        history time series data or a query statement that select the history
-        data.
+      history_data (str): The table ID of the BigQuery table containing the
+        history time series data.
       times_series_timestamp_col (str): The name of the column containing the
         timestamp for each data point.
       times_series_data_col (str): The name of the column containing the
         numerical values to be forecasted and anomaly detected.
       horizon (int, optional): The number of time steps to forecast into the
         future. Defaults to 1000.
-      target_data (str, optional): The table id of the BigQuery table containing
-        the target time series data or a query statement that select the target
-        data.
+      target_data (str, optional): The table ID of the BigQuery table
+        containing the target time series data.
       times_series_id_cols (list, optional): The column names of the id columns
         to indicate each time series when there are multiple time series in the
         table. All elements must be strings. Defaults to None.
@@ -1210,16 +1276,11 @@ def detect_anomalies(
             ]
           }
 
-      Detect Anomalies on multiple time series using a SQL query as input:
+      Detect Anomalies on multiple time series using a BigQuery table:
 
-          >>> history_query = (
-          ...     "SELECT unique_id, timestamp, value "
-          ...     "FROM `my-project.my-dataset.my-timeseries-table` "
-          ...     "WHERE timestamp > '1980-01-01'"
-          ... )
           >>> detect_anomalies(
           ...     project_id="my-gcp-project",
-          ...     history_data=history_query,
+          ...     history_data="my-project.my_dataset.my_timeseries_table",
           ...     times_series_timestamp_col="timestamp",
           ...     times_series_data_col="value",
           ...     times_series_id_cols=["unique_id"]
@@ -1271,20 +1332,38 @@ def detect_anomalies(
             location US"
           }
   """
-  trimmed_upper_history_data = history_data.strip().upper()
-  if trimmed_upper_history_data.startswith(
-      "SELECT"
-  ) or trimmed_upper_history_data.startswith("WITH"):
-    history_data_source = f"({history_data})"
-  else:
-    history_data_source = f"SELECT * FROM `{history_data}`"
+  try:
+    history_data = _validate_table_id(
+        history_data, project_id=project_id, argument_name="history_data"
+    )
+  except ValueError as ex:
+    return {"status": "ERROR", "error_details": str(ex)}
+
+  history_data_source = f"SELECT * FROM `{history_data}`"
 
   options = [
       "MODEL_TYPE = 'ARIMA_PLUS'",
-      f"TIME_SERIES_TIMESTAMP_COL = '{times_series_timestamp_col}'",
-      f"TIME_SERIES_DATA_COL = '{times_series_data_col}'",
-      f"HORIZON = {horizon}",
+      "TIME_SERIES_TIMESTAMP_COL = @times_series_timestamp_col",
+      "TIME_SERIES_DATA_COL = @times_series_data_col",
+      "HORIZON = @horizon",
   ]
+  create_model_parameters = [
+      bigquery.ScalarQueryParameter(
+          "times_series_timestamp_col", "STRING", times_series_timestamp_col
+      ),
+      bigquery.ScalarQueryParameter(
+          "times_series_data_col", "STRING", times_series_data_col
+      ),
+      bigquery.ScalarQueryParameter("horizon", "INT64", horizon),
+  ]
+  try:
+    quoted_timestamp_col = _quote_field_path(
+        times_series_timestamp_col,
+        argument_name="times_series_timestamp_col",
+    )
+  except ValueError as ex:
+    return {"status": "ERROR", "error_details": str(ex)}
+  order_by_cols = [quoted_timestamp_col]
 
   if times_series_id_cols:
     if not all(isinstance(item, str) for item in times_series_id_cols):
@@ -1294,10 +1373,26 @@ def detect_anomalies(
               "All elements in times_series_id_cols must be strings."
           ),
       }
-    times_series_id_cols_str = (
-        "[" + ", ".join([f"'{col}'" for col in times_series_id_cols]) + "]"
+    try:
+      quoted_id_cols = [
+          _quote_field_path(col, argument_name="times_series_id_cols")
+          for col in times_series_id_cols
+      ]
+    except ValueError:
+      return {
+          "status": "ERROR",
+          "error_details": (
+              "All elements in times_series_id_cols must be valid BigQuery"
+              " column names or field paths."
+          ),
+      }
+    options.append("TIME_SERIES_ID_COL = @times_series_id_cols")
+    create_model_parameters.append(
+        bigquery.ArrayQueryParameter(
+            "times_series_id_cols", "STRING", times_series_id_cols
+        )
     )
-    options.append(f"TIME_SERIES_ID_COL = {times_series_id_cols_str}")
+    order_by_cols = quoted_id_cols + order_by_cols
 
   options_str = ", ".join(options)
 
@@ -1308,26 +1403,27 @@ def detect_anomalies(
     OPTIONS ({options_str})
   AS {history_data_source}
   """
-  order_by_id_cols = (
-      ", ".join(col for col in times_series_id_cols) + ", "
-      if times_series_id_cols
-      else ""
-  )
+  order_by_clause = ", ".join(order_by_cols)
+  anomaly_detection_parameters = [
+      bigquery.ScalarQueryParameter(
+          "anomaly_prob_threshold", "FLOAT64", anomaly_prob_threshold
+      )
+  ]
 
   anomaly_detection_query = f"""
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold)) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT(@anomaly_prob_threshold AS anomaly_prob_threshold)) ORDER BY {order_by_clause}
   """
   if target_data:
-    trimmed_upper_target_data = target_data.strip().upper()
-    if trimmed_upper_target_data.startswith(
-        "SELECT"
-    ) or trimmed_upper_target_data.startswith("WITH"):
-      target_data_source = f"({target_data})"
-    else:
-      target_data_source = f"(SELECT * FROM `{target_data}`)"
+    try:
+      target_data = _validate_table_id(
+          target_data, project_id=project_id, argument_name="target_data"
+      )
+    except ValueError as ex:
+      return {"status": "ERROR", "error_details": str(ex)}
+    target_data_source = f"(SELECT * FROM `{target_data}`)"
 
     anomaly_detection_query = f"""
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source}) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT(@anomaly_prob_threshold AS anomaly_prob_threshold), {target_data_source}) ORDER BY {order_by_clause}
     """
 
   # Create a session and run the create model query.
@@ -1350,6 +1446,7 @@ def detect_anomalies(
         settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="detect_anomalies",
+        query_parameters=create_model_parameters,
     )
     if result["status"] != "SUCCESS":
       return result
@@ -1361,6 +1458,7 @@ def detect_anomalies(
         settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="detect_anomalies",
+        query_parameters=anomaly_detection_parameters,
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {
