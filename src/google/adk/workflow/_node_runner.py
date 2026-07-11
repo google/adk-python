@@ -28,6 +28,7 @@ import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
+from ..events._branch_path import _BranchPath
 from ..telemetry import node_tracing
 
 if TYPE_CHECKING:
@@ -157,7 +158,7 @@ class NodeRunner:
         )
         await self._enqueue_event(error_event, ctx)
 
-        if not await self._attempt_retry(e, ctx, attempt_count):
+        if not await self._attempt_retry(e, attempt_count):
           ctx._error = e
           ctx._error_node_path = ctx.node_path
           logger.debug("node %s end.", ctx.node_path)
@@ -169,9 +170,7 @@ class NodeRunner:
         )
         attempt_count += 1
 
-  async def _attempt_retry(
-      self, e: Exception, ctx: Context, attempt_count: int
-  ) -> bool:
+  async def _attempt_retry(self, e: Exception, attempt_count: int) -> bool:
     """Checks if node should retry and sleeps if so."""
     from ._node_state import NodeState
     from .utils._retry_utils import _get_retry_delay
@@ -208,8 +207,9 @@ class NodeRunner:
     )
 
     if self._use_sub_branch:
-      segment = f"{self._node.name}@{self._run_id}"
-      branch = f"{base_branch}.{segment}" if base_branch else segment
+      branch = _BranchPath.create_sub_branch(
+          base_branch, name=self._node.name, run_id=self._run_id
+      )
       ic = ic.model_copy(update={"branch": branch})
     elif self._override_branch is not None:
       ic = ic.model_copy(update={"branch": self._override_branch})

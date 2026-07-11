@@ -16,12 +16,27 @@
 
 exit_code=0
 
-# Get list of newly added files using diff-filter=A
-# Using process substitution to avoid subshell and handle spaces in filenames
+get_added_files() {
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git diff --cached --name-only --diff-filter=A
+  elif jj root >/dev/null 2>&1; then
+    jj diff --summary 2>/dev/null | awk '/^A / {print $2}'
+  elif hg root >/dev/null 2>&1; then
+    hg status --added --no-status 2>/dev/null
+  elif g4 info >/dev/null 2>&1; then
+    g4 opened 2>/dev/null | awk '/ - add / {print $1}' | sed 's/#.*//'
+  elif p4 info >/dev/null 2>&1; then
+    p4 opened 2>/dev/null | awk '/ - add / {print $1}' | sed 's/#.*//'
+  fi
+}
+
 while read -r file; do
     # Check if file is not empty (happens if no new files)
     if [[ -n "$file" ]]; then
-        if [[ "$file" == src/google/adk/*.py ]]; then
+        # Match only files in the package source (src/google/adk/) to avoid false
+        # positives in environments (e.g., monorepos) where the entire repository
+        # root is nested under a 'google/adk/' directory structure.
+        if [[ "$file" == */src/google/adk/*.py ]] || [[ "$file" == src/google/adk/*.py ]]; then
             filename=$(basename "$file")
             if [[ ! "$filename" == _* ]]; then
                 echo "Error: New Python file '$file' must have a '_' prefix."
@@ -32,6 +47,6 @@ while read -r file; do
             fi
         fi
     fi
-done < <(git diff --cached --name-only --diff-filter=A)
+done < <(get_added_files)
 
 exit $exit_code

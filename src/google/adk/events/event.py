@@ -171,6 +171,7 @@ class Event(LlmResponse):
     if not isinstance(data, dict):
       return data
 
+    data = dict(data)
     field_names: set[str] = set(cls.model_fields.keys())
     for f in cls.model_fields.values():
       if f.alias:

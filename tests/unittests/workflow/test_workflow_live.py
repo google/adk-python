@@ -27,6 +27,7 @@ from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
+from pydantic import Field
 import pytest
 
 from . import testing_utils
@@ -39,6 +40,7 @@ class _MockNonLiveNode(BaseNode):
 
   called: bool = False
   actual_input: Any = None
+  shared_state: dict[str, Any] = Field(default_factory=dict)
 
   def __init__(self, *, name: str):
     super().__init__(name=name)
@@ -51,6 +53,8 @@ class _MockNonLiveNode(BaseNode):
   ) -> AsyncGenerator[Any, None]:
     self.called = True
     self.actual_input = node_input
+    self.shared_state["called"] = True
+    self.shared_state["actual_input"] = node_input
     yield Event(output=f"{self.name}_output")
 
 
@@ -72,39 +76,9 @@ class _ConstantNode(BaseNode):
     yield Event(output=self.output_value)
 
 
-class _DynamicLiveSchedulerNode(BaseNode):
-  """A node that dynamically schedules a child live node using ctx.run_node()."""
-
-  child_node: BaseNode | None = None
-  child_output: Any = None
-
-  def __init__(self, *, name: str, child_node: BaseNode):
-    super().__init__(name=name, rerun_on_resume=True)
-    self.child_node = child_node
-
-  async def _run_impl(
-      self,
-      *,
-      ctx: Context,
-      node_input: Any,
-  ) -> AsyncGenerator[Any, None]:
-    if self.child_node:
-      self.child_output = await ctx.run_node(
-          self.child_node, node_input=node_input
-      )
-    yield Event(output=f"{self.name}_output")
-
-
 # --- Live Workflow Unit Tests (TDD) ---
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        "when scheduler preserves originating node_input on resume."
-    ),
-)
 @pytest.mark.asyncio
 async def test_hybrid_live_non_live_nodes():
   """CUJ 1: A workflow has hybrid live & non-live nodes."""
@@ -213,7 +187,9 @@ async def test_hybrid_live_non_live_nodes():
       "NonLiveNode_output",
       {"result": "LiveNode2_output"},
   ]
-  assert non_live_node.actual_input == {"result": "LiveNode1_output"}
+  assert non_live_node.shared_state.get("actual_input") == {
+      "result": "LiveNode1_output"
+  }
 
   # 2. Assert intermediate content events (conversational turns)
   content_texts = [
@@ -241,13 +217,6 @@ async def test_hybrid_live_non_live_nodes():
   ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        "when scheduler preserves originating node_input on resume."
-    ),
-)
 @pytest.mark.asyncio
 async def test_nested_workflow_has_live_node():
   """CUJ 2: A nested workflow has a live node."""
@@ -325,13 +294,6 @@ async def test_nested_workflow_has_live_node():
   ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        "when scheduler preserves originating node_input on resume."
-    ),
-)
 @pytest.mark.asyncio
 async def test_nested_live_node_and_outer_live_node():
   """CUJ 3: A nested workflow has live node & outer workflow then has a live node."""
@@ -468,6 +430,30 @@ async def test_nested_live_node_and_outer_live_node():
 @pytest.mark.asyncio
 async def test_dynamic_node_scheduling_of_live_node():
   """CUJ 4: A node in workflow dynamically schedules a live node using ctx.run_node()."""
+
+  class _DynamicLiveSchedulerNode(BaseNode):
+    """A node that dynamically schedules a child live node using ctx.run_node()."""
+
+    child_node: BaseNode | None = None
+    child_output: Any = None
+    shared_state: dict[str, Any] = Field(default_factory=dict)
+
+    def __init__(self, *, name: str, child_node: BaseNode):
+      super().__init__(name=name, rerun_on_resume=True)
+      self.child_node = child_node
+
+    async def _run_impl(
+        self,
+        *,
+        ctx: Context,
+        node_input: Any,
+    ) -> AsyncGenerator[Any, None]:
+      if self.child_node:
+        output = await ctx.run_node(self.child_node, node_input=node_input)
+        self.child_output = output
+        self.shared_state["child_output"] = output
+      yield Event(output=f"{self.name}_output")
+
   mock_model = testing_utils.MockModel.create(
       responses=[
           LlmResponse(
@@ -531,7 +517,9 @@ async def test_dynamic_node_scheduling_of_live_node():
       {"result": "DynamicLiveNode_output"},
       "SchedulerNode_output",
   ]
-  assert scheduler_node.child_output == {"result": "DynamicLiveNode_output"}
+  assert scheduler_node.shared_state.get("child_output") == {
+      "result": "DynamicLiveNode_output"
+  }
 
   # Assert content events
   content_texts = [
@@ -551,13 +539,6 @@ async def test_dynamic_node_scheduling_of_live_node():
   ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        "when scheduler preserves originating node_input on resume."
-    ),
-)
 @pytest.mark.asyncio
 async def test_live_node_output_passed_to_downstream():
   """CUJ 5: Dedicated test verifying output of a live node is passed to the next node."""
@@ -610,7 +591,7 @@ async def test_live_node_output_passed_to_downstream():
 
   outputs = [e.output for e in events if e.output is not None]
   assert outputs == [{"result": "LiveNode_output"}, "NonLiveNode_output"]
-  assert non_live_node.actual_input == {
+  assert non_live_node.shared_state.get("actual_input") == {
       "result": "LiveNode_output"
   }, "The downstream node must receive the live node's exact output"
   assert [b.data for b in mock_model.live_blobs] == [b"start_msg", b"end_msg"]
@@ -663,7 +644,7 @@ async def test_single_turn_agent_runs_as_non_live_in_live_session():
 
   outputs = [e.output for e in events if e.output is not None]
   assert outputs == ["initial_text_input", "capture_output"]
-  assert capture.actual_input == "SingleTurn_output"
+  assert capture.shared_state.get("actual_input") == "SingleTurn_output"
   # Verify that the model received the initial_text_input (node_input) and NOT the live queue audio
   assert len(mock_model.requests) == 1
   assert (

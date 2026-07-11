@@ -48,3 +48,7 @@ Use `isinstance()` for runtime type discrimination when handling polymorphic inp
 - Always include an `else` branch that raises `TypeError` or handles the unknown case.
 - Prefer `isinstance(x, SomeType)` over `type(x) is SomeType` — it handles subclasses correctly.
 - For checking multiple types: `isinstance(x, (TypeA, TypeB))`.
+
+## No Asserts in Production Code
+
+**Never use `assert` statements in production code.** They can be optimized away when Python runs with `-O` flags and provide poor error messages. Use specific exceptions like `ValueError`, `TypeError`, or `RuntimeError` instead.

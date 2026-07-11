@@ -12,29 +12,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Step 3 (optional): Cherry-picks a commit from main to the release/candidate branch.
-# Use between step 1 and step 4 to include bug fixes in an in-progress release.
+# Step 3 (optional): Cherry-picks a commit from a base branch (main or v1) into the active release candidate branch.
+# Use this between step 1 and step 4 to include hotfixes in an in-progress release.
 # Note: Does NOT auto-trigger release-please to preserve manual changelog edits.
 name: "Release: Cherry-pick"
 
 on:
   workflow_dispatch:
     inputs:
+      branch:
+        description: 'Branch line of the release candidate (main or v1)'
+        required: true
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - v1
       commit_sha:
         description: 'Commit SHA to cherry-pick'
         required: true
-        type: string
-
-permissions:
-  contents: write
 
 jobs:
   cherry-pick:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     steps:
+      - name: Determine Branch Configurations
+        id: config
+        run: |
+          BRANCH="${{ inputs.branch }}"
+          if [ "$BRANCH" = "v1" ]; then
+            echo "candidate_branch=release/v1-candidate" >> $GITHUB_OUTPUT
+          else
+            echo "candidate_branch=release/candidate" >> $GITHUB_OUTPUT
+          fi
+
       - uses: actions/checkout@v6
         with:
-          ref: release/candidate
+          ref: ${{ steps.config.outputs.candidate_branch }}
           fetch-depth: 0
 
       - name: Configure git
@@ -44,14 +59,16 @@ jobs:
 
       - name: Cherry-pick commit
         run: |
-          echo "Cherry-picking ${INPUTS_COMMIT_SHA} to release/candidate"
+          CANDIDATE_BRANCH="${{ steps.config.outputs.candidate_branch }}"
+          echo "Cherry-picking ${INPUTS_COMMIT_SHA} to $CANDIDATE_BRANCH"
           git cherry-pick ${INPUTS_COMMIT_SHA}
         env:
           INPUTS_COMMIT_SHA: ${{ inputs.commit_sha }}
 
       - name: Push changes
         run: |
-          git push origin release/candidate
-          echo "Successfully cherry-picked commit to release/candidate"
-          echo "Note: Release Please is NOT auto-triggered to preserve manual changelog edits."
-          echo "Run release-please.yml manually if you want to regenerate the changelog."
+          CANDIDATE_BRANCH="${{ steps.config.outputs.candidate_branch }}"
+          git push origin "$CANDIDATE_BRANCH"
+          echo "Successfully cherry-picked commit to $CANDIDATE_BRANCH"
+          echo "If you want to regenerate the changelog PR, run the 'Release: Cut' workflow manually"
+          echo "with action='regenerate' and branch='${{ inputs.branch }}'."

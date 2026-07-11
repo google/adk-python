@@ -33,6 +33,7 @@ from .memory_entry import MemoryEntry
 
 if TYPE_CHECKING:
   import vertexai
+  from vertexai import types as vertex_types
 
   from ..events.event import Event
   from ..sessions.session import Session
@@ -107,22 +108,21 @@ _MAX_DIRECT_MEMORIES_PER_GENERATE_CALL = 5
 def _supports_generate_memories_metadata() -> bool:
   """Returns whether installed Vertex SDK supports config.metadata."""
   try:
-    from vertexai._genai.types import common as vertex_common_types
+    from vertexai import types as vertex_types
   except ImportError:
     return False
   return (
-      'metadata'
-      in vertex_common_types.GenerateAgentEngineMemoriesConfig.model_fields
+      'metadata' in vertex_types.GenerateAgentEngineMemoriesConfig.model_fields
   )
 
 
 def _supports_create_memory_metadata() -> bool:
   """Returns whether installed Vertex SDK supports create config.metadata."""
   try:
-    from vertexai._genai.types import common as vertex_common_types
+    from vertexai import types as vertex_types
   except ImportError:
     return False
-  return 'metadata' in vertex_common_types.AgentEngineMemoryConfig.model_fields
+  return 'metadata' in vertex_types.AgentEngineMemoryConfig.model_fields
 
 
 @lru_cache(maxsize=1)
@@ -133,14 +133,12 @@ def _get_generate_memories_config_keys() -> frozenset[str]:
   allowlist to preserve compatibility when introspection is unavailable.
   """
   try:
-    from vertexai._genai.types import common as vertex_common_types
+    from vertexai import types as vertex_types
   except ImportError:
     return _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
 
   try:
-    model_fields = (
-        vertex_common_types.GenerateAgentEngineMemoriesConfig.model_fields
-    )
+    model_fields = vertex_types.GenerateAgentEngineMemoriesConfig.model_fields
   except AttributeError:
     return _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
 
@@ -157,12 +155,12 @@ def _get_create_memory_config_keys() -> frozenset[str]:
   allowlist to preserve compatibility when introspection is unavailable.
   """
   try:
-    from vertexai._genai.types import common as vertex_common_types
+    from vertexai import types as vertex_types
   except ImportError:
     return _CREATE_MEMORY_CONFIG_FALLBACK_KEYS
 
   try:
-    model_fields = vertex_common_types.AgentEngineMemoryConfig.model_fields
+    model_fields = vertex_types.AgentEngineMemoryConfig.model_fields
   except AttributeError:
     return _CREATE_MEMORY_CONFIG_FALLBACK_KEYS
 
@@ -573,6 +571,39 @@ class VertexAiMemoryBankService(BaseMemoryService):
           len(memory_events),
       )
     return SearchMemoryResponse(memories=memory_events)
+
+  async def retrieve_profiles(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+  ) -> list[vertex_types.MemoryProfile]:
+    """Retrieves structured user profiles for the scope, one per schema.
+
+    Profiles are a Vertex Memory Bank capability distinct from memory search:
+    a scope-keyed lookup, not a semantic query.
+
+    Args:
+      app_name: The application name for the profile scope.
+      user_id: The user ID for the profile scope.
+
+    Returns:
+      The structured profiles for the scope, one per registered schema.
+    """
+    api_client = self._get_api_client()
+    response = await api_client.agent_engines.memories.retrieve_profiles(
+        name='reasoningEngines/' + self._agent_engine_id,
+        scope={
+            'app_name': app_name,
+            'user_id': user_id,
+        },
+    )
+    profiles = list((response.profiles or {}).values())
+    if profiles:
+      logger.info('Retrieved %d memory profiles.', len(profiles))
+    else:
+      logger.info('Retrieved no memory profiles.')
+    return profiles
 
   def _get_api_client(self) -> vertexai.AsyncClient:
     """Instantiates an API client for the given project and location.

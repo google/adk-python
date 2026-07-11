@@ -57,7 +57,7 @@ dependencies = [
   "websockets>=15.0.1,<16",
 ]
 optional-dependencies.a2a = [
-  "a2a-sdk>=0.3.4,<0.4",
+  "a2a-sdk>=0.3.4,<2",
 ]
 optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
@@ -65,12 +65,13 @@ optional-dependencies.agent-identity = [
 ]
 optional-dependencies.all = [
   "anyio>=4.9,<5",
+  "daytona>=0.191",
   "e2b>=2,<3",
   "google-api-python-client>=2.157,<3",
   "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",
+  "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
   "google-cloud-parametermanager>=0.4,<1",
@@ -95,8 +96,14 @@ optional-dependencies.antigravity = [
   "google-antigravity>=0.1,<0.2",
   "protobuf>=6",
 ]
+optional-dependencies.benchmark = [
+  "google-benchmark>=1.9",
+]
 optional-dependencies.community = [
   "google-adk-community",
+]
+optional-dependencies.daytona = [
+  "daytona>=0.191", # For DaytonaEnvironment remote sandbox.
 ]
 optional-dependencies.db = [
   "sqlalchemy>=2,<3",
@@ -150,10 +157,11 @@ optional-dependencies.extensions = [
   "k8s-agent-sandbox>=0.1.1.post3",
   "kubernetes>=29",
   "langgraph>=0.2.60,<0.4.8",
-  "litellm>=1.83.7,<=1.83.14",
+  "litellm>=1.84",
   "llama-index-embeddings-google-genai>=0.3",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
+  "openai>=2.20,<3",
   "pypika>=0.50",
   "toolbox-adk>=1,<2",
 ]
@@ -161,7 +169,7 @@ optional-dependencies.gcp = [
   "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",
+  "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
   "google-cloud-parametermanager>=0.4,<1",
@@ -190,11 +198,13 @@ optional-dependencies.otel-gcp = [
 ]
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
-  "a2a-sdk>=0.3,<0.4",
+  "a2a-sdk>=0.3.4,<2",
   "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "anyio>=4.9,<5",
   "beautifulsoup4>=3.2.2",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
+  "daytona>=0.191",
+  "docker>=7",                                                       # For ContainerCodeExecutor tests
   "e2b>=2,<3",
   "gepa>=0.1",
   "google-antigravity>=0.1,<0.2",
@@ -203,7 +213,7 @@ optional-dependencies.test = [
   "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",
+  "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
   "google-cloud-firestore>=2.11,<3",
@@ -219,11 +229,11 @@ optional-dependencies.test = [
   "kubernetes>=29",
   "langchain-community>=0.3.17",
   "langgraph>=0.2.60,<0.4.8",
-  "litellm>=1.83.7,<=1.83.14",
+  "litellm>=1.84",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
   "mcp>=1.24,<2",
-  "openai>=1.100.2",
+  "openai>=2.20,<3",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
@@ -274,8 +284,6 @@ extend-exclude = [
   "src/google/adk/integrations/bigquery/data_insights_tool.py",
   "src/google/adk/plugins/bigquery_agent_analytics_plugin.py",
   "src/google/adk/tools/data_agent/data_agent_tool.py",
-  "src/google/adk/v1/",
-  "v1_tests/",
 ]
 lint.select = [ "F401" ]
 # __init__.py files re-export symbols for the public API; unused imports
@@ -289,12 +297,18 @@ single_line_exclusions = []
 known_third_party = [ "a2a", "google.adk" ]
 
 [tool.mypy]
+mypy_path = [ "src" ]
 exclude = [ "contributing/samples/", "tests/" ]
-follow_imports = "skip"
+namespace_packages = true
+explicit_package_bases = true
+follow_imports = "normal"
 python_version = "3.11"
 disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
 strict = true
 plugins = [ "pydantic.mypy" ]
+overrides = [ { module = [
+  "google.auth.*",
+], ignore_missing_imports = true, follow_imports = "skip" } ]
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]

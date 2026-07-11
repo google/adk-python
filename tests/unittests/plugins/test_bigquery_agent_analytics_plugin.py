@@ -1451,7 +1451,161 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert attributes["llm_config"]["temperature"] == 0.5
     assert attributes["llm_config"]["top_p"] == 0.9
     assert attributes["llm_config"]["top_p"] == 0.9
-    assert attributes["tools"] == ["tool1", "tool2"]
+    # Tools without a name/description/declaration fall back to just the key.
+    assert attributes["tools"] == [{"name": "tool1"}, {"name": "tool2"}]
+
+  @pytest.mark.asyncio
+  async def test_before_model_callback_logs_tool_declarations(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """LLM_REQUEST tools carry name, description, and parameter schema."""
+
+    class _FakeTool(base_tool_lib.BaseTool):
+
+      def __init__(self, name, description, declaration):
+        super().__init__(name=name, description=description)
+        self._declaration = declaration
+
+      def _get_declaration(self):
+        return self._declaration
+
+    execute_sql = _FakeTool(
+        name="execute_sql",
+        description="Run a SQL query against BigQuery.",
+        declaration=types.FunctionDeclaration(
+            name="execute_sql",
+            description="Run a SQL query against BigQuery.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="The SQL query to run.",
+                    )
+                },
+                required=["query"],
+            ),
+        ),
+    )
+    # A tool without a declaration still contributes name + description.
+    list_datasets = _FakeTool(
+        name="list_dataset_ids",
+        description="List available datasets.",
+        declaration=None,
+    )
+
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+    )
+    llm_request.tools_dict = {
+        "execute_sql": execute_sql,
+        "list_dataset_ids": list_datasets,
+    }
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_REQUEST")
+    attributes = json.loads(log_entry["attributes"])
+    tools_by_name = {t["name"]: t for t in attributes["tools"]}
+
+    assert tools_by_name["execute_sql"]["description"] == (
+        "Run a SQL query against BigQuery."
+    )
+    params = tools_by_name["execute_sql"]["parameters"]
+    assert params["type"] == "OBJECT"
+    assert params["properties"]["query"]["type"] == "STRING"
+    assert params["required"] == ["query"]
+
+    assert tools_by_name["list_dataset_ids"]["description"] == (
+        "List available datasets."
+    )
+    assert "parameters" not in tools_by_name["list_dataset_ids"]
+
+  def test_extract_tool_declarations_declaration_error_is_isolated(self):
+    """A tool whose _get_declaration raises still yields name + description."""
+
+    class _RaisingTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        raise ValueError("boom")
+
+    class _OkTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        return None
+
+    result = bigquery_agent_analytics_plugin._extract_tool_declarations({
+        "raiser": _RaisingTool(name="raiser", description="Raises."),
+        "ok": _OkTool(name="ok", description="Fine."),
+    })
+    by_name = {t["name"]: t for t in result}
+
+    # The raising tool is not dropped; other tools are unaffected.
+    assert by_name["raiser"] == {"name": "raiser", "description": "Raises."}
+    assert by_name["ok"] == {"name": "ok", "description": "Fine."}
+
+  def test_extract_tool_declarations_parameters_serialization_error(self):
+    """A parameters object that fails to serialize is dropped, not fatal."""
+
+    class _BadParams:
+
+      def model_dump(self, *args, **kwargs):
+        raise ValueError("cannot serialize")
+
+    class _BadDecl:
+      description = None
+      parameters = _BadParams()
+
+    class _BadParamTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        return _BadDecl()
+
+    result = bigquery_agent_analytics_plugin._extract_tool_declarations(
+        {"bad_params": _BadParamTool(name="bad_params", description="Bad.")}
+    )
+
+    # Name + description survive; the unserializable parameters key is omitted.
+    assert result == [{"name": "bad_params", "description": "Bad."}]
+
+  def test_extract_tool_declarations_uses_parameters_json_schema(self):
+    """Declarations exposing parameters_json_schema log that raw schema."""
+
+    json_schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    }
+
+    class _JsonSchemaTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        return types.FunctionDeclaration(
+            name="read_file",
+            description="Read a file.",
+            parameters_json_schema=json_schema,
+        )
+
+    result = bigquery_agent_analytics_plugin._extract_tool_declarations(
+        {"read_file": _JsonSchemaTool(name="read_file", description="Read.")}
+    )
+
+    # parameters_json_schema is logged verbatim (preferred over `parameters`).
+    assert result == [{
+        "name": "read_file",
+        "description": "Read.",
+        "parameters": json_schema,
+    }]
 
   @pytest.mark.asyncio
   async def test_before_model_callback_with_full_config(
@@ -1940,6 +2094,189 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert content_dict["args"] == {"param": "value"}
     assert log_entry["error_message"] == "Tool timed out"
     assert log_entry["status"] == "ERROR"
+
+  @pytest.mark.asyncio
+  async def test_on_agent_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """on_agent_error_callback emits AGENT_ERROR with traceback."""
+    error = RuntimeError("Agent crashed")
+    try:
+      raise error
+    except RuntimeError:
+      pass  # populate __traceback__
+    pushed_span_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "agent"
+    )
+    await bq_plugin_inst.on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=callback_context,
+        error=error,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+    assert log_entry["error_message"] == "Agent crashed"
+    assert log_entry["status"] == "ERROR"
+    # The agent span BQAA pushed is popped and attributed to the error row.
+    assert log_entry["span_id"] == pushed_span_id
+    content = json.loads(log_entry["content"])
+    assert "error_traceback" in content
+    assert "RuntimeError: Agent crashed" in content["error_traceback"]
+
+  @pytest.mark.asyncio
+  async def test_on_agent_error_does_not_pop_foreign_invocation_span(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """on_agent_error must not pop a span BQAA did not push for this agent.
+
+    Simulates another plugin's before_agent_callback raising before BQAA's
+    own before_agent_callback ran: the stack holds only the invocation root.
+    The guarded pop must leave the invocation span in place so the
+    subsequent INVOCATION_ERROR keeps correct span/latency data.
+    """
+    trace_manager = bigquery_agent_analytics_plugin.TraceManager
+    inv_span_id = trace_manager.push_span(callback_context, "invocation")
+
+    error = RuntimeError("other plugin's before_agent failed")
+    try:
+      raise error
+    except RuntimeError:
+      pass
+
+    await bq_plugin_inst.on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=callback_context,
+        error=error,
+    )
+    await asyncio.sleep(0.05)
+
+    # The invocation root was NOT consumed by the agent-error pop.
+    assert trace_manager.get_current_span_id() == inv_span_id
+    # The AGENT_ERROR row is still emitted.
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+    assert log_entry["error_message"] == "other plugin's before_agent failed"
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """on_run_error_callback emits INVOCATION_ERROR with traceback."""
+    error = ValueError("Invocation failed")
+    try:
+      raise error
+    except ValueError:
+      pass
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        invocation_context, "invocation"
+    )
+    await bq_plugin_inst.on_run_error_callback(
+        invocation_context=invocation_context,
+        error=error,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "INVOCATION_ERROR")
+    assert log_entry["error_message"] == "Invocation failed"
+    assert log_entry["status"] == "ERROR"
+    content = json.loads(log_entry["content"])
+    assert "error_traceback" in content
+    assert "ValueError: Invocation failed" in content["error_traceback"]
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_callback_cleanup_runs_on_log_failure(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """on_run_error_callback cleans up even when _log_event raises."""
+    # Push spans and set context vars to simulate active invocation
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    bigquery_agent_analytics_plugin._active_invocation_id_ctx.set("test-inv")
+    bigquery_agent_analytics_plugin._root_agent_name_ctx.set("test-agent")
+
+    # Make _log_event raise
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", side_effect=RuntimeError("boom")
+    ):
+      # @_safe_callback swallows the exception
+      await bq_plugin_inst.on_run_error_callback(
+          invocation_context=invocation_context,
+          error=ValueError("app error"),
+      )
+
+    # finally block must have cleaned up
+    assert (
+        bigquery_agent_analytics_plugin._active_invocation_id_ctx.get(None)
+        is None
+    )
+    assert (
+        bigquery_agent_analytics_plugin._root_agent_name_ctx.get(None) is None
+    )
+
+  @pytest.mark.asyncio
+  async def test_traceback_not_truncated_with_negative_max_len(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      invocation_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """Traceback is not truncated when max_content_length is -1."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=-1,
+        create_views=False,
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      await plugin._ensure_started()
+
+      error = RuntimeError("x" * 2000)
+      try:
+        raise error
+      except RuntimeError:
+        pass
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin.on_agent_error_callback(
+          agent=mock_agent,
+          callback_context=bigquery_agent_analytics_plugin.CallbackContext(
+              invocation_context
+          ),
+          error=error,
+      )
+      await asyncio.sleep(0.05)
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+      content = json.loads(log_entry["content"])
+      # Should NOT be truncated
+      assert "[truncated]" not in content["error_traceback"]
+      assert "x" * 2000 in content["error_traceback"]
 
   @pytest.mark.asyncio
   async def test_table_creation_options(
@@ -5301,7 +5638,7 @@ class TestHITLTracing:
 
 
 class TestSpanHierarchyIsolation:
-  """Regression tests for https://github.com/google/adk-python/issues/4561.
+  """Regression tests for span hierarchy isolation.
 
   ``push_span()`` must NOT attach its span to the ambient OTel context.
   If it does, any subsequent ``tracer.start_as_current_span()`` in the
@@ -5978,6 +6315,47 @@ class TestAnalyticsViews:
       view_name = "v_" + event_type.lower()
       assert view_name in all_sql, f"View {view_name} not found in SQL"
 
+  def test_error_views_contain_traceback_column(self):
+    """AGENT_ERROR and INVOCATION_ERROR views include error_traceback."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    all_sqls = {c[0][0] for c in calls}
+
+    agent_error_sqls = [s for s in all_sqls if "v_agent_error" in s]
+    assert len(agent_error_sqls) == 1
+    assert "error_traceback" in agent_error_sqls[0]
+    assert "total_ms" in agent_error_sqls[0]
+
+    inv_error_sqls = [s for s in all_sqls if "v_invocation_error" in s]
+    assert len(inv_error_sqls) == 1
+    assert "error_traceback" in inv_error_sqls[0]
+
+  def test_llm_response_view_exposes_token_usage_columns(self):
+    """LLM_RESPONSE view surfaces cached/thinking/tool-use token columns.
+
+    These are read from the full ``usage_metadata`` proto that is already
+    logged to ``attributes.usage_metadata``, so they are sourced from
+    ``attributes`` rather than the ``content.usage`` summary.
+    """
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    plugin.client.query.return_value = mock.MagicMock()
+
+    plugin._ensure_schema_exists()
+
+    all_sql = " ".join(c[0][0] for c in plugin.client.query.call_args_list)
+    assert "usage_cached_tokens" in all_sql
+    assert "usage_thinking_tokens" in all_sql
+    assert "usage_tool_use_tokens" in all_sql
+    assert "$.usage_metadata.thoughts_token_count" in all_sql
+    assert "$.usage_metadata.tool_use_prompt_token_count" in all_sql
+
   def test_config_create_views_default_true(self):
     """Config create_views defaults to True."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
@@ -6118,8 +6496,6 @@ class TestAnalyticsViews:
 # ==============================================================================
 class TestTraceIdContinuity:
   """Tests for trace_id continuity across all events in an invocation.
-
-  Regression tests for https://github.com/google/adk-python/issues/4645.
 
   When there is no ambient OTel span (e.g. Agent Engine, custom runners),
   early events (USER_MESSAGE_RECEIVED, INVOCATION_STARTING) used to fall
@@ -8815,3 +9191,510 @@ class TestUnmatchedLongRunningIdFallback:
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1
+
+
+# ==============================================================================
+# Observability controls (otel correlation, custom_metadata allowlist,
+# column projection)
+# ==============================================================================
+
+
+class _FakeMetaEvent:
+  """Minimal stand-in for an Event carrying custom_metadata."""
+
+  def __init__(self, custom_metadata=None):
+    self.custom_metadata = custom_metadata
+
+
+def _make_offline_plugin(config):
+  """Constructs a plugin without starting the BQ/network path."""
+  return bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+      PROJECT_ID, DATASET_ID, config=config
+  )
+
+
+# --- custom_metadata allowlist ---
+
+
+def test_parse_custom_metadata_allowlist_exact_and_prefix():
+  exact, prefixes = (
+      bigquery_agent_analytics_plugin._parse_custom_metadata_allowlist(
+          ["citation_metadata", "a2a:*", "tool:*"]
+      )
+  )
+  assert exact == frozenset({"citation_metadata"})
+  assert prefixes == ("a2a:", "tool:")
+
+
+def test_parse_custom_metadata_allowlist_none():
+  exact, prefixes = (
+      bigquery_agent_analytics_plugin._parse_custom_metadata_allowlist(None)
+  )
+  assert exact == frozenset()
+  assert prefixes == ()
+
+
+def test_custom_metadata_allowed_exact_and_prefix():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["citation_metadata", "trace:*"]
+      )
+  )
+  assert plugin._custom_metadata_allowed("citation_metadata")
+  assert plugin._custom_metadata_allowed("trace:foo")
+  # a plain key is never treated as a prefix
+  assert not plugin._custom_metadata_allowed("citation")
+  assert not plugin._custom_metadata_allowed("other")
+  assert not plugin._custom_metadata_allowed(123)
+
+
+def test_capture_custom_metadata_namespace_and_allowlist():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["citation_metadata"]
+      )
+  )
+  event_data = bigquery_agent_analytics_plugin.EventData(
+      source_event=_FakeMetaEvent(
+          {"citation_metadata": {"c1": "sql1"}, "other": "drop"}
+      )
+  )
+  attrs: dict = {}
+  truncated = plugin._capture_custom_metadata(event_data, attrs)
+  assert truncated is False
+  assert attrs["custom_metadata"] == {"citation_metadata": {"c1": "sql1"}}
+  assert "other" not in attrs["custom_metadata"]
+
+
+def test_capture_custom_metadata_redaction_does_not_set_flag():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["secrets"]
+      )
+  )
+  event_data = bigquery_agent_analytics_plugin.EventData(
+      source_event=_FakeMetaEvent({"secrets": {"api_key": "abc", "ok": "v"}})
+  )
+  attrs: dict = {}
+  truncated = plugin._capture_custom_metadata(event_data, attrs)
+  # redaction returns [REDACTED] without flipping is_truncated
+  assert truncated is False
+  assert attrs["custom_metadata"]["secrets"]["api_key"] == "[REDACTED]"
+  assert attrs["custom_metadata"]["secrets"]["ok"] == "v"
+
+
+def test_capture_custom_metadata_truncation_sets_flag():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["big"], max_content_length=5
+      )
+  )
+  event_data = bigquery_agent_analytics_plugin.EventData(
+      source_event=_FakeMetaEvent({"big": "x" * 100})
+  )
+  attrs: dict = {}
+  truncated = plugin._capture_custom_metadata(event_data, attrs)
+  assert truncated is True
+  assert attrs["custom_metadata"]["big"].endswith("...[TRUNCATED]")
+
+
+def test_capture_custom_metadata_non_allowlisted_absent():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["citation_metadata"]
+      )
+  )
+  event_data = bigquery_agent_analytics_plugin.EventData(
+      source_event=_FakeMetaEvent({"unrelated": "v"})
+  )
+  attrs: dict = {}
+  assert plugin._capture_custom_metadata(event_data, attrs) is False
+  assert attrs == {}
+
+
+def test_capture_custom_metadata_no_source_event():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["x"]
+      )
+  )
+  attrs: dict = {}
+  assert (
+      plugin._capture_custom_metadata(
+          bigquery_agent_analytics_plugin.EventData(), attrs
+      )
+      is False
+  )
+  assert attrs == {}
+
+
+def test_default_config_has_no_custom_metadata_capture():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  assert plugin._custom_metadata_exact == frozenset()
+  assert plugin._custom_metadata_prefixes == ()
+
+
+# --- payload column projection ---
+
+
+def test_validate_payload_column_denylist_accepts_payload_columns():
+  denied = bigquery_agent_analytics_plugin._validate_payload_column_denylist(
+      ["content", "attributes"]
+  )
+  assert denied == frozenset({"content", "attributes"})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["span_id", "trace_id", "timestamp", "event_type", "is_truncated", "nope"],
+)
+def test_validate_payload_column_denylist_rejects_protected_or_unknown(bad):
+  with pytest.raises(ValueError):
+    bigquery_agent_analytics_plugin._validate_payload_column_denylist([bad])
+
+
+def test_plugin_construction_rejects_protected_denylist():
+  with pytest.raises(ValueError):
+    _make_offline_plugin(
+        bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            payload_column_denylist=["span_id"]
+        )
+    )
+
+
+def test_project_schema_removes_denied_keeps_protected():
+  full = bigquery_agent_analytics_plugin._get_events_schema()
+  full_names = {f.name for f in full}
+  projected = bigquery_agent_analytics_plugin._project_schema(
+      full, frozenset({"content", "attributes"})
+  )
+  names = {f.name for f in projected}
+  assert "content" not in names and "attributes" not in names
+  for col in (
+      "timestamp",
+      "event_type",
+      "span_id",
+      "parent_span_id",
+      "is_truncated",
+      "latency_ms",
+  ):
+    assert col in names
+  assert names == full_names - {"content", "attributes"}
+
+
+def test_project_schema_to_arrow_consistency():
+  # schema-first: the Arrow schema derived from the projected BQ schema
+  # omits the denied column too.
+  projected = bigquery_agent_analytics_plugin._project_schema(
+      bigquery_agent_analytics_plugin._get_events_schema(),
+      frozenset({"content"}),
+  )
+  arrow = bigquery_agent_analytics_plugin.to_arrow_schema(projected)
+  assert "content" not in arrow.names
+  assert "span_id" in arrow.names
+
+
+def test_project_view_columns_drops_denied_refs():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          payload_column_denylist=["attributes"]
+      )
+  )
+  exprs = [
+      "JSON_VALUE(attributes, '$.model') AS model",
+      "content AS request_content",
+      "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+  ]
+  kept = plugin._project_view_columns(exprs)
+  assert "JSON_VALUE(attributes, '$.model') AS model" not in kept
+  assert "content AS request_content" in kept
+  assert any("latency_ms" in e for e in kept)
+
+
+def test_project_view_columns_drops_content_and_latency_refs():
+  # view degradation is not attributes-only: content and latency_ms too.
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          payload_column_denylist=["content", "latency_ms"]
+      )
+  )
+  exprs = [
+      "JSON_QUERY(content, '$.response') AS response",
+      "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+      "JSON_VALUE(attributes, '$.model') AS model",
+  ]
+  kept = plugin._project_view_columns(exprs)
+  assert kept == ["JSON_VALUE(attributes, '$.model') AS model"]
+
+
+def test_project_view_columns_noop_without_denylist():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  exprs = ["JSON_VALUE(attributes, '$.model') AS model"]
+  assert plugin._project_view_columns(exprs) == exprs
+
+
+# --- otel correlation ---
+
+
+def test_enrich_attributes_captures_valid_ambient_otel_span(callback_context):
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          enable_otel_correlation=True
+      )
+  )
+  ctx = trace.SpanContext(
+      trace_id=0x1234567890ABCDEF1234567890ABCDEF,
+      span_id=0xFEEDFACECAFEBEEF,
+      is_remote=False,
+      trace_flags=trace.TraceFlags(trace.TraceFlags.SAMPLED),
+  )
+  fake_span = mock.Mock()
+  fake_span.get_span_context.return_value = ctx
+  with (
+      mock.patch.object(plugin, "_build_adk_envelope", return_value={}),
+      mock.patch.object(
+          bigquery_agent_analytics_plugin.trace,
+          "get_current_span",
+          return_value=fake_span,
+      ),
+  ):
+    attrs = plugin._enrich_attributes(
+        bigquery_agent_analytics_plugin.EventData(), callback_context
+    )
+  assert attrs["otel"]["span_id"] == format(0xFEEDFACECAFEBEEF, "016x")
+  assert attrs["otel"]["trace_id"] == format(
+      0x1234567890ABCDEF1234567890ABCDEF, "032x"
+  )
+
+
+def test_enrich_attributes_no_otel_when_correlation_disabled(callback_context):
+  # enable_otel_correlation defaults to False: even with a valid ambient span,
+  # no attributes.otel is emitted (the feature is opt-in / off by default).
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  ctx = trace.SpanContext(
+      trace_id=0x1234567890ABCDEF1234567890ABCDEF,
+      span_id=0xFEEDFACECAFEBEEF,
+      is_remote=False,
+      trace_flags=trace.TraceFlags(trace.TraceFlags.SAMPLED),
+  )
+  fake_span = mock.Mock()
+  fake_span.get_span_context.return_value = ctx
+  with (
+      mock.patch.object(plugin, "_build_adk_envelope", return_value={}),
+      mock.patch.object(
+          bigquery_agent_analytics_plugin.trace,
+          "get_current_span",
+          return_value=fake_span,
+      ),
+  ):
+    attrs = plugin._enrich_attributes(
+        bigquery_agent_analytics_plugin.EventData(), callback_context
+    )
+  assert "otel" not in attrs
+
+
+def test_enrich_attributes_no_otel_when_span_invalid(callback_context):
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          enable_otel_correlation=True
+      )
+  )
+  fake_span = mock.Mock()
+  fake_span.get_span_context.return_value = trace.INVALID_SPAN_CONTEXT
+  with (
+      mock.patch.object(plugin, "_build_adk_envelope", return_value={}),
+      mock.patch.object(
+          bigquery_agent_analytics_plugin.trace,
+          "get_current_span",
+          return_value=fake_span,
+      ),
+  ):
+    attrs = plugin._enrich_attributes(
+        bigquery_agent_analytics_plugin.EventData(), callback_context
+    )
+  assert "otel" not in attrs
+
+
+class _FakeTable:
+  """Minimal stand-in for a bigquery.Table for schema-upgrade tests."""
+
+  def __init__(self, schema, labels):
+    self.schema = schema
+    self.labels = labels
+
+
+def test_schema_upgrade_adds_columns_when_denylist_relaxed():
+  # Table was created under a restrictive projection (missing content +
+  # attributes) but its version label is current. Relaxing the denylist must
+  # still add the now-desired columns instead of early-returning on the label.
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  full = bigquery_agent_analytics_plugin._get_events_schema()
+  plugin._schema = full  # desired = full schema (denylist relaxed)
+  plugin.full_table_id = "p.d.t"
+  plugin.client = mock.Mock()
+  projected = [f for f in full if f.name not in ("content", "attributes")]
+  existing = _FakeTable(
+      schema=list(projected),
+      labels={
+          bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+              bigquery_agent_analytics_plugin._SCHEMA_VERSION
+          )
+      },
+  )
+  plugin._maybe_upgrade_schema(existing)
+  plugin.client.update_table.assert_called_once()
+  names = {f.name for f in existing.schema}
+  assert "content" in names and "attributes" in names
+
+
+def test_schema_upgrade_noop_when_current_and_complete():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  full = bigquery_agent_analytics_plugin._get_events_schema()
+  plugin._schema = full
+  plugin.full_table_id = "p.d.t"
+  plugin.client = mock.Mock()
+  existing = _FakeTable(
+      schema=list(full),
+      labels={
+          bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+              bigquery_agent_analytics_plugin._SCHEMA_VERSION
+          )
+      },
+  )
+  plugin._maybe_upgrade_schema(existing)
+  plugin.client.update_table.assert_not_called()
+
+
+def test_attributes_denylist_with_custom_metadata_rejected():
+  with pytest.raises(ValueError):
+    _make_offline_plugin(
+        bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            payload_column_denylist=["attributes"],
+            custom_metadata_allowlist=["citation_metadata"],
+        )
+    )
+
+
+def test_attributes_denylist_without_custom_metadata_ok():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          payload_column_denylist=["attributes"]
+      )
+  )
+  assert "attributes" in plugin._denied_columns
+
+
+def test_enrich_attributes_skips_otel_when_attributes_denied(callback_context):
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          enable_otel_correlation=True,
+          payload_column_denylist=["attributes"],
+      )
+  )
+  ctx = trace.SpanContext(
+      trace_id=0x1234567890ABCDEF1234567890ABCDEF,
+      span_id=0xFEEDFACECAFEBEEF,
+      is_remote=False,
+      trace_flags=trace.TraceFlags(trace.TraceFlags.SAMPLED),
+  )
+  fake_span = mock.Mock()
+  fake_span.get_span_context.return_value = ctx
+  with (
+      mock.patch.object(plugin, "_build_adk_envelope", return_value={}),
+      mock.patch.object(
+          bigquery_agent_analytics_plugin.trace,
+          "get_current_span",
+          return_value=fake_span,
+      ),
+  ):
+    attrs = plugin._enrich_attributes(
+        bigquery_agent_analytics_plugin.EventData(), callback_context
+    )
+  assert "otel" not in attrs
+
+
+@pytest.mark.asyncio
+async def test_content_parts_denied_disables_gcs_offload(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  # denying content_parts (which holds the offload object reference)
+  # must disable GCS offload, otherwise the payload is uploaded with no
+  # retained reference (leak + cost).
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content_parts"],
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is None
+    mock_blob = (
+        mock_storage_client.return_value.bucket.return_value.blob.return_value
+    )
+    large_text = "A" * (32 * 1024 + 1)
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text=large_text)])],
+    )
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await plugin.flush()
+    mock_blob.upload_from_string.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_both_payload_columns_denied_skips_parse_and_offload(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  # with both content and content_parts denied, parsing is skipped
+  # entirely -- no inline summary, no parts, and no GCS upload work.
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content", "content_parts"],
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is None
+    mock_blob = (
+        mock_storage_client.return_value.bucket.return_value.blob.return_value
+    )
+    large_text = "A" * (32 * 1024 + 1)
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text=large_text)])],
+    )
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await plugin.flush()
+    mock_blob.upload_from_string.assert_not_called()

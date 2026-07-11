@@ -141,6 +141,7 @@ class SqliteSessionService(BaseSessionService):
     self._db_path, self._db_connect_path, self._db_connect_uri = _parse_db_path(
         db_path
     )
+    self._schema_ready = False
 
     if self._is_migration_needed():
       raise RuntimeError(
@@ -473,7 +474,9 @@ class SqliteSessionService(BaseSessionService):
     ) as db:
       db.row_factory = aiosqlite.Row
       await db.execute(PRAGMA_FOREIGN_KEYS)
-      await db.executescript(CREATE_SCHEMA_SQL)
+      if not self._schema_ready:
+        await db.executescript(CREATE_SCHEMA_SQL)
+        self._schema_ready = True
       yield db
 
   async def _get_state(

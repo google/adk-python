@@ -17,8 +17,12 @@
 from google.adk.utils._schema_utils import get_list_inner_type
 from google.adk.utils._schema_utils import is_basemodel_schema
 from google.adk.utils._schema_utils import is_list_of_basemodel
+from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
+from google.genai import types
 from pydantic import BaseModel
+from pydantic import ValidationError
+import pytest
 
 
 class SampleModel(BaseModel):
@@ -144,3 +148,63 @@ class TestValidateSchema:
     json_text = '{"key1": 1, "key2": 2}'
     result = validate_schema(dict[str, int], json_text)
     assert result == {'key1': 1, 'key2': 2}
+
+
+class TestValidateNodeData:
+  """Tests for validate_node_data function."""
+
+  def test_none_schema_or_data_returns_data(self):
+    """Bypasses validation if schema or data is None."""
+    assert validate_node_data(None, 'some_data') == 'some_data'
+    assert validate_node_data(SampleModel, None) is None
+
+  def test_dict_or_types_schema_returns_data(self):
+    """Bypasses validation if schema is dict or types.Schema."""
+    assert validate_node_data({'key': int}, 'some_data') == 'some_data'
+    # Mock types.Schema
+    schema = types.Schema(type=types.Type.STRING)
+    assert validate_node_data(schema, 'some_data') == 'some_data'
+
+  def test_content_schema_returns_data(self):
+    """Bypasses validation if target schema is types.Content or subclass."""
+    result = validate_node_data(
+        types.Content, types.Content(role='user', parts=[])
+    )
+    assert result == {'role': 'user', 'parts': []}
+
+  def test_plain_basemodel_schema_validates_raw_dict(self):
+    """Validates raw dict data against BaseModel schema."""
+    result = validate_node_data(SampleModel, {'name': 'test', 'value': 42})
+    assert result == {'name': 'test', 'value': 42}
+
+  def test_content_data_and_preserve_content(self):
+    """Validates wrapped content and wraps result back into Content."""
+    data = types.Content(
+        role='user',
+        parts=[types.Part(text='{"name": "test", "value": 42}')],
+    )
+    result = validate_node_data(SampleModel, data, preserve_content=True)
+    assert isinstance(result, types.Content)
+    assert result.role == 'user'
+    assert len(result.parts) == 1
+    assert result.parts[0].text == '{"name": "test", "value": 42}'
+
+  def test_content_data_no_preserve_content(self):
+    """Validates wrapped content and returns unwrapped dictionary."""
+    data = types.Content(
+        role='user',
+        parts=[types.Part(text='{"name": "test", "value": 42}')],
+    )
+    result = validate_node_data(SampleModel, data, preserve_content=False)
+    assert isinstance(result, dict)
+    assert result == {'name': 'test', 'value': 42}
+
+  def test_raw_json_string_validated_against_basemodel_schema(self):
+    """Raw JSON string fails validation against BaseModel schema (not auto-parsed)."""
+    with pytest.raises(ValidationError):
+      validate_node_data(SampleModel, '{"name": "test", "value": 42}')
+
+  def test_raw_string_not_parsed_with_str_schema(self):
+    """Bypasses JSON parsing if schema is str."""
+    result = validate_node_data(str, 'hello')
+    assert result == 'hello'

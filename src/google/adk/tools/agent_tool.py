@@ -27,6 +27,7 @@ from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from ..agents.common_configs import AgentRefConfig
+from ..events._branch_path import _BranchPath
 from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..memory.in_memory_memory_service import InMemoryMemoryService
@@ -110,6 +111,13 @@ class AgentTool(BaseTool):
   This tool allows an agent to be called as a tool within a larger application.
   The agent's input schema is used to define the tool's input parameters, and
   the agent's output is returned as the tool's result.
+
+  Note:
+    To expose an agent as an inline tool of a parent ``LlmAgent``, prefer
+    setting ``mode='single_turn'`` on the sub-agent and attaching it via
+    ``sub_agents=[...]`` instead of wrapping it with ``AgentTool``. The
+    framework then exposes the sub-agent as a tool automatically and runs it
+    inline in the parent's session. See the single-turn mode guide for details.
 
   Attributes:
     agent: The agent to wrap.
@@ -361,9 +369,19 @@ class _SingleTurnAgentTool(AgentTool):
     else:
       node_input = args.get('request')
 
+    # Align subagent branch scoping with node execution (Node as Tool) using function_call_id.
+    fc_id = tool_context.function_call_id
+    base_branch = tool_context.get_invocation_context().branch
+    tool_branch = _BranchPath.create_sub_branch(
+        base_branch, name=self.agent.name, run_id=fc_id
+    )
+
     try:
       return await tool_context.run_node(
-          self.agent, node_input=node_input, use_sub_branch=True
+          self.agent,
+          node_input=node_input,
+          override_branch=tool_branch,
+          use_sub_branch=False,
       )
     except Exception as e:
       return f'Error running sub-agent: {e}'

@@ -197,5 +197,36 @@ async def test_send_to_model_with_text_content(mock_llm_connection):
   await flow._send_to_model(mock_llm_connection, invocation_context)
 
   # Verify send_content was called instead of send_realtime
-  mock_llm_connection.send_content.assert_called_once_with(content)
+  mock_llm_connection._send_content.assert_called_once_with(
+      content, partial=False
+  )
   mock_llm_connection.send_realtime.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_with_intermediate_text_content(
+    mock_llm_connection,
+):
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.session_service.append_event = mock.AsyncMock()
+
+  flow = TestBaseLlmFlow()
+
+  content = types.Content(
+      role='user', parts=[types.Part.from_text(text='progress')]
+  )
+  invocation_context.live_request_queue.send(
+      LiveRequest(content=content, partial=True)
+  )
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(mock_llm_connection, invocation_context)
+
+  mock_llm_connection._send_content.assert_called_once_with(
+      content, partial=True
+  )
+  invocation_context.session_service.append_event.assert_not_called()

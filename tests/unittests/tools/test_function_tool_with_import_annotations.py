@@ -159,6 +159,26 @@ def test_string_annotation_mixed_parameters_vertex():
   assert declaration.response.type == types.Type.STRING
 
 
+def test_pipe_union_list_annotation_parameter_vertex():
+  """Test function with pipe union list parameter annotation."""
+
+  def test_function(file_patterns: list[str] | None = None) -> None:
+    """A test function that accepts optional file patterns."""
+    pass
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == 'OBJECT'
+  file_patterns_schema = declaration.parameters.properties['file_patterns']
+  assert file_patterns_schema.type == types.Type.ARRAY
+  assert file_patterns_schema.items.type == types.Type.STRING
+  assert file_patterns_schema.nullable
+  assert declaration.parameters.required == []
+
+
 def test_string_annotation_no_params_vertex():
   """Test function with no parameters but string annotation return."""
 

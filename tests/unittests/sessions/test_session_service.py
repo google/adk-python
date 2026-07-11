@@ -281,29 +281,29 @@ async def test_get_empty_session(session_service):
 
 @pytest.mark.asyncio
 async def test_database_session_service_get_session_uses_read_only_factory():
-  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  service.prepare_tables = mock.AsyncMock()
+  async with DatabaseSessionService('sqlite+aiosqlite:///:memory:') as service:
+    service.prepare_tables = mock.AsyncMock()
 
-  read_only_session = mock.AsyncMock()
-  read_only_session.get = mock.AsyncMock(return_value=None)
+    read_only_session = mock.AsyncMock()
+    read_only_session.get = mock.AsyncMock(return_value=None)
 
-  @asynccontextmanager
-  async def fake_read_only_session():
-    yield read_only_session
+    @asynccontextmanager
+    async def fake_read_only_session():
+      yield read_only_session
 
-  service.database_session_factory = mock.Mock(
-      side_effect=AssertionError('write session factory should not be used')
-  )
-  service._read_only_database_session_factory = mock.Mock(
-      return_value=fake_read_only_session()
-  )
+    service.database_session_factory = mock.Mock(
+        side_effect=AssertionError('write session factory should not be used')
+    )
+    service._read_only_database_session_factory = mock.Mock(
+        return_value=fake_read_only_session()
+    )
 
-  session = await service.get_session(
-      app_name='my_app', user_id='test_user', session_id='123'
-  )
+    session = await service.get_session(
+        app_name='my_app', user_id='test_user', session_id='123'
+    )
 
-  assert session is None
-  service._read_only_database_session_factory.assert_called_once_with()
+    assert session is None
+    service._read_only_database_session_factory.assert_called_once_with()
   service.database_session_factory.assert_not_called()
 
   await service.close()
@@ -1468,8 +1468,7 @@ async def test_service_recovers_after_multiple_failures():
 @pytest.mark.asyncio
 async def test_concurrent_prepare_tables_no_race_condition():
   """Verifies that concurrent calls to prepare_tables wait for table creation.
-  Reproduces the race condition from
-  https://github.com/google/adk-python/issues/4445: when concurrent requests
+  Reproduces the race condition where concurrent requests
   arrive at startup, prepare_tables must not return before tables exist.
   Previously, the early-return guard checked _db_schema_version (set during
   schema detection) instead of _tables_created, so a second request could
@@ -1602,7 +1601,7 @@ async def test_get_or_create_state_creates_new_row():
 async def test_get_or_create_state_handles_race_condition():
   """_get_or_create_state recovers when a concurrent INSERT wins the race.
 
-  Simulates the race from https://github.com/google/adk-python/issues/4954:
+  Simulates the race:
   the initial SELECT returns None (another caller hasn't committed yet), but
   by the time we INSERT, the other caller has committed — so the INSERT fails
   with IntegrityError and we fall back to re-fetching.

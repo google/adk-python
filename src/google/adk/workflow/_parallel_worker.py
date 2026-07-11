@@ -36,13 +36,13 @@ class _ParallelWorker(BaseNode):
   """A node that runs a wrapped node in parallel for each item in the input list.
 
   Attributes:
-    max_concurrency: The maximum number of parallel tasks to run. If None, there
-      is no limit on concurrency.
+    max_parallel_workers: The maximum number of parallel tasks to run. If None,
+      there is no limit on concurrency.
   """
 
   model_config = ConfigDict(arbitrary_types_allowed=True)
 
-  max_concurrency: int | None = Field(default=None)
+  max_parallel_workers: int | None = Field(default=None)
 
   _node: BaseNode = PrivateAttr()
 
@@ -50,7 +50,7 @@ class _ParallelWorker(BaseNode):
       self,
       *,
       node: NodeLike,
-      max_concurrency: int | None = None,
+      max_parallel_workers: int | None = None,
       retry_config: RetryConfig | None = None,
       timeout: float | None = None,
   ):
@@ -63,8 +63,12 @@ class _ParallelWorker(BaseNode):
         retry_config=retry_config,
         timeout=timeout,
     )
+    if max_parallel_workers is not None and max_parallel_workers < 1:
+      raise ValueError(
+          'max_parallel_workers must be greater than or equal to 1.'
+      )
     self._node = built_node
-    self.max_concurrency = max_concurrency
+    self.max_parallel_workers = max_parallel_workers
 
   @override
   async def _run_impl(
@@ -89,8 +93,8 @@ class _ParallelWorker(BaseNode):
     while input_index < len(node_input) or pending_tasks:
       # Check for any inputs waiting to be processed.
       while input_index < len(node_input) and (
-          self.max_concurrency is None
-          or len(pending_tasks) < self.max_concurrency
+          self.max_parallel_workers is None
+          or len(pending_tasks) < self.max_parallel_workers
       ):
         item = node_input[input_index]
         task = asyncio.create_task(

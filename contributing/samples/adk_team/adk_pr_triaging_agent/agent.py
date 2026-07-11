@@ -22,6 +22,7 @@ from adk_pr_triaging_agent.settings import REPO
 from adk_pr_triaging_agent.utils import error_response
 from adk_pr_triaging_agent.utils import get_diff
 from adk_pr_triaging_agent.utils import get_request
+from adk_pr_triaging_agent.utils import is_assignable
 from adk_pr_triaging_agent.utils import post_request
 from adk_pr_triaging_agent.utils import read_file
 from adk_pr_triaging_agent.utils import run_graphql_query
@@ -41,17 +42,34 @@ ALLOWED_LABELS = [
     "web",
 ]
 
+# Component label -> GitHub login of the owner who shepherds that component.
+# The owner becomes the PR's assignee so the contributor can see who is
+# handling their PR. github login != corp ldap, so this is the login form. Keep
+# in sync with the OWNERS file (the authority) and adk_triaging_agent's map.
+LABEL_TO_OWNER = {
+    "documentation": "joefernandez",
+    "services": "DeanChensj",
+    "tools": "xuanyang15",
+    "mcp": "wukath",
+    "eval": "ankursharmas",
+    "live": "wuliang229",
+    "models": "xuanyang15",
+    "tracing": "jawoszek",
+    "core": "DeanChensj",
+    "web": "wyf7107",
+}
+
 CONTRIBUTING_MD = read_file(
     Path(__file__).resolve().parents[4] / "CONTRIBUTING.md"
 )
 
 APPROVAL_INSTRUCTION = (
-    "Do not ask for user approval for labeling or commenting! If you can't find"
-    " appropriate labels for the PR, do not label it."
+    "Do not ask for user approval for labeling, commenting, or assigning!"
+    " If you can't find appropriate labels for the PR, do not label it."
 )
 if IS_INTERACTIVE:
   APPROVAL_INSTRUCTION = (
-      "Only label or comment when the user approves the labeling or commenting!"
+      "Only label, comment, or assign when the user approves the action!"
   )
 
 
@@ -80,6 +98,11 @@ def get_pull_request_details(pr_number: int) -> str:
           labels(last: 10) {
             nodes {
               name
+            }
+          }
+          assignees(first: 10) {
+            nodes {
+              login
             }
           }
           files(last: 50) {
@@ -194,6 +217,48 @@ def add_label_to_pr(pr_number: int, label: str) -> dict[str, Any]:
   }
 
 
+def assign_owner_to_pr(pr_number: int, label: str) -> dict[str, Any]:
+  """Assign the component owner (the shepherd) to a PR based on its label.
+
+  The owner is looked up from `LABEL_TO_OWNER` so the contributor can see who is
+  shepherding their PR. GitHub only allows assigning users with
+  repo write/triage access, so a non-assignable owner is reported as skipped
+  rather than silently dropped.
+
+  Args:
+    pr_number: the number of the GitHub pull request
+    label: the component label the PR was triaged into
+
+  Returns:
+    The status of this request, with the assigned owner when successful.
+  """
+  owner = LABEL_TO_OWNER.get(label)
+  if not owner:
+    return error_response(f"Error: no owner mapped for label '{label}'.")
+  print(f"Attempting to assign owner '{owner}' to PR #{pr_number}")
+  if not is_assignable(owner):
+    return {
+        "status": "skipped",
+        "reason": f"'{owner}' is not assignable (needs repo access)",
+        "owner": owner,
+    }
+
+  # Pull Request is a special issue in GitHub, so we can use the issue url.
+  assignee_url = (
+      f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{pr_number}/assignees"
+  )
+  try:
+    response = post_request(assignee_url, {"assignees": [owner]})
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Error: {e}")
+
+  return {
+      "status": "success",
+      "assigned_owner": owner,
+      "response": response,
+  }
+
+
 def add_comment_to_pr(pr_number: int, comment: str) -> dict[str, Any]:
   """Add the specified comment to the given PR number.
 
@@ -282,6 +347,7 @@ root_agent = Agent(
       Your core responsibility includes:
       - Get the pull request details.
       - Add a label to the pull request.
+      - Assign the component owner (the shepherd) to the pull request.
       - Check if the pull request is following the contribution guidelines.
       - Add a comment to the pull request if it's not following the guidelines.
 
@@ -337,17 +403,23 @@ root_agent = Agent(
         - Check if the PR is following the contribution guidelines.
           - If it's not following the guidelines, recommend or add a comment to the PR that points to the contribution guidelines (https://github.com/google/adk-python/blob/main/CONTRIBUTING.md).
           - If it's following the guidelines, recommend or add a label to the PR.
+        - After you add a component label, assign the component owner (the shepherd) to the PR:
+          - Call `assign_owner_to_pr` with the same label you applied.
+          - Skip assignment if the PR already has an assignee.
+          - If the tool reports the owner is not assignable, just note it; do not comment about it.
 
       # 5. Output
       Present the following in an easy to read format highlighting PR number and your label.
       - The PR summary in a few sentence
       - The label you recommended or added with the justification
+      - The owner you assigned (or why you did not)
       - The comment you recommended or added to the PR with the justification
     """,
     tools=[
         list_untriaged_pull_requests,
         get_pull_request_details,
         add_label_to_pr,
+        assign_owner_to_pr,
         add_comment_to_pr,
     ],
 )

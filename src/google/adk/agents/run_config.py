@@ -196,6 +196,9 @@ class RunConfig(BaseModel):
   speech_config: Optional[types.SpeechConfig] = None
   """Speech configuration for the live agent."""
 
+  http_options: Optional[types.HttpOptions] = None
+  """HTTP options for the agent execution (e.g. custom headers)."""
+
   response_modalities: Optional[list[types.Modality]] = None
   """The output modalities. If not set, it's default to AUDIO."""
 
@@ -238,6 +241,9 @@ class RunConfig(BaseModel):
 
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
   """Realtime input config for live agents with audio input from user."""
+
+  explicit_vad_signal: Optional[bool] = None
+  """Whether to enable explicit voice activity detection (VAD) signals from the model."""
 
   translation_config: Optional[types.TranslationConfig] = None
   """Configures real-time speech-to-speech translation.
@@ -366,6 +372,22 @@ class RunConfig(BaseModel):
       run_config = RunConfig(
           get_session_config=GetSessionConfig(num_recent_events=50),
       )
+  """
+
+  model_input_context: list[types.Content] | None = None
+  """Transient context to include in the model input for this invocation.
+
+  The Runner does not persist these contents to the session. They are only
+  added to the LLM request assembled for the current invocation, which lets
+  callers provide per-turn context without changing the conversation history.
+  """
+
+  include_thoughts_from_other_agents: bool = False
+  """Whether to include other agents' thought parts in LLM context.
+
+  By default, thoughts from other agents are excluded when their messages are
+  reformatted as user context for the current agent. Enable this only when
+  agents are expected to share internal reasoning with one another.
   """
 
   @model_validator(mode='before')

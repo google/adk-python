@@ -26,6 +26,7 @@ from pathlib import Path
 import sys
 import tempfile
 import textwrap
+from typing import Optional
 
 import click
 from click.core import ParameterSource
@@ -1007,7 +1008,6 @@ def cli_eval(
     from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
     from ..evaluation.eval_config import get_eval_metrics_from_config
     from ..evaluation.eval_config import get_evaluation_criteria_or_default
-    from ..evaluation.eval_result import EvalCaseResult
     from ..evaluation.evaluator import EvalStatus
     from ..evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
     from ..evaluation.local_eval_service import LocalEvalService
@@ -1160,8 +1160,6 @@ def cli_eval(
   eval_run_summary = {}
 
   for eval_result in eval_results:
-    eval_result: EvalCaseResult
-
     if eval_result.eval_set_id not in eval_run_summary:
       eval_run_summary[eval_result.eval_set_id] = [0, 0]
 
@@ -1178,7 +1176,6 @@ def cli_eval(
 
   if print_detailed_results:
     for eval_result in eval_results:
-      eval_result: EvalCaseResult
       click.echo(
           "********************************************************************"
       )
@@ -1806,8 +1803,8 @@ def cli_web(
   """Starts a FastAPI server with Web UI for agents.
 
   AGENTS_DIR: The directory of agents (where each subdirectory is a single
-  agent containing `agent.py` or `root_agent.yaml` files) or a path pointing
-  directly to a single agent folder.
+  agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
+  pointing directly to a single agent folder.
 
   Example:
 
@@ -1947,8 +1944,8 @@ def cli_api_server(
   """Starts a FastAPI server for agents.
 
   AGENTS_DIR: The directory of agents (where each subdirectory is a single
-  agent containing `agent.py` or `root_agent.yaml` files) or a path pointing
-  directly to a single agent folder.
+  agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
+  pointing directly to a single agent folder.
 
   Example:
 

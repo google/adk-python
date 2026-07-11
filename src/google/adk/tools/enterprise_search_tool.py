@@ -41,7 +41,7 @@ class EnterpriseWebSearchTool(BaseTool):
 
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     """Initializes the Enterprise Web Search tool."""
     # Name and description are not used because this is a model built-in tool.
     super().__init__(
