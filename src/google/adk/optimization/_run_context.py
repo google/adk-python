@@ -213,6 +213,10 @@ class OptimizationRunSnapshot(BaseModel):
 
   terminal_error_code: Optional[str] = None
   terminal_error_type: Optional[str] = None
+  terminal_from_provider_call: bool = False
+  """True when a ``failed`` terminal came from a governed provider call;
+  False for local/optimizer failures recorded via ``finalize_failed`` or
+  ``abort_model_call``."""
 
 
 class OptimizationRunContextError(Exception):
@@ -768,6 +772,7 @@ class OptimizationRunContext:
         terminal_sequence=self._terminal_sequence,
         terminal_error_code=self._terminal_error_code,
         terminal_error_type=self._terminal_error_type,
+        terminal_from_provider_call=self._terminal_from_provider_call,
     )
 
 
