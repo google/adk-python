@@ -151,6 +151,7 @@ class SimplePromptOptimizer(
           run_context.end_model_call(
               handle,
               usage_metadata=last_usage,
+              returned_model_version=model_version,
               error_code=str(error_code),
               error_type=type(llm_response).__name__,
           )
@@ -166,7 +167,10 @@ class SimplePromptOptimizer(
       if run_context is not None:
         if handle is not None:
           run_context.end_model_call(
-              handle, usage_metadata=last_usage, cancelled=True
+              handle,
+              usage_metadata=last_usage,
+              returned_model_version=model_version,
+              cancelled=True,
           )
         run_context.finalize_cancelled("task_cancelled")
       raise

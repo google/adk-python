@@ -177,15 +177,19 @@ def _create_agent_gepa_adapter_class():
           raise _GovernedRunAbort(str(e)) from e
 
       # Run the evaluation in the main loop
-      future = asyncio.run_coroutine_threadsafe(
-          self._sampler.sample_and_score(
-              new_agent,
-              example_set=example_set,
-              batch=batch,
-              capture_full_eval_data=capture_traces,
-          ),
-          self._main_loop,
+      sample_coroutine = self._sampler.sample_and_score(
+          new_agent,
+          example_set=example_set,
+          batch=batch,
+          capture_full_eval_data=capture_traces,
       )
+      try:
+        future = asyncio.run_coroutine_threadsafe(
+            sample_coroutine, self._main_loop
+        )
+      except Exception:
+        sample_coroutine.close()
+        raise
       result: UnstructuredSamplingResult = future.result()
 
       if self._run_context is not None:
@@ -323,19 +327,31 @@ class GEPARootAgentPromptOptimizer(
       llm = self._llm_class(model=self._config.optimizer_model)
 
       def reflection_lm(prompt: str) -> str:
-        # Build and validate the request BEFORE reserving the model-call slot: a
-        # construction failure is a failed proposal (GEPA-native no-proposal
-        # path) with a clean ledger -- no admitted call is left open.
-        llm_request = LlmRequest(
-            model=self._config.optimizer_model,
-            config=self._config.model_configuration,
-            contents=[
-                genai_types.Content(
-                    parts=[genai_types.Part(text=prompt)],
-                    role="user",
-                )
-            ],
-        )
+        # Build and validate the request BEFORE reserving the model-call
+        # slot: the call ledger stays correctly empty (no provider call
+        # began). On the governed path a construction failure is still an
+        # optimizer-internal failure, NOT a successful optimization:
+        # finalize FAILED and abort so GEPA cannot convert it to a silent
+        # no-proposal success. Legacy no-context behavior is preserved.
+        try:
+          llm_request = LlmRequest(
+              model=self._config.optimizer_model,
+              config=self._config.model_configuration,
+              contents=[
+                  genai_types.Content(
+                      parts=[genai_types.Part(text=prompt)],
+                      role="user",
+                  )
+              ],
+          )
+        except Exception as e:
+          if run_context is not None:
+            run_context.finalize_failed(
+                error_code="REQUEST_CONSTRUCTION_FAILURE",
+                error_type=type(e).__name__,
+            )
+            raise _GovernedRunAbort(str(e)) from e
+          raise
 
         capture = _ReflectionCapture()
 
@@ -381,9 +397,12 @@ class GEPARootAgentPromptOptimizer(
         except OptimizationRunContextError as e:
           raise _GovernedRunAbort(str(e)) from e
 
+        generate_coroutine = _generate()
         try:
-          future = asyncio.run_coroutine_threadsafe(_generate(), loop)
+          future = asyncio.run_coroutine_threadsafe(generate_coroutine, loop)
         except Exception as e:
+          # Close the never-awaited coroutine before settling the abort.
+          generate_coroutine.close()
           # Local scheduling failure: settle as an aborted call -> run FAILED
           # (OptimizationFailedError), truthfully distinct from a provider
           # failure and from cancellation.
@@ -404,6 +423,7 @@ class GEPARootAgentPromptOptimizer(
             run_context.end_model_call(
                 handle,
                 usage_metadata=capture.usage,
+                returned_model_version=capture.model_version,
                 error_code=str(
                     getattr(e, "error_code", None) or "PROVIDER_EXCEPTION"
                 ),
@@ -420,6 +440,7 @@ class GEPARootAgentPromptOptimizer(
             run_context.end_model_call(
                 handle,
                 usage_metadata=capture.usage,
+                returned_model_version=capture.model_version,
                 error_code=capture.error_code,
                 error_type="LlmResponseError",
             )

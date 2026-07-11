@@ -647,10 +647,12 @@ class TestRoundThreeEnforcementFindings:
   """Regression tests for the round-3 adversarial findings."""
 
   @pytest.mark.asyncio
-  async def test_reflection_request_failure_leaves_clean_ledger(self, mocker):
-    # Request construction happens BEFORE slot admission: a failure is a
-    # GEPA-native no-proposal with a clean ledger, never an open call, and
-    # finalize_success (second line of defense) can commit truthfully.
+  async def test_reflection_request_failure_is_failed_not_success(self, mocker):
+    # Request construction happens BEFORE slot admission, so the call ledger
+    # stays empty -- but a malformed request is an optimizer-internal
+    # failure, never a successful governed optimization (round-4).
+    from google.adk.optimization import OptimizationFailedError
+
     counter = {"count": 0}
     _gepa_stub(mocker, counter)
     mocker.patch(
@@ -659,13 +661,13 @@ class TestRoundThreeEnforcementFindings:
     )
     optimizer = _gepa_optimizer(_mock_llm())
     ctx = OptimizationRunContext()
-    result = await optimizer.optimize(
-        _agent(), _mock_sampler(), run_context=ctx
-    )
+    with pytest.raises(OptimizationFailedError):
+      await optimizer.optimize(_agent(), _mock_sampler(), run_context=ctx)
     snap = ctx.snapshot()
-    assert snap.started_calls == 0  # no admitted call was left open
-    assert snap.run_status == RunStatus.COMPLETED
-    assert result.optimized_agents
+    assert snap.started_calls == 0  # clean ledger: no provider call began
+    assert snap.run_status == RunStatus.FAILED
+    assert snap.terminal_error_code == "REQUEST_CONSTRUCTION_FAILURE"
+    assert not snap.terminal_from_provider_call
 
   @pytest.mark.asyncio
   async def test_reflection_scheduling_failure_becomes_failed_not_success(
@@ -772,20 +774,94 @@ class TestRealGepaRoundThree:
     assert ctx.snapshot().run_status == RunStatus.CANCELLED
 
   @pytest.mark.asyncio
-  async def test_real_gepa_reflection_request_failure_completes_cleanly(
-      self, mocker
-  ):
+  async def test_real_gepa_reflection_request_failure_is_failed(self, mocker):
     pytest.importorskip("gepa")
+    from google.adk.optimization import OptimizationFailedError
+
     mocker.patch(
         "google.adk.optimization.gepa_root_agent_prompt_optimizer.LlmRequest",
         side_effect=RuntimeError("bad request config"),
     )
     optimizer = _gepa_optimizer(_mock_llm())
     ctx = OptimizationRunContext()
-    result = await optimizer.optimize(
-        _agent(), _mock_sampler(), run_context=ctx
-    )
+    with pytest.raises(OptimizationFailedError):
+      await optimizer.optimize(_agent(), _mock_sampler(), run_context=ctx)
     snap = ctx.snapshot()
     assert snap.started_calls == 0
-    assert snap.run_status == RunStatus.COMPLETED
-    assert result.optimized_agents
+    assert snap.run_status == RunStatus.FAILED
+    assert snap.terminal_error_code == "REQUEST_CONSTRUCTION_FAILURE"
+
+
+class TestRoundFourEnforcementFindings:
+
+  @pytest.mark.asyncio
+  @pytest.mark.filterwarnings("error::RuntimeWarning")
+  async def test_scheduling_failure_closes_coroutine(self, mocker):
+    # Promotes 'coroutine was never awaited' to an error: the abort path
+    # must close the never-scheduled coroutine.
+    from google.adk.optimization import OptimizationFailedError
+
+    counter = {"count": 0}
+    _gepa_stub(mocker, counter)
+    optimizer = _gepa_optimizer(_mock_llm())
+    mocker.patch(
+        "google.adk.optimization.gepa_root_agent_prompt_optimizer.asyncio"
+        ".run_coroutine_threadsafe",
+        side_effect=RuntimeError("loop closed"),
+    )
+    ctx = OptimizationRunContext()
+    with pytest.raises(OptimizationFailedError):
+      await optimizer.optimize(_agent(), _mock_sampler(), run_context=ctx)
+    assert ctx.snapshot().run_status == RunStatus.FAILED
+
+  @pytest.mark.asyncio
+  async def test_gepa_in_band_terminal_keeps_model_version(self):
+    pytest.importorskip("gepa")
+    usage = SimpleNamespace(total_token_count=7)
+    mock_llm = mock.MagicMock()
+
+    async def stream(*args, **kwargs):
+      yield SimpleNamespace(
+          content=genai_types.Content(parts=[], role="model"),
+          usage_metadata=usage,
+          model_version="provider-model-v9",
+          error_code="RESOURCE_EXHAUSTED",
+      )
+
+    mock_llm.generate_content_async.side_effect = stream
+    optimizer = _gepa_optimizer(mock.MagicMock(return_value=mock_llm))
+    ctx = OptimizationRunContext()
+    with pytest.raises(OptimizationProviderError):
+      await optimizer.optimize(_agent(), _mock_sampler(), run_context=ctx)
+    event = ctx.snapshot().events[0]
+    # Terminal attempt evidence is as strong as success evidence.
+    assert event.total_tokens == 7
+    assert event.error_code == "RESOURCE_EXHAUSTED"
+    assert event.returned_model_version == "provider-model-v9"
+
+  @pytest.mark.asyncio
+  async def test_simple_cancel_terminal_keeps_model_version(self, mock_sampler):
+    from google.adk.optimization import ModelCallState
+
+    ctx = OptimizationRunContext()
+    mock_llm = mock.MagicMock()
+
+    async def gen(*args, **kwargs):
+      yield SimpleNamespace(
+          content=genai_types.Content(
+              parts=[genai_types.Part(text="p")], role="model"
+          ),
+          usage_metadata=SimpleNamespace(total_token_count=7),
+          model_version="provider-model-v9",
+          error_code=None,
+      )
+      raise asyncio.CancelledError()
+
+    mock_llm.generate_content_async.side_effect = gen
+    optimizer = _optimizer(mock.MagicMock(return_value=mock_llm), iterations=1)
+    with pytest.raises(asyncio.CancelledError):
+      await optimizer.optimize(_agent(), mock_sampler, run_context=ctx)
+    event = ctx.snapshot().events[0]
+    assert event.state == ModelCallState.CANCELLED
+    assert event.total_tokens == 7
+    assert event.returned_model_version == "provider-model-v9"

@@ -27,7 +27,6 @@ from google.adk.optimization.gepa_root_agent_optimizer import _create_agent_gepa
 from google.adk.optimization.gepa_root_agent_optimizer import _update_skill_toolset
 from google.adk.optimization.gepa_root_agent_optimizer import GEPARootAgentOptimizer
 from google.adk.optimization.gepa_root_agent_optimizer import GEPARootAgentOptimizerConfig
-from google.adk.optimization.sampler import Sampler
 from google.adk.skills import models
 from google.adk.tools.skill_toolset import SkillToolset
 import pytest
