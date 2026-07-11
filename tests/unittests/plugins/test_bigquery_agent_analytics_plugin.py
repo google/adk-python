@@ -2096,6 +2096,189 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert log_entry["status"] == "ERROR"
 
   @pytest.mark.asyncio
+  async def test_on_agent_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """on_agent_error_callback emits AGENT_ERROR with traceback."""
+    error = RuntimeError("Agent crashed")
+    try:
+      raise error
+    except RuntimeError:
+      pass  # populate __traceback__
+    pushed_span_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "agent"
+    )
+    await bq_plugin_inst.on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=callback_context,
+        error=error,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+    assert log_entry["error_message"] == "Agent crashed"
+    assert log_entry["status"] == "ERROR"
+    # The agent span BQAA pushed is popped and attributed to the error row.
+    assert log_entry["span_id"] == pushed_span_id
+    content = json.loads(log_entry["content"])
+    assert "error_traceback" in content
+    assert "RuntimeError: Agent crashed" in content["error_traceback"]
+
+  @pytest.mark.asyncio
+  async def test_on_agent_error_does_not_pop_foreign_invocation_span(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """on_agent_error must not pop a span BQAA did not push for this agent.
+
+    Simulates another plugin's before_agent_callback raising before BQAA's
+    own before_agent_callback ran: the stack holds only the invocation root.
+    The guarded pop must leave the invocation span in place so the
+    subsequent INVOCATION_ERROR keeps correct span/latency data.
+    """
+    trace_manager = bigquery_agent_analytics_plugin.TraceManager
+    inv_span_id = trace_manager.push_span(callback_context, "invocation")
+
+    error = RuntimeError("other plugin's before_agent failed")
+    try:
+      raise error
+    except RuntimeError:
+      pass
+
+    await bq_plugin_inst.on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=callback_context,
+        error=error,
+    )
+    await asyncio.sleep(0.05)
+
+    # The invocation root was NOT consumed by the agent-error pop.
+    assert trace_manager.get_current_span_id() == inv_span_id
+    # The AGENT_ERROR row is still emitted.
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+    assert log_entry["error_message"] == "other plugin's before_agent failed"
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """on_run_error_callback emits INVOCATION_ERROR with traceback."""
+    error = ValueError("Invocation failed")
+    try:
+      raise error
+    except ValueError:
+      pass
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        invocation_context, "invocation"
+    )
+    await bq_plugin_inst.on_run_error_callback(
+        invocation_context=invocation_context,
+        error=error,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "INVOCATION_ERROR")
+    assert log_entry["error_message"] == "Invocation failed"
+    assert log_entry["status"] == "ERROR"
+    content = json.loads(log_entry["content"])
+    assert "error_traceback" in content
+    assert "ValueError: Invocation failed" in content["error_traceback"]
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_callback_cleanup_runs_on_log_failure(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """on_run_error_callback cleans up even when _log_event raises."""
+    # Push spans and set context vars to simulate active invocation
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    bigquery_agent_analytics_plugin._active_invocation_id_ctx.set("test-inv")
+    bigquery_agent_analytics_plugin._root_agent_name_ctx.set("test-agent")
+
+    # Make _log_event raise
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", side_effect=RuntimeError("boom")
+    ):
+      # @_safe_callback swallows the exception
+      await bq_plugin_inst.on_run_error_callback(
+          invocation_context=invocation_context,
+          error=ValueError("app error"),
+      )
+
+    # finally block must have cleaned up
+    assert (
+        bigquery_agent_analytics_plugin._active_invocation_id_ctx.get(None)
+        is None
+    )
+    assert (
+        bigquery_agent_analytics_plugin._root_agent_name_ctx.get(None) is None
+    )
+
+  @pytest.mark.asyncio
+  async def test_traceback_not_truncated_with_negative_max_len(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      invocation_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """Traceback is not truncated when max_content_length is -1."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=-1,
+        create_views=False,
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      await plugin._ensure_started()
+
+      error = RuntimeError("x" * 2000)
+      try:
+        raise error
+      except RuntimeError:
+        pass
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin.on_agent_error_callback(
+          agent=mock_agent,
+          callback_context=bigquery_agent_analytics_plugin.CallbackContext(
+              invocation_context
+          ),
+          error=error,
+      )
+      await asyncio.sleep(0.05)
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+      content = json.loads(log_entry["content"])
+      # Should NOT be truncated
+      assert "[truncated]" not in content["error_traceback"]
+      assert "x" * 2000 in content["error_traceback"]
+
+  @pytest.mark.asyncio
   async def test_table_creation_options(
       self,
       mock_auth_default,
@@ -6131,6 +6314,27 @@ class TestAnalyticsViews:
     for event_type in bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS:
       view_name = "v_" + event_type.lower()
       assert view_name in all_sql, f"View {view_name} not found in SQL"
+
+  def test_error_views_contain_traceback_column(self):
+    """AGENT_ERROR and INVOCATION_ERROR views include error_traceback."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    all_sqls = {c[0][0] for c in calls}
+
+    agent_error_sqls = [s for s in all_sqls if "v_agent_error" in s]
+    assert len(agent_error_sqls) == 1
+    assert "error_traceback" in agent_error_sqls[0]
+    assert "total_ms" in agent_error_sqls[0]
+
+    inv_error_sqls = [s for s in all_sqls if "v_invocation_error" in s]
+    assert len(inv_error_sqls) == 1
+    assert "error_traceback" in inv_error_sqls[0]
 
   def test_llm_response_view_exposes_token_usage_columns(self):
     """LLM_RESPONSE view surfaces cached/thinking/tool-use token columns.

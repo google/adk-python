@@ -564,3 +564,47 @@ class TestGoogleApiToolset:
 
     mock_openapi_toolset_instance.close.assert_called_once()
     mock_mtls_certs_instance.close.assert_called_once()
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.httpx.AsyncClient"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.MtlsClientCerts"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.use_client_cert_effective"
+  )
+  async def test_mtls_no_passphrase(
+      self,
+      mock_use_client_cert,
+      mock_mtls_certs_class,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      mock_async_client_class,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    """Test that mTLS is configured even if key passphrase is None."""
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    mock_use_client_cert.return_value = True
+    mock_mtls_certs_instance = mock.MagicMock()
+    mock_mtls_certs_instance.get_certs.return_value = ("cert", "key", None)
+    mock_mtls_certs_class.return_value = mock_mtls_certs_instance
+
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME, api_version=TEST_API_VERSION
+    )
+
+    assert tool_set._httpx_client_factory is not None
+
+    client = tool_set._httpx_client_factory()
+    assert client is not None
+    mock_async_client_class.assert_called_once_with(cert=("cert", "key"))

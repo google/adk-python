@@ -33,7 +33,10 @@ get_added_files() {
 while read -r file; do
     # Check if file is not empty (happens if no new files)
     if [[ -n "$file" ]]; then
-        if [[ "$file" == */google/adk/*.py ]] || [[ "$file" == google/adk/*.py ]]; then
+        # Match only files in the package source (src/google/adk/) to avoid false
+        # positives in environments (e.g., monorepos) where the entire repository
+        # root is nested under a 'google/adk/' directory structure.
+        if [[ "$file" == */src/google/adk/*.py ]] || [[ "$file" == src/google/adk/*.py ]]; then
             filename=$(basename "$file")
             if [[ ! "$filename" == _* ]]; then
                 echo "Error: New Python file '$file' must have a '_' prefix."

@@ -28,6 +28,7 @@ import json
 import logging
 import mimetypes
 import os
+import traceback as traceback_module
 
 # Enable gRPC fork support so child processes created via os.fork()
 # can safely create new gRPC channels.  Must be set before grpc's
@@ -40,10 +41,12 @@ import re
 import time
 from types import MappingProxyType
 from typing import Any
-from typing import Awaitable
 from typing import Callable
+from typing import Coroutine
 from typing import Optional
+from typing import ParamSpec
 from typing import TYPE_CHECKING
+from typing import TypeVar
 import uuid
 import weakref
 
@@ -155,17 +158,31 @@ if hasattr(os, "register_at_fork"):
   os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
-def _safe_callback(func):
+_SafeCallbackP = ParamSpec("_SafeCallbackP")
+_SafeCallbackT = TypeVar("_SafeCallbackT")
+
+
+def _safe_callback(
+    func: Callable[
+        _SafeCallbackP, Coroutine[Any, Any, Optional[_SafeCallbackT]]
+    ],
+) -> Callable[_SafeCallbackP, Coroutine[Any, Any, Optional[_SafeCallbackT]]]:
   """Decorator that catches and logs exceptions in plugin callbacks.
 
   Prevents plugin errors from propagating to the runner and crashing
   the agent run. All callback exceptions are logged and swallowed.
+
+  The signature (including keyword-only parameters and the ``Coroutine``
+  return type) is preserved via ``ParamSpec`` so decorated methods still
+  match the ``BasePlugin`` overrides they implement.
   """
 
   @functools.wraps(func)
-  async def wrapper(self, **kwargs):
+  async def wrapper(
+      *args: _SafeCallbackP.args, **kwargs: _SafeCallbackP.kwargs
+  ) -> Optional[_SafeCallbackT]:
     try:
-      return await func(self, **kwargs)
+      return await func(*args, **kwargs)
     except Exception:
       logger.exception(
           "BigQuery analytics plugin error in %s; skipping.",
@@ -838,6 +855,11 @@ class _SpanRecord:
   trace_id: str
   owns_span: bool
   start_time_ns: int
+  # What pushed this record ("invocation", "agent", "llm_request", "tool").
+  # Lets error callbacks pop only spans they own: e.g. if another plugin's
+  # before_agent_callback raised before BQAA pushed its agent span,
+  # on_agent_error_callback must not pop the invocation span instead.
+  kind: str = ""
   first_token_time: Optional[float] = None
 
 
@@ -912,10 +934,9 @@ class TraceManager:
            or non-OTel runtimes).
     * ``start_time_ns`` — for the eventual ``latency_ms`` on pop.
 
-    ``span_name`` is preserved on the signature for API stability but
-    is no longer used (no OTel span name is set).
+    ``span_name`` is recorded as the span ``kind`` so error callbacks
+    can verify ownership before popping (no OTel span name is set).
     """
-    del span_name  # No-op: kept for API stability; no OTel span is created.
     TraceManager.init_trace(callback_context)
 
     records = TraceManager._get_records()
@@ -935,6 +956,7 @@ class TraceManager:
         trace_id=trace_id,
         owns_span=True,
         start_time_ns=time.time_ns(),
+        kind=span_name or "",
     )
     _span_records_ctx.set(list(records) + [record])
 
@@ -966,6 +988,9 @@ class TraceManager:
         trace_id=trace_id,
         owns_span=False,
         start_time_ns=time.time_ns(),
+        # attach_current_span is only used to seed the invocation root
+        # (see ensure_invocation_span), so it carries the same kind.
+        kind="invocation",
     )
     records = TraceManager._get_records()
     _span_records_ctx.set(list(records) + [record])
@@ -1016,14 +1041,26 @@ class TraceManager:
       TraceManager.push_span(callback_context, "invocation")
 
   @staticmethod
-  def pop_span() -> tuple[Optional[str], Optional[int]]:
+  def pop_span(
+      expected_kind: Optional[str] = None,
+  ) -> tuple[Optional[str], Optional[int]]:
     """Pops the top span record from the internal stack.
 
     Returns ``(span_id, duration_ms)``.  No OTel span is ended
     because the plugin no longer creates one (see ``_SpanRecord``).
+
+    Args:
+      expected_kind: When set, only pop if the top record was pushed
+        with this kind; otherwise leave the stack untouched and return
+        ``(None, None)``.  Error callbacks use this so they never pop a
+        span they do not own (e.g. ``on_agent_error_callback`` firing
+        for a failure that happened before BQAA pushed its agent span).
     """
     records = _span_records_ctx.get()
     if not records:
+      return None, None
+
+    if expected_kind is not None and records[-1].kind != expected_kind:
       return None, None
 
     new_records = list(records)
@@ -2194,8 +2231,15 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
     "AGENT_COMPLETED": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
     ],
+    "AGENT_ERROR": [
+        "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
+    ],
     "INVOCATION_STARTING": [],
     "INVOCATION_COMPLETED": [],
+    "INVOCATION_ERROR": [
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
+    ],
     "STATE_DELTA": [
         "JSON_QUERY(attributes, '$.state_delta') AS state_delta",
     ],
@@ -4405,3 +4449,108 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             parent_span_id_override=parent_span_id,
         ),
     )
+
+  @_safe_callback
+  async def on_agent_error_callback(
+      self,
+      *,
+      agent: Any,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Callback when an agent execution fails with an unhandled exception.
+
+    Emits an AGENT_ERROR event and pops the agent span from
+    TraceManager.
+
+    The pop is guarded by span kind: the agent-error contract includes
+    failures raised by *other* plugins' before_agent_callbacks, in which
+    case BQAA's own before_agent_callback never pushed an agent span and
+    there is nothing to pop (popping unconditionally would consume the
+    invocation span and corrupt the subsequent INVOCATION_ERROR row).
+
+    Args:
+        agent: The agent instance that failed.
+        callback_context: The callback context.
+        error: The exception that escaped agent execution.
+    """
+    span_id, duration = TraceManager.pop_span(expected_kind="agent")
+    parent_span_id, _ = TraceManager.get_current_span_and_parent()
+
+    error_tb = "".join(
+        traceback_module.format_exception(
+            type(error), error, error.__traceback__
+        )
+    )
+    max_len = self.config.max_content_length
+    if max_len > 0 and len(error_tb) > max_len:
+      error_tb = error_tb[:max_len] + "... [truncated]"
+
+    await self._log_event(
+        "AGENT_ERROR",
+        callback_context,
+        event_data=EventData(
+            status="ERROR",
+            error_message=str(error),
+            latency_ms=duration,
+            span_id_override=span_id,
+            parent_span_id_override=parent_span_id,
+        ),
+        raw_content={"error_traceback": error_tb},
+    )
+
+  @_safe_callback
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: "InvocationContext",
+      error: Exception,
+  ) -> None:
+    """Callback when a runner execution fails with an unhandled exception.
+
+    Emits an INVOCATION_ERROR event and performs the cleanup that
+    after_run_callback would normally do.
+
+    Args:
+        invocation_context: The context of the current invocation.
+        error: The exception that escaped runner execution.
+    """
+    try:
+      callback_ctx = CallbackContext(invocation_context)
+      trace_id = TraceManager.get_trace_id(callback_ctx)
+
+      # Guarded pop: only consume the invocation-root span. If the failure
+      # left intermediate spans on the stack (or the root was never pushed),
+      # emit the row without span/latency rather than mis-attributing them;
+      # the finally-block clear_stack below resets the stack either way.
+      span_id, duration = TraceManager.pop_span(expected_kind="invocation")
+      parent_span_id = TraceManager.get_current_span_id()
+
+      error_tb = "".join(
+          traceback_module.format_exception(
+              type(error), error, error.__traceback__
+          )
+      )
+      max_len = self.config.max_content_length
+      if max_len > 0 and len(error_tb) > max_len:
+        error_tb = error_tb[:max_len] + "... [truncated]"
+
+      await self._log_event(
+          "INVOCATION_ERROR",
+          callback_ctx,
+          event_data=EventData(
+              trace_id_override=trace_id,
+              status="ERROR",
+              error_message=str(error),
+              latency_ms=duration,
+              span_id_override=span_id,
+              parent_span_id_override=parent_span_id,
+          ),
+          raw_content={"error_traceback": error_tb},
+      )
+    finally:
+      # Cleanup must run even if _log_event raises.
+      TraceManager.clear_stack()
+      _active_invocation_id_ctx.set(None)
+      _root_agent_name_ctx.set(None)
+      await self.flush()

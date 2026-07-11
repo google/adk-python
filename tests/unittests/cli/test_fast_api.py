@@ -689,6 +689,43 @@ def test_get_runner_async_accepts_internal_special_agent_name(
   mock_agent_loader.load_agent.assert_called_once_with(special_app_name)
 
 
+def test_api_server_get_runner_async_rejects_internal_special_agent_name(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  from fastapi import HTTPException
+  from google.adk.cli.api_server import ApiServer
+
+  special_app_name = "__adk_agent_builder_assistant"
+  special_agent = DummyAgent(name="agent_builder_assistant")
+  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
+
+  api_server = ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with pytest.raises(HTTPException) as exc_info:
+    asyncio.run(api_server.get_runner_async(special_app_name))
+
+  assert exc_info.value.status_code == 403
+  assert (
+      "Access to internal special agents is disabled in API server mode"
+      in exc_info.value.detail
+  )
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,

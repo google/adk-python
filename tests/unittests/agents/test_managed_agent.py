@@ -68,7 +68,17 @@ def test_construction_sets_fields_and_injectable_client():
   assert agent.api_client is client
 
 
+def test_injected_client_is_not_tagged():
+  client = _FakeClient()
+  agent = ManagedAgent(name='mgr', agent_id='agents/a', api_client=client)
+
+  # ADK must not attach http_options/headers onto a caller-supplied client.
+  assert agent.api_client is client
+  assert not hasattr(client, 'http_options')
+
+
 def test_lazy_client_enterprise_uses_global_location(monkeypatch):
+  from google.adk.utils._google_client_headers import get_tracking_headers
   import google.genai as genai
 
   monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', '1')
@@ -85,9 +95,11 @@ def test_lazy_client_enterprise_uses_global_location(monkeypatch):
 
   assert captured['enterprise'] is True
   assert captured['location'] == 'global'
+  assert captured['http_options'].headers == get_tracking_headers()
 
 
 def test_lazy_client_dev_api_omits_location(monkeypatch):
+  from google.adk.utils._google_client_headers import get_tracking_headers
   import google.genai as genai
 
   monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', '0')
@@ -104,6 +116,7 @@ def test_lazy_client_dev_api_omits_location(monkeypatch):
 
   assert captured['enterprise'] is False
   assert 'location' not in captured
+  assert captured['http_options'].headers == get_tracking_headers()
 
 
 def test_injected_non_global_enterprise_client_raises():
@@ -346,6 +359,7 @@ def _user_ctx(text, *, session_events=None, invocation_id='inv1', branch=None):
   ctx.invocation_id = invocation_id
   ctx.branch = branch
   ctx.session.events = session_events or []
+  ctx.run_config.http_options = None  # no per-request headers by default
   return ctx
 
 
@@ -381,7 +395,9 @@ def _final_text_response(text):
 def test_run_async_yields_events_with_ids(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _make_llm_response('Hello!', 'int_1', 'env_1')
 
   monkeypatch.setattr(mod, '_create_interactions', _fake_stream)
@@ -452,10 +468,59 @@ def test_run_async_sets_background_true():
   assert create_kwargs['background'] is True
 
 
+def test_run_async_merges_run_config_headers_into_extra_headers():
+  client = _RecordingClient([[]])
+  agent = ManagedAgent(name='mgr', agent_id='agents/a', api_client=client)
+  ctx = _user_ctx('hi')
+  ctx.run_config.http_options = genai_types.HttpOptions(
+      headers={'x-custom': 'v'}
+  )
+
+  asyncio.run(_drain(agent._run_async_impl(ctx)))
+
+  extra_headers = client.aio.interactions.calls[0]['extra_headers']
+  assert extra_headers['x-custom'] == 'v'
+  assert 'google-adk/' in extra_headers['x-goog-api-client']
+  assert 'google-adk/' in extra_headers['user-agent']
+
+
+def test_run_async_sends_tracking_headers_without_run_config_headers():
+  from google.adk.utils._google_client_headers import get_tracking_headers
+
+  client = _RecordingClient([[]])
+  agent = ManagedAgent(name='mgr', agent_id='agents/a', api_client=client)
+  ctx = _user_ctx('hi')  # http_options defaults to None
+
+  asyncio.run(_drain(agent._run_async_impl(ctx)))
+
+  assert (
+      client.aio.interactions.calls[0]['extra_headers']
+      == get_tracking_headers()
+  )
+
+
+def test_run_async_sends_tracking_headers_when_http_options_has_no_headers():
+  from google.adk.utils._google_client_headers import get_tracking_headers
+
+  client = _RecordingClient([[]])
+  agent = ManagedAgent(name='mgr', agent_id='agents/a', api_client=client)
+  ctx = _user_ctx('hi')
+  ctx.run_config.http_options = genai_types.HttpOptions()  # headers is None
+
+  asyncio.run(_drain(agent._run_async_impl(ctx)))
+
+  assert (
+      client.aio.interactions.calls[0]['extra_headers']
+      == get_tracking_headers()
+  )
+
+
 def test_run_async_yields_multiple_events_in_order(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _make_llm_response('one', 'int_1', 'env_1')
     yield _make_llm_response('two', 'int_1', 'env_1')
 
@@ -472,7 +537,7 @@ def test_run_async_yields_multiple_events_in_order(monkeypatch):
 def test_run_async_error_yields_error_event(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _boom(api_client, *, create_kwargs, stream):
+  async def _boom(api_client, *, create_kwargs, stream, extra_headers=None):
     raise RuntimeError('api exploded')
     yield  # pragma: no cover
 
@@ -494,7 +559,7 @@ def test_run_async_api_error_surfaces_backend_status_and_message(monkeypatch):
   from google.adk.agents import _managed_agent as mod
   from google.genai import errors
 
-  async def _boom(api_client, *, create_kwargs, stream):
+  async def _boom(api_client, *, create_kwargs, stream, extra_headers=None):
     raise errors.ClientError(
         429,
         {
@@ -558,7 +623,9 @@ def test_managed_agent_exported_from_package():
 def test_run_async_non_streaming_suppresses_partials(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _partial_text_response('thinking')
     yield _partial_text_response('searching')
     yield _final_text_response('Final answer.')
@@ -580,7 +647,9 @@ def test_run_async_non_streaming_suppresses_partials(monkeypatch):
 def test_run_async_sse_yields_all_partials(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _partial_text_response('thinking')
     yield _partial_text_response('searching')
     yield _final_text_response('Final answer.')
@@ -604,7 +673,9 @@ def test_run_async_sse_yields_all_partials(monkeypatch):
 def test_run_async_non_streaming_surfaces_error_event(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _partial_text_response('thinking')
     yield LlmResponse(
         error_code='UNKNOWN_ERROR', error_message='boom', turn_complete=True
@@ -627,7 +698,9 @@ def test_run_async_non_streaming_surfaces_error_event(monkeypatch):
 def test_run_async_default_run_config_suppresses_partials(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _partial_text_response('thinking')
     yield _final_text_response('Final answer.')
 
@@ -688,6 +761,63 @@ def test_run_async_non_streaming_final_event_carries_grounding_and_usage():
   assert final.grounding_metadata.web_search_queries == ['q1']
   assert final.usage_metadata.prompt_token_count == 12
   assert final.usage_metadata.candidates_token_count == 7
+
+
+def test_mode_defaults_to_none():
+  agent = ManagedAgent(name='m', agent_id='a')
+  assert agent.mode is None
+
+
+def test_mode_single_turn_is_accepted():
+  agent = ManagedAgent(name='m', agent_id='a', mode='single_turn')
+  assert agent.mode == 'single_turn'
+
+
+def test_mode_chat_is_rejected():
+  from pydantic import ValidationError
+
+  with pytest.raises(ValidationError):
+    ManagedAgent(name='m', agent_id='a', mode='chat')
+
+
+async def test_run_impl_bridges_node_input_to_user_content():
+  from google.adk.agents.context import Context
+  from google.adk.agents.invocation_context import InvocationContext
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+  from google.adk.sessions.session import Session
+  from google.adk.utils.content_utils import to_user_content
+
+  captured = {}
+
+  # ManagedAgent is a Pydantic model, so `run_async` cannot be reassigned on an
+  # instance; subclassing to override it is the pydantic-safe equivalent of
+  # stubbing it. The override captures the `parent_context.user_content` that
+  # `_run_impl` threads in from `node_input`.
+  class _CapturingManagedAgent(ManagedAgent):
+
+    async def run_async(self, parent_context):
+      captured['user_content'] = parent_context.user_content
+      return
+      yield  # make this an async generator
+
+  agent = _CapturingManagedAgent(name='m', agent_id='a', mode='single_turn')
+
+  # Build a minimal node Context (mirrors
+  # tests/unittests/workflow/test_agent_node.py).
+  session = Session(app_name='test', user_id='user', id='session')
+  ic = InvocationContext(
+      invocation_id='inv',
+      session=session,
+      session_service=InMemorySessionService(),
+  )
+  ctx = Context(ic, node_path='wf')
+
+  events = [
+      e async for e in agent._run_impl(ctx=ctx, node_input='compute primes')
+  ]
+
+  assert events == []
+  assert captured['user_content'] == to_user_content('compute primes')
 
 
 async def _drain(agen):
