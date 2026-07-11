@@ -377,7 +377,9 @@ class OptimizationRunContext:
     with self._lock:
       if not self._cancel_requested:
         self._cancel_requested = True
-        self._cancel_reason = reason
+        self._cancel_reason = (
+            _sanitize_optional_str(reason, _ERROR_META_MAX_LEN) or "requested"
+        )
 
   @property
   def cancel_requested(self) -> bool:
@@ -454,7 +456,9 @@ class OptimizationRunContext:
     with self._lock:
       if not self._cancel_requested:
         self._cancel_requested = True
-        self._cancel_reason = reason
+        self._cancel_reason = (
+            _sanitize_optional_str(reason, _ERROR_META_MAX_LEN) or "requested"
+        )
       for record in self._records:
         if not record.closed:
           record.closed = True
@@ -519,8 +523,10 @@ class OptimizationRunContext:
       return OptimizationFailedError(
           f"Optimization failed: {self._terminal_error_code}", snapshot
       )
+    status = self._run_status
+    status_name = status.value if status is not None else "unknown"
     return OptimizationRunFinalizedError(
-        f"OptimizationRunContext already finalized as {self._run_status.value}."
+        f"OptimizationRunContext already finalized as {status_name}."
     )
 
   # --- the ledger -----------------------------------------------------------
@@ -555,8 +561,17 @@ class OptimizationRunContext:
               self._snapshot_locked(),
           )
         else:
+          clean_stage = _sanitize_optional_str(stage, _ERROR_META_MAX_LEN)
+          if not clean_stage:
+            raise ValueError(
+                "stage must be a non-empty string (see the STAGE_* constants)."
+            )
           self._started_calls += 1
-          record = _CallRecord(self._started_calls, stage, requested_model)
+          record = _CallRecord(
+              self._started_calls,
+              clean_stage,
+              _sanitize_optional_str(requested_model, _MODEL_VERSION_MAX_LEN),
+          )
           self._records.append(record)
           return _CallHandle(self, record)
     raise error
@@ -608,7 +623,14 @@ class OptimizationRunContext:
             "Call handle belongs to a different OptimizationRunContext."
         )
       if record.closed:
-        return
+        # Ledger-idempotent, but a caller must not continue past a committed
+        # terminal: re-raise the existing terminal outcome. The no-op return
+        # is only for an already-closed call on a still-nonterminal run.
+        if self._run_status is not None:
+          error = self._terminal_error_locked()
+        else:
+          return
+        raise error
       was_terminal = self._run_status is not None
       record.closed = True
       record.end_time = time.time()
@@ -686,7 +708,10 @@ class OptimizationRunContext:
             "Call handle belongs to a different OptimizationRunContext."
         )
       error: Optional[Exception] = None
-      if not record.closed:
+      if record.closed:
+        if self._run_status is not None:
+          error = self._terminal_error_locked()
+      else:
         record.closed = True
         record.end_time = time.time()
         record.state = ModelCallState.ABORTED
@@ -784,10 +809,17 @@ _MODEL_VERSION_MAX_LEN = 256
 
 
 def _sanitize_optional_str(value: Any, max_len: int) -> Optional[str]:
-  """Bounded optional-string normalization for ledger fields."""
+  """Bounded optional-string normalization for ledger fields.
+
+  Defensive against hostile ``__str__``: a conversion failure degrades the
+  field to ``None`` rather than defeating settlement.
+  """
   if value is None:
     return None
-  text = str(value).strip()
+  try:
+    text = str(value).strip()
+  except Exception:  # pylint: disable=broad-except
+    return None
   return text[:max_len] if text else None
 
 
@@ -799,7 +831,10 @@ def _sanitize_error_meta(value: Any) -> Optional[str]:
   """
   if value is None:
     return None
-  text = str(value).strip()
+  try:
+    text = str(value).strip()
+  except Exception:  # pylint: disable=broad-except
+    return "UNSTRINGABLE"
   if not text:
     return None
   text = _ERROR_META_SAFE.sub("_", text)
@@ -817,16 +852,22 @@ def _extract_usage(usage_metadata: Any) -> dict[str, Optional[int]]:
     return {}
 
   def _get(name: str) -> Optional[int]:
-    value = getattr(usage_metadata, name, None)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    # Defensive around BOTH attribute access and conversion: a throwing
+    # property or hostile numeric type from a custom provider degrades that
+    # counter to unreported -- it must never strand an admitted call open.
+    try:
+      value = getattr(usage_metadata, name, None)
+      if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+      if not math.isfinite(value) or value < 0:
+        return None
+      if isinstance(value, float) and not value.is_integer():
+        # Token counters are integral evidence; silent truncation is not
+        # truthful normalization -- fractional values are "not reported".
+        return None
+      return int(value)
+    except Exception:  # pylint: disable=broad-except
       return None
-    if not math.isfinite(value) or value < 0:
-      return None
-    if isinstance(value, float) and not value.is_integer():
-      # Token counters are integral evidence; silent truncation is not
-      # truthful normalization -- fractional values are "not reported".
-      return None
-    return int(value)
 
   return {
       "prompt_tokens": _get("prompt_token_count"),

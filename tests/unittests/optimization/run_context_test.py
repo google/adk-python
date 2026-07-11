@@ -684,27 +684,119 @@ class TestConcurrencyRaces:
     for _ in range(20):
       ctx = OptimizationRunContext()
       h = ctx.begin_model_call(STAGE_REFLECTION)
-      outcomes: list[str] = []
+      barrier = threading.Barrier(2)
+      outcomes: dict[str, object] = {}
 
-      def settle(handle=h, context=ctx):
-        context.end_model_call(handle, usage_metadata=None)
+      def settle(handle=h, context=ctx, sync=barrier, sink=outcomes):
+        sync.wait()
+        try:
+          context.end_model_call(handle, usage_metadata=None)
+          sink["settle"] = "ok"
+        except OptimizationFailedError:
+          # Success won the race, committed FAILED/OPEN_MODEL_CALLS, and
+          # this settling caller observes it after committing its event.
+          sink["settle"] = "observed_terminal"
 
-      def finish(context=ctx, sink=outcomes):
+      def finish(context=ctx, sync=barrier, sink=outcomes):
+        sync.wait()
         try:
           context.finalize_success()
-          sink.append("completed")
+          sink["success"] = "completed"
         except OptimizationFailedError:
-          sink.append("failed_open")
+          sink["success"] = "failed_open"
 
       t1 = threading.Thread(target=settle)
       t2 = threading.Thread(target=finish)
-      t2.start()
       t1.start()
+      t2.start()
       t1.join()
       t2.join()
       snap = ctx.snapshot()
-      if "completed" in outcomes:
-        # Success was only recordable because the call had already settled.
+      # Exactly two legal resolutions -- and never COMPLETED with open calls.
+      assert snap.completed_calls == snap.started_calls == 1
+      if outcomes["success"] == "completed":
+        assert outcomes["settle"] == "ok"
+        assert snap.run_status == RunStatus.COMPLETED
         assert snap.events[0].state is not None
       else:
+        assert outcomes["success"] == "failed_open"
+        assert outcomes["settle"] == "observed_terminal"
         assert snap.run_status == RunStatus.FAILED
+        assert snap.terminal_error_code == "OPEN_MODEL_CALLS"
+
+
+class TestRoundFourFindings:
+
+  def test_throwing_usage_accessor_degrades_to_unreported(self):
+    class ExplodingUsage:
+
+      @property
+      def total_token_count(self):
+        raise RuntimeError("bad provider metadata")
+
+      prompt_token_count = 5
+
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    ctx.end_model_call(h, usage_metadata=ExplodingUsage())
+    snap = ctx.snapshot()
+    # The call settles atomically; the throwing counter is unreported and
+    # the well-behaved counter survives.
+    assert snap.completed_calls == 1
+    event = snap.events[0]
+    assert event.state == ModelCallState.COMPLETED
+    assert event.total_tokens is None
+    assert event.prompt_tokens == 5
+
+  def test_hostile_str_cannot_defeat_settlement(self):
+    class HostileCode:
+
+      def __str__(self):
+        raise RuntimeError("no string for you")
+
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    with pytest.raises(OptimizationProviderError):
+      ctx.end_model_call(h, error_code=HostileCode())
+    snap = ctx.snapshot()
+    assert snap.completed_calls == 1
+    assert snap.events[0].error_code == "UNSTRINGABLE"
+
+  def test_duplicate_terminal_settlement_reraises_terminal(self):
+    ctx = OptimizationRunContext(
+        OptimizationBudgets(max_provider_reported_tokens=10)
+    )
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    with pytest.raises(OptimizationBudgetExceeded):
+      ctx.end_model_call(h, usage_metadata=_usage(total_token_count=50))
+    # A duplicate close on a terminal run must not return normally.
+    with pytest.raises(OptimizationBudgetExceeded):
+      ctx.end_model_call(h, usage_metadata=_usage(total_token_count=50))
+    assert ctx.snapshot().completed_calls == 1  # committed exactly once
+
+  def test_duplicate_close_on_nonterminal_run_is_noop(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    ctx.end_model_call(h, usage_metadata=None)
+    ctx.end_model_call(h, usage_metadata=None)  # no raise, no double count
+    assert ctx.snapshot().completed_calls == 1
+
+  def test_admission_metadata_normalized(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(123, requested_model=456)  # hostile callers
+    ctx.end_model_call(h, usage_metadata=None)
+    snap = ctx.snapshot()  # must not raise
+    assert snap.events[0].stage == "123"
+    assert snap.events[0].requested_model == "456"
+
+  def test_empty_stage_rejected(self):
+    ctx = OptimizationRunContext()
+    with pytest.raises(ValueError):
+      ctx.begin_model_call("   ")
+    assert ctx.snapshot().started_calls == 0
+
+  def test_cancel_reason_normalized(self):
+    ctx = OptimizationRunContext()
+    ctx.request_cancel(123)
+    snap = ctx.snapshot()  # must not raise
+    assert snap.cancel_reason == "123"
