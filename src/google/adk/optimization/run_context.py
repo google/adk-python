@@ -36,6 +36,8 @@ attempt in a ``finally`` block without parsing logs.
 from __future__ import annotations
 
 import enum
+import math
+import re
 import threading
 import time
 from typing import Any
@@ -117,6 +119,8 @@ class ModelCallEvent(BaseModel):
   requested_model: Optional[str] = None
   returned_model_version: Optional[str] = None
   start_time: float
+  """Wall-clock (epoch seconds): durable and comparable across workers."""
+
   end_time: Optional[float] = None
   state: Optional[ModelCallState] = None
   prompt_tokens: Optional[int] = None
@@ -181,6 +185,9 @@ class OptimizationRunSnapshot(BaseModel):
   budgets: OptimizationBudgets = Field(default_factory=OptimizationBudgets)
   started_calls: int = 0
   completed_calls: int = 0
+  """Count of settled (closed) calls, whatever their terminal call status --
+  completed, provider_error, or cancelled."""
+
   cumulative_total_tokens: int = 0
   """Sum of provider-reported authoritative totals (verified calls only)."""
 
@@ -221,12 +228,22 @@ class OptimizationCancelledError(OptimizationRunContextError):
 
 
 class OptimizationProviderError(OptimizationRunContextError):
-  """A governed run terminated on a provider failure.
+  """A governed run terminated on a provider-call failure.
 
   Usage reported before the failure is preserved on the snapshot. Provider
   failure takes precedence over a simultaneous token overshoot: both the
   committed usage and the token-compliance evidence are preserved, but the
   run terminates ``failed`` and this error is raised.
+  """
+
+
+class OptimizationFailedError(OptimizationRunContextError):
+  """A governed run terminated on a non-provider failure.
+
+  Sampler, adapter, validation, and optimizer-internal failures recorded via
+  ``finalize_failed`` surface as this generic type;
+  ``OptimizationProviderError`` is reserved for failures of governed
+  provider calls.
   """
 
 
@@ -264,7 +281,7 @@ class _CallRecord:
     self.stage = stage
     self.requested_model = requested_model
     self.returned_model_version = None
-    self.start_time = time.monotonic()
+    self.start_time = time.time()
     self.end_time = None
     self.state: Optional[ModelCallState] = None
     self.usage: dict[str, Optional[int]] = {}
@@ -309,7 +326,7 @@ class OptimizationRunContext:
     self._lock = threading.Lock()
     self._records: list[_CallRecord] = []
     self._started_calls = 0
-    self._completed_calls = 0
+    self._settled_calls = 0
     self._cumulative_total_tokens = 0
     self._cancel_requested = False
     self._cancel_reason: Optional[str] = None
@@ -317,6 +334,7 @@ class OptimizationRunContext:
     self._terminal_sequence: Optional[int] = None
     self._terminal_error_code: Optional[str] = None
     self._terminal_error_type: Optional[str] = None
+    self._terminal_from_provider_call = False
     self._attached_owner: object = _UNATTACHED
 
   @property
@@ -376,9 +394,25 @@ class OptimizationRunContext:
   # --- terminal transitions -------------------------------------------------
 
   def finalize_success(self) -> None:
-    """Marks a normal optimizer return ``completed`` (first terminal wins)."""
+    """Marks a normal optimizer return ``completed`` (first terminal wins).
+
+    Defensive: a pending cancellation observed here commits ``cancelled``
+    and raises the typed error -- a cancelled run can never be recorded as a
+    success, no matter how late the signal arrived.
+    """
     with self._lock:
-      self._transition_locked(RunStatus.COMPLETED)
+      if self._run_status is not None:
+        return
+      if self._cancel_requested:
+        self._transition_locked(RunStatus.CANCELLED)
+        error = OptimizationCancelledError(
+            f"Optimization cancelled: {self._cancel_reason}",
+            self._snapshot_locked(),
+        )
+      else:
+        self._transition_locked(RunStatus.COMPLETED)
+        return
+    raise error
 
   def finalize_cancelled(self, reason: str = "cancelled") -> None:
     """Commits the ``cancelled`` terminal (e.g. on native task cancellation).
@@ -393,8 +427,9 @@ class OptimizationRunContext:
       for record in self._records:
         if not record.closed:
           record.closed = True
-          record.end_time = time.monotonic()
+          record.end_time = time.time()
           record.state = ModelCallState.CANCELLED
+          self._settled_calls += 1
       self._transition_locked(RunStatus.CANCELLED)
 
   def finalize_failed(
@@ -410,7 +445,9 @@ class OptimizationRunContext:
     """
     with self._lock:
       self._transition_locked(
-          RunStatus.FAILED, error_code=error_code, error_type=error_type
+          RunStatus.FAILED,
+          error_code=_sanitize_error_meta(error_code),
+          error_type=_sanitize_error_meta(error_type),
       )
 
   def _transition_locked(
@@ -420,6 +457,7 @@ class OptimizationRunContext:
       sequence: Optional[int] = None,
       error_code: Optional[str] = None,
       error_type: Optional[str] = None,
+      provider: bool = False,
   ) -> bool:
     """First-terminal-wins transition; returns True if this call won."""
     if self._run_status is not None:
@@ -428,6 +466,7 @@ class OptimizationRunContext:
     self._terminal_sequence = sequence
     self._terminal_error_code = error_code
     self._terminal_error_type = error_type
+    self._terminal_from_provider_call = provider
     return True
 
   def _terminal_error_locked(self) -> Exception:
@@ -442,7 +481,11 @@ class OptimizationRunContext:
           f"Optimization cancelled: {self._cancel_reason}", snapshot
       )
     if self._run_status == RunStatus.FAILED:
-      return OptimizationProviderError(
+      if self._terminal_from_provider_call:
+        return OptimizationProviderError(
+            f"Provider failure: {self._terminal_error_code}", snapshot
+        )
+      return OptimizationFailedError(
           f"Optimization failed: {self._terminal_error_code}", snapshot
       )
     return OptimizationRunFinalizedError(
@@ -495,21 +538,38 @@ class OptimizationRunContext:
       returned_model_version: Optional[str] = None,
       error_code: Optional[str] = None,
       error_type: Optional[str] = None,
+      cancelled: bool = False,
   ) -> None:
     """Commits the terminal outcome of one logical model invocation.
 
-    Ownership and close are validated atomically under the context lock: a
-    handle from another context is a typed misuse error, and a concurrent
-    double-close commits exactly once.
+    All usage and error metadata is normalized and validated *before* the
+    record is mutated, then the event, counters, and any terminal transition
+    commit atomically under the context lock -- no exception path can expose
+    a half-closed event. Ownership and close are validated under the same
+    lock: a handle from another context is a typed misuse error, and a
+    concurrent double-close commits exactly once.
 
     Provider failure takes precedence over token overshoot: usage is
     committed either way, but a call ending in a provider error transitions
     the run to ``failed`` and raises ``OptimizationProviderError``. A clean
     over-budget final call is committed with call status ``completed`` while
     the run transitions to ``budget_exceeded`` and
-    ``OptimizationBudgetExceeded`` is raised. Error metadata must be
-    sanitized identifiers, never raw exception/payload text.
+    ``OptimizationBudgetExceeded`` is raised. ``cancelled=True`` settles the
+    call as ``cancelled`` (preserving usage evidence) without raising.
+
+    If the run was already terminated by another call, this call still
+    settles for truthful accounting, and the existing terminal outcome is
+    then raised so no caller can continue scheduling work past a committed
+    terminal.
     """
+    # Normalize/validate everything BEFORE touching the record.
+    usage = _extract_usage(usage_metadata)
+    clean_code = _sanitize_error_meta(error_code)
+    clean_type = _sanitize_error_meta(error_type)
+    is_provider_error = error_code is not None or error_type is not None
+    if is_provider_error and clean_code is None:
+      clean_code = "PROVIDER_ERROR"
+
     record = handle._record
     with self._lock:
       if handle._context is not self:
@@ -518,31 +578,35 @@ class OptimizationRunContext:
         )
       if record.closed:
         return
+      was_terminal = self._run_status is not None
       record.closed = True
-      record.end_time = time.monotonic()
+      record.end_time = time.time()
       record.returned_model_version = returned_model_version
-      record.usage = _extract_usage(usage_metadata)
-      self._completed_calls += 1
-      total = record.usage.get("total_tokens")
+      record.usage = usage
+      self._settled_calls += 1
+      total = usage.get("total_tokens")
       if total is not None:
         self._cumulative_total_tokens += total
 
       error: Optional[Exception] = None
-      if error_code is not None or error_type is not None:
+      if cancelled:
+        record.state = ModelCallState.CANCELLED
+      elif is_provider_error:
         record.state = ModelCallState.PROVIDER_ERROR
-        record.error_code = error_code
-        record.error_type = error_type
+        record.error_code = clean_code
+        record.error_type = clean_type
         # Provider failure is primary even when the same terminal response
         # also crossed the token ceiling; both usage and token-compliance
         # evidence are preserved on the snapshot.
         if self._transition_locked(
             RunStatus.FAILED,
             sequence=record.sequence,
-            error_code=error_code,
-            error_type=error_type,
+            error_code=clean_code,
+            error_type=clean_type,
+            provider=True,
         ):
           error = OptimizationProviderError(
-              f"Provider failure on call {record.sequence}: {error_code}",
+              f"Provider failure on call {record.sequence}: {clean_code}",
               self._snapshot_locked(),
           )
       else:
@@ -559,6 +623,10 @@ class OptimizationRunContext:
                 f"Token budget exhausted ({max_tokens}).",
                 self._snapshot_locked(),
             )
+      if error is None and was_terminal and not cancelled:
+        # Another call already terminated the run; the settling caller must
+        # observe that terminal instead of continuing.
+        error = self._terminal_error_locked()
     if error is not None:
       raise error
 
@@ -616,7 +684,7 @@ class OptimizationRunContext:
         events=events,
         budgets=self._budgets,
         started_calls=self._started_calls,
-        completed_calls=self._completed_calls,
+        completed_calls=self._settled_calls,
         cumulative_total_tokens=self._cumulative_total_tokens,
         usage_coverage=run_coverage,
         token_budget_status=token_status,
@@ -629,14 +697,42 @@ class OptimizationRunContext:
     )
 
 
+_ERROR_META_MAX_LEN = 128
+_ERROR_META_SAFE = re.compile(r"[^A-Za-z0-9_.:-]")
+
+
+def _sanitize_error_meta(value: Any) -> Optional[str]:
+  """Normalizes error metadata to a bounded, single-token identifier.
+
+  Accepts any input (providers report numeric codes, enums, or strings) and
+  never lets raw multiline/path-like text into the ledger.
+  """
+  if value is None:
+    return None
+  text = str(value).strip()
+  if not text:
+    return None
+  text = _ERROR_META_SAFE.sub("_", text)
+  return text[:_ERROR_META_MAX_LEN]
+
+
 def _extract_usage(usage_metadata: Any) -> dict[str, Optional[int]]:
-  """Copies provider-reported token counters, truthfully (no zero-coercion)."""
+  """Copies provider-reported token counters, truthfully (no zero-coercion).
+
+  Counters must be finite, non-negative numbers; anything else (NaN, inf,
+  negative, non-numeric) is treated as not reported rather than corrupting
+  the ledger.
+  """
   if usage_metadata is None:
     return {}
 
   def _get(name: str) -> Optional[int]:
     value = getattr(usage_metadata, name, None)
-    return int(value) if isinstance(value, (int, float)) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+      return None
+    if not math.isfinite(value) or value < 0:
+      return None
+    return int(value)
 
   return {
       "prompt_tokens": _get("prompt_token_count"),

@@ -402,3 +402,127 @@ class TestBuiltInsRejectContextInContractsPr:
       )
     # Rejected before any sampler work.
     sampler.get_train_example_ids.assert_not_called()
+
+
+class TestAtomicSettlement:
+  """Round-2 adversarial findings: validate-before-commit."""
+
+  def test_nan_usage_does_not_corrupt_the_record(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    ctx.end_model_call(h, usage_metadata=_usage(total_token_count=float("nan")))
+    event = ctx.snapshot().events[0]
+    # NaN/inf/negative counters are "not reported", never a crash or a
+    # half-closed event.
+    assert event.state == ModelCallState.COMPLETED
+    assert event.total_tokens is None
+    assert event.usage_coverage == UsageCoverage.UNREPORTED
+
+  def test_negative_and_inf_usage_treated_as_unreported(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    ctx.end_model_call(
+        h,
+        usage_metadata=_usage(
+            total_token_count=float("inf"), prompt_token_count=-3
+        ),
+    )
+    event = ctx.snapshot().events[0]
+    assert event.total_tokens is None
+    assert event.prompt_tokens is None
+
+  def test_numeric_error_code_is_normalized_to_string(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    with pytest.raises(OptimizationProviderError) as exc:
+      ctx.end_model_call(h, usage_metadata=None, error_code=429)
+    snap = exc.value.snapshot
+    assert snap.events[0].error_code == "429"
+    assert snap.terminal_error_code == "429"
+
+  def test_error_metadata_is_sanitized_and_bounded(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    with pytest.raises(OptimizationProviderError) as exc:
+      ctx.end_model_call(
+          h,
+          error_code="multi\nline /etc/passwd " + "x" * 500,
+          error_type="/usr/lib/module.py",
+      )
+    event = exc.value.snapshot.events[0]
+    assert "\n" not in event.error_code
+    assert "/" not in event.error_code
+    assert len(event.error_code) <= 128
+    assert "/" not in event.error_type
+
+
+class TestTerminalCompleteness:
+  """Round-2 adversarial findings: every caller observes the terminal."""
+
+  def test_finalize_success_observes_pending_cancellation(self):
+    ctx = OptimizationRunContext()
+    ctx.request_cancel("deadline")
+    with pytest.raises(OptimizationCancelledError):
+      ctx.finalize_success()
+    assert ctx.snapshot().run_status == RunStatus.CANCELLED
+
+  def test_inflight_settlement_after_terminal_raises_existing_terminal(self):
+    ctx = OptimizationRunContext(
+        OptimizationBudgets(max_provider_reported_tokens=10)
+    )
+    h1 = ctx.begin_model_call(STAGE_REFLECTION)
+    h2 = ctx.begin_model_call(STAGE_REFLECTION)  # admitted before terminal
+    with pytest.raises(OptimizationBudgetExceeded):
+      ctx.end_model_call(h1, usage_metadata=_usage(total_token_count=50))
+    # The second in-flight call settles for truthful accounting, but its
+    # caller receives the existing terminal and cannot continue.
+    with pytest.raises(OptimizationBudgetExceeded):
+      ctx.end_model_call(h2, usage_metadata=_usage(total_token_count=5))
+    snap = ctx.snapshot()
+    assert snap.completed_calls == 2  # both settled
+    assert snap.cumulative_total_tokens == 55  # evidence preserved
+    assert snap.run_status == RunStatus.BUDGET_EXCEEDED
+
+  def test_cancelled_settlement_preserves_usage_without_raising(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    ctx.end_model_call(
+        h, usage_metadata=_usage(total_token_count=7), cancelled=True
+    )
+    snap = ctx.snapshot()
+    assert snap.events[0].state == ModelCallState.CANCELLED
+    assert snap.events[0].total_tokens == 7
+    assert snap.completed_calls == 1  # settled calls, any call status
+
+
+class TestFailureTypes:
+
+  def test_finalize_failed_is_generic_not_provider(self):
+    from google.adk.optimization.run_context import OptimizationFailedError
+
+    ctx = OptimizationRunContext()
+    ctx.finalize_failed(error_code="SAMPLER_CRASH", error_type="ValueError")
+    with pytest.raises(OptimizationFailedError):
+      ctx.begin_model_call(STAGE_REFLECTION)
+
+  def test_provider_call_failure_stays_provider_typed(self):
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    with pytest.raises(OptimizationProviderError):
+      ctx.end_model_call(h, error_code="INTERNAL")
+    with pytest.raises(OptimizationProviderError):
+      ctx.begin_model_call(STAGE_REFLECTION)
+
+
+class TestDurableTimestamps:
+
+  def test_event_times_are_wall_clock(self):
+    import time as _time
+
+    before = _time.time()
+    ctx = OptimizationRunContext()
+    h = ctx.begin_model_call(STAGE_REFLECTION)
+    ctx.end_model_call(h, usage_metadata=None)
+    event = ctx.snapshot().events[0]
+    after = _time.time()
+    assert before <= event.start_time <= event.end_time <= after

@@ -35,6 +35,7 @@ from .agent_optimizer import AgentOptimizer
 from .data_types import AgentWithScores
 from .data_types import OptimizerResult
 from .data_types import UnstructuredSamplingResult
+from .run_context import OptimizationRunContext
 from .sampler import Sampler
 
 _logger = logging.getLogger("google_adk." + __name__)
@@ -208,7 +209,7 @@ class GEPARootAgentPromptOptimizer(
       initial_agent: Agent,
       sampler: Sampler[UnstructuredSamplingResult],
       *,
-      run_context=None,
+      run_context: Optional[OptimizationRunContext] = None,
   ) -> GEPARootAgentPromptOptimizerResult:
     """Runs the GEPARootAgentPromptOptimizer.
 

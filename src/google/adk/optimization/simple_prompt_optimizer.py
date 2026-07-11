@@ -28,6 +28,7 @@ from google.adk.optimization.agent_optimizer import AgentOptimizer
 from google.adk.optimization.data_types import AgentWithScores
 from google.adk.optimization.data_types import OptimizerResult
 from google.adk.optimization.data_types import UnstructuredSamplingResult
+from google.adk.optimization.run_context import OptimizationRunContext
 from google.adk.optimization.sampler import Sampler
 from google.genai import types as genai_types
 from pydantic import BaseModel
@@ -205,7 +206,7 @@ class SimplePromptOptimizer(
       initial_agent: Agent,
       sampler: Sampler[UnstructuredSamplingResult],
       *,
-      run_context=None,
+      run_context: Optional[OptimizationRunContext] = None,
   ) -> OptimizerResult[AgentWithScores]:
     if run_context is not None:
       from .run_context import UnsupportedOptimizationContextError

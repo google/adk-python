@@ -19,6 +19,7 @@ import contextvars
 import logging
 from typing import Any
 from typing import Callable
+from typing import Optional
 
 from google.genai import types as genai_types
 from pydantic import BaseModel
@@ -36,6 +37,7 @@ from .agent_optimizer import AgentOptimizer
 from .data_types import AgentWithScores
 from .data_types import OptimizerResult
 from .data_types import UnstructuredSamplingResult
+from .run_context import OptimizationRunContext
 from .sampler import Sampler
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -334,7 +336,7 @@ class GEPARootAgentOptimizer(
       initial_agent: Agent,
       sampler: Sampler[UnstructuredSamplingResult],
       *,
-      run_context=None,
+      run_context: Optional[OptimizationRunContext] = None,
   ) -> GEPARootAgentOptimizerResult:
     """Runs the GEPARootAgentOptimizer.
 
