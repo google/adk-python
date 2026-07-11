@@ -3288,7 +3288,7 @@ class TestRemoteA2aAgentGoogleAuthMtls:
   async def test_default_client_uses_mtls_transport_when_enabled(self):
     agent = RemoteA2aAgent(
         name="test_agent",
-        agent_card=_make_agent_card(url="https://foo.googleapis.com/a2a"),
+        agent_card=_make_agent_card(url="https://foo.example.com/a2a"),
         enable_google_auth_mtls=True,
     )
     mock_transport = Mock(spec=httpx.AsyncBaseTransport)
@@ -3300,14 +3300,14 @@ class TestRemoteA2aAgentGoogleAuthMtls:
       client = await agent._create_default_httpx_client()
     assert client._transport is mock_transport
     mock_factory.assert_awaited_once()
-    assert mock_factory.await_args.args[0] == "https://foo.googleapis.com/a2a"
+    assert mock_factory.await_args.args[0] == "https://foo.example.com/a2a"
     await client.aclose()
 
   @pytest.mark.asyncio
   async def test_default_client_falls_back_when_no_mtls(self):
     agent = RemoteA2aAgent(
         name="test_agent",
-        agent_card=_make_agent_card(url="https://foo.googleapis.com/a2a"),
+        agent_card=_make_agent_card(url="https://foo.example.com/a2a"),
         enable_google_auth_mtls=True,
     )
     with patch.object(

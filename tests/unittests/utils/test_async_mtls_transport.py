@@ -26,7 +26,7 @@ _AIO_SUPPORTED = amt._AIO_SUPPORTED
 async def test_create_transport_returns_none_when_aio_unsupported():
   with patch.object(amt, "_AIO_SUPPORTED", False):
     transport = await amt.create_google_auth_mtls_transport(
-        "https://foo.googleapis.com/bar"
+        "https://foo.example.com/bar"
     )
   assert transport is None
 
@@ -45,7 +45,7 @@ async def test_create_transport_success_when_mtls():
   ):
     mock_transport_class.return_value = "the-transport"
     transport = await amt.create_google_auth_mtls_transport(
-        "https://foo.googleapis.com/bar"
+        "https://foo.example.com/bar"
     )
 
   assert transport == "the-transport"
@@ -65,7 +65,7 @@ async def test_create_transport_returns_none_when_channel_not_mtls():
       patch.object(amt, "AsyncAuthorizedSession", return_value=mock_session),
   ):
     transport = await amt.create_google_auth_mtls_transport(
-        "https://foo.googleapis.com/bar"
+        "https://foo.example.com/bar"
     )
 
   assert transport is None
@@ -75,7 +75,7 @@ async def test_create_transport_returns_none_when_channel_not_mtls():
 async def test_create_transport_returns_none_on_exception():
   with patch("google.auth.default", side_effect=Exception("auth error")):
     transport = await amt.create_google_auth_mtls_transport(
-        "https://foo.googleapis.com/bar"
+        "https://foo.example.com/bar"
     )
   assert transport is None
 
@@ -86,12 +86,12 @@ async def test_refreshable_credentials_injects_token_for_target_host():
   creds.token = "the-token"
   creds.expired = False
   refreshable = amt._RefreshableAsyncCredentials(
-      creds, target_host="foo.googleapis.com"
+      creds, target_host="foo.example.com"
   )
 
   headers: dict[str, str] = {}
   await refreshable.before_request(
-      None, "GET", "https://foo.googleapis.com/bar", headers
+      None, "GET", "https://foo.example.com/bar", headers
   )
   assert headers["Authorization"] == "Bearer the-token"
 
@@ -102,7 +102,7 @@ async def test_refreshable_credentials_skips_other_hosts():
   creds.token = "the-token"
   creds.expired = False
   refreshable = amt._RefreshableAsyncCredentials(
-      creds, target_host="foo.googleapis.com"
+      creds, target_host="foo.example.com"
   )
 
   headers: dict[str, str] = {}
@@ -121,6 +121,6 @@ async def test_refreshable_credentials_does_not_overwrite_existing_header():
 
   headers = {"Authorization": "Bearer preset"}
   await refreshable.before_request(
-      None, "GET", "https://foo.googleapis.com/bar", headers
+      None, "GET", "https://foo.example.com/bar", headers
   )
   assert headers["Authorization"] == "Bearer preset"

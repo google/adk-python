@@ -45,13 +45,22 @@ try:
   _AIO_SUPPORTED = True
 except ImportError:
 
-  class AsyncCredentials:  # pylint: disable=g-bad-classes
+  class AsyncCredentials:  # type: ignore[no-redef]  # pylint: disable=g-bad-classes
     pass
 
-  class AsyncAuthorizedSession:  # pylint: disable=g-bad-classes
+  class AsyncAuthorizedSession:  # type: ignore[no-redef]  # pylint: disable=g-bad-classes
     pass
 
   _AIO_SUPPORTED = False
+
+# Re-exported for the MCP session manager, which imports the async mTLS
+# building blocks from here. Listed so mypy treats them as explicit exports
+# (no_implicit_reexport) rather than private imports.
+__all__ = [
+    "AsyncAuthorizedSession",
+    "AsyncCredentials",
+    "create_google_auth_mtls_transport",
+]
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -61,7 +70,7 @@ logger = logging.getLogger("google_adk." + __name__)
 _DEFAULT_SCOPES = ["https://www." + "googleapis" + ".com/auth/cloud-platform"]
 
 
-class _RefreshableAsyncCredentials(AsyncCredentials):
+class _RefreshableAsyncCredentials(AsyncCredentials):  # type: ignore[misc]
   """Adapter to refresh sync credentials asynchronously."""
 
   def __init__(
