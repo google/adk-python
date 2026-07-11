@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+from typing import Any
+from typing import Callable
 
 from sqlalchemy import Dialect
 from sqlalchemy import Text
@@ -67,10 +69,12 @@ class PreciseTimestamp(TypeDecorator):
       return dialect.type_descriptor(mysql.DATETIME(fsp=6))
     return self.impl
 
-  def result_processor(self, dialect, coltype):
-    impl_processor = self.impl.result_processor(dialect, coltype)
+  def result_processor(
+      self, dialect: Dialect, coltype: object
+  ) -> Callable[[Any], Any] | None:
+    impl_processor = self.impl_instance.result_processor(dialect, coltype)
 
-    def process(value):
+    def process(value: Any) -> Any:
       if value is None:
         return None
       if isinstance(value, (int, float)):
