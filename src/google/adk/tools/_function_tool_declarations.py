@@ -40,6 +40,9 @@ import pydantic
 from pydantic import create_model
 from pydantic import fields as pydantic_fields
 
+from ..utils.variant_utils import get_google_llm_variant
+from ..utils.variant_utils import GoogleLLMVariant
+
 
 def _get_function_fields(
     func: Callable[..., Any],
@@ -95,6 +98,64 @@ def _get_function_fields(
     fields[name] = (ann, default)
 
   return fields
+
+
+def _flatten_optional_any_of(schema: dict[str, Any]) -> dict[str, Any]:
+  """Flattens `Optional[X]`-style `anyOf` schemas for Vertex AI.
+
+  Pydantic serializes `Optional[X]` fields as
+  `{"anyOf": [<X schema>, {"type": "null"}], ...}`. Vertex AI rejects such
+  schemas because the wrapping schema itself has no top-level `type` field
+  (see https://github.com/googleapis/python-genai/issues/1807), even though
+  the Gemini Developer API (AI Studio) accepts them as-is. This merges the
+  non-null branch into the parent schema and marks it `nullable` instead,
+  which Vertex AI accepts.
+
+  True unions with more than one non-null variant (e.g. `Union[int, str]`)
+  can't be losslessly flattened this way and are left untouched.
+  """
+  any_of = schema.get('anyOf')
+  if not isinstance(any_of, list) or len(any_of) != 2:
+    return schema
+
+  null_variants = [
+      variant
+      for variant in any_of
+      if isinstance(variant, dict) and variant.get('type') == 'null'
+  ]
+  non_null_variants = [
+      variant for variant in any_of if variant not in null_variants
+  ]
+  if len(null_variants) != 1 or len(non_null_variants) != 1:
+    return schema
+
+  flattened = dict(non_null_variants[0])
+  for key, value in schema.items():
+    if key != 'anyOf':
+      flattened.setdefault(key, value)
+  flattened['nullable'] = True
+  return flattened
+
+
+def _sanitize_json_schema_for_vertex(schema: Any) -> Any:
+  """Recursively rewrites `Optional[X]` `anyOf` schemas for Vertex AI.
+
+  Vertex AI's schema validator requires every (sub)schema to declare a
+  top-level `type`, which Pydantic's `anyOf`-based representation of
+  `Optional`/`Union` fields does not provide. This is only applied for the
+  Vertex AI backend since the Gemini Developer API (AI Studio) already
+  accepts the unmodified Pydantic schema.
+  """
+  if isinstance(schema, list):
+    return [_sanitize_json_schema_for_vertex(item) for item in schema]
+  if not isinstance(schema, dict):
+    return schema
+
+  sanitized = {
+      key: _sanitize_json_schema_for_vertex(value)
+      for key, value in schema.items()
+  }
+  return _flatten_optional_any_of(sanitized)
 
 
 def _build_parameters_json_schema(
@@ -228,9 +289,13 @@ def build_function_declaration_with_json_schema(
     >>> decl.name
     'paint_room'
   """
+  is_vertex_ai = get_google_llm_variant() == GoogleLLMVariant.VERTEX_AI
+
   # Handle Pydantic BaseModel classes
   if isinstance(func, type) and issubclass(func, pydantic.BaseModel):
     schema = func.model_json_schema()
+    if is_vertex_ai:
+      schema = _sanitize_json_schema_for_vertex(schema)
     description = inspect.cleandoc(func.__doc__) if func.__doc__ else None
     return types.FunctionDeclaration(
         name=func.__name__,
@@ -248,10 +313,14 @@ def build_function_declaration_with_json_schema(
 
   parameters_schema = _build_parameters_json_schema(func, ignore_params)
   if parameters_schema:
+    if is_vertex_ai:
+      parameters_schema = _sanitize_json_schema_for_vertex(parameters_schema)
     declaration.parameters_json_schema = parameters_schema
 
   response_schema = _build_response_json_schema(func)
   if response_schema:
+    if is_vertex_ai:
+      response_schema = _sanitize_json_schema_for_vertex(response_schema)
     declaration.response_json_schema = response_schema
 
   return declaration
