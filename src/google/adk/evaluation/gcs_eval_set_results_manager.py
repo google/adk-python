@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from google.cloud import exceptions as cloud_exceptions
 from google.cloud import storage
@@ -36,7 +37,7 @@ _EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
 class GcsEvalSetResultsManager(EvalSetResultsManager):
   """An EvalSetResultsManager that stores eval results in a GCS bucket."""
 
-  def __init__(self, bucket_name: str, **kwargs):
+  def __init__(self, bucket_name: str, **kwargs: Any) -> None:
     """Initializes the GcsEvalSetsManager.
 
     Args:
@@ -64,7 +65,7 @@ class GcsEvalSetResultsManager(EvalSetResultsManager):
 
   def _write_eval_set_result(
       self, blob_name: str, eval_set_result: EvalSetResult
-  ):
+  ) -> None:
     """Writes an EvalSetResult to GCS."""
     blob = self.bucket.blob(blob_name)
     blob.upload_from_string(

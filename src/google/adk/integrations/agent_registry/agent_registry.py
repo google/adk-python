@@ -106,7 +106,7 @@ class AgentRegistrySingleMcpToolset(McpToolset):
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> List[BaseTool]:
-    tools = await super().get_tools(readonly_context)
+    tools: List[BaseTool] = await super().get_tools(readonly_context)
 
     # Noop if there is no destination_resource_id
     if self.destination_resource_id is None:
@@ -264,7 +264,8 @@ class AgentRegistry:
       else:
         response = self._session.get(url, headers=headers, params=params)
       response.raise_for_status()
-      return response.json()
+      data: Dict[str, Any] = response.json()
+      return data
     except requests.exceptions.HTTPError as e:
       raise RuntimeError(
           f"API request failed with status {e.response.status_code}:"

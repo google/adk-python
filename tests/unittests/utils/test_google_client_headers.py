@@ -86,3 +86,49 @@ def test_get_tracking_http_options():
       "x-goog-api-client": _EXPECTED_BASE_HEADER,
       "user-agent": _EXPECTED_BASE_HEADER,
   }
+
+
+def test_get_tracking_headers_with_framework_label():
+  """framework_label flows into both tracking header values."""
+  expected = (
+      f"google-adk/{version.__version__}+managed_agent"
+      f" gl-python/{sys.version.split()[0]}"
+  )
+  headers = _google_client_headers.get_tracking_headers(
+      framework_label="managed_agent"
+  )
+  assert headers == {
+      "x-goog-api-client": expected,
+      "user-agent": expected,
+  }
+
+
+def test_merge_tracking_headers_with_framework_label():
+  """framework_label flows into the merged tracking header values."""
+  expected = (
+      f"google-adk/{version.__version__}+managed_agent"
+      f" gl-python/{sys.version.split()[0]}"
+  )
+  headers = _google_client_headers.merge_tracking_headers(
+      None, framework_label="managed_agent"
+  )
+  assert headers == {
+      "x-goog-api-client": expected,
+      "user-agent": expected,
+  }
+
+
+def test_merge_tracking_headers_with_framework_label_preserves_custom_headers():
+  """The suffix is applied while unrelated custom headers pass through."""
+  expected = (
+      f"google-adk/{version.__version__}+managed_agent"
+      f" gl-python/{sys.version.split()[0]}"
+  )
+  headers = _google_client_headers.merge_tracking_headers(
+      {"x-custom": "v"}, framework_label="managed_agent"
+  )
+  assert headers == {
+      "x-goog-api-client": expected,
+      "user-agent": expected,
+      "x-custom": "v",
+  }

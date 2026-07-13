@@ -40,7 +40,9 @@ import random
 import re
 import time
 from types import MappingProxyType
+from types import TracebackType
 from typing import Any
+from typing import AsyncIterator
 from typing import Callable
 from typing import Coroutine
 from typing import Optional
@@ -142,7 +144,7 @@ def _derive_scope(
 
 # Track all living plugin instances so the fork handler can reset
 # them proactively in the child, before _ensure_started runs.
-_LIVE_PLUGINS: weakref.WeakSet = weakref.WeakSet()
+_LIVE_PLUGINS: weakref.WeakSet[BigQueryAgentAnalyticsPlugin] = weakref.WeakSet()
 
 
 def _after_fork_in_child() -> None:
@@ -232,7 +234,7 @@ def _format_content(
   return " | ".join(parts), truncated
 
 
-def _find_transfer_target(agent, agent_name: str):
+def _find_transfer_target(agent: Any, agent_name: str) -> Any:
   """Find a transfer target agent by name in the accessible agent tree.
 
   Searches the current agent's sub-agents, parent, and peer agents
@@ -863,7 +865,7 @@ class _SpanRecord:
   first_token_time: Optional[float] = None
 
 
-_span_records_ctx: contextvars.ContextVar[list[_SpanRecord]] = (
+_span_records_ctx: contextvars.ContextVar[Optional[list[_SpanRecord]]] = (
     contextvars.ContextVar("_bq_analytics_span_records", default=None)
 )
 
@@ -1181,7 +1183,7 @@ class BatchProcessor:
     self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
         maxsize=queue_max_size
     )
-    self._batch_processor_task: Optional[asyncio.Task] = None
+    self._batch_processor_task: Optional[asyncio.Task[None]] = None
     self._shutdown = False
 
     # Running tally of events/rows dropped without ever being written, keyed by
@@ -1204,7 +1206,7 @@ class BatchProcessor:
     # Wait for all items in the queue to be processed
     await self._queue.join()
 
-  async def start(self):
+  async def start(self) -> None:
     """Starts the batch writer worker task."""
     if self._batch_processor_task is None:
       self._batch_processor_task = asyncio.create_task(self._batch_writer())
@@ -1257,7 +1259,7 @@ class BatchProcessor:
     Returns:
         pa.RecordBatch for writing.
     """
-    data = {field.name: [] for field in self.arrow_schema}
+    data: dict[str, list[Any]] = {field.name: [] for field in self.arrow_schema}
     for row in rows:
       for field in self.arrow_schema:
         value = row.get(field.name)
@@ -1415,10 +1417,10 @@ class BatchProcessor:
     while attempt <= self.retry_config.max_retries:
       try:
 
-        async def requests_iter():
+        async def requests_iter() -> AsyncIterator[Any]:
           yield req
 
-        async def perform_write():
+        async def perform_write() -> None:
           # The AppendRows streaming RPC does not auto-populate the
           # request-routing header, so writes to any region other than
           # the US multiregion fail with a "session not found" /
@@ -2404,7 +2406,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       config: Optional[BigQueryLoggerConfig] = None,
       location: str = "US",
       credentials: Optional[google.auth.credentials.Credentials] = None,
-      **kwargs,
+      **kwargs: Any,
   ) -> None:
     """Initializes the instance.
 
@@ -2467,8 +2469,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
-    self._write_stream_name = None  # Resolved stream name
-    self._executor = None
+    self._write_stream_name: Optional[str] = None  # Resolved stream name
+    self._executor: Optional[ThreadPoolExecutor] = None
     self.offloader: Optional[GCSOffloader] = None
     self.parser: Optional[HybridContentParser] = None
     self._schema = None
@@ -2576,7 +2578,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     # grpc.aio clients are loop-bound, so we create one per event loop.
 
-    def get_credentials():
+    def get_credentials() -> google.auth.credentials.Credentials:
       creds, _ = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
       return creds
 
@@ -2657,7 +2659,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         totals[reason] = totals.get(reason, 0) + count
     return totals
 
-  async def _lazy_setup(self, **kwargs) -> None:
+  async def _lazy_setup(self, **kwargs: Any) -> None:
     """Performs lazy initialization of BigQuery clients and resources."""
     if self._started:
       return
@@ -3064,7 +3066,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._is_shutting_down = False
     self._started = False
 
-  def __getstate__(self):
+  def __getstate__(self) -> dict[str, Any]:
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
     state["_setup_lock"] = None
@@ -3080,7 +3082,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_init_pid"] = 0
     return state
 
-  def __setstate__(self, state):
+  def __setstate__(self, state: dict[str, Any]) -> None:
     """Custom unpickling to restore state."""
     # Backfill keys that may be absent in pickled state from older
     # code versions so _ensure_started does not raise AttributeError.
@@ -3144,10 +3146,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     await self._ensure_started()
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     await self.shutdown()
 
-  async def _ensure_started(self, **kwargs) -> None:
+  async def _ensure_started(self, **kwargs: Any) -> None:
     """Ensures that the plugin is started and initialized."""
     # _init_pid == 0 means the plugin was unpickled and has never been
     # initialized in this process (the pickle sentinel set by

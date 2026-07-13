@@ -157,7 +157,9 @@ def _wrap_content_param_in_step(
     'convert_part_to_interaction_content is deprecated and will be removed in'
     ' future versions'
 )
-def convert_part_to_interaction_content(part: types.Part) -> dict | None:
+def convert_part_to_interaction_content(
+    part: types.Part,
+) -> dict[str, Any] | None:
   """Convert a types.Part to an interaction content dict.
 
   Args:

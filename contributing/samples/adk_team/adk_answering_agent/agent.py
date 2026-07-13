@@ -15,6 +15,7 @@
 from adk_answering_agent.gemini_assistant.agent import root_agent as gemini_assistant_agent
 from adk_answering_agent.settings import BOT_RESPONSE_LABEL
 from adk_answering_agent.settings import IS_INTERACTIVE
+from adk_answering_agent.settings import LLM_MODEL_NAME
 from adk_answering_agent.settings import OWNER
 from adk_answering_agent.settings import REPO
 from adk_answering_agent.settings import VERTEXAI_DATASTORE_ID
@@ -38,7 +39,7 @@ else:
 
 
 root_agent = Agent(
-    model="gemini-3.5-flash",
+    model=LLM_MODEL_NAME,
     name="adk_answering_agent",
     description="Answer questions about ADK repo.",
     instruction=f"""

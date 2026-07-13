@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import contextlib
 import copy
 from functools import cached_property
@@ -76,7 +77,7 @@ class _ResourceExhaustedError(ClientError):
         response=client_error.response,
     )
 
-  def __str__(self):
+  def __str__(self) -> str:
     # We don't get override the actual message on ClientError, so we override
     # this method instead. This will ensure that when the exception is
     # stringified (for either publishing the exception on console or to logs)
@@ -487,8 +488,10 @@ class Gemini(BaseLlm):
 
     from ..tools.computer_use.computer_use_toolset import ComputerUseToolset
 
-    async def convert_wait_to_wait_5_seconds(wait_func):
-      async def wait_5_seconds(tool_context=None):
+    async def convert_wait_to_wait_5_seconds(
+        wait_func: Callable[..., Any],
+    ) -> Callable[..., Any]:
+      async def wait_5_seconds(tool_context: Any = None) -> Any:
         return await wait_func(5, tool_context=tool_context)
 
       return wait_5_seconds
@@ -666,7 +669,7 @@ Raw response:
 
 def _remove_display_name_if_present(
     data_obj: Union[types.Blob, types.FileData, None],
-):
+) -> None:
   """Sets display_name to None for the Gemini API (non-Vertex) backend.
 
   This backend does not support the display_name parameter for file uploads,

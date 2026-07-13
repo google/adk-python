@@ -32,7 +32,7 @@ from .gcp_auth_provider_scheme import GcpAuthProviderScheme
 class GcpAuthProvider(BaseAuthProvider):
   """An auth provider that uses Credentials service to generate access tokens."""
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._iam_connector_provider = _IamConnectorCredentialsProvider()
     self._agent_identity_provider = _AgentIdentityCredentialsProvider()
 

@@ -504,7 +504,7 @@ def message_to_generate_content_response(
   )
 
 
-def _update_type_string(value: Any):
+def _update_type_string(value: Any) -> None:
   """Lowercases nested JSON schema type strings for Anthropic compatibility."""
   if isinstance(value, list):
     for item in value:

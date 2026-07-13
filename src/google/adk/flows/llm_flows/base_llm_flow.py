@@ -519,7 +519,7 @@ class BaseLlmFlow(ABC):
   This flow ends when it transfers to another agent.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self.request_processors: list[BaseLlmRequestProcessor] = []
     self.response_processors: list[BaseLlmResponseProcessor] = []
 
@@ -768,7 +768,7 @@ class BaseLlmFlow(ABC):
       self,
       llm_connection: BaseLlmConnection,
       invocation_context: InvocationContext,
-  ):
+  ) -> None:
     """Sends data to model."""
     while True:
       live_request_queue = invocation_context.live_request_queue

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from google.auth.credentials import Credentials
 
 from . import client
@@ -25,7 +27,7 @@ def list_buckets(
     credentials: Credentials,
     page_size: int | None = None,
     page_token: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
   """List GCS bucket names in a Google Cloud project.
 
   Args:
@@ -44,7 +46,7 @@ def list_buckets(
     gcs_client = client.get_gcs_client(
         project=project_id, credentials=credentials
     )
-    list_kwargs = {}
+    list_kwargs: dict[str, Any] = {}
     if page_size is not None:
       list_kwargs["max_results"] = page_size
     if page_token is not None:
@@ -80,7 +82,7 @@ def create_bucket(
     bucket_name: str,
     credentials: Credentials,
     location: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
   """Create a new GCS bucket.
 
   Args:
@@ -115,7 +117,7 @@ def update_bucket(
     credentials: Credentials,
     versioning_enabled: bool | None = None,
     uniform_bucket_level_access_enabled: bool | None = None,
-) -> dict:
+) -> dict[str, Any]:
   """Update properties of a GCS bucket.
 
   Args:
@@ -156,7 +158,9 @@ def update_bucket(
     }
 
 
-def delete_bucket(*, bucket_name: str, credentials: Credentials) -> dict:
+def delete_bucket(
+    *, bucket_name: str, credentials: Credentials
+) -> dict[str, Any]:
   """Delete a GCS bucket.
 
   Args:
