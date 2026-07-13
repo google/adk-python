@@ -29,7 +29,10 @@ def decode_model(
     data: Optional[dict[str, Any]], model_cls: Type[M]
 ) -> Optional[M]:
   """Decodes a pydantic model object from a JSON dictionary."""
-  if data is None:
+  # Guard against non-dict values (e.g. a legacy/corrupted "null" string
+  # persisted in place of SQL NULL). Passing those to model_validate would
+  # raise a ValidationError and break session replay in get_session().
+  if not isinstance(data, dict):
     return None
   return model_cls.model_validate(data)
 
