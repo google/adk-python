@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import dataclasses
@@ -245,7 +246,8 @@ async def _run_pre_processor(
         content=code_content,
     )
 
-    code_execution_result = code_executor.execute_code(
+    code_execution_result = await asyncio.to_thread(
+        code_executor.execute_code,
         invocation_context,
         CodeExecutionInput(
             code=code_str,
@@ -355,7 +357,8 @@ async def _run_post_processor(
       actions=EventActions(),
   )
 
-  code_execution_result = code_executor.execute_code(
+  code_execution_result = await asyncio.to_thread(
+      code_executor.execute_code,
       invocation_context,
       CodeExecutionInput(
           code=code_str,
