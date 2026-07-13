@@ -23,6 +23,7 @@ auth (ADC) is configured. Run explicitly:
 from __future__ import annotations
 
 import os
+import re
 
 from google.adk.agents import ManagedAgent
 from google.adk.runners import Runner
@@ -31,6 +32,7 @@ from google.adk.tools import google_search
 from google.adk.tools import RemoteMcpServer
 from google.adk.utils.context_utils import Aclosing
 from google.genai import types
+import httpx
 import pytest
 
 _AGENT_ID = 'antigravity-preview-05-2026'
@@ -92,6 +94,86 @@ async def test_google_search_project_hail_mary():
 
 
 @pytest.mark.asyncio
+async def test_interactions_request_carries_managed_agent_suffix(monkeypatch):
+  """The outgoing Interactions request must carry google-adk/<ver>+managed_agent.
+
+  Guards the per-request tracking suffix at runtime. Unit tests only prove ADK
+  builds the right extra_headers dict; this proves the suffix survives onto the
+  actual outgoing HTTP request. Hooks httpx.AsyncClient.send (the layer every
+  google-genai transport funnels through), runs a real ManagedAgent turn, and
+  inspects the first interaction request's headers. Runs on both backends by
+  default (see conftest llm_backend), covering the Gemini Developer API and
+  Vertex interaction endpoints.
+  """
+  captured: list[dict[str, str]] = []
+  orig_send = httpx.AsyncClient.send
+
+  async def _spy_send(self, request, **kwargs):
+    if 'interaction' in str(request.url).lower():
+      captured.append({
+          'x-goog-api-client': request.headers.get('x-goog-api-client', ''),
+          'user-agent': request.headers.get('user-agent', ''),
+      })
+    return await orig_send(self, request, **kwargs)
+
+  monkeypatch.setattr(httpx.AsyncClient, 'send', _spy_send)
+
+  agent = ManagedAgent(
+      name='managed_header_agent',
+      agent_id=_AGENT_ID,
+      environment={'type': 'remote'},
+      tools=[google_search],
+  )
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name='managed_agent_it',
+      agent=agent,
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name='managed_agent_it', user_id='test_user'
+  )
+
+  # Request headers are set before any response is produced, so stop streaming
+  # as soon as an interaction request is captured. This keeps the test fast and
+  # independent of (non-deterministic) model output; any error after capture is
+  # irrelevant to the assertion.
+  run_error = None
+  try:
+    async with Aclosing(
+        runner.run_async(
+            user_id='test_user',
+            session_id=session.id,
+            new_message=types.Content(
+                role='user', parts=[types.Part.from_text(text='Say hi.')]
+            ),
+        )
+    ) as agen:
+      async for _ in agen:
+        if captured:
+          break
+  except Exception as e:  # noqa: BLE001 - header is captured before any later error
+    run_error = e
+
+  assert captured, (
+      'no Interactions request was observed on the wire; '
+      f'run raised: {run_error!r}'
+  )
+  api_client = captured[0]['x-goog-api-client']
+  user_agent = captured[0]['user-agent']
+  print('\n=== captured interaction request headers ===')
+  print('x-goog-api-client:', api_client)
+  print('user-agent:       ', user_agent)
+  assert re.search(r'google-adk/[^ ]*\+managed_agent', api_client), (
+      'expected google-adk/<version>+managed_agent in x-goog-api-client; '
+      f'got: {api_client!r}'
+  )
+  assert (
+      '+managed_agent' in user_agent
+  ), f'expected +managed_agent in user-agent; got: {user_agent!r}'
+
+
+@pytest.mark.asyncio
 async def test_code_execution_prime_sum():
   agent = ManagedAgent(
       name='managed_code_execution_agent',
@@ -145,7 +227,7 @@ async def test_remote_mcp_maps_grounding_lite():
       tools=[
           RemoteMcpServer(
               name='maps_grounding_lite',
-              url='https://mapstools.googleapis.com/mcp',
+              url='https://mapstools.mtls.googleapis.com/mcp',
               header_provider=lambda ctx: {
                   'X-Goog-Api-Key': os.environ['GOOGLE_MAPS_API_KEY']
               },

@@ -659,7 +659,11 @@ class LiteLLMClient:
   """Provides acompletion method (for better testability)."""
 
   async def acompletion(
-      self, model, messages, tools, **kwargs
+      self,
+      model: Any,
+      messages: Any,
+      tools: Any,
+      **kwargs: Any,
   ) -> Union[ModelResponse, CustomStreamWrapper]:
     """Asynchronously calls acompletion.
 
@@ -682,7 +686,12 @@ class LiteLLMClient:
     )
 
   def completion(
-      self, model, messages, tools, stream=False, **kwargs
+      self,
+      model: Any,
+      messages: Any,
+      tools: Any,
+      stream: bool = False,
+      **kwargs: Any,
   ) -> Union[ModelResponse, CustomStreamWrapper]:
     """Synchronously calls completion. This is used for streaming only.
 
@@ -707,7 +716,7 @@ class LiteLLMClient:
     )
 
 
-def _safe_json_serialize(obj) -> str:
+def _safe_json_serialize(obj: object) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
   Args:
@@ -807,7 +816,7 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
       if isinstance(value, int):
         return value
     elif isinstance(details, list):
-      total = sum(
+      total: int = sum(
           item.get("cached_tokens", 0)
           for item in details
           if isinstance(item, dict)
@@ -1696,7 +1705,7 @@ def _parse_tool_calls_from_text(
     text_block: str,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
   """Extracts inline JSON tool calls from LiteLLM text responses."""
-  tool_calls = []
+  tool_calls: list[ChatCompletionMessageToolCall] = []
   if not text_block:
     return tool_calls, None
 
@@ -1793,7 +1802,7 @@ TYPE_LABELS = {
 }
 
 
-def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
+def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   """Recursively converts a schema object or dict to a pure-python dict.
 
   Args:
@@ -1839,7 +1848,7 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
 
 def _function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
-) -> dict:
+) -> dict[str, Any]:
   """Converts a types.FunctionDeclaration to an openapi spec dictionary.
 
   Args:
@@ -2305,9 +2314,9 @@ async def _get_completion_inputs(
     model: str,
 ) -> Tuple[
     List[Message],
-    Optional[List[Dict]],
+    Optional[List[Dict[str, Any]]],
     Optional[Dict[str, Any]],
-    Optional[Dict],
+    Optional[Dict[str, Any]],
 ]:
   """Converts an LlmRequest to litellm inputs and extracts generation params.
 
@@ -2346,7 +2355,7 @@ async def _get_completion_inputs(
   messages = _ensure_tool_results(messages, model)
 
   # 2. Convert tool declarations
-  tools: Optional[List[Dict]] = None
+  tools: Optional[List[Dict[str, Any]]] = None
   if (
       llm_request.config
       and llm_request.config.tools
@@ -2366,7 +2375,7 @@ async def _get_completion_inputs(
     )
 
   # 4. Extract generation parameters
-  generation_params: dict | None = None
+  generation_params: dict[str, Any] | None = None
   if llm_request.config:
     config_dict = llm_request.config.model_dump(exclude_none=True)
     # Generate LiteLlm parameters here,
@@ -2655,7 +2664,7 @@ class LiteLlm(BaseLlm):
 
   _additional_args: Dict[str, Any] = None
 
-  def __init__(self, model: str, **kwargs):
+  def __init__(self, model: str, **kwargs: Any) -> None:
     """Initializes the LiteLlm class.
 
     Args:
@@ -2710,7 +2719,7 @@ class LiteLlm(BaseLlm):
       # LiteLLM does not support both tools and functions together.
       tools = None
 
-    completion_args = {
+    completion_args: dict[str, Any] = {
         "model": effective_model,
         "messages": normalized_messages,
         "tools": tools,
@@ -2757,7 +2766,9 @@ class LiteLlm(BaseLlm):
       text = ""
       reasoning_parts: List[types.Part] = []
       # Track function calls by index
-      function_calls = {}  # index -> {name, args, id}
+      function_calls: dict[int, dict[str, Any]] = (
+          {}
+      )  # index -> {name, args, id}
       tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}

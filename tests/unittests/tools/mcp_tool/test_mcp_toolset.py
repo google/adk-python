@@ -291,6 +291,26 @@ class TestMcpToolset:
     assert tools[3].name == "load_mcp_resource"
 
   @pytest.mark.asyncio
+  async def test_get_tools_returns_sorted_by_name(self):
+    """Test that get_tools returns tools sorted by name for cache stability."""
+    # Mock tools from MCP server in non-alphabetical order.
+    mock_tools = [
+        MockMCPTool("charlie"),
+        MockMCPTool("alpha"),
+        MockMCPTool("bravo"),
+    ]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["alpha", "bravo", "charlie"]
+
+  @pytest.mark.asyncio
   async def test_get_tools_with_list_filter(self):
     """Test getting tools with list-based filtering."""
     # Mock tools from MCP server

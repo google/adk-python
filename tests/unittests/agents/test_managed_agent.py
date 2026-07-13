@@ -480,8 +480,8 @@ def test_run_async_merges_run_config_headers_into_extra_headers():
 
   extra_headers = client.aio.interactions.calls[0]['extra_headers']
   assert extra_headers['x-custom'] == 'v'
-  assert 'google-adk/' in extra_headers['x-goog-api-client']
-  assert 'google-adk/' in extra_headers['user-agent']
+  assert '+managed_agent' in extra_headers['x-goog-api-client']
+  assert '+managed_agent' in extra_headers['user-agent']
 
 
 def test_run_async_sends_tracking_headers_without_run_config_headers():
@@ -493,10 +493,9 @@ def test_run_async_sends_tracking_headers_without_run_config_headers():
 
   asyncio.run(_drain(agent._run_async_impl(ctx)))
 
-  assert (
-      client.aio.interactions.calls[0]['extra_headers']
-      == get_tracking_headers()
-  )
+  assert client.aio.interactions.calls[0][
+      'extra_headers'
+  ] == get_tracking_headers(framework_label='managed_agent')
 
 
 def test_run_async_sends_tracking_headers_when_http_options_has_no_headers():
@@ -509,10 +508,9 @@ def test_run_async_sends_tracking_headers_when_http_options_has_no_headers():
 
   asyncio.run(_drain(agent._run_async_impl(ctx)))
 
-  assert (
-      client.aio.interactions.calls[0]['extra_headers']
-      == get_tracking_headers()
-  )
+  assert client.aio.interactions.calls[0][
+      'extra_headers'
+  ] == get_tracking_headers(framework_label='managed_agent')
 
 
 def test_run_async_yields_multiple_events_in_order(monkeypatch):

@@ -34,7 +34,7 @@ _lazy_imports = {
 }
 
 
-def __getattr__(name: str) -> any:
+def __getattr__(name: str) -> typing.Any:
   if name in _lazy_imports:
     import importlib
 

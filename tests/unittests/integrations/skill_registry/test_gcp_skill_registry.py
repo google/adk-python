@@ -14,12 +14,12 @@
 
 """Tests for GCP Skill Registry."""
 
-import base64
+import io
 import os
 from unittest import mock
 import zipfile
 
-from google.adk.integrations.skill_registry.gcp_skill_registry import GCPSkillRegistry
+from google.adk.integrations.skill_registry import gcp_skill_registry
 import pytest
 
 
@@ -36,20 +36,37 @@ def mock_env():
     yield
 
 
-@pytest.fixture
-def mock_vertex_client():
-  """Fixture to mock vertexai.Client."""
+@pytest.fixture(autouse=True)
+def mock_google_auth():
+  """Fixture to mock google.auth.default."""
+  mock_creds = mock.MagicMock()
+  mock_creds.valid = True
+  mock_creds.token = "fake-token"
+  mock_creds.quota_project_id = None
   with mock.patch(
-      "google.adk.dependencies.vertexai.vertexai.Client"
-  ) as mock_client_class:
-    mock_client = mock_client_class.return_value
-    yield mock_client
+      "google.auth.default", return_value=(mock_creds, "test-project")
+  ):
+    yield mock_creds
+
+
+@pytest.fixture(autouse=True)
+def disable_mtls_by_default():
+  """Fixture to disable mTLS by default for unit tests."""
+  with (
+      mock.patch(
+          "google.adk.utils._mtls_utils.use_client_cert_effective",
+          return_value=False,
+      ),
+      mock.patch(
+          "google.auth.transport.mtls.has_default_client_cert_source",
+          return_value=False,
+      ),
+  ):
+    yield
 
 
 def _create_fake_zip_bytes():
   """Creates a fake zip file in memory and returns its bytes."""
-  import io
-
   zip_buffer = io.BytesIO()
   with zipfile.ZipFile(zip_buffer, "w") as z:
     z.writestr(
@@ -59,86 +76,129 @@ def _create_fake_zip_bytes():
 
 
 @pytest.mark.asyncio
-async def test_get_skill_success(mock_vertex_client):
+async def test_get_skill_success():
   """Verifies that get_skill successfully fetches and loads a skill in memory."""
-  registry = GCPSkillRegistry()
+  registry = gcp_skill_registry.GCPSkillRegistry()
 
   fake_zip = _create_fake_zip_bytes()
-  fake_zip_base64 = base64.b64encode(fake_zip).decode("utf-8")
 
-  mock_skill_resource = mock.MagicMock()
-  mock_skill_resource.zipped_filesystem = fake_zip_base64
+  mock_response1 = mock.MagicMock()
+  mock_response1.status_code = 200
+  mock_response1.json.return_value = {
+      "name": "projects/test-project/locations/us-central1/skills/my-skill",
+      "defaultRevision": (
+          "projects/test-project/locations/us-central1/skills/my-skill/revisions/rev-123"
+      ),
+  }
 
-  mock_vertex_client.aio.skills.get = mock.AsyncMock(
-      return_value=mock_skill_resource
-  )
+  mock_response2 = mock.MagicMock()
+  mock_response2.status_code = 200
+  mock_response2.content = fake_zip
 
-  skill = await registry.get_skill(name="my-skill")
+  async def mock_get(url, *unused_args, **kwargs):
+    if "alt=media" in str(url) or (
+        kwargs.get("params") and kwargs.get("params").get("alt") == "media"
+    ):
+      return mock_response2
+    return mock_response1
+
+  with mock.patch(
+      "httpx.AsyncClient.get", side_effect=mock_get
+  ) as mock_get_called:
+    skill = await registry.get_skill(name="my-skill")
 
   assert skill.frontmatter.name == "my-skill"
   assert skill.frontmatter.description == "test"
   assert skill.instructions == "# My Skill"
-  mock_vertex_client.aio.skills.get.assert_called_once_with(
-      name="projects/test-project/locations/us-central1/skills/my-skill"
-  )
+
+  mock_get_called.assert_has_calls([
+      mock.call(
+          "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills/my-skill",
+          headers={
+              "Authorization": "Bearer fake-token",
+              "Content-Type": "application/json",
+              "x-goog-user-project": "test-project",
+          },
+          params=None,
+      ),
+      mock.call(
+          "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills/my-skill/revisions/rev-123",
+          headers={
+              "Authorization": "Bearer fake-token",
+              "Content-Type": "application/json",
+              "x-goog-user-project": "test-project",
+          },
+          params={"alt": "media"},
+      ),
+  ])
 
 
 @pytest.mark.asyncio
-async def test_search_skills_success(mock_vertex_client):
+async def test_search_skills_success():
   """Verifies that search_skills successfully returns frontmatter list."""
-  registry = GCPSkillRegistry()
-
-  mock_skill1 = mock.MagicMock()
-  mock_skill1.skill_name = (
-      "projects/test-project/locations/us-central1/skills/skill1"
-  )
-  mock_skill1.description = "Description 1"
-
-  mock_skill2 = mock.MagicMock()
-  mock_skill2.skill_name = (
-      "projects/test-project/locations/us-central1/skills/skill2"
-  )
-  mock_skill2.description = "Description 2"
+  registry = gcp_skill_registry.GCPSkillRegistry()
 
   mock_response = mock.MagicMock()
-  mock_response.retrieved_skills = [mock_skill1, mock_skill2]
+  mock_response.status_code = 200
+  mock_response.json.return_value = {
+      "skills": [
+          {
+              "name": (
+                  "projects/test-project/locations/us-central1/skills/skill1"
+              ),
+              "description": "Description 1",
+          },
+          {
+              "name": (
+                  "projects/test-project/locations/us-central1/skills/skill2"
+              ),
+              "description": "Description 2",
+          },
+      ]
+  }
 
-  mock_vertex_client.aio.skills.retrieve = mock.AsyncMock(
-      return_value=mock_response
-  )
-
-  results = await registry.search_skills(query="query")
+  with mock.patch(
+      "httpx.AsyncClient.get", return_value=mock_response
+  ) as mock_get_called:
+    results = await registry.search_skills(query="query")
 
   assert len(results) == 2
   assert results[0].name == "skill1"
   assert results[0].description == "Description 1"
   assert results[1].name == "skill2"
   assert results[1].description == "Description 2"
-  mock_vertex_client.aio.skills.retrieve.assert_called_once_with(query="query")
 
-
-@pytest.mark.asyncio
-async def test_get_skill_raises_on_missing_zip(mock_vertex_client):
-  """Verifies that get_skill raises error if zip filesystem is missing."""
-  registry = GCPSkillRegistry()
-
-  mock_skill_resource = mock.MagicMock()
-  mock_skill_resource.zipped_filesystem = None
-
-  mock_vertex_client.aio.skills.get = mock.AsyncMock(
-      return_value=mock_skill_resource
+  mock_get_called.assert_called_once_with(
+      "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills:search",
+      headers={
+          "Authorization": "Bearer fake-token",
+          "Content-Type": "application/json",
+          "x-goog-user-project": "test-project",
+      },
+      params={"search_string": "query"},
   )
 
-  with pytest.raises(ValueError, match="does not contain zipped filesystem"):
-    await registry.get_skill(name="my-skill")
+
+@pytest.mark.asyncio
+async def test_get_skill_raises_on_missing_zip():
+  """Verifies that get_skill raises error if zip filesystem is missing."""
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  mock_response = mock.MagicMock()
+  mock_response.status_code = 200
+  mock_response.json.return_value = {
+      "name": "projects/test-project/locations/us-central1/skills/my-skill",
+  }
+
+  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+    with pytest.raises(ValueError, match="does not contain default revision"):
+      await registry.get_skill(name="my-skill")
 
 
 @pytest.mark.asyncio
-async def test_get_skill_raises_on_zip_slip(mock_vertex_client):
+async def test_get_skill_raises_on_zip_slip():
   """Verifies that get_skill raises error if zip contains dangerous paths."""
-  registry = GCPSkillRegistry()
-
-  import io
+  registry = gcp_skill_registry.GCPSkillRegistry()
 
   zip_buffer = io.BytesIO()
   with zipfile.ZipFile(zip_buffer, "w") as z:
@@ -147,25 +207,36 @@ async def test_get_skill_raises_on_zip_slip(mock_vertex_client):
         "SKILL.md", "---\nname: my-skill\ndescription: test\n---\n# My Skill\n"
     )
   fake_zip = zip_buffer.getvalue()
-  fake_zip_base64 = base64.b64encode(fake_zip).decode("utf-8")
 
-  mock_skill_resource = mock.MagicMock()
-  mock_skill_resource.zipped_filesystem = fake_zip_base64
+  mock_response1 = mock.MagicMock()
+  mock_response1.status_code = 200
+  mock_response1.json.return_value = {
+      "name": "projects/test-project/locations/us-central1/skills/my-skill",
+      "defaultRevision": (
+          "projects/test-project/locations/us-central1/skills/my-skill/revisions/rev-123"
+      ),
+  }
 
-  mock_vertex_client.aio.skills.get = mock.AsyncMock(
-      return_value=mock_skill_resource
-  )
+  mock_response2 = mock.MagicMock()
+  mock_response2.status_code = 200
+  mock_response2.content = fake_zip
 
-  with pytest.raises(ValueError, match="Dangerous zip entry ignored"):
-    await registry.get_skill(name="my-skill")
+  async def mock_get(url, *unused_args, **kwargs):
+    if "alt=media" in str(url) or (
+        kwargs.get("params") and kwargs.get("params").get("alt") == "media"
+    ):
+      return mock_response2
+    return mock_response1
+
+  with mock.patch("httpx.AsyncClient.get", side_effect=mock_get):
+    with pytest.raises(ValueError, match="Dangerous zip entry ignored"):
+      await registry.get_skill(name="my-skill")
 
 
 @pytest.mark.asyncio
-async def test_get_skill_raises_on_invalid_skill_name(mock_vertex_client):
+async def test_get_skill_raises_on_invalid_skill_name():
   """Verifies that get_skill raises error if skill name is invalid."""
-  registry = GCPSkillRegistry()
-
-  import io
+  registry = gcp_skill_registry.GCPSkillRegistry()
 
   zip_buffer = io.BytesIO()
   with zipfile.ZipFile(zip_buffer, "w") as z:
@@ -173,14 +244,137 @@ async def test_get_skill_raises_on_invalid_skill_name(mock_vertex_client):
         "SKILL.md", "---\nname: ../evil\ndescription: test\n---\n# My Skill\n"
     )
   fake_zip = zip_buffer.getvalue()
-  fake_zip_base64 = base64.b64encode(fake_zip).decode("utf-8")
 
-  mock_skill_resource = mock.MagicMock()
-  mock_skill_resource.zipped_filesystem = fake_zip_base64
+  mock_response1 = mock.MagicMock()
+  mock_response1.status_code = 200
+  mock_response1.json.return_value = {
+      "name": "projects/test-project/locations/us-central1/skills/my-skill",
+      "defaultRevision": (
+          "projects/test-project/locations/us-central1/skills/my-skill/revisions/rev-123"
+      ),
+  }
 
-  mock_vertex_client.aio.skills.get = mock.AsyncMock(
-      return_value=mock_skill_resource
-  )
+  mock_response2 = mock.MagicMock()
+  mock_response2.status_code = 200
+  mock_response2.content = fake_zip
 
-  with pytest.raises(ValueError, match="Invalid skill name in SKILL.md"):
-    await registry.get_skill(name="my-skill")
+  async def mock_get(url, *unused_args, **kwargs):
+    if "alt=media" in str(url) or (
+        kwargs.get("params") and kwargs.get("params").get("alt") == "media"
+    ):
+      return mock_response2
+    return mock_response1
+
+  with mock.patch("httpx.AsyncClient.get", side_effect=mock_get):
+    with pytest.raises(ValueError, match="Invalid skill name in SKILL.md"):
+      await registry.get_skill(name="my-skill")
+
+
+def test_constructor_configures_base_url():
+  """Verifies that constructor configures base URL from environment."""
+  # Case 1: Environment variable fallback
+  with mock.patch.dict(
+      os.environ, {"AGENT_REGISTRY_ENDPOINT": "https://staging.endpoint.com"}
+  ):
+    registry = gcp_skill_registry.GCPSkillRegistry()
+    assert registry.base_url == "https://staging.endpoint.com"
+
+  # Case 2: Default fallback
+  registry = gcp_skill_registry.GCPSkillRegistry()
+  assert registry.base_url == "https://agentregistry.googleapis.com/v1alpha"
+
+
+# pylint: disable=protected-access
+def test_lazy_load_credentials():
+  """Verifies that google.auth.default is not called in constructor."""
+  with mock.patch("google.auth.default") as mock_auth:
+    registry = gcp_skill_registry.GCPSkillRegistry()
+    mock_auth.assert_not_called()
+    assert registry._credentials is None
+
+
+def test_constructor_configures_mtls_base_url():
+  """Verifies that constructor configures base URL when mTLS is enabled."""
+  mock_cert_source = mock.MagicMock(return_value=(b"fake-cert", b"fake-key"))
+  with (
+      mock.patch(
+          "google.adk.utils._mtls_utils.use_client_cert_effective",
+          return_value=True,
+      ),
+      mock.patch(
+          "google.auth.transport.mtls.has_default_client_cert_source",
+          return_value=True,
+      ),
+      mock.patch(
+          "google.auth.transport.mtls.default_client_cert_source",
+          return_value=mock_cert_source,
+      ),
+      mock.patch("ssl.create_default_context") as mock_create_ssl_context,
+  ):
+    registry = gcp_skill_registry.GCPSkillRegistry()
+    assert (
+        registry.base_url == "https://agentregistry.mtls.googleapis.com/v1alpha"
+    )
+    assert registry._ssl_context is not None
+    mock_create_ssl_context.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_skill_with_mtls():
+  """Verifies that get_skill works correctly and passes ssl context when mTLS is enabled."""
+  mock_cert_source = mock.MagicMock(return_value=(b"fake-cert", b"fake-key"))
+  fake_zip = _create_fake_zip_bytes()
+
+  mock_response1 = mock.MagicMock()
+  mock_response1.status_code = 200
+  mock_response1.json.return_value = {
+      "name": "projects/test-project/locations/us-central1/skills/my-skill",
+      "defaultRevision": (
+          "projects/test-project/locations/us-central1/skills/my-skill/revisions/rev-123"
+      ),
+  }
+
+  mock_response2 = mock.MagicMock()
+  mock_response2.status_code = 200
+  mock_response2.content = fake_zip
+
+  async def mock_get(url, *unused_args, **kwargs):
+    if "alt=media" in str(url) or (
+        kwargs.get("params") and kwargs.get("params").get("alt") == "media"
+    ):
+      return mock_response2
+    return mock_response1
+
+  with (
+      mock.patch(
+          "google.adk.utils._mtls_utils.use_client_cert_effective",
+          return_value=True,
+      ),
+      mock.patch(
+          "google.auth.transport.mtls.has_default_client_cert_source",
+          return_value=True,
+      ),
+      mock.patch(
+          "google.auth.transport.mtls.default_client_cert_source",
+          return_value=mock_cert_source,
+      ),
+      mock.patch("ssl.create_default_context") as mock_create_ssl_context,
+  ):
+    # Set up mock SSL context
+    mock_ssl_context = mock_create_ssl_context.return_value
+    registry = gcp_skill_registry.GCPSkillRegistry()
+
+    with mock.patch("httpx.AsyncClient", autospec=True) as mock_client_class:
+      mock_client = mock_client_class.return_value
+      mock_client.__aenter__.return_value = mock_client
+      mock_client.get = mock.AsyncMock(side_effect=mock_get)
+
+      skill = await registry.get_skill(name="my-skill")
+
+      # Verify AsyncClient was instantiated with verify=mock_ssl_context
+      mock_client_class.assert_called_with(verify=mock_ssl_context)
+
+  assert skill.frontmatter.name == "my-skill"
+
+
+# pylint: enable=protected-access

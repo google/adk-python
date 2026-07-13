@@ -149,7 +149,7 @@ class BaseLlm(BaseModel):
     )
     yield  # AsyncGenerator requires a yield statement in function body.
 
-  def _maybe_append_user_content(self, llm_request: LlmRequest):
+  def _maybe_append_user_content(self, llm_request: LlmRequest) -> None:
     """Appends a user content, so that model can continue to output.
 
     Args:

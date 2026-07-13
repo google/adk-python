@@ -119,7 +119,7 @@ class BigQueryToolConfig(BaseModel):
 
   @field_validator('maximum_bytes_billed')
   @classmethod
-  def validate_maximum_bytes_billed(cls, v):
+  def validate_maximum_bytes_billed(cls, v: Optional[int]) -> Optional[int]:
     """Validate the maximum bytes billed."""
     if v and v < 10_485_760:
       raise ValueError(
@@ -132,7 +132,7 @@ class BigQueryToolConfig(BaseModel):
 
   @field_validator('application_name')
   @classmethod
-  def validate_application_name(cls, v):
+  def validate_application_name(cls, v: Optional[str]) -> Optional[str]:
     """Validate the application name."""
     if v and ' ' in v:
       raise ValueError('Application name should not contain spaces.')
@@ -140,7 +140,9 @@ class BigQueryToolConfig(BaseModel):
 
   @field_validator('job_labels')
   @classmethod
-  def validate_job_labels(cls, v):
+  def validate_job_labels(
+      cls, v: Optional[dict[str, str]]
+  ) -> Optional[dict[str, str]]:
     """Validate the job labels."""
     if v is not None:
       if len(v) > 20:

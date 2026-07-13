@@ -265,5 +265,5 @@ class TrajectoryEvaluator(Evaluator):
 
     return True
 
-  def _get_eval_status(self, score: float):
+  def _get_eval_status(self, score: float) -> EvalStatus:
     return EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED

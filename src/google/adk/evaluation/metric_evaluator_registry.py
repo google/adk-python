@@ -83,7 +83,7 @@ class MetricEvaluatorRegistry:
       self,
       metric_info: MetricInfo,
       evaluator: type[Evaluator],
-  ):
+  ) -> None:
     """Registers an evaluator given the metric info.
 
     If a mapping already exist, then it is updated.
