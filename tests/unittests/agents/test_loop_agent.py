@@ -285,3 +285,8 @@ async def test_run_async_with_pause_preserves_sub_agent_state(
   # Verify that the sub-agent state was NOT reset
   assert agent.name in parent_ctx.agent_states
   assert parent_ctx.agent_states[agent.name] == {'some_key': 'some_value'}
+
+
+def test_deprecation_mentions_sub_agent_limitation():
+  with pytest.warns(DeprecationWarning, match='sub-agent'):
+    LoopAgent(name='deprecated_loop', sub_agents=[])

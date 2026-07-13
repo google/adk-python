@@ -167,7 +167,7 @@ class Rater:
     Returns:
       A dictionary containing rating information including score.
     """
-    env = jinja2.Environment()
+    env = jinja2.Environment(autoescape=True)
     env.globals['user_input'] = (
         messages[0].get('parts', [{}])[0].get('text', '') if messages else ''
     )

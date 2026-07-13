@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import AsyncGenerator
 from typing import Optional
@@ -103,6 +104,16 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           isolation_scope=invocation_context.isolation_scope,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
+      )
+
+    if (
+        invocation_context.run_config
+        and invocation_context.run_config.model_input_context
+    ):
+      _add_model_input_context_to_user_content(
+          invocation_context,
+          llm_request,
+          copy.deepcopy(invocation_context.run_config.model_input_context),
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -1037,6 +1048,26 @@ def _content_contains_function_response(content: types.Content) -> bool:
     if part.function_response:
       return True
   return False
+
+
+def _add_model_input_context_to_user_content(
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+    model_input_context: list[types.Content],
+) -> None:
+  """Insert transient model input context before the invocation user content."""
+  if not model_input_context:
+    return
+
+  insert_index = 0
+  user_content = invocation_context.user_content
+  if user_content:
+    for i in range(len(llm_request.contents) - 1, -1, -1):
+      if llm_request.contents[i] == user_content:
+        insert_index = i
+        break
+
+  llm_request.contents[insert_index:insert_index] = model_input_context
 
 
 async def _add_instructions_to_user_content(
