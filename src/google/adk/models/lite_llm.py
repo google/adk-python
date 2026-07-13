@@ -2564,6 +2564,50 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
   )
 
 
+class _BraceDepthTracker:
+  """Streams JSON characters and reports when a top-level object closes.
+
+  Only `{`/`}` are counted; `[`/`]` are ignored. Tool-call arguments per
+  the OpenAI/LiteLLM spec are always top-level JSON objects, never arrays,
+  so array depth is irrelevant for detecting when the top-level container
+  closes. Arrays nested as values (e.g. `{"a": [{"b": 1}]}`) still balance
+  correctly because chars inside the array don't change brace depth.
+  """
+
+  __slots__ = ("_depth", "_in_string", "_escaped", "_seen_open")
+
+  def __init__(self) -> None:
+    self._depth = 0
+    self._in_string = False
+    self._escaped = False
+    self._seen_open = False
+
+  def feed(self, fragment: str) -> bool:
+    """Feeds new chars; returns True iff a top-level object just closed."""
+    closed = False
+    for ch in fragment:
+      if self._in_string:
+        if self._escaped:
+          self._escaped = False
+        elif ch == "\\":
+          self._escaped = True
+        elif ch == '"':
+          self._in_string = False
+        continue
+      if ch == '"':
+        self._in_string = True
+      elif ch == "{":
+        self._depth += 1
+        self._seen_open = True
+      elif ch == "}":
+        if self._depth > 0:
+          self._depth -= 1
+          if self._depth == 0 and self._seen_open:
+            closed = True
+            self._seen_open = False
+    return closed
+
+
 def _redirect_litellm_loggers_to_stdout() -> None:
   """Redirects LiteLLM loggers from stderr to stdout.
 
@@ -2714,6 +2758,7 @@ class LiteLlm(BaseLlm):
       reasoning_parts: List[types.Part] = []
       # Track function calls by index
       function_calls = {}  # index -> {name, args, id}
+      tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
       aggregated_llm_response = None
@@ -2803,6 +2848,7 @@ class LiteLlm(BaseLlm):
         text = ""
         reasoning_parts = []
         function_calls.clear()
+        tool_call_trackers.clear()
 
       async for part in await self.llm_client.acompletion(**completion_args):
         # Grounding metadata can arrive on the first chunk (search queries) or
@@ -2821,13 +2867,17 @@ class LiteLlm(BaseLlm):
             if chunk.args:
               function_calls[index]["args"] += chunk.args
 
-              # check if args is completed (workaround for improper chunk
-              # indexing)
-              try:
-                json.loads(function_calls[index]["args"])
-                fallback_index += 1
-              except json.JSONDecodeError:
-                pass
+              # Detect args completion to advance fallback_index (workaround
+              # for improper chunk indexing) without O(N^2) re-parsing.
+              tracker = tool_call_trackers.setdefault(
+                  index, _BraceDepthTracker()
+              )
+              if tracker.feed(chunk.args):
+                try:
+                  json.loads(function_calls[index]["args"])
+                  fallback_index += 1
+                except json.JSONDecodeError:
+                  pass
 
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)

@@ -235,6 +235,11 @@ class AgentLoader(BaseAgentLoader):
     """Validate agent name to prevent arbitrary module imports."""
     # Strip the special agent prefix for validation
     if agent_name.startswith("__"):
+      if not self._allow_special_agents:
+        raise PermissionError(
+            f"Loading special internal agent {agent_name!r} is disabled in this"
+            " loader configuration."
+        )
       name_to_check = agent_name[2:]
       check_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
     else:

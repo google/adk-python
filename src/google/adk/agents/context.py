@@ -86,8 +86,8 @@ def _derive_node_path(
 
   if not parent_path and isinstance(node, BaseAgent) and node.parent_agent:
     path_builder = _NodePathBuilder([])
-    curr = node.parent_agent
-    parent_agents = []
+    curr: BaseAgent | None = node.parent_agent
+    parent_agents: list[BaseAgent] = []
     depth = 0
     while curr is not None and depth < _MAX_PARENT_DEPTH:
       parent_agents.insert(0, curr)

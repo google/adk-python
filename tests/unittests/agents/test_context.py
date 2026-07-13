@@ -779,10 +779,10 @@ class TestContextRunNodeTransferLoop:
     )
     child_ctx_b.output = "b_output"
 
-    # Mock the scheduler boundary
-    root_ctx._workflow_scheduler = AsyncMock(
-        side_effect=[child_ctx_a, child_ctx_b]
-    )
+    # Keep a strong reference to mock_scheduler so it doesn't get garbage
+    # collected immediately (Context._workflow_scheduler uses weakref internally).
+    mock_scheduler = AsyncMock(side_effect=[child_ctx_a, child_ctx_b])
+    root_ctx._workflow_scheduler = mock_scheduler
 
     # Act
     result = await root_ctx.run_node(agent_a, node_input="a_input")

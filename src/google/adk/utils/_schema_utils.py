@@ -125,9 +125,81 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
     type_adapter = TypeAdapter(schema)
-    validated = type_adapter.validate_json(json_text)
+    validated: list[Any] = type_adapter.validate_json(json_text)
     return [item.model_dump(exclude_none=True) for item in validated]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
-    # just parse JSON without pydantic validation
     return json.loads(json_text)
+
+
+def validate_node_data(
+    schema: Optional[SchemaType],
+    data: Any,
+    *,
+    preserve_content: bool = False,
+) -> Any:
+  """Validates and sanitizes node input or output data against a schema."""
+  if data is None or schema is None:
+    return data
+
+  if isinstance(schema, (dict, types.Schema)):
+    return data
+
+  def _to_serializable(val: Any) -> Any:
+    if isinstance(val, BaseModel):
+      return val.model_dump(exclude_none=True)
+    if isinstance(val, list):
+      return [_to_serializable(item) for item in val]
+    if isinstance(val, dict):
+      return {k: _to_serializable(v) for k, v in val.items()}
+    return val
+
+  def _validate_python_object(val: Any) -> Any:
+    validated: Any = TypeAdapter(schema).validate_python(val)
+    return _to_serializable(validated)
+
+  # If schema expects Content, do not unwrap
+  if isinstance(schema, type) and issubclass(schema, types.Content):
+    return _validate_python_object(data)
+  if schema is types.Content:
+    return _validate_python_object(data)
+
+  if isinstance(data, types.Content):
+    # Extract text part
+    text_parts = [p.text for p in data.parts if p.text] if data.parts else []
+    text_str = "".join(text_parts)
+
+    # Validate the text
+    if schema is str:
+      validated_payload = text_str
+    else:
+      # Try to parse text as JSON first
+      try:
+        parsed_json = json.loads(text_str)
+        validated_payload = _validate_python_object(parsed_json)
+      except json.JSONDecodeError:
+        # Fallback to validate raw string
+        validated_payload = _validate_python_object(text_str)
+
+    if not preserve_content:
+      return validated_payload
+
+    # Re-wrap in Content
+    new_parts = [p for p in data.parts if not p.text] if data.parts else []
+    new_parts.append(
+        types.Part(
+            text=json.dumps(validated_payload)
+            if not isinstance(validated_payload, str)
+            else validated_payload
+        )
+    )
+    return types.Content(role=data.role, parts=new_parts)
+
+  # If data is a string (but not wrapped in Content)
+  if isinstance(data, str):
+    if schema is str:
+      return data
+    return _validate_python_object(data)
+
+  # For any other Python object (dict, BaseModel instance, etc.)
+  return _validate_python_object(data)

@@ -137,6 +137,11 @@ class NestedAgentLoader(AgentLoader):
   def _validate_agent_name(self, full_agent_name: str) -> None:
     """Validate agent name allowing dot-separated paths."""
     if full_agent_name.startswith("__"):
+      if not self._allow_special_agents:
+        raise PermissionError(
+            f"Loading special internal agent {full_agent_name!r} is disabled in"
+            " this loader configuration."
+        )
       agent_relative_path = full_agent_name[2:]
       check_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
     else:

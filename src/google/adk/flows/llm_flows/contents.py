@@ -368,7 +368,7 @@ def _build_task_input_user_content(
   When no matching FC is found (workflow-node task case — task agent
   dispatched directly by a Workflow, not via FC delegation), falls
   back to ``user_content`` (set on the InvocationContext by the
-  wrapper to ``_node_input_to_content(node_input)``).
+  wrapper to ``to_user_content(node_input)``).
 
   When ``is_single_turn`` is True, appends a second text part nudging
   the LLM that no further user replies will arrive — single-turn

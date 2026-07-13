@@ -333,6 +333,50 @@ class TestGoogleApiToOpenApiConverter:
         == "https://www.mtls.googleapis.com/discovery/v1/apis/{api}/{apiVersion}/rest"
     )
 
+  def test_fetch_google_api_spec_with_mtls_no_passphrase(
+      self, monkeypatch, mock_api_resource, calendar_api_spec
+  ):
+    """Test fetching Google API specification with mTLS enabled but no passphrase."""
+    mock_build = MagicMock(return_value=mock_api_resource)
+    monkeypatch.setattr(
+        "google.adk.tools.google_api_tool.googleapi_to_openapi_converter.build",
+        mock_build,
+    )
+
+    # Enable mTLS
+    monkeypatch.setattr(
+        "google.auth.transport.mtls.should_use_client_cert",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "google.auth.transport.mtls.has_default_client_cert_source",
+        lambda: True,
+    )
+
+    # Return None for passphrase
+    mock_cert_source = MagicMock(
+        return_value=("/path/to/cert", "/path/to/key", None)
+    )
+    monkeypatch.setattr(
+        "google.auth.transport.mtls.default_client_encrypted_cert_source",
+        lambda c, k: mock_cert_source,
+    )
+
+    converter = GoogleApiToOpenApiConverter("calendar", "v3")
+    converter.fetch_google_api_spec()
+
+    assert converter._google_api_spec == calendar_api_spec
+
+    # Verify build was called with the http parameter set and mtls url
+    mock_build.assert_called_once()
+    _, kwargs = mock_build.call_args
+    assert "http" in kwargs
+    assert kwargs["http"] is not None
+    assert (
+        kwargs["discoveryServiceUrl"]
+        == "https://www.mtls.googleapis.com/discovery/v1/apis/{api}/{apiVersion}/rest"
+    )
+
   def test_fetch_google_api_spec_error(self, monkeypatch, converter):
     """Test error handling when fetching Google API specification."""
     # Create a mock that raises an error

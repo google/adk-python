@@ -14,7 +14,11 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from google.genai import types
+from pydantic import BaseModel
 
 SKIP_THOUGHT_SIGNATURE_VALIDATOR: bytes = b'skip_thought_signature_validator'
 """Placeholder ``Part.thought_signature`` that bypasses backend validation.
@@ -51,3 +55,26 @@ def extract_text_from_content(content: types.Content | None) -> str:
   if not content or not content.parts:
     return ''
   return ''.join(p.text for p in content.parts if p.text and not p.thought)
+
+
+def to_user_content(value: Any) -> types.Content:
+  """Coerces an arbitrary value into a user-role Content.
+
+  - types.Content -> re-wrapped with role='user' (parts list shared, not
+    deep-copied)
+  - str -> single text part
+  - BaseModel -> model_dump_json() text part
+  - dict/list -> json.dumps() text part
+  - anything else -> str() text part
+  """
+  if isinstance(value, types.Content):
+    return types.Content(role='user', parts=value.parts)
+  if isinstance(value, str):
+    text = value
+  elif isinstance(value, BaseModel):
+    text = value.model_dump_json()
+  elif isinstance(value, (dict, list)):
+    text = json.dumps(value)
+  else:
+    text = str(value)
+  return types.Content(role='user', parts=[types.Part(text=text)])

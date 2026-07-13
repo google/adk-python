@@ -54,14 +54,14 @@ The A2A Human-in-the-Loop sample consists of:
 
    ```bash
    # Start the remote a2a server that serves the human-in-the-loop approval agent on port 8001
-   adk api_server --a2a --port 8001 contributing/samples/a2a_human_in_loop/remote_a2a
+   adk api_server --a2a --port 8001 contributing/samples/a2a/a2a_human_in_loop/remote_a2a
    ```
 
 1. **Run the Main Agent**:
 
    ```bash
    # In a separate terminal, run the adk web server
-   adk web contributing/samples/
+   adk web contributing/samples/a2a
    ```
 
 ### Example Interactions
@@ -82,9 +82,23 @@ Agent: ✅ Reimbursement approved and processed: $50 for meals
 User: Please reimburse $200 for conference travel
 Agent: I'll process your reimbursement request for $200 for conference travel. Since this amount exceeds $100, I need to get manager approval.
 Agent: 🔄 Request submitted for approval (Ticket: reimbursement-ticket-001). Please wait for manager review.
-[Human manager interacts with root agent to approve the request]
+[Human manager approves the pending request from the ADK Web UI]
 Agent: ✅ Great news! Your reimbursement has been approved by the manager. Processing $200 for conference travel.
 ```
+
+> **Approving from the ADK Web UI:** The approval is a *long-running tool* call
+> that runs on the remote approval agent. The pending call is surfaced in the
+> Web UI as a function call awaiting a response. To approve (or reject), hover
+> over the pending `ask_for_approval` function response in the UI and use
+> **"Send another response"** to send back an updated response such as
+> `{"status": "approved", "ticketId": "reimbursement-ticket-001"}`. Simply
+> typing "I approve" as a chat message will **not** resume the pending request,
+> because the framework needs a `FunctionResponse` that carries the same call
+> `id` to resume the long-running tool.
+>
+> For this resume to be routed back to the remote approval agent (rather than
+> restarting at the root agent), the sample is exposed as an `App` with
+> `ResumabilityConfig(is_resumable=True)` in `agent.py`.
 
 ## Code Structure
 

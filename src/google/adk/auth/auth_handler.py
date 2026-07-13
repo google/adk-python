@@ -81,7 +81,7 @@ class AuthHandler:
     state[credential_key] = await self.exchange_auth_token()
 
   def _validate(self) -> None:
-    if not self.auth_scheme:
+    if not self.auth_config.auth_scheme:
       raise ValueError("auth_scheme is empty.")
 
   def get_auth_response(self, state: State) -> AuthCredential:
@@ -236,9 +236,10 @@ class AuthHandler:
     )
 
     exchanged_auth_credential = auth_credential.model_copy(deep=True)
-    exchanged_auth_credential.oauth2.auth_uri = uri
-    exchanged_auth_credential.oauth2.state = state
-    if code_verifier:
-      exchanged_auth_credential.oauth2.code_verifier = code_verifier
+    if exchanged_auth_credential.oauth2 is not None:
+      exchanged_auth_credential.oauth2.auth_uri = uri
+      exchanged_auth_credential.oauth2.state = state
+      if code_verifier:
+        exchanged_auth_credential.oauth2.code_verifier = code_verifier
 
     return exchanged_auth_credential

@@ -19,16 +19,13 @@ from typing import Any
 from typing import final
 from typing import TYPE_CHECKING
 
-from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
-from pydantic import TypeAdapter
-from pydantic import ValidationError
 
 from ..utils._schema_utils import SchemaType
-from ..utils.content_utils import extract_text_from_content
+from ..utils._schema_utils import validate_node_data
 from ._retry_config import RetryConfig
 
 if TYPE_CHECKING:
@@ -123,64 +120,16 @@ class BaseNode(BaseModel):
   """
 
   def _validate_schema(self, data: Any, schema: Any) -> Any:
-    """Validates data against a schema using ``TypeAdapter``.
-
-    Handles BaseModel, list[BaseModel], primitive types, unions, and
-    generic aliases.  Descriptive schemas (``types.Schema``, raw
-    ``dict``) are skipped.  Any BaseModel instances in the validated
-    result are converted to dicts via ``model_dump()`` to keep
-    ``Event.output`` JSON-serializable.
-    """
-    if data is None or schema is None:
-      return data
-
-    if isinstance(schema, (dict, types.Schema)):
-      return data
-
-    validated = TypeAdapter(schema).validate_python(data)
-    return self._to_serializable(validated)
+    """Validates data against a schema using validate_node_data helper."""
+    return validate_node_data(schema, data)
 
   def _validate_input_data(self, data: Any) -> Any:
     """Validates data against input_schema if set."""
-    if self.input_schema and isinstance(data, types.Content):
-      # Extract text from Content (e.g. user input from START node).
-      text = extract_text_from_content(data)
-      if self.input_schema is str:
-        return text
-      # If schema is defined, try to parse the text as JSON.
-      try:
-        return TypeAdapter(self.input_schema).validate_json(text)
-      except ValidationError:
-        # Fallback to validate_python if it's a raw string matching the schema.
-        try:
-          return TypeAdapter(self.input_schema).validate_python(text)
-        except ValidationError:
-          pass
-    return self._validate_schema(data, self.input_schema)
+    return validate_node_data(self.input_schema, data, preserve_content=False)
 
   def _validate_output_data(self, data: Any) -> Any:
     """Validates data against output_schema if set."""
-    if not self.output_schema:
-      return data
-
-    # 1. Try standard validation first
-    try:
-      return self._validate_schema(data, self.output_schema)
-    except ValidationError as e:
-      # 2. If failed, try to parse JSON ONLY if it's Content
-      if isinstance(data, types.Content):
-        text = extract_text_from_content(data)
-        if self.output_schema is str:
-          return text
-        if text.strip():
-          try:
-            validated = TypeAdapter(self.output_schema).validate_json(text)
-            return self._to_serializable(validated)
-          except ValidationError:
-            pass
-
-      # 3. If not Content or parsing failed, re-raise original error
-      raise e
+    return validate_node_data(self.output_schema, data, preserve_content=False)
 
   @staticmethod
   def _to_serializable(data: Any) -> Any:

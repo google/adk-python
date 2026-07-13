@@ -50,13 +50,13 @@ if TYPE_CHECKING:
   from ..agents.context import Context
   from ._schedule_dynamic_node import ScheduleDynamicNode
 
-logger = logging.getLogger('google_adk.' + __name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def get_common_branch_prefix(branches: list[str]) -> str:
   """Find the common prefix of dot-separated branch strings."""
   if not branches:
-    return ''
+    return ""
   paths = [_BranchPath.from_string(b) for b in branches]
   return str(_BranchPath.common_prefix(paths))
 
@@ -147,7 +147,7 @@ class Workflow(BaseNode):
   rerun_on_resume: bool = Field(default=True)
 
   edges: list[EdgeItem] = Field(
-      description='Edges to build the workflow graph.',
+      description="Edges to build the workflow graph.",
       default_factory=list,
   )
 
@@ -160,7 +160,7 @@ class Workflow(BaseNode):
   """
 
   graph: Graph | None = Field(
-      description='The compiled workflow graph.',
+      description="The compiled workflow graph.",
       default=None,
   )
 
@@ -171,42 +171,12 @@ class Workflow(BaseNode):
     if self.edges and self.graph is None:
       self.graph = self._build_graph()
     self._validate_state_schema()
-    self._validate_no_task_mode_graph_nodes()
 
   def _build_graph(self) -> Graph:
     """Convert edge definitions to a validated Graph."""
     graph = Graph.from_edge_items(self.edges)
     graph.validate_graph()
     return graph
-
-  def _validate_no_task_mode_graph_nodes(self) -> None:
-    """Reject ``mode='task'`` LlmAgents that appear as static graph nodes.
-
-    Task-mode agents are multi-turn — they pause for user replies and
-    expect the original ``node_input`` (the task brief) to remain visible
-    across re-dispatches.  The workflow scheduler currently overwrites
-    ``node_input`` with the latest user message on every re-entry, so the
-    task brief is lost and the agent loses context.  Until the scheduler
-    preserves the originating ``node_input`` on resume, task agents may
-    only be used:
-
-      * as chat sub-agents of an LlmAgent coordinator (FC delegation
-        via ``_TaskAgentTool`` / ``_dispatch_task_fc``), or
-      * dispatched dynamically via ``ctx.run_node`` from a custom
-        function node — never as static workflow graph nodes.
-    """
-    if not self.graph:
-      return
-    from ..agents.llm_agent import LlmAgent
-
-    for graph_node in self.graph.nodes:
-      if isinstance(graph_node, LlmAgent) and graph_node.mode == 'task':
-        raise ValueError(
-            f"Agent {graph_node.name!r} has mode='task' and cannot be "
-            'used as a workflow graph node. Use a chat coordinator with '
-            'task sub-agents, or dispatch dynamically via ctx.run_node '
-            'from a function node.'
-        )
 
   def _validate_state_schema(self) -> None:
     """Raises when FunctionNode params don't match state_schema fields."""
@@ -223,15 +193,15 @@ class Workflow(BaseNode):
         continue
 
       for param_name in graph_node._sig.parameters:
-        if param_name in ('ctx', 'node_input', 'self'):
+        if param_name in ("ctx", "node_input", "self"):
           continue
 
         if param_name not in schema_fields:
           raise StateSchemaError(
-              f'FunctionNode {graph_node.name!r} parameter '
-              f'{param_name!r} is not declared in state_schema '
-              f'{self.state_schema.__name__!r}. Declared fields: '
-              f'{sorted(schema_fields)}'
+              f"FunctionNode {graph_node.name!r} parameter "
+              f"{param_name!r} is not declared in state_schema "
+              f"{self.state_schema.__name__!r}. Declared fields: "
+              f"{sorted(schema_fields)}"
           )
 
   # --- _run_impl: the orchestration loop ---
@@ -258,8 +228,8 @@ class Workflow(BaseNode):
 
     if ctx.resume_inputs and not loop_state.recovered_executions:
       logger.warning(
-          'Workflow %s: resume_inputs provided but no recovered executions'
-          ' found.',
+          "Workflow %s: resume_inputs provided but no recovered executions"
+          " found.",
           self.name,
       )
 
@@ -297,7 +267,7 @@ class Workflow(BaseNode):
 
   async def _run_loop(self, loop_state: _LoopState, ctx: Context) -> None:
     """Schedule and execute nodes until no more work."""
-    logger.debug('node %s execute loop start.', ctx.node_path)
+    logger.debug("node %s execute loop start.", ctx.node_path)
 
     recovered_sequence_indices = {
         node_path: i
@@ -342,12 +312,12 @@ class Workflow(BaseNode):
       def get_recovered_sequence_index(t):
         name = task_to_name.get(t)
         if not name:
-          return float('inf')
+          return float("inf")
         node_state = loop_state.nodes.get(name)
         if not node_state:
-          return float('inf')
-        node_path = f'{name}@{node_state.run_id}'
-        return recovered_sequence_indices.get(node_path, float('inf'))
+          return float("inf")
+        node_path = f"{name}@{node_state.run_id}"
+        return recovered_sequence_indices.get(node_path, float("inf"))
 
       sorted_done = sorted(ordered_done, key=get_recovered_sequence_index)
 
@@ -359,7 +329,7 @@ class Workflow(BaseNode):
         child_ctx: Context = task.result()
         if loop_state.sequence_barrier:
           loop_state.sequence_barrier.check_and_advance(
-              f'{name}@{child_ctx.run_id}'
+              f"{name}@{child_ctx.run_id}"
           )
 
         if child_ctx.error:
@@ -375,7 +345,7 @@ class Workflow(BaseNode):
 
       if error_to_raise:
         loop_state.error_shut_down = True
-        logger.debug('node %s execute loop end.', ctx.node_path)
+        logger.debug("node %s execute loop end.", ctx.node_path)
         return
 
     # Await fire-and-forget dynamic tasks.
@@ -385,7 +355,7 @@ class Workflow(BaseNode):
     dynamic_tasks = loop_state.get_dynamic_tasks()
     if dynamic_tasks:
       await asyncio.wait(dynamic_tasks)
-    logger.debug('node %s execute loop end.', ctx.node_path)
+    logger.debug("node %s execute loop end.", ctx.node_path)
 
   # --- Scheduling ---
 
@@ -409,8 +379,22 @@ class Workflow(BaseNode):
           )
       )
 
+  def _has_waiting_task_agent(self, loop_state: _LoopState) -> bool:
+    """Check if there is any task-mode agent node currently WAITING in the workflow."""
+    if not self.graph:
+      return False
+    for node in self.graph.nodes:
+      if getattr(node, "mode", None) == "task":
+        state = loop_state.nodes.get(node.name)
+        if state and state.status == NodeStatus.WAITING:
+          return True
+    return False
+
   def _schedule_ready_nodes(self, loop_state: _LoopState, ctx: Context) -> None:
     """Pop triggers from buffer and schedule ready nodes."""
+    if self._has_waiting_task_agent(loop_state):
+      return
+
     # loop_state.trigger_buffer is a dict, and Python 3.7+ dicts preserve insertion order.
     # Therefore, nodes are processed strictly in the order their triggers arrived,
     # ensuring deterministic scheduling order for parallel branches.
@@ -493,10 +477,10 @@ class Workflow(BaseNode):
     """
     if trigger.isolation_scope is not None:
       return trigger.isolation_scope
-    if getattr(node, 'mode', None) == 'task':
-      parent_path = parent_ctx.node_path if parent_ctx else ''
-      segment = f'{node.name}@{run_id}'
-      return f'{parent_path}/{segment}' if parent_path else segment
+    if getattr(node, "mode", None) == "task":
+      parent_path = parent_ctx.node_path if parent_ctx else ""
+      segment = f"{node.name}@{run_id}"
+      return f"{parent_path}/{segment}" if parent_path else segment
     return None
 
   @classmethod
@@ -552,7 +536,7 @@ class Workflow(BaseNode):
     node_state.run_id = run_id
 
     # Intercept execution based on historical session events.
-    key = f'{node_name}@{run_id}'
+    key = f"{node_name}@{run_id}"
     if key in loop_state.recovered_executions:
       recovered = loop_state.recovered_executions[key]
 
@@ -659,7 +643,7 @@ class Workflow(BaseNode):
     if child_ctx.output is not None:
       loop_state.node_outputs[node_name] = child_ctx.output
     loop_state.node_branches[node_name] = (
-        child_ctx._invocation_context.branch or ''
+        child_ctx._invocation_context.branch or ""
     )
 
     # Buffer downstream triggers.
@@ -703,7 +687,7 @@ class Workflow(BaseNode):
         ):
           # All predecessors have completed!
           outputs = {p: loop_state.node_outputs.get(p) for p in predecessors}
-          branches = [loop_state.node_branches.get(p, '') for p in predecessors]
+          branches = [loop_state.node_branches.get(p, "") for p in predecessors]
           common_branch = get_common_branch_prefix(branches)
 
           loop_state.trigger_buffer.setdefault(target_name, []).append(
@@ -756,9 +740,9 @@ class Workflow(BaseNode):
       ctx.output = self._validate_output_data(terminal_outputs[0])
     elif terminal_outputs:
       raise ValueError(
-          f'Workflow {self.name}: multiple terminal nodes produced'
-          f' output ({len(terminal_outputs)}). A workflow must have'
-          ' at most one terminal output.'
+          f"Workflow {self.name}: multiple terminal nodes produced"
+          f" output ({len(terminal_outputs)}). A workflow must have"
+          " at most one terminal output."
       )
 
   # --- Utilities ---
@@ -777,7 +761,7 @@ class Workflow(BaseNode):
     for node in self.graph.nodes:
       if node.name == name:
         return node
-    raise ValueError(f'Node {name} not found in graph.')
+    raise ValueError(f"Node {name} not found in graph.")
 
   def _pop_completed_task(
       self, loop_state: _LoopState, task: asyncio.Task[Context]
@@ -787,7 +771,7 @@ class Workflow(BaseNode):
       if t is task:
         del loop_state.pending_tasks[name]
         return name
-    raise ValueError('Task not found in pending_tasks.')
+    raise ValueError("Task not found in pending_tasks.")
 
   async def _cleanup_all_tasks(self, loop_state: _LoopState) -> None:
     """Cancel remaining tasks to prevent leaks."""
@@ -796,7 +780,7 @@ class Workflow(BaseNode):
     all_tasks = list(loop_state.pending_tasks.values()) + dynamic_tasks
     if all_tasks:
       logger.warning(
-          'Workflow %s: cancelling %d leftover tasks.',
+          "Workflow %s: cancelling %d leftover tasks.",
           self.name,
           len(all_tasks),
       )

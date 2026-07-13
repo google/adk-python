@@ -91,6 +91,12 @@ class TestPlugin(BasePlugin):
   async def on_model_error_callback(self, **kwargs):
     return await self._handle_callback("on_model_error_callback")
 
+  async def on_agent_error_callback(self, **kwargs):
+    return await self._handle_callback("on_agent_error_callback")
+
+  async def on_run_error_callback(self, **kwargs):
+    return await self._handle_callback("on_run_error_callback")
+
 
 @pytest.fixture
 def service() -> PluginManager:
@@ -252,6 +258,15 @@ async def test_all_callbacks_are_supported(
       llm_request=mock_context,
       error=mock_context,
   )
+  await service.run_on_agent_error_callback(
+      agent=mock_context,
+      callback_context=mock_context,
+      error=mock_context,
+  )
+  await service.run_on_run_error_callback(
+      invocation_context=mock_context,
+      error=mock_context,
+  )
 
   # Verify all callbacks were logged
   expected_callbacks = [
@@ -267,6 +282,8 @@ async def test_all_callbacks_are_supported(
       "before_model_callback",
       "after_model_callback",
       "on_model_error_callback",
+      "on_agent_error_callback",
+      "on_run_error_callback",
   ]
   assert set(plugin1.call_log) == set(expected_callbacks)
 

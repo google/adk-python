@@ -264,7 +264,7 @@ def resolve_agent_reference(
     raise ValueError("AgentRefConfig must have either 'code' or 'config_path'")
 
 
-def _resolve_agent_code_reference(code: str) -> Any:
+def _resolve_agent_code_reference(code: str) -> BaseAgent:
   """Resolve a code reference to an actual agent instance.
 
   Args:

@@ -806,6 +806,8 @@ class BaseLlmFlow(ABC):
 
       if live_request.content:
         content = live_request.content
+        if content.parts and any(p.function_call for p in content.parts):
+          raise ValueError('User message cannot contain function calls.')
         # Persist user text content to session (similar to non-live mode)
         # Skip function responses - they are already handled separately
         is_function_response = content.parts and any(
