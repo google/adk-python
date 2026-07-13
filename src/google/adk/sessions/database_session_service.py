@@ -664,7 +664,7 @@ class DatabaseSessionService(BaseSessionService):
       if user_id is not None:
         stmt = stmt.filter(schema.StorageSession.user_id == user_id)
       stmt = stmt.order_by(
-          schema.StorageSession.create_time.asc(),
+          schema.StorageSession.update_time.asc(),
           schema.StorageSession.user_id.asc(),
           schema.StorageSession.id.asc(),
       )
