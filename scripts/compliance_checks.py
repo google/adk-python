@@ -63,7 +63,6 @@ _EXCLUDED_FROM_MTLS = {
     'src/google/adk/tools/openapi_tool/auth/credential_exchangers/service_account_exchanger.py',
     'src/google/adk/tools/pubsub/pubsub_credentials.py',
     'src/google/adk/tools/spanner/spanner_credentials.py',
-    'tests/integration/test_managed_agent.py',
     'tests/unittests/auth/test_credential_manager.py',
     'tests/unittests/cli/utils/test_gcp_utils.py',
     'tests/unittests/flows/llm_flows/test_functions_request_euc.py',

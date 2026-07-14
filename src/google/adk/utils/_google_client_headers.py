@@ -19,13 +19,18 @@ from google.genai import types
 from ._client_labels_utils import get_client_labels
 
 
-def get_tracking_headers() -> dict[str, str]:
+def get_tracking_headers(framework_label: str | None = None) -> dict[str, str]:
   """Returns a dictionary of HTTP headers for tracking API requests.
 
   These headers are used to identify HTTP calls made by ADK towards
    Vertex AI LLM APIs.
+
+  Args:
+    framework_label: Optional SemVer build-metadata suffix appended to the
+      google-adk framework token (e.g. "managed_agent"), used to distinguish a
+      specific ADK surface in Google's server-side usage pipeline.
   """
-  labels = get_client_labels()
+  labels = get_client_labels(framework_label=framework_label)
   header_value = " ".join(labels)
   return {
       "x-goog-api-client": header_value,
@@ -43,17 +48,24 @@ def get_tracking_http_options() -> types.HttpOptions:
   return types.HttpOptions(headers=get_tracking_headers())
 
 
-def merge_tracking_headers(headers: dict[str, str] | None) -> dict[str, str]:
+def merge_tracking_headers(
+    headers: dict[str, str] | None, framework_label: str | None = None
+) -> dict[str, str]:
   """Merge tracking headers to the given headers.
 
   Args:
     headers: headers to merge tracking headers into.
+    framework_label: Optional SemVer build-metadata suffix appended to the
+      google-adk framework token (e.g. "managed_agent"), used to distinguish a
+      specific ADK surface in Google's server-side usage pipeline.
 
   Returns:
     A dictionary of HTTP headers with tracking headers merged.
   """
   new_headers = (headers or {}).copy()
-  for key, tracking_header_value in get_tracking_headers().items():
+  for key, tracking_header_value in get_tracking_headers(
+      framework_label=framework_label
+  ).items():
     custom_value = new_headers.get(key, None)
     if not custom_value:
       new_headers[key] = tracking_header_value

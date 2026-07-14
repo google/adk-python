@@ -386,7 +386,9 @@ class ManagedAgent(BaseAgent):
         if run_config is not None and run_config.http_options is not None
         else None
     )
-    extra_headers = merge_tracking_headers(run_config_headers)
+    extra_headers = merge_tracking_headers(
+        run_config_headers, framework_label='managed_agent'
+    )
 
     logger.info(
         'Sending request via interactions API, agent: %s, stream: %s, '

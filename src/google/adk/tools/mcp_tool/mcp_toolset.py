@@ -400,6 +400,11 @@ class McpToolset(BaseToolset):
       if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
 
+    # Sort by name for a stable order across turns. The MCP server's
+    # list_tools() order is not contractual; an unstable order would
+    # invalidate the context cache every turn.
+    tools.sort(key=lambda tool: tool.name)
+
     if self._use_mcp_resources:
       load_resource_tool = LoadMcpResourceTool(
           mcp_toolset=self,

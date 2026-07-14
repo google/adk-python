@@ -156,7 +156,7 @@ class PluginManager:
       self, *, invocation_context: InvocationContext
   ) -> Optional[None]:
     """Runs the `after_run_callback` for all plugins."""
-    return await self._run_callbacks(
+    await self._run_callbacks(
         "after_run_callback", invocation_context=invocation_context
     )
 
@@ -196,7 +196,7 @@ class PluginManager:
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Runs the `before_tool_callback` for all plugins."""
     return await self._run_callbacks(
         "before_tool_callback",
@@ -211,8 +211,8 @@ class PluginManager:
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
     """Runs the `after_tool_callback` for all plugins."""
     return await self._run_callbacks(
         "after_tool_callback",
@@ -264,7 +264,7 @@ class PluginManager:
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Runs the `on_tool_error_callback` for all plugins."""
     return await self._run_callbacks(
         "on_tool_error_callback",

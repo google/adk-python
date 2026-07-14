@@ -23,7 +23,9 @@ import inspect
 import logging
 import re
 from typing import Any
+from typing import AsyncIterator
 from typing import Callable
+from typing import Iterator
 from typing import Sequence
 
 from opentelemetry import trace as trace_api
@@ -228,14 +230,20 @@ def build_tracing_wrapper(
   param_names = positional_param_names(fn)
   yield_cap = caps.max_recorded_yields
 
-  def _finish(span, args, kwargs, result, exc):
+  def _finish(
+      span: trace_api.Span,
+      args: tuple[Any, ...],
+      kwargs: dict[str, Any],
+      result: Any,
+      exc: BaseException | None,
+  ) -> None:
     if not span.is_recording():
       return
     pairs = name_value_pairs(param_names, args, kwargs, caps)
     record_io_on_span(span, pairs, result, exc, caps)
 
   @functools.wraps(fn)
-  async def async_wrapper(*args, **kwargs):
+  async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
     with tracer.start_as_current_span(display_name) as span:
       try:
         r = await fn(*args, **kwargs)
@@ -246,7 +254,7 @@ def build_tracing_wrapper(
       return r
 
   @functools.wraps(fn)
-  async def async_gen_wrapper(*args, **kwargs):
+  async def async_gen_wrapper(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
     with tracer.start_as_current_span(display_name) as span:
       items: list[Any] = []
       total = 0
@@ -262,7 +270,7 @@ def build_tracing_wrapper(
       _finish(span, args, kwargs, StreamResult(items, caps, total), None)
 
   @functools.wraps(fn)
-  def gen_wrapper(*args, **kwargs):
+  def gen_wrapper(*args: Any, **kwargs: Any) -> Iterator[Any]:
     with tracer.start_as_current_span(display_name) as span:
       items: list[Any] = []
       total = 0
@@ -278,7 +286,7 @@ def build_tracing_wrapper(
       _finish(span, args, kwargs, StreamResult(items, caps, total), None)
 
   @functools.wraps(fn)
-  def sync_wrapper(*args, **kwargs):
+  def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
     with tracer.start_as_current_span(display_name) as span:
       try:
         r = fn(*args, **kwargs)
@@ -288,6 +296,7 @@ def build_tracing_wrapper(
       _finish(span, args, kwargs, r, None)
       return r
 
+  wrapper: Callable[..., Any]
   if inspect.isasyncgenfunction(fn):
     wrapper = async_gen_wrapper
   elif asyncio.iscoroutinefunction(fn):

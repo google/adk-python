@@ -101,7 +101,7 @@ def _detect_error_type_for_telemetry(
     detector = getattr(tool, '_detect_error_in_response', None)
     if detector is None:
       return None
-    return detector(function_response)
+    return cast('str | None', detector(function_response))
   except Exception:  # pylint: disable=broad-exception-caught
     # Never let telemetry logic break tool execution.
     logger.exception(
@@ -190,7 +190,7 @@ async def _call_tool_in_thread_pool(
   if _is_sync_tool(tool):
     if isinstance(tool, FunctionTool):
       # For sync FunctionTool, call the underlying function directly.
-      def run_sync_tool():
+      def run_sync_tool() -> Any:
         args_to_call = tool._preprocess_args(args)
         signature = inspect.signature(tool.func)
         valid_params = {param for param in signature.parameters}
@@ -222,7 +222,7 @@ async def _call_tool_in_thread_pool(
     # For async tools, run them in a new event loop in a background thread.
     # This helps when async functions contain blocking I/O (common user mistake)
     # that would otherwise block the main event loop.
-    def run_async_tool_in_new_loop():
+    def run_async_tool_in_new_loop() -> Any:
       # Create a new event loop for this thread
       return asyncio.run(tool.run_async(args=args, tool_context=tool_context))
 
@@ -560,7 +560,7 @@ async def _execute_single_function_call_async(
     else:
       raise tool_error
 
-  async def _run_with_trace():
+  async def _run_with_trace() -> Event | None:
     nonlocal function_args, detected_error_type
 
     # Step 1: Check if plugin before_tool_callback overrides the function
@@ -800,7 +800,7 @@ async def _execute_single_function_call_live(
       )
     raise tool_error
 
-  async def _run_with_trace() -> Optional[Event]:
+  async def _run_with_trace() -> Event | None:
     """Executes the tool with full lifecycle management and telemetry.
 
     This function orchestrates the tool execution pipeline, including:
@@ -1037,7 +1037,11 @@ async def _process_function_live_helper(
   elif hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func):
     # for streaming tool use case
     # we require the function to be an async generator function
-    async def run_tool_and_update_queue(tool, function_args, tool_context):
+    async def run_tool_and_update_queue(
+        tool: BaseTool,
+        function_args: dict[str, Any],
+        tool_context: ToolContext,
+    ) -> None:
       try:
         async with Aclosing(
             __call_tool_live(
@@ -1115,7 +1119,7 @@ async def _process_function_live_helper(
 
 def _get_tool(
     function_call: types.FunctionCall, tools_dict: dict[str, BaseTool]
-):
+) -> BaseTool:
   """Returns the tool corresponding to the function call."""
   if function_call.name not in tools_dict:
     available = list(tools_dict.keys())
@@ -1137,7 +1141,7 @@ def _create_tool_context(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
     tool_confirmation: Optional[ToolConfirmation] = None,
-):
+) -> ToolContext:
   """Creates a ToolContext object."""
   return ToolContext(
       invocation_context=invocation_context,
@@ -1151,7 +1155,7 @@ def _get_tool_and_context(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     tool_confirmation: Optional[ToolConfirmation] = None,
-):
+) -> tuple[BaseTool, ToolContext]:
   """Returns the tool and tool context corresponding to the function call."""
   tool = _get_tool(function_call, tools_dict)
   tool_context = _create_tool_context(

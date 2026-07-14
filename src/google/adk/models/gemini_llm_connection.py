@@ -57,7 +57,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         model_name_utils.is_gemini_3_5_live_translate(model_version)
     )
 
-  async def send_history(self, history: list[types.Content]):
+  async def send_history(self, history: list[types.Content]) -> None:
     """Sends the conversation history to the gemini model.
 
     You call this method right after setting up the model connection.
@@ -94,7 +94,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     else:
       logger.info('no content is sent')
 
-  async def send_content(self, content: types.Content):
+  async def send_content(self, content: types.Content) -> None:
     """Sends a user content to the gemini model.
 
     The model will respond immediately upon receiving the content.
@@ -144,7 +144,7 @@ class GeminiLlmConnection(BaseLlmConnection):
             )
         )
 
-  async def send_realtime(self, input: RealtimeInput):
+  async def send_realtime(self, input: RealtimeInput) -> None:
     """Sends a chunk of audio or a frame of video to the model in realtime.
 
     Args:
@@ -225,7 +225,7 @@ class GeminiLlmConnection(BaseLlmConnection):
       is_thought: bool = False,
       grounding_metadata: types.GroundingMetadata | None = None,
       interrupted: bool = False,
-  ):
+  ) -> LlmResponse:
     """Builds a full text response.
 
     The text should not be partial and the returned LlmResponse is not
@@ -293,7 +293,7 @@ class GeminiLlmConnection(BaseLlmConnection):
 
     text = ''
     is_thought = False
-    tool_call_parts = []
+    tool_call_parts: list[types.Part] = []
     last_grounding_metadata = None
     tool_call_metadata = None
     async with Aclosing(self._gemini_session.receive()) as agen:
@@ -625,7 +625,7 @@ class GeminiLlmConnection(BaseLlmConnection):
             live_session_id=self._gemini_session.session_id,
         )
 
-  async def close(self):
+  async def close(self) -> None:
     """Closes the llm server connection."""
 
     await self._gemini_session.close()
