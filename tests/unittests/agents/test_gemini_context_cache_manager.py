@@ -34,6 +34,7 @@ class TestGeminiContextCacheManager:
   def setup_method(self):
     """Set up test fixtures."""
     mock_client = AsyncMock(spec=Client)
+    mock_client.vertexai = False
     self.manager = GeminiContextCacheManager(mock_client)
     self.cache_config = ContextCacheConfig(
         cache_intervals=10,
@@ -201,6 +202,68 @@ class TestGeminiContextCacheManager:
     )
     mock_cleanup.assert_called_once_with(existing_cache.cache_name)
     self.manager.genai_client.aio.caches.create.assert_called_once()
+
+  async def test_model_change_invalidates_active_cache(self):
+    """A cache created for one model is not reused by another model."""
+    flash_request = self.create_llm_request(contents_count=0)
+    flash_metadata = await self.manager.handle_context_caching(flash_request)
+    assert flash_metadata is not None
+    active_metadata = CacheMetadata(
+        cache_name="cachedContents/flash-cache",
+        expire_time=time.time() + 1_800,
+        fingerprint=flash_metadata.fingerprint,
+        invocations_used=1,
+        contents_count=flash_metadata.contents_count,
+        created_at=time.time(),
+    )
+    pro_request = self.create_llm_request(
+        cache_metadata=active_metadata, contents_count=0
+    )
+    pro_request.model = "gemini-2.5-pro"
+    self.manager.genai_client.aio.caches.delete = AsyncMock()
+
+    pro_metadata = await self.manager.handle_context_caching(pro_request)
+
+    assert pro_metadata is not None
+    assert pro_metadata.cache_name is None
+    assert pro_metadata.fingerprint != active_metadata.fingerprint
+    self.manager.genai_client.aio.caches.delete.assert_awaited_once_with(
+        name="cachedContents/flash-cache"
+    )
+
+  async def test_backend_change_invalidates_active_cache(self):
+    """A Developer API cache is not reused by a Vertex client."""
+    developer_request = self.create_llm_request(contents_count=0)
+    developer_metadata = await self.manager.handle_context_caching(
+        developer_request
+    )
+    assert developer_metadata is not None
+    active_metadata = CacheMetadata(
+        cache_name="cachedContents/developer-cache",
+        expire_time=time.time() + 1_800,
+        fingerprint=developer_metadata.fingerprint,
+        invocations_used=1,
+        contents_count=developer_metadata.contents_count,
+        created_at=time.time(),
+    )
+    vertex_client = AsyncMock(spec=Client)
+    vertex_client.vertexai = True
+    vertex_client.aio.caches.delete = AsyncMock()
+    vertex_manager = GeminiContextCacheManager(vertex_client)
+    vertex_request = self.create_llm_request(
+        cache_metadata=active_metadata, contents_count=0
+    )
+
+    vertex_metadata = await vertex_manager.handle_context_caching(
+        vertex_request
+    )
+
+    assert vertex_metadata is not None
+    assert vertex_metadata.cache_name is None
+    assert vertex_metadata.fingerprint != active_metadata.fingerprint
+    vertex_client.aio.caches.delete.assert_awaited_once_with(
+        name="cachedContents/developer-cache"
+    )
 
   async def test_create_cache_gates_on_prefix_not_full_prompt(self):
     """Cache creation is gated on the cacheable prefix, not the full prompt.
@@ -420,6 +483,38 @@ class TestGeminiContextCacheManager:
     )
 
     assert fingerprint1 != fingerprint2
+
+  def test_generate_cache_fingerprint_canonicalizes_mapping_order(self):
+    """Equivalent argument mappings do not cause an avoidable cache miss."""
+    first_request = self.create_llm_request(contents_count=0)
+    second_request = self.create_llm_request(contents_count=0)
+    first_request.contents = [
+        types.ModelContent(
+            types.Part(
+                function_call=types.FunctionCall(
+                    name="lookup", args={"first": 1, "second": 2}
+                )
+            )
+        )
+    ]
+    second_request.contents = [
+        types.ModelContent(
+            types.Part(
+                function_call=types.FunctionCall(
+                    name="lookup", args={"second": 2, "first": 1}
+                )
+            )
+        )
+    ]
+
+    first_fingerprint = self.manager._generate_cache_fingerprint(
+        first_request, 1
+    )
+    second_fingerprint = self.manager._generate_cache_fingerprint(
+        second_request, 1
+    )
+
+    assert first_fingerprint == second_fingerprint
 
   def test_generate_cache_fingerprint_tool_config_variations(self):
     """Test that different tool configs generate different fingerprints."""

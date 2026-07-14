@@ -1275,6 +1275,56 @@ def test_get_adk_app_info_non_llm_agent(test_app, mock_agent_loader):
     assert "Root agent is not an LlmAgent" in response.json()["detail"]
 
 
+def test_get_adk_app_info_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test app-info returns 404 when the app_name matches no agent."""
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.get("/apps/unknown_app/app-info")
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_sse_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run_sse returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
 def test_create_session_with_id(test_app, test_session_info):
   """Test creating a session with a specific ID."""
   new_session_id = "new_session_id"
