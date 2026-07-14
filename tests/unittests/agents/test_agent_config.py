@@ -616,3 +616,16 @@ def test_load_config_from_path_blocks_args_when_enforced(tmp_path: Path):
     assert "Blocked key 'args' found" in str(exc_info.value)
   finally:
     config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+
+def test_posix_blocked():
+  """Verify posix is blocked (Unix alias for os: posix.system is os.system)."""
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils._validate_module_reference("posix.system")
+
+
+def test_nt_blocked():
+  """Verify nt is blocked (Windows alias for os: nt.system is os.system)."""
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils._validate_module_reference("nt.system")
+    
