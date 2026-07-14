@@ -237,7 +237,7 @@ class AgentEngineSandboxComputer(BaseComputer):
     config = {
         "display_name": "adk_computer_use_sandbox",
     }
-    spec = None
+    spec: dict[str, Any] | None = None
     if self._sandbox_template_name:
       config["sandbox_environment_template"] = self._sandbox_template_name
       logger.info(

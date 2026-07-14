@@ -300,7 +300,7 @@ class BasePlugin(ABC):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Callback executed before a tool is called.
 
     This callback is useful for logging tool usage, input validation, or
@@ -324,8 +324,8 @@ class BasePlugin(ABC):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
     """Callback executed after a tool has been called.
 
     This callback allows for inspecting, logging, or modifying the result
@@ -352,7 +352,7 @@ class BasePlugin(ABC):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Callback executed when a tool call encounters an error.
 
     This callback provides an opportunity to handle tool errors gracefully,

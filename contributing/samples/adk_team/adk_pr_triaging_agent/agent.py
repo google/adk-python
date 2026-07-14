@@ -53,7 +53,7 @@ LABEL_TO_OWNER = {
     "mcp": "wukath",
     "eval": "ankursharmas",
     "live": "wuliang229",
-    "models": "xuanyang15",
+    "models": "GWeale",
     "tracing": "jawoszek",
     "core": "DeanChensj",
     "web": "wyf7107",

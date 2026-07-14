@@ -1763,6 +1763,77 @@ def test_recover_compacted_function_calls_noop_when_call_present():
   assert result is effective
 
 
+def test_recover_compacted_function_calls_uses_latest_sibling_response():
+  """A recovered sibling contributes its real result, not a stale placeholder.
+
+  Two long-running calls (lr-1, lr-2) are issued together. lr-2 resumes and
+  completes (placeholder then real result), then the whole exchange is
+  compacted; lr-1 resumes later and survives. Recovering lr-2's compacted
+  response must pick its latest (real) result, not the earlier placeholder.
+  """
+
+  def _response_event(
+      call_id: str, response: dict[str, str], timestamp: float
+  ) -> Event:
+    return Event(
+        invocation_id="inv2",
+        author="user",
+        timestamp=timestamp,
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id=call_id, name="lr_tool", response=response
+                    )
+                )
+            ],
+        ),
+    )
+
+  parallel_call = Event(
+      invocation_id="inv2",
+      author="model",
+      timestamp=2.0,
+      long_running_tool_ids={"lr-1", "lr-2"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-1", name="lr_tool_1", args={}
+                  )
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-2", name="lr_tool_2", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  lr2_placeholder = _response_event("lr-2", {"status": "pending"}, 3.0)
+  lr2_result = _response_event("lr-2", {"result": "done-2"}, 4.0)
+  summary_event = Event(
+      invocation_id="compacted",
+      author="model",
+      timestamp=5.0,
+      content=types.Content(role="model", parts=[types.Part(text="summary")]),
+  )
+  lr1_result = _response_event("lr-1", {"result": "done-1"}, 7.0)
+
+  # After compaction the call event and both lr-2 responses are gone; only
+  # lr-1's later result survives. Both lr-2 responses remain in the source.
+  effective = [summary_event, lr1_result]
+  source = [parallel_call, lr2_placeholder, lr2_result, lr1_result]
+
+  result = contents._recover_compacted_function_calls(effective, source)  # pylint: disable=protected-access
+
+  assert result == [summary_event, parallel_call, lr2_result, lr1_result]
+  # The recovered lr-2 response is the real result, not the pending placeholder.
+  assert result[2].get_function_responses()[0].response == {"result": "done-2"}
+
+
 def test_get_contents_recovers_compacted_long_running_call_on_resume():
   """A long-running call compacted before resume is restored during assembly.
 

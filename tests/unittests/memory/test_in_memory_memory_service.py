@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import threading
+
 from google.adk.events.event import Event
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.sessions.session import Session
@@ -356,3 +359,94 @@ async def test_search_memory_matches_non_latin_text():
 
   assert len(result.memories) == 1
   assert result.memories[0].content.parts[0].text == 'Привет мир'
+
+
+def _make_event(tag: str) -> Event:
+  return Event(
+      id=f'event-{tag}',
+      invocation_id=f'inv-{tag}',
+      author='user',
+      timestamp=1.0,
+      content=types.Content(parts=[types.Part(text=f'fact about {tag}')]),
+  )
+
+
+def _make_session(tag: str) -> Session:
+  return Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id=f'session-{tag}',
+      last_update_time=1,
+      events=[_make_event(tag)],
+  )
+
+
+def test_search_memory_is_thread_safe_against_concurrent_writes():
+  """Searching while other threads add memory must not crash.
+
+  InMemoryMemoryService documents itself as thread-safe. search_memory must
+  therefore iterate a stable snapshot taken under the lock; iterating a live
+  reference to the shared store while a concurrent writer mutates it raises
+  "RuntimeError: dictionary changed size during iteration".
+  """
+  memory_service = InMemoryMemoryService()
+  seed_loop = asyncio.new_event_loop()
+  try:
+    for i in range(50):
+      seed_loop.run_until_complete(
+          memory_service.add_session_to_memory(_make_session(f'seed-{i}'))
+      )
+  finally:
+    seed_loop.close()
+
+  errors = []
+  stop = threading.Event()
+  barrier = threading.Barrier(3)
+
+  def writer():
+    loop = asyncio.new_event_loop()
+    barrier.wait()
+    try:
+      for i in range(500):
+        if stop.is_set():
+          return
+        loop.run_until_complete(
+            memory_service.add_session_to_memory(_make_session(f'writer-{i}'))
+        )
+    except Exception as e:  # pylint: disable=broad-except
+      errors.append(e)
+      stop.set()
+    finally:
+      loop.close()
+
+  def reader():
+    loop = asyncio.new_event_loop()
+    barrier.wait()
+    try:
+      for _ in range(500):
+        if stop.is_set():
+          return
+        loop.run_until_complete(
+            memory_service.search_memory(
+                app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='fact'
+            )
+        )
+    except Exception as e:  # pylint: disable=broad-except
+      errors.append(e)
+      stop.set()
+    finally:
+      loop.close()
+
+  threads = [
+      threading.Thread(target=writer),
+      threading.Thread(target=reader),
+      threading.Thread(target=reader),
+  ]
+  for thread in threads:
+    thread.start()
+  for thread in threads:
+    thread.join()
+
+  assert (
+      not errors
+  ), f'search_memory raced with concurrent writes: {errors[0]!r}'

@@ -989,6 +989,8 @@ class TestGeminiContextCacheManager:
     assert result_2.contents_count == 0  # Preserved from prefix
     assert result_2.invocations_used == 1
     self.manager.genai_client.aio.caches.create.assert_called_once()
+    create_call = self.manager.genai_client.aio.caches.create.call_args
+    assert create_call.kwargs["config"].contents is None
 
   async def test_dynamic_instruction_does_not_break_initial_cache_fingerprint(
       self,
