@@ -15,14 +15,10 @@
 from __future__ import annotations
 
 from unittest.mock import Mock
-from unittest.mock import patch
-import uuid
 
-from a2a.types import Part as A2APart
 from a2a.types import TaskArtifactUpdateEvent
-from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
+from google.adk.a2a import _compat
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.events import event_actions
 from google.adk.events.event import Event
@@ -62,8 +58,7 @@ class TestFromAdk:
     agents_artifacts = {}
 
     # Mock part converter to return a standard text part
-    mock_a2a_part = A2APart(root=TextPart(text="hello"))
-    mock_a2a_part.root.metadata = {}
+    mock_a2a_part = _compat.make_text_part("hello")
     mock_convert_part = Mock(return_value=[mock_a2a_part])
 
     result = convert_event_to_a2a_events(

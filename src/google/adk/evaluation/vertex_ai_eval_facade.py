@@ -65,7 +65,7 @@ class _VertexAiEvalFacade(Evaluator):
       metric_name: Union[
           vertexai.types.PrebuiltMetric, vertexai.types.RubricMetric
       ],
-      expected_invocations_required=False,
+      expected_invocations_required: bool = False,
   ):
     self._threshold = threshold
     self._metric_name = metric_name
@@ -126,7 +126,7 @@ class _VertexAiEvalFacade(Evaluator):
 
     return None
 
-  def _get_eval_status(self, score: Optional[float]):
+  def _get_eval_status(self, score: Optional[float]) -> EvalStatus:
     if score is not None:
       return (
           EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED

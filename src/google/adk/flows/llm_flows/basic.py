@@ -113,6 +113,9 @@ def _build_basic_request(
   llm_request.live_connect_config.realtime_input_config = (
       invocation_context.run_config.realtime_input_config
   )
+  llm_request.live_connect_config.explicit_vad_signal = (
+      invocation_context.run_config.explicit_vad_signal
+  )
   llm_request.live_connect_config.translation_config = (
       invocation_context.run_config.translation_config
   )

@@ -230,7 +230,7 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
       self, per_invocation_results: list[PerInvocationResult]
   ) -> EvaluationResult:
     """Computes the fraction of invocation results that are valid."""
-    num_valid = 0
+    num_valid: float = 0
     num_evaluated = 0
     for result in per_invocation_results:
       if result.score is None or result.eval_status == EvalStatus.NOT_EVALUATED:

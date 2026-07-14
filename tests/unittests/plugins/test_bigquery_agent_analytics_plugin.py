@@ -1451,7 +1451,161 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert attributes["llm_config"]["temperature"] == 0.5
     assert attributes["llm_config"]["top_p"] == 0.9
     assert attributes["llm_config"]["top_p"] == 0.9
-    assert attributes["tools"] == ["tool1", "tool2"]
+    # Tools without a name/description/declaration fall back to just the key.
+    assert attributes["tools"] == [{"name": "tool1"}, {"name": "tool2"}]
+
+  @pytest.mark.asyncio
+  async def test_before_model_callback_logs_tool_declarations(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """LLM_REQUEST tools carry name, description, and parameter schema."""
+
+    class _FakeTool(base_tool_lib.BaseTool):
+
+      def __init__(self, name, description, declaration):
+        super().__init__(name=name, description=description)
+        self._declaration = declaration
+
+      def _get_declaration(self):
+        return self._declaration
+
+    execute_sql = _FakeTool(
+        name="execute_sql",
+        description="Run a SQL query against BigQuery.",
+        declaration=types.FunctionDeclaration(
+            name="execute_sql",
+            description="Run a SQL query against BigQuery.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="The SQL query to run.",
+                    )
+                },
+                required=["query"],
+            ),
+        ),
+    )
+    # A tool without a declaration still contributes name + description.
+    list_datasets = _FakeTool(
+        name="list_dataset_ids",
+        description="List available datasets.",
+        declaration=None,
+    )
+
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+    )
+    llm_request.tools_dict = {
+        "execute_sql": execute_sql,
+        "list_dataset_ids": list_datasets,
+    }
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_REQUEST")
+    attributes = json.loads(log_entry["attributes"])
+    tools_by_name = {t["name"]: t for t in attributes["tools"]}
+
+    assert tools_by_name["execute_sql"]["description"] == (
+        "Run a SQL query against BigQuery."
+    )
+    params = tools_by_name["execute_sql"]["parameters"]
+    assert params["type"] == "OBJECT"
+    assert params["properties"]["query"]["type"] == "STRING"
+    assert params["required"] == ["query"]
+
+    assert tools_by_name["list_dataset_ids"]["description"] == (
+        "List available datasets."
+    )
+    assert "parameters" not in tools_by_name["list_dataset_ids"]
+
+  def test_extract_tool_declarations_declaration_error_is_isolated(self):
+    """A tool whose _get_declaration raises still yields name + description."""
+
+    class _RaisingTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        raise ValueError("boom")
+
+    class _OkTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        return None
+
+    result = bigquery_agent_analytics_plugin._extract_tool_declarations({
+        "raiser": _RaisingTool(name="raiser", description="Raises."),
+        "ok": _OkTool(name="ok", description="Fine."),
+    })
+    by_name = {t["name"]: t for t in result}
+
+    # The raising tool is not dropped; other tools are unaffected.
+    assert by_name["raiser"] == {"name": "raiser", "description": "Raises."}
+    assert by_name["ok"] == {"name": "ok", "description": "Fine."}
+
+  def test_extract_tool_declarations_parameters_serialization_error(self):
+    """A parameters object that fails to serialize is dropped, not fatal."""
+
+    class _BadParams:
+
+      def model_dump(self, *args, **kwargs):
+        raise ValueError("cannot serialize")
+
+    class _BadDecl:
+      description = None
+      parameters = _BadParams()
+
+    class _BadParamTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        return _BadDecl()
+
+    result = bigquery_agent_analytics_plugin._extract_tool_declarations(
+        {"bad_params": _BadParamTool(name="bad_params", description="Bad.")}
+    )
+
+    # Name + description survive; the unserializable parameters key is omitted.
+    assert result == [{"name": "bad_params", "description": "Bad."}]
+
+  def test_extract_tool_declarations_uses_parameters_json_schema(self):
+    """Declarations exposing parameters_json_schema log that raw schema."""
+
+    json_schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    }
+
+    class _JsonSchemaTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        return types.FunctionDeclaration(
+            name="read_file",
+            description="Read a file.",
+            parameters_json_schema=json_schema,
+        )
+
+    result = bigquery_agent_analytics_plugin._extract_tool_declarations(
+        {"read_file": _JsonSchemaTool(name="read_file", description="Read.")}
+    )
+
+    # parameters_json_schema is logged verbatim (preferred over `parameters`).
+    assert result == [{
+        "name": "read_file",
+        "description": "Read.",
+        "parameters": json_schema,
+    }]
 
   @pytest.mark.asyncio
   async def test_before_model_callback_with_full_config(
@@ -1940,6 +2094,189 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert content_dict["args"] == {"param": "value"}
     assert log_entry["error_message"] == "Tool timed out"
     assert log_entry["status"] == "ERROR"
+
+  @pytest.mark.asyncio
+  async def test_on_agent_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """on_agent_error_callback emits AGENT_ERROR with traceback."""
+    error = RuntimeError("Agent crashed")
+    try:
+      raise error
+    except RuntimeError:
+      pass  # populate __traceback__
+    pushed_span_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "agent"
+    )
+    await bq_plugin_inst.on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=callback_context,
+        error=error,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+    assert log_entry["error_message"] == "Agent crashed"
+    assert log_entry["status"] == "ERROR"
+    # The agent span BQAA pushed is popped and attributed to the error row.
+    assert log_entry["span_id"] == pushed_span_id
+    content = json.loads(log_entry["content"])
+    assert "error_traceback" in content
+    assert "RuntimeError: Agent crashed" in content["error_traceback"]
+
+  @pytest.mark.asyncio
+  async def test_on_agent_error_does_not_pop_foreign_invocation_span(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """on_agent_error must not pop a span BQAA did not push for this agent.
+
+    Simulates another plugin's before_agent_callback raising before BQAA's
+    own before_agent_callback ran: the stack holds only the invocation root.
+    The guarded pop must leave the invocation span in place so the
+    subsequent INVOCATION_ERROR keeps correct span/latency data.
+    """
+    trace_manager = bigquery_agent_analytics_plugin.TraceManager
+    inv_span_id = trace_manager.push_span(callback_context, "invocation")
+
+    error = RuntimeError("other plugin's before_agent failed")
+    try:
+      raise error
+    except RuntimeError:
+      pass
+
+    await bq_plugin_inst.on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=callback_context,
+        error=error,
+    )
+    await asyncio.sleep(0.05)
+
+    # The invocation root was NOT consumed by the agent-error pop.
+    assert trace_manager.get_current_span_id() == inv_span_id
+    # The AGENT_ERROR row is still emitted.
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+    assert log_entry["error_message"] == "other plugin's before_agent failed"
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """on_run_error_callback emits INVOCATION_ERROR with traceback."""
+    error = ValueError("Invocation failed")
+    try:
+      raise error
+    except ValueError:
+      pass
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        invocation_context, "invocation"
+    )
+    await bq_plugin_inst.on_run_error_callback(
+        invocation_context=invocation_context,
+        error=error,
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "INVOCATION_ERROR")
+    assert log_entry["error_message"] == "Invocation failed"
+    assert log_entry["status"] == "ERROR"
+    content = json.loads(log_entry["content"])
+    assert "error_traceback" in content
+    assert "ValueError: Invocation failed" in content["error_traceback"]
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_callback_cleanup_runs_on_log_failure(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """on_run_error_callback cleans up even when _log_event raises."""
+    # Push spans and set context vars to simulate active invocation
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    bigquery_agent_analytics_plugin._active_invocation_id_ctx.set("test-inv")
+    bigquery_agent_analytics_plugin._root_agent_name_ctx.set("test-agent")
+
+    # Make _log_event raise
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", side_effect=RuntimeError("boom")
+    ):
+      # @_safe_callback swallows the exception
+      await bq_plugin_inst.on_run_error_callback(
+          invocation_context=invocation_context,
+          error=ValueError("app error"),
+      )
+
+    # finally block must have cleaned up
+    assert (
+        bigquery_agent_analytics_plugin._active_invocation_id_ctx.get(None)
+        is None
+    )
+    assert (
+        bigquery_agent_analytics_plugin._root_agent_name_ctx.get(None) is None
+    )
+
+  @pytest.mark.asyncio
+  async def test_traceback_not_truncated_with_negative_max_len(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      invocation_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """Traceback is not truncated when max_content_length is -1."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=-1,
+        create_views=False,
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      await plugin._ensure_started()
+
+      error = RuntimeError("x" * 2000)
+      try:
+        raise error
+      except RuntimeError:
+        pass
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin.on_agent_error_callback(
+          agent=mock_agent,
+          callback_context=bigquery_agent_analytics_plugin.CallbackContext(
+              invocation_context
+          ),
+          error=error,
+      )
+      await asyncio.sleep(0.05)
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+      content = json.loads(log_entry["content"])
+      # Should NOT be truncated
+      assert "[truncated]" not in content["error_traceback"]
+      assert "x" * 2000 in content["error_traceback"]
 
   @pytest.mark.asyncio
   async def test_table_creation_options(
@@ -5977,6 +6314,27 @@ class TestAnalyticsViews:
     for event_type in bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS:
       view_name = "v_" + event_type.lower()
       assert view_name in all_sql, f"View {view_name} not found in SQL"
+
+  def test_error_views_contain_traceback_column(self):
+    """AGENT_ERROR and INVOCATION_ERROR views include error_traceback."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    all_sqls = {c[0][0] for c in calls}
+
+    agent_error_sqls = [s for s in all_sqls if "v_agent_error" in s]
+    assert len(agent_error_sqls) == 1
+    assert "error_traceback" in agent_error_sqls[0]
+    assert "total_ms" in agent_error_sqls[0]
+
+    inv_error_sqls = [s for s in all_sqls if "v_invocation_error" in s]
+    assert len(inv_error_sqls) == 1
+    assert "error_traceback" in inv_error_sqls[0]
 
   def test_llm_response_view_exposes_token_usage_columns(self):
     """LLM_RESPONSE view surfaces cached/thinking/tool-use token columns.

@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+from typing import cast
 from typing import Optional
 from typing import Union
 
@@ -23,13 +25,31 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_serializer
+from pydantic import SerializerFunctionWrapHandler
+from pydantic_core import to_jsonable_python
 
 from ..auth.auth_tool import AuthConfig
 from ..tools.tool_confirmation import ToolConfirmation
 from .ui_widget import UiWidget
 
+logger = logging.getLogger('google_adk.' + __name__)
 
-class EventCompaction(BaseModel):
+
+def _make_json_serializable(obj: Any) -> Any:
+  """Converts an object into a JSON-serializable form.
+
+  Used as a fallback when the default Pydantic serialization fails. Delegates to
+  `pydantic_core.to_jsonable_python` so rich types (e.g. datetimes, Pydantic
+  models) are serialized faithfully instead of being discarded. Values that
+  pydantic-core cannot serialize (e.g. Python callables stored in session state)
+  are replaced with their `repr` via `serialize_unknown=True` so the overall
+  structure can still be persisted without crashing.
+  """
+  return to_jsonable_python(obj, serialize_unknown=True)
+
+
+class EventCompaction(BaseModel):  # type: ignore[misc]
   """The compaction of the events."""
 
   model_config = ConfigDict(
@@ -49,7 +69,7 @@ class EventCompaction(BaseModel):
   """The compacted content of the events."""
 
 
-class EventActions(BaseModel):
+class EventActions(BaseModel):  # type: ignore[misc]
   """Represents the actions attached to an event."""
 
   model_config = ConfigDict(
@@ -67,6 +87,27 @@ class EventActions(BaseModel):
 
   state_delta: dict[str, Any] = Field(default_factory=dict)
   """Indicates that the event is updating the state with the given delta."""
+
+  @field_serializer('state_delta', mode='wrap')  # type: ignore[misc, untyped-decorator]
+  def _serialize_state_delta(
+      self, value: dict[str, object], handler: SerializerFunctionWrapHandler
+  ) -> dict[str, Any]:
+    # Use a wrap serializer so the default serialization (which honors callers'
+    # `exclude`/`include` directives, e.g. the conformance harness excluding
+    # internal `_adk_*` keys) is preserved. Only fall back to sanitization when
+    # the value contains objects Pydantic cannot serialize (e.g. callables).
+    try:
+      return cast(dict[str, Any], handler(value))
+    except Exception:  # pylint: disable=broad-except
+      logger.warning(
+          'Failed to serialize `state_delta`; some values are not'
+          ' JSON-serializable (e.g. callables) and will be replaced with a'
+          ' string representation in the persisted event.',
+          exc_info=True,
+      )
+      # Re-run the handler on the sanitized value so that caller `exclude` /
+      # `include` directives are still applied to the fallback output.
+      return cast(dict[str, Any], handler(_make_json_serializable(value)))
 
   artifact_delta: dict[str, int] = Field(default_factory=dict)
   """Indicates that the event is updating an artifact. key is the filename,
@@ -107,6 +148,28 @@ class EventActions(BaseModel):
   agent_state: Optional[dict[str, Any]] = None
   """The agent state at the current event, used for checkpoint and resume. This
   should only be set by ADK workflow."""
+
+  @field_serializer('agent_state', mode='wrap')  # type: ignore[misc, untyped-decorator]
+  def _serialize_agent_state(
+      self,
+      value: Optional[dict[str, Any]],
+      handler: SerializerFunctionWrapHandler,
+  ) -> Optional[dict[str, Any]]:
+    if value is None:
+      return None
+    # See `_serialize_state_delta` for why a wrap serializer is used.
+    try:
+      return cast(Optional[dict[str, Any]], handler(value))
+    except Exception:  # pylint: disable=broad-except
+      logger.warning(
+          'Failed to serialize `agent_state`; some values are not'
+          ' JSON-serializable (e.g. callables) and will be replaced with a'
+          ' string representation in the persisted event.',
+          exc_info=True,
+      )
+      # Re-run the handler on the sanitized value so that caller `exclude` /
+      # `include` directives are still applied to the fallback output.
+      return cast(dict[str, Any], handler(_make_json_serializable(value)))
 
   rewind_before_invocation_id: Optional[str] = None
   """The invocation id to rewind to. This is only set for rewind event."""

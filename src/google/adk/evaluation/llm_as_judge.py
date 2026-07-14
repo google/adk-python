@@ -65,7 +65,7 @@ class LlmAsJudge(Evaluator):
       self,
       eval_metric: EvalMetric,
       criterion_type: type[BaseCriterion],
-      expected_invocations_required=False,
+      expected_invocations_required: bool = False,
   ):
     self._eval_metric = eval_metric
     self._expected_invocations_required = expected_invocations_required

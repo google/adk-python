@@ -100,16 +100,18 @@ def test_duplicate_edges_fail_validation(
 ) -> None:
   """Tests that duplicate edges fail validation, regardless of routes."""
   node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
   graph = Graph(
       edges=[
+          Edge(from_node=START, to_node=node_a),
           Edge(
-              from_node=START,
-              to_node=node_a,
+              from_node=node_a,
+              to_node=node_b,
               route=routes[0],
           ),
           Edge(
-              from_node=START,
-              to_node=node_a,
+              from_node=node_a,
+              to_node=node_b,
               route=routes[1],
           ),
       ],
@@ -117,9 +119,24 @@ def test_duplicate_edges_fail_validation(
   with pytest.raises(
       ValueError,
       match=(
-          r'Graph validation failed\. Duplicate edge found: from=__START__,'
-          r' to=NodeA'
+          r'Graph validation failed\. Duplicate edge found: from=NodeA,'
+          r' to=NodeB'
       ),
+  ):
+    validate_graph(graph.nodes, graph.edges)
+
+
+def test_routed_start_edge_fails_validation() -> None:
+  """Tests that routed edges from START node fail validation."""
+  node_a = TestingNode(name='NodeA')
+  graph = Graph(
+      edges=[
+          Edge(from_node=START, to_node=node_a, route='route1'),
+      ],
+  )
+  with pytest.raises(
+      ValueError,
+      match=r'Graph validation failed\. Edges from START must not have routes',
   ):
     validate_graph(graph.nodes, graph.edges)
 

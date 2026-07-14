@@ -19,6 +19,7 @@ from typing import Union
 
 from google.genai import types
 from langchain_core.messages import AIMessage
+from langchain_core.messages import BaseMessage
 from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables.config import RunnableConfig
@@ -31,7 +32,9 @@ from .base_agent import BaseAgent
 from .invocation_context import InvocationContext
 
 
-def _get_last_human_messages(events: list[Event]) -> list[HumanMessage]:
+def _get_last_human_messages(
+    events: list[Event],
+) -> list[Union[HumanMessage, AIMessage]]:
   """Extracts last human messages from given list of events.
 
   Args:
@@ -40,7 +43,7 @@ def _get_last_human_messages(events: list[Event]) -> list[HumanMessage]:
   Returns:
     list of last human messages
   """
-  messages = []
+  messages: list[Union[HumanMessage, AIMessage]] = []
   for event in reversed(events):
     if messages and event.author != 'user':
       break
@@ -77,7 +80,7 @@ class LangGraphAgent(BaseAgent):
         if current_graph_state.values
         else []
     )
-    messages = (
+    messages: list[BaseMessage] = (
         [SystemMessage(content=self.instruction)]
         if self.instruction and not graph_messages
         else []
@@ -132,7 +135,7 @@ class LangGraphAgent(BaseAgent):
       list of messages
     """
 
-    messages = []
+    messages: list[Union[HumanMessage, AIMessage]] = []
     for event in events:
       if not event.content or not event.content.parts:
         continue

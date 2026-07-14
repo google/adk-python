@@ -24,6 +24,7 @@ from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Literal
 from typing import Mapping
 from typing import TypedDict
 from urllib.parse import urlparse
@@ -48,10 +49,8 @@ from typing_extensions import override
 
 # pylint: disable=g-import-not-at-top
 try:
-  from a2a.types import AgentCapabilities
-  from a2a.types import AgentCard
   from a2a.types import AgentSkill
-  from a2a.types import TransportProtocol as A2ATransport
+  from google.adk.a2a import _compat
   from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 except ImportError as e:
   raise ImportError(
@@ -66,9 +65,9 @@ AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1"
 AGENT_REGISTRY_MTLS_BASE_URL = "https://agentregistry.mtls.googleapis.com/v1"
 
 _TRANSPORT_MAPPING = {
-    "HTTP_JSON": A2ATransport.http_json,
-    "JSONRPC": A2ATransport.jsonrpc,
-    "GRPC": A2ATransport.grpc,
+    "HTTP_JSON": _compat.TP_HTTP_JSON,
+    "JSONRPC": _compat.TP_JSONRPC,
+    "GRPC": _compat.TP_GRPC,
 }
 
 
@@ -107,7 +106,7 @@ class AgentRegistrySingleMcpToolset(McpToolset):
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> List[BaseTool]:
-    tools = await super().get_tools(readonly_context)
+    tools: List[BaseTool] = await super().get_tools(readonly_context)
 
     # Noop if there is no destination_resource_id
     if self.destination_resource_id is None:
@@ -241,9 +240,13 @@ class AgentRegistry:
       ) from e
 
   def _make_request(
-      self, path: str, params: Dict[str, Any] | None = None
+      self,
+      path: str,
+      method: str = "GET",
+      params: Dict[str, Any] | None = None,
+      json_data: Dict[str, Any] | None = None,
   ) -> Dict[str, Any]:
-    """Helper function to make GET requests to the Agent Registry API."""
+    """Helper function to make requests to the Agent Registry API."""
     if path.startswith("projects/"):
       url = f"{self._base_url}/{path}"
     else:
@@ -256,9 +259,13 @@ class AgentRegistry:
     )
     try:
       # Using AuthorizedSession for internal API calls to handle mTLS/Auth.
-      response = self._session.get(url, headers=headers, params=params)
+      if method == "POST":
+        response = self._session.post(url, headers=headers, json=json_data)
+      else:
+        response = self._session.get(url, headers=headers, params=params)
       response.raise_for_status()
-      return response.json()
+      data: Dict[str, Any] = response.json()
+      return data
     except requests.exceptions.HTTPError as e:
       raise RuntimeError(
           f"API request failed with status {e.response.status_code}:"
@@ -269,12 +276,41 @@ class AgentRegistry:
     except Exception as e:
       raise RuntimeError(f"API request failed: {e}") from e
 
+  def _search(
+      self,
+      resource_type: str,
+      *,
+      search_string: str | None = None,
+      search_type: Literal["KEYWORD", "SEMANTIC"] | None = None,
+      filter_str: str | None = None,
+      order_by: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
+  ) -> Dict[str, Any]:
+    """Helper function to execute search requests."""
+    json_data: dict[str, Any] = {}
+    if search_string is not None:
+      json_data["searchString"] = search_string
+    if search_type is not None:
+      json_data["searchType"] = search_type
+    if filter_str is not None:
+      json_data["filter"] = filter_str
+    if order_by is not None:
+      json_data["orderBy"] = order_by
+    if page_size is not None:
+      json_data["pageSize"] = page_size
+    if page_token is not None:
+      json_data["pageToken"] = page_token
+    return self._make_request(
+        f"{resource_type}:search", method="POST", json_data=json_data
+    )
+
   def _get_connection_uri(
       self,
       resource_details: Mapping[str, Any],
       protocol_type: _ProtocolType | None = None,
-      protocol_binding: A2ATransport | None = None,
-  ) -> str | None:
+      protocol_binding: _compat.TransportProtocol | None = None,
+  ) -> tuple[str | None, str | None, _compat.TransportProtocol | None]:
     """Extracts the first matching URI based on type and binding filters."""
     protocols = list(resource_details.get("protocols", []))
     if "interfaces" in resource_details:
@@ -320,6 +356,27 @@ class AgentRegistry:
       params["pageToken"] = page_token
     return self._make_request("mcpServers", params=params)
 
+  def search_mcp_servers(
+      self,
+      *,
+      search_string: str | None = None,
+      search_type: Literal["KEYWORD", "SEMANTIC"] | None = None,
+      filter_str: str | None = None,
+      order_by: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
+  ) -> Dict[str, Any]:
+    """Searches registered MCP Servers."""
+    return self._search(
+        "mcpServers",
+        search_string=search_string,
+        search_type=search_type,
+        filter_str=filter_str,
+        order_by=order_by,
+        page_size=page_size,
+        page_token=page_token,
+    )
+
   def get_mcp_server(self, name: str) -> Dict[str, Any]:
     """Retrieves details of a specific MCP Server."""
     return self._make_request(name)
@@ -354,11 +411,11 @@ class AgentRegistry:
       mcp_server_id = None
 
     endpoint_uri, _, _ = self._get_connection_uri(
-        server_details, protocol_binding=A2ATransport.jsonrpc
+        server_details, protocol_binding=_compat.TP_JSONRPC
     )
     if not endpoint_uri:
       endpoint_uri, _, _ = self._get_connection_uri(
-          server_details, protocol_binding=A2ATransport.http_json
+          server_details, protocol_binding=_compat.TP_HTTP_JSON
       )
     if not endpoint_uri:
       raise ValueError(
@@ -475,6 +532,27 @@ class AgentRegistry:
       params["pageToken"] = page_token
     return self._make_request("agents", params=params)
 
+  def search_agents(
+      self,
+      *,
+      search_string: str | None = None,
+      search_type: Literal["KEYWORD", "SEMANTIC"] | None = None,
+      filter_str: str | None = None,
+      order_by: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
+  ) -> Dict[str, Any]:
+    """Searches registered A2A Agents."""
+    return self._search(
+        "agents",
+        search_string=search_string,
+        search_type=search_type,
+        filter_str=filter_str,
+        order_by=order_by,
+        page_size=page_size,
+        page_token=page_token,
+    )
+
   def get_agent_info(self, name: str) -> Dict[str, Any]:
     """Retrieves detailed metadata of a specific A2A Agent."""
     return self._make_request(name)
@@ -492,7 +570,7 @@ class AgentRegistry:
     card = agent_info.get("card", {})
     card_content = card.get("content")
     if card.get("type") == "A2A_AGENT_CARD" and card_content:
-      agent_card = AgentCard(**card_content)
+      agent_card = _compat.parse_agent_card(card_content)
       # Clean the name to be a valid identifier
       name = self._clean_name(agent_card.name)
 
@@ -525,17 +603,17 @@ class AgentRegistry:
           )
       )
 
-    agent_card = AgentCard(
+    binding = protocol_binding or _compat.TP_HTTP_JSON
+    agent_card = _compat.build_agent_card(
         name=name,
         description=description,
         version=version,
-        preferredTransport=protocol_binding or A2ATransport.http_json,
-        protocolVersion=protocol_version or "0.3.0",
         url=url,
+        protocol_binding=getattr(binding, "value", binding),
+        protocol_version=protocol_version,
         skills=skills,
-        capabilities=AgentCapabilities(streaming=False, polling=False),
-        defaultInputModes=["text"],
-        defaultOutputModes=["text"],
+        default_input_modes=["text"],
+        default_output_modes=["text"],
     )
 
     return RemoteA2aAgent(

@@ -28,6 +28,7 @@ import json
 import logging
 import mimetypes
 import os
+import traceback as traceback_module
 
 # Enable gRPC fork support so child processes created via os.fork()
 # can safely create new gRPC channels.  Must be set before grpc's
@@ -39,11 +40,15 @@ import random
 import re
 import time
 from types import MappingProxyType
+from types import TracebackType
 from typing import Any
-from typing import Awaitable
+from typing import AsyncIterator
 from typing import Callable
+from typing import Coroutine
 from typing import Optional
+from typing import ParamSpec
 from typing import TYPE_CHECKING
+from typing import TypeVar
 import uuid
 import weakref
 
@@ -139,7 +144,7 @@ def _derive_scope(
 
 # Track all living plugin instances so the fork handler can reset
 # them proactively in the child, before _ensure_started runs.
-_LIVE_PLUGINS: weakref.WeakSet = weakref.WeakSet()
+_LIVE_PLUGINS: weakref.WeakSet[BigQueryAgentAnalyticsPlugin] = weakref.WeakSet()
 
 
 def _after_fork_in_child() -> None:
@@ -155,17 +160,31 @@ if hasattr(os, "register_at_fork"):
   os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
-def _safe_callback(func):
+_SafeCallbackP = ParamSpec("_SafeCallbackP")
+_SafeCallbackT = TypeVar("_SafeCallbackT")
+
+
+def _safe_callback(
+    func: Callable[
+        _SafeCallbackP, Coroutine[Any, Any, Optional[_SafeCallbackT]]
+    ],
+) -> Callable[_SafeCallbackP, Coroutine[Any, Any, Optional[_SafeCallbackT]]]:
   """Decorator that catches and logs exceptions in plugin callbacks.
 
   Prevents plugin errors from propagating to the runner and crashing
   the agent run. All callback exceptions are logged and swallowed.
+
+  The signature (including keyword-only parameters and the ``Coroutine``
+  return type) is preserved via ``ParamSpec`` so decorated methods still
+  match the ``BasePlugin`` overrides they implement.
   """
 
   @functools.wraps(func)
-  async def wrapper(self, **kwargs):
+  async def wrapper(
+      *args: _SafeCallbackP.args, **kwargs: _SafeCallbackP.kwargs
+  ) -> Optional[_SafeCallbackT]:
     try:
-      return await func(self, **kwargs)
+      return await func(*args, **kwargs)
     except Exception:
       logger.exception(
           "BigQuery analytics plugin error in %s; skipping.",
@@ -215,7 +234,7 @@ def _format_content(
   return " | ".join(parts), truncated
 
 
-def _find_transfer_target(agent, agent_name: str):
+def _find_transfer_target(agent: Any, agent_name: str) -> Any:
   """Find a transfer target agent by name in the accessible agent tree.
 
   Searches the current agent's sub-agents, parent, and peer agents
@@ -304,6 +323,84 @@ def _get_tool_origin(
   if isinstance(tool, FunctionTool):
     return "LOCAL"
   return "UNKNOWN"
+
+
+def _extract_tool_declarations(
+    tools_dict: dict[str, "BaseTool"],
+) -> list[dict[str, Any]]:
+  """Extracts structured tool metadata for the ``LLM_REQUEST`` event.
+
+  Earlier versions logged only the tool names (``list(tools_dict.keys())``).
+  Downstream consumers such as online evaluation need the tool *description* and
+  *parameter schema* to judge whether the model selected and invoked the right
+  tool, so this returns one structured entry per tool instead of a bare name.
+
+  Each entry always carries ``name`` and, when available, ``description`` and
+  ``parameters`` (the OpenAPI parameter schema from the tool's
+  ``FunctionDeclaration``). Extraction is best-effort and per-tool: a tool whose
+  declaration cannot be resolved still contributes its name and description, so
+  one misbehaving tool never drops the whole ``tools`` attribute.
+
+  Args:
+      tools_dict: Mapping of tool name to ``BaseTool`` from ``LlmRequest``.
+
+  Returns:
+      A list of ``{"name", "description"?, "parameters"?}`` dicts.
+  """
+  tools: list[dict[str, Any]] = []
+  for name, tool in tools_dict.items():
+    # Fall back to the dict key when the tool has no (or a falsy) name.
+    entry: dict[str, Any] = {"name": getattr(tool, "name", None) or name}
+    description = getattr(tool, "description", None)
+    if description:
+      entry["description"] = description
+
+    # The parameter schema lives on the tool's FunctionDeclaration, which some
+    # tools (e.g. built-in tools) do not provide. Resolve defensively so a
+    # single failing tool does not discard the whole tools list.
+    #
+    # Note: FunctionTool._get_declaration() rebuilds the declaration from the
+    # function signature on each call (no caching), so this repeats work the
+    # framework already did when assembling the request. Acceptable for typical
+    # toolsets; revisit with a cache if it shows up on the hot path.
+    declaration = None
+    try:
+      get_declaration = getattr(tool, "_get_declaration", None)
+      if callable(get_declaration):
+        declaration = get_declaration()
+    except Exception:  # pylint: disable=broad-except
+      logger.debug("Failed to get declaration for tool %s", name, exc_info=True)
+
+    if declaration is not None:
+      if "description" not in entry:
+        decl_description = getattr(declaration, "description", None)
+        if decl_description:
+          entry["description"] = decl_description
+      # A declaration carries its parameter schema in one of two shapes: the
+      # structured `parameters` Schema, or a raw JSON-schema dict in
+      # `parameters_json_schema`. Several tools (MCP, OpenAPI, skill, node, and
+      # environment tools) populate only the latter, and model adapters prefer
+      # it, so prefer it here too and fall back to `parameters` otherwise.
+      json_schema = getattr(declaration, "parameters_json_schema", None)
+      if json_schema is not None:
+        entry["parameters"] = json_schema
+      else:
+        parameters = getattr(declaration, "parameters", None)
+        if parameters is not None:
+          try:
+            entry["parameters"] = parameters.model_dump(
+                exclude_none=True, mode="json"
+            )
+          except Exception:  # pylint: disable=broad-except
+            # Leave parameters off if the schema is not JSON-serializable.
+            logger.debug(
+                "Failed to serialize parameters for tool %s",
+                name,
+                exc_info=True,
+            )
+
+    tools.append(entry)
+  return tools
 
 
 _SENSITIVE_KEYS = frozenset({
@@ -760,10 +857,15 @@ class _SpanRecord:
   trace_id: str
   owns_span: bool
   start_time_ns: int
+  # What pushed this record ("invocation", "agent", "llm_request", "tool").
+  # Lets error callbacks pop only spans they own: e.g. if another plugin's
+  # before_agent_callback raised before BQAA pushed its agent span,
+  # on_agent_error_callback must not pop the invocation span instead.
+  kind: str = ""
   first_token_time: Optional[float] = None
 
 
-_span_records_ctx: contextvars.ContextVar[list[_SpanRecord]] = (
+_span_records_ctx: contextvars.ContextVar[Optional[list[_SpanRecord]]] = (
     contextvars.ContextVar("_bq_analytics_span_records", default=None)
 )
 
@@ -834,10 +936,9 @@ class TraceManager:
            or non-OTel runtimes).
     * ``start_time_ns`` — for the eventual ``latency_ms`` on pop.
 
-    ``span_name`` is preserved on the signature for API stability but
-    is no longer used (no OTel span name is set).
+    ``span_name`` is recorded as the span ``kind`` so error callbacks
+    can verify ownership before popping (no OTel span name is set).
     """
-    del span_name  # No-op: kept for API stability; no OTel span is created.
     TraceManager.init_trace(callback_context)
 
     records = TraceManager._get_records()
@@ -857,6 +958,7 @@ class TraceManager:
         trace_id=trace_id,
         owns_span=True,
         start_time_ns=time.time_ns(),
+        kind=span_name or "",
     )
     _span_records_ctx.set(list(records) + [record])
 
@@ -888,6 +990,9 @@ class TraceManager:
         trace_id=trace_id,
         owns_span=False,
         start_time_ns=time.time_ns(),
+        # attach_current_span is only used to seed the invocation root
+        # (see ensure_invocation_span), so it carries the same kind.
+        kind="invocation",
     )
     records = TraceManager._get_records()
     _span_records_ctx.set(list(records) + [record])
@@ -938,14 +1043,26 @@ class TraceManager:
       TraceManager.push_span(callback_context, "invocation")
 
   @staticmethod
-  def pop_span() -> tuple[Optional[str], Optional[int]]:
+  def pop_span(
+      expected_kind: Optional[str] = None,
+  ) -> tuple[Optional[str], Optional[int]]:
     """Pops the top span record from the internal stack.
 
     Returns ``(span_id, duration_ms)``.  No OTel span is ended
     because the plugin no longer creates one (see ``_SpanRecord``).
+
+    Args:
+      expected_kind: When set, only pop if the top record was pushed
+        with this kind; otherwise leave the stack untouched and return
+        ``(None, None)``.  Error callbacks use this so they never pop a
+        span they do not own (e.g. ``on_agent_error_callback`` firing
+        for a failure that happened before BQAA pushed its agent span).
     """
     records = _span_records_ctx.get()
     if not records:
+      return None, None
+
+    if expected_kind is not None and records[-1].kind != expected_kind:
       return None, None
 
     new_records = list(records)
@@ -1066,7 +1183,7 @@ class BatchProcessor:
     self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
         maxsize=queue_max_size
     )
-    self._batch_processor_task: Optional[asyncio.Task] = None
+    self._batch_processor_task: Optional[asyncio.Task[None]] = None
     self._shutdown = False
 
     # Running tally of events/rows dropped without ever being written, keyed by
@@ -1089,7 +1206,7 @@ class BatchProcessor:
     # Wait for all items in the queue to be processed
     await self._queue.join()
 
-  async def start(self):
+  async def start(self) -> None:
     """Starts the batch writer worker task."""
     if self._batch_processor_task is None:
       self._batch_processor_task = asyncio.create_task(self._batch_writer())
@@ -1142,7 +1259,7 @@ class BatchProcessor:
     Returns:
         pa.RecordBatch for writing.
     """
-    data = {field.name: [] for field in self.arrow_schema}
+    data: dict[str, list[Any]] = {field.name: [] for field in self.arrow_schema}
     for row in rows:
       for field in self.arrow_schema:
         value = row.get(field.name)
@@ -1300,10 +1417,10 @@ class BatchProcessor:
     while attempt <= self.retry_config.max_retries:
       try:
 
-        async def requests_iter():
+        async def requests_iter() -> AsyncIterator[Any]:
           yield req
 
-        async def perform_write():
+        async def perform_write() -> None:
           # The AppendRows streaming RPC does not auto-populate the
           # request-routing header, so writes to any region other than
           # the US multiregion fail with a "session not found" /
@@ -2116,8 +2233,15 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
     "AGENT_COMPLETED": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
     ],
+    "AGENT_ERROR": [
+        "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
+    ],
     "INVOCATION_STARTING": [],
     "INVOCATION_COMPLETED": [],
+    "INVOCATION_ERROR": [
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
+    ],
     "STATE_DELTA": [
         "JSON_QUERY(attributes, '$.state_delta') AS state_delta",
     ],
@@ -2282,7 +2406,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       config: Optional[BigQueryLoggerConfig] = None,
       location: str = "US",
       credentials: Optional[google.auth.credentials.Credentials] = None,
-      **kwargs,
+      **kwargs: Any,
   ) -> None:
     """Initializes the instance.
 
@@ -2345,8 +2469,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
-    self._write_stream_name = None  # Resolved stream name
-    self._executor = None
+    self._write_stream_name: Optional[str] = None  # Resolved stream name
+    self._executor: Optional[ThreadPoolExecutor] = None
     self.offloader: Optional[GCSOffloader] = None
     self.parser: Optional[HybridContentParser] = None
     self._schema = None
@@ -2454,7 +2578,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     # grpc.aio clients are loop-bound, so we create one per event loop.
 
-    def get_credentials():
+    def get_credentials() -> google.auth.credentials.Credentials:
       creds, _ = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
       return creds
 
@@ -2535,7 +2659,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         totals[reason] = totals.get(reason, 0) + count
     return totals
 
-  async def _lazy_setup(self, **kwargs) -> None:
+  async def _lazy_setup(self, **kwargs: Any) -> None:
     """Performs lazy initialization of BigQuery clients and resources."""
     if self._started:
       return
@@ -2942,7 +3066,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._is_shutting_down = False
     self._started = False
 
-  def __getstate__(self):
+  def __getstate__(self) -> dict[str, Any]:
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
     state["_setup_lock"] = None
@@ -2958,7 +3082,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_init_pid"] = 0
     return state
 
-  def __setstate__(self, state):
+  def __setstate__(self, state: dict[str, Any]) -> None:
     """Custom unpickling to restore state."""
     # Backfill keys that may be absent in pickled state from older
     # code versions so _ensure_started does not raise AttributeError.
@@ -3022,10 +3146,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     await self._ensure_started()
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     await self.shutdown()
 
-  async def _ensure_started(self, **kwargs) -> None:
+  async def _ensure_started(self, **kwargs: Any) -> None:
     """Ensures that the plugin is started and initialized."""
     # _init_pid == 0 means the plugin was unpickled and has never been
     # initialized in this process (the pickle sentinel set by
@@ -4028,7 +4157,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
 
     # 5. Attributes (Config & Tools)
-    attributes = {}
+    attributes: dict[str, Any] = {}
+    tools_truncated = False
     if llm_request.config:
       config_dict = {}
       for field_name in [
@@ -4057,13 +4187,21 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         attributes["labels"] = labels
 
     if hasattr(llm_request, "tools_dict") and llm_request.tools_dict:
-      attributes["tools"] = list(llm_request.tools_dict.keys())
+      # Route tool declarations through the shared safety pipeline so unbounded
+      # descriptions / parameter schemas are size-capped and sensitive keys are
+      # redacted, consistent with every other captured attribute.
+      tools, tools_truncated = _recursive_smart_truncate(
+          _extract_tool_declarations(llm_request.tools_dict),
+          self.config.max_content_length,
+      )
+      attributes["tools"] = tools
 
     TraceManager.push_span(callback_context, "llm_request")
     await self._log_event(
         "LLM_REQUEST",
         callback_context,
         raw_content=llm_request,
+        is_truncated=tools_truncated,
         event_data=EventData(
             model=llm_request.model,
             extra_attributes=attributes,
@@ -4318,3 +4456,108 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             parent_span_id_override=parent_span_id,
         ),
     )
+
+  @_safe_callback
+  async def on_agent_error_callback(
+      self,
+      *,
+      agent: Any,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Callback when an agent execution fails with an unhandled exception.
+
+    Emits an AGENT_ERROR event and pops the agent span from
+    TraceManager.
+
+    The pop is guarded by span kind: the agent-error contract includes
+    failures raised by *other* plugins' before_agent_callbacks, in which
+    case BQAA's own before_agent_callback never pushed an agent span and
+    there is nothing to pop (popping unconditionally would consume the
+    invocation span and corrupt the subsequent INVOCATION_ERROR row).
+
+    Args:
+        agent: The agent instance that failed.
+        callback_context: The callback context.
+        error: The exception that escaped agent execution.
+    """
+    span_id, duration = TraceManager.pop_span(expected_kind="agent")
+    parent_span_id, _ = TraceManager.get_current_span_and_parent()
+
+    error_tb = "".join(
+        traceback_module.format_exception(
+            type(error), error, error.__traceback__
+        )
+    )
+    max_len = self.config.max_content_length
+    if max_len > 0 and len(error_tb) > max_len:
+      error_tb = error_tb[:max_len] + "... [truncated]"
+
+    await self._log_event(
+        "AGENT_ERROR",
+        callback_context,
+        event_data=EventData(
+            status="ERROR",
+            error_message=str(error),
+            latency_ms=duration,
+            span_id_override=span_id,
+            parent_span_id_override=parent_span_id,
+        ),
+        raw_content={"error_traceback": error_tb},
+    )
+
+  @_safe_callback
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: "InvocationContext",
+      error: Exception,
+  ) -> None:
+    """Callback when a runner execution fails with an unhandled exception.
+
+    Emits an INVOCATION_ERROR event and performs the cleanup that
+    after_run_callback would normally do.
+
+    Args:
+        invocation_context: The context of the current invocation.
+        error: The exception that escaped runner execution.
+    """
+    try:
+      callback_ctx = CallbackContext(invocation_context)
+      trace_id = TraceManager.get_trace_id(callback_ctx)
+
+      # Guarded pop: only consume the invocation-root span. If the failure
+      # left intermediate spans on the stack (or the root was never pushed),
+      # emit the row without span/latency rather than mis-attributing them;
+      # the finally-block clear_stack below resets the stack either way.
+      span_id, duration = TraceManager.pop_span(expected_kind="invocation")
+      parent_span_id = TraceManager.get_current_span_id()
+
+      error_tb = "".join(
+          traceback_module.format_exception(
+              type(error), error, error.__traceback__
+          )
+      )
+      max_len = self.config.max_content_length
+      if max_len > 0 and len(error_tb) > max_len:
+        error_tb = error_tb[:max_len] + "... [truncated]"
+
+      await self._log_event(
+          "INVOCATION_ERROR",
+          callback_ctx,
+          event_data=EventData(
+              trace_id_override=trace_id,
+              status="ERROR",
+              error_message=str(error),
+              latency_ms=duration,
+              span_id_override=span_id,
+              parent_span_id_override=parent_span_id,
+          ),
+          raw_content={"error_traceback": error_tb},
+      )
+    finally:
+      # Cleanup must run even if _log_event raises.
+      TraceManager.clear_stack()
+      _active_invocation_id_ctx.set(None)
+      _root_agent_name_ctx.set(None)
+      await self.flush()

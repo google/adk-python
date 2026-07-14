@@ -382,7 +382,7 @@ if LiteLlm is not None:
         ollama pull gemma3:12b
     """
 
-    def __init__(self, model: str = 'ollama/gemma3:12b', **kwargs):
+    def __init__(self, model: str = 'ollama/gemma3:12b', **kwargs: Any) -> None:
       super().__init__(model=model, **kwargs)
 
     def __repr__(self) -> str:

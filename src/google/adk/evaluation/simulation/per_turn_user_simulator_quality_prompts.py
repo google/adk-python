@@ -15,8 +15,12 @@
 from __future__ import annotations
 
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from .user_simulator_personas import UserPersona
+
+if TYPE_CHECKING:
+  from jinja2.runtime import Context
 
 _LATEST_TURN_USER_SIMULATOR_EVALUATOR_PROMPT_TEMPLATE = """
 You are a data scientist tasked with evaluating the quality of a User Simulator that is interacting with an Agent.
@@ -218,7 +222,7 @@ def get_per_turn_user_simulator_quality_prompt(
     generated_user_response: str,
     stop_signal: str,
     user_persona: Optional[UserPersona] = None,
-):
+) -> str:
   """Formats the prompt for the per turn user simulator evaluator"""
   from jinja2 import DictLoader
   from jinja2 import pass_context
@@ -234,14 +238,14 @@ def get_per_turn_user_simulator_quality_prompt(
   template_env = SandboxedEnvironment(loader=DictLoader(templates))
 
   @pass_context
-  def _render_string_filter(context, template_string):
+  def _render_string_filter(context: Context, template_string: str) -> str:
     if not template_string:
       return ""
     return template_env.from_string(template_string).render(context.get_all())
 
   template_env.filters["render_string_filter"] = _render_string_filter
 
-  template_parameters = {
+  template_parameters: dict[str, object] = {
       "conversation_plan": conversation_plan,
       "conversation_history": conversation_history,
       "generated_user_response": generated_user_response,

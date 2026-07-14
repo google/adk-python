@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from typing_extensions import override
 
 from . import storage_tool
@@ -71,34 +74,36 @@ class GCSToolset(BaseToolset):
         Capabilities.READ_ONLY in self._tool_settings.capabilities
         or Capabilities.READ_WRITE in self._tool_settings.capabilities
     ):
+      read_funcs: list[Callable[..., Any]] = [
+          storage_tool.get_bucket,
+          storage_tool.get_object_data,
+          storage_tool.get_object_metadata,
+          storage_tool.list_objects,
+      ]
       all_tools.extend([
           GoogleTool(
               func=func,
               credentials_config=self._credentials_config,
               tool_settings=self._tool_settings,
           )
-          for func in [
-              storage_tool.get_bucket,
-              storage_tool.get_object_data,
-              storage_tool.get_object_metadata,
-              storage_tool.list_objects,
-          ]
+          for func in read_funcs
       ])
 
     if (
         self._tool_settings
         and Capabilities.READ_WRITE in self._tool_settings.capabilities
     ):
+      write_funcs: list[Callable[..., Any]] = [
+          storage_tool.create_object,
+          storage_tool.delete_objects,
+      ]
       all_tools.extend([
           GoogleTool(
               func=func,
               credentials_config=self._credentials_config,
               tool_settings=self._tool_settings,
           )
-          for func in [
-              storage_tool.create_object,
-              storage_tool.delete_objects,
-          ]
+          for func in write_funcs
       ])
 
     return [

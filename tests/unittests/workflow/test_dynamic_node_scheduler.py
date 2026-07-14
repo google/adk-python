@@ -32,6 +32,7 @@ from google.adk.workflow._node_state import NodeState
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import _LoopState
 from pydantic import BaseModel
+from pydantic import ValidationError
 import pytest
 
 # --- Fixtures ---
@@ -639,10 +640,7 @@ async def test_runtime_schema_validation_raises():
 
   node = BaseNode(name='child', input_schema=_ModelA)
 
-  with pytest.raises(
-      ValueError,
-      match=r"Runtime schema validation failed for dynamic node 'child'",
-  ):
+  with pytest.raises(ValidationError):
     await scheduler(
         ctx,
         node,

@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from typing_extensions import override
 
 from . import admin_tool
@@ -84,17 +87,18 @@ class GCSAdminToolset(BaseToolset):
         self._tool_settings
         and Capabilities.READ_WRITE in self._tool_settings.capabilities
     ):
+      write_funcs: list[Callable[..., Any]] = [
+          admin_tool.create_bucket,
+          admin_tool.update_bucket,
+          admin_tool.delete_bucket,
+      ]
       all_tools.extend([
           GoogleTool(
               func=func,
               credentials_config=self._credentials_config,
               tool_settings=self._tool_settings,
           )
-          for func in [
-              admin_tool.create_bucket,
-              admin_tool.update_bucket,
-              admin_tool.delete_bucket,
-          ]
+          for func in write_funcs
       ])
 
     return [

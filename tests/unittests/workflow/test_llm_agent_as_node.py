@@ -342,13 +342,6 @@ class TestBuildNode:
 # --- Old workflow path ---
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        'when scheduler preserves originating node_input on resume.'
-    ),
-)
 @pytest.mark.asyncio
 async def test_task_finish_output_reaches_downstream(
     request: pytest.FixtureRequest,
@@ -401,13 +394,6 @@ async def test_single_turn_output_reaches_downstream(
   assert capture.received_inputs == ['Done.']
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        'when scheduler preserves originating node_input on resume.'
-    ),
-)
 @pytest.mark.asyncio
 async def test_valid_input_schema_accepted(
     request: pytest.FixtureRequest,
@@ -422,26 +408,11 @@ async def test_valid_input_schema_accepted(
       name='wf',
       edges=[('START', wrapper), (wrapper, capture)],
   )
-  from unittest.mock import AsyncMock
-  from unittest.mock import MagicMock
-
-  ctx = MagicMock(spec=Context)
-  ic = MagicMock()
-  ctx.get_invocation_context.return_value = ic
-  ctx._invocation_context = ic
-  ctx.resume_inputs = {}
-  ctx._output_for_ancestors = []
-  ic.branch = None
-  ic.model_copy.return_value = ic
-  ic._enqueue_event = AsyncMock(return_value=None)
-  ic.plugin_manager.run_before_agent_callback = AsyncMock(return_value=None)
-  ic.plugin_manager.run_after_agent_callback = AsyncMock(return_value=None)
-  ctx.node_path = 'wf'
+  runner = _new_workflow_runner(wf, request.function.__name__)
 
   agent_clone = next(n for n in wf.graph.nodes if n.name == wrapper.name)
   with _mock_agent_run(agent_clone, finish_output={'result': 'ok'}):
-    async for _ in wf.run(ctx=ctx, node_input={'topic': 'Gemini'}):
-      pass
+    await runner.run_async('{"topic": "Gemini"}')
 
   assert capture.received_inputs == [{'result': 'ok'}]
 
@@ -465,13 +436,6 @@ async def test_valid_input_schema_accepted(
 #         pass
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        'when scheduler preserves originating node_input on resume.'
-    ),
-)
 @pytest.mark.asyncio
 async def test_auto_wrap_in_workflow_edges(request: pytest.FixtureRequest):
   """LlmAgent placed directly in edges is auto-wrapped and works."""
@@ -560,13 +524,6 @@ async def test_single_turn_propagates_isolation_scope(
   assert captured_isolation_scopes == ['test-scope-123']
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        'when scheduler preserves originating node_input on resume.'
-    ),
-)
 @pytest.mark.asyncio
 async def test_task_mode_does_not_set_branch(
     request: pytest.FixtureRequest,
@@ -1361,3 +1318,67 @@ async def test_three_layer_llm_agent_transfer_round_trip(
       if p.text
   ]
   assert any('Welcome back to root!' in t for t in content_texts3)
+
+
+@pytest.mark.asyncio
+async def test_workflow_node_with_valid_input_schema_completes_successfully(
+    request: pytest.FixtureRequest,
+):
+  """A valid node_input payload successfully passes schema validation."""
+
+  # Arrange
+  class InputSchema(BaseModel):
+    required_field: str
+
+  agent = LlmAgent(
+      name='schema_agent',
+      model='test_model',
+      input_schema=InputSchema,
+      instruction='Just say hi',
+      mode='single_turn',
+  )
+  wrapper = build_node(agent)
+  wf = Workflow(
+      name='test_workflow',
+      edges=[('START', wrapper)],
+  )
+  runner = _new_workflow_runner(wf, request.function.__name__)
+  agent_clone = next(n for n in wf.graph.nodes if n.name == wrapper.name)
+
+  # Act
+  with _mock_agent_run(agent_clone, content_text='hi'):
+    events = await runner.run_async('{"required_field": "hello"}')
+
+  # Assert
+  assert len(events) > 0
+
+
+@pytest.mark.asyncio
+async def test_workflow_node_with_invalid_input_schema_raises_validation_error(
+    request: pytest.FixtureRequest,
+):
+  """An invalid node_input payload raises a pydantic ValidationError."""
+
+  # Arrange
+  class InputSchema(BaseModel):
+    required_field: str
+
+  agent = LlmAgent(
+      name='schema_agent',
+      model='test_model',
+      input_schema=InputSchema,
+      instruction='Just say hi',
+      mode='single_turn',
+  )
+  wrapper = build_node(agent)
+  wf = Workflow(
+      name='test_workflow',
+      edges=[('START', wrapper)],
+  )
+  runner = _new_workflow_runner(wf, request.function.__name__)
+  agent_clone = next(n for n in wf.graph.nodes if n.name == wrapper.name)
+
+  # Act / Assert
+  with _mock_agent_run(agent_clone, content_text='hi'):
+    with pytest.raises(ValidationError):
+      await runner.run_async('{"wrong_field": "hello"}')

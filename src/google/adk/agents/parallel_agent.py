@@ -60,7 +60,9 @@ async def _merge_agent_run(
 
   # Agents are processed in parallel.
   # Events for each agent are put on queue sequentially.
-  async def process_an_agent(events_for_one_agent):
+  async def process_an_agent(
+      events_for_one_agent: AsyncGenerator[Event, None],
+  ) -> None:
     try:
       async for event in events_for_one_agent:
         resume_signal = asyncio.Event()
@@ -112,7 +114,7 @@ async def _merge_agent_run_pre_3_11(
   sentinel = object()
   queue = asyncio.Queue()
 
-  def propagate_exceptions(tasks):
+  def propagate_exceptions(tasks: list[asyncio.Task[None]]) -> None:
     # Propagate exceptions and errors from tasks.
     for task in tasks:
       if task.done():
@@ -122,7 +124,9 @@ async def _merge_agent_run_pre_3_11(
 
   # Agents are processed in parallel.
   # Events for each agent are put on queue sequentially.
-  async def process_an_agent(events_for_one_agent):
+  async def process_an_agent(
+      events_for_one_agent: AsyncGenerator[Event, None],
+  ) -> None:
     try:
       async for event in events_for_one_agent:
         resume_signal = asyncio.Event()

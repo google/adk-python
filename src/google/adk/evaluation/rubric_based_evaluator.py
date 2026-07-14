@@ -150,7 +150,9 @@ class MajorityVotePerInvocationResultsAggregator(
       This method will use majority vote and combine the results of 5 samples
       into one, and it will report "Yes" as the final verdict.
     """
-    score_category_by_rubric_id = {}
+    score_category_by_rubric_id: dict[
+        str, tuple[list[RubricScore], list[RubricScore], list[RubricScore]]
+    ] = {}
 
     # We go over each rubric for each sample, and categorize the rubric into
     # one of the following buckets:
@@ -233,7 +235,7 @@ class MeanInvocationResultsSummarizer(InvocationResultsSummarizer):
 
     # Collect rubric scores by id, so that we can calculate average score
     # for each rubric id.
-    rubric_scores_by_id = {}
+    rubric_scores_by_id: dict[str, list[RubricScore]] = {}
     for sample in per_invocation_results:
       if not sample.rubric_scores:
         continue
@@ -345,7 +347,7 @@ class RubricBasedEvaluator(LlmAsJudge):
   ) -> None:
     rubrics_by_id = {}
 
-    def _add_rubrics(rubrics_to_add: list[Rubric], scope_name: str):
+    def _add_rubrics(rubrics_to_add: list[Rubric], scope_name: str) -> None:
       for r in rubrics_to_add:
         if r.rubric_id in rubrics_by_id:
           raise ValueError(

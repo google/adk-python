@@ -67,7 +67,7 @@ async def cleanup_unused_files(
     if exclude_patterns is None:
       exclude_patterns = ["__init__.py", "*_test.py", "test_*.py"]
 
-    result = {
+    result: dict[str, Any] = {
         "success": False,
         "unused_files": [],
         "deleted_files": [],
@@ -81,7 +81,7 @@ async def cleanup_unused_files(
       return result
 
     # Find all files matching patterns
-    all_files = []
+    all_files: list[Any] = []
     for pattern in file_patterns:
       all_files.extend(root_path.rglob(pattern))
 

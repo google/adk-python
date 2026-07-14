@@ -129,6 +129,16 @@ def _validate_duplicate_edges(edges: list[Edge]) -> None:
     seen_edges.add(edge_tuple)
 
 
+def _validate_start_edges(edges: list[Edge]) -> None:
+  """Checks that edges from START do not have routes."""
+  for edge in edges:
+    if edge.from_node.name == START.name and edge.route is not None:
+      raise ValueError(
+          "Graph validation failed. Edges from START must not have routes"
+          f" (edge to {edge.to_node.name} has route {edge.route})."
+      )
+
+
 def _validate_default_routes(edges: list[Edge]) -> None:
   """Checks constraints on DEFAULT_ROUTE."""
   default_route_edges: dict[str, str] = {}
@@ -202,6 +212,7 @@ def validate_graph(nodes: list[BaseNode], edges: list[Edge]) -> set[str]:
   """Validates the workflow graph and returns terminal node names."""
   node_names = _validate_duplicate_node_names(nodes)
   _validate_start_node(node_names)
+  _validate_start_edges(edges)
   _validate_connectivity(edges, node_names)
   _validate_duplicate_edges(edges)
   _validate_default_routes(edges)
