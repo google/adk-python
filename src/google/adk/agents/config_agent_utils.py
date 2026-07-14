@@ -143,6 +143,8 @@ _ENFORCE_DENYLIST = True
 _BLOCKED_MODULES = frozenset({
     # Process / OS execution
     "os",
+    "posix",           # Unix alias: posix.system is os.system
+    "nt",              # Windows alias: nt.system is os.system
     "subprocess",
     "sys",
     "builtins",
