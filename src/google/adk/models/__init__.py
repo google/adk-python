@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import importlib
+from typing import Any
 from typing import TYPE_CHECKING
 
 from .base_llm import BaseLlm
@@ -104,7 +105,7 @@ _OTHER_LAZY_IMPORTS: dict[str, str] = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
   if name in _LAZY_PROVIDERS:
     module_name = _LAZY_PROVIDERS[name][1]
   elif name in _OTHER_LAZY_IMPORTS:

@@ -22,16 +22,15 @@ import tempfile
 from typing import Any
 from typing import Optional
 from unittest.mock import AsyncMock
-from unittest.mock import call
 from unittest.mock import MagicMock
 from unittest.mock import patch
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
+from google.adk.a2a import _compat
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
-from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.fast_api import get_fast_api_app
@@ -46,7 +45,6 @@ from google.adk.events.event_actions import EventActions
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.sessions.session import Session
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -691,6 +689,43 @@ def test_get_runner_async_accepts_internal_special_agent_name(
   mock_agent_loader.load_agent.assert_called_once_with(special_app_name)
 
 
+def test_api_server_get_runner_async_rejects_internal_special_agent_name(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  from fastapi import HTTPException
+  from google.adk.cli.api_server import ApiServer
+
+  special_app_name = "__adk_agent_builder_assistant"
+  special_agent = DummyAgent(name="agent_builder_assistant")
+  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
+
+  api_server = ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with pytest.raises(HTTPException) as exc_info:
+    asyncio.run(api_server.get_runner_async(special_app_name))
+
+  assert exc_info.value.status_code == 403
+  assert (
+      "Access to internal special agents is disabled in API server mode"
+      in exc_info.value.detail
+  )
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,
@@ -841,8 +876,11 @@ def temp_agents_dir_with_a2a():
         "name": "test_a2a_agent",
         "description": "Test A2A agent",
         "version": "1.0.0",
-        "author": "test",
-        "capabilities": ["text"],
+        "url": "http://localhost:8000/a2a/test_a2a_agent",
+        "capabilities": {},
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": [],
     }
 
     with open(agent_dir / "agent.json", "w") as f:
@@ -1235,6 +1273,56 @@ def test_get_adk_app_info_non_llm_agent(test_app, mock_agent_loader):
     response = test_app.get("/apps/test_app/app-info")
     assert response.status_code == 400
     assert "Root agent is not an LlmAgent" in response.json()["detail"]
+
+
+def test_get_adk_app_info_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test app-info returns 404 when the app_name matches no agent."""
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.get("/apps/unknown_app/app-info")
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_sse_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run_sse returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
 
 
 def test_create_session_with_id(test_app, test_session_info):
@@ -2041,6 +2129,12 @@ def test_openapi_json_schema_accessible(test_app):
   logger.info("OpenAPI /openapi.json endpoint is accessible")
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_agent_discovery(test_app_with_a2a):
   """Test that A2A agents are properly discovered and configured."""
   # This test mainly verifies that the A2A setup doesn't break the app
@@ -2049,6 +2143,12 @@ def test_a2a_agent_discovery(test_app_with_a2a):
   logger.info("A2A agent discovery test passed")
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_request_handler_uses_push_config_store(
     mock_session_service,
     mock_artifact_service,
@@ -2131,6 +2231,12 @@ def test_a2a_request_handler_uses_push_config_store(
     )
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_request_handler_uses_task_store_uri(
     mock_session_service,
     mock_artifact_service,
@@ -2211,6 +2317,12 @@ def test_a2a_request_handler_uses_task_store_uri(
     assert call_kwargs["task_store"] is custom_task_store
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_task_store_engine_disposed_on_shutdown(
     mock_session_service,
     mock_artifact_service,
@@ -2292,6 +2404,12 @@ def test_a2a_task_store_engine_disposed_on_shutdown(
     mock_engine.dispose.assert_awaited_once()
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_in_memory_task_store_no_engine_dispose(
     mock_session_service,
     mock_artifact_service,

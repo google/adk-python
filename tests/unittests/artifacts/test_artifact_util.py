@@ -14,6 +14,8 @@
 
 """Tests for artifact_util."""
 
+from unittest import mock
+
 from google.adk.artifacts import artifact_util
 from google.adk.errors.input_validation_error import InputValidationError
 from google.genai import types
@@ -148,10 +150,14 @@ def test_is_artifact_ref_false(part):
         "user123",
         "myapp",
         "sess123",
+        "group/user123",
+        "has/slash",
+        "back\\slash",
+        mock.MagicMock(),
     ],
 )
 def test_validate_path_segment_valid(value, field_name):
-  """Normal segments should pass validation."""
+  """Normal and namespaced segments should pass validation."""
   artifact_util.validate_path_segment(value, field_name)
 
 
@@ -167,13 +173,14 @@ def test_validate_path_segment_valid(value, field_name):
         "foo/../../bar",
         "..",
         ".",
-        "has/slash",
-        "back\\slash",
         "null\x00byte",
         "",
+        "/etc/passwd",
+        "/leading/slash",
+        "\\leading\\backslash",
     ],
 )
 def test_validate_path_segment_invalid(value, field_name):
-  """Invalid segments should raise InputValidationError."""
+  """Traversal segments, null bytes, and absolute paths should raise InputValidationError."""
   with pytest.raises(InputValidationError):
     artifact_util.validate_path_segment(value, field_name)

@@ -18,16 +18,12 @@ from typing import ClassVar
 from typing import Optional
 
 from pydantic import BaseModel
-from typing_extensions import TypeAlias
 
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
-from .eval_metrics import EvalStatus
+from .eval_metrics import EvalStatus as EvalStatus
 from .eval_rubrics import RubricScore
-
-# Redefining the type here for backward compatibility.
-EvalStatus: TypeAlias = EvalStatus
 
 
 class PerInvocationResult(BaseModel):

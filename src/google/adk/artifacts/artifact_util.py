@@ -144,8 +144,8 @@ def validate_path_segment(value: str, field_name: str) -> None:
     field_name: Human-readable name used in the error message.
 
   Raises:
-    InputValidationError: If the value contains path separators, traversal
-      segments, or null bytes.
+    InputValidationError: If the value contains traversal segments, null bytes,
+      or is an absolute path / starts with a slash.
   """
   if not value:
     raise input_validation_error.InputValidationError(
@@ -155,11 +155,18 @@ def validate_path_segment(value: str, field_name: str) -> None:
     raise input_validation_error.InputValidationError(
         f"{field_name} must not contain null bytes."
     )
-  if "/" in value or "\\" in value:
+  if isinstance(value, str) and (
+      value.startswith("/") or value.startswith("\\")
+  ):
     raise input_validation_error.InputValidationError(
-        f"{field_name} {value!r} must not contain path separators."
+        f"{field_name} {value!r} must not be an absolute path or start with a"
+        " slash."
     )
-  if value in (".", "..") or ".." in value.split("/"):
+  if (
+      value in (".", "..")
+      or ".." in value.split("/")
+      or ".." in value.split("\\")
+  ):
     raise input_validation_error.InputValidationError(
         f"{field_name} {value!r} must not contain traversal segments."
     )

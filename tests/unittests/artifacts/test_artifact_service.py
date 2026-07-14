@@ -819,17 +819,52 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
     )
 
 
-INVALID_PATH_SEGMENT_CASES = [
-    ("../escape", "must not contain path separators"),
-    ("../../etc", "must not contain path separators"),
-    ("foo/../../bar", "must not contain path separators"),
+INVALID_PATH_SEGMENT_CASES = (
+    ("../escape", "must not contain traversal segments"),
+    ("../../etc", "must not contain traversal segments"),
+    ("foo/../../bar", "must not contain traversal segments"),
     ("..", "must not contain traversal segments"),
     (".", "must not contain traversal segments"),
-    ("has/slash", "must not contain path separators"),
-    ("back\\slash", "must not contain path separators"),
     ("null\x00byte", "must not contain null bytes"),
     ("", "must not be empty"),
-]
+    ("/etc/passwd", "must not be an absolute path or start with a slash"),
+    ("/leading/slash", "must not be an absolute path or start with a slash"),
+    (
+        "\\leading\\backslash",
+        "must not be an absolute path or start with a slash",
+    ),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_and_load_namespaced_user_id_succeeds(
+    service_type, artifact_service_factory
+):
+  """ArtifactService implementations permit namespaced user IDs."""
+  service = artifact_service_factory(service_type)
+  artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+  await service.save_artifact(
+      app_name="myapp",
+      user_id="group/user123",
+      session_id="sess123",
+      filename="safe.txt",
+      artifact=artifact,
+  )
+  loaded = await service.load_artifact(
+      app_name="myapp",
+      user_id="group/user123",
+      session_id="sess123",
+      filename="safe.txt",
+  )
+  assert loaded.inline_data.data == b"data"
 
 
 @pytest.mark.asyncio

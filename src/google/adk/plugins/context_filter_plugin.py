@@ -62,8 +62,9 @@ def _adjust_split_index_to_avoid_orphaned_function_responses(
 
 def _is_function_response_content(content: types.Content) -> bool:
   """Returns whether a content contains function responses."""
-  return bool(content.parts) and any(
-      part.function_response is not None for part in content.parts
+  parts = content.parts
+  return parts is not None and any(
+      part.function_response is not None for part in parts
   )
 
 

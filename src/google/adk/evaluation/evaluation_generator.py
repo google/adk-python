@@ -21,6 +21,7 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
+from typing import TYPE_CHECKING
 import uuid
 
 from google.genai import types
@@ -63,6 +64,9 @@ from .simulation.user_simulator import Status as UserSimulatorStatus
 from .simulation.user_simulator import UserSimulator
 from .simulation.user_simulator_provider import UserSimulatorProvider
 
+if TYPE_CHECKING:
+  from types import TracebackType
+
 logger = logging.getLogger("google_adk." + __name__)
 
 _USER_AUTHOR = "user"
@@ -94,7 +98,7 @@ class _LiveSession:
     self.user_id = user_id
     self.session_id = session_id
     self.live_request_queue = LiveRequestQueue()
-    self.event_queue = asyncio.Queue()
+    self.event_queue: asyncio.Queue[Event] = asyncio.Queue()
     self.turn_complete_event = asyncio.Event()
     self.live_finished = asyncio.Event()
     self.current_invocation_id = Event.new_id()
@@ -226,7 +230,12 @@ class _LiveSession:
       self.live_finished.set()
       self.turn_complete_event.set()  # Unblock any waiters
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     """Closes the queue and waits for the background task to finish."""
     from google.genai import errors
 
@@ -264,7 +273,7 @@ class EvaluationGenerator:
       eval_set: EvalSet,
       agent_module_path: str,
       repeat_num: int = 3,
-      agent_name: str = None,
+      agent_name: Optional[str] = None,
       user_simulator_config: Optional[BaseUserSimulatorConfig] = None,
   ) -> list[EvalCaseResponses]:
     """Returns evaluation responses for the given dataset and agent.
@@ -491,7 +500,7 @@ class EvaluationGenerator:
         memory_service=memory_service,
         plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
-      events = []
+      events: list[Event] = []
 
       # `_LiveSession` is a runtime connection manager wrapping the `Session`
       # data model (which stores conversation history/state). It manages the
@@ -598,7 +607,7 @@ class EvaluationGenerator:
         memory_service=memory_service,
         plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
-      events = []
+      events: list[Event] = []
       while True:
         next_user_message = await user_simulator.get_next_user_message(
             copy.deepcopy(events)
@@ -637,7 +646,7 @@ class EvaluationGenerator:
       final_response = None
       final_event: Optional[Event] = None
       user_content = Content(parts=[])
-      invocation_timestamp = 0
+      invocation_timestamp: float = 0
       app_details = None
       if (
           app_details_per_invocation

@@ -88,7 +88,7 @@ def _get_text_from_content(content: Optional[genai_types.Content]) -> str:
   return ""
 
 
-def _get_eval_status(score: float, threshold: float):
+def _get_eval_status(score: float, threshold: float) -> EvalStatus:
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 

@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import asyncio
+import subprocess
+import sys
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -22,9 +24,11 @@ from google.adk.agents.run_config import StreamingMode
 from google.adk.events.event import Event
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import google_search
+from google.adk.tools._remote_mcp_server import RemoteMcpServer
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 from google.genai import types as genai_types
+from pydantic import ValidationError
 import pytest
 
 
@@ -64,7 +68,17 @@ def test_construction_sets_fields_and_injectable_client():
   assert agent.api_client is client
 
 
+def test_injected_client_is_not_tagged():
+  client = _FakeClient()
+  agent = ManagedAgent(name='mgr', agent_id='agents/a', api_client=client)
+
+  # ADK must not attach http_options/headers onto a caller-supplied client.
+  assert agent.api_client is client
+  assert not hasattr(client, 'http_options')
+
+
 def test_lazy_client_enterprise_uses_global_location(monkeypatch):
+  from google.adk.utils._google_client_headers import get_tracking_headers
   import google.genai as genai
 
   monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', '1')
@@ -81,9 +95,11 @@ def test_lazy_client_enterprise_uses_global_location(monkeypatch):
 
   assert captured['enterprise'] is True
   assert captured['location'] == 'global'
+  assert captured['http_options'].headers == get_tracking_headers()
 
 
 def test_lazy_client_dev_api_omits_location(monkeypatch):
+  from google.adk.utils._google_client_headers import get_tracking_headers
   import google.genai as genai
 
   monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', '0')
@@ -100,6 +116,7 @@ def test_lazy_client_dev_api_omits_location(monkeypatch):
 
   assert captured['enterprise'] is False
   assert 'location' not in captured
+  assert captured['http_options'].headers == get_tracking_headers()
 
 
 def test_injected_non_global_enterprise_client_raises():
@@ -342,6 +359,7 @@ def _user_ctx(text, *, session_events=None, invocation_id='inv1', branch=None):
   ctx.invocation_id = invocation_id
   ctx.branch = branch
   ctx.session.events = session_events or []
+  ctx.run_config.http_options = None  # no per-request headers by default
   return ctx
 
 
@@ -377,7 +395,9 @@ def _final_text_response(text):
 def test_run_async_yields_events_with_ids(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _make_llm_response('Hello!', 'int_1', 'env_1')
 
   monkeypatch.setattr(mod, '_create_interactions', _fake_stream)
@@ -448,10 +468,57 @@ def test_run_async_sets_background_true():
   assert create_kwargs['background'] is True
 
 
+def test_run_async_merges_run_config_headers_into_extra_headers():
+  client = _RecordingClient([[]])
+  agent = ManagedAgent(name='mgr', agent_id='agents/a', api_client=client)
+  ctx = _user_ctx('hi')
+  ctx.run_config.http_options = genai_types.HttpOptions(
+      headers={'x-custom': 'v'}
+  )
+
+  asyncio.run(_drain(agent._run_async_impl(ctx)))
+
+  extra_headers = client.aio.interactions.calls[0]['extra_headers']
+  assert extra_headers['x-custom'] == 'v'
+  assert '+managed_agent' in extra_headers['x-goog-api-client']
+  assert '+managed_agent' in extra_headers['user-agent']
+
+
+def test_run_async_sends_tracking_headers_without_run_config_headers():
+  from google.adk.utils._google_client_headers import get_tracking_headers
+
+  client = _RecordingClient([[]])
+  agent = ManagedAgent(name='mgr', agent_id='agents/a', api_client=client)
+  ctx = _user_ctx('hi')  # http_options defaults to None
+
+  asyncio.run(_drain(agent._run_async_impl(ctx)))
+
+  assert client.aio.interactions.calls[0][
+      'extra_headers'
+  ] == get_tracking_headers(framework_label='managed_agent')
+
+
+def test_run_async_sends_tracking_headers_when_http_options_has_no_headers():
+  from google.adk.utils._google_client_headers import get_tracking_headers
+
+  client = _RecordingClient([[]])
+  agent = ManagedAgent(name='mgr', agent_id='agents/a', api_client=client)
+  ctx = _user_ctx('hi')
+  ctx.run_config.http_options = genai_types.HttpOptions()  # headers is None
+
+  asyncio.run(_drain(agent._run_async_impl(ctx)))
+
+  assert client.aio.interactions.calls[0][
+      'extra_headers'
+  ] == get_tracking_headers(framework_label='managed_agent')
+
+
 def test_run_async_yields_multiple_events_in_order(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _make_llm_response('one', 'int_1', 'env_1')
     yield _make_llm_response('two', 'int_1', 'env_1')
 
@@ -468,7 +535,7 @@ def test_run_async_yields_multiple_events_in_order(monkeypatch):
 def test_run_async_error_yields_error_event(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _boom(api_client, *, create_kwargs, stream):
+  async def _boom(api_client, *, create_kwargs, stream, extra_headers=None):
     raise RuntimeError('api exploded')
     yield  # pragma: no cover
 
@@ -490,7 +557,7 @@ def test_run_async_api_error_surfaces_backend_status_and_message(monkeypatch):
   from google.adk.agents import _managed_agent as mod
   from google.genai import errors
 
-  async def _boom(api_client, *, create_kwargs, stream):
+  async def _boom(api_client, *, create_kwargs, stream, extra_headers=None):
     raise errors.ClientError(
         429,
         {
@@ -554,7 +621,9 @@ def test_managed_agent_exported_from_package():
 def test_run_async_non_streaming_suppresses_partials(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _partial_text_response('thinking')
     yield _partial_text_response('searching')
     yield _final_text_response('Final answer.')
@@ -576,7 +645,9 @@ def test_run_async_non_streaming_suppresses_partials(monkeypatch):
 def test_run_async_sse_yields_all_partials(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _partial_text_response('thinking')
     yield _partial_text_response('searching')
     yield _final_text_response('Final answer.')
@@ -600,7 +671,9 @@ def test_run_async_sse_yields_all_partials(monkeypatch):
 def test_run_async_non_streaming_surfaces_error_event(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _partial_text_response('thinking')
     yield LlmResponse(
         error_code='UNKNOWN_ERROR', error_message='boom', turn_complete=True
@@ -623,7 +696,9 @@ def test_run_async_non_streaming_surfaces_error_event(monkeypatch):
 def test_run_async_default_run_config_suppresses_partials(monkeypatch):
   from google.adk.agents import _managed_agent as mod
 
-  async def _fake_stream(api_client, *, create_kwargs, stream):
+  async def _fake_stream(
+      api_client, *, create_kwargs, stream, extra_headers=None
+  ):
     yield _partial_text_response('thinking')
     yield _final_text_response('Final answer.')
 
@@ -686,6 +761,63 @@ def test_run_async_non_streaming_final_event_carries_grounding_and_usage():
   assert final.usage_metadata.candidates_token_count == 7
 
 
+def test_mode_defaults_to_none():
+  agent = ManagedAgent(name='m', agent_id='a')
+  assert agent.mode is None
+
+
+def test_mode_single_turn_is_accepted():
+  agent = ManagedAgent(name='m', agent_id='a', mode='single_turn')
+  assert agent.mode == 'single_turn'
+
+
+def test_mode_chat_is_rejected():
+  from pydantic import ValidationError
+
+  with pytest.raises(ValidationError):
+    ManagedAgent(name='m', agent_id='a', mode='chat')
+
+
+async def test_run_impl_bridges_node_input_to_user_content():
+  from google.adk.agents.context import Context
+  from google.adk.agents.invocation_context import InvocationContext
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+  from google.adk.sessions.session import Session
+  from google.adk.utils.content_utils import to_user_content
+
+  captured = {}
+
+  # ManagedAgent is a Pydantic model, so `run_async` cannot be reassigned on an
+  # instance; subclassing to override it is the pydantic-safe equivalent of
+  # stubbing it. The override captures the `parent_context.user_content` that
+  # `_run_impl` threads in from `node_input`.
+  class _CapturingManagedAgent(ManagedAgent):
+
+    async def run_async(self, parent_context):
+      captured['user_content'] = parent_context.user_content
+      return
+      yield  # make this an async generator
+
+  agent = _CapturingManagedAgent(name='m', agent_id='a', mode='single_turn')
+
+  # Build a minimal node Context (mirrors
+  # tests/unittests/workflow/test_agent_node.py).
+  session = Session(app_name='test', user_id='user', id='session')
+  ic = InvocationContext(
+      invocation_id='inv',
+      session=session,
+      session_service=InMemorySessionService(),
+  )
+  ctx = Context(ic, node_path='wf')
+
+  events = [
+      e async for e in agent._run_impl(ctx=ctx, node_input='compute primes')
+  ]
+
+  assert events == []
+  assert captured['user_content'] == to_user_content('compute primes')
+
+
 async def _drain(agen):
   async for _ in agen:
     pass
@@ -696,3 +828,219 @@ async def _drain_collect(agen):
   async for e in agen:
     out.append(e)
   return out
+
+
+def test_remote_mcp_server_constructs_and_is_exported():
+  import google.adk.tools as tools_pkg
+
+  server = RemoteMcpServer(
+      url='https://mcp.example.com/mcp',
+      name='example',
+      headers={'X-Static': 'v'},
+      allowed_tools=['a', 'b'],
+      header_provider=lambda ctx: {'Authorization': 'Bearer t'},
+  )
+
+  assert server.url == 'https://mcp.example.com/mcp'
+  assert server.name == 'example'
+  assert server.headers == {'X-Static': 'v'}
+  assert server.allowed_tools == ['a', 'b']
+  assert server.header_provider is not None
+  assert tools_pkg.RemoteMcpServer is RemoteMcpServer
+  assert 'RemoteMcpServer' in tools_pkg.__all__
+
+
+def test_tools_import_first_has_no_cycle():
+  """Importing google.adk.tools before google.adk.agents must not cycle.
+
+  Guards the leaf-module invariant for RemoteMcpServer: a future edit that adds
+  a runtime (non-TYPE_CHECKING) google.adk.agents import to
+  google.adk.tools._remote_mcp_server would reintroduce a circular import and
+  fail this test.
+  """
+  subprocess.run(
+      [
+          sys.executable,
+          '-c',
+          (
+              'import google.adk.tools as t; t.RemoteMcpServer; '
+              'from google.adk.agents._managed_agent import ManagedAgent'
+          ),
+      ],
+      check=True,
+  )
+
+
+def test_remote_mcp_server_defaults():
+  server = RemoteMcpServer(url='https://x/mcp')
+
+  assert server.name is None
+  assert server.headers is None
+  assert server.allowed_tools is None
+  assert server.header_provider is None
+
+
+def test_remote_mcp_server_forbids_extra_fields():
+  with pytest.raises(ValidationError):
+    RemoteMcpServer(url='https://x/mcp', bogus='nope')
+
+
+def _mcp_params(params):
+  return [p for p in params if p.get('type') == 'mcp_server']
+
+
+def test_resolve_mcp_basic_mapping():
+  server = RemoteMcpServer(
+      url='https://mcp.example.com/mcp', name='example', allowed_tools=['a']
+  )
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert {
+      'type': 'mcp_server',
+      'url': 'https://mcp.example.com/mcp',
+      'name': 'example',
+      'allowed_tools': [{'tools': ['a']}],
+  } in params
+
+
+def test_resolve_mcp_sync_header_provider():
+  captured = {}
+
+  def provider(ctx):
+    captured['called'] = True
+    return {'Authorization': 'Bearer tok'}
+
+  server = RemoteMcpServer(url='https://x/mcp', header_provider=provider)
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert captured['called'] is True
+  assert _mcp_params(params)[0]['headers'] == {'Authorization': 'Bearer tok'}
+
+
+def test_resolve_mcp_async_header_provider():
+  async def provider(ctx):
+    return {'Authorization': 'Bearer async'}
+
+  server = RemoteMcpServer(url='https://x/mcp', header_provider=provider)
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert _mcp_params(params)[0]['headers'] == {'Authorization': 'Bearer async'}
+
+
+def test_resolve_mcp_merges_static_and_dynamic_dynamic_wins():
+  server = RemoteMcpServer(
+      url='https://x/mcp',
+      headers={'X-Static': 's', 'Shared': 'static'},
+      header_provider=lambda ctx: {'Shared': 'dynamic', 'X-Dyn': 'd'},
+  )
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert _mcp_params(params)[0]['headers'] == {
+      'X-Static': 's',
+      'Shared': 'dynamic',
+      'X-Dyn': 'd',
+  }
+
+
+def test_resolve_mcp_no_header_provider_static_only():
+  server = RemoteMcpServer(url='https://x/mcp', headers={'X-Static': 's'})
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert _mcp_params(params)[0]['headers'] == {'X-Static': 's'}
+
+
+def test_resolve_mcp_header_provider_error_propagates():
+  def boom(ctx):
+    raise RuntimeError('token mint failed')
+
+  server = RemoteMcpServer(url='https://x/mcp', header_provider=boom)
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  with pytest.raises(RuntimeError, match='token mint failed'):
+    asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+
+def test_resolve_mcp_mixed_with_builtin():
+  server = RemoteMcpServer(url='https://x/mcp')
+  agent = ManagedAgent(
+      name='mgr',
+      agent_id='agents/a',
+      tools=[google_search, server],
+      api_client=_FakeClient(),
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert {'type': 'google_search'} in params
+  assert _mcp_params(params)
+
+
+def test_resolve_mcp_empty_header_provider_omits_headers():
+  # A header_provider returning an empty dict (or None), with no static headers,
+  # must not add a 'headers' key to the mcp_server param.
+  server = RemoteMcpServer(url='https://x/mcp', header_provider=lambda ctx: {})
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  params = asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  assert 'headers' not in _mcp_params(params)[0]
+
+
+def test_resolve_mcp_does_not_mutate_spec_headers():
+  original_headers = {'X-Static': 's'}
+  server = RemoteMcpServer(
+      url='https://x/mcp',
+      headers=original_headers,
+      header_provider=lambda ctx: {'Authorization': 'Bearer tok'},
+  )
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=_FakeClient()
+  )
+
+  asyncio.run(agent._resolve_backend_tools(_ctx()))
+
+  # The spec's original headers dict must be untouched by resolution.
+  assert server.headers == {'X-Static': 's'}
+  assert original_headers == {'X-Static': 's'}
+
+
+def test_run_async_forwards_mcp_server_param():
+  client = _RecordingClient([[]])
+  server = RemoteMcpServer(
+      url='https://mcp.example.com/mcp',
+      header_provider=lambda ctx: {'X-Goog-Api-Key': 'k'},
+  )
+  agent = ManagedAgent(
+      name='mgr', agent_id='agents/a', tools=[server], api_client=client
+  )
+
+  asyncio.run(_drain(agent._run_async_impl(_user_ctx('hi'))))
+
+  create_kwargs = client.aio.interactions.calls[0]
+  mcp = [t for t in create_kwargs['tools'] if t['type'] == 'mcp_server'][0]
+  assert mcp['url'] == 'https://mcp.example.com/mcp'
+  assert mcp['headers'] == {'X-Goog-Api-Key': 'k'}

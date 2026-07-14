@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 # The TYPE_CHECKING block is needed for autocomplete to work.
 if TYPE_CHECKING:
   from ..auth.auth_tool import AuthToolArguments
+  from ._remote_mcp_server import RemoteMcpServer
   from ._request_input_tool import request_input
   from .agent_tool import AgentTool
   from .api_registry import ApiRegistry
@@ -83,6 +84,7 @@ _LAZY_MAPPING = {
     ),
     'preload_memory': ('.preload_memory_tool', 'preload_memory_tool'),
     'request_input': ('._request_input_tool', 'request_input'),
+    'RemoteMcpServer': ('._remote_mcp_server', 'RemoteMcpServer'),
     'ToolContext': ('.tool_context', 'ToolContext'),
     'transfer_to_agent': ('.transfer_to_agent_tool', 'transfer_to_agent'),
     'TransferToAgentTool': (

@@ -104,7 +104,7 @@ def _generate_files(
     google_cloud_region: Optional[str] = None,
     model: Optional[str] = None,
     type: str,
-):
+) -> None:
   """Generates a folder name for the agent."""
   os.makedirs(agent_folder, exist_ok=True)
 
@@ -189,7 +189,7 @@ def run_cmd(
     google_cloud_project: Optional[str],
     google_cloud_region: Optional[str],
     type: Optional[str],
-):
+) -> None:
   """Runs `adk create` command to create agent template.
 
   Args:

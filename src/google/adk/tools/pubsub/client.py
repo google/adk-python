@@ -28,7 +28,9 @@ USER_AGENT = f"adk-pubsub-tool google-adk/{version.__version__}"
 
 _CACHE_TTL = 1800  # 30 minutes
 
-_publisher_client_cache = {}
+_publisher_client_cache: dict[
+    object, tuple[pubsub_v1.PublisherClient, float]
+] = {}
 _publisher_client_lock = threading.Lock()
 
 
@@ -91,7 +93,9 @@ def get_publisher_client(
     return publisher_client
 
 
-_subscriber_client_cache = {}
+_subscriber_client_cache: dict[
+    object, tuple[pubsub_v1.SubscriberClient, float]
+] = {}
 _subscriber_client_lock = threading.Lock()
 
 
@@ -150,7 +154,7 @@ def get_subscriber_client(
     return subscriber_client
 
 
-def cleanup_clients():
+def cleanup_clients() -> None:
   """Clean up all cached Pub/Sub clients."""
   global _publisher_client_cache, _subscriber_client_cache
 

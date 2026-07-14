@@ -14,23 +14,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from datetime import timezone
 from typing import List
 from typing import Set
 import uuid
 
-from a2a.server.agent_execution.context import RequestContext
-from a2a.types import DataPart
+from a2a.server.agent_execution import RequestContext
 from a2a.types import Message
 from a2a.types import Part as A2APart
-from a2a.types import Role
-from a2a.types import TaskState
-from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
 from google.genai import types as genai_types
 
+from .. import _compat
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
@@ -51,7 +45,7 @@ class LongRunningFunctions:
     self._parts: List[genai_types.Part] = []
     self._long_running_tool_ids: Set[str] = set()
     self._part_converter = part_converter or convert_a2a_part_to_genai_part
-    self._task_state: TaskState = TaskState.input_required
+    self._task_state = _compat.TS_INPUT_REQUIRED
 
   def has_long_running_function_calls(self) -> bool:
     """Returns True if there are long running function calls."""
@@ -108,18 +102,15 @@ class LongRunningFunctions:
     if not a2a_parts:
       return None
 
-    return TaskStatusUpdateEvent(
+    lr_msg = Message(
+        message_id=str(uuid.uuid4()),
+        role=_compat.ROLE_AGENT,
+        parts=a2a_parts,
+    )
+    return _compat.make_task_status_update_event(
         task_id=task_id,
         context_id=context_id,
-        status=TaskStatus(
-            state=self._task_state,
-            message=Message(
-                message_id=str(uuid.uuid4()),
-                role=Role.agent,
-                parts=a2a_parts,
-            ),
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        ),
+        status=_compat.make_task_status(self._task_state, message=lr_msg),
         final=True,
     )
 
@@ -146,35 +137,37 @@ class LongRunningFunctions:
       a2a_part: The A2A part to potentially mark as long-running.
     """
 
+    meta = _compat.part_metadata(a2a_part)
     if (
-        isinstance(a2a_part.root, DataPart)
-        and a2a_part.root.metadata
-        and a2a_part.root.metadata.get(
-            _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
-        )
+        _compat.is_data_part(a2a_part)
+        and meta
+        and meta.get(_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY))
         == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
     ):
-      a2a_part.root.metadata[
+      meta[
           _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
       ] = True
+      _compat.set_part_metadata(a2a_part, meta)
       # If the function is a request for EUC, set the task state to
       # auth_required. Otherwise, set it to input_required. Save the state of
       # the last function call, as it will be the state of the task.
-      if a2a_part.root.metadata.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME:
-        self._task_state = TaskState.auth_required
+      if meta.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME:
+        self._task_state = _compat.TS_AUTH_REQUIRED
       else:
-        self._task_state = TaskState.input_required
+        self._task_state = _compat.TS_INPUT_REQUIRED
 
 
-def handle_user_input(context: RequestContext) -> TaskStatusUpdateEvent | None:
+def handle_user_input(
+    context: RequestContext,
+) -> TaskStatusUpdateEvent | None:
   """Processes user input events, validating function responses."""
 
   if (
       not context.current_task
       or not context.current_task.status
       or (
-          context.current_task.status.state != TaskState.input_required
-          and context.current_task.status.state != TaskState.auth_required
+          context.current_task.status.state != _compat.TS_INPUT_REQUIRED
+          and context.current_task.status.state != _compat.TS_AUTH_REQUIRED
       )
   ):
     return None
@@ -183,36 +176,29 @@ def handle_user_input(context: RequestContext) -> TaskStatusUpdateEvent | None:
   # to provide a response for the function call. Check if the user input
   # contains a function response.
   for a2a_part in context.message.parts:
+    meta = _compat.part_metadata(a2a_part)
     if (
-        isinstance(a2a_part.root, DataPart)
-        and a2a_part.root.metadata
-        and a2a_part.root.metadata.get(
-            _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
-        )
+        _compat.is_data_part(a2a_part)
+        and meta
+        and meta.get(_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY))
         == A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
     ):
       return None
 
-  return TaskStatusUpdateEvent(
+  missing_response_msg = Message(
+      message_id=str(uuid.uuid4()),
+      role=_compat.ROLE_AGENT,
+      parts=[
+          _compat.make_text_part(
+              "It was not provided a function response for the function call."
+          )
+      ],
+  )
+  return _compat.make_task_status_update_event(
       task_id=context.task_id,
       context_id=context.context_id,
-      status=TaskStatus(
-          state=context.current_task.status.state,
-          timestamp=datetime.now(timezone.utc).isoformat(),
-          message=Message(
-              message_id=str(uuid.uuid4()),
-              role=Role.agent,
-              parts=[
-                  A2APart(
-                      root=TextPart(
-                          text=(
-                              "It was not provided a function response for the"
-                              " function call."
-                          )
-                      )
-                  )
-              ],
-          ),
+      status=_compat.make_task_status(
+          context.current_task.status.state, message=missing_response_msg
       ),
       final=True,
   )

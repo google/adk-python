@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import importlib
 import json
 import logging
@@ -21,6 +22,7 @@ import os
 from os import path
 import statistics
 from typing import Any
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -77,9 +79,9 @@ REFERENCE_COLUMN = "reference"
 EXPECTED_TOOL_USE_COLUMN = "expected_tool_use"
 
 
-def load_json(file_path: str) -> Union[Dict, List]:
+def load_json(file_path: str) -> Union[Dict[str, Any], List[Any]]:
   with open(file_path, "r") as f:
-    return json.load(f)
+    return cast(Union[Dict[str, Any], List[Any]], json.load(f))
 
 
 class _EvalMetricResultWithInvocation(BaseModel):
@@ -113,7 +115,7 @@ class AgentEvaluator:
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
       print_detailed_results: bool = True,
-  ):
+  ) -> None:
     """Evaluates an agent using the given EvalSet.
 
     Args:
@@ -200,7 +202,7 @@ class AgentEvaluator:
       agent_name: Optional[str] = None,
       initial_session_file: Optional[str] = None,
       print_detailed_results: bool = True,
-  ):
+  ) -> None:
     """Evaluates an Agent given eval data.
 
     Args:
@@ -252,7 +254,7 @@ class AgentEvaluator:
       old_eval_data_file: str,
       new_eval_data_file: str,
       initial_session_file: Optional[str] = None,
-  ):
+  ) -> None:
     """A utility for migrating eval data to new schema backed by EvalSet."""
     if not old_eval_data_file or not new_eval_data_file:
       raise ValueError(
@@ -320,8 +322,10 @@ class AgentEvaluator:
     )
 
   @staticmethod
-  def _get_initial_session(initial_session_file: Optional[str] = None):
-    initial_session = {}
+  def _get_initial_session(
+      initial_session_file: Optional[str] = None,
+  ) -> dict[str, Any]:
+    initial_session: dict[str, Any] = {}
     if initial_session_file:
       with open(initial_session_file, "r") as f:
         initial_session = json.loads(f.read())
@@ -329,9 +333,14 @@ class AgentEvaluator:
 
   @staticmethod
   def _load_dataset(
-      input_data: Union[str, List[str], List[Dict], List[List[Dict]]],
-  ) -> List[List[Dict]]:
-    def load_json_file(file_path: str) -> List[Dict]:
+      input_data: Union[
+          str,
+          List[str],
+          List[Dict[str, Any]],
+          List[List[Dict[str, Any]]],
+      ],
+  ) -> List[List[Dict[str, Any]]]:
+    def load_json_file(file_path: str) -> List[Dict[str, Any]]:
       data = load_json(file_path)
       if not isinstance(data, list) or not all(
           isinstance(d, dict) for d in data
@@ -353,12 +362,15 @@ class AgentEvaluator:
         raise ValueError(f"Input path {input_data} is invalid.")
     elif isinstance(input_data, list):
       if all(isinstance(i, str) and os.path.isfile(i) for i in input_data):
-        return [load_json_file(i) for i in input_data]
+        return [load_json_file(cast(str, i)) for i in input_data]
       raise TypeError("Input list must contain valid file paths.")
     raise TypeError("Invalid input type for dataset loading.")
 
   @staticmethod
-  def _validate_input(eval_dataset, criteria):
+  def _validate_input(
+      eval_dataset: list[list[dict[str, Any]]],
+      criteria: Mapping[str, object],
+  ) -> None:
     """Validates that the evaluation criteria align with the provided dataset.
 
     For efficiency, we only use first row to validate input.
@@ -418,7 +430,7 @@ class AgentEvaluator:
       overall_score: Optional[float],
       metric_name: str,
       threshold: float,
-  ):
+  ) -> None:
     try:
       from pandas import pandas as pd
       from tabulate import tabulate
