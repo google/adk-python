@@ -14,6 +14,8 @@
 
 """Tests for GeminiContextCacheManager."""
 
+from datetime import datetime
+from datetime import timezone
 import time
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -1156,6 +1158,25 @@ class TestGeminiContextCacheManager:
     assert result_2.contents_count == 0
     assert result_2.invocations_used == 1
     self.manager.genai_client.aio.caches.create.assert_called_once()
+
+  async def test_create_cache_uses_server_expire_time(self):
+    """The server-reported expiry is authoritative when it is available."""
+    server_expire_time = datetime.fromtimestamp(2_000_000_000, tz=timezone.utc)
+    mock_cached_content = types.CachedContent(
+        name="projects/test/locations/us-central1/cachedContents/test123",
+        expire_time=server_expire_time,
+    )
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=mock_cached_content
+    )
+    llm_request = self.create_llm_request()
+
+    with patch.object(
+        self.manager, "_generate_cache_fingerprint", return_value="test_fp"
+    ):
+      cache_metadata = await self.manager._create_gemini_cache(llm_request, 2)
+
+    assert cache_metadata.expire_time == server_expire_time.timestamp()
 
   async def test_create_http_options_passthrough(self):
     """Test that create_http_options is passed through to cache creation config."""

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import hashlib
 import json
 import logging
@@ -532,6 +533,12 @@ class GeminiContextCacheManager:
       )
       # Set precise creation timestamp right after cache creation
       created_at = time.time()
+      server_expire_time = getattr(cached_content, "expire_time", None)
+      expire_time = (
+          server_expire_time.timestamp()
+          if isinstance(server_expire_time, datetime)
+          else created_at + llm_request.cache_config.ttl_seconds
+      )
       logger.info("Cache created successfully: %s", cached_content.name)
 
       span.set_attribute("cache_name", cached_content.name)
@@ -539,7 +546,7 @@ class GeminiContextCacheManager:
       # Return complete cache metadata with precise timing
       return CacheMetadata(
           cache_name=cached_content.name,
-          expire_time=created_at + llm_request.cache_config.ttl_seconds,
+          expire_time=expire_time,
           fingerprint=self._generate_cache_fingerprint(
               llm_request, cache_contents_count
           ),
