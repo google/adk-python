@@ -24,6 +24,7 @@ from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
+from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.base_llm_connection import BaseLlmConnection
@@ -357,6 +358,34 @@ async def test_process_agent_tools_preserves_order_when_later_unions_resolve_fir
   # Even though fast_tool was resolved first, process_llm_request must
   # be invoked in agent.tools order (slow_tool first).
   assert process_call_order == ['slow_tool', 'fast_tool']
+  assert [tool.name for tool in invocation_context.canonical_tools_cache] == [
+      'slow_tool',
+      'fast_tool',
+  ]
+  response = LlmResponse(content=types.ModelContent('response'))
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  with mock.patch.object(
+      type(agent), 'canonical_tools', new_callable=AsyncMock
+  ) as resolve_again:
+    await _handle_after_model_callback(invocation_context, response, event)
+  resolve_again.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_clears_cache_when_agent_has_no_tools():
+  """A later tool-free model step cannot reuse an earlier tool resolution."""
+  agent = Agent(name='test_agent', tools=[])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  invocation_context.canonical_tools_cache = [google_search]
+
+  await _process_agent_tools(invocation_context, LlmRequest())
+
+  assert invocation_context.canonical_tools_cache == []
 
 
 async def _preprocess(agent, *, is_live: bool) -> LlmRequest:

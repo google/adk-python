@@ -687,6 +687,7 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
               AdkEvent(
                   author="user",
                   content=content,
+                  branch=event.get("branch"),
               )
           )
           next_run_events = runner.run(content)

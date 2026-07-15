@@ -75,14 +75,12 @@ def test_ask_data_insights_pipeline_from_file(mock_get_session, case_file_path):
   assert result["response"] == expected_final_list
   mock_get_session.assert_called_once_with(mock_creds)
   mock_session.post.assert_called_once_with(
-      "https://geminidataanalytics.mtls.googleapis.com/v1beta/projects/test-project/locations/global:chat",
+      "https://geminidataanalytics.mtls.googleapis.com/v1/projects/test-project/locations/global:chat",
       json={
-          "project": "projects/test-project",
           "messages": [{"userMessage": {"text": case_data["user_question"]}}],
           "inlineContext": {
               "datasourceReferences": {"bq": {"tableReferences": []}},
               "systemInstruction": mock.ANY,
-              "options": {"chart": {"image": {"noImage": {}}}},
           },
           "clientIdEnum": "GOOGLE_ADK",
       },
@@ -132,14 +130,12 @@ def test_ask_data_insights_success(mock_get_session, mock_get_stream):
   mock_get_session.assert_called_once_with(mock_creds)
   mock_get_stream.assert_called_once_with(
       mock_session,
-      "https://geminidataanalytics.mtls.googleapis.com/v1beta/projects/test-project/locations/global:chat",
+      "https://geminidataanalytics.mtls.googleapis.com/v1/projects/test-project/locations/global:chat",
       {
-          "project": "projects/test-project",
           "messages": [{"userMessage": {"text": "test query"}}],
           "inlineContext": {
               "datasourceReferences": {"bq": {"tableReferences": []}},
               "systemInstruction": mock.ANY,
-              "options": {"chart": {"image": {"noImage": {}}}},
           },
           "clientIdEnum": "GOOGLE_ADK",
       },
