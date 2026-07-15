@@ -121,3 +121,6 @@ CLAUDE.md
 
 # Conformance test outputs (timestamped folders from --test mode)
 **/conformance/20*-*-*_*-*-*/
+
+# Local lean-ctx/codecanvas cache artifacts
+.codecanvas/
