@@ -501,6 +501,7 @@ class Gemini(BaseLlm):
     )
 
   async def _preprocess_request(self, llm_request: LlmRequest) -> None:
+    from ..tools import load_artifacts_tool  # pylint: disable=import-outside-toplevel
 
     if self._api_backend == GoogleLLMVariant.GEMINI_API:
       # Using API key from Google AI Studio to call model doesn't support labels.
@@ -527,6 +528,24 @@ class Gemini(BaseLlm):
         if isinstance(tool, types.Tool) and tool.computer_use:
           llm_request.config.system_instruction = None
           await self._adapt_computer_use_tool(llm_request)
+
+    # Sanitize inputs by ensuring unsupported inline types (e.g. DOCX from UI)
+    # are converted to plain text using load_artifacts_tool._as_safe_part_for_llm.
+    if llm_request.contents:
+      for content in llm_request.contents:
+        if not content.parts:
+          continue
+        new_parts = []
+        for part in content.parts:
+          if part.inline_data:
+            # GE inline_data does not preserve filenames, so we pass a dummy
+            # 'inline-file' name as a placeholder for
+            # _as_safe_part_for_llm's required artifact_name argument.
+            part = load_artifacts_tool._as_safe_part_for_llm(  # pylint: disable=protected-access
+                part, 'inline-file'
+            )
+          new_parts.append(part)
+        content.parts = new_parts
 
   def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
     """Merge tracking headers to the given headers."""

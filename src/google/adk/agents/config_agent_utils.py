@@ -143,7 +143,10 @@ _ENFORCE_DENYLIST = True
 _BLOCKED_MODULES = frozenset({
     # Process / OS execution
     "os",
+    "posix",  # Unix alias: posix.system is os.system
+    "nt",  # Windows alias: nt.system is os.system
     "subprocess",
+    "_posixsubprocess",
     "sys",
     "builtins",
     "importlib",
@@ -160,6 +163,7 @@ _BLOCKED_MODULES = frozenset({
     "ctypes",
     # Network access
     "socket",
+    "_socket",
     "http",
     "urllib",
     "ftplib",

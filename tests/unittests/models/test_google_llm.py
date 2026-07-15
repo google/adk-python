@@ -29,6 +29,7 @@ from google.adk.models.google_llm import _ResourceExhaustedError
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.tools import load_artifacts_tool
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
 from google.adk.utils._google_client_headers import get_tracking_headers
@@ -1035,6 +1036,42 @@ async def test_preprocess_request_handles_backend_specific_fields(
     assert file_part.file_data.display_name == expected_file_display_name
     assert inline_part.inline_data.display_name == expected_inline_display_name
     assert llm_request_with_files.config.labels == expected_labels
+
+
+@pytest.mark.asyncio
+async def test_preprocess_request_converts_inline_data_safely():
+  """Tests that _preprocess_request uses _as_safe_part_for_llm to sanitize inline data."""
+  with mock.patch.object(
+      load_artifacts_tool, "_as_safe_part_for_llm", autospec=True
+  ) as mock_safe_part:
+    # Arrange
+    mock_safe_part.return_value = Part.from_text(text="safe_text")
+    my_gemini_llm = Gemini(model="gemini-2.5-flash")
+
+    my_llm_request = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=[
+            Content(
+                role="user",
+                parts=[
+                    Part(
+                        inline_data=types.Blob(
+                            data=b"some bytes",
+                            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        )
+                    )
+                ],
+            )
+        ],
+    )
+
+    # Act
+    await my_gemini_llm._preprocess_request(my_llm_request)  # pylint: disable=protected-access
+
+    # Assert
+    mock_safe_part.assert_called_once()
+    assert mock_safe_part.call_args[0][1] == "inline-file"
+    assert my_llm_request.contents[0].parts[0].text == "safe_text"
 
 
 @pytest.mark.asyncio
