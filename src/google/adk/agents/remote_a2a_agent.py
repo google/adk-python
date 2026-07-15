@@ -69,6 +69,7 @@ from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.contents import _present_other_agent_message
 from ..flows.llm_flows.functions import find_matching_function_call
 from ..utils._async_mtls_transport import create_google_auth_mtls_transport
+from ..utils._mtls_utils import effective_googleapis_endpoint
 from .base_agent import BaseAgent
 
 __all__ = [
@@ -242,8 +243,18 @@ class RemoteA2aAgent(BaseAgent):
     if self._enable_google_auth_mtls and self._agent_card is not None:
       target_url = _compat.agent_card_url(self._agent_card)
       if target_url:
-        transport = await create_google_auth_mtls_transport(str(target_url))
+        # A channel-bound token is only honored on the mTLS endpoint
+        # (*.mtls.googleapis.com); presenting it to the standard endpoint still
+        # 401s. Resolve to the mTLS endpoint and bind both the transport and the
+        # A2A client to it. effective_googleapis_endpoint is a no-op for
+        # non-Google hosts and when GOOGLE_API_USE_MTLS_ENDPOINT=never.
+        mtls_url = effective_googleapis_endpoint(str(target_url))
+        transport = await create_google_auth_mtls_transport(mtls_url)
         if transport is not None:
+          if mtls_url != str(target_url):
+            _compat.rewrite_agent_card_url(
+                self._agent_card, effective_googleapis_endpoint
+            )
           return httpx.AsyncClient(transport=transport, timeout=timeout)
     return httpx.AsyncClient(timeout=timeout)
 

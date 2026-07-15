@@ -562,6 +562,25 @@ def agent_card_url(
     return getattr(card, "url", None)
 
 
+def rewrite_agent_card_url(
+    card: AgentCard, rewriter: Callable[[str], str]
+) -> None:
+  """Rewrites the RPC URL(s) on an AgentCard in place using ``rewriter``.
+
+  Applies ``rewriter`` to each RPC URL the card exposes, mirroring
+  ``agent_card_url``. 1.x rewrites every ``supported_interfaces[i].url``; 0.3.x
+  rewrites the top-level ``url``.
+  """
+  if IS_A2A_V1:
+    for iface in card.supported_interfaces or []:
+      if iface.url:
+        iface.url = rewriter(iface.url)
+  else:
+    existing = getattr(card, "url", None)
+    if existing:
+      card.url = rewriter(existing)
+
+
 # -----------------------------------------------------------------------------
 # Stream-item normalization
 # -----------------------------------------------------------------------------
