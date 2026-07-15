@@ -20,6 +20,7 @@ from google.genai import types as genai_types
 from typing_extensions import override
 
 from ..dependencies.rouge_scorer import rouge_scorer
+from ..dependencies.rouge_scorer import tokenizers
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
@@ -27,6 +28,19 @@ from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+
+
+class _UnicodeFriendlyTokenizer(tokenizers.Tokenizer):
+  """A tokenizer that splits on whitespace and preserves Unicode characters.
+
+  The default rouge_score tokenizer strips all non-ASCII characters, causing
+  non-English text (e.g., Thai, Chinese, Arabic) to tokenize to empty strings
+  and receive a score of 0 regardless of content.  This tokenizer uses simple
+  whitespace splitting and lowercasing, which correctly handles any language.
+  """
+
+  def tokenize(self, text: str) -> list[str]:
+    return text.lower().split()
 
 
 class RougeEvaluator(Evaluator):
@@ -110,7 +124,9 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  scorer = rouge_scorer.RougeScorer(
+      ["rouge1"], tokenizer=_UnicodeFriendlyTokenizer()
+  )
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.

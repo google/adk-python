@@ -87,6 +87,24 @@ def test_calculate_rouge_1_scores():
   assert rouge_1_score.fmeasure == pytest.approx(8 / 11)
 
 
+def test_calculate_rouge_1_scores_non_english_identical():
+  """Non-English text that is identical should score 1.0, not 0."""
+  candidate = "สวัสดี"
+  reference = "สวัสดี"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.precision == pytest.approx(1.0)
+  assert rouge_1_score.recall == pytest.approx(1.0)
+  assert rouge_1_score.fmeasure == pytest.approx(1.0)
+
+
+def test_calculate_rouge_1_scores_non_english_partial_overlap():
+  """Non-English text with partial overlap should return a partial score."""
+  candidate = "สวัสดี โลก"
+  reference = "สวัสดี ทุกคน"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.fmeasure == pytest.approx(0.5)
+
+
 @pytest.mark.parametrize(
     "candidates, references, expected_score, expected_status",
     [
