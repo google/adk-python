@@ -487,6 +487,24 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     with pytest.raises(ValidationError):
       EventsCompactionConfig()
 
+  def test_events_compaction_config_rejects_non_positive_interval(self):
+    # compaction_interval must be > 0. A value of 0 (or negative) would make
+    # the sliding-window trigger fire on every invocation because the guard
+    # `len(new_invocation_ids) < compaction_interval` can never hold.
+    with pytest.raises(ValidationError):
+      EventsCompactionConfig(compaction_interval=0, overlap_size=0)
+
+    with pytest.raises(ValidationError):
+      EventsCompactionConfig(compaction_interval=-1, overlap_size=0)
+
+  def test_events_compaction_config_rejects_negative_overlap(self):
+    with pytest.raises(ValidationError):
+      EventsCompactionConfig(compaction_interval=2, overlap_size=-1)
+
+  def test_events_compaction_config_allows_zero_overlap(self):
+    config = EventsCompactionConfig(compaction_interval=2, overlap_size=0)
+    self.assertEqual(config.overlap_size, 0)
+
   def test_latest_prompt_token_count_fallback_applies_compaction(self):
     events = [
         self._create_event(1.0, 'inv1', 'a' * 40),

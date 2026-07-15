@@ -58,14 +58,22 @@ class EventsCompactionConfig(BaseModel):
   summarizer: Optional[BaseEventsSummarizer] = None
   """The event summarizer to use for compaction."""
 
-  compaction_interval: int
+  compaction_interval: int = Field(gt=0)
   """The number of *new* user-initiated invocations that, once
-  fully represented in the session's events, will trigger a compaction."""
+  fully represented in the session's events, will trigger a compaction.
 
-  overlap_size: int
+  Must be greater than 0. A value of 0 (or negative) would make the
+  sliding-window trigger fire on *every* invocation, because the guard
+  ``len(new_invocation_ids) < compaction_interval`` can never hold.
+  """
+
+  overlap_size: int = Field(ge=0)
   """The number of preceding invocations to include from the
   end of the last compacted range. This creates an overlap between consecutive
-  compacted summaries, maintaining context."""
+  compacted summaries, maintaining context.
+
+  Must be greater than or equal to 0 (0 means no overlap).
+  """
 
   token_threshold: Optional[int] = Field(
       default=None,
