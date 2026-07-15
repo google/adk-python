@@ -126,7 +126,7 @@ def _get_planner(
   return PlanReActPlanner()
 
 
-def _remove_thought_from_request(llm_request: LlmRequest):
+def _remove_thought_from_request(llm_request: LlmRequest) -> None:
   if not llm_request.contents:
     return
 

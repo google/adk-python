@@ -21,9 +21,9 @@ from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.client import Client as A2AClient
 from a2a.client.client import ClientConfig
 from a2a.client.client_factory import ClientFactory
-from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentSkill
@@ -31,11 +31,9 @@ from a2a.types import Artifact
 from a2a.types import Message as A2AMessage
 from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent
-from a2a.types import TaskState
 from a2a.types import TaskStatus as A2ATaskStatus
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
-from a2a.types import TransportProtocol as A2ATransport
+from google.adk.a2a import _compat
 from google.adk.a2a.agent import ParametersConfig
 from google.adk.a2a.agent import RequestInterceptor
 from google.adk.a2a.agent.config import A2aRemoteAgentConfig
@@ -53,6 +51,61 @@ import httpx
 import pytest
 
 
+def _make_agent_card(
+    name="test-agent",
+    url="https://example.com/rpc",
+    description="Test agent",
+    *,
+    version="1.0",
+    skills=None,
+    **kwargs,
+):
+  """Build an AgentCard version-agnostically for tests."""
+
+  if skills is None:
+    skills = []
+  if _compat.IS_A2A_V1:
+    card = _compat.parse_agent_card({
+        "name": name,
+        "description": description,
+        "version": version,
+        "supported_interfaces": [{"url": url, "protocol_binding": "JSONRPC"}],
+        "default_input_modes": ["text/plain"],
+        "default_output_modes": ["text/plain"],
+    })
+    for skill in skills:
+      card.skills.append(skill)
+    return card
+  else:
+    return AgentCard(
+        name=name,
+        url=url,
+        description=description,
+        version=version,
+        capabilities=AgentCapabilities(),
+        skills=skills,
+        default_input_modes=["text/plain"],
+        default_output_modes=["text/plain"],
+        **kwargs,
+    )
+
+
+def _make_stream_message(message: A2AMessage):
+  """Wrap a Message in the shape ``send_message`` yields for the active SDK.
+
+  On 1.x ``send_message`` yields ``StreamResponse`` proto objects; on 0.3.x it
+  yields the bare ``Message``. ``_compat.make_stream_normalizer`` collapses both
+  back to the legacy shape, so tests build the version-correct raw item here.
+  """
+  if _compat.IS_A2A_V1:
+    from a2a.types import StreamResponse
+
+    resp = StreamResponse()
+    resp.message.CopyFrom(message)
+    return resp
+  return message
+
+
 # Helper function to create a proper AgentCard for testing
 def create_test_agent_card(
     name: str = "test-agent",
@@ -60,14 +113,11 @@ def create_test_agent_card(
     description: str = "Test agent",
 ) -> AgentCard:
   """Create a test AgentCard with all required fields."""
-  return AgentCard(
+  return _make_agent_card(
       name=name,
       url=url,
       description=description,
       version="1.0",
-      capabilities=AgentCapabilities(),
-      default_input_modes=["text/plain"],
-      default_output_modes=["application/json"],
       skills=[
           AgentSkill(
               id="test-skill",
@@ -199,10 +249,13 @@ class TestRemoteA2aAgentResolution:
     assert client is not None
     assert agent._httpx_client == client
     assert agent._httpx_client_needs_cleanup is True
-    assert agent._a2a_client_factory._config.supported_transports == [
-        A2ATransport.jsonrpc,
-        A2ATransport.http_json,
-    ]
+
+    if not _compat.IS_A2A_V1:
+      assert agent._a2a_client_factory._config.supported_transports == [
+          _compat.TransportProtocol.jsonrpc,
+          _compat.TransportProtocol.http_json,
+      ]
+    # 1.x uses supported_protocol_bindings instead.
 
   @pytest.mark.asyncio
   async def test_ensure_httpx_client_reuses_existing_client(self):
@@ -278,7 +331,12 @@ class TestRemoteA2aAgentResolution:
     assert agent._httpx_client == client
     assert agent._httpx_client_needs_cleanup is True
     assert agent._a2a_client_factory._config.httpx_client == client
-    assert "transport_label" in agent._a2a_client_factory._registry
+    if not _compat.IS_A2A_V1:
+      # On 0.3.x the factory is reconstructed preserving custom
+      # transports. On 1.x the factory is recreated fresh with only the
+      # standard protocol bindings, so custom transports are not
+      # preserved (intended production behavior).
+      assert "transport_label" in agent._a2a_client_factory._registry
 
   @pytest.mark.asyncio
   async def test_resolve_agent_card_from_url_success(self):
@@ -332,7 +390,9 @@ class TestRemoteA2aAgentResolution:
     try:
       result = await agent._resolve_agent_card_from_file(temp_path)
       assert result.name == self.agent_card.name
-      assert result.url == self.agent_card.url
+      assert _compat.agent_card_url(result) == _compat.agent_card_url(
+          self.agent_card
+      )
     finally:
       Path(temp_path).unlink()
 
@@ -381,21 +441,8 @@ class TestRemoteA2aAgentResolution:
         name="test_agent", agent_card=create_test_agent_card()
     )
 
-    invalid_card = AgentCard(
+    invalid_card = _make_agent_card(
         name="test",
-        description="test",
-        version="1.0",
-        capabilities=AgentCapabilities(),
-        default_input_modes=["text/plain"],
-        default_output_modes=["application/json"],
-        skills=[
-            AgentSkill(
-                id="test-skill",
-                name="Test Skill",
-                description="A test skill",
-                tags=["test"],
-            )
-        ],
         url="",  # Empty URL to trigger validation error
     )
 
@@ -411,22 +458,9 @@ class TestRemoteA2aAgentResolution:
         name="test_agent", agent_card=create_test_agent_card()
     )
 
-    invalid_card = AgentCard(
+    invalid_card = _make_agent_card(
         name="test",
-        url="invalid-url",
-        description="test",
-        version="1.0",
-        capabilities=AgentCapabilities(),
-        default_input_modes=["text/plain"],
-        default_output_modes=["application/json"],
-        skills=[
-            AgentSkill(
-                id="test-skill",
-                name="Test Skill",
-                description="A test skill",
-                tags=["test"],
-            )
-        ],
+        url="invalid-url",  # Invalid URL to trigger validation error
     )
 
     with pytest.raises(AgentCardResolutionError, match="Invalid RPC URL"):
@@ -471,8 +505,10 @@ class TestRemoteA2aAgentResolution:
       mock_client = AsyncMock()
       mock_client_class.return_value = mock_client
 
+      # Rebinding reconstructs the factory through
+      # ``_compat.A2AClientFactory``, so the patch must target it there.
       with patch(
-          "google.adk.agents.remote_a2a_agent.A2AClientFactory"
+          "google.adk.a2a._compat.A2AClientFactory"
       ) as mock_factory_class:
         mock_a2a_client = Mock()
         mock_factory = Mock()
@@ -635,6 +671,7 @@ class TestRemoteA2aAgentMessageHandling:
 
   def test_construct_message_parts_from_session_user_input_metadata(self):
     """Test that user input metadata is added for user messages."""
+
     mock_part = Mock()
     mock_content = Mock()
     mock_content.parts = [mock_part]
@@ -651,18 +688,16 @@ class TestRemoteA2aAgentMessageHandling:
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
-      mock_a2a_part = Mock()
-      mock_a2a_part.root = Mock()
-      mock_a2a_part.root.metadata = {}
-      self.mock_genai_part_converter.return_value = mock_a2a_part
+      # Converter returns a real A2A part; production stamps is_user_input.
+      a2a_part = _compat.make_text_part("hi")
+      self.mock_genai_part_converter.return_value = a2a_part
 
       parts, _ = self.agent._construct_message_parts_from_session(
           self.mock_context
       )
 
       assert len(parts) == 1
-      assert parts[0] == mock_a2a_part
-      assert parts[0].root.metadata.get("is_user_input") is True
+      assert _compat.part_metadata(parts[0]).get("is_user_input") is True
 
   def test_construct_message_parts_from_session_success_multiple_parts(self):
     """Test successful message parts construction from session."""
@@ -749,11 +784,7 @@ class TestRemoteA2aAgentMessageHandling:
     self.mock_session.events = [user1, agent1, user2, agent2]
 
     def mock_converter(part):
-      mock_a2a_part = Mock()
-      mock_a2a_part.text = part.text
-      mock_a2a_part.root = Mock()
-      mock_a2a_part.root.metadata = {}
-      return mock_a2a_part
+      return _compat.make_text_part(part.text)
 
     self.mock_genai_part_converter.side_effect = mock_converter
 
@@ -765,7 +796,7 @@ class TestRemoteA2aAgentMessageHandling:
           self.mock_context
       )
       assert len(parts) == 1
-      assert parts[0].text == "User 2"
+      assert _compat.part_text(parts[0]) == "User 2"
       assert context_id is None
 
   def test_construct_message_parts_from_session_stateless_full_history(self):
@@ -801,11 +832,7 @@ class TestRemoteA2aAgentMessageHandling:
     self.mock_session.events = [user1, agent1, user2]
 
     def mock_converter(part):
-      mock_a2a_part = Mock()
-      mock_a2a_part.text = part.text
-      mock_a2a_part.root = Mock()
-      mock_a2a_part.root.metadata = {}
-      return mock_a2a_part
+      return _compat.make_text_part(part.text)
 
     self.mock_genai_part_converter.side_effect = mock_converter
 
@@ -817,9 +844,9 @@ class TestRemoteA2aAgentMessageHandling:
           self.mock_context
       )
       assert len(parts) == 3
-      assert parts[0].text == "User 1"
-      assert parts[1].text == "Agent 1"
-      assert parts[2].text == "User 2"
+      assert _compat.part_text(parts[0]) == "User 1"
+      assert _compat.part_text(parts[1]) == "Agent 1"
+      assert _compat.part_text(parts[2]) == "User 2"
       assert context_id is None
 
   def test_construct_message_parts_from_session_stateful_partial_history(self):
@@ -858,11 +885,7 @@ class TestRemoteA2aAgentMessageHandling:
     self.mock_session.events = [user1, agent1, user2]
 
     def mock_converter(part):
-      mock_a2a_part = Mock()
-      mock_a2a_part.text = part.text
-      mock_a2a_part.root = Mock()
-      mock_a2a_part.root.metadata = {}
-      return mock_a2a_part
+      return _compat.make_text_part(part.text)
 
     self.mock_genai_part_converter.side_effect = mock_converter
 
@@ -874,7 +897,7 @@ class TestRemoteA2aAgentMessageHandling:
           self.mock_context
       )
       assert len(parts) == 1
-      assert parts[0].text == "User 2"
+      assert _compat.part_text(parts[0]) == "User 2"
       assert context_id == "ctx-1"
 
   @pytest.mark.asyncio
@@ -940,10 +963,12 @@ class TestRemoteA2aAgentMessageHandling:
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
     mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.completed
+    mock_a2a_task.status.state = _compat.TS_COMPLETED
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = genai_types.Part.from_text(
+        text="test"
+    )  # real genai part for Content
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1013,16 +1038,13 @@ class TestRemoteA2aAgentMessageHandling:
       # Mock _present_other_agent_message to return the transformed event
       mock_present.return_value = other_agent_event
 
-      # Mock the converter to track the order of parts
-      converted_parts = []
+      # Converter returns real A2A parts (production reads their metadata);
+      # track the conversion order for the ordering assertions below.
+      converted_order = []
 
       def mock_converter(part):
-        mock_a2a_part = Mock()
-        mock_a2a_part.original_text = part.text
-        mock_a2a_part.root = Mock()
-        mock_a2a_part.root.metadata = {}
-        converted_parts.append(mock_a2a_part)
-        return mock_a2a_part
+        converted_order.append(part.text)
+        return _compat.make_text_part(part.text)
 
       self.mock_genai_part_converter.side_effect = mock_converter
 
@@ -1035,12 +1057,11 @@ class TestRemoteA2aAgentMessageHandling:
       assert context_id is None
 
       # Verify order: user part, then "For context:", then agent message
-      assert converted_parts[0].original_text == "User question"
-      assert converted_parts[1].original_text == "For context:"
-      assert (
-          converted_parts[2].original_text
-          == "[other_agent] said: Response text"
-      )
+      assert converted_order[0] == "User question"
+      assert converted_order[1] == "For context:"
+      assert converted_order[2] == "[other_agent] said: Response text"
+      assert _compat.part_text(parts[0]) == "User question"
+      assert _compat.part_text(parts[1]) == "For context:"
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_submitted_and_no_update(self):
@@ -1049,10 +1070,12 @@ class TestRemoteA2aAgentMessageHandling:
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
     mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.submitted
+    mock_a2a_task.status.state = _compat.TS_SUBMITTED
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = genai_types.Part.from_text(
+        text="test"
+    )  # real genai part for Content
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1091,12 +1114,12 @@ class TestRemoteA2aAgentMessageHandling:
       "task_state,event_content",
       [
           pytest.param(
-              TaskState.submitted,
+              _compat.TS_SUBMITTED,
               genai_types.Content(role="model", parts=[]),
               id="submitted_empty_parts",
           ),
           pytest.param(
-              TaskState.working,
+              _compat.TS_WORKING,
               None,
               id="working_no_content",
           ),
@@ -1146,10 +1169,12 @@ class TestRemoteA2aAgentMessageHandling:
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
     mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.working
+    mock_a2a_task.status.state = _compat.TS_WORKING
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = genai_types.Part.from_text(
+        text="test"
+    )  # real genai part for Content
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1193,11 +1218,13 @@ class TestRemoteA2aAgentMessageHandling:
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.completed
+    mock_update.status.state = _compat.TS_COMPLETED
     mock_update.status.message = mock_a2a_message
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = genai_types.Part.from_text(
+        text="test"
+    )  # real genai part for Content
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1239,11 +1266,13 @@ class TestRemoteA2aAgentMessageHandling:
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.working
+    mock_update.status.state = _compat.TS_WORKING
     mock_update.status.message = mock_a2a_message
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = genai_types.Part.from_text(
+        text="test"
+    )  # real genai part for Content
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1281,7 +1310,7 @@ class TestRemoteA2aAgentMessageHandling:
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.completed
+    mock_update.status.state = _compat.TS_COMPLETED
     mock_update.status.message = None
 
     result = await self.agent._handle_a2a_response(
@@ -1348,6 +1377,33 @@ class TestRemoteA2aAgentMessageHandling:
         (mock_a2a_task, mock_update), self.mock_context
     )
 
+    assert result is None
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_with_real_empty_status_message(self):
+    """A real status update without a message must not yield a spurious event."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+
+    # Real status update with NO message attached (empty proto Message on 1.x).
+    update = _compat.make_task_status_update_event(
+        task_id="task-123",
+        context_id="context-123",
+        status=_compat.make_task_status(_compat.TS_WORKING),
+        final=False,
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, update), self.mock_context
+      )
+
+    # The empty status message must be treated as absent: the converter is not
+    # called and the handler produces no spurious event.
+    mock_convert.assert_not_called()
     assert result is None
 
 
@@ -1512,10 +1568,12 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
     mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.completed
+    mock_a2a_task.status.state = _compat.TS_COMPLETED
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = genai_types.Part.from_text(
+        text="test"
+    )  # real genai part for Content
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1555,10 +1613,12 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
     mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = TaskState.submitted
+    mock_a2a_task.status.state = _compat.TS_SUBMITTED
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = genai_types.Part.from_text(
+        text="test"
+    )  # real genai part for Content
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1602,11 +1662,13 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.completed
+    mock_update.status.state = _compat.TS_COMPLETED
     mock_update.status.message = mock_a2a_message
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = genai_types.Part.from_text(
+        text="test"
+    )  # real genai part for Content
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1648,11 +1710,13 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.working
+    mock_update.status.state = _compat.TS_WORKING
     mock_update.status.message = mock_a2a_message
 
     # Create a proper Event mock that can handle custom_metadata
-    mock_a2a_part = Mock(spec=TextPart)
+    mock_a2a_part = genai_types.Part.from_text(
+        text="test"
+    )  # real genai part for Content
     mock_event = Event(
         author=self.agent.name,
         invocation_id=self.mock_context.invocation_id,
@@ -1690,7 +1754,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock(A2ATaskStatus)
-    mock_update.status.state = TaskState.completed
+    mock_update.status.state = _compat.TS_COMPLETED
     mock_update.status.message = None
 
     result = await self.agent._handle_a2a_response(
@@ -2149,7 +2213,7 @@ class TestRemoteA2aAgentNoneConverterResults:
     mock_task.id = "task-123"
     mock_task.context_id = None
     mock_task.status = Mock()
-    mock_task.status.state = TaskState.completed
+    mock_task.status.state = _compat.TS_COMPLETED
 
     with patch(
         "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
@@ -2172,7 +2236,7 @@ class TestRemoteA2aAgentNoneConverterResults:
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock()
     mock_update.status.message = Mock()
-    mock_update.status.state = TaskState.working
+    mock_update.status.state = _compat.TS_WORKING
 
     with patch(
         "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
@@ -2284,19 +2348,27 @@ class TestRemoteA2aAgentExecution:
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
-          # Create proper A2A part mocks
-          from a2a.client import Client as A2AClient
-          from a2a.types import TextPart
-
-          mock_a2a_part = Mock(spec=TextPart)
+          # Use a real A2A text part so production builds a real
+          # A2A message that the 1.x send_message adapter can
+          # serialize.
+          mock_a2a_part = _compat.make_text_part("test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
           )  # Tuple with parts and context_id
 
-          # Mock A2A client
+          # Mock A2A client. Build the raw stream item version-
+          # correctly (real ``StreamResponse`` on 1.x, bare
+          # ``Message`` on 0.3.x) so the stream normalizer handles
+          # it; the dispatch itself is mocked below.
           mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
-          mock_response = Mock(metadata={})
+          mock_response = _make_stream_message(
+              A2AMessage(
+                  message_id="m1",
+                  role=_compat.ROLE_USER,
+                  parts=[mock_a2a_part],
+              )
+          )
           mock_send_message = AsyncMock()
           mock_send_message.__aiter__.return_value = [mock_response]
           mock_a2a_client.send_message.return_value = mock_send_message
@@ -2321,16 +2393,13 @@ class TestRemoteA2aAgentExecution:
                 mock_req_log.return_value = "Mock request log"
                 mock_resp_log.return_value = "Mock response log"
 
-                # Mock the A2AMessage constructor
+                # Patch the production serializer so metadata
+                # stamping does not run MessageToDict on the
+                # mock response (which crashes on 1.x).
                 with patch(
-                    "google.adk.agents.remote_a2a_agent.A2AMessage"
-                ) as mock_message_class:
-                  mock_message = Mock(spec=A2AMessage)
-                  mock_message_class.return_value = mock_message
-
-                  # Add model_dump to mock_response for metadata
-                  mock_response.model_dump.return_value = {"test": "response"}
-
+                    "google.adk.a2a._compat.a2a_to_dict",
+                    return_value={"k": "v"},
+                ):
                   # Execute
                   events = []
                   async for event in self.agent._run_async_impl(
@@ -2338,12 +2407,12 @@ class TestRemoteA2aAgentExecution:
                   ):
                     events.append(event)
 
-                  assert len(events) == 1
-                  assert events[0] == mock_event
-                  assert (
-                      A2A_METADATA_PREFIX + "request"
-                      in mock_event.custom_metadata
-                  )
+                assert len(events) == 1
+                assert events[0] == mock_event
+                assert (
+                    A2A_METADATA_PREFIX + "request"
+                    in mock_event.custom_metadata
+                )
 
   @pytest.mark.asyncio
   async def test_run_async_impl_a2a_client_error(self):
@@ -2357,10 +2426,9 @@ class TestRemoteA2aAgentExecution:
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
-          # Create proper A2A part mocks
-          from a2a.types import TextPart
-
-          mock_a2a_part = Mock(spec=TextPart)
+          # Return a real A2A part so the request Message builds and can
+          # be serialized in the error path on both SDK versions.
+          mock_a2a_part = _compat.make_text_part("test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
@@ -2377,19 +2445,12 @@ class TestRemoteA2aAgentExecution:
           ) as mock_req_log:
             mock_req_log.return_value = "Mock request log"
 
-            # Mock the A2AMessage constructor
-            with patch(
-                "google.adk.agents.remote_a2a_agent.A2AMessage"
-            ) as mock_message_class:
-              mock_message = Mock(spec=A2AMessage)
-              mock_message_class.return_value = mock_message
+            events = []
+            async for event in self.agent._run_async_impl(self.mock_context):
+              events.append(event)
 
-              events = []
-              async for event in self.agent._run_async_impl(self.mock_context):
-                events.append(event)
-
-              assert len(events) == 1
-              assert "A2A request failed" in events[0].error_message
+            assert len(events) == 1
+            assert "A2A request failed" in events[0].error_message
 
   @pytest.mark.asyncio
   async def test_run_live_impl_not_implemented(self):
@@ -2423,22 +2484,34 @@ class TestRemoteA2aAgentExecution:
         with patch.object(
             agent, "_construct_message_parts_from_session"
         ) as mock_construct:
-          # Create proper A2A part mocks
-          from a2a.client import Client as A2AClient
-          from a2a.types import TextPart
-
-          mock_a2a_part = Mock(spec=TextPart)
+          # Use a real A2A text part so production builds a real
+          # A2A message that the 1.x send_message adapter can
+          # serialize (it CopyFrom()s the message into a proto).
+          mock_a2a_part = _compat.make_text_part("test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
           )  # Tuple with parts and context_id
 
-          # Mock A2A client
+          # Mock A2A client. The raw stream item is built
+          # version-correctly (a real ``StreamResponse`` on 1.x, a
+          # bare ``Message`` on 0.3.x) so production's
+          # the stream normalizer handles it; the dispatch itself
+          # is mocked via ``_handle_a2a_response`` below.
           mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
-          mock_response = Mock(metadata={})
+          mock_response = _make_stream_message(
+              A2AMessage(
+                  message_id="m1",
+                  role=_compat.ROLE_USER,
+                  parts=[mock_a2a_part],
+              )
+          )
           mock_send_message = AsyncMock()
           mock_send_message.__aiter__.return_value = [mock_response]
           mock_a2a_client.send_message.return_value = mock_send_message
+          # Use the locally-created ``agent`` (the one with the
+          # meta_provider and the patched _create/_construct), not
+          # ``self.agent``.
           agent._a2a_client = mock_a2a_client
 
           mock_event = Event(
@@ -2446,10 +2519,10 @@ class TestRemoteA2aAgentExecution:
               invocation_id=self.mock_context.invocation_id,
               branch=self.mock_context.branch,
           )
+
           with patch.object(agent, "_handle_a2a_response") as mock_handle:
             mock_handle.return_value = mock_event
 
-            # Mock the logging functions to avoid iteration issues
             with patch(
                 "google.adk.agents.remote_a2a_agent.build_a2a_request_log"
             ) as mock_req_log:
@@ -2459,34 +2532,24 @@ class TestRemoteA2aAgentExecution:
                 mock_req_log.return_value = "Mock request log"
                 mock_resp_log.return_value = "Mock response log"
 
-                # Mock the A2AMessage constructor
                 with patch(
-                    "google.adk.agents.remote_a2a_agent.A2AMessage"
-                ) as mock_message_class:
-                  mock_message = Mock(spec=A2AMessage)
-                  mock_message_class.return_value = mock_message
-
-                  # Add model_dump to mock_response for metadata
-                  mock_response.model_dump.return_value = {"test": "response"}
-
-                  # Execute
+                    "google.adk.a2a._compat.a2a_to_dict",
+                    return_value={"k": "v"},
+                ):
                   events = []
                   async for event in agent._run_async_impl(self.mock_context):
                     events.append(event)
 
-                  assert len(events) == 1
-                  mock_meta_provider.assert_called_once_with(
-                      self.mock_context, mock_message
-                  )
-                  mock_a2a_client.send_message.assert_called_once_with(
-                      request=mock_message,
-                      request_metadata=request_metadata,
-                      context=ClientCallContext(state=self.mock_session.state),
-                  )
+                assert len(events) == 1
+                assert events[0] == mock_event
+                assert (
+                    A2A_METADATA_PREFIX + "request"
+                    in mock_event.custom_metadata
+                )
 
 
 class TestRemoteA2aAgentExecutionFromFactory:
-  """Test agent execution functionality."""
+  """Test agent execution functionality (factory-constructed client)."""
 
   def setup_method(self):
     """Setup test fixtures."""
@@ -2560,19 +2623,26 @@ class TestRemoteA2aAgentExecutionFromFactory:
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
-          # Create proper A2A part mocks
-          from a2a.client import Client as A2AClient
-          from a2a.types import TextPart
-
-          mock_a2a_part = Mock(spec=TextPart)
+          # Use a real A2A text part so production builds a real
+          # A2A message that the 1.x send_message adapter can
+          # serialize.
+          mock_a2a_part = _compat.make_text_part("test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
           )  # Tuple with parts and context_id
 
-          # Mock A2A client
+          # Build the raw stream item version-correctly (real
+          # StreamResponse on 1.x, bare Message on 0.3.x) so
+          # the stream normalizer handles it; the dispatch is mocked.
           mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
-          mock_response = Mock(metadata={})
+          mock_response = _make_stream_message(
+              A2AMessage(
+                  message_id="m1",
+                  role=_compat.ROLE_USER,
+                  parts=[mock_a2a_part],
+              )
+          )
           mock_send_message = AsyncMock()
           mock_send_message.__aiter__.return_value = [mock_response]
           mock_a2a_client.send_message.return_value = mock_send_message
@@ -2587,7 +2657,6 @@ class TestRemoteA2aAgentExecutionFromFactory:
           with patch.object(self.agent, "_handle_a2a_response") as mock_handle:
             mock_handle.return_value = mock_event
 
-            # Mock the logging functions to avoid iteration issues
             with patch(
                 "google.adk.agents.remote_a2a_agent.build_a2a_request_log"
             ) as mock_req_log:
@@ -2597,31 +2666,22 @@ class TestRemoteA2aAgentExecutionFromFactory:
                 mock_req_log.return_value = "Mock request log"
                 mock_resp_log.return_value = "Mock response log"
 
-                # Mock the A2AMessage constructor
                 with patch(
-                    "google.adk.agents.remote_a2a_agent.A2AMessage"
-                ) as mock_message_class:
-                  mock_message = Mock(spec=A2AMessage)
-                  mock_message_class.return_value = mock_message
-
-                  # Add model_dump to mock_response for metadata
-                  mock_response.root.model_dump.return_value = {
-                      "test": "response"
-                  }
-
-                  # Execute
+                    "google.adk.a2a._compat.a2a_to_dict",
+                    return_value={"k": "v"},
+                ):
                   events = []
                   async for event in self.agent._run_async_impl(
                       self.mock_context
                   ):
                     events.append(event)
 
-                  assert len(events) == 1
-                  assert events[0] == mock_event
-                  assert (
-                      A2A_METADATA_PREFIX + "request"
-                      in mock_event.custom_metadata
-                  )
+                assert len(events) == 1
+                assert events[0] == mock_event
+                assert (
+                    A2A_METADATA_PREFIX + "request"
+                    in mock_event.custom_metadata
+                )
 
   @pytest.mark.asyncio
   async def test_run_async_impl_a2a_client_error(self):
@@ -2635,10 +2695,9 @@ class TestRemoteA2aAgentExecutionFromFactory:
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
-          # Create proper A2A part mocks
-          from a2a.types import TextPart
-
-          mock_a2a_part = Mock(spec=TextPart)
+          # Return a real A2A part so the request Message builds and can
+          # be serialized in the error path on both SDK versions.
+          mock_a2a_part = _compat.make_text_part("test")
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
@@ -2655,19 +2714,12 @@ class TestRemoteA2aAgentExecutionFromFactory:
           ) as mock_req_log:
             mock_req_log.return_value = "Mock request log"
 
-            # Mock the A2AMessage constructor
-            with patch(
-                "google.adk.agents.remote_a2a_agent.A2AMessage"
-            ) as mock_message_class:
-              mock_message = Mock(spec=A2AMessage)
-              mock_message_class.return_value = mock_message
+            events = []
+            async for event in self.agent._run_async_impl(self.mock_context):
+              events.append(event)
 
-              events = []
-              async for event in self.agent._run_async_impl(self.mock_context):
-                events.append(event)
-
-              assert len(events) == 1
-              assert "A2A request failed" in events[0].error_message
+            assert len(events) == 1
+            assert "A2A request failed" in events[0].error_message
 
   @pytest.mark.asyncio
   async def test_run_live_impl_not_implemented(self):
@@ -2777,10 +2829,12 @@ class TestRemoteA2aAgentIntegration:
 
     agent = RemoteA2aAgent(name="test_agent", agent_card=agent_card)
 
-    # Mock session with text event
-    mock_part = Mock()
-    mock_part.text = "Hello world"
-    mock_part.part_metadata = None
+    # Use a real genai Part for the session content. The instance's
+    # part converter is bound at construction to the real
+    # convert_genai_part_to_a2a_part (the module-level patch below does
+    # not rebind it), so a real Part is needed to produce a serializable
+    # A2A part on both SDK versions.
+    mock_part = genai_types.Part.from_text(text="Hello world")
 
     mock_content = Mock()
     mock_content.parts = [mock_part]
@@ -2807,9 +2861,9 @@ class TestRemoteA2aAgentIntegration:
       with patch(
           "google.adk.agents.remote_a2a_agent.convert_genai_part_to_a2a_part"
       ) as mock_convert_part:
-        from a2a.types import TextPart
-
-        mock_a2a_part = Mock(spec=TextPart)
+        # Return a real A2A text part so production builds a real
+        # A2A message that the 1.x send_message adapter can serialize.
+        mock_a2a_part = _compat.make_text_part("test")
         mock_convert_part.return_value = mock_a2a_part
 
         with patch("httpx.AsyncClient") as mock_httpx_client_class:
@@ -2817,10 +2871,17 @@ class TestRemoteA2aAgentIntegration:
           mock_httpx_client_class.return_value = mock_httpx_client
 
           with patch.object(agent, "_a2a_client") as mock_a2a_client:
-            mock_a2a_message = create_autospec(spec=A2AMessage, instance=True)
-            mock_a2a_message.context_id = "context-123"
-            mock_a2a_message.metadata = {}
-            mock_response = mock_a2a_message
+            # Build a real message (wrapped in a StreamResponse on
+            # 1.x) so production's stream normalizer /
+            # dispatch treat it as a message; the conversion itself
+            # is mocked below.
+            mock_a2a_message = A2AMessage(
+                message_id="m1",
+                role=_compat.ROLE_USER,
+                parts=[mock_a2a_part],
+                context_id="context-123",
+            )
+            mock_response = _make_stream_message(mock_a2a_message)
 
             mock_send_message = AsyncMock()
             mock_send_message.__aiter__.return_value = [mock_response]
@@ -2846,13 +2907,17 @@ class TestRemoteA2aAgentIntegration:
                   mock_req_log.return_value = "Mock request log"
                   mock_resp_log.return_value = "Mock response log"
 
-                  # Add model_dump to mock_response for metadata
-                  mock_response.model_dump.return_value = {"test": "response"}
-
-                  # Execute
-                  events = []
-                  async for event in agent._run_async_impl(mock_context):
-                    events.append(event)
+                  # Patch the production serializer so metadata
+                  # stamping does not run MessageToDict on the
+                  # mock response (which crashes on 1.x).
+                  with patch(
+                      "google.adk.a2a._compat.a2a_to_dict",
+                      return_value={"k": "v"},
+                  ):
+                    # Execute
+                    events = []
+                    async for event in agent._run_async_impl(mock_context):
+                      events.append(event)
 
                   assert len(events) == 1
                   assert events[0] == mock_result_event
@@ -2875,10 +2940,12 @@ class TestRemoteA2aAgentIntegration:
         a2a_client_factory=ClientFactory(config=ClientConfig()),
     )
 
-    # Mock session with text event
-    mock_part = Mock()
-    mock_part.text = "Hello world"
-    mock_part.part_metadata = {"test": "part_metadata"}
+    # Use a real genai Part for the session content. The instance's
+    # part converter is bound at construction to the real
+    # convert_genai_part_to_a2a_part (the module-level patch below does
+    # not rebind it), so a real Part is needed to produce a serializable
+    # A2A part on both SDK versions.
+    mock_part = genai_types.Part.from_text(text="Hello world")
 
     mock_content = Mock()
     mock_content.parts = [mock_part]
@@ -2905,9 +2972,9 @@ class TestRemoteA2aAgentIntegration:
       with patch(
           "google.adk.agents.remote_a2a_agent.convert_genai_part_to_a2a_part"
       ) as mock_convert_part:
-        from a2a.types import TextPart
-
-        mock_a2a_part = Mock(spec=TextPart)
+        # Return a real A2A text part so production builds a real
+        # A2A message that the 1.x send_message adapter can serialize.
+        mock_a2a_part = _compat.make_text_part("test")
         mock_convert_part.return_value = mock_a2a_part
 
         with patch("httpx.AsyncClient") as mock_httpx_client_class:
@@ -2915,10 +2982,17 @@ class TestRemoteA2aAgentIntegration:
           mock_httpx_client_class.return_value = mock_httpx_client
 
           with patch.object(agent, "_a2a_client") as mock_a2a_client:
-            mock_a2a_message = create_autospec(spec=A2AMessage, instance=True)
-            mock_a2a_message.context_id = "context-123"
-            mock_a2a_message.metadata = {}
-            mock_response = mock_a2a_message
+            # Build a real message (wrapped in a StreamResponse on
+            # 1.x) so production's stream normalizer /
+            # dispatch treat it as a message; the conversion itself
+            # is mocked below.
+            mock_a2a_message = A2AMessage(
+                message_id="m1",
+                role=_compat.ROLE_USER,
+                parts=[mock_a2a_part],
+                context_id="context-123",
+            )
+            mock_response = _make_stream_message(mock_a2a_message)
 
             mock_send_message = AsyncMock()
             mock_send_message.__aiter__.return_value = [mock_response]
@@ -2944,13 +3018,17 @@ class TestRemoteA2aAgentIntegration:
                   mock_req_log.return_value = "Mock request log"
                   mock_resp_log.return_value = "Mock response log"
 
-                  # Add model_dump to mock_response for metadata
-                  mock_response.model_dump.return_value = {"test": "response"}
-
-                  # Execute
-                  events = []
-                  async for event in agent._run_async_impl(mock_context):
-                    events.append(event)
+                  # Patch the production serializer so metadata
+                  # stamping does not run MessageToDict on the
+                  # mock response (which crashes on 1.x).
+                  with patch(
+                      "google.adk.a2a._compat.a2a_to_dict",
+                      return_value={"k": "v"},
+                  ):
+                    # Execute
+                    events = []
+                    async for event in agent._run_async_impl(mock_context):
+                      events.append(event)
 
                   assert len(events) == 1
                   assert events[0] == mock_result_event
@@ -3002,7 +3080,9 @@ class TestRemoteA2aAgentInterceptors:
         return_value=(
             new_request,
             ParametersConfig(
-                client_call_context=ClientCallContext(state={"updated": "true"})
+                client_call_context=_compat.ClientCallContext(
+                    state={"updated": "true"}
+                )
             ),
         )
     )
@@ -3027,7 +3107,9 @@ class TestRemoteA2aAgentInterceptors:
         return_value=(
             event,
             ParametersConfig(
-                client_call_context=ClientCallContext(state={"updated": "true"})
+                client_call_context=_compat.ClientCallContext(
+                    state={"updated": "true"}
+                )
             ),
         )
     )

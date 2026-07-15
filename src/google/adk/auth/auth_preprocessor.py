@@ -34,7 +34,7 @@ from .auth_tool import AuthToolArguments
 # Prefix used by toolset auth credential IDs.
 # Auth requests with this prefix are for toolset authentication (before tool
 # listing) and don't require resuming a function call.
-TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
+TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = "_adk_toolset_auth_"
 
 
 async def _store_auth_and_collect_resume_targets(
@@ -132,7 +132,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = invocation_context.agent
-    if not hasattr(agent, 'canonical_tools'):
+    if agent is None or not hasattr(agent, "canonical_tools"):
       return
     events = invocation_context._get_events(current_branch=True)
     if not events:
@@ -147,7 +147,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
         last_event_with_content = event
         break
 
-    if not last_event_with_content or last_event_with_content.author != 'user':
+    if not last_event_with_content or last_event_with_content.author != "user":
       return
 
     responses = last_event_with_content.get_function_responses()

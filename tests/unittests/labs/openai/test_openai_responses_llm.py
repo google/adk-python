@@ -672,7 +672,9 @@ def test_response_parsing_accepts_openai_sdk_response_types():
       status='completed',
       usage=ResponseUsage(
           input_tokens=3,
-          input_tokens_details=InputTokensDetails(cached_tokens=1),
+          input_tokens_details=InputTokensDetails(
+              cached_tokens=1, cache_write_tokens=0
+          ),
           output_tokens=5,
           output_tokens_details=OutputTokensDetails(reasoning_tokens=2),
           total_tokens=8,

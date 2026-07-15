@@ -51,8 +51,8 @@ class MultimodalToolResultsPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
     """Saves parts returned by the tool in ToolContext.
 
     Later these are passed to LLM's context as-is.

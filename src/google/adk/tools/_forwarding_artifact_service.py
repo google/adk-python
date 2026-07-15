@@ -119,7 +119,17 @@ class ForwardingArtifactService(BaseArtifactService):
       filename: str,
       session_id: Optional[str] = None,
   ) -> list[ArtifactVersion]:
-    raise NotImplementedError("list_artifact_versions is not implemented yet.")
+    del app_name, user_id, session_id
+    if self._invocation_context.artifact_service is None:
+      raise ValueError("Artifact service is not initialized.")
+    return (
+        await self._invocation_context.artifact_service.list_artifact_versions(
+            app_name=self._invocation_context.app_name,
+            user_id=self._invocation_context.user_id,
+            session_id=self._invocation_context.session.id,
+            filename=filename,
+        )
+    )
 
   @override
   async def get_artifact_version(
@@ -131,4 +141,13 @@ class ForwardingArtifactService(BaseArtifactService):
       session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[ArtifactVersion]:
-    raise NotImplementedError("get_artifact_version is not implemented yet.")
+    del app_name, user_id, session_id
+    if self._invocation_context.artifact_service is None:
+      raise ValueError("Artifact service is not initialized.")
+    return await self._invocation_context.artifact_service.get_artifact_version(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        session_id=self._invocation_context.session.id,
+        filename=filename,
+        version=version,
+    )

@@ -79,7 +79,7 @@ class GoogleApiToOpenApiConverter:
 
       if self._use_client_cert and self._mtls_certs:
         cert_path, key_path, passphrase = self._mtls_certs.get_certs()
-        if cert_path and key_path and passphrase:
+        if cert_path and key_path:
           # Set default HTTP timeout similar to googleapiclient.http.build_http()
           http_timeout = socket.getdefaulttimeout() or 60
           http_client = httplib2.Http(timeout=http_timeout)

@@ -678,6 +678,8 @@ class ApiServer:
       runner_dict: A dict of instantiated runners for each app.
   """
 
+  _allow_special_agents: bool = False
+
   def __init__(
       self,
       *,
@@ -711,7 +713,7 @@ class ApiServer:
     # Internal properties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
-    self.runner_dict = {}
+    self.runner_dict: dict[str, Runner] = {}
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
@@ -720,18 +722,30 @@ class ApiServer:
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
+    if app_name.startswith("__") and not self._allow_special_agents:
+      raise HTTPException(
+          status_code=403,
+          detail=(
+              "Access to internal special agents is disabled in API server"
+              " mode."
+          ),
+      )
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
       runner = self.runner_dict.pop(app_name, None)
-      await cleanup.close_runners(list([runner]))
+      if runner is not None:
+        await cleanup.close_runners([runner])
 
     # Return cached runner if exists
     if app_name in self.runner_dict:
       return self.runner_dict[app_name]
 
     # Create new runner
-    agent_or_app = self.agent_loader.load_agent(app_name)
+    try:
+      agent_or_app = self.agent_loader.load_agent(app_name)
+    except ValueError as ve:
+      raise HTTPException(status_code=404, detail=str(ve)) from ve
 
     if self.default_llm_model:
       from .cli import _override_default_llm_model
@@ -982,8 +996,8 @@ class ApiServer:
     Returns:
       A FastAPI app instance.
     """
-    trace_dict = {}
-    session_trace_dict = {}
+    trace_dict: dict[str, Any] = {}
+    session_trace_dict: dict[str, Any] = {}
     self._trace_dict = trace_dict
     self._session_trace_dict = session_trace_dict
 
@@ -1143,7 +1157,18 @@ class ApiServer:
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      if app_name.startswith("__") and not self._allow_special_agents:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Access to internal special agents is disabled in API server"
+                " mode."
+            ),
+        )
+      try:
+        agent_or_app = self.agent_loader.load_agent(app_name)
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
         return AppInfo(
@@ -1705,6 +1730,7 @@ class ApiServer:
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
         save_live_blob: bool = Query(default=False),
+        explicit_vad_signal: bool | None = Query(default=None),
     ) -> None:
       resolved_app_name = app_name or self.default_app_name
       if not resolved_app_name:
@@ -1761,6 +1787,7 @@ class ApiServer:
                 else None
             ),
             save_live_blob=save_live_blob,
+            explicit_vad_signal=explicit_vad_signal,
         )
         async with Aclosing(
             runner.run_live(

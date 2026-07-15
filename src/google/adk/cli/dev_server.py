@@ -159,6 +159,8 @@ class DevServer(ApiServer):
   endpoints for evaluation, debugging, and developer UI features.
   """
 
+  _allow_special_agents: bool = True
+
   def _get_agent_dir(self, app_name: str) -> str:
     """Resolves the agent directory and validates the app name to prevent path traversal."""
     if not self.agents_dir:
@@ -634,7 +636,7 @@ class DevServer(ApiServer):
       import subprocess
       import sys
 
-      queue = asyncio.Queue()
+      queue: asyncio.Queue[str | None] = asyncio.Queue()
 
       async def run_pytest_subprocess():
         cmd_args = [

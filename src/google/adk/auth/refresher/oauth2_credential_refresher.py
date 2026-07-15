@@ -63,10 +63,12 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
       if not AUTHLIB_AVAILABLE:
         return False
 
-      return OAuth2Token({
-          "expires_at": auth_credential.oauth2.expires_at,
-          "expires_in": auth_credential.oauth2.expires_in,
-      }).is_expired()
+      return bool(
+          OAuth2Token({
+              "expires_at": auth_credential.oauth2.expires_at,
+              "expires_in": auth_credential.oauth2.expires_in,
+          }).is_expired()
+      )
 
     return False
 

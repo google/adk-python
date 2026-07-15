@@ -444,7 +444,9 @@ def _validate_single_config(
         config_dict, project_folder_name, path
     )
     warnings.extend(project_scope_result.get("warnings", []))
-    project_scope_error = project_scope_result.get("error")
+    project_scope_error: dict[str, Any] | None = project_scope_result.get(
+        "error"
+    )
     if project_scope_error is not None:
       return project_scope_error
 

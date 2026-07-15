@@ -137,6 +137,11 @@ class NestedAgentLoader(AgentLoader):
   def _validate_agent_name(self, full_agent_name: str) -> None:
     """Validate agent name allowing dot-separated paths."""
     if full_agent_name.startswith("__"):
+      if not self._allow_special_agents:
+        raise PermissionError(
+            f"Loading special internal agent {full_agent_name!r} is disabled in"
+            " this loader configuration."
+        )
       agent_relative_path = full_agent_name[2:]
       check_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
     else:
@@ -291,7 +296,7 @@ class NestedAgentLoader(AgentLoader):
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
   @override
-  def remove_agent_from_cache(self, agent_name: str):
+  def remove_agent_from_cache(self, agent_name: str) -> None:
     agent_dot_path = agent_name.replace("/", ".")
     keys_to_delete = [
         module_name

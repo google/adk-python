@@ -29,6 +29,7 @@ import warnings
 
 from google.adk.models.lite_llm import _aggregate_streaming_thought_parts
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
+from google.adk.models.lite_llm import _BraceDepthTracker
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
@@ -6080,3 +6081,258 @@ async def test_generate_content_async_passes_http_options_extra_body(
   assert "extra_body" in kwargs
   assert kwargs["extra_body"]["custom_field"] == "custom_value"
   assert kwargs["extra_body"]["priority"] == "high"
+
+
+def _split_into_chunks(text, sizes):
+  pieces = []
+  pos = 0
+  for size in sizes:
+    pieces.append(text[pos : pos + size])
+    pos += size
+  if pos < len(text):
+    pieces.append(text[pos:])
+  return pieces
+
+
+def test_brace_depth_tracker_simple_object():
+  tracker = _BraceDepthTracker()
+  assert tracker.feed('{"a": 1}') is True
+
+
+def test_brace_depth_tracker_empty_object():
+  tracker = _BraceDepthTracker()
+  assert tracker.feed("{}") is True
+
+
+def test_brace_depth_tracker_only_opens():
+  tracker = _BraceDepthTracker()
+  assert tracker.feed('{"a": ') is False
+
+
+def test_brace_depth_tracker_completes_after_more_fragments():
+  tracker = _BraceDepthTracker()
+  assert tracker.feed('{"a": ') is False
+  assert tracker.feed('"b"') is False
+  assert tracker.feed("}") is True
+
+
+def test_brace_depth_tracker_nested_objects():
+  tracker = _BraceDepthTracker()
+  assert tracker.feed('{"a": {"b": {"c": 1}}}') is True
+
+
+def test_brace_depth_tracker_nested_split_across_fragments():
+  tracker = _BraceDepthTracker()
+  fragments = _split_into_chunks(
+      '{"a": {"b": {"c": 1}, "d": [1, 2, 3]}, "e": "f"}', [3, 5, 4, 7, 9, 2, 1]
+  )
+  closes = [tracker.feed(f) for f in fragments]
+  assert sum(closes) == 1
+  assert closes[-1] is True
+
+
+def test_brace_depth_tracker_string_with_braces_ignored():
+  tracker = _BraceDepthTracker()
+  # Braces inside strings must not affect depth.
+  assert tracker.feed('{"x": "{}{{}}"}') is True
+
+
+def test_brace_depth_tracker_string_with_braces_split_across_fragments():
+  tracker = _BraceDepthTracker()
+  fragments = ['{"x": "', "abc{def", "}ghi", '"}']
+  closes = [tracker.feed(f) for f in fragments]
+  assert closes == [False, False, False, True]
+
+
+def test_brace_depth_tracker_escaped_quote_in_string():
+  tracker = _BraceDepthTracker()
+  # Escaped quote should not end the string; the trailing } closes the obj.
+  assert tracker.feed(r'{"x": "a\"b}c"}') is True
+
+
+def test_brace_depth_tracker_escaped_backslash_then_quote_ends_string():
+  tracker = _BraceDepthTracker()
+  # \\ is an escaped backslash; the next " ends the string. Then } closes.
+  assert tracker.feed(r'{"x": "a\\"}') is True
+
+
+def test_brace_depth_tracker_escape_split_across_fragments():
+  tracker = _BraceDepthTracker()
+  # Backslash arrives in one fragment, the escaped quote in the next.
+  fragments = ['{"x": "a', "\\", '"', 'b"}']
+  closes = [tracker.feed(f) for f in fragments]
+  assert closes == [False, False, False, True]
+
+
+def test_brace_depth_tracker_two_consecutive_objects():
+  tracker = _BraceDepthTracker()
+  assert tracker.feed('{"a": 1}{"b": 2}') is True
+
+
+def test_brace_depth_tracker_one_char_at_a_time():
+  tracker = _BraceDepthTracker()
+  text = '{"key": {"nested": "v{}al"}, "n": 42}'
+  closes = [tracker.feed(ch) for ch in text]
+  assert sum(closes) == 1
+  assert closes[-1] is True
+
+
+def test_brace_depth_tracker_leading_whitespace_ignored():
+  tracker = _BraceDepthTracker()
+  assert tracker.feed('   \n  {"a": 1}') is True
+
+
+def _function_chunks_for_args(arg_fragments):
+  return [
+      FunctionChunk(
+          id="call_xyz" if i == 0 else None,
+          name="my_func" if i == 0 else None,
+          args=fragment,
+          index=0,
+      )
+      for i, fragment in enumerate(arg_fragments)
+  ]
+
+
+def _stream_chunks_from_function_chunks(function_chunks):
+  stream = []
+  for chunk in function_chunks:
+    delta_kwargs = {"role": "assistant"}
+    if chunk.args is not None:
+      delta_kwargs["tool_calls"] = [
+          ChatCompletionDeltaToolCall(
+              type="function",
+              id=chunk.id,
+              function=Function(name=chunk.name, arguments=chunk.args),
+              index=chunk.index,
+          )
+      ]
+    stream.append(
+        ModelResponseStream(
+            choices=[
+                StreamingChoices(
+                    finish_reason=None, delta=Delta(**delta_kwargs)
+                )
+            ]
+        )
+    )
+  stream.append(
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+      )
+  )
+  return stream
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_args_assembled_from_many_fragments(
+    mock_completion, lite_llm_instance
+):
+  full_args = (
+      '{"city": "San Francisco", "details": {"radius": 5, "tags": ["a{}",'
+      ' "b\\"c"]}}'
+  )
+  fragments = _split_into_chunks(full_args, [4, 6, 1, 8, 3, 11, 2, 9, 7, 5, 1])
+  mock_completion.return_value = iter(
+      _stream_chunks_from_function_chunks(_function_chunks_for_args(fragments))
+  )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  function_call = responses[0].content.parts[0].function_call
+  assert function_call.name == "my_func"
+  assert function_call.id == "call_xyz"
+  assert function_call.args == json.loads(full_args)
+
+
+async def _count_full_buffer_loads(
+    lite_llm_instance, mock_completion, full_args, fragments
+):
+  mock_completion.return_value = iter(
+      _stream_chunks_from_function_chunks(_function_chunks_for_args(fragments))
+  )
+  real_loads = json.loads
+  with patch(
+      "google.adk.models.lite_llm.json.loads", side_effect=real_loads
+  ) as patched_loads:
+    responses = [
+        r
+        async for r in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+        )
+    ]
+  full_buffer_calls = [
+      c
+      for c in patched_loads.call_args_list
+      if c.args and c.args[0] == full_args
+  ]
+  return responses, len(full_buffer_calls)
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_json_loads_count_independent_of_fragment_count(
+    mock_completion, lite_llm_instance
+):
+  # The previous implementation called json.loads(buffer) after every
+  # fragment, so the count grew with the fragment count (O(N) calls and
+  # O(N^2) total parse cost). The fix makes the count constant.
+  full_args = '{"a": 1, "b": {"c": 2}}'
+  one_chunk = [full_args]
+  one_char_at_a_time = _split_into_chunks(full_args, [1] * len(full_args))
+
+  _, count_one_chunk = await _count_full_buffer_loads(
+      lite_llm_instance, mock_completion, full_args, one_chunk
+  )
+  _, count_many_chunks = await _count_full_buffer_loads(
+      lite_llm_instance, mock_completion, full_args, one_char_at_a_time
+  )
+  assert count_one_chunk == count_many_chunks
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
+    mock_completion, lite_llm_instance
+):
+  # The closing brace inside the string must not advance fallback_index.
+  # If it did, the second tool call would be merged into a single bucket
+  # and the assembled args would be invalid.
+  full_args_a = '{"text": "a{b}c"}'
+  full_args_b = '{"x": 1}'
+  fragments_a = _split_into_chunks(full_args_a, [1] * len(full_args_a))
+  fragments_b = _split_into_chunks(full_args_b, [1] * len(full_args_b))
+
+  function_chunks = _function_chunks_for_args(fragments_a)
+  # Second tool call: provider emits no index, relies on fallback_index advance.
+  for i, fragment in enumerate(fragments_b):
+    function_chunks.append(
+        FunctionChunk(
+            id="call_2" if i == 0 else None,
+            name="other_func" if i == 0 else None,
+            args=fragment,
+            index=0,
+        )
+    )
+
+  mock_completion.return_value = iter(
+      _stream_chunks_from_function_chunks(function_chunks)
+  )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  parts = responses[0].content.parts
+  assert len(parts) == 2
+  args_by_name = {p.function_call.name: p.function_call.args for p in parts}
+  assert args_by_name["my_func"] == json.loads(full_args_a)
+  assert args_by_name["other_func"] == json.loads(full_args_b)

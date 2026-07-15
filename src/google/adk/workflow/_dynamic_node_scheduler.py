@@ -96,6 +96,9 @@ class DynamicNodeState:
   completes.
   """
 
+  replay_manager: ReplayManager = field(default_factory=ReplayManager)
+  """The replay manager for this loop state, containing event indexes."""
+
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
     return [
@@ -120,7 +123,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
 
   def __init__(self, *, state: DynamicNodeState) -> None:
     self._state = state
-    self._replay_manager = ReplayManager()
+    self._replay_manager = state.replay_manager
 
   async def __call__(
       self,
@@ -170,10 +173,9 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       try:
         node_input = node._validate_input_data(node_input)
       except ValidationError as e:
-        raise ValueError(
-            'Runtime schema validation failed for dynamic node'
-            f" '{node_name or node.name}'. Input does not match"
-            f' input_schema: {e}'
+        raise ValidationError.from_exception_data(
+            title=f"dynamic node '{node_name or node.name}'",
+            line_errors=e.errors(),  # type: ignore[arg-type]
         ) from e
 
     logger.debug('node %s schedule start.', node_path)
@@ -328,8 +330,11 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
     logger.debug('node %s rehydrate start.', node_path)
     ic = ctx._invocation_context  # pylint: disable=protected-access
 
+    filtered_events = self._replay_manager.get_events_for_rehydration(
+        ctx, node_path
+    )
     results = _reconstruct_node_states(
-        events=ic.session.events,
+        events=filtered_events,
         base_path=node_path,
         group_by_direct_child=False,
         invocation_id=ic.invocation_id,

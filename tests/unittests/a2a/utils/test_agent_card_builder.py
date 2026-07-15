@@ -20,6 +20,7 @@ from a2a.types import AgentCard
 from a2a.types import AgentProvider
 from a2a.types import AgentSkill
 from a2a.types import SecurityScheme
+from google.adk.a2a import _compat
 from google.adk.a2a.utils.agent_card_builder import _build_agent_description
 from google.adk.a2a.utils.agent_card_builder import _build_llm_agent_description_with_instructions
 from google.adk.a2a.utils.agent_card_builder import _build_loop_description
@@ -151,10 +152,13 @@ class TestAgentCardBuilder:
     mock_agent.name = "test_agent"
     mock_agent.description = "Test agent description"
 
-    mock_primary_skill = Mock(spec=AgentSkill)
-    mock_sub_skill = Mock(spec=AgentSkill)
-    mock_build_primary_skills.return_value = [mock_primary_skill]
-    mock_build_sub_skills.return_value = [mock_sub_skill]
+    # Use real AgentSkill protos so the card builder works on both SDK versions.
+    primary_skill = AgentSkill(
+        id="primary", name="primary", description="d", tags=["t"]
+    )
+    sub_skill = AgentSkill(id="sub", name="sub", description="d", tags=["t"])
+    mock_build_primary_skills.return_value = [primary_skill]
+    mock_build_sub_skills.return_value = [sub_skill]
 
     builder = AgentCardBuilder(agent=mock_agent)
 
@@ -165,15 +169,23 @@ class TestAgentCardBuilder:
     assert isinstance(result, AgentCard)
     assert result.name == "test_agent"
     assert result.description == "Test agent description"
-    assert result.documentation_url is None
-    assert result.url == "http://localhost:80/a2a"
+    assert not result.documentation_url  # None on 0.3, "" on 1.x
+    assert _compat.agent_card_url(result) == "http://localhost:80/a2a"
     assert result.version == "0.0.1"
-    assert result.skills == [mock_primary_skill, mock_sub_skill]
+    assert list(result.skills) == [primary_skill, sub_skill]
     assert result.default_input_modes == ["text/plain"]
     assert result.default_output_modes == ["text/plain"]
-    assert result.supports_authenticated_extended_card is False
-    assert result.provider is None
-    assert result.security_schemes is None
+    # supports_authenticated_extended_card only exists in 0.3.x.
+    if not _compat.IS_A2A_V1:
+      assert result.supports_authenticated_extended_card is False
+    # Proto: unset embedded message returns empty message, not None
+    if _compat.IS_A2A_V1:
+      assert not result.provider.url and not result.provider.organization
+    else:
+      assert result.provider is None
+    # Proto: security_schemes field behavior differs on 1.x
+    if not _compat.IS_A2A_V1:
+      assert result.security_schemes is None
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
@@ -186,21 +198,28 @@ class TestAgentCardBuilder:
     mock_agent.name = "test_agent"
     mock_agent.description = None  # Should use default description
 
-    mock_primary_skill = Mock(spec=AgentSkill)
-    mock_sub_skill = Mock(spec=AgentSkill)
-    mock_build_primary_skills.return_value = [mock_primary_skill]
-    mock_build_sub_skills.return_value = [mock_sub_skill]
+    primary_skill = AgentSkill(
+        id="primary", name="primary", description="d", tags=["t"]
+    )
+    sub_skill = AgentSkill(id="sub", name="sub", description="d", tags=["t"])
+    mock_build_primary_skills.return_value = [primary_skill]
+    mock_build_sub_skills.return_value = [sub_skill]
 
-    mock_provider = Mock(spec=AgentProvider)
-    mock_security_schemes = {"test": Mock(spec=SecurityScheme)}
+    # Use real (non-Mock) A2A objects so they serialize into the proto card on
+    # 1.x. The 1.x branch now propagates provider/security_schemes (previously
+    # dropped), so a Mock(spec=...) would fail MessageToDict serialization.
+    provider = AgentProvider(
+        organization="ACME", url="https://acme.example.com"
+    )
+    security_schemes = {"test": _compat.make_api_key_scheme(name="X-API-Key")}
 
     builder = AgentCardBuilder(
         agent=mock_agent,
         rpc_url="https://example.com/a2a/",
         doc_url="https://docs.example.com",
-        provider=mock_provider,
+        provider=provider,
         agent_version="2.0.0",
-        security_schemes=mock_security_schemes,
+        security_schemes=security_schemes,
     )
 
     # Act
@@ -209,15 +228,57 @@ class TestAgentCardBuilder:
     # Assert
     assert result.name == "test_agent"
     assert result.description == "An ADK Agent"  # Default description
-    # The source code uses doc_url parameter but AgentCard expects documentation_url
-    # Since the source code doesn't map doc_url to documentation_url, it will be None
-    assert result.documentation_url is None
+    # documentation_url is populated on both SDKs.
+    assert result.documentation_url == "https://docs.example.com"
     assert (
-        result.url == "https://example.com/a2a"
+        _compat.agent_card_url(result) == "https://example.com/a2a"
     )  # Should strip trailing slash
     assert result.version == "2.0.0"
-    assert result.provider == mock_provider
-    assert result.security_schemes == mock_security_schemes
+    # provider / security_schemes now propagate on BOTH versions.
+    assert result.provider.organization == "ACME"
+    assert "test" in result.security_schemes
+
+  @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
+  @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
+  async def test_build_propagates_capabilities_provider_security_schemes(
+      self, mock_build_sub_skills, mock_build_primary_skills
+  ):
+    """capabilities/provider/security_schemes round-trip on both SDKs."""
+    # Regression: the 1.x branch of AgentCardBuilder.build previously
+    # dropped capabilities/provider/security_schemes (only the 0.3.x branch
+    # set them), silently losing caller config on 1.x. Uses real (non-Mock)
+    # A2A objects so they serialize into the proto card on 1.x.
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "test_agent"
+    mock_agent.description = None
+    mock_build_primary_skills.return_value = []
+    mock_build_sub_skills.return_value = []
+
+    capabilities = AgentCapabilities(streaming=True)
+    provider = AgentProvider(
+        organization="ACME", url="https://acme.example.com"
+    )
+    security_schemes = {
+        "api_key": _compat.make_api_key_scheme(name="X-API-Key")
+    }
+
+    builder = AgentCardBuilder(
+        agent=mock_agent,
+        rpc_url="https://example.com/a2a/",
+        capabilities=capabilities,
+        provider=provider,
+        security_schemes=security_schemes,
+    )
+
+    result = await builder.build()
+
+    # Capabilities propagated on both versions.
+    assert result.capabilities.streaming
+    # Provider propagated on both versions.
+    assert result.provider.organization == "ACME"
+    assert result.provider.url == "https://acme.example.com"
+    # Security schemes propagated on both versions.
+    assert "api_key" in result.security_schemes
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")

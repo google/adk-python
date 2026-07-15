@@ -20,6 +20,7 @@ from typing import AsyncGenerator
 from google.genai import types
 
 from ..agents.base_agent import BaseAgent
+from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -386,8 +387,14 @@ async def _run_compaction_for_token_threshold_config(
   if config.token_threshold is None or config.event_retention_size is None:
     return False
 
+  # Drop rewound invocations so the summary covers only live events, consistent
+  # with prompt building and sliding-window compaction (all route through
+  # _apply_rewinds); otherwise rewound content would leak back into future
+  # prompts via the compaction summary.
+  events = _apply_rewinds(session.events)
+
   prompt_token_count = _latest_prompt_token_count(
-      session.events,
+      events,
       current_branch=current_branch,
       agent_name=agent_name,
   )
@@ -395,7 +402,7 @@ async def _run_compaction_for_token_threshold_config(
     return False
 
   events_to_compact = _events_to_compact_for_token_threshold(
-      events=session.events,
+      events=events,
       event_retention_size=config.event_retention_size,
   )
   if not events_to_compact:
@@ -530,7 +537,11 @@ async def _run_compaction_for_sliding_window(
     runner loop) is responsible for appending it to the session, so that
     persistence of this event stays at the runtime's synchronization point.
   """
-  events = session.events
+  # Drop rewound invocations first so the summary covers only live events. This
+  # keeps the compactor consistent with prompt building (the contents processor
+  # also applies rewinds); otherwise rewound content would leak back into future
+  # prompts via the compaction summary.
+  events = _apply_rewinds(session.events)
   if not events:
     return
 

@@ -11,7 +11,7 @@ description: ADK architectural knowledge — graph orchestration, resumption, ex
 - [Runner](references/interfaces/runner.md) — The public interface for executing workflows and agents. Documents entrance methods `run` and `run_async`.
 - [Agent](references/interfaces/agent.md) — Blueprint defining identity, instructions, and tools. Documents that `run` is the preferred entrance method.
 - [BaseAgent](references/interfaces/base-agent.md) — Base class for all agents. Defines the contract for subclassing with `_run_impl` as the primary override point.
-- [Event](references/interfaces/event.md) — Core data structure for state reconstruction and communication. Represents a conversation turn or action.
+- [Event](references/interfaces/event.md) — Core data structure for state reconstruction and communication. Represents a conversation turn, action, and state lifecycle immutability.
 
 ## Key Principles (references/principles/)
 - [API Principles](references/principles/api-principles.md) — stability, backward compatibility, and self-containment. Use when making design choices that affect the public API surface.

@@ -800,3 +800,38 @@ def test_streaming_default_model_when_not_specified(mocker):
   finally:
     # Restore original default
     LlmAgent.set_default_live_model(original_default)
+
+
+def test_streaming_with_explicit_vad_signal():
+  """Test streaming configuration with explicit_vad_signal enabled."""
+  response1 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(
+      root_agent=root_agent, response_modalities=['AUDIO']
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  res_events = runner.run_live(
+      live_request_queue, run_config=RunConfig(explicit_vad_signal=True)
+  )
+
+  assert res_events is not None
+  assert len(mock_model.requests) == 1
+  llm_request_sent_to_mock = mock_model.requests[0]
+
+  assert llm_request_sent_to_mock.live_connect_config is not None
+  assert (
+      llm_request_sent_to_mock.live_connect_config.explicit_vad_signal is True
+  )

@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 from google.adk.utils.content_utils import SKIP_THOUGHT_SIGNATURE_VALIDATOR
+from google.adk.utils.content_utils import to_user_content
 from google.genai import types
+from pydantic import BaseModel
 
 
 def test_skip_thought_signature_validator_wire_value():
@@ -30,3 +32,59 @@ def test_skip_thought_signature_validator_assignable_to_part():
       thought_signature=SKIP_THOUGHT_SIGNATURE_VALIDATOR,
   )
   assert part.thought_signature == SKIP_THOUGHT_SIGNATURE_VALIDATOR
+
+
+def test_to_user_content_str_input_becomes_user_text():
+  content = to_user_content('hello')
+  assert content.role == 'user'
+  assert content.parts[0].text == 'hello'
+
+
+def test_to_user_content_input_is_normalized_to_user_role():
+  original = types.Content(role='model', parts=[types.Part(text='hi')])
+  content = to_user_content(original)
+  assert content.role == 'user'
+  assert content.parts[0].text == 'hi'
+
+
+def test_to_user_content_basemodel_input_is_json():
+  class _M(BaseModel):
+    a: int
+
+  content = to_user_content(_M(a=1))
+  assert content.role == 'user'
+  assert '"a":1' in content.parts[0].text.replace(' ', '')
+
+
+def test_to_user_content_dict_input_is_json():
+  content = to_user_content({'a': 1})
+  assert content.role == 'user'
+  assert content.parts[0].text.replace(' ', '') == '{"a":1}'
+
+
+def test_to_user_content_other_input_is_str():
+  content = to_user_content(42)
+  assert content.role == 'user'
+  assert content.parts[0].text == '42'
+
+
+def test_to_user_content_dict_input_preserves_non_ascii():
+  """Non-ASCII input must reach the LLM as-is, not as \\uXXXX escapes.
+
+  Escaping (json.dumps' default ensure_ascii=True) turns each non-Latin
+  character into a ``\\uXXXX`` sequence, which bloats prompt tokens and
+  degrades model responses for non-English inputs.
+  """
+  content = to_user_content({'query': 'שלום עולם', 'city': '北京'})
+  text = content.parts[0].text
+  assert 'שלום עולם' in text
+  assert '北京' in text
+  assert '\\u' not in text
+
+
+def test_to_user_content_list_input_preserves_non_ascii():
+  content = to_user_content(['שלום', '你好'])
+  text = content.parts[0].text
+  assert 'שלום' in text
+  assert '你好' in text
+  assert '\\u' not in text

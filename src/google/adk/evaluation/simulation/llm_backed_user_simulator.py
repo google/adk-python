@@ -20,6 +20,7 @@ from typing import ClassVar
 from google.genai import types as genai_types
 from pydantic import Field
 from pydantic import field_validator
+from typing_extensions import Literal
 from typing_extensions import override
 
 from ...events.event import Event
@@ -45,6 +46,14 @@ _STOP_SIGNAL = "</finished>"
 
 class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
   """Contains configurations required by an LLM backed user simulator."""
+
+  type: Literal["llm_backed"] = Field(
+      default="llm_backed",
+      description=(
+          "Discriminator tag for this config subclass. See"
+          " `BaseUserSimulatorConfig.type` for the rationale."
+      ),
+  )
 
   model: str = Field(
       default="gemini-2.5-flash",

@@ -124,13 +124,6 @@ async def test_workflow_pause_and_resume_simple(
   assert any('LLM response after tool' in t for t in content_texts)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        'when scheduler preserves originating node_input on resume.'
-    ),
-)
 @pytest.mark.asyncio
 async def test_workflow_pause_and_resume_task_mode(
     request: pytest.FixtureRequest,
@@ -415,13 +408,6 @@ async def test_workflow_pause_and_resume_auth_node(
   assert any('authed with secret_key' in t for t in content_texts)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        'when scheduler preserves originating node_input on resume.'
-    ),
-)
 @pytest.mark.asyncio
 async def test_workflow_pause_and_resume_parent_interruption(
     request: pytest.FixtureRequest,
@@ -885,3 +871,63 @@ async def test_workflow_resume_inputs_multiple_branches(monkeypatch):
   assert 'branch_B' in branches
   assert 'func_A' in names
   assert 'func_B' in names
+
+
+@pytest.mark.asyncio
+async def test_workflow_task_mode_plain_text_resume_auto_routing(
+    request: pytest.FixtureRequest,
+):
+  """Tests that task mode agent can pause for text and resume with text without explicit invocation_id."""
+
+  # LLM behavior:
+  # Round 1: Outputs text asking for info.
+  # Round 2: After user replies with text, calls finish_task with result.
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_text(text='Please provide the secret code:'),
+          types.Part.from_function_call(
+              name='finish_task',
+              args={'result': 'Success with code'},
+          ),
+      ]
+  )
+
+  node_a = LlmAgent(
+      name='my_task_agent',
+      model=mock_model,
+      mode='task',
+  )
+
+  wf = Workflow(
+      name='test_workflow_plain_text_resume',
+      edges=[
+          (START, node_a),
+      ],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # 1. First run: should yield the prompt and pause.
+  events1 = await runner.run_async('start workflow')
+
+  # Verify it yielded the prompt
+  texts1 = [
+      p.text
+      for e in events1
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ]
+  assert 'Please provide the secret code:' in texts1
+
+  # 2. Second run: resume with plain text, NOT passing invocation_id!
+  # It should automatically resolve invocation_id and isolation_scope.
+  events2 = await runner.run_async('my_secret_code_123')
+
+  # Verify completion
+  # The last event should have output set from finish_task args
+  assert any(e.output == {'result': 'Success with code'} for e in events2)

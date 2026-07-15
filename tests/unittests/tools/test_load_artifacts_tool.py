@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import base64
+import io
+import zipfile
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
@@ -108,6 +110,230 @@ async def test_load_artifacts_converts_base64_unsupported_mime_to_text():
   artifact_part = llm_request.contents[-1].parts[1]
   assert artifact_part.inline_data is None
   assert artifact_part.text == csv_bytes.decode('utf-8')
+
+
+@mark.asyncio
+async def test_load_artifacts_converts_csv_octet_stream_to_text():
+  """CSV files streamed as octet-stream are extracted using text fallback."""
+  artifact_name = 'test.csv'
+  csv_bytes = b'col1,col2\n1,2\n'
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=csv_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert artifact_part.text == csv_bytes.decode('utf-8')
+
+
+@mark.asyncio
+async def test_load_artifacts_converts_docx_to_text():
+  """DOCX binary payloads are extracted to raw text."""
+  artifact_name = 'document.docx'
+
+  # Create a minimal valid docx in memory
+  docx_bytes_io = io.BytesIO()
+  with zipfile.ZipFile(docx_bytes_io, 'w') as zf:
+    zf.writestr(
+        'word/document.xml',
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document'
+        b' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:t>Hello'
+        b' DOCX</w:t></w:p></w:body></w:document>',
+    )
+
+  docx_bytes = docx_bytes_io.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=docx_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert artifact_part.text == 'Hello DOCX'
+
+
+@mark.asyncio
+async def test_load_artifacts_converts_docx_octet_stream_inline_file_to_text():
+  """DOCX binary payloads named 'inline-file' with octet-stream are extracted."""
+  artifact_name = 'inline-file'
+
+  # Create a minimal valid docx in memory
+  docx_bytes_io = io.BytesIO()
+  with zipfile.ZipFile(docx_bytes_io, 'w') as zf:
+    zf.writestr(
+        'word/document.xml',
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document'
+        b' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:t>Hello'
+        b' Inline DOCX</w:t></w:p></w:body></w:document>',
+    )
+
+  docx_bytes = docx_bytes_io.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=docx_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert artifact_part.text == 'Hello Inline DOCX'
+
+
+@mark.asyncio
+async def test_load_artifacts_fallback_for_invalid_docx_octet_stream():
+  """Invalid DOCX with octet-stream falls back to binary placeholder."""
+  artifact_name = 'inline-file'
+  invalid_docx_bytes = b'not a zip file'
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=invalid_docx_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert 'Binary artifact' in artifact_part.text
+  assert 'Content cannot be displayed inline' in artifact_part.text
+
+
+@mark.asyncio
+async def test_load_artifacts_converts_docx_with_custom_namespace_prefix_to_text():
+  """DOCX binary payloads with non-standard namespace prefix are extracted."""
+  artifact_name = 'document.docx'
+
+  # Create a minimal valid docx in memory with custom namespace prefix 'ns0'
+  docx_bytes_io = io.BytesIO()
+  with zipfile.ZipFile(docx_bytes_io, 'w') as zf:
+    zf.writestr(
+        'word/document.xml',
+        b'<?xml version="1.0" encoding="UTF-8"'
+        b' standalone="yes"?>\n<ns0:document'
+        b' xmlns:ns0="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><ns0:body><ns0:p><ns0:t>Hello'
+        b' Custom Prefix</ns0:t></ns0:p></ns0:body></ns0:document>',
+    )
+
+  docx_bytes = docx_bytes_io.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=docx_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert artifact_part.text == 'Hello Custom Prefix'
 
 
 @mark.asyncio

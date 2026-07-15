@@ -242,6 +242,9 @@ class RunConfig(BaseModel):
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
   """Realtime input config for live agents with audio input from user."""
 
+  explicit_vad_signal: Optional[bool] = None
+  """Whether to enable explicit voice activity detection (VAD) signals from the model."""
+
   translation_config: Optional[types.TranslationConfig] = None
   """Configures real-time speech-to-speech translation.
 

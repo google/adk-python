@@ -186,7 +186,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
         boolean indicating whether the credential was exchanged.
     """
     client, token_endpoint = create_oauth2_session(auth_scheme, auth_credential)
-    if not client:
+    if not client or not auth_credential.oauth2:
       logger.warning(
           "Could not create OAuth2 session for authorization code exchange"
       )
