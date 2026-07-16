@@ -243,7 +243,8 @@ class Gemini(BaseLlm):
           yield llm_response
         return
 
-      logger.debug(_build_request_log(llm_request))
+      if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(_build_request_log(llm_request))
 
       if stream:
         responses = await self.api_client.aio.models.generate_content_stream(

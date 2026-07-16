@@ -5005,7 +5005,6 @@ def test_model_response_to_generate_content_response_safety_finish_reason():
   assert llm_response.error_message == "Finished with SAFETY"
 
 
-@pytest.mark.skip(reason="LiteLLM finish_reason mapping behaviour changed")
 @pytest.mark.asyncio
 async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance

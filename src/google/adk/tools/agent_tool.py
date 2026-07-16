@@ -117,7 +117,13 @@ class AgentTool(BaseTool):
     setting ``mode='single_turn'`` on the sub-agent and attaching it via
     ``sub_agents=[...]`` instead of wrapping it with ``AgentTool``. The
     framework then exposes the sub-agent as a tool automatically and runs it
-    inline in the parent's session. See the single-turn mode guide for details.
+    inline in the parent's session.
+
+    If the sub-agent needs to access parent artifacts, add
+    ``load_artifacts_tool`` directly to the sub-agent's ``tools`` list.
+
+    Direct usage of ``AgentTool`` is discouraged. See the single-turn
+    mode guide for details.
 
   Attributes:
     agent: The agent to wrap.
