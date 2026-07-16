@@ -226,6 +226,25 @@ class NodeRunner:
         attempt_count=attempt_count,
     )
 
+    if ic.session and ic.session.events:
+      from .utils._rehydration_utils import _reconstruct_node_states
+
+      states = _reconstruct_node_states(
+          events=ic.session.events,
+          base_path=ctx.node_path,
+          invocation_id=ic.invocation_id,
+      )
+      if ctx.node_path in states:
+        rehydrated = dict(states[ctx.node_path].resolved_responses)
+        if ctx._resume_inputs:
+          rehydrated.update(ctx._resume_inputs)
+        ctx._resume_inputs = rehydrated
+        logger.debug(
+            "node %s rehydrated resume_inputs: %s",
+            ctx.node_path,
+            ctx._resume_inputs,
+        )
+
     # override the inherited isolation_scope when explicitly set.
     if self._override_isolation_scope is not None:
       ctx.isolation_scope = self._override_isolation_scope
