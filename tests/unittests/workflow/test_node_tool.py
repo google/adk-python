@@ -17,10 +17,12 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.events.request_input import RequestInput
 from google.adk.tools._node_tool import NodeTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import JoinNode
@@ -57,7 +59,6 @@ def test_node_tool_requires_input_schema():
     NodeTool(node=wf)
 
 
-@pytest.mark.skip(reason='Requires CL 2 subagent branch refactor')
 @pytest.mark.asyncio
 async def test_workflow_as_tool_hitl_resume(request: pytest.FixtureRequest):
   """Workflow-as-a-tool suspends on RequestInput and resumes successfully.
@@ -176,7 +177,6 @@ async def test_workflow_as_tool_hitl_resume(request: pytest.FixtureRequest):
   assert 'Thank you! I received the user details.' in text_responses
 
 
-@pytest.mark.skip(reason='Requires CL 2 subagent branch refactor')
 @pytest.mark.asyncio
 async def test_workflow_as_tool_hitl_resume_non_resumable_app(
     request: pytest.FixtureRequest,
@@ -517,7 +517,6 @@ async def test_workflow_tool_with_nested_workflows(
   ].function_response.response == {'result': 'inner_output'}
 
 
-@pytest.mark.skip(reason='Requires CL 2 subagent branch refactor')
 @pytest.mark.asyncio
 async def test_workflow_tool_with_dynamic_node_hitl_resume(
     request: pytest.FixtureRequest,
@@ -603,21 +602,30 @@ async def test_workflow_tool_with_dynamic_node_hitl_resume(
   assert 'Task completed.' in text_responses
 
 
-@pytest.mark.skip(
-    reason='Known framework issue with MockModel nested HITL in sub-workflow'
-)
 @pytest.mark.asyncio
 async def test_workflow_as_tool_nested_hitl(request: pytest.FixtureRequest):
   """Parent LLM agent -> workflow -> LLM agent -> NodeTool(HITL) propagation."""
+
   # 1. Define the deepest node that raises RequestInput
-  input_node = RequestInputNode(
-      name='deep_input_node',
-      message='Give me some input:',
-      response_schema={
-          'type': 'object',
-          'properties': {'val': {'type': 'string'}},
-      },
-  )
+  @node(name='deep_input_node', rerun_on_resume=True)
+  def input_node(ctx: Context):
+    resume_input = ctx.resume_inputs.get('deep_input_id')
+    if not resume_input:
+      yield RequestInput(
+          interrupt_id='deep_input_id',
+          message='Give me some input:',
+          response_schema={
+              'type': 'object',
+              'properties': {'val': {'type': 'string'}},
+          },
+      )
+      return
+    user_val = (
+        resume_input.get('val')
+        if isinstance(resume_input, dict)
+        else resume_input
+    )
+    yield Event(output=f'Processed: {user_val}')
 
   # 2. Wrap it as a NodeTool
   input_node.input_schema = DummyRequest
@@ -708,22 +716,45 @@ async def test_workflow_as_tool_nested_hitl(request: pytest.FixtureRequest):
 
 
 @pytest.mark.skip(
-    reason='Known framework issue with MockModel multi-HITL in nested workflow'
+    reason='Requires Step 2 LRO pause resolution in base_llm_flow.py'
 )
 @pytest.mark.asyncio
 async def test_workflow_as_tool_nested_multi_hitl(
     request: pytest.FixtureRequest,
 ):
   """Parent LLM agent -> workflow -> LLM agent -> NodeTool(HITL) twice."""
+
   # 1. Define the deepest node that raises RequestInput
-  input_node = RequestInputNode(
-      name='deep_input_node',
-      message='Give me some input:',
-      response_schema={
-          'type': 'object',
-          'properties': {'val': {'type': 'string'}},
-      },
-  )
+  @node(name='deep_input_node', rerun_on_resume=True)
+  def input_node(ctx: Context):
+    resume_input_1 = ctx.resume_inputs.get('deep_input_id_1')
+    resume_input_2 = ctx.resume_inputs.get('deep_input_id_2')
+    if not resume_input_1:
+      yield RequestInput(
+          interrupt_id='deep_input_id_1',
+          message='Give me some input:',
+          response_schema={
+              'type': 'object',
+              'properties': {'val': {'type': 'string'}},
+          },
+      )
+      return
+    if not resume_input_2:
+      yield RequestInput(
+          interrupt_id='deep_input_id_2',
+          message='Give me some input:',
+          response_schema={
+              'type': 'object',
+              'properties': {'val': {'type': 'string'}},
+          },
+      )
+      return
+    user_val = (
+        resume_input_2.get('val')
+        if isinstance(resume_input_2, dict)
+        else resume_input_2
+    )
+    yield Event(output=f'Processed: {user_val}')
 
   # 2. Wrap it as a NodeTool
   input_node.input_schema = DummyRequest
@@ -734,10 +765,6 @@ async def test_workflow_as_tool_nested_multi_hitl(
       name='child_agent',
       model=testing_utils.MockModel.create(
           responses=[
-              types.Part.from_function_call(
-                  name='my_node_tool',
-                  args={},
-              ),
               types.Part.from_function_call(
                   name='my_node_tool',
                   args={},
@@ -802,6 +829,7 @@ async def test_workflow_as_tool_nested_multi_hitl(
       new_message=testing_utils.UserContent(user_input1),
       invocation_id=invocation_id,
   )
+
   request_input_event2 = workflow_testing_utils.find_function_call_event(
       events2, REQUEST_INPUT_FUNCTION_CALL_NAME
   )
@@ -825,7 +853,6 @@ async def test_workflow_as_tool_nested_multi_hitl(
   assert 'Parent agent finished successfully.' in text_responses
 
 
-@pytest.mark.skip(reason='Requires CL 2 subagent branch refactor')
 @pytest.mark.asyncio
 async def test_workflow_as_tool_nested_lro(request: pytest.FixtureRequest):
   """Parent LLM agent -> workflow -> LLM agent -> LRO tool."""
