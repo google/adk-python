@@ -38,6 +38,7 @@ from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..evaluation.local_eval_service import LocalEvalService
+from ..evaluation.metric_evaluator_registry import register_custom_metrics_from_config
 from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
 from ..utils.context_utils import Aclosing
 from .data_types import UnstructuredSamplingResult
@@ -50,7 +51,6 @@ def _log_eval_summary(eval_results: list[EvalCaseResult]):
   """Logs a summary of eval results."""
   num_pass, num_fail, num_other = 0, 0, 0
   for eval_result in eval_results:
-    eval_result: EvalCaseResult
     if eval_result.final_eval_status == EvalStatus.PASSED:
       num_pass += 1
     elif eval_result.final_eval_status == EvalStatus.FAILED:
@@ -154,6 +154,9 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
   ):
     self._config = config
     self._eval_sets_manager = eval_sets_manager
+    self._metric_evaluator_registry = register_custom_metrics_from_config(
+        self._config.eval_config
+    )
 
     self._train_eval_set = self._config.train_eval_set
     self._train_eval_case_ids = (
@@ -236,6 +239,7 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
     eval_service = LocalEvalService(
         root_agent=agent,
         eval_sets_manager=self._eval_sets_manager,
+        metric_evaluator_registry=self._metric_evaluator_registry,
         user_simulator_provider=user_simulator_provider,
     )
 

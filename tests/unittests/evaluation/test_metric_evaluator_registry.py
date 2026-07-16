@@ -14,17 +14,23 @@
 
 from __future__ import annotations
 
+from google.adk.agents.common_configs import CodeConfig
 from google.adk.errors.not_found_error import NotFoundError
+from google.adk.evaluation.custom_metric_evaluator import _CustomMetricEvaluator
+from google.adk.evaluation.eval_config import CustomMetricConfig
+from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import Interval
 from google.adk.evaluation.eval_metrics import MetricInfo
 from google.adk.evaluation.eval_metrics import MetricValueInfo
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import Evaluator
+from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.evaluation.metric_evaluator_registry import FinalResponseMatchV2EvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import HallucinationsV1EvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import MetricEvaluatorRegistry
 from google.adk.evaluation.metric_evaluator_registry import PerTurnUserSimulatorQualityV1MetricInfoProvider
+from google.adk.evaluation.metric_evaluator_registry import register_custom_metrics_from_config
 from google.adk.evaluation.metric_evaluator_registry import ResponseEvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import RubricBasedMultiTurnTrajectoryMetricInfoProvider
@@ -118,6 +124,112 @@ class TestMetricEvaluatorRegistry:
     eval_metric = EvalMetric(metric_name="non_existent_metric", threshold=0.5)
     with pytest.raises(NotFoundError):
       registry.get_evaluator(eval_metric)
+
+
+class TestRegisterCustomMetricsFromConfig:
+  """Test cases for register_custom_metrics_from_config."""
+
+  _CUSTOM_METRIC_NAME = "custom_metric_for_registry_test"
+
+  @pytest.fixture
+  def registry(self):
+    registry = MetricEvaluatorRegistry()
+    yield registry
+    # The registry dict is shared class-level state; remove what we added.
+    registry._registry.pop(self._CUSTOM_METRIC_NAME, None)
+
+  def _registered_metric_info(self, registry, metric_name):
+    return next(
+        metric_info
+        for metric_info in registry.get_registered_metrics()
+        if metric_info.metric_name == metric_name
+    )
+
+  def test_registers_custom_metric_with_provided_metric_info(self, registry):
+    metric_info = MetricInfo(
+        metric_name="name_to_be_overridden",
+        description="Custom metric description",
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=5.0)
+        ),
+    )
+    eval_config = EvalConfig(
+        custom_metrics={
+            self._CUSTOM_METRIC_NAME: CustomMetricConfig(
+                code_config=CodeConfig(name="math.sqrt"),
+                metric_info=metric_info,
+            )
+        }
+    )
+
+    result = register_custom_metrics_from_config(eval_config, registry)
+
+    assert result is registry
+    registered_info = self._registered_metric_info(
+        registry, self._CUSTOM_METRIC_NAME
+    )
+    assert registered_info.metric_value_info.interval.max_value == 5.0
+    assert all(
+        metric_info.metric_name != "name_to_be_overridden"
+        for metric_info in registry.get_registered_metrics()
+    )
+    evaluator = registry.get_evaluator(
+        EvalMetric(
+            metric_name=self._CUSTOM_METRIC_NAME,
+            threshold=0.5,
+            custom_function_path="math.sqrt",
+        )
+    )
+    assert isinstance(evaluator, _CustomMetricEvaluator)
+
+  def test_registers_custom_metric_with_default_metric_info(self, registry):
+    eval_config = EvalConfig(
+        custom_metrics={
+            self._CUSTOM_METRIC_NAME: CustomMetricConfig(
+                code_config=CodeConfig(name="math.sqrt"),
+                description="A custom metric",
+            )
+        }
+    )
+
+    register_custom_metrics_from_config(eval_config, registry)
+
+    registered_info = self._registered_metric_info(
+        registry, self._CUSTOM_METRIC_NAME
+    )
+    assert registered_info.description == "A custom metric"
+    assert registered_info.metric_value_info.interval.min_value == 0.0
+    assert registered_info.metric_value_info.interval.max_value == 1.0
+
+  def test_no_custom_metrics_is_a_no_op(self, registry):
+    registered_before = registry.get_registered_metrics()
+
+    result = register_custom_metrics_from_config(EvalConfig(), registry)
+
+    assert result is registry
+    assert registry.get_registered_metrics() == registered_before
+
+  def test_defaults_to_the_default_registry(self):
+    eval_config = EvalConfig(
+        custom_metrics={
+            self._CUSTOM_METRIC_NAME: CustomMetricConfig(
+                code_config=CodeConfig(name="math.sqrt"),
+            )
+        }
+    )
+
+    try:
+      result = register_custom_metrics_from_config(eval_config)
+
+      assert result is DEFAULT_METRIC_EVALUATOR_REGISTRY
+      registered_info = self._registered_metric_info(
+          DEFAULT_METRIC_EVALUATOR_REGISTRY, self._CUSTOM_METRIC_NAME
+      )
+      assert registered_info.metric_name == self._CUSTOM_METRIC_NAME
+    finally:
+      DEFAULT_METRIC_EVALUATOR_REGISTRY._registry.pop(
+          self._CUSTOM_METRIC_NAME, None
+      )
 
 
 class TestMetricInfoProviders:
