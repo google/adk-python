@@ -16,10 +16,6 @@
 
 import logging
 
-from google.adk.agents.loop_agent import LoopAgent
-from google.adk.agents.parallel_agent import ParallelAgent
-from google.adk.agents.sequential_agent import SequentialAgent
-from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
 from google.adk.workflow import START
 from google.adk.workflow._graph import DEFAULT_ROUTE
@@ -392,71 +388,3 @@ def test_chat_agent_wiring_validation_only_runs_on_llm_agent() -> None:
   validate_graph(
       graph.nodes, graph.edges
   )  # Should not raise because node_b is a TestingNode, not LlmAgent
-
-
-@pytest.mark.parametrize(
-    'agent_class, name, expected_class_name',
-    [
-        (SequentialAgent, 'SeqAgent', 'SequentialAgent'),
-        (ParallelAgent, 'ParAgent', 'ParallelAgent'),
-        (LoopAgent, 'LoopAgent', 'LoopAgent'),
-    ],
-)
-def test_old_orchestrators_fail_validation(
-    agent_class: type[BaseNode],
-    name: str,
-    expected_class_name: str,
-) -> None:
-  """Tests that a graph containing deprecated orchestrators fails validation."""
-  agent = agent_class(name=name, sub_agents=[])
-  graph = Graph(
-      edges=[
-          Edge(from_node=START, to_node=agent),
-      ],
-  )
-  with pytest.raises(
-      ValueError,
-      match=(
-          rf"Graph validation failed\. Node '{name}' uses deprecated"
-          rf" orchestrator '{expected_class_name}'\."
-      ),
-  ):
-    validate_graph(graph.nodes, graph.edges)
-
-
-def test_old_orchestrator_wrapped_in_parallel_worker_fails_validation() -> None:
-  """Tests that a graph with old orchestrators in ParallelWorker fails validation."""
-  from google.adk.agents.sequential_agent import SequentialAgent
-  from google.adk.workflow._parallel_worker import _ParallelWorker
-
-  seq_agent = SequentialAgent(name='SeqAgent', sub_agents=[])
-  worker_node = _ParallelWorker(node=seq_agent)
-  graph = Graph(
-      edges=[
-          Edge(from_node=START, to_node=worker_node),
-      ],
-  )
-  with pytest.raises(
-      ValueError,
-      match=(
-          r"Graph validation failed\. Node 'SeqAgent' uses deprecated"
-          r" orchestrator 'SequentialAgent'\."
-      ),
-  ):
-    validate_graph(graph.nodes, graph.edges)
-
-
-def test_self_referential_wrapped_node_safely_terminates() -> None:
-  """Tests that a self-referential wrapped node safely breaks without infinite loop."""
-  node_a = TestingNode(name='NodeA')
-  # Mock a self-referential node property
-  object.__setattr__(node_a, 'node', node_a)
-
-  graph = Graph(
-      edges=[
-          Edge(from_node=START, to_node=node_a),
-      ],
-  )
-  validate_graph(
-      graph.nodes, graph.edges
-  )  # Should not spin forever and should pass

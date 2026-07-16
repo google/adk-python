@@ -43,7 +43,6 @@ from ._trigger import Trigger
 from .utils._rehydration_utils import _ChildScanState
 from .utils._replay_interceptor import check_interception
 from .utils._replay_interceptor import create_mock_context
-from .utils._replay_manager import ReplayManager
 from .utils._replay_sequence_barrier import ReplaySequenceBarrier
 
 if TYPE_CHECKING:
@@ -222,7 +221,7 @@ class Workflow(BaseNode):
     # --- SETUP: resume from events or start fresh ---
     # TODO: resume from checkpoint event.
     loop_state = _LoopState()
-    replay_mgr = ReplayManager()
+    replay_mgr = loop_state.replay_manager
     loop_state.recovered_executions, _ = replay_mgr.scan_workflow_events(ctx)
     loop_state.sequence_barrier = replay_mgr.sequence_barrier
 

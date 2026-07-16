@@ -378,3 +378,33 @@ async def test_get_skill_with_mtls():
 
 
 # pylint: enable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_use_custom_credentials():
+  """Verifies that custom credentials are used when provided."""
+  mock_creds = mock.MagicMock()
+  mock_creds.valid = True
+  mock_creds.token = "custom-token"
+  mock_creds.quota_project_id = "custom-quota-project"
+
+  registry = gcp_skill_registry.GCPSkillRegistry(credentials=mock_creds)
+
+  mock_response = mock.MagicMock()
+  mock_response.status_code = 200
+  mock_response.json.return_value = {"skills": []}
+
+  with mock.patch(
+      "httpx.AsyncClient.get", return_value=mock_response
+  ) as mock_get_called:
+    await registry.search_skills(query="query")
+
+  mock_get_called.assert_called_once_with(
+      "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills:search",
+      headers={
+          "Authorization": "Bearer custom-token",
+          "Content-Type": "application/json",
+          "x-goog-user-project": "custom-quota-project",
+      },
+      params={"search_string": "query"},
+  )

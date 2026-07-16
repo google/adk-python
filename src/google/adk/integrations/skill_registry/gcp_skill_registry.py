@@ -28,6 +28,7 @@ from google.adk.skills.skill_registry import SkillRegistry
 from google.adk.utils import _mtls_utils
 import google.auth
 import google.auth.credentials
+from google.auth.credentials import Credentials
 import google.auth.exceptions
 from google.auth.transport import mtls
 from google.auth.transport import requests as auth_requests
@@ -42,16 +43,17 @@ class GCPSkillRegistry(SkillRegistry):
       *,
       project_id: str | None = None,
       location: str | None = None,
+      credentials: Credentials | None = None,
   ):
     """Initializes the GCP Skill Registry.
 
     Args:
       project_id: Optional GCP project ID. If omitted, loads from environment.
       location: Optional GCP location. If omitted, loads from environment.
+      credentials: Optional credentials to use for the client.
     """
     self.project_id = project_id or os.environ.get("GOOGLE_CLOUD_PROJECT")
     self.location = location or os.environ.get("GOOGLE_CLOUD_LOCATION")
-
     # Set up SSL context for mTLS if needed
     self._ssl_context = None
     use_client_cert = _mtls_utils.use_client_cert_effective()
@@ -97,7 +99,7 @@ class GCPSkillRegistry(SkillRegistry):
           "project_id and location must be specified or set via environment"
           " variables."
       )
-    self._credentials: google.auth.credentials.Credentials | None = None
+    self._credentials: Credentials | None = credentials
 
   async def _get_headers(self) -> dict[str, str]:
     """Refreshes credentials and returns authorization headers."""

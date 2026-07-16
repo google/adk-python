@@ -198,43 +198,6 @@ def _validate_chat_agent_wiring(edges: list[Edge]) -> None:
         )
 
 
-def _validate_no_old_orchestrators(nodes: list[BaseNode]) -> None:
-  """Validates that deprecated orchestrators are not used in the workflow graph."""
-  from ...agents.loop_agent import LoopAgent
-  from ...agents.parallel_agent import ParallelAgent
-  from ...agents.sequential_agent import SequentialAgent
-
-  for node in nodes:
-    target = node
-    visited = set()
-    while True:
-      if id(target) in visited:
-        break
-      visited.add(id(target))
-
-      next_target = None
-      for attr in ("node", "_node", "agent", "_agent"):
-        val = getattr(target, attr, None)
-        if isinstance(val, BaseNode):
-          next_target = val
-          break
-
-      if next_target is not None:
-        target = next_target
-      else:
-        break
-
-    if isinstance(target, (SequentialAgent, ParallelAgent, LoopAgent)):
-      agent_type_name = type(target).__name__
-      raise ValueError(
-          f"Graph validation failed. Node '{node.name}' uses deprecated"
-          f" orchestrator '{agent_type_name}'. Old orchestrators"
-          " (SequentialAgent, ParallelAgent, LoopAgent) cannot be used inside"
-          " a Workflow static graph. Please migrate the orchestration logic to"
-          " Workflow nodes and edges."
-      )
-
-
 def _compute_terminal_nodes(
     nodes: list[BaseNode], edges: list[Edge]
 ) -> set[str]:
@@ -256,5 +219,4 @@ def validate_graph(nodes: list[BaseNode], edges: list[Edge]) -> set[str]:
   _detect_unconditional_cycles(edges, node_names)
   _validate_static_schemas(edges)
   _validate_chat_agent_wiring(edges)
-  _validate_no_old_orchestrators(nodes)
   return _compute_terminal_nodes(nodes, edges)

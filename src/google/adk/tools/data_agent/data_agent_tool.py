@@ -95,7 +95,7 @@ def list_accessible_data_agents(
   """
   try:
     session, endpoint = _gda_stream_util.get_gda_session(credentials)
-    base_url = f"{endpoint}/v1beta"
+    base_url = f"{endpoint}/v1"
     headers = {
         "Content-Type": "application/json",
         "X-Goog-API-Client": _GDA_CLIENT_ID,
@@ -125,7 +125,7 @@ def _get_data_agent_info(
 ) -> dict[str, Any]:
   try:
     endpoint = _gda_stream_util.get_gda_endpoint()
-    base_url = f"{endpoint}/v1beta"
+    base_url = f"{endpoint}/v1"
     headers = {
         "Content-Type": "application/json",
         "X-Goog-API-Client": _GDA_CLIENT_ID,
@@ -289,7 +289,7 @@ def ask_data_agent(
   try:
     session, endpoint = _gda_stream_util.get_gda_session(credentials)
     with session:
-      base_url = f"{endpoint}/v1beta"
+      base_url = f"{endpoint}/v1"
       headers = {
           "Content-Type": "application/json",
           "X-Goog-API-Client": _GDA_CLIENT_ID,
