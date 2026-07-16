@@ -6335,3 +6335,146 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
   assert args_by_name["my_func"] == json.loads(full_args_a)
   assert args_by_name["other_func"] == json.loads(full_args_b)
+
+
+# Empty-completion guard (fixes #5394 / #5006 / #5636 / #3618 family)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_streaming_empty_completion_with_content_filter_surfaces_error(
+    mock_completion, lite_llm_instance
+):
+  """A stream that ends with finish_reason but no text/tool deltas must
+  surface as an explicit error event, not a silent zero-yield stream.
+
+  Reproduces the "empty completion" pattern reported across
+  #5394 / #5006 / #5636 / #3618: provider returns 200 OK with a
+  finish_reason (content_filter / safety / model_not_found / etc.)
+  but no content. Pre-fix the aggregator simply yielded nothing and
+  the downstream Runner saw zero events — silent successful empty
+  turn from the user's perspective.
+  """
+  stream_chunks = [
+      ModelResponseStream(
+          model="anthropic/claude-opus-4-8",
+          choices=[
+              StreamingChoices(finish_reason="content_filter", delta=Delta())
+          ],
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1, (
+      "empty completion with finish_reason must surface exactly one error "
+      f"LlmResponse, got {len(responses)}: {responses}"
+  )
+  empty_response = responses[0]
+  assert empty_response.error_code == types.FinishReason.SAFETY
+  assert empty_response.finish_reason == types.FinishReason.SAFETY
+  assert empty_response.error_message
+  # The model name must propagate so downstream consumers know what failed.
+  assert empty_response.model_version == "anthropic/claude-opus-4-8"
+
+
+@pytest.mark.asyncio
+async def test_streaming_empty_completion_with_stop_finish_reason_still_surfaces(
+    mock_completion, lite_llm_instance
+):
+  """A stream that ends with finish_reason='stop' but no content also
+  surfaces — the model said "I'm done" but produced nothing. This is the
+  most common shape of the silent-empty bug (#5636 specifically called
+  out gemini-2.5-flash-lite returning STOP with empty content after a
+  tool call). Pre-fix, the (text or reasoning_parts) guard skipped
+  finalization for this case and the aggregator yielded nothing.
+  """
+  stream_chunks = [
+      ModelResponseStream(
+          model="google/gemini-3.5-flash",
+          choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1, (
+      "STOP-with-empty stream must surface exactly one response, got "
+      f"{len(responses)}: {responses}"
+  )
+  empty_response = responses[0]
+  # The finish_reason is preserved so callers see the model's signal
+  # ("I stopped cleanly") + the empty body is also visible (no text
+  # content). error_message names the failure mode so the operator
+  # does not have to dig.
+  assert empty_response.finish_reason == types.FinishReason.STOP
+  assert empty_response.error_message
+  assert empty_response.model_version == "google/gemini-3.5-flash"
+
+
+@pytest.mark.asyncio
+async def test_streaming_text_response_does_not_trigger_empty_guard(
+    mock_completion, lite_llm_instance
+):
+  """Regression guard: a normal text completion must NOT trigger the
+  empty-guard — the existing aggregated_llm_response handles it and
+  exactly one response is yielded with the actual text."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="hello"),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="stop", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  # The text deltas yield partial responses + one final aggregated
+  # response; the empty-guard MUST NOT fire because text was produced.
+  assert len(responses) >= 2
+  final = responses[-1]
+  assert final.error_code is None
+  assert final.finish_reason == types.FinishReason.STOP
+
+
+@pytest.mark.asyncio
+async def test_streaming_no_chunks_and_no_finish_reason_is_byte_identical(
+    mock_completion, lite_llm_instance
+):
+  """The empty-guard ONLY fires when there's a finish_reason. A stream
+  that yields literally nothing (test doubles, etc.) must stay
+  byte-identical to pre-fix — zero responses, no synthesized error."""
+  mock_completion.return_value = iter([])
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert responses == []
