@@ -12,13 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import logging
 import os
+import pprint
+from typing import Any
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.mcp_instruction_provider import McpInstructionProvider
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.tool_context import ToolContext
+
+# Configure logging; the mcp_tool logger must be set to
+# DEBUG to capture http_debug_info
+logging.basicConfig(level=logging.INFO)
+logging.getLogger('google_adk.google.adk.tools.mcp_tool.mcp_tool').setLevel(
+    logging.DEBUG
+)
 
 _allowed_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -26,6 +37,20 @@ connection_params = SseConnectionParams(
     url='http://localhost:3000/sse',
     headers={'Accept': 'text/event-stream'},
 )
+
+
+def after_tool_debug_callback(
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+    tool_response: dict[str, Any],
+) -> dict[str, Any] | None:
+  # pylint: disable=unused-argument
+  print(f'\n=== HTTP Debug Info (from Callback for {tool.name}) ===')
+  pprint.pprint(tool_context.custom_metadata.get('http_debug_info'))
+  print('====================================================\n')
+  return None
+
 
 root_agent = LlmAgent(
     name='enterprise_assistant',
@@ -57,4 +82,5 @@ root_agent = LlmAgent(
             require_confirmation=True,
         )
     ],
+    after_tool_callback=after_tool_debug_callback,
 )

@@ -19,8 +19,8 @@ import dataclasses
 import logging
 import sys
 import time
-from typing import Any
 from typing import AsyncIterator
+from typing import Iterator
 from typing import TYPE_CHECKING
 
 from opentelemetry import trace
@@ -28,46 +28,61 @@ import opentelemetry.context as context_api
 
 from . import _metrics
 from . import tracing
-from ..events import event as event_lib
+from ._schema_version import resolve_schema_version
+from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 
+# pylint: disable=g-import-not-at-top
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
+  from ..events import event as event_lib
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
+  from ..workflow._base_node import BaseNode
 
 logger = logging.getLogger("google_adk." + __name__)
 
+_INVOKE_AGENT_TELEMETRY_KEY = context_api.create_key("invoke_agent_telemetry")
 
-def _get_elapsed_ms(
-    span: trace.Span | tracing.GenerateContentSpan | None,
-    fallback_start: float,
-) -> float:
-  """Guarantees consistent time source for duration calculation.
 
-  Note: This must be called with an ended span.
+@contextlib.contextmanager
+def record_invocation(
+    entrypoint_node: BaseNode | None,
+    conversation_id: str,
+) -> Iterator[None]:
+  """Top-level invocation span for a runner invocation.
+
+  Schema v1 emits the legacy ``invocation`` span. Schema v2 replaces it with an
+  entrypoint ``invoke_workflow {entrypoint}`` span (entrypoint = root agent or
+  root node name), which omits the ``gen_ai.workflow.nested`` attribute, and a
+  ``gen_ai.invoke_workflow.duration`` metric -- unless the entrypoint is itself
+  a workflow, in which case its own node span is the entrypoint
+  ``invoke_workflow`` span and we avoid double-emitting it here.
 
   Args:
-    span (trace.Span | tracing.GenerateContentSpan | None): The ended span to
-      extract duration from.
-    fallback_start (float): Fallback start time in seconds (monotonic).
+    entrypoint_node: The runner's root agent/node.
+    conversation_id: Session/conversation id (stamped on the v2 span).
 
-  Returns:
-    float: Elapsed duration in milliseconds.
+  Yields:
+    Nothing; the span (if any) is active for the duration of the block.
   """
-  if span is None:
-    return (time.monotonic() - fallback_start) * 1000
+  if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
+    with tracing.tracer.start_as_current_span("invocation"):
+      yield
+    return
 
-  span = span.span if hasattr(span, "span") else span
-  start_ns = getattr(span, "start_time", None)
-  end_ns = getattr(span, "end_time", None)
+  from . import node_tracing
+  from ..workflow._workflow import Workflow
 
-  if isinstance(start_ns, int) and isinstance(end_ns, int):
-    return (end_ns - start_ns) / 1e6  # Convert ns to ms
+  if isinstance(entrypoint_node, Workflow):
+    # The workflow's own node span is the entrypoint `invoke_workflow` span.
+    yield
+    return
 
-  # Fallback if span times are missing
-  return (time.monotonic() - fallback_start) * 1000
+  entrypoint_name = entrypoint_node.name if entrypoint_node else ""
+  with node_tracing._use_invoke_workflow_span(entrypoint_name, conversation_id):
+    yield
 
 
 @dataclasses.dataclass
@@ -79,6 +94,22 @@ class TelemetryContext:
   error_type: str | None = None
   span: tracing.GenerateContentSpan | trace.Span | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
+  _inference_call_count: int = 0
+  _tool_call_count: int = 0
+
+  @property
+  def inference_call_count(self) -> int:
+    return self._inference_call_count
+
+  def increment_inference_calls(self) -> None:
+    self._inference_call_count += 1
+
+  @property
+  def tool_call_count(self) -> int:
+    return self._tool_call_count
+
+  def increment_tool_calls(self) -> None:
+    self._tool_call_count += 1
 
   @property
   def llm_responses(self) -> list[LlmResponse]:
@@ -93,22 +124,47 @@ class TelemetryContext:
 
 def _record_agent_metrics(
     agent_name: str,
-    elapsed_ms: float,
-    user_content: Any,
-    events: Any,
+    elapsed_s: float,
     caught_error: Exception | None,
 ) -> None:
   try:
     _metrics.record_agent_invocation_duration(
         agent_name,
-        elapsed_ms,
+        elapsed_s,
         caught_error,
     )
-    _metrics.record_agent_request_size(agent_name, user_content)
-    _metrics.record_agent_response_size(agent_name, events)
-    _metrics.record_agent_workflow_steps(agent_name, events)
   except Exception:  # pylint: disable=broad-exception-caught
     logger.exception("Failed to record agent metrics for agent %s", agent_name)
+
+
+def _flush_invoke_agent_metrics(
+    tel_ctx: TelemetryContext, agent_name: str
+) -> None:
+  """Flushes this span's accumulated inference/tool-call metrics."""
+  _metrics.record_invoke_agent_inference_calls(
+      agent_name, tel_ctx.inference_call_count
+  )
+  _metrics.record_invoke_agent_tool_calls(agent_name, tel_ctx.tool_call_count)
+
+
+def _active_invoke_agent_tel_ctx() -> TelemetryContext | None:
+  """Returns the TelemetryContext of the active invoke_agent span."""
+  value = context_api.get_value(_INVOKE_AGENT_TELEMETRY_KEY)
+  return value if isinstance(value, TelemetryContext) else None
+
+
+def _accumulate_invoke_agent_tool_call() -> None:
+  """Counts one tool call against the active invoke_agent span."""
+  span_tel_ctx = _active_invoke_agent_tel_ctx()
+  if span_tel_ctx is not None:
+    span_tel_ctx.increment_tool_calls()
+
+
+def _accumulate_invoke_agent_inference_call() -> None:
+  """Counts one model call against the active invoke_agent span."""
+  span_tel_ctx = _active_invoke_agent_tel_ctx()
+  if span_tel_ctx is not None:
+    span_tel_ctx.increment_inference_calls()
 
 
 @contextlib.asynccontextmanager
@@ -120,32 +176,35 @@ async def record_agent_invocation(
   caught_error: Exception | None = None
   span: trace.Span | None = None
   span_name = f"invoke_agent {agent.name}"
+  tel_ctx = TelemetryContext()
+  token = context_api.attach(
+      context_api.set_value(_INVOKE_AGENT_TELEMETRY_KEY, tel_ctx)
+  )
   try:
     with tracing.tracer.start_as_current_span(span_name) as s:
       span = s
       tracing.trace_agent_invocation(span, agent, ctx)
-      tel_ctx = TelemetryContext(otel_context=context_api.get_current())
+      tel_ctx.otel_context = context_api.get_current()
       yield tel_ctx
   except Exception as e:
     caught_error = e
     raise
   finally:
-    elapsed_ms = _get_elapsed_ms(span, start_time)
+    context_api.detach(token)
     _record_agent_metrics(
         agent.name,
-        elapsed_ms,
-        getattr(ctx, "user_content", None),
-        getattr(getattr(ctx, "session", None), "events", []),
+        _metrics.get_elapsed_s(span, start_time),
         caught_error,
     )
+    _flush_invoke_agent_metrics(tel_ctx, agent.name)
 
 
 @contextlib.asynccontextmanager
 async def record_tool_execution(
     tool: BaseTool,
     agent: BaseAgent,
-    function_args: dict[str, Any],
-    invocation_context: InvocationContext | None = None,
+    function_args: dict[str, object],
+    invocation_context: InvocationContext,
 ) -> AsyncIterator[TelemetryContext]:
   """Unified context manager for consolidated tool execution telemetry."""
   start_time = time.monotonic()
@@ -174,11 +233,13 @@ async def record_tool_execution(
             error_type=tel_ctx.error_type,
         )
   finally:
+    _accumulate_invoke_agent_tool_call()
     try:
       _metrics.record_tool_execution_duration(
           tool_name=tool.name,
+          tool_type=tool.__class__.__name__,
           agent_name=agent.name,
-          elapsed_ms=_get_elapsed_ms(span, start_time),
+          elapsed_s=_metrics.get_elapsed_s(span, start_time),
           error=caught_error,
       )
     except Exception:  # pylint: disable=broad-exception-caught
@@ -206,13 +267,14 @@ async def record_inference_telemetry(
       yield tel_ctx
   finally:
     inference_error = sys.exc_info()[1]
-    elapsed_ms = _get_elapsed_ms(tel_ctx.span, start_time)
+    _accumulate_invoke_agent_inference_call()
     agent = invocation_context.agent
+    elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:
       if agent is not None and tracing._should_emit_native_telemetry(agent):
         _metrics.record_client_operation_duration(
             agent_name=agent.name,
-            elapsed_ms=elapsed_ms,
+            elapsed_s=elapsed_s,
             llm_request=llm_request,
             responses=tel_ctx.llm_responses,
             error=(

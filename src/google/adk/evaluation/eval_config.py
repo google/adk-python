@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 from typing import Optional
 from typing import Union
 
@@ -23,15 +24,26 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 from ..agents.common_configs import CodeConfig
 from ..evaluation.eval_metrics import EvalMetric
 from .eval_metrics import BaseCriterion
 from .eval_metrics import MetricInfo
 from .eval_metrics import Threshold
-from .simulation.user_simulator import BaseUserSimulatorConfig
+from .simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# The set of user-simulator config subclasses that `EvalConfig` can
+# deserialize into via the `type` discriminator. Add any new subclass to
+# this Union (each with a unique `Literal[...]` for its `type` field).
+_UserSimulatorConfig = Union[LlmBackedUserSimulatorConfig]
+
+# Legacy default preserved for backward compatibility with eval configs authored
+# before the `type` discriminator existed. See
+# `EvalConfig._inject_default_user_simulator_type` below.
+_LEGACY_DEFAULT_USER_SIMULATOR_TYPE = "llm_backed"
 
 
 class CustomMetricConfig(BaseModel):
@@ -141,10 +153,54 @@ Example:
 """,
   )
 
-  user_simulator_config: Optional[BaseUserSimulatorConfig] = Field(
+  user_simulator_config: Optional[_UserSimulatorConfig] = Field(
       default=None,
-      description="Config to be used by the user simulator.",
+      discriminator="type",
+      description=(
+          "Config to be used by the user simulator. When authored as JSON,"
+          " the concrete subclass is selected via the `type` discriminator"
+          ' field (e.g. `{"type": "llm_backed", ...}`). Configs that'
+          " predate the `type` field are treated as"
+          f' `type="{_LEGACY_DEFAULT_USER_SIMULATOR_TYPE}"` for backward'
+          " compatibility."
+      ),
   )
+
+  @model_validator(mode="before")
+  @classmethod
+  def _inject_default_user_simulator_type(cls, values: Any) -> Any:
+    """Inject the legacy default `type` when a JSON config predates the
+
+    discriminator field.
+
+    Without this validator, existing configs that never carried a `type`
+    key would fail validation with `union_tag_not_found`. Here we silently
+    treat a missing `type` as the legacy default so existing files keep
+    working. Configs that DO carry `type` are left untouched.
+    """
+    if not isinstance(values, dict):
+      return values
+    # Handle both snake_case and camelCase spellings (this model uses
+    # `alias_generator=to_camel`).
+    for key in ("user_simulator_config", "userSimulatorConfig"):
+      inner = values.get(key)
+      # Treat a missing key AND an explicit `type=None` (e.g. from a
+      # `BaseUserSimulatorConfig().model_dump()`) both as "no discriminator
+      # supplied" so backward-compat is preserved either way.
+      if isinstance(inner, dict) and inner.get("type") is None:
+        logger.info(
+            "eval_config.%s has no `type` discriminator; defaulting to"
+            ' \'%s\'. Add `"type": "%s"` to your config to make this'
+            " explicit.",
+            key,
+            _LEGACY_DEFAULT_USER_SIMULATOR_TYPE,
+            _LEGACY_DEFAULT_USER_SIMULATOR_TYPE,
+        )
+        values = {
+            **values,
+            key: {**inner, "type": _LEGACY_DEFAULT_USER_SIMULATOR_TYPE},
+        }
+    return values
 
 
 _DEFAULT_EVAL_CONFIG = EvalConfig(

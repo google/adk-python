@@ -561,3 +561,34 @@ def test_aggregate_invocation_results():
   # Only 4 / 8 invocations are evaluated, and 2 / 4 are valid.
   assert aggregated_result.overall_score == 0.5
   assert aggregated_result.overall_eval_status == EvalStatus.PASSED
+
+
+def test_aggregate_invocation_results_none_evaluated():
+  evaluator = _create_test_evaluator_gemini(threshold=0.5)
+
+  actual_invocation, expected_invocation = _create_test_invocations(
+      "candidate text", "reference text"
+  )
+
+  per_invocation_results = [
+      PerInvocationResult(
+          actual_invocation=actual_invocation,
+          expected_invocation=expected_invocation,
+          score=None,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+      PerInvocationResult(
+          actual_invocation=actual_invocation,
+          expected_invocation=expected_invocation,
+          score=1.0,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+  ]
+
+  aggregated_result = evaluator.aggregate_invocation_results(
+      per_invocation_results
+  )
+
+  assert aggregated_result.overall_score is None
+  assert aggregated_result.overall_eval_status == EvalStatus.NOT_EVALUATED
+  assert aggregated_result.per_invocation_results == per_invocation_results

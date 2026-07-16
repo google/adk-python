@@ -23,7 +23,9 @@ from unittest.mock import patch
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.tools.mcp_tool.session_context import _format_exception
 from google.adk.tools.mcp_tool.session_context import SessionContext
+import httpx
 from mcp import ClientSession
 import pytest
 
@@ -607,9 +609,14 @@ class TestSessionContext:
 
     mock_session = MockClientSession()
 
-    with patch(
-        'google.adk.tools.mcp_tool.session_context.ClientSession'
-    ) as mock_session_class:
+    with (
+        patch(
+            'google.adk.tools.mcp_tool.session_context.ClientSession'
+        ) as mock_session_class,
+        patch(
+            'google.adk.tools.mcp_tool.session_context.logger'
+        ) as mock_logger,
+    ):
       mock_session_class.return_value = mock_session
 
       await session_context.start()
@@ -623,6 +630,9 @@ class TestSessionContext:
 
       # Should not raise exception
       assert session_context._close_event.is_set()
+
+      # Verify no warning logs were generated
+      mock_logger.warning.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_close_handles_exception_during_cleanup(self):
@@ -896,3 +906,43 @@ class TestSessionContextFlagOffPreservesPreFixBehavior:
           assert result is not None
         finally:
           await session_context.close()
+
+
+class TestFormatException:
+  """Test suite for _format_exception helper."""
+
+  def test_format_exception_normal(self):
+    exc = ValueError('normal error')
+    assert _format_exception(exc) == 'normal error'
+
+  def test_format_exception_http_status_error(self):
+    request = httpx.Request('GET', 'http://test')
+    response = httpx.Response(403, request=request, text='Forbidden access')
+    exc = httpx.HTTPStatusError(
+        '403 Forbidden', request=request, response=response
+    )
+
+    formatted = _format_exception(exc)
+    assert '403 Forbidden' in formatted
+    assert 'Forbidden access' in formatted
+
+  def test_format_exception_group(self):
+    class MockExceptionGroup(Exception):
+
+      def __init__(self, message, exceptions):
+        super().__init__(message)
+        self.exceptions = exceptions
+
+    request = httpx.Request('GET', 'http://test')
+    response = httpx.Response(403, request=request, text='Forbidden access')
+    exc1 = httpx.HTTPStatusError(
+        '403 Forbidden', request=request, response=response
+    )
+    exc2 = ValueError('another error')
+
+    eg = MockExceptionGroup('Group', [exc1, exc2])
+    formatted = _format_exception(eg)
+
+    assert '403 Forbidden' in formatted
+    assert 'Forbidden access' in formatted
+    assert 'another error' in formatted

@@ -20,6 +20,9 @@ import inspect
 import logging
 import sys
 import threading
+from types import ModuleType
+from typing import Any
+from typing import Callable
 from typing import TYPE_CHECKING
 
 from opentelemetry import trace
@@ -87,12 +90,13 @@ class AutoTracingPlugin(BasePlugin):
           logger.exception("AutoTracingPlugin: failed to instrument %s", name)
         self._wrapped_modules.add(name)
 
-  def _add_agent_scope(self, invocation_context):
+  def _add_agent_scope(self, invocation_context: InvocationContext) -> None:
     """Adds packages of every object reachable from the invocation."""
-    seen, packages = set(), set()
+    seen: set[int] = set()
+    packages: set[str] = set()
     max_depth = self._max_walk_depth
 
-    def walk(obj, depth):
+    def walk(obj: object, depth: int) -> None:
       if obj is None:
         return
       if depth > max_depth or id(obj) in seen:
@@ -138,7 +142,7 @@ class AutoTracingPlugin(BasePlugin):
     if new:
       self._scope_prefixes = self._scope_prefixes + new
 
-  def _wrap_module(self, module):
+  def _wrap_module(self, module: ModuleType) -> None:
     module_name = module.__name__
     for attr_name, attr in inspect.getmembers(module):
       if attr_name.startswith("_"):
@@ -157,7 +161,9 @@ class AutoTracingPlugin(BasePlugin):
             continue
           self._rebind(attr, member_name, member)
 
-  def _rebind(self, owner, name, fn):
+  def _rebind(
+      self, owner: ModuleType | type[Any], name: str, fn: Callable[..., Any]
+  ) -> None:
     if getattr(fn, auto_tracing_helpers.WRAPPED_ATTR, False):
       return
     try:

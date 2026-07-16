@@ -36,6 +36,17 @@ except ImportError:
   AUTHLIB_AVAILABLE = False
 
 
+def _normalize_oauth_scopes(
+    scopes: dict[str, str] | list[str] | None,
+) -> list[str]:
+  """Normalize OAuth scopes into the list shape expected by authlib."""
+  if not scopes:
+    return []
+  if isinstance(scopes, dict):
+    return list(scopes.keys())
+  return list(scopes)
+
+
 class AuthHandler:
   """A handler that handles the auth flow in Agent Development Kit to help
   orchestrate the credential request and response flow (e.g. OAuth flow)
@@ -70,7 +81,7 @@ class AuthHandler:
     state[credential_key] = await self.exchange_auth_token()
 
   def _validate(self) -> None:
-    if not self.auth_scheme:
+    if not self.auth_config.auth_scheme:
       raise ValueError("auth_scheme is empty.")
 
   def get_auth_response(self, state: State) -> AuthCredential:
@@ -164,7 +175,7 @@ class AuthHandler:
 
     if isinstance(auth_scheme, OpenIdConnectWithConfig):
       authorization_endpoint = auth_scheme.authorization_endpoint
-      scopes = auth_scheme.scopes
+      scopes = _normalize_oauth_scopes(auth_scheme.scopes)
     else:
       authorization_endpoint = (
           auth_scheme.flows.implicit
@@ -176,17 +187,20 @@ class AuthHandler:
           or auth_scheme.flows.password
           and auth_scheme.flows.password.tokenUrl
       )
-      scopes = (
-          auth_scheme.flows.implicit
-          and auth_scheme.flows.implicit.scopes
-          or auth_scheme.flows.authorizationCode
-          and auth_scheme.flows.authorizationCode.scopes
-          or auth_scheme.flows.clientCredentials
-          and auth_scheme.flows.clientCredentials.scopes
-          or auth_scheme.flows.password
-          and auth_scheme.flows.password.scopes
-      )
-      scopes = list(scopes.keys())
+      if auth_scheme.flows.implicit:
+        scopes = _normalize_oauth_scopes(auth_scheme.flows.implicit.scopes)
+      elif auth_scheme.flows.authorizationCode:
+        scopes = _normalize_oauth_scopes(
+            auth_scheme.flows.authorizationCode.scopes
+        )
+      elif auth_scheme.flows.clientCredentials:
+        scopes = _normalize_oauth_scopes(
+            auth_scheme.flows.clientCredentials.scopes
+        )
+      elif auth_scheme.flows.password:
+        scopes = _normalize_oauth_scopes(auth_scheme.flows.password.scopes)
+      else:
+        scopes = []
 
     client = OAuth2Session(
         auth_credential.oauth2.client_id,
@@ -197,7 +211,7 @@ class AuthHandler:
     )
     params = {
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": auth_credential.oauth2.prompt or "consent",
     }
     if auth_credential.oauth2.audience:
       params["audience"] = auth_credential.oauth2.audience
@@ -222,9 +236,10 @@ class AuthHandler:
     )
 
     exchanged_auth_credential = auth_credential.model_copy(deep=True)
-    exchanged_auth_credential.oauth2.auth_uri = uri
-    exchanged_auth_credential.oauth2.state = state
-    if code_verifier:
-      exchanged_auth_credential.oauth2.code_verifier = code_verifier
+    if exchanged_auth_credential.oauth2 is not None:
+      exchanged_auth_credential.oauth2.auth_uri = uri
+      exchanged_auth_credential.oauth2.state = state
+      if code_verifier:
+        exchanged_auth_credential.oauth2.code_verifier = code_verifier
 
     return exchanged_auth_credential

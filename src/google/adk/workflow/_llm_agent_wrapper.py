@@ -18,18 +18,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-import json
 from typing import Any
 from typing import Optional
 
 from google.genai import types
-from pydantic import BaseModel
 
 from ..agents.context import Context
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH_TASK_FC_NAME
 from ..events.event import Event
 from ..utils._schema_utils import validate_schema
+from ..utils.content_utils import to_user_content
 
 
 def _extract_finish_task_fc(event: Event) -> Optional[types.FunctionCall]:
@@ -185,21 +184,6 @@ def _synthesize_task_fr_event(fc: types.FunctionCall, output: Any) -> Event:
   )
 
 
-def _node_input_to_content(node_input: Any) -> types.Content:
-  """Converts node_input to a user Content for the LLM agent."""
-  if isinstance(node_input, types.Content):
-    return types.Content(role='user', parts=node_input.parts)
-  if isinstance(node_input, str):
-    text = node_input
-  elif isinstance(node_input, BaseModel):
-    text = node_input.model_dump_json()
-  elif isinstance(node_input, (dict, list)):
-    text = json.dumps(node_input)
-  else:
-    text = str(node_input)
-  return types.Content(role='user', parts=[types.Part(text=text)])
-
-
 def prepare_llm_agent_context(agent: Any, ctx: Context) -> Context:
   """Prepares the context for running LlmAgent as a node."""
   if agent.mode != 'single_turn':
@@ -207,12 +191,14 @@ def prepare_llm_agent_context(agent: Any, ctx: Context) -> Context:
 
   ic = ctx._invocation_context.model_copy()
   ic._event_queue = ctx._invocation_context._event_queue
+  ic.isolation_scope = ctx.isolation_scope
   agent_ctx = Context(
       invocation_context=ic,
       node_path=ctx.node_path,
       run_id=ctx.run_id,
       resume_inputs=ctx.resume_inputs,
   )
+  agent_ctx.isolation_scope = ctx.isolation_scope
 
   ic.session = ic.session.model_copy(deep=False)
   return agent_ctx
@@ -233,18 +219,21 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   overrides ``ic.user_content`` so the content-builder can fall back
   to that as the first user turn.
 
-  No branch is set — task and single_turn agents scope via
-  ``isolation_scope`` rather than branch.
+  For workflow nodes running in a sub-branch, stamp the input event with that
+  branch. A private node input should not look like the shared root user turn.
   """
   if node_input is None or agent.mode != 'single_turn':
     return
-  agent_input = _node_input_to_content(node_input)
+  agent_input = to_user_content(node_input)
   user_event = Event(author='user', message=agent_input)
   if user_event.content is not None:
     user_event.content.role = 'user'
   iso = getattr(ctx, 'isolation_scope', None)
   if iso:
     user_event.isolation_scope = iso
+  branch = ctx._invocation_context.branch
+  if branch:
+    user_event.branch = branch
   ctx.session.events.append(user_event)
 
 
@@ -296,7 +285,8 @@ async def run_llm_agent_as_node(
         f" but agent '{agent.name}' has mode='{agent.mode}'."
     )
 
-  if agent.mode == 'single_turn':
+  include_contents_explicit = 'include_contents' in agent.model_fields_set
+  if agent.mode == 'single_turn' and not include_contents_explicit:
     agent.include_contents = 'none'
 
   agent_ctx = prepare_llm_agent_context(agent, ctx)
@@ -318,7 +308,7 @@ async def run_llm_agent_as_node(
   # case).  For delegated tasks, the FC takes precedence and this
   # override is unused.
   if agent.mode == 'task' and node_input is not None:
-    update['user_content'] = _node_input_to_content(node_input)
+    update['user_content'] = to_user_content(node_input)
   ic = ic.model_copy(update=update)
 
   from ..agents.live_request_queue import LiveRequestQueue
@@ -388,19 +378,19 @@ async def run_llm_agent_as_node(
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
             target_name = event.actions.transfer_to_agent
-            if target_name != agent.name:
-              from ..agents.llm_agent import LlmAgent
 
-              if (
-                  isinstance(agent, LlmAgent)
-                  and ctx._invocation_context.is_resumable
-              ):
-                ctx._invocation_context.set_agent_state(
-                    agent.name, end_of_agent=True
-                )
-                yield agent._create_agent_state_event(ctx._invocation_context)
-              transferred = True
-              break
+            from ..agents.llm_agent import LlmAgent
+
+            if (
+                isinstance(agent, LlmAgent)
+                and ctx._invocation_context.is_resumable
+            ):
+              ctx._invocation_context.set_agent_state(
+                  agent.name, end_of_agent=True
+              )
+              yield agent._create_agent_state_event(ctx._invocation_context)
+            transferred = True
+            break
       if not had_task_fc or transferred:
         # LLM finished without delegating (or transferred away);
         # nothing more for this wrapper to do.

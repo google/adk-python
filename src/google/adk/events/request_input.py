@@ -48,13 +48,16 @@ class RequestInput(BaseModel):
   function calls and responses by count. Using unique IDs per
   iteration is still recommended for clarity in event logs.
   """
+
   payload: Optional[Any] = None
   """ Custom payload to be provided for resuming."""
+
   message: Optional[str] = Field(
       None,
       description="A message to display to the user when requesting input.",
   )
   """A message to display to the user when requesting input."""
+
   response_schema: Optional[SchemaType] = Field(
       None,
       description=(

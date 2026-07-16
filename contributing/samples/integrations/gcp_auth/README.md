@@ -1,5 +1,7 @@
 # GCP Auth Sample
 
+## Overview
+
 Demonstrates the use of Agent Identity auth manager with an agent that queries
 Spotify and Google Maps using auth providers.
 
@@ -68,46 +70,115 @@ gcloud alpha agent-identity connectors create $SPOTIFY_3LO_AUTH_PROVIDER_ID \
     --allowed-scopes=ALLOWED_SCOPES
 ```
 
-### 5. Test API key and 2LO auth provider using ADK web client
+## Sample Inputs
+
+- `What is the current weather in New York?`
+
+  *Tests the API key auth provider using the Google Maps tool.*
+
+- `Tell me about the song: Waving Flag`
+
+  *Tests the 2-legged OAuth (2LO) auth provider using the Spotify search track
+  tool.*
+
+- `Get my private playlists`
+
+  *Tests the 3-legged OAuth (3LO) auth provider using the custom web client and
+  the Spotify get playlists tool.*
+
+## How To
+
+### 1. Register the GCP Auth Provider
+
+Register the Agent Identity authentication provider with the credential manager
+so it can resolve GCP auth provider connector schemes.
+
+```python
+CredentialManager.register_auth_provider(GcpAuthProvider())
+```
+
+### 2. Configure 2-Legged OAuth (2LO)
+
+Define an `AuthConfig` utilizing `GcpAuthProviderScheme` pointing to the 2LO
+connector resource name. Attach it to an `AuthenticatedFunctionTool`.
+
+```python
+spotify_auth_config_2lo = AuthConfig(
+    auth_scheme=GcpAuthProviderScheme(name=SPOTIFY_2LO_AUTH_PROVIDER)
+)
+spotify_search_track_tool = AuthenticatedFunctionTool(
+    func=spotify_search_track,
+    auth_config=spotify_auth_config_2lo,
+)
+```
+
+See https://docs.cloud.google.com/iam/docs/auth-with-2lo for more details.
+
+### 3. Configure 3-Legged OAuth (3LO)
+
+For interactive user authorization flows, configure `GcpAuthProviderScheme` with
+required `scopes` and a `continue_uri` where the OAuth callback will redirect
+upon completion.
+
+```python
+spotify_auth_config_3lo = AuthConfig(
+    auth_scheme=GcpAuthProviderScheme(
+        name=SPOTIFY_3LO_AUTH_PROVIDER,
+        scopes=["playlist-read-private"],
+        continue_uri=CONTINUE_URI,
+    )
+)
+spotify_get_playlist_tool = AuthenticatedFunctionTool(
+    func=spotify_get_playlists,
+    auth_config=spotify_auth_config_3lo,
+)
+```
+
+See https://docs.cloud.google.com/iam/docs/auth-with-3lo for more details.
+
+### 4. Configure Auth for MCP Toolsets
+
+When utilizing an `McpToolset`, supply the `auth_scheme` directly to enable
+automatic authentication (such as API key injection) during MCP server
+communication.
+
+```python
+maps_tools = McpToolset(
+    connection_params=StreamableHTTPConnectionParams(url=MAPS_MCP_ENDPOINT),
+    auth_scheme=GcpAuthProviderScheme(name=MAPS_API_AUTH_PROVIDER),
+    errlog=None,  # Required for agent-freezing (pickling)
+)
+```
+
+## Testing the Sample
+
+### 1. Test API key and 2LO auth provider using ADK web client
 
 ```bash
 adk web contributing/samples
 ```
 
 - On the ADK web UI, select the agent named `gcp_auth` from the dropdown.
-- Sample queries to try:
-  - API key (Google Maps tool): "What is the current weather in New York?"
-  - 2LO key (Spotify tool): "Tell me about the song: Waving Flag"
+- Try the sample queries from the **Sample Inputs** section for API key
+  (Google Maps) and 2LO (Spotify).
 
-### 6. Test 3LO auth provider using custom web client
+### 2. Test 3LO auth provider using custom web client
 
-> **Note:** If the agent backend is running on a different port or host other
-> than `localhost:8000`, please set the `AGENT_BACKEND_URL` environment variable
-> before starting the client (e.g.,
-> `export AGENT_BACKEND_URL="http://localhost:9000"`).
-
-- In a separate shell, activate environment
+- Navigate to the client directory and install dependencies:
 
 ```bash
-cd adk-python
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-- Navigate to the client directory and install dependencies
-
-```bash
-cd contributing/samples/gcp_auth/client
+cd contributing/samples/integrations/gcp_auth/client
 pip install -r requirements.txt
 ```
 
-- Start the client application
+- Start the client application:
 
 ```bash
 uvicorn main:app --port 8080 --reload
 ```
 
-- Open `http://localhost:8080`. (**Note:** You must use `localhost` and not `127.0.0.1`, as the OAuth redirect URL specifically requires it.)
-- On the login screen, enter an arbitrary user ID (e.g. test_user123).
-- Sample queries to try:
-  - 3LO key (Spotify tool): "What are my private Spotify playlists?"
+- Open `http://localhost:8080`. (**Note:** You must use `localhost` and not
+  `127.0.0.1`, as the OAuth redirect URL specifically requires it.)
+- In the sidebar, configure your GCP Project ID and Location, click "Load Remote
+  Agents", choose an engine to query, and click "Save & Apply Settings".
+- Try the 3LO sample query to fetch private playlists.

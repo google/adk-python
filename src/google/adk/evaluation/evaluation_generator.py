@@ -21,9 +21,9 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
+from typing import TYPE_CHECKING
 import uuid
 
-from google.genai import errors
 from google.genai import types
 from google.genai.types import Content
 from pydantic import BaseModel
@@ -59,9 +59,13 @@ from .eval_case import InvocationEvents
 from .eval_case import SessionInput
 from .eval_set import EvalSet
 from .request_intercepter_plugin import _RequestIntercepterPlugin
+from .simulation.user_simulator import BaseUserSimulatorConfig
 from .simulation.user_simulator import Status as UserSimulatorStatus
 from .simulation.user_simulator import UserSimulator
 from .simulation.user_simulator_provider import UserSimulatorProvider
+
+if TYPE_CHECKING:
+  from types import TracebackType
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -94,7 +98,7 @@ class _LiveSession:
     self.user_id = user_id
     self.session_id = session_id
     self.live_request_queue = LiveRequestQueue()
-    self.event_queue = asyncio.Queue()
+    self.event_queue: asyncio.Queue[Event] = asyncio.Queue()
     self.turn_complete_event = asyncio.Event()
     self.live_finished = asyncio.Event()
     self.current_invocation_id = Event.new_id()
@@ -226,8 +230,15 @@ class _LiveSession:
       self.live_finished.set()
       self.turn_complete_event.set()  # Unblock any waiters
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     """Closes the queue and waits for the background task to finish."""
+    from google.genai import errors
+
     self.live_request_queue.close()
     try:
       await asyncio.wait_for(self.consume_task, timeout=30)
@@ -262,7 +273,8 @@ class EvaluationGenerator:
       eval_set: EvalSet,
       agent_module_path: str,
       repeat_num: int = 3,
-      agent_name: str = None,
+      agent_name: Optional[str] = None,
+      user_simulator_config: Optional[BaseUserSimulatorConfig] = None,
   ) -> list[EvalCaseResponses]:
     """Returns evaluation responses for the given dataset and agent.
 
@@ -273,14 +285,20 @@ class EvaluationGenerator:
         usually done to remove uncertainty that a single run may bring.
       agent_name: The name of the agent that should be evaluated. This is
         usually the sub-agent.
+      user_simulator_config: Optional configuration for the user simulator.
+        Only relevant for eval cases that use a `conversation_scenario` (which
+        are driven by `LlmBackedUserSimulator`); ignored for static
+        conversations. Pass an `LlmBackedUserSimulatorConfig` to override the
+        user-simulation model, max invocations, or custom instructions.
     """
     results = []
 
     for eval_case in eval_set.eval_cases:
-      # assume only static conversations are needed
-      user_simulator = UserSimulatorProvider().provide(eval_case)
       responses = []
       for _ in range(repeat_num):
+        user_simulator = UserSimulatorProvider(
+            user_simulator_config=user_simulator_config
+        ).provide(eval_case)
         response_invocations = await EvaluationGenerator._process_query(
             agent_module_path,
             user_simulator,
@@ -482,7 +500,7 @@ class EvaluationGenerator:
         memory_service=memory_service,
         plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
-      events = []
+      events: list[Event] = []
 
       # `_LiveSession` is a runtime connection manager wrapping the `Session`
       # data model (which stores conversation history/state). It manages the
@@ -589,7 +607,7 @@ class EvaluationGenerator:
         memory_service=memory_service,
         plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
-      events = []
+      events: list[Event] = []
       while True:
         next_user_message = await user_simulator.get_next_user_message(
             copy.deepcopy(events)
@@ -626,9 +644,9 @@ class EvaluationGenerator:
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
       final_response = None
-      final_event = None
+      final_event: Optional[Event] = None
       user_content = Content(parts=[])
-      invocation_timestamp = 0
+      invocation_timestamp: float = 0
       app_details = None
       if (
           app_details_per_invocation
@@ -644,8 +662,9 @@ class EvaluationGenerator:
         if current_author == _USER_AUTHOR:
           # If the author is the user, then we just identify it and move on
           # to the next event.
-          user_content = event.content
-          invocation_timestamp = event.timestamp
+          if event.content is not None:
+            user_content = event.content
+            invocation_timestamp = event.timestamp
           continue
 
         if event.content and event.content.parts:
@@ -666,7 +685,9 @@ class EvaluationGenerator:
       invocation_events = [
           InvocationEvent(author=e.author, content=e.content)
           for e in events_to_add
-          if e is not final_event
+          if final_event is None
+          or e is not final_event
+          or e.get_function_calls()
       ]
       invocations.append(
           Invocation(

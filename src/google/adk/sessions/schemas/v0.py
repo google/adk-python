@@ -172,12 +172,22 @@ class StorageSession(Base):
         and sqlalchemy_session.bind
         and sqlalchemy_session.bind.dialect.name == "sqlite"
     )
-    return self.get_update_timestamp(is_sqlite=is_sqlite)
+    is_postgresql = bool(
+        sqlalchemy_session
+        and sqlalchemy_session.bind
+        and sqlalchemy_session.bind.dialect.name == "postgresql"
+    )
+    return self.get_update_timestamp(
+        is_sqlite=is_sqlite, is_postgresql=is_postgresql
+    )
 
-  def get_update_timestamp(self, is_sqlite: bool) -> float:
+  def get_update_timestamp(
+      self, is_sqlite: bool = False, is_postgresql: bool = False
+  ) -> float:
     """Returns the time zone aware update timestamp."""
-    if is_sqlite:
-      # SQLite does not support timezone. SQLAlchemy returns a naive datetime
+    del is_sqlite, is_postgresql  # Unused.
+    if self.update_time.tzinfo is None:
+      # SQLite and PostgreSQL do not support timezone. SQLAlchemy returns a naive datetime
       # object without timezone information. We need to convert it to UTC
       # manually.
       return self.update_time.replace(tzinfo=timezone.utc).timestamp()
@@ -195,6 +205,7 @@ class StorageSession(Base):
       state: dict[str, Any] | None = None,
       events: list[Event] | None = None,
       is_sqlite: bool = False,
+      is_postgresql: bool = False,
   ) -> Session:
     """Converts the storage session to a session object."""
     if state is None:
@@ -208,7 +219,9 @@ class StorageSession(Base):
         id=self.id,
         state=state,
         events=events,
-        last_update_time=self.get_update_timestamp(is_sqlite=is_sqlite),
+        last_update_time=self.get_update_timestamp(
+            is_sqlite=is_sqlite, is_postgresql=is_postgresql
+        ),
     )
     session._storage_update_marker = self.get_update_marker()
     return session

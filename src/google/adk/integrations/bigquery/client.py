@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import List
 from typing import Optional
 from typing import Union
@@ -42,7 +41,7 @@ def get_bigquery_client(
     project: Optional[str],
     credentials: Credentials,
     location: Optional[str] = None,
-    user_agent: Optional[Union[str, List[str]]] = None,
+    user_agent: Optional[Union[str, List[Optional[str]]]] = None,
 ) -> bigquery.Client:
   """Get a BigQuery client.
 
@@ -84,7 +83,7 @@ def get_bigquery_client(
 def get_dataplex_catalog_client(
     *,
     credentials: Credentials,
-    user_agent: Optional[Union[str, List[str]]] = None,
+    user_agent: Optional[Union[str, List[Optional[str]]]] = None,
 ) -> dataplex_v1.CatalogServiceClient:
   """Get a Dataplex CatalogServiceClient with minimal necessary arguments.
 

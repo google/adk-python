@@ -22,10 +22,12 @@ import logging
 from typing import Any
 from typing import AsyncIterator
 from typing import Optional
+from typing import overload
 from typing import TypeAlias
 from typing import TypeVar
 
 from google.adk.platform import time as platform_time
+from google.adk.platform import uuid as platform_uuid
 
 try:
   from sqlalchemy import delete
@@ -78,6 +80,18 @@ _SQLITE_DIALECT = "sqlite"
 _MARIADB_DIALECT = "mariadb"
 _MYSQL_DIALECT = "mysql"
 _POSTGRESQL_DIALECT = "postgresql"
+# Dialects whose DATETIME/TIMESTAMP columns do not retain timezone info, so
+# timezone-aware datetimes must have their tzinfo stripped before storage. This
+# keeps the value written by create_session consistent with the value read back
+# from storage; otherwise the stale-writer marker comparison in append_event
+# raises a false positive on the first append after create_session. Cloud
+# Spanner is intentionally excluded because its TIMESTAMP is timezone-aware.
+_NAIVE_DATETIME_DIALECTS = (
+    _SQLITE_DIALECT,
+    _POSTGRESQL_DIALECT,
+    _MYSQL_DIALECT,
+    _MARIADB_DIALECT,
+)
 # Tuple key order for in-process per-session lock maps:
 # (app_name, user_id, session_id).
 _SessionLockKey: TypeAlias = tuple[str, str, str]
@@ -193,57 +207,104 @@ class _SchemaClasses:
 class DatabaseSessionService(BaseSessionService):
   """A session service that uses a database for storage."""
 
+  @overload
   def __init__(
       self,
       db_url: str,
+      **kwargs: Any,
+  ) -> None:
+    """Initializes the database session service with a database URL.
+
+    Args:
+      db_url: Database URL string for creating a new engine.
+      **kwargs: Additional keyword arguments passed to create_async_engine.
+    """
+
+  @overload
+  def __init__(
+      self,
+      *,
+      db_engine: AsyncEngine,
+  ) -> None:
+    """Initializes the database session service with an existing SQLAlchemy AsyncEngine.
+
+    Args:
+      db_engine: Existing SQLAlchemy AsyncEngine instance to use.
+    """
+
+  def __init__(
+      self,
+      db_url: Optional[str] = None,
+      db_engine: Optional[AsyncEngine] = None,
       *,
       transformer: Optional[SessionDataTransformer] = None,
       **kwargs: Any,
-  ):
-    """Initializes the database session service with a database URL."""
-    # 1. Create DB engine for db connection
-    # 2. Create all tables based on schema
-    # 3. Initialize all properties
+  ) -> None:
+    """Initializes the database session service.
+
+    Args:
+      db_url: Database URL string for creating a new engine. Mutually exclusive
+        with db_engine.
+      db_engine: Existing AsyncEngine instance. Mutually exclusive with db_url.
+      transformer: Optional SessionDataTransformer for encrypting/masking data
+        at the storage boundary.
+      **kwargs: Additional keyword arguments passed to create_async_engine when
+        db_url is provided. Ignored when db_engine is provided.
+
+    Raises:
+      ValueError: If neither or both db_url and db_engine are provided, or if
+        engine creation fails.
+    """
     try:
-      import sqlalchemy
+      import sqlalchemy  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
       raise missing_extra("sqlalchemy", "db") from e
 
-    try:
-      engine_kwargs = dict(kwargs)
-      url = make_url(db_url)
-      if (
-          url.get_backend_name() == _SQLITE_DIALECT
-          and url.database == ":memory:"
-      ):
-        engine_kwargs.setdefault("poolclass", StaticPool)
-        connect_args = dict(engine_kwargs.get("connect_args", {}))
-        connect_args.setdefault("check_same_thread", False)
-        engine_kwargs["connect_args"] = connect_args
-      elif url.get_backend_name() != _SQLITE_DIALECT:
-        engine_kwargs.setdefault("pool_pre_ping", True)
-
-      db_engine = create_async_engine(db_url, **engine_kwargs)
-      if db_engine.dialect.name == _SQLITE_DIALECT:
-        # Set sqlite pragma to enable foreign keys constraints
-        event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
-
-    except Exception as e:
-      if isinstance(e, ArgumentError):
-        raise ValueError(
-            f"Invalid database URL format or argument '{db_url}'."
-        ) from e
-      if isinstance(e, ImportError):
-        raise ValueError(
-            f"Database related module not found for URL '{db_url}'."
-        ) from e
+    if (db_url is None) == (db_engine is None):
       raise ValueError(
-          f"Failed to create database engine for URL '{db_url}'"
-      ) from e
+          "Exactly one of 'db_url' or 'db_engine' must be provided."
+      )
+
+    if db_engine is None:
+      self._owns_db_engine = True
+      try:
+        engine_kwargs = dict(kwargs)
+        url = make_url(db_url)
+        if (
+            url.get_backend_name() == _SQLITE_DIALECT
+            and url.database == ":memory:"
+        ):
+          engine_kwargs.setdefault("poolclass", StaticPool)
+          connect_args = dict(engine_kwargs.get("connect_args", {}))
+          connect_args.setdefault("check_same_thread", False)
+          engine_kwargs["connect_args"] = connect_args
+        elif url.get_backend_name() != _SQLITE_DIALECT:
+          engine_kwargs.setdefault("pool_pre_ping", True)
+
+        db_engine = create_async_engine(db_url, **engine_kwargs)
+        if db_engine.dialect.name == _SQLITE_DIALECT:
+          # Set sqlite pragma to enable foreign keys constraints
+          event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
+
+      except Exception as e:
+        if isinstance(e, ArgumentError):
+          raise ValueError(
+              f"Invalid database URL format or argument '{db_url}'."
+          ) from e
+        if isinstance(e, ImportError):
+          raise ValueError(
+              f"Database related module not found for URL '{db_url}'."
+          ) from e
+        raise ValueError(
+            f"Failed to create database engine for URL '{db_url}'"
+        ) from e
+    else:
+      self._owns_db_engine = False
 
     self.db_engine: AsyncEngine = db_engine
+
     # DB session factory method
     self.database_session_factory: async_sessionmaker[
         DatabaseSessionFactory
@@ -305,6 +366,14 @@ class DatabaseSessionService(BaseSessionService):
         _POSTGRESQL_DIALECT,
     )
 
+  def _uses_naive_datetime(self) -> bool:
+    """Returns whether the active dialect stores datetimes without timezone info.
+
+    These dialects persist timezone-naive DATETIME/TIMESTAMP values, so
+    timezone-aware datetimes must have their tzinfo stripped before storage.
+    """
+    return self.db_engine.dialect.name in _NAIVE_DATETIME_DIALECTS
+
   @asynccontextmanager
   async def _with_session_lock(
       self, *, app_name: str, user_id: str, session_id: str
@@ -337,12 +406,17 @@ class DatabaseSessionService(BaseSessionService):
         else:
           self._session_lock_ref_count[lock_key] = remaining
 
-  async def _prepare_tables(self) -> None:
+  async def prepare_tables(self) -> None:
     """Ensure database tables are ready for use.
 
     This method is called lazily before each database operation. It checks the
     DB schema version to use and creates the tables (including setting the
     schema version metadata) if needed.
+
+    It can also be called eagerly right after construction to pay the
+    table-creation cost upfront (e.g. during application startup) instead of
+    on the first database operation.  It is safe to call more than once and
+    is recommended for latency-sensitive applications.
     """
     # Early return if tables are already created
     if self._tables_created:
@@ -441,10 +515,13 @@ class DatabaseSessionService(BaseSessionService):
     # 3. Add the object to the table
     # 4. Build the session object with generated id
     # 5. Return the session
-    await self._prepare_tables()
+    await self.prepare_tables()
+    has_user_provided_id = session_id is not None
+    if session_id is None:
+      session_id = platform_uuid.new_uuid()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
-      if session_id and await sql_session.get(
+      if has_user_provided_id and await sql_session.get(
           schema.StorageSession, (app_name, user_id, session_id)
       ):
         raise AlreadyExistsError(
@@ -488,7 +565,7 @@ class DatabaseSessionService(BaseSessionService):
       now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
-      if is_sqlite or is_postgresql:
+      if self._uses_naive_datetime():
         now = now.replace(tzinfo=None)
 
       storage_session = schema.StorageSession(
@@ -500,7 +577,6 @@ class DatabaseSessionService(BaseSessionService):
           update_time=now,
       )
       sql_session.add(storage_session)
-      await sql_session.commit()
 
       # Merge states for response
       merged_state = _merge_state(
@@ -508,9 +584,12 @@ class DatabaseSessionService(BaseSessionService):
       )
       if self.transformer:
         merged_state = self.transformer.after_load_state(merged_state)
+      # Call to_session before commit to avoid post-commit lazy-load.
+      await sql_session.flush()
       session = storage_session.to_session(
-          state=merged_state, is_sqlite=is_sqlite
+          state=merged_state, is_sqlite=is_sqlite, is_postgresql=is_postgresql
       )
+      await sql_session.commit()
     return session
 
   @override
@@ -522,7 +601,7 @@ class DatabaseSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
-    await self._prepare_tables()
+    await self.prepare_tables()
     # 1. Get the storage session entry from session table
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
@@ -536,26 +615,30 @@ class DatabaseSessionService(BaseSessionService):
       if storage_session is None:
         return None
 
-      stmt = (
-          select(schema.StorageEvent)
-          .filter(schema.StorageEvent.app_name == app_name)
-          .filter(schema.StorageEvent.session_id == storage_session.id)
-          .filter(schema.StorageEvent.user_id == user_id)
-      )
+      if config and config.num_recent_events == 0:
+        # Existence/metadata-only read; skip the events query entirely.
+        storage_events = []
+      else:
+        stmt = (
+            select(schema.StorageEvent)
+            .filter(schema.StorageEvent.app_name == app_name)
+            .filter(schema.StorageEvent.session_id == storage_session.id)
+            .filter(schema.StorageEvent.user_id == user_id)
+        )
 
-      if config and config.after_timestamp:
-        after_dt = datetime.fromtimestamp(
-            config.after_timestamp, timezone.utc
-        ).replace(tzinfo=None)
-        stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
+        if config and config.after_timestamp:
+          after_dt = datetime.fromtimestamp(
+              config.after_timestamp, timezone.utc
+          ).replace(tzinfo=None)
+          stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
-      stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
+        stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
 
-      if config and config.num_recent_events is not None:
-        stmt = stmt.limit(config.num_recent_events)
+        if config and config.num_recent_events is not None:
+          stmt = stmt.limit(config.num_recent_events)
 
-      result = await sql_session.execute(stmt)
-      storage_events = result.scalars().all()
+        result = await sql_session.execute(stmt)
+        storage_events = result.scalars().all()
 
       # Fetch states from storage
       storage_app_state = await sql_session.get(
@@ -582,8 +665,12 @@ class DatabaseSessionService(BaseSessionService):
           evt = self.transformer.after_load_event(evt)
         events.append(evt)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
+      is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       session = storage_session.to_session(
-          state=merged_state, events=events, is_sqlite=is_sqlite
+          state=merged_state,
+          events=events,
+          is_sqlite=is_sqlite,
+          is_postgresql=is_postgresql,
       )
     return session
 
@@ -591,7 +678,7 @@ class DatabaseSessionService(BaseSessionService):
   async def list_sessions(
       self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
-    await self._prepare_tables()
+    await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session(
         read_only=True
@@ -630,6 +717,7 @@ class DatabaseSessionService(BaseSessionService):
 
       sessions = []
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
+      is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       for storage_session in results:
         session_state = storage_session.state
         user_state = user_states_map.get(storage_session.user_id, {})
@@ -637,7 +725,11 @@ class DatabaseSessionService(BaseSessionService):
         if self.transformer:
           merged_state = self.transformer.after_load_state(merged_state)
         sessions.append(
-            storage_session.to_session(state=merged_state, is_sqlite=is_sqlite)
+            storage_session.to_session(
+                state=merged_state,
+                is_sqlite=is_sqlite,
+                is_postgresql=is_postgresql,
+            )
         )
       return ListSessionsResponse(sessions=sessions)
 
@@ -645,7 +737,7 @@ class DatabaseSessionService(BaseSessionService):
   async def delete_session(
       self, app_name: str, user_id: str, session_id: str
   ) -> None:
-    await self._prepare_tables()
+    await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
       stmt = delete(schema.StorageSession).where(
@@ -660,7 +752,7 @@ class DatabaseSessionService(BaseSessionService):
   async def get_user_state(
       self, *, app_name: str, user_id: str
   ) -> dict[str, Any]:
-    await self._prepare_tables()
+    await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session(
         read_only=True
@@ -674,7 +766,7 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    await self._prepare_tables()
+    await self.prepare_tables()
     if event.partial:
       return event
 
@@ -689,6 +781,7 @@ class DatabaseSessionService(BaseSessionService):
     # 3. Store the new event.
     schema = self._get_schema_classes()
     is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
+    is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
 
     state_delta = (
@@ -724,7 +817,9 @@ class DatabaseSessionService(BaseSessionService):
         storage_session = storage_session_result.scalars().one_or_none()
         if storage_session is None:
           raise ValueError(f"Session {session.id} not found.")
-        storage_update_time = storage_session.get_update_timestamp(is_sqlite)
+        storage_update_time = storage_session.get_update_timestamp(
+            is_sqlite=is_sqlite, is_postgresql=is_postgresql
+        )
         storage_update_marker = storage_session.get_update_marker()
 
         storage_app_state = await _select_required_state(
@@ -810,13 +905,17 @@ class DatabaseSessionService(BaseSessionService):
             schema.StorageEvent.from_event(session, transformed_event)
         )
 
+        # Read revision fields before commit. Post-commit ORM attribute access
+        # can lazy-load expired columns and trigger MissingGreenlet with asyncpg
+        # when pool_pre_ping is enabled.
+        last_update_time = storage_session.get_update_timestamp(
+            is_sqlite=is_sqlite, is_postgresql=is_postgresql
+        )
+        storage_update_marker = storage_session.get_update_marker()
         await sql_session.commit()
 
-        # Update timestamp with commit time
-        session.last_update_time = storage_session.get_update_timestamp(
-            is_sqlite
-        )
-        session._storage_update_marker = storage_session.get_update_marker()
+        session.last_update_time = last_update_time
+        session._storage_update_marker = storage_update_marker
 
     # Also update the in-memory session
     await super().append_event(session=session, event=event)
@@ -824,7 +923,8 @@ class DatabaseSessionService(BaseSessionService):
 
   async def close(self) -> None:
     """Disposes the SQLAlchemy engine and closes pooled connections."""
-    await self.db_engine.dispose()
+    if self._owns_db_engine:
+      await self.db_engine.dispose()
 
   async def __aenter__(self) -> DatabaseSessionService:
     """Enters the async context manager and returns this service."""

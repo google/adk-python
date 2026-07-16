@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 from typing import Mapping
 from typing import Optional
@@ -235,6 +236,26 @@ class PerAgentDatabaseSessionService(BaseSessionService):
   async def append_event(self, session: Session, event: Event) -> Event:
     service = await self._get_service(session.app_name)
     return await service.append_event(session, event)
+
+  async def close(self) -> None:
+    """Closes all underlying session services."""
+    for service in self._services.values():
+      if hasattr(service, "close"):
+        await service.close()
+    self._services.clear()
+
+  async def __aenter__(self) -> PerAgentDatabaseSessionService:
+    """Enters the async context manager."""
+    return self
+
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
+    """Exits the async context manager and closes the service."""
+    await self.close()
 
 
 class PerAgentFileArtifactService(BaseArtifactService):

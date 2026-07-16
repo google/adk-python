@@ -1,0 +1,37 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "Hello! What can you help me with?"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "author": "interactions_test_agent",
+      "content": {
+        "parts": [
+          {
+            "text": "Hello! I am \"interactions_test_agent,\" an agent designed for testing the Interactions API integration.\n\nI can help you with two main tasks:\n1.  **Searching the web:** If you have questions that require up-to-date information, I can search the web for you.\n2.  **Checking the weather:** I can provide the current weather for a specific city.\n\nHow can I assist you today?"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "id": "e-2",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "interactions_test_agent@1"
+      }
+    }
+  ]
+}

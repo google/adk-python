@@ -39,7 +39,7 @@ def _user_key(app_name: str, user_id: str) -> str:
 
 def _extract_words_lower(text: str) -> set[str]:
   """Extracts words from a string and converts them to lowercase."""
-  return set([word.lower() for word in re.findall(r'[A-Za-z]+', text)])
+  return set([word.lower() for word in re.findall(r'\w+', text, re.UNICODE)])
 
 
 class InMemoryMemoryService(BaseMemoryService):
@@ -107,12 +107,19 @@ class InMemoryMemoryService(BaseMemoryService):
     user_key = _user_key(app_name, user_id)
 
     with self._lock:
-      session_event_lists = self._session_events.get(user_key, {})
+      # Copy the events into a stable snapshot while holding the lock. Iterating
+      # a live reference outside the lock would race with concurrent writers
+      # (add_session_to_memory / add_events_to_memory) mutating the same dict
+      # and lists, raising "dictionary changed size during iteration".
+      session_event_lists = [
+          list(events)
+          for events in self._session_events.get(user_key, {}).values()
+      ]
 
     words_in_query = _extract_words_lower(query)
     response = SearchMemoryResponse()
 
-    for session_events in session_event_lists.values():
+    for session_events in session_event_lists:
       for event in session_events:
         if not event.content or not event.content.parts:
           continue

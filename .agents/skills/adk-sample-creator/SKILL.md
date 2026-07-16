@@ -89,8 +89,9 @@ Each sample should have a `README.md` with the following structure:
 
 - **Overview**: What the sample does.
 - **Sample Inputs**: Examples of inputs to test with. Each prompt must be wrapped in backticks. If a prompt has an explanation, always add a blank line between the prompt and the explanation, and indent the explanation by two spaces.
-- **Graph**: Visualization of the graph flow (Mermaid recommended for workflows).
+- **Graph**: Visualization of the graph flow (Mermaid recommended). For Workflow root agents, visualize the graph flow of nodes. For agents that orchestrate tools or sub-agents (e.g., `LlmAgent`, `ManagedAgent`), visualize the topology of the agent and its tools/sub-agents instead of internal workflow nodes. Keep it a simple topology diagram (a few nodes and edges). Do **not** draw a request/response data-flow sequence (e.g., `user -> agent -> API -> tool -> ... -> user`); those are noisy and add little value over the topology.
 - **How To**: Explanation of key techniques used (e.g., `ctx.run_node`).
+- **Related Guides**: Links to relevant developer guides in `docs/guides/` that explain the concepts or classes used.
 
 #### README Example Template:
 
@@ -111,17 +112,25 @@ Brief description.
 
 ## Graph
 
+For Workflow root agents:
 ```mermaid
 graph TD
     START --> MyNode
 ```
 
-````
+For agents that orchestrate tools or sub-agents (`LlmAgent`, `ManagedAgent`, ...):
+```mermaid
+graph TD
+    MyAgent[my_agent] -->|calls| MyTool(my_tool)
+```
 
 ## How To
 
 Explain the details.
 
+## Related Guides
+
+- [Guide Title](../../docs/guides/path/to/guide.md) - Brief description of what the guide covers.
 ````
 
 ## Examples

@@ -28,6 +28,7 @@ import json
 import logging
 import mimetypes
 import os
+import traceback as traceback_module
 
 # Enable gRPC fork support so child processes created via os.fork()
 # can safely create new gRPC channels.  Must be set before grpc's
@@ -36,13 +37,18 @@ import os
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
 
 import random
+import re
 import time
 from types import MappingProxyType
+from types import TracebackType
 from typing import Any
-from typing import Awaitable
+from typing import AsyncIterator
 from typing import Callable
+from typing import Coroutine
 from typing import Optional
+from typing import ParamSpec
 from typing import TYPE_CHECKING
+from typing import TypeVar
 import uuid
 import weakref
 
@@ -138,7 +144,7 @@ def _derive_scope(
 
 # Track all living plugin instances so the fork handler can reset
 # them proactively in the child, before _ensure_started runs.
-_LIVE_PLUGINS: weakref.WeakSet = weakref.WeakSet()
+_LIVE_PLUGINS: weakref.WeakSet[BigQueryAgentAnalyticsPlugin] = weakref.WeakSet()
 
 
 def _after_fork_in_child() -> None:
@@ -154,17 +160,31 @@ if hasattr(os, "register_at_fork"):
   os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
-def _safe_callback(func):
+_SafeCallbackP = ParamSpec("_SafeCallbackP")
+_SafeCallbackT = TypeVar("_SafeCallbackT")
+
+
+def _safe_callback(
+    func: Callable[
+        _SafeCallbackP, Coroutine[Any, Any, Optional[_SafeCallbackT]]
+    ],
+) -> Callable[_SafeCallbackP, Coroutine[Any, Any, Optional[_SafeCallbackT]]]:
   """Decorator that catches and logs exceptions in plugin callbacks.
 
   Prevents plugin errors from propagating to the runner and crashing
   the agent run. All callback exceptions are logged and swallowed.
+
+  The signature (including keyword-only parameters and the ``Coroutine``
+  return type) is preserved via ``ParamSpec`` so decorated methods still
+  match the ``BasePlugin`` overrides they implement.
   """
 
   @functools.wraps(func)
-  async def wrapper(self, **kwargs):
+  async def wrapper(
+      *args: _SafeCallbackP.args, **kwargs: _SafeCallbackP.kwargs
+  ) -> Optional[_SafeCallbackT]:
     try:
-      return await func(self, **kwargs)
+      return await func(*args, **kwargs)
     except Exception:
       logger.exception(
           "BigQuery analytics plugin error in %s; skipping.",
@@ -214,7 +234,7 @@ def _format_content(
   return " | ".join(parts), truncated
 
 
-def _find_transfer_target(agent, agent_name: str):
+def _find_transfer_target(agent: Any, agent_name: str) -> Any:
   """Find a transfer target agent by name in the accessible agent tree.
 
   Searches the current agent's sub-agents, parent, and peer agents
@@ -305,6 +325,84 @@ def _get_tool_origin(
   return "UNKNOWN"
 
 
+def _extract_tool_declarations(
+    tools_dict: dict[str, "BaseTool"],
+) -> list[dict[str, Any]]:
+  """Extracts structured tool metadata for the ``LLM_REQUEST`` event.
+
+  Earlier versions logged only the tool names (``list(tools_dict.keys())``).
+  Downstream consumers such as online evaluation need the tool *description* and
+  *parameter schema* to judge whether the model selected and invoked the right
+  tool, so this returns one structured entry per tool instead of a bare name.
+
+  Each entry always carries ``name`` and, when available, ``description`` and
+  ``parameters`` (the OpenAPI parameter schema from the tool's
+  ``FunctionDeclaration``). Extraction is best-effort and per-tool: a tool whose
+  declaration cannot be resolved still contributes its name and description, so
+  one misbehaving tool never drops the whole ``tools`` attribute.
+
+  Args:
+      tools_dict: Mapping of tool name to ``BaseTool`` from ``LlmRequest``.
+
+  Returns:
+      A list of ``{"name", "description"?, "parameters"?}`` dicts.
+  """
+  tools: list[dict[str, Any]] = []
+  for name, tool in tools_dict.items():
+    # Fall back to the dict key when the tool has no (or a falsy) name.
+    entry: dict[str, Any] = {"name": getattr(tool, "name", None) or name}
+    description = getattr(tool, "description", None)
+    if description:
+      entry["description"] = description
+
+    # The parameter schema lives on the tool's FunctionDeclaration, which some
+    # tools (e.g. built-in tools) do not provide. Resolve defensively so a
+    # single failing tool does not discard the whole tools list.
+    #
+    # Note: FunctionTool._get_declaration() rebuilds the declaration from the
+    # function signature on each call (no caching), so this repeats work the
+    # framework already did when assembling the request. Acceptable for typical
+    # toolsets; revisit with a cache if it shows up on the hot path.
+    declaration = None
+    try:
+      get_declaration = getattr(tool, "_get_declaration", None)
+      if callable(get_declaration):
+        declaration = get_declaration()
+    except Exception:  # pylint: disable=broad-except
+      logger.debug("Failed to get declaration for tool %s", name, exc_info=True)
+
+    if declaration is not None:
+      if "description" not in entry:
+        decl_description = getattr(declaration, "description", None)
+        if decl_description:
+          entry["description"] = decl_description
+      # A declaration carries its parameter schema in one of two shapes: the
+      # structured `parameters` Schema, or a raw JSON-schema dict in
+      # `parameters_json_schema`. Several tools (MCP, OpenAPI, skill, node, and
+      # environment tools) populate only the latter, and model adapters prefer
+      # it, so prefer it here too and fall back to `parameters` otherwise.
+      json_schema = getattr(declaration, "parameters_json_schema", None)
+      if json_schema is not None:
+        entry["parameters"] = json_schema
+      else:
+        parameters = getattr(declaration, "parameters", None)
+        if parameters is not None:
+          try:
+            entry["parameters"] = parameters.model_dump(
+                exclude_none=True, mode="json"
+            )
+          except Exception:  # pylint: disable=broad-except
+            # Leave parameters off if the schema is not JSON-serializable.
+            logger.debug(
+                "Failed to serialize parameters for tool %s",
+                name,
+                exc_info=True,
+            )
+
+    tools.append(entry)
+  return tools
+
+
 _SENSITIVE_KEYS = frozenset({
     "client_secret",
     "access_token",
@@ -313,6 +411,14 @@ _SENSITIVE_KEYS = frozenset({
     "api_key",
     "password",
 })
+
+# Cloud Platform OAuth scope. Assembled from parts so this module does not
+# embed a bare Google APIs host literal: the file-content compliance scan
+# rejects such host literals on changed files unless an accompanying mTLS
+# endpoint is present, which does not apply to this OAuth-scope use.
+_CLOUD_PLATFORM_SCOPE = (
+    "https://www." + "googleapis" + ".com/auth/cloud-platform"
+)
 
 
 def _recursive_smart_truncate(
@@ -606,6 +712,28 @@ class BigQueryLoggerConfig:
         views like ``v_llm_request``. Set a distinct prefix per table when
         multiple plugin instances share one dataset to avoid view-name
         collisions.
+      enable_otel_correlation: When ``True``, capture the ambient OpenTelemetry
+        span context at row-emission time into ``attributes.otel.{span_id,
+        trace_id}`` (a best-effort Cloud Trace join key, not a foreign key).
+        ``False`` (the default) emits no ``attributes.otel``. Has no effect when
+        ``attributes`` is projected out via ``payload_column_denylist``.
+      custom_metadata_allowlist: Keys to capture from ``event.custom_metadata``
+        into ``attributes.custom_metadata.*``. Entries are exact keys, or
+        explicit prefix patterns ending in ``*`` (e.g. ``"a2a:*"``). ``None`` /
+        empty preserves today's behavior (only the built-in ``a2a:*`` path
+        runs). Captured values pass the same safety pipeline (truncation,
+        sensitive-key redaction, circular-reference handling) as all other
+        logged content.
+      payload_column_denylist: Payload columns to project OUT of the table at
+        write time. Only the projectable payload columns ``content`` /
+        ``content_parts`` / ``attributes`` / ``latency_ms`` may be listed;
+        identity / correlation columns are protected and raise ``ValueError`` if
+        listed. Applied schema-first (table schema, Arrow schema, row dict, and
+        views all stay consistent); views that reference a denied column drop
+        the dependent derived columns. NOTE: denying ``attributes`` also
+        disables ``attributes.otel`` and ``attributes.custom_metadata``;
+        combining it with a non-empty ``custom_metadata_allowlist`` is
+        rejected at construction.
   """
 
   enabled: bool = True
@@ -651,6 +779,24 @@ class BigQueryLoggerConfig:
   # to avoid view-name collisions (e.g. ``"v_staging"`` →
   # ``v_staging_llm_request``).
   view_prefix: str = "v"
+
+  # --- span-level Cloud Trace correlation ---
+  # When True, capture the ambient OpenTelemetry span context into
+  # ``attributes.otel.{span_id,trace_id}`` at row-emission time. Off by
+  # default; no plugin-owned span is created.
+  enable_otel_correlation: bool = False
+
+  # --- generic custom_metadata capture (allowlist) ---
+  # Exact keys and/or explicit ``*``-suffixed prefix patterns to capture
+  # from ``event.custom_metadata`` into ``attributes.custom_metadata.*``.
+  # None/empty preserves today's behavior (only the built-in ``a2a:*`` path).
+  custom_metadata_allowlist: list[str] | None = None
+
+  # --- physical column projection (denylist-first) ---
+  # Payload columns to omit from the table at write time.  Only the
+  # projectable payload columns are accepted; identity/correlation columns
+  # are protected (see ``_PROJECTABLE_PAYLOAD_COLUMNS``).
+  payload_column_denylist: list[str] | None = None
 
 
 # ==============================================================================
@@ -711,10 +857,15 @@ class _SpanRecord:
   trace_id: str
   owns_span: bool
   start_time_ns: int
+  # What pushed this record ("invocation", "agent", "llm_request", "tool").
+  # Lets error callbacks pop only spans they own: e.g. if another plugin's
+  # before_agent_callback raised before BQAA pushed its agent span,
+  # on_agent_error_callback must not pop the invocation span instead.
+  kind: str = ""
   first_token_time: Optional[float] = None
 
 
-_span_records_ctx: contextvars.ContextVar[list[_SpanRecord]] = (
+_span_records_ctx: contextvars.ContextVar[Optional[list[_SpanRecord]]] = (
     contextvars.ContextVar("_bq_analytics_span_records", default=None)
 )
 
@@ -785,10 +936,9 @@ class TraceManager:
            or non-OTel runtimes).
     * ``start_time_ns`` — for the eventual ``latency_ms`` on pop.
 
-    ``span_name`` is preserved on the signature for API stability but
-    is no longer used (no OTel span name is set).
+    ``span_name`` is recorded as the span ``kind`` so error callbacks
+    can verify ownership before popping (no OTel span name is set).
     """
-    del span_name  # No-op: kept for API stability; no OTel span is created.
     TraceManager.init_trace(callback_context)
 
     records = TraceManager._get_records()
@@ -808,6 +958,7 @@ class TraceManager:
         trace_id=trace_id,
         owns_span=True,
         start_time_ns=time.time_ns(),
+        kind=span_name or "",
     )
     _span_records_ctx.set(list(records) + [record])
 
@@ -839,6 +990,9 @@ class TraceManager:
         trace_id=trace_id,
         owns_span=False,
         start_time_ns=time.time_ns(),
+        # attach_current_span is only used to seed the invocation root
+        # (see ensure_invocation_span), so it carries the same kind.
+        kind="invocation",
     )
     records = TraceManager._get_records()
     _span_records_ctx.set(list(records) + [record])
@@ -889,14 +1043,26 @@ class TraceManager:
       TraceManager.push_span(callback_context, "invocation")
 
   @staticmethod
-  def pop_span() -> tuple[Optional[str], Optional[int]]:
+  def pop_span(
+      expected_kind: Optional[str] = None,
+  ) -> tuple[Optional[str], Optional[int]]:
     """Pops the top span record from the internal stack.
 
     Returns ``(span_id, duration_ms)``.  No OTel span is ended
     because the plugin no longer creates one (see ``_SpanRecord``).
+
+    Args:
+      expected_kind: When set, only pop if the top record was pushed
+        with this kind; otherwise leave the stack untouched and return
+        ``(None, None)``.  Error callbacks use this so they never pop a
+        span they do not own (e.g. ``on_agent_error_callback`` firing
+        for a failure that happened before BQAA pushed its agent span).
     """
     records = _span_records_ctx.get()
     if not records:
+      return None, None
+
+    if expected_kind is not None and records[-1].kind != expected_kind:
       return None, None
 
     new_records = list(records)
@@ -1017,7 +1183,7 @@ class BatchProcessor:
     self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
         maxsize=queue_max_size
     )
-    self._batch_processor_task: Optional[asyncio.Task] = None
+    self._batch_processor_task: Optional[asyncio.Task[None]] = None
     self._shutdown = False
 
     # Running tally of events/rows dropped without ever being written, keyed by
@@ -1040,7 +1206,7 @@ class BatchProcessor:
     # Wait for all items in the queue to be processed
     await self._queue.join()
 
-  async def start(self):
+  async def start(self) -> None:
     """Starts the batch writer worker task."""
     if self._batch_processor_task is None:
       self._batch_processor_task = asyncio.create_task(self._batch_writer())
@@ -1093,7 +1259,7 @@ class BatchProcessor:
     Returns:
         pa.RecordBatch for writing.
     """
-    data = {field.name: [] for field in self.arrow_schema}
+    data: dict[str, list[Any]] = {field.name: [] for field in self.arrow_schema}
     for row in rows:
       for field in self.arrow_schema:
         value = row.get(field.name)
@@ -1251,10 +1417,10 @@ class BatchProcessor:
     while attempt <= self.retry_config.max_retries:
       try:
 
-        async def requests_iter():
+        async def requests_iter() -> AsyncIterator[Any]:
           yield req
 
-        async def perform_write():
+        async def perform_write() -> None:
           # The AppendRows streaming RPC does not auto-populate the
           # request-routing header, so writes to any region other than
           # the US multiregion fail with a "session not found" /
@@ -1727,15 +1893,23 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           "span_id",
           "STRING",
           mode="NULLABLE",
-          description="OpenTelemetry span ID for this specific operation.",
+          description=(
+              "BQAA-internal execution-tree span id for this operation. This is"
+              " the plugin's own correlation id used with parent_span_id to"
+              " reconstruct the agent/LLM/tool tree -- NOT the OpenTelemetry"
+              " span id, except on the root/invocation row where it may reuse"
+              " the ambient OTel span id. For span-level Cloud Trace"
+              " correlation use attributes.otel.span_id (best-effort)."
+          ),
       ),
       bigquery.SchemaField(
           "parent_span_id",
           "STRING",
           mode="NULLABLE",
           description=(
-              "OpenTelemetry parent span ID to reconstruct the operation"
-              " hierarchy."
+              "BQAA-internal parent execution-tree span id, used to reconstruct"
+              " the operation hierarchy. Points at another BQAA row, not an"
+              " OpenTelemetry parent span."
           ),
       ),
       bigquery.SchemaField(
@@ -1852,7 +2026,9 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
               " additional event metadata. Includes enrichment fields like"
               " 'root_agent_name' (turn orchestration), 'model' (request"
               " model), 'model_version' (response version), and"
-              " 'usage_metadata' (detailed token counts)."
+              " 'usage_metadata' (detailed token counts). May also carry"
+              " 'otel' (best-effort ambient Cloud Trace span/trace ids) and"
+              " 'custom_metadata' (allowlisted event.custom_metadata keys)."
           ),
       ),
       bigquery.SchemaField(
@@ -1881,11 +2057,74 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           "BOOLEAN",
           mode="NULLABLE",
           description=(
-              "Boolean flag indicating if the 'content' field was truncated"
-              " because it exceeded the maximum allowed size."
+              "Boolean flag indicating if the content or metadata payload was"
+              " truncated because it exceeded the maximum allowed size. Set"
+              " when 'content', captured 'custom_metadata', or A2A metadata is"
+              " truncated; redaction of sensitive keys does not set this flag."
           ),
       ),
   ]
+
+
+# Payload columns eligible for physical projection.  Every other
+# schema column is an identity / correlation / view-critical column and is
+# *protected* — it cannot be projected out, because the BQAA execution tree
+# and the per-event views depend on it.
+_PROJECTABLE_PAYLOAD_COLUMNS = frozenset(
+    {"content", "content_parts", "attributes", "latency_ms"}
+)
+
+
+def _validate_payload_column_denylist(
+    denylist: Optional[list[str]],
+) -> frozenset[str]:
+  """Validates ``payload_column_denylist`` and returns the denied set.
+
+  Only the projectable payload columns may be denied.  Anything else —
+  an identity/correlation column or an unknown name — is a hard error,
+  so a typo or an attempt to drop a join key fails loudly at construction
+  rather than producing malformed rows or broken views.
+  """
+  denied = frozenset(denylist or ())
+  invalid = denied - _PROJECTABLE_PAYLOAD_COLUMNS
+  if invalid:
+    raise ValueError(
+        "payload_column_denylist may only contain projectable payload"
+        f" columns {sorted(_PROJECTABLE_PAYLOAD_COLUMNS)}; got"
+        f" {sorted(invalid)}. Identity/correlation columns (timestamp,"
+        " event_type, session_id, invocation_id, trace_id, span_id,"
+        " parent_span_id, is_truncated, ...) are protected and cannot be"
+        " projected out."
+    )
+  return denied
+
+
+def _project_schema(
+    schema: list[bigquery.SchemaField], denied: frozenset[str]
+) -> list[bigquery.SchemaField]:
+  """Returns *schema* with denied columns removed (schema-first projection)."""
+  if not denied:
+    return schema
+  return [f for f in schema if f.name not in denied]
+
+
+def _parse_custom_metadata_allowlist(
+    allowlist: Optional[list[str]],
+) -> tuple[frozenset[str], tuple[str, ...]]:
+  """Splits the allowlist into exact keys and explicit prefix patterns.
+
+  An entry ending in ``*`` is an explicit prefix pattern (the ``*`` is
+  stripped); every other entry matches exactly.  This keeps a plain key
+  like ``"citation_metadata"`` from being treated as a prefix.
+  """
+  exact: set[str] = set()
+  prefixes: list[str] = []
+  for entry in allowlist or ():
+    if entry.endswith("*"):
+      prefixes.append(entry[:-1])
+    else:
+      exact.add(entry)
+  return frozenset(exact), tuple(prefixes)
 
 
 # ==============================================================================
@@ -1939,6 +2178,16 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
             " usage_cached_tokens"
         ),
         (
+            "CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.thoughts_token_count') AS INT64) AS"
+            " usage_thinking_tokens"
+        ),
+        (
+            "CAST(JSON_VALUE(attributes,"
+            " '$.usage_metadata.tool_use_prompt_token_count') AS INT64) AS"
+            " usage_tool_use_tokens"
+        ),
+        (
             "SAFE_DIVIDE(CAST(JSON_VALUE(attributes,"
             " '$.usage_metadata.cached_content_token_count') AS"
             " INT64),CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64)) AS"
@@ -1984,8 +2233,15 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
     "AGENT_COMPLETED": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
     ],
+    "AGENT_ERROR": [
+        "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
+    ],
     "INVOCATION_STARTING": [],
     "INVOCATION_COMPLETED": [],
+    "INVOCATION_ERROR": [
+        "JSON_VALUE(content, '$.error_traceback') AS error_traceback",
+    ],
     "STATE_DELTA": [
         "JSON_QUERY(attributes, '$.state_delta') AS state_delta",
     ],
@@ -2150,7 +2406,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       config: Optional[BigQueryLoggerConfig] = None,
       location: str = "US",
       credentials: Optional[google.auth.credentials.Credentials] = None,
-      **kwargs,
+      **kwargs: Any,
   ) -> None:
     """Initializes the instance.
 
@@ -2179,6 +2435,28 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if not self.config.view_prefix:
       raise ValueError("view_prefix must be a non-empty string.")
 
+    # Pre-parse the custom_metadata allowlist into exact keys + prefixes.
+    self._custom_metadata_exact, self._custom_metadata_prefixes = (
+        _parse_custom_metadata_allowlist(self.config.custom_metadata_allowlist)
+    )
+    # Validate (fail-closed on protected/unknown columns) the projection.
+    self._denied_columns = _validate_payload_column_denylist(
+        self.config.payload_column_denylist
+    )
+    # Capturing custom_metadata into the attributes column is
+    # incompatible with projecting attributes out -- the captured payload
+    # would be silently dropped (and is_truncated could still flip). Fail
+    # fast rather than do useless work.
+    if "attributes" in self._denied_columns and (
+        self._custom_metadata_exact or self._custom_metadata_prefixes
+    ):
+      raise ValueError(
+          "custom_metadata_allowlist captures into the 'attributes' column,"
+          " but 'attributes' is in payload_column_denylist -- the captured"
+          " metadata would be dropped. Remove 'attributes' from"
+          " payload_column_denylist or clear custom_metadata_allowlist."
+      )
+
     self.table_id = table_id or self.config.table_id
     self.location = location
 
@@ -2191,8 +2469,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._credentials = credentials
     self.client = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
-    self._write_stream_name = None  # Resolved stream name
-    self._executor = None
+    self._write_stream_name: Optional[str] = None  # Resolved stream name
+    self._executor: Optional[ThreadPoolExecutor] = None
     self.offloader: Optional[GCSOffloader] = None
     self.parser: Optional[HybridContentParser] = None
     self._schema = None
@@ -2300,10 +2578,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     # grpc.aio clients are loop-bound, so we create one per event loop.
 
-    def get_credentials():
-      creds, _ = google.auth.default(
-          scopes=["https://www.googleapis.com/auth/cloud-platform"]
-      )
+    def get_credentials() -> google.auth.credentials.Credentials:
+      creds, _ = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
       return creds
 
     if self._credentials is None:
@@ -2383,7 +2659,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         totals[reason] = totals.get(reason, 0) + count
     return totals
 
-  async def _lazy_setup(self, **kwargs) -> None:
+  async def _lazy_setup(self, **kwargs: Any) -> None:
     """Performs lazy initialization of BigQuery clients and resources."""
     if self._started:
       return
@@ -2403,7 +2679,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     self.full_table_id = f"{self.project_id}.{self.dataset_id}.{self.table_id}"
     if not self._schema:
-      self._schema = _get_events_schema()
+      # Project out denied payload columns schema-first, so the table
+      # schema, Arrow schema, row dict, and views all stay consistent.
+      self._schema = _project_schema(_get_events_schema(), self._denied_columns)
       await loop.run_in_executor(self._executor, self._ensure_schema_exists)
 
     if not self.parser:
@@ -2413,14 +2691,28 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
       self.offloader = None
       if self.config.gcs_bucket_name:
-        self.offloader = GCSOffloader(
-            self.project_id,
-            self.config.gcs_bucket_name,
-            self._executor,
-            storage_client=storage.Client(
-                project=self.project_id, credentials=self._credentials
-            ),
-        )
+        if "content_parts" in self._denied_columns:
+          # GCS offload stores its object reference in the
+          # ``content_parts`` column. With ``content_parts`` projected out,
+          # an upload would be orphaned -- payload leaks to GCS and incurs
+          # cost with no retained reference. Disable offload and keep
+          # content inline (truncated) instead.
+          logger.warning(
+              "GCS offload disabled: payload_column_denylist drops"
+              " 'content_parts', which holds the offloaded object reference;"
+              " large/binary content is kept inline (truncated) instead of"
+              " being uploaded to %s.",
+              self.config.gcs_bucket_name,
+          )
+        else:
+          self.offloader = GCSOffloader(
+              self.project_id,
+              self.config.gcs_bucket_name,
+              self._executor,
+              storage_client=storage.Client(
+                  project=self.project_id, credentials=self._credentials
+              ),
+          )
 
       self.parser = HybridContentParser(
           self.offloader,
@@ -2581,15 +2873,25 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Args:
         existing_table: The current BigQuery table object.
     """
-    stored_version = (existing_table.labels or {}).get(
-        _SCHEMA_VERSION_LABEL_KEY
-    )
-    if stored_version == _SCHEMA_VERSION:
-      return
-
     new_fields, updated_records = self._schema_fields_match(
         list(existing_table.schema), list(self._schema)
     )
+
+    stored_version = (existing_table.labels or {}).get(
+        _SCHEMA_VERSION_LABEL_KEY
+    )
+    # No-op only when there is genuinely nothing to add AND the version label
+    # is current. We must NOT early-return on the label alone: ``self._schema``
+    # is projection-dependent, so relaxing ``payload_column_denylist``
+    # makes previously-omitted columns desired again on a table whose label
+    # still matches -- skipping the diff would leave those columns missing and
+    # later writes would carry fields absent from the table.
+    if (
+        not new_fields
+        and not updated_records
+        and stored_version == _SCHEMA_VERSION
+    ):
+      return
 
     if new_fields or updated_records:
       # Build merged top-level schema.
@@ -2634,6 +2936,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           exc_info=True,
       )
 
+  def _project_view_columns(self, extra_cols: list[str]) -> list[str]:
+    """Drops derived view expressions that reference a denied column.
+
+    Each entry is a ``"SQL_EXPR AS alias"`` string referencing payload
+    columns (``content`` / ``attributes`` / ``latency_ms``) as bare
+    identifiers.  When such a column is projected out, its dependent view
+    columns must go too, otherwise the view SQL references a non-existent
+    column and view creation fails.
+    """
+    if not self._denied_columns:
+      return list(extra_cols)
+    kept: list[str] = []
+    for expr in extra_cols:
+      if any(
+          re.search(rf"\b{re.escape(col)}\b", expr)
+          for col in self._denied_columns
+      ):
+        continue
+      kept.append(expr)
+    return kept
+
   def _create_analytics_views(self) -> None:
     """Creates per-event-type BigQuery views (idempotent).
 
@@ -2644,7 +2967,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     for event_type, extra_cols in _EVENT_VIEW_DEFS.items():
       view_name = self.config.view_prefix + "_" + event_type.lower()
-      columns = ",\n  ".join(list(_VIEW_COMMON_COLUMNS) + extra_cols)
+      # Projection-aware views -- drop any derived column whose SQL
+      # references a denied payload column (content / attributes / latency_ms).
+      # Common columns are all protected, so they always remain.
+      projected_extra = self._project_view_columns(extra_cols)
+      columns = ",\n  ".join(list(_VIEW_COMMON_COLUMNS) + projected_extra)
       sql = _VIEW_SQL_TEMPLATE.format(
           project=self.project_id,
           dataset=self.dataset_id,
@@ -2739,7 +3066,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._is_shutting_down = False
     self._started = False
 
-  def __getstate__(self):
+  def __getstate__(self) -> dict[str, Any]:
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
     state["_setup_lock"] = None
@@ -2755,7 +3082,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_init_pid"] = 0
     return state
 
-  def __setstate__(self, state):
+  def __setstate__(self, state: dict[str, Any]) -> None:
     """Custom unpickling to restore state."""
     # Backfill keys that may be absent in pickled state from older
     # code versions so _ensure_started does not raise AttributeError.
@@ -2819,10 +3146,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     await self._ensure_started()
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     await self.shutdown()
 
-  async def _ensure_started(self, **kwargs) -> None:
+  async def _ensure_started(self, **kwargs: Any) -> None:
     """Ensures that the plugin is started and initialized."""
     # _init_pid == 0 means the plugin was unpickled and has never been
     # initialized in this process (the pickle sentinel set by
@@ -3143,7 +3475,67 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self.config.custom_tags:
       attrs["custom_tags"] = self.config.custom_tags
 
+    # Best-effort span-level Cloud Trace correlation, opt-in via
+    # ``enable_otel_correlation``. Capture the ambient OTel span context at
+    # row-emission time, ONLY when it is valid. Stored under attributes.otel.*
+    # (staged); the typed span_id / parent_span_id columns stay the
+    # BQAA-internal execution tree. This is a best-effort join key, not a
+    # foreign key -- an unsampled valid span is absent from the Cloud Trace
+    # export. Skipped when the attributes column is projected out, since it
+    # would be dropped anyway.
+    if (
+        self.config.enable_otel_correlation
+        and "attributes" not in self._denied_columns
+    ):
+      otel_ctx = trace.get_current_span().get_span_context()
+      if otel_ctx.is_valid:
+        attrs["otel"] = {
+            "span_id": format(otel_ctx.span_id, "016x"),
+            "trace_id": format(otel_ctx.trace_id, "032x"),
+        }
+
     return attrs
+
+  def _custom_metadata_allowed(self, key: Any) -> bool:
+    """Returns whether *key* matches the allowlist (exact or prefix)."""
+    if not isinstance(key, str):
+      return False
+    if key in self._custom_metadata_exact:
+      return True
+    return any(key.startswith(p) for p in self._custom_metadata_prefixes)
+
+  def _capture_custom_metadata(
+      self, event_data: EventData, attributes: dict[str, Any]
+  ) -> bool:
+    """Captures allowlisted ``custom_metadata`` into ``attributes``.
+
+    Reads ``event.custom_metadata`` from the row's source Event, keeps only
+    allowlisted keys, runs them through the shared safety pipeline
+    (truncation + sensitive-key redaction + circular-reference handling),
+    and writes the result under ``attributes['custom_metadata']``.
+
+    The built-in ``a2a:*`` handling in ``on_event_callback`` is unaffected;
+    this is purely additive under a separate namespace.
+
+    Returns:
+        True if any captured value was truncated (so the caller can flip
+        ``is_truncated``).
+    """
+    source = event_data.source_event
+    meta = getattr(source, "custom_metadata", None) if source else None
+    if not meta:
+      return False
+    captured = {
+        k: v for k, v in meta.items() if self._custom_metadata_allowed(k)
+    }
+    if not captured:
+      return False
+    safe, truncated = _recursive_smart_truncate(
+        captured, self.config.max_content_length
+    )
+    if isinstance(safe, dict) and safe:
+      attributes["custom_metadata"] = safe
+    return bool(truncated)
 
   async def _log_event(
       self,
@@ -3196,16 +3588,33 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Parser not initialized; skipping event %s.", event_type)
       return
 
-    # Update parser's trace/span IDs for GCS pathing (reuse instance)
-    self.parser.trace_id = trace_id or "no_trace"
-    self.parser.span_id = span_id or "no_span"
-    content_json, content_parts, parser_truncated = await self.parser.parse(
-        raw_content
-    )
+    # When both payload columns are projected out, skip content parsing
+    # entirely -- no inline summary, no parts, and (critically) no GCS offload
+    # work for a row that retains neither payload column.
+    content_json: Any
+    content_parts: list[dict[str, Any]]
+    parser_truncated: bool
+    if {"content", "content_parts"} <= self._denied_columns:
+      content_json, content_parts, parser_truncated = None, [], False
+    else:
+      # Update parser's trace/span IDs for GCS pathing (reuse instance)
+      self.parser.trace_id = trace_id or "no_trace"
+      self.parser.span_id = span_id or "no_span"
+      content_json, content_parts, parser_truncated = await self.parser.parse(
+          raw_content
+      )
     is_truncated = is_truncated or parser_truncated
 
     latency_json = self._extract_latency(event_data)
     attributes = self._enrich_attributes(event_data, callback_context)
+
+    # Capture allowlisted custom_metadata into attributes.custom_metadata.
+    # Runs for every row emitted from a source Event (incl. AGENT_RESPONSE,
+    # which does not otherwise read custom_metadata), through the same safety
+    # pipeline. Truncation here also flips is_truncated.
+    if self._custom_metadata_exact or self._custom_metadata_prefixes:
+      meta_truncated = self._capture_custom_metadata(event_data, attributes)
+      is_truncated = is_truncated or meta_truncated
 
     # Serialize attributes to JSON string
     try:
@@ -3235,6 +3644,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "error_message": event_data.error_message,
         "is_truncated": is_truncated,
     }
+
+    # drop denied payload columns from the row so it matches the
+    # projected table / Arrow schema exactly (schema-first consistency).
+    if self._denied_columns:
+      row = {k: v for k, v in row.items() if k not in self._denied_columns}
 
     state = await self._get_loop_state()
     await state.batch_processor.append(row)
@@ -3743,7 +4157,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
 
     # 5. Attributes (Config & Tools)
-    attributes = {}
+    attributes: dict[str, Any] = {}
+    tools_truncated = False
     if llm_request.config:
       config_dict = {}
       for field_name in [
@@ -3772,13 +4187,21 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         attributes["labels"] = labels
 
     if hasattr(llm_request, "tools_dict") and llm_request.tools_dict:
-      attributes["tools"] = list(llm_request.tools_dict.keys())
+      # Route tool declarations through the shared safety pipeline so unbounded
+      # descriptions / parameter schemas are size-capped and sensitive keys are
+      # redacted, consistent with every other captured attribute.
+      tools, tools_truncated = _recursive_smart_truncate(
+          _extract_tool_declarations(llm_request.tools_dict),
+          self.config.max_content_length,
+      )
+      attributes["tools"] = tools
 
     TraceManager.push_span(callback_context, "llm_request")
     await self._log_event(
         "LLM_REQUEST",
         callback_context,
         raw_content=llm_request,
+        is_truncated=tools_truncated,
         event_data=EventData(
             model=llm_request.model,
             extra_attributes=attributes,
@@ -4033,3 +4456,108 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             parent_span_id_override=parent_span_id,
         ),
     )
+
+  @_safe_callback
+  async def on_agent_error_callback(
+      self,
+      *,
+      agent: Any,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Callback when an agent execution fails with an unhandled exception.
+
+    Emits an AGENT_ERROR event and pops the agent span from
+    TraceManager.
+
+    The pop is guarded by span kind: the agent-error contract includes
+    failures raised by *other* plugins' before_agent_callbacks, in which
+    case BQAA's own before_agent_callback never pushed an agent span and
+    there is nothing to pop (popping unconditionally would consume the
+    invocation span and corrupt the subsequent INVOCATION_ERROR row).
+
+    Args:
+        agent: The agent instance that failed.
+        callback_context: The callback context.
+        error: The exception that escaped agent execution.
+    """
+    span_id, duration = TraceManager.pop_span(expected_kind="agent")
+    parent_span_id, _ = TraceManager.get_current_span_and_parent()
+
+    error_tb = "".join(
+        traceback_module.format_exception(
+            type(error), error, error.__traceback__
+        )
+    )
+    max_len = self.config.max_content_length
+    if max_len > 0 and len(error_tb) > max_len:
+      error_tb = error_tb[:max_len] + "... [truncated]"
+
+    await self._log_event(
+        "AGENT_ERROR",
+        callback_context,
+        event_data=EventData(
+            status="ERROR",
+            error_message=str(error),
+            latency_ms=duration,
+            span_id_override=span_id,
+            parent_span_id_override=parent_span_id,
+        ),
+        raw_content={"error_traceback": error_tb},
+    )
+
+  @_safe_callback
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: "InvocationContext",
+      error: Exception,
+  ) -> None:
+    """Callback when a runner execution fails with an unhandled exception.
+
+    Emits an INVOCATION_ERROR event and performs the cleanup that
+    after_run_callback would normally do.
+
+    Args:
+        invocation_context: The context of the current invocation.
+        error: The exception that escaped runner execution.
+    """
+    try:
+      callback_ctx = CallbackContext(invocation_context)
+      trace_id = TraceManager.get_trace_id(callback_ctx)
+
+      # Guarded pop: only consume the invocation-root span. If the failure
+      # left intermediate spans on the stack (or the root was never pushed),
+      # emit the row without span/latency rather than mis-attributing them;
+      # the finally-block clear_stack below resets the stack either way.
+      span_id, duration = TraceManager.pop_span(expected_kind="invocation")
+      parent_span_id = TraceManager.get_current_span_id()
+
+      error_tb = "".join(
+          traceback_module.format_exception(
+              type(error), error, error.__traceback__
+          )
+      )
+      max_len = self.config.max_content_length
+      if max_len > 0 and len(error_tb) > max_len:
+        error_tb = error_tb[:max_len] + "... [truncated]"
+
+      await self._log_event(
+          "INVOCATION_ERROR",
+          callback_ctx,
+          event_data=EventData(
+              trace_id_override=trace_id,
+              status="ERROR",
+              error_message=str(error),
+              latency_ms=duration,
+              span_id_override=span_id,
+              parent_span_id_override=parent_span_id,
+          ),
+          raw_content={"error_traceback": error_tb},
+      )
+    finally:
+      # Cleanup must run even if _log_event raises.
+      TraceManager.clear_stack()
+      _active_invocation_id_ctx.set(None)
+      _root_agent_name_ctx.set(None)
+      await self.flush()

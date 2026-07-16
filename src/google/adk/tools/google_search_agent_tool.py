@@ -43,7 +43,7 @@ class GoogleSearchAgentTool(AgentTool):
   """A tool that wraps a sub-agent that only uses google_search tool.
 
   This is a workaround to support using google_search tool with other tools.
-  TODO(b/448114567): Remove once the workaround is no longer needed.
+  TODO: Remove once the workaround is no longer needed.
 
   Attributes:
     model: The model to use for the sub-agent.

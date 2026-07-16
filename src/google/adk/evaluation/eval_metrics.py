@@ -30,8 +30,8 @@ from typing_extensions import TypeAlias
 
 from .common import EvalBaseModel
 from .eval_case import Invocation
-from .eval_rubrics import Rubric
-from .eval_rubrics import RubricScore
+from .eval_rubrics import Rubric as Rubric
+from .eval_rubrics import RubricScore as RubricScore
 
 
 class EvalStatus(Enum):

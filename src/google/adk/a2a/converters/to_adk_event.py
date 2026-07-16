@@ -24,6 +24,7 @@ import uuid
 
 from a2a.types import Message
 from a2a.types import Part as A2APart
+from a2a.types import Role
 from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
@@ -31,11 +32,15 @@ from a2a.types import TaskStatusUpdateEvent
 from google.genai import types as genai_types
 from pydantic import ValidationError
 
+from .. import _compat
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ..experimental import a2a_experimental
+from .part_converter import A2A_DATA_PART_END_TAG
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+from .part_converter import A2A_DATA_PART_START_TAG
+from .part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
 from .utils import _get_adk_metadata_key
@@ -153,9 +158,10 @@ def _convert_a2a_parts_to_adk_parts(
         continue
 
       # Check for long-running functions
+      pmeta = _compat.part_metadata(a2a_part)
       if (
-          a2a_part.root.metadata
-          and a2a_part.root.metadata.get(
+          pmeta
+          and pmeta.get(
               _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
           )
           is True
@@ -184,6 +190,7 @@ def _create_event(
     actions: Optional[EventActions] = None,
     long_running_function_ids: Optional[set[str]] = None,
     partial: bool = False,
+    content_role: str = "model",
 ) -> Optional[Event]:
   """Creates an ADK event from parts and metadata."""
   event_actions = actions or EventActions()
@@ -206,7 +213,7 @@ def _create_event(
       ),
       content=(
           genai_types.Content(
-              role="model",
+              role=content_role,
               parts=output_parts,
           )
           if output_parts
@@ -216,6 +223,11 @@ def _create_event(
   )
 
   return event
+
+
+def _a2a_role_to_content_role(role: Optional[Role]) -> str:
+  """Maps an A2A Role to the corresponding GenAI content role."""
+  return _compat.role_to_str(role)
 
 
 def _parse_adk_metadata_value(value: Any) -> Any:
@@ -229,10 +241,14 @@ def _parse_adk_metadata_value(value: Any) -> Any:
     return value
 
 
-def _extract_event_actions(
-    metadata: Optional[dict[str, Any]],
-) -> EventActions:
-  """Extracts ADK event actions from A2A metadata."""
+def _extract_event_actions(metadata: Any) -> EventActions:
+  """Extracts ADK event actions from A2A metadata.
+
+  ``metadata`` is the A2A object's raw metadata: a plain ``dict`` on 0.3.x or a
+  ``google.protobuf.Struct`` on 1.x. ``_compat.meta_to_dict`` normalizes both to
+  a plain ``dict`` (empty when there is nothing to extract).
+  """
+  metadata = _compat.meta_to_dict(metadata)
   if not metadata:
     return EventActions()
 
@@ -283,6 +299,40 @@ def _merge_event_actions(
   return EventActions.model_validate(merged_actions_data)
 
 
+def _extract_user_input_prompt(part: genai_types.Part) -> Any:
+  """Extracts a prompt from a converted ADK part."""
+  if part.text:
+    return part.text
+
+  blob = part.inline_data
+  if (
+      blob is None
+      or blob.data is None
+      or blob.mime_type != A2A_DATA_PART_TEXT_MIME_TYPE
+      or not blob.data.startswith(A2A_DATA_PART_START_TAG)
+      or not blob.data.endswith(A2A_DATA_PART_END_TAG)
+  ):
+    return None
+
+  raw_json = blob.data[
+      len(A2A_DATA_PART_START_TAG) : -len(A2A_DATA_PART_END_TAG)
+  ]
+  try:
+    data_part = json.loads(raw_json)
+  except (ValueError, TypeError) as e:
+    logger.warning("Failed to parse A2A data part JSON for HITL prompt: %s", e)
+    return None
+
+  if not isinstance(data_part, dict):
+    logger.warning(
+        "Unexpected A2A data part JSON of type %s for HITL prompt",
+        type(data_part).__name__,
+    )
+    return None
+
+  return data_part.get("data")
+
+
 def _create_mock_function_call_for_required_user_input(
     state: TaskState,
     output_parts: list[genai_types.Part],
@@ -299,24 +349,25 @@ def _create_mock_function_call_for_required_user_input(
   if long_running_function_ids:
     return output_parts, long_running_function_ids
 
-  if state == TaskState.input_required:
+  if state == _compat.TS_INPUT_REQUIRED:
     args_key = "input_required"
     function_name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
-  elif state == TaskState.auth_required:
+  elif state == _compat.TS_AUTH_REQUIRED:
     args_key = "auth_required"
     function_name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
   else:
     return output_parts, long_running_function_ids
 
-  # Find the last text part from the bottom to replace it with a function call.
-  # In case of input-required / auth-required events, the LLM should stop the
-  # production of other parts.
+  # Find the last part with a usable prompt from the bottom to replace it with a
+  # function call. In case of input-required / auth-required events, the LLM
+  # should stop the production of other parts.
   for i in range(len(output_parts) - 1, -1, -1):
-    if output_parts[i].text:
+    prompt = _extract_user_input_prompt(output_parts[i])
+    if prompt:
       function_call = genai_types.FunctionCall(
           id=str(uuid.uuid4()),
           name=function_name,
-          args={args_key: output_parts[i].text},
+          args={args_key: prompt},
       )
       long_running_function_ids = set()
       long_running_function_ids.add(function_call.id)
@@ -366,16 +417,17 @@ def convert_a2a_task_to_event(
       output_parts, _ = _convert_a2a_parts_to_adk_parts(
           artifact_parts, part_converter
       )
-    if a2a_task.status.message and (
-        a2a_task.status.state == TaskState.input_required
-        or a2a_task.status.state == TaskState.auth_required
+    status_message = _compat.normalize_message(a2a_task.status.message)
+    if status_message and (
+        a2a_task.status.state == _compat.TS_INPUT_REQUIRED
+        or a2a_task.status.state == _compat.TS_AUTH_REQUIRED
     ):
       event_actions = _merge_event_actions(
           event_actions,
-          _extract_event_actions(a2a_task.status.message.metadata),
+          _extract_event_actions(status_message.metadata),
       )
       parts, ids = _convert_a2a_parts_to_adk_parts(
-          a2a_task.status.message.parts, part_converter
+          status_message.parts, part_converter
       )
       output_parts.extend(parts)
       long_running_function_ids.update(ids)
@@ -430,11 +482,13 @@ def convert_a2a_message_to_event(
     output_parts, _ = _convert_a2a_parts_to_adk_parts(
         a2a_message.parts, part_converter
     )
+    content_role = _a2a_role_to_content_role(getattr(a2a_message, "role", None))
     return _create_event(
         output_parts,
         invocation_context,
         author,
         _extract_event_actions(a2a_message.metadata),
+        content_role=content_role,
     )
 
   except Exception as e:
@@ -467,12 +521,11 @@ def convert_a2a_status_update_to_event(
     output_parts = []
     long_running_function_ids = set()
     event_actions = EventActions()
-    if a2a_status_update.status.message:
-      event_actions = _extract_event_actions(
-          a2a_status_update.status.message.metadata
-      )
+    status_message = _compat.normalize_message(a2a_status_update.status.message)
+    if status_message:
+      event_actions = _extract_event_actions(status_message.metadata)
       parts, ids = _convert_a2a_parts_to_adk_parts(
-          a2a_status_update.status.message.parts, part_converter
+          status_message.parts, part_converter
       )
       output_parts.extend(parts)
       long_running_function_ids.update(ids)

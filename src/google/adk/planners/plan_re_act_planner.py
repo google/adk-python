@@ -71,7 +71,7 @@ class PlanReActPlanner(BasePlanner):
       # Split the response into reasoning and final answer parts.
       self._handle_non_function_call_parts(response_parts[i], preserved_parts)
 
-    if first_fc_part_index > 0:
+    if first_fc_part_index >= 0:
       j = first_fc_part_index + 1
       while j < len(response_parts):
         if response_parts[j].function_call:

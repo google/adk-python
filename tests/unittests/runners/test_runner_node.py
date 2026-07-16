@@ -26,13 +26,18 @@ from typing import AsyncGenerator
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
+from google.adk.apps.app import App
 from google.adk.events.event import Event
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow import node
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
+from google.adk.workflow._errors import DynamicNodeFailError
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
 import pytest
@@ -253,6 +258,30 @@ async def test_multiple_invocations_accumulate_events():
   )
   outputs = [e.output for e in updated.events if e.output is not None]
   assert outputs == ['Echo: first', 'Echo: second', 'Echo: third']
+
+
+@pytest.mark.asyncio
+async def test_run_config_custom_metadata_stamps_user_event():
+  """The node path stamps the user event with run-level custom_metadata."""
+  ss = InMemorySessionService()
+  runner = Runner(
+      app_name='test', node=_EchoNode(name='echo'), session_service=ss
+  )
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  async for _ in runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=_user_message('hi'),
+      run_config=RunConfig(custom_metadata={'turn_id': 't-1'}),
+  ):
+    pass
+
+  updated = await ss.get_session(
+      app_name='test', user_id='u', session_id=session.id
+  )
+  user_event = next(e for e in updated.events if e.author == 'user')
+  assert user_event.custom_metadata == {'turn_id': 't-1'}
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +745,63 @@ async def test_run_node_works_without_workflow():
 
   outputs = [e.output for e in events if e.output is not None]
   assert 'parent got: child got: hello' in outputs
+
+
+@pytest.mark.asyncio
+async def test_run_node_propagates_error_without_workflow():
+  """A standalone node propagates errors raised by its dynamically executed child nodes."""
+
+  class _ChildNode(BaseNode):
+    """A helper child node that fails."""
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      raise ValueError('child failure')
+      yield
+
+  class _ParentNode(BaseNode):
+    """A helper parent node that calls the child."""
+
+    rerun_on_resume: bool = True
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      try:
+        await ctx.run_node(_ChildNode(name='child'), 'hello')
+      except DynamicNodeFailError as e:
+        yield f'parent caught: {type(e).__name__}'
+        raise
+      yield 'parent got success'
+
+  # Arrange
+  ss = InMemorySessionService()
+  runner = Runner(
+      app_name='test',
+      node=_ParentNode(name='parent'),
+      session_service=ss,
+  )
+  session = await ss.create_session(app_name='test', user_id='u')
+  msg = types.Content(parts=[types.Part(text='go')], role='user')
+  events = []
+
+  # Act
+  # The runner unwraps DynamicNodeFailError to the original ValueError
+  with pytest.raises(ValueError, match='child failure'):
+    async for event in runner.run_async(
+        user_id='u', session_id=session.id, new_message=msg
+    ):
+      events.append(event)
+
+  # Assert
+  # Verify that parent node caught DynamicNodeFailError before propagating
+  parent_caught_events = [
+      e.output
+      for e in events
+      if isinstance(e.output, str) and 'parent caught' in e.output
+  ]
+  assert parent_caught_events == ['parent caught: DynamicNodeFailError']
 
 
 @pytest.mark.asyncio
@@ -1310,3 +1396,43 @@ async def test_run_node_isolation_across_invocations():
   assert call_counts['child'] == 2
   outputs2 = [e.output for e in events2 if e.output is not None]
   assert 'child_out_2' in outputs2
+
+
+# ---------------------------------------------------------------------------
+# Plugin lifecycle on the node path
+# ---------------------------------------------------------------------------
+
+
+class _AfterRunCountingPlugin(BasePlugin):
+  """Counts how many times after_run_callback is dispatched."""
+
+  def __init__(self) -> None:
+    super().__init__(name='after_run_counter')
+    self.after_run_calls = 0
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    self.after_run_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_after_run_callback_dispatched_on_workflow_root():
+  """Runner dispatches plugin after_run_callback on a Workflow(BaseNode) root."""
+
+  def terminal(node_input: str) -> str:
+    return node_input.upper()
+
+  plugin = _AfterRunCountingPlugin()
+  workflow = Workflow(name='wf', edges=[(START, terminal)])
+  app = App(name='test', root_agent=workflow, plugins=[plugin])
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  async for _ in runner.run_async(
+      user_id='u', session_id=session.id, new_message=_user_message('hi')
+  ):
+    pass
+
+  assert plugin.after_run_calls == 1
