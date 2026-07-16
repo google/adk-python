@@ -317,10 +317,14 @@ class A2aAgentExecutor(AgentExecutor):
     session_id = run_request.session_id
     # create a new session if not exists
     user_id = run_request.user_id
+    get_session_config = None
+    if run_request.run_config:
+      get_session_config = run_request.run_config.get_session_config
     session = await runner.session_service.get_session(
         app_name=runner.app_name,
         user_id=user_id,
         session_id=session_id,
+        config=get_session_config,
     )
     if session is None:
       session = await runner.session_service.create_session(
