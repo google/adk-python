@@ -30,6 +30,7 @@ from google.adk.a2a.executor.config import ExecuteInterceptor
 from google.adk.events.event import Event
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.genai.types import Content
 import pytest
 
@@ -133,7 +134,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
     # Mock session service
     mock_session = Mock()
@@ -235,7 +236,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
     mock_session = Mock()
     mock_session.id = "test-session"
@@ -300,7 +301,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -364,7 +365,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id=None,
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -392,7 +393,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="existing-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -410,6 +411,90 @@ class TestA2aAgentExecutor:
     # Verify existing session was returned
     assert result == mock_session
     self.mock_runner.session_service.create_session.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_prepare_session_passes_get_session_config(self):
+    """Test that _prepare_session forwards get_session_config to get_session."""
+    session_config = GetSessionConfig(num_recent_events=10)
+    run_config = RunConfig(get_session_config=session_config)
+    run_args = AgentRunRequest(
+        user_id="test-user",
+        session_id="existing-session",
+        new_message=Mock(spec=Content),
+        run_config=run_config,
+    )
+
+    mock_session = Mock()
+    mock_session.id = "existing-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+
+    await self.executor._prepare_session(
+        self.mock_context, run_args, self.mock_runner
+    )
+
+    self.mock_runner.session_service.get_session.assert_called_once_with(
+        app_name=self.mock_runner.app_name,
+        user_id="test-user",
+        session_id="existing-session",
+        config=session_config,
+    )
+
+  @pytest.mark.asyncio
+  async def test_prepare_session_none_run_config(self):
+    """Test that _prepare_session handles run_config=None gracefully."""
+    run_args = AgentRunRequest(
+        user_id="test-user",
+        session_id="existing-session",
+        new_message=Mock(spec=Content),
+        run_config=None,
+    )
+
+    mock_session = Mock()
+    mock_session.id = "existing-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+
+    await self.executor._prepare_session(
+        self.mock_context, run_args, self.mock_runner
+    )
+
+    self.mock_runner.session_service.get_session.assert_called_once_with(
+        app_name=self.mock_runner.app_name,
+        user_id="test-user",
+        session_id="existing-session",
+        config=None,
+    )
+
+  @pytest.mark.asyncio
+  async def test_prepare_session_no_get_session_config(self):
+    """Test that _prepare_session passes config=None when get_session_config is not set."""
+    run_config = RunConfig()
+    run_args = AgentRunRequest(
+        user_id="test-user",
+        session_id="existing-session",
+        new_message=Mock(spec=Content),
+        run_config=run_config,
+    )
+
+    mock_session = Mock()
+    mock_session.id = "existing-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+
+    await self.executor._prepare_session(
+        self.mock_context, run_args, self.mock_runner
+    )
+
+    self.mock_runner.session_service.get_session.assert_called_once_with(
+        app_name=self.mock_runner.app_name,
+        user_id="test-user",
+        session_id="existing-session",
+        config=None,
+    )
 
   def test_constructor_with_callable_runner(self):
     """Test constructor with callable runner."""
@@ -536,7 +621,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -595,7 +680,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -652,7 +737,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -794,7 +879,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -865,7 +950,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -939,7 +1024,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -1027,7 +1112,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -1104,7 +1189,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Setup Interceptor
@@ -1210,7 +1295,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
