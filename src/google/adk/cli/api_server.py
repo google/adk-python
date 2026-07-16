@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -54,6 +55,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
+from pydantic import model_validator
 from pydantic import ValidationError
 from starlette.types import Lifespan
 from typing_extensions import deprecated
@@ -282,6 +284,14 @@ def _is_request_origin_allowed(
   return origin == request_origin
 
 
+def _accepts_arbitrary_kwargs(func: Callable[..., Any]) -> bool:
+  """Returns True if func accepts arbitrary keyword arguments (**kwargs)."""
+  return any(
+      param.kind == inspect.Parameter.VAR_KEYWORD
+      for param in inspect.signature(func).parameters.values()
+  )
+
+
 _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
@@ -471,6 +481,32 @@ class CreateSessionRequest(common.BaseModel):
       default=None,
       description="A list of events to initialize the session with.",
   )
+  expire_time: Optional[str] = Field(
+      default=None,
+      description=(
+          "The absolute expiration time of the session as an RFC 3339"
+          " timestamp, e.g. '2026-08-01T00:00:00Z'. Mutually exclusive with"
+          " ttl. Only supported by session services that accept expiration"
+          " arguments, such as VertexAiSessionService."
+      ),
+  )
+  ttl: Optional[str] = Field(
+      default=None,
+      description=(
+          "The time-to-live of the session as a duration, e.g. '7200s'."
+          " Mutually exclusive with expire_time. Only supported by session"
+          " services that accept expiration arguments, such as"
+          " VertexAiSessionService."
+      ),
+  )
+
+  @model_validator(mode="after")
+  def _validate_expiration_mutually_exclusive(self) -> CreateSessionRequest:
+    if self.ttl is not None and self.expire_time is not None:
+      raise ValueError(
+          "Cannot specify both 'ttl' and 'expire_time' simultaneously."
+      )
+    return self
 
 
 class SaveArtifactRequest(common.BaseModel):
@@ -937,13 +973,31 @@ class ApiServer:
       user_id: str,
       session_id: Optional[str] = None,
       state: Optional[dict[str, Any]] = None,
+      expire_time: Optional[str] = None,
+      ttl: Optional[str] = None,
   ) -> Session:
+    expiration_kwargs: dict[str, Any] = {}
+    if expire_time is not None:
+      expiration_kwargs["expire_time"] = expire_time
+    if ttl is not None:
+      expiration_kwargs["ttl"] = ttl
+    if expiration_kwargs and not _accepts_arbitrary_kwargs(
+        self.session_service.create_session
+    ):
+      raise HTTPException(
+          status_code=400,
+          detail=(
+              "Session expiration (ttl/expire_time) is not supported by the"
+              " configured session service."
+          ),
+      )
     try:
       session = await self.session_service.create_session(
           app_name=app_name,
           user_id=user_id,
           state=state,
           session_id=session_id,
+          **expiration_kwargs,
       )
       logger.info("New session created: %s", session.id)
       return session
@@ -1251,6 +1305,8 @@ class ApiServer:
           user_id=user_id,
           state=req.state,
           session_id=req.session_id,
+          expire_time=req.expire_time,
+          ttl=req.ttl,
       )
 
       if req.events:
