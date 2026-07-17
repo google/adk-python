@@ -21,14 +21,23 @@ from types import ModuleType
 
 import pytest
 
-# Dynamically import verify_md and run scripts since they reside in open_source_workspace/.agents
-SCRIPTS_DIR = (
-    Path(__file__).resolve().parent.parent.parent
-    / "open_source_workspace"
-    / ".agents"
-    / "skills"
-    / "adk-verify-snippets"
-    / "scripts"
+# verify_md and run are standalone scripts (not a package), so load them by path.
+# The scripts dir lives at the repo root on GitHub but under
+# "open_source_workspace/" in the source tree, so try both layouts.
+_ADK_ROOT = Path(__file__).resolve().parent.parent.parent
+_SCRIPTS_SUBPATH = (
+    Path(".agents") / "skills" / "adk-verify-snippets" / "scripts"
+)
+SCRIPTS_DIR = next(
+    (
+        candidate
+        for candidate in (
+            _ADK_ROOT / _SCRIPTS_SUBPATH,
+            _ADK_ROOT / "open_source_workspace" / _SCRIPTS_SUBPATH,
+        )
+        if candidate.exists()
+    ),
+    _ADK_ROOT / _SCRIPTS_SUBPATH,
 )
 
 

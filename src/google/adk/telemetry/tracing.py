@@ -329,10 +329,14 @@ def trace_call_llm(
     llm_request: The LLM request object.
     llm_response: The LLM response object.
   """
+  if span is None:
+    span = trace.get_current_span()
+  if not span.is_recording():
+    return
+
   telemetry_config = _telemetry_config_from_invocation_context(
       invocation_context
   )
-  span = span or trace.get_current_span()
   # Special standard Open Telemetry GenaI attributes that indicate
   # that this is a span related to a Generative AI system.
   span.set_attribute("gen_ai.system", "gcp.vertex.agent")

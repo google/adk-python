@@ -66,3 +66,25 @@ def test_to_user_content_other_input_is_str():
   content = to_user_content(42)
   assert content.role == 'user'
   assert content.parts[0].text == '42'
+
+
+def test_to_user_content_dict_input_preserves_non_ascii():
+  """Non-ASCII input must reach the LLM as-is, not as \\uXXXX escapes.
+
+  Escaping (json.dumps' default ensure_ascii=True) turns each non-Latin
+  character into a ``\\uXXXX`` sequence, which bloats prompt tokens and
+  degrades model responses for non-English inputs.
+  """
+  content = to_user_content({'query': 'שלום עולם', 'city': '北京'})
+  text = content.parts[0].text
+  assert 'שלום עולם' in text
+  assert '北京' in text
+  assert '\\u' not in text
+
+
+def test_to_user_content_list_input_preserves_non_ascii():
+  content = to_user_content(['שלום', '你好'])
+  text = content.parts[0].text
+  assert 'שלום' in text
+  assert '你好' in text
+  assert '\\u' not in text

@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-from typing import cast
 from typing import Optional
 
 from google.api_core.gapic_v1 import client_info
@@ -97,7 +96,7 @@ class ParameterManagerClient:
       except Exception as e:
         raise ValueError(
             "'service_account_json' or 'auth_token' are both missing, and"
-            " error occurred while trying to use default credentials: {e}"
+            f" error occurred while trying to use default credentials: {e}"
         ) from e
 
     if not credentials:
@@ -145,4 +144,4 @@ class ParameterManagerClient:
         name=resource_name
     )
     response = self._client.render_parameter_version(request=request)
-    return cast(str, response.rendered_payload.decode("UTF-8"))
+    return response.rendered_payload.decode("UTF-8")

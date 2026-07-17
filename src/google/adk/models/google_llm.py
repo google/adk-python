@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import contextlib
 import copy
 from functools import cached_property
@@ -76,7 +77,7 @@ class _ResourceExhaustedError(ClientError):
         response=client_error.response,
     )
 
-  def __str__(self):
+  def __str__(self) -> str:
     # We don't get override the actual message on ClientError, so we override
     # this method instead. This will ensure that when the exception is
     # stringified (for either publishing the exception on console or to logs)
@@ -242,7 +243,8 @@ class Gemini(BaseLlm):
           yield llm_response
         return
 
-      logger.debug(_build_request_log(llm_request))
+      if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(_build_request_log(llm_request))
 
       if stream:
         responses = await self.api_client.aio.models.generate_content_stream(
@@ -487,8 +489,10 @@ class Gemini(BaseLlm):
 
     from ..tools.computer_use.computer_use_toolset import ComputerUseToolset
 
-    async def convert_wait_to_wait_5_seconds(wait_func):
-      async def wait_5_seconds(tool_context=None):
+    async def convert_wait_to_wait_5_seconds(
+        wait_func: Callable[..., Any],
+    ) -> Callable[..., Any]:
+      async def wait_5_seconds(tool_context: Any = None) -> Any:
         return await wait_func(5, tool_context=tool_context)
 
       return wait_5_seconds
@@ -498,6 +502,7 @@ class Gemini(BaseLlm):
     )
 
   async def _preprocess_request(self, llm_request: LlmRequest) -> None:
+    from ..tools import load_artifacts_tool  # pylint: disable=import-outside-toplevel
 
     if self._api_backend == GoogleLLMVariant.GEMINI_API:
       # Using API key from Google AI Studio to call model doesn't support labels.
@@ -524,6 +529,24 @@ class Gemini(BaseLlm):
         if isinstance(tool, types.Tool) and tool.computer_use:
           llm_request.config.system_instruction = None
           await self._adapt_computer_use_tool(llm_request)
+
+    # Sanitize inputs by ensuring unsupported inline types (e.g. DOCX from UI)
+    # are converted to plain text using load_artifacts_tool._as_safe_part_for_llm.
+    if llm_request.contents:
+      for content in llm_request.contents:
+        if not content.parts:
+          continue
+        new_parts = []
+        for part in content.parts:
+          if part.inline_data:
+            # GE inline_data does not preserve filenames, so we pass a dummy
+            # 'inline-file' name as a placeholder for
+            # _as_safe_part_for_llm's required artifact_name argument.
+            part = load_artifacts_tool._as_safe_part_for_llm(  # pylint: disable=protected-access
+                part, 'inline-file'
+            )
+          new_parts.append(part)
+        content.parts = new_parts
 
   def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
     """Merge tracking headers to the given headers."""
@@ -666,7 +689,7 @@ Raw response:
 
 def _remove_display_name_if_present(
     data_obj: Union[types.Blob, types.FileData, None],
-):
+) -> None:
   """Sets display_name to None for the Gemini API (non-Vertex) backend.
 
   This backend does not support the display_name parameter for file uploads,

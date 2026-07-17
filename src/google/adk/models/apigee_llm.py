@@ -78,7 +78,7 @@ class ApigeeLlm(Gemini):
     GENAI = 'genai'
 
     @classmethod
-    def _missing_(cls, value):
+    def _missing_(cls, value: object) -> Any:
       # Empty string or None should return UNKNOWN.
       if not value:
         return cls.UNKNOWN
@@ -665,8 +665,8 @@ class CompletionsHTTPClient:
     if role == 'model':
       role = 'assistant'
 
-    tool_calls = []
-    content_parts = []
+    tool_calls: list[dict[str, Any]] = []
+    content_parts: list[dict[str, Any]] = []
     refusals: list[str] = []
 
     function_responses = []
@@ -684,7 +684,7 @@ class CompletionsHTTPClient:
     if function_responses:
       return function_responses
 
-    message = {'role': role}
+    message: dict[str, Any] = {'role': role}
     if refusals:
       message['refusal'] = '\n'.join(refusals)
     if tool_calls:
@@ -856,15 +856,15 @@ class ChatCompletionsResponseHandler:
   Useful for both streaming and non-streaming responses.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self.content_parts = ''
-    self.tool_call_parts = {}
+    self.tool_call_parts: dict[int, types.Part] = {}
     self.role = ''
     self.streaming_complete = False
     self.model = ''
-    self.usage = {}
-    self.logprobs = {}
-    self.custom_metadata = {}
+    self.usage: dict[str, Any] = {}
+    self.logprobs: dict[str, Any] = {}
+    self.custom_metadata: dict[str, Any] = {}
     self._refusal_started = False
 
   def process_response(self, response: dict[str, Any]) -> LlmResponse:
@@ -1083,7 +1083,7 @@ class ChatCompletionsResponseHandler:
 
   def _add_chat_completion_message(
       self, message: dict[str, Any]
-  ) -> (list[types.Part], str):
+  ) -> tuple[list[types.Part], str]:
     """Adds a complete chat completion message to the accumulator.
 
     This method processes a single message from a non-streaming chat completions

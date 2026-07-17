@@ -17,6 +17,7 @@ from __future__ import annotations
 import functools
 import json
 import types
+from typing import Any
 from typing import Callable
 from typing import Optional
 import uuid
@@ -40,7 +41,7 @@ def _execute_sql(
     tool_context: ToolContext,
     dry_run: bool = False,
     caller_id: Optional[str] = None,
-) -> dict:
+) -> dict[str, Any]:
   try:
     # Validate compute project if applicable
     if (
@@ -181,7 +182,7 @@ def _execute_sql(
         row_values[key] = val
       rows.append(row_values)
 
-    result = {"status": "SUCCESS", "rows": rows}
+    result: dict[str, Any] = {"status": "SUCCESS", "rows": rows}
     if (
         settings.max_query_result_rows is not None
         and len(rows) == settings.max_query_result_rows
@@ -202,7 +203,7 @@ def execute_sql(
     settings: BigQueryToolConfig,
     tool_context: ToolContext,
     dry_run: bool = False,
-) -> dict:
+) -> dict[str, Any]:
   """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
 
   Args:
@@ -292,7 +293,7 @@ def execute_sql(
   )
 
 
-def _execute_sql_write_mode(*args, **kwargs) -> dict:
+def _execute_sql_write_mode(*args: Any, **kwargs: Any) -> dict[str, Any]:
   """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
 
   Args:
@@ -512,7 +513,9 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
   return execute_sql(*args, **kwargs)
 
 
-def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
+def _execute_sql_protected_write_mode(
+    *args: Any, **kwargs: Any
+) -> dict[str, Any]:
   """Run a BigQuery or BigQuery ML SQL query in the project and return the result.
 
   Args:
@@ -723,7 +726,9 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
   return execute_sql(*args, **kwargs)
 
 
-def get_execute_sql(settings: BigQueryToolConfig) -> Callable[..., dict]:
+def get_execute_sql(
+    settings: BigQueryToolConfig,
+) -> Callable[..., dict[str, Any]]:
   """Get the execute_sql tool customized as per the given tool settings.
 
   Args:
@@ -775,7 +780,7 @@ def forecast(
     credentials: Credentials,
     settings: BigQueryToolConfig,
     tool_context: ToolContext,
-) -> dict:
+) -> dict[str, Any]:
   """Run a BigQuery AI time series forecast using AI.FORECAST.
 
   Args:
@@ -949,7 +954,7 @@ def analyze_contribution(
     tool_context: ToolContext,
     top_k_insights: int = 30,
     pruning_method: str = "PRUNE_REDUNDANT_INSIGHTS",
-) -> dict:
+) -> dict[str, Any]:
   """Run a BigQuery ML contribution analysis using ML.CREATE_MODEL and ML.GET_INSIGHTS.
 
   Args:
@@ -1151,7 +1156,7 @@ def detect_anomalies(
     credentials: Credentials,
     settings: BigQueryToolConfig,
     tool_context: ToolContext,
-) -> dict:
+) -> dict[str, Any]:
   """Run a BigQuery time series ARIMA_PLUS model training and anomaly detection using CREATE MODEL and ML.DETECT_ANOMALIES clauses.
 
   Args:

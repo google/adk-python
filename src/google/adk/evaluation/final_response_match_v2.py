@@ -102,7 +102,7 @@ def _parse_critique(response: str) -> Label:
   )
   # Remove any trailing whitespace, commas, or end-brackets from the label.
   if label_match_is_response_valid:
-    label = label_match_is_response_valid.group(1).strip(r"\s,\}")
+    label = label_match_is_response_valid.group(1).strip().rstrip(",}")
     if label in [
         Label.INVALID.value,
         Label.ALMOST.value,
@@ -115,7 +115,7 @@ def _parse_critique(response: str) -> Label:
     else:
       label = Label.NOT_FOUND
   elif label_match_is_response_invalid:
-    label = label_match_is_response_invalid.group(1).strip(r"\s,\}")
+    label = label_match_is_response_invalid.group(1).strip().rstrip(",}")
     label = (
         Label.INVALID
         if label in [Label.TRUE.value, Label.INVALID.value]
@@ -230,7 +230,7 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
       self, per_invocation_results: list[PerInvocationResult]
   ) -> EvaluationResult:
     """Computes the fraction of invocation results that are valid."""
-    num_valid = 0
+    num_valid: float = 0
     num_evaluated = 0
     for result in per_invocation_results:
       if result.score is None or result.eval_status == EvalStatus.NOT_EVALUATED:

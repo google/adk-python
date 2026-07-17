@@ -155,27 +155,28 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
   @staticmethod
   def _merge_state(
-      app_state: dict[str, Any],
-      user_state: dict[str, Any],
+      app_state: Optional[dict[str, Any]],
+      user_state: Optional[dict[str, Any]],
       session_state: dict[str, Any],
   ) -> dict[str, Any]:
     """Merge app, user, and session states into a single state dictionary."""
     merged_state = copy.deepcopy(session_state)
-    for key, value in app_state.items():
+    for key, value in (app_state or {}).items():
       merged_state[State.APP_PREFIX + key] = value
-    for key, value in user_state.items():
+    for key, value in (user_state or {}).items():
       merged_state[State.USER_PREFIX + key] = value
     return merged_state
 
   def _get_sessions_ref(
       self, app_name: str, user_id: str
   ) -> firestore.AsyncCollectionReference:
-    return (
+    return cast(
+        "firestore.AsyncCollectionReference",
         self.client.collection(self.root_collection)
         .document(app_name)
         .collection("users")
         .document(user_id)
-        .collection(self.sessions_collection)
+        .collection(self.sessions_collection),
     )
 
   async def create_session(
@@ -526,7 +527,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
         # 2. Writes
         if app_updates and app_snap is not None:
-          current_app = app_snap.to_dict() if app_snap.exists else {}
+          current_app = (app_snap.to_dict() or {}) if app_snap.exists else {}
           current_app.update(app_updates)
           transaction.set(app_ref, current_app, merge=True)
 

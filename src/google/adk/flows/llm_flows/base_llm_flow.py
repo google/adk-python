@@ -448,6 +448,7 @@ async def _process_agent_tools(
   """
   agent = invocation_context.agent
   if agent is None or not hasattr(agent, 'tools') or not agent.tools:
+    invocation_context.canonical_tools_cache = []
     return
 
   multiple_tools = len(agent.tools) > 1
@@ -492,6 +493,12 @@ async def _process_agent_tools(
   if invocation_context.live_request_queue is not None:
     _mark_live_async_tools_non_blocking(llm_request)
 
+  # Reuse this exact, current-step resolution in after-model processing. Tool
+  # sets can change between model steps, so the cache is refreshed each time.
+  invocation_context.canonical_tools_cache = [
+      tool for tools in resolved_tools_per_union for tool in tools
+  ]
+
 
 def _mark_live_async_tools_non_blocking(llm_request: LlmRequest) -> None:
   """Marks live streaming and response-scheduling tools as NON_BLOCKING.
@@ -519,7 +526,7 @@ class BaseLlmFlow(ABC):
   This flow ends when it transfers to another agent.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self.request_processors: list[BaseLlmRequestProcessor] = []
     self.response_processors: list[BaseLlmResponseProcessor] = []
 
@@ -768,7 +775,7 @@ class BaseLlmFlow(ABC):
       self,
       llm_connection: BaseLlmConnection,
       invocation_context: InvocationContext,
-  ):
+  ) -> None:
     """Sends data to model."""
     while True:
       live_request_queue = invocation_context.live_request_queue

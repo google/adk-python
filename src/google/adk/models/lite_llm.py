@@ -626,6 +626,26 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   return message.get("reasoning")
 
 
+_GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
+
+
+def _is_gemma4_model(model: str) -> bool:
+  """Detects Gemma 4 models across naming conventions.
+
+  Ollama uses "gemma4" (e.g. "ollama/gemma4:e2b"), while Hugging Face,
+  vLLM, and llama.cpp use the hyphenated "gemma-4" (e.g.
+  "google/gemma-4-26B-A4B"). Both need role='tool_responses' for tool
+  results.
+
+  Args:
+    model: The model name to check.
+
+  Returns:
+    True if the model is a Gemma 4 model, False otherwise.
+  """
+  return bool(_GEMMA4_MODEL_PATTERN.search(model.lower()))
+
+
 class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
   file_id: str
@@ -659,7 +679,11 @@ class LiteLLMClient:
   """Provides acompletion method (for better testability)."""
 
   async def acompletion(
-      self, model, messages, tools, **kwargs
+      self,
+      model: Any,
+      messages: Any,
+      tools: Any,
+      **kwargs: Any,
   ) -> Union[ModelResponse, CustomStreamWrapper]:
     """Asynchronously calls acompletion.
 
@@ -682,7 +706,12 @@ class LiteLLMClient:
     )
 
   def completion(
-      self, model, messages, tools, stream=False, **kwargs
+      self,
+      model: Any,
+      messages: Any,
+      tools: Any,
+      stream: bool = False,
+      **kwargs: Any,
   ) -> Union[ModelResponse, CustomStreamWrapper]:
     """Synchronously calls completion. This is used for streaming only.
 
@@ -707,7 +736,7 @@ class LiteLLMClient:
     )
 
 
-def _safe_json_serialize(obj) -> str:
+def _safe_json_serialize(obj: object) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
   Args:
@@ -807,7 +836,7 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
       if isinstance(value, int):
         return value
     elif isinstance(details, list):
-      total = sum(
+      total: int = sum(
           item.get("cached_tokens", 0)
           for item in details
           if isinstance(item, dict)
@@ -997,7 +1026,7 @@ async def _content_to_message_param(
       # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
       # Earlier Gemma versions before version 4 do not support tool use,
       # so this check is intentionally scoped to only look for "gemma4" in the model name.
-      tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
+      tool_role = "tool_responses" if _is_gemma4_model(model) else "tool"
       tool_messages.append(
           ChatCompletionToolMessage(
               role=tool_role,
@@ -1165,7 +1194,7 @@ def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
 
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
-  expected_tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
+  expected_tool_role = "tool_responses" if _is_gemma4_model(model) else "tool"
 
   for message in messages:
     role = message.get("role")
@@ -1300,7 +1329,7 @@ async def _get_content(
           )
           content_objects.append({
               "type": "file",
-              "file": {"file_id": file_response.id},
+              "file": {"file_id": file_response.id, "format": mime_type},
           })
         else:
           content_objects.append({
@@ -1696,7 +1725,7 @@ def _parse_tool_calls_from_text(
     text_block: str,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
   """Extracts inline JSON tool calls from LiteLLM text responses."""
-  tool_calls = []
+  tool_calls: list[ChatCompletionMessageToolCall] = []
   if not text_block:
     return tool_calls, None
 
@@ -1793,7 +1822,7 @@ TYPE_LABELS = {
 }
 
 
-def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
+def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   """Recursively converts a schema object or dict to a pure-python dict.
 
   Args:
@@ -1839,7 +1868,7 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
 
 def _function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
-) -> dict:
+) -> dict[str, Any]:
   """Converts a types.FunctionDeclaration to an openapi spec dictionary.
 
   Args:
@@ -2305,9 +2334,9 @@ async def _get_completion_inputs(
     model: str,
 ) -> Tuple[
     List[Message],
-    Optional[List[Dict]],
+    Optional[List[Dict[str, Any]]],
     Optional[Dict[str, Any]],
-    Optional[Dict],
+    Optional[Dict[str, Any]],
 ]:
   """Converts an LlmRequest to litellm inputs and extracts generation params.
 
@@ -2346,7 +2375,7 @@ async def _get_completion_inputs(
   messages = _ensure_tool_results(messages, model)
 
   # 2. Convert tool declarations
-  tools: Optional[List[Dict]] = None
+  tools: Optional[List[Dict[str, Any]]] = None
   if (
       llm_request.config
       and llm_request.config.tools
@@ -2366,7 +2395,7 @@ async def _get_completion_inputs(
     )
 
   # 4. Extract generation parameters
-  generation_params: dict | None = None
+  generation_params: dict[str, Any] | None = None
   if llm_request.config:
     config_dict = llm_request.config.model_dump(exclude_none=True)
     # Generate LiteLlm parameters here,
@@ -2650,12 +2679,14 @@ class LiteLlm(BaseLlm):
     llm_client: The LLM client to use for the model.
   """
 
-  llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient)
+  # LiteLLMClient has no JSON serializer, so it is excluded from dumps to keep
+  # model_dump(mode="json") from raising.
+  llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient, exclude=True)
   """The LLM client to use for the model."""
 
   _additional_args: Dict[str, Any] = None
 
-  def __init__(self, model: str, **kwargs):
+  def __init__(self, model: str, **kwargs: Any) -> None:
     """Initializes the LiteLlm class.
 
     Args:
@@ -2710,7 +2741,7 @@ class LiteLlm(BaseLlm):
       # LiteLLM does not support both tools and functions together.
       tools = None
 
-    completion_args = {
+    completion_args: dict[str, Any] = {
         "model": effective_model,
         "messages": normalized_messages,
         "tools": tools,
@@ -2757,7 +2788,9 @@ class LiteLlm(BaseLlm):
       text = ""
       reasoning_parts: List[types.Part] = []
       # Track function calls by index
-      function_calls = {}  # index -> {name, args, id}
+      function_calls: dict[int, dict[str, Any]] = (
+          {}
+      )  # index -> {name, args, id}
       tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
