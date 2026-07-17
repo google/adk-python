@@ -564,8 +564,13 @@ class _SkillScriptCodeExecutor:
             stdout = parsed.get("stdout", "")
             stderr = parsed.get("stderr", "")
             rc = parsed.get("returncode", 0)
-            if rc != 0 and not stderr:
-              stderr = f"Exit code {rc}"
+            if rc != 0 and not parsed.get("timeout", False):
+              exit_code_message = f"Exit code {rc}"
+              stderr = (
+                  f"{stderr.rstrip()}\n{exit_code_message}"
+                  if stderr
+                  else exit_code_message
+              )
         except (json.JSONDecodeError, ValueError):
           pass
 
@@ -745,6 +750,8 @@ class _SkillScriptCodeExecutor:
           "        _r = subprocess.run(",
           f"          {arr!r},",
           "          capture_output=True, text=True,",
+          # Keep shell output decoding independent from the host locale.
+          "          encoding='utf-8', errors='replace',",
           f"          timeout={timeout!r}, cwd=td,",
           "        )",
           "        print(_json.dumps({",
@@ -759,6 +766,7 @@ class _SkillScriptCodeExecutor:
           "            'stdout': _e.stdout or '',",
           f"            'stderr': 'Timed out after {timeout}s',",
           "            'returncode': -1,",
+          "            'timeout': True,",
           "        }))",
       ])
     else:

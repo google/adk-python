@@ -20,6 +20,7 @@ from google.adk.evaluation.eval_config import get_eval_metrics_from_config
 from google.adk.evaluation.eval_config import get_evaluation_criteria_or_default
 from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.eval_rubrics import RubricContent
+from google.adk.evaluation.simulation._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 from pydantic import ValidationError
 import pytest
@@ -165,6 +166,26 @@ def test_user_simulator_config_json_with_explicit_type():
       eval_config.user_simulator_config, LlmBackedUserSimulatorConfig
   )
   assert eval_config.user_simulator_config.type == "llm_backed"
+  assert eval_config.user_simulator_config.model == "my-model"
+  assert eval_config.user_simulator_config.max_allowed_invocations == 5
+
+
+def test_user_simulator_config_json_with_llm_audio_type():
+  """A JSON config that carries `type=llm_audio` should deserialize to the
+
+  `LlmAudioUserSimulatorConfig` subclass via the `type` discriminator.
+  """
+  payload = (
+      '{"criteria": {"tool_trajectory_avg_score": 1.0},'
+      ' "userSimulatorConfig": {"type": "llm_audio",'
+      ' "model": "my-model", "maxAllowedInvocations": 5}}'
+  )
+  eval_config = EvalConfig.model_validate_json(payload)
+
+  assert isinstance(
+      eval_config.user_simulator_config, LlmAudioUserSimulatorConfig
+  )
+  assert eval_config.user_simulator_config.type == "llm_audio"
   assert eval_config.user_simulator_config.model == "my-model"
   assert eval_config.user_simulator_config.max_allowed_invocations == 5
 

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pathlib import Path
 from typing import Any
 
 from adk_pr_triaging_agent.settings import GITHUB_BASE_URL
@@ -24,7 +23,6 @@ from adk_pr_triaging_agent.utils import get_diff
 from adk_pr_triaging_agent.utils import get_request
 from adk_pr_triaging_agent.utils import is_assignable
 from adk_pr_triaging_agent.utils import post_request
-from adk_pr_triaging_agent.utils import read_file
 from adk_pr_triaging_agent.utils import run_graphql_query
 from google.adk import Agent
 import requests
@@ -59,17 +57,13 @@ LABEL_TO_OWNER = {
     "web": "wyf7107",
 }
 
-CONTRIBUTING_MD = read_file(
-    Path(__file__).resolve().parents[4] / "CONTRIBUTING.md"
-)
-
 APPROVAL_INSTRUCTION = (
-    "Do not ask for user approval for labeling, commenting, or assigning!"
+    "Do not ask for user approval for labeling or assigning!"
     " If you can't find appropriate labels for the PR, do not label it."
 )
 if IS_INTERACTIVE:
   APPROVAL_INSTRUCTION = (
-      "Only label, comment, or assign when the user approves the action!"
+      "Only label or assign when the user approves the action!"
   )
 
 
@@ -259,32 +253,6 @@ def assign_owner_to_pr(pr_number: int, label: str) -> dict[str, Any]:
   }
 
 
-def add_comment_to_pr(pr_number: int, comment: str) -> dict[str, Any]:
-  """Add the specified comment to the given PR number.
-
-  Args:
-    pr_number: the number of the GitHub pull request
-    comment: the comment to add
-
-  Returns:
-    The status of this request, with the applied comment when successful.
-  """
-  print(f"Attempting to add comment '{comment}' to issue #{pr_number}")
-
-  # Pull Request is a special issue in GitHub, so we can use issue url for PR.
-  url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{pr_number}/comments"
-  payload = {"body": comment}
-
-  try:
-    post_request(url, payload)
-  except requests.exceptions.RequestException as e:
-    return error_response(f"Error: {e}")
-  return {
-      "status": "success",
-      "added_comment": comment,
-  }
-
-
 def list_untriaged_pull_requests(pr_count: int) -> dict[str, Any]:
   """List open pull requests that need triaging.
 
@@ -348,8 +316,6 @@ root_agent = Agent(
       - Get the pull request details.
       - Add a label to the pull request.
       - Assign the component owner (the shepherd) to the pull request.
-      - Check if the pull request is following the contribution guidelines.
-      - Add a comment to the pull request if it's not following the guidelines.
 
       **IMPORTANT: {APPROVAL_INSTRUCTION}**
 
@@ -367,59 +333,30 @@ root_agent = Agent(
       - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with "mcp".
       - If you can't find an appropriate labels for the PR, follow the previous instruction that starts with "IMPORTANT:".
 
-      Here is the contribution guidelines:
-      `{CONTRIBUTING_MD}`
-
-      Here are the guidelines for checking if the PR is following the guidelines:
-      - The "statusCheckRollup" in the pull request details may help you to identify if the PR is following some of the guidelines (e.g. CLA compliance).
-
-      Here are the guidelines for the comment:
-      - **Be Polite and Helpful:** Start with a friendly tone.
-      - **Be Specific:** Clearly list only the sections from the contribution guidelines that are still missing.
-      - **Address the Author:** Mention the PR author by their username (e.g., `@username`).
-      - **Provide Context:** Explain *why* the information or action is needed.
-      - **Do not be repetitive:** If you have already commented on an PR asking for information, do not comment again unless new information has been added and it's still incomplete.
-      - **Identify yourself:** Include a bolded note (e.g. "Response from ADK Triaging Agent") in your comment to indicate this comment was added by an ADK Answering Agent.
-
-      **Example Comment for a PR:**
-      > **Response from ADK Triaging Agent**
-      >
-      > Hello @[pr-author-username], thank you for creating this PR!
-      >
-      > This PR is a bug fix, could you please associate the github issue with this PR? If there is no existing issue, could you please create one?
-      >
-      > In addition, could you please provide logs or screenshot after the fix is applied?
-      >
-      > This information will help reviewers to review your PR more efficiently. Thanks!
-
       # 4. Steps
       - If you are asked to find pull requests that need triaging, use `list_untriaged_pull_requests` first.
       - For each pull request to be triaged:
         - Call the `get_pull_request_details` tool to get the details of the PR.
-        - Skip the PR (i.e. do not label or comment) if any of the following is true:
+        - Skip the PR (i.e. do not label) if any of the following is true:
           - the PR is closed
           - the PR is labeled with "google-contributor"
           - the PR is already labelled with the above labels (e.g. "documentation", "services", "tools", etc.).
-        - Check if the PR is following the contribution guidelines.
-          - If it's not following the guidelines, recommend or add a comment to the PR that points to the contribution guidelines (https://github.com/google/adk-python/blob/main/CONTRIBUTING.md).
-          - If it's following the guidelines, recommend or add a label to the PR.
+        - Recommend or add a label to the PR.
         - After you add a component label, assign the component owner (the shepherd) to the PR:
           - Call `assign_owner_to_pr` with the same label you applied.
           - Skip assignment if the PR already has an assignee.
-          - If the tool reports the owner is not assignable, just note it; do not comment about it.
+          - If the tool reports the owner is not assignable, just note it.
 
       # 5. Output
       Present the following in an easy to read format highlighting PR number and your label.
       - The PR summary in a few sentence
       - The label you recommended or added with the justification
       - The owner you assigned (or why you did not)
-      - The comment you recommended or added to the PR with the justification
     """,
     tools=[
         list_untriaged_pull_requests,
         get_pull_request_details,
         add_label_to_pr,
         assign_owner_to_pr,
-        add_comment_to_pr,
     ],
 )

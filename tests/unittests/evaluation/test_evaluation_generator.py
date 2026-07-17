@@ -516,6 +516,182 @@ class TestGenerateInferencesForSingleUserInvocationLive:
     with pytest.raises(StopAsyncIteration):
       await gen.__anext__()
 
+  @pytest.mark.asyncio
+  async def test_generate_inferences_live_strips_text_from_audio_message(
+      self, mocker
+  ):
+    """Text parts are stripped from an audio message before it is sent.
+
+    The agent should receive audio-only input, while the full Content
+    (text + audio) is preserved in the yielded user Event for trajectory
+    logging and autorater evaluation.
+    """
+    mock_live_request_queue = mocker.MagicMock()
+    event_queue = asyncio.Queue()
+    turn_complete_event = asyncio.Event()
+
+    text_part = types.Part(text="User query")
+    audio_part = types.Part(
+        inline_data=types.Blob(mime_type="audio/pcm", data=b"fake-audio")
+    )
+    user_content = types.Content(role="user", parts=[text_part, audio_part])
+    invocation_id = "inv1"
+
+    agent_event = _build_event(
+        "agent", [types.Part(text="Agent response")], invocation_id
+    )
+
+    gen = EvaluationGenerator._generate_inferences_for_single_user_invocation_live(
+        live_request_queue=mock_live_request_queue,
+        event_queue=event_queue,
+        user_message=user_content,
+        current_invocation_id=invocation_id,
+        turn_complete_event=turn_complete_event,
+        live_timeout_seconds=300,
+    )
+
+    # The yielded user event preserves the full content (text + audio).
+    first_event = await gen.__anext__()
+    assert first_event.author == "user"
+    assert first_event.content == user_content
+    assert len(first_event.content.parts) == 2
+
+    # Mock turn_complete_event.wait to avoid blocking
+    turn_complete_event.wait = mocker.AsyncMock()
+    await event_queue.put(agent_event)
+
+    second_event = await gen.__anext__()
+    assert second_event == agent_event
+
+    # The agent receives an audio-only message (text part stripped).
+    mock_live_request_queue.send_content.assert_called_once()
+    sent_content = mock_live_request_queue.send_content.call_args.args[0]
+    assert sent_content.role == "user"
+    assert len(sent_content.parts) == 1
+    assert sent_content.parts[0].text is None
+    assert sent_content.parts[0].inline_data.data == b"fake-audio"
+
+  @pytest.mark.asyncio
+  async def test_generate_inferences_live_audio_only_message(self, mocker):
+    """Audio-only messages are forwarded to the agent unchanged."""
+    mock_live_request_queue = mocker.MagicMock()
+    event_queue = asyncio.Queue()
+    turn_complete_event = asyncio.Event()
+
+    audio_part = types.Part(
+        inline_data=types.Blob(mime_type="audio/pcm", data=b"fake-audio")
+    )
+    user_content = types.Content(role="user", parts=[audio_part])
+    invocation_id = "inv1"
+
+    agent_event = _build_event(
+        "agent", [types.Part(text="Agent response")], invocation_id
+    )
+
+    gen = EvaluationGenerator._generate_inferences_for_single_user_invocation_live(
+        live_request_queue=mock_live_request_queue,
+        event_queue=event_queue,
+        user_message=user_content,
+        current_invocation_id=invocation_id,
+        turn_complete_event=turn_complete_event,
+        live_timeout_seconds=300,
+    )
+
+    first_event = await gen.__anext__()
+    assert first_event.content == user_content
+
+    # Mock turn_complete_event.wait to avoid blocking
+    turn_complete_event.wait = mocker.AsyncMock()
+    await event_queue.put(agent_event)
+    await gen.__anext__()
+
+    mock_live_request_queue.send_content.assert_called_once()
+    sent_content = mock_live_request_queue.send_content.call_args.args[0]
+    assert len(sent_content.parts) == 1
+    assert sent_content.parts[0].inline_data.data == b"fake-audio"
+
+  @pytest.mark.asyncio
+  async def test_generate_inferences_live_text_only_message_unchanged(
+      self, mocker
+  ):
+    """Text-only messages are forwarded to the agent unchanged."""
+    mock_live_request_queue = mocker.MagicMock()
+    event_queue = asyncio.Queue()
+    turn_complete_event = asyncio.Event()
+
+    user_content = types.Content(
+        role="user", parts=[types.Part(text="User query")]
+    )
+    invocation_id = "inv1"
+
+    agent_event = _build_event(
+        "agent", [types.Part(text="Agent response")], invocation_id
+    )
+
+    gen = EvaluationGenerator._generate_inferences_for_single_user_invocation_live(
+        live_request_queue=mock_live_request_queue,
+        event_queue=event_queue,
+        user_message=user_content,
+        current_invocation_id=invocation_id,
+        turn_complete_event=turn_complete_event,
+        live_timeout_seconds=300,
+    )
+
+    await gen.__anext__()
+    turn_complete_event.wait = mocker.AsyncMock()
+    await event_queue.put(agent_event)
+    await gen.__anext__()
+
+    # No audio present, so the original content object is sent as-is.
+    mock_live_request_queue.send_content.assert_called_once_with(user_content)
+
+  @pytest.mark.asyncio
+  async def test_generate_inferences_live_audio_with_text_sends_unchanged(
+      self, mocker
+  ):
+    """Falls back to the original message when stripping text leaves no parts.
+
+    When every part carries text (even the audio-bearing part), stripping
+    text parts would produce an empty message. In that case the original
+    Content is sent to the agent unchanged rather than an empty message.
+    """
+    mock_live_request_queue = mocker.MagicMock()
+    event_queue = asyncio.Queue()
+    turn_complete_event = asyncio.Event()
+
+    # A single part that carries both text and audio, so it is excluded by the
+    # `not p.text` filter, leaving `audio_parts` empty.
+    combined_part = types.Part(
+        text="User query",
+        inline_data=types.Blob(mime_type="audio/pcm", data=b"fake-audio"),
+    )
+    user_content = types.Content(role="user", parts=[combined_part])
+    invocation_id = "inv1"
+
+    agent_event = _build_event(
+        "agent", [types.Part(text="Agent response")], invocation_id
+    )
+
+    gen = EvaluationGenerator._generate_inferences_for_single_user_invocation_live(
+        live_request_queue=mock_live_request_queue,
+        event_queue=event_queue,
+        user_message=user_content,
+        current_invocation_id=invocation_id,
+        turn_complete_event=turn_complete_event,
+        live_timeout_seconds=300,
+    )
+
+    first_event = await gen.__anext__()
+    assert first_event.content == user_content
+
+    # Mock turn_complete_event.wait to avoid blocking
+    turn_complete_event.wait = mocker.AsyncMock()
+    await event_queue.put(agent_event)
+    await gen.__anext__()
+
+    # audio_parts is empty, so the original content object is sent as-is.
+    mock_live_request_queue.send_content.assert_called_once_with(user_content)
+
 
 @pytest.fixture
 def mock_runner(mocker):

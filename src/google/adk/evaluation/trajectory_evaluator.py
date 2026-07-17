@@ -27,6 +27,7 @@ from .eval_case import get_all_tool_calls
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import ToolTrajectoryCriterion
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -105,13 +106,16 @@ class TrajectoryEvaluator(Evaluator):
     """Returns EvaluationResult after performing evaluations using actual and expected invocations."""
     if expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
     del conversation_scenario  # not supported for per-invocation evaluation.
 
     total_tool_use_accuracy = 0.0
     num_invocations = 0
     per_invocation_results = []
 
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, expected_invocations, strict=True
+    ):
       tool_use_accuracy = self._calculate_tool_use_accuracy(actual, expected)
       per_invocation_results.append(
           PerInvocationResult(
@@ -259,7 +263,9 @@ class TrajectoryEvaluator(Evaluator):
     if len(actual_tool_calls) != len(expected_tool_calls):
       return False
 
-    for actual, expected in zip(actual_tool_calls, expected_tool_calls):
+    for actual, expected in zip(
+        actual_tool_calls, expected_tool_calls, strict=True
+    ):
       if actual.name != expected.name or actual.args != expected.args:
         return False
 
