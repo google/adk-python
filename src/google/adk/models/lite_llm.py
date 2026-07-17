@@ -1329,7 +1329,7 @@ async def _get_content(
           )
           content_objects.append({
               "type": "file",
-              "file": {"file_id": file_response.id},
+              "file": {"file_id": file_response.id, "format": mime_type},
           })
         else:
           content_objects.append({

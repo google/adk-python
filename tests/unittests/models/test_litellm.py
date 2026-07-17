@@ -5104,6 +5104,7 @@ async def test_get_content_pdf_openai_uses_file_id(mocker):
 
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_id"] == "file-abc123"
+  assert content[0]["file"]["format"] == "application/pdf"
   assert "file_data" not in content[0]["file"]
 
   mock_acreate_file.assert_called_once_with(
@@ -5144,6 +5145,7 @@ async def test_get_content_pdf_azure_uses_file_id(mocker):
 
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_id"] == "file-xyz789"
+  assert content[0]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once_with(
       file=b"test_pdf_data",
@@ -5189,6 +5191,7 @@ async def test_get_completion_inputs_openai_file_upload(mocker):
   assert content[0]["text"] == "Analyze this PDF"
   assert content[1]["type"] == "file"
   assert content[1]["file"]["file_id"] == "file-uploaded123"
+  assert content[1]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once()
 

@@ -410,7 +410,19 @@ class EvaluationGenerator:
         invocation_id=current_invocation_id,
     )
 
-    live_request_queue.send_content(user_message)
+    # If the user message contains audio parts, strip text parts before
+    # sending to the agent so the model receives audio-only input.
+    # The full Content (with text) is preserved in the Event above for
+    # trajectory logging and autorater evaluation.
+    message_for_agent = user_message
+    if user_message.parts:
+      has_audio = any(p.inline_data for p in user_message.parts)
+      if has_audio:
+        audio_parts = [p for p in user_message.parts if not p.text]
+        if audio_parts:
+          message_for_agent = Content(parts=audio_parts, role=user_message.role)
+
+    live_request_queue.send_content(message_for_agent)
 
     try:
       await asyncio.wait_for(

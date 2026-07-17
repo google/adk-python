@@ -21,6 +21,7 @@ Please do not rely on the implementation details.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from typing import get_args
 from typing import get_origin
@@ -106,6 +107,19 @@ def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
   return TypeAdapter(schema).json_schema()
 
 
+def _strip_json_code_fence(json_text: str) -> str:
+  """Removes a markdown code fence wrapping the entire JSON payload, if present.
+
+  A model asked for structured output occasionally wraps it in a
+  ```json ... ``` fence, most often when tools are configured alongside an
+  output schema and the schema constraint becomes best-effort. Well-formed JSON
+  never starts with a fence, so this is a no-op on valid input.
+  """
+  stripped = json_text.strip()
+  match = re.fullmatch(r"```\w*\s*(.*?)\s*```", stripped, re.DOTALL)
+  return match.group(1).strip() if match else json_text
+
+
 def validate_schema(schema: SchemaType, json_text: str) -> Any:
   """Validate JSON text against a schema and return the result.
 
@@ -119,6 +133,8 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
       - list of dicts for list[BaseModel]
       - raw value for other schema types (list[str], dict, etc.)
   """
+  json_text = _strip_json_code_fence(json_text)
+
   if is_basemodel_schema(schema):
     # For regular BaseModel, use model_validate_json
     return schema.model_validate_json(json_text).model_dump(exclude_none=True)

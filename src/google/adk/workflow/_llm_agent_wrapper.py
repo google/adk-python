@@ -429,6 +429,8 @@ async def run_llm_agent_as_node(
           event.output = pending_fc_args[wrapper_key]
         else:
           event.output = pending_fc_args
+        if getattr(agent, 'output_key', None) and event.output is not None:
+          ctx.actions.state_delta[agent.output_key] = event.output
         yield event
         return
 

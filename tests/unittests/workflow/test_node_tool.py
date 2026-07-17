@@ -329,6 +329,53 @@ async def test_function_node_wrapped_as_tool_returns_output(
 
 
 @pytest.mark.asyncio
+async def test_function_node_wrapped_as_tool_no_output(
+    request: pytest.FixtureRequest,
+):
+  """NodeTool wrapping a function node that returns None completes with None result."""
+
+  @node
+  def no_output_node(request: str):
+    yield Event(output=None)
+
+  no_output_node.input_schema = GreetRequest
+  no_output_tool = NodeTool(node=no_output_node, name='no_output_tool')
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='no_output_tool',
+                  args={'request': 'world'},
+              ),
+              types.Part.from_text(text='Processed no output.'),
+          ]
+      ),
+      tools=[no_output_tool],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(
+      testing_utils.get_user_content('Run no output')
+  )
+
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': None}
+
+
+@pytest.mark.asyncio
 async def test_workflow_tool_with_join_node(request: pytest.FixtureRequest):
   """WorkflowTool containing a JoinNode works correctly when wrapped as a tool."""
   node_a = workflow_testing_utils.TestingNode(name='NodeA', output={'a': 1})
