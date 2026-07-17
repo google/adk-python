@@ -967,6 +967,11 @@ class LlmAgent(BaseAgent, abc.ABC):
     if not self.output_key:
       return
 
+    # Task mode agents deliver their final output via finish_task, not intermediate
+    # conversational text turns. Skip output_key processing on text responses for task mode.
+    if getattr(self, 'mode', None) == 'task':
+      return
+
     # Handle text responses
     if event.is_final_response() and event.content and event.content.parts:
 
@@ -1016,6 +1021,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     """
     if (
         not self.output_key
+        or getattr(self, 'mode', None) == 'task'
         or self.output_schema
         or event.author != self.name
         or event.partial

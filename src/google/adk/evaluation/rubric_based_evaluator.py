@@ -80,8 +80,12 @@ class DefaultAutoRaterResponseParser(AutoRaterResponseParser):
 
       scores.append(score)
 
+    # A partial parse can silently omit a failed rubric and inflate the score.
+    if not len(properties) == len(rationales) == len(scores):
+      return []
+
     rubric_responses = []
-    for p, r, s in zip(properties, rationales, scores):
+    for p, r, s in zip(properties, rationales, scores, strict=True):
       rubric_responses.append(
           RubricResponse(property_text=p.strip(), rationale=r.strip(), score=s)
       )

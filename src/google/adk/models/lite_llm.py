@@ -1329,7 +1329,7 @@ async def _get_content(
           )
           content_objects.append({
               "type": "file",
-              "file": {"file_id": file_response.id},
+              "file": {"file_id": file_response.id, "format": mime_type},
           })
         else:
           content_objects.append({
@@ -2679,7 +2679,9 @@ class LiteLlm(BaseLlm):
     llm_client: The LLM client to use for the model.
   """
 
-  llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient)
+  # LiteLLMClient has no JSON serializer, so it is excluded from dumps to keep
+  # model_dump(mode="json") from raising.
+  llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient, exclude=True)
   """The LLM client to use for the model."""
 
   _additional_args: Dict[str, Any] = None
