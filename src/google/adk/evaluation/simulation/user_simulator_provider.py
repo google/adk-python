@@ -18,6 +18,8 @@ from typing import Optional
 
 from ...utils.feature_decorator import experimental
 from ..eval_case import EvalCase
+from ._llm_audio_user_simulator import _LlmAudioUserSimulator
+from ._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
 from .llm_backed_user_simulator import LlmBackedUserSimulator
 from .llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 from .static_user_simulator import StaticUserSimulator
@@ -34,7 +36,7 @@ from .user_simulator import UserSimulator
 # to the shared dispatch registry. Each new built-in simulator adds one line
 # here, right alongside the existing ones.
 register_user_simulator(LlmBackedUserSimulatorConfig, LlmBackedUserSimulator)
-
+register_user_simulator(LlmAudioUserSimulatorConfig, _LlmAudioUserSimulator)
 
 # The historical default when the caller supplies no config, or supplies a
 # bare `BaseUserSimulatorConfig`. Preserves the pre-discriminator behavior of
@@ -113,6 +115,29 @@ class UserSimulatorProvider:
             " `register_user_simulator()`. Currently registered:"
             f" {registered}."
         )
+
+      # When the config resolves to the audio decorator, build the inner
+      # LlmBackedUserSimulator first and inject it as the text simulator.
+      if simulator_cls is _LlmAudioUserSimulator:
+        assert isinstance(
+            self._user_simulator_config, LlmAudioUserSimulatorConfig
+        )
+        text_config = LlmBackedUserSimulatorConfig(
+            model=self._user_simulator_config.model,
+            model_configuration=self._user_simulator_config.model_configuration,
+            max_allowed_invocations=self._user_simulator_config.max_allowed_invocations,
+            custom_instructions=self._user_simulator_config.custom_instructions,
+            include_function_calls=self._user_simulator_config.include_function_calls,
+        )
+        text_simulator = LlmBackedUserSimulator(
+            config=text_config,
+            conversation_scenario=eval_case.conversation_scenario,
+        )
+        return _LlmAudioUserSimulator(
+            config=self._user_simulator_config,
+            text_simulator=text_simulator,
+        )
+
       return simulator_cls(
           config=self._user_simulator_config,
           conversation_scenario=eval_case.conversation_scenario,
@@ -125,4 +150,22 @@ class UserSimulatorProvider:
             " EvalCase. Provide exactly one."
         )
 
-      return StaticUserSimulator(static_conversation=eval_case.conversation)
+      # Static conversations replay pre-authored turns.
+      static_simulator = StaticUserSimulator(
+          static_conversation=eval_case.conversation
+      )
+
+      # When an audio config is set, route the static turns through the audio
+      # decorator so they are synthesized to audio, just like the scenario
+      # case. The `StaticUserSimulator` is injected as the decorator's inner
+      # text simulator.
+      simulator_cls = _SIMULATOR_BY_CONFIG_TYPE.get(
+          type(self._user_simulator_config)
+      )
+      if simulator_cls is _LlmAudioUserSimulator:
+        return _LlmAudioUserSimulator(
+            config=self._user_simulator_config,
+            text_simulator=static_simulator,
+        )
+
+      return static_simulator
