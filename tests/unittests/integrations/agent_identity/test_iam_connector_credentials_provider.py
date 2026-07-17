@@ -271,40 +271,40 @@ async def test_get_auth_credential_raises_error_if_upstream_call_fails(
 @patch.object(_iam_connector_credentials_provider.time, "time")
 async def test_get_auth_credential_raises_error_if_polling_times_out(
     mock_time,
-    mock_operation,
+    mock_client,
     auth_scheme,
     context,
     provider,
 ):
   """Test get_auth_credential raises RuntimeError if polling times out."""
 
-  # Force the operation into the polling loop state
+  # 1. Setup the operation metadata to indicate consent is pending
   meta_pb = RetrieveCredentialsMetadata.pb()()
   meta_pb.consent_pending.SetInParent()
-  meta = RetrieveCredentialsMetadata.deserialize(meta_pb.SerializeToString())
-  mock_operation.metadata.value = RetrieveCredentialsMetadata.serialize(meta)
 
-  # First call sets start_time=0.0, second call checks time > timeout
-  # (20.0 > 10.0)
-  mock_time.side_effect = [0.0, 20.0]
+  # 2. Keep the operation in the pending state (done=False)
+  op_pending = Operation(done=False)
+  op_pending.metadata.value = meta_pb.SerializeToString()
 
-  mock_metadata = Mock(spec=RetrieveCredentialsMetadata)
-  mock_metadata.consent_pending = True
-  mock_metadata.uri_consent_required = False
-  mock_operation.done = True
-  mock_operation.ClearField("error")
-  mock_client = Mock(spec=Client)
-  mock_client.retrieve_credentials.side_effect = Exception(
-      "Timeout waiting for credentials."
-  )
-  provider._client = mock_client
+  # Configure the mock client to repeatedly return this pending operation
+  mock_client.retrieve_credentials.return_value = Mock(operation=op_pending)
 
+  # 3. Simulate the passage of time:
+  # - 1st time.time() sets start/end time (returns 0.0)
+  # - 2nd time.time() inside the while-loop check returns a value exceeding the
+  #   NON_INTERACTIVE_TOKEN_POLL_TIMEOUT_SEC timeout (currently 10.0s)
+  provider_lib = _iam_connector_credentials_provider
+  timeout = provider_lib.NON_INTERACTIVE_TOKEN_POLL_TIMEOUT_SEC
+  mock_time.side_effect = [0.0, timeout + 10.0]
+
+  # 4. Verify that timeout raises RuntimeError wrapping TimeoutError
   with pytest.raises(
       RuntimeError,
       match="Failed to retrieve credential for user 'user' on connector",
   ) as exc_info:
     await provider.get_auth_credential(auth_scheme, context)
 
+  # Assert that the underlying cause was indeed a TimeoutError from polling
   assert "Timeout waiting for credentials." in str(exc_info.value.__cause__)
 
 
@@ -508,3 +508,55 @@ async def test_get_auth_credential_handles_consent_pending_state_correctly(
 
   # Verify that retrieve_credentials was called twice (initial + 1 poll)
   assert mock_client.retrieve_credentials.call_count == 2
+
+
+@patch.object(_iam_connector_credentials_provider.time, "time")
+@patch.object(_iam_connector_credentials_provider.asyncio, "sleep")
+async def test_get_auth_credential_polling_succeeds_before_timeout(
+    mock_sleep,
+    mock_time,
+    mock_client,
+    auth_scheme,
+    context,
+    provider,
+):
+  """Test get_auth_credential returns credential if polling succeeds."""
+  # 1. Setup the first retrieve_credentials call to return a pending Operation
+  # containing consent_pending metadata.
+  meta_pb = RetrieveCredentialsMetadata.pb()()
+  meta_pb.consent_pending.SetInParent()
+
+  op_pending = Operation(done=False)
+  op_pending.metadata.value = meta_pb.SerializeToString()
+
+  # 2. Setup the operation to succeed on a subsequent poll.
+  op_success = Operation(done=True)
+  resp = RetrieveCredentialsResponse(
+      header="Authorization: Bearer", token="valid-token"
+  )
+  op_success.response.value = RetrieveCredentialsResponse.serialize(resp)
+
+  # Configure mock client to return pending, pending, then success.
+  mock_client.retrieve_credentials.side_effect = [
+      Mock(operation=op_pending),
+      Mock(operation=op_pending),
+      Mock(operation=op_success),
+  ]
+
+  # 3. Simulate the passage of time:
+  # - 1st time.time() sets end_time (returns 0.0)
+  # - 2nd time.time() inside loop (returns 0.0, first poll -> pending)
+  # - 3rd time.time() inside loop (returns timeout / 5.0, 2nd poll -> success)
+  provider_lib = _iam_connector_credentials_provider
+  timeout = provider_lib.NON_INTERACTIVE_TOKEN_POLL_TIMEOUT_SEC
+  mock_time.side_effect = [0.0, 0.0, timeout / 5.0]
+
+  # 4. Call the provider and verify.
+  credential = await provider.get_auth_credential(auth_scheme, context)
+
+  assert credential is not None
+  assert credential.http.credentials.token == "valid-token"
+  assert mock_client.retrieve_credentials.call_count == 3
+  mock_sleep.assert_called_once_with(
+      provider_lib.NON_INTERACTIVE_TOKEN_POLL_INTERVAL_SEC
+  )

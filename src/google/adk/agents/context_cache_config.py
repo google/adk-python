@@ -36,8 +36,9 @@ class ContextCacheConfig(BaseModel):
   by reusing previously processed context across multiple requests.
 
   Caching begins on the second turn of a session at the earliest and requires
-  the prior request to reach Gemini's hard 4096-token minimum, so short or
-  single-turn sessions are never cached.
+  the cacheable prefix to reach the model-specific minimum: 2048 tokens for
+  Gemini 2.5 or 4096 tokens for Gemini 3. Short or single-turn sessions are
+  therefore never cached.
 
   Attributes:
       cache_intervals: Maximum number of invocations to reuse the same cache before refreshing it
@@ -71,11 +72,11 @@ class ContextCacheConfig(BaseModel):
       description=(
           "Minimum prior-request tokens required to enable caching. This gates"
           " on the previous request's actual prompt token count, not an"
-          " estimate of the current request. Gemini enforces a hard 4096-token"
-          " minimum that always applies, so values below 4096 have no"
-          " additional effect. No cache is created on the first request of a"
-          " session; caching begins on the second turn once a previous token"
-          " count is known. Set higher to avoid caching small requests where"
+          " estimate of the current request. Gemini's model-specific minimum"
+          " always applies: 2048 tokens for Gemini 2.5 and 4096 tokens for"
+          " Gemini 3. No cache is created on the first request of a session;"
+          " caching begins on the second turn once a previous token count is"
+          " known. Set this higher to avoid caching small requests where"
           " storage overhead may exceed benefits."
       ),
   )

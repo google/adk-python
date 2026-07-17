@@ -19,6 +19,8 @@ from typing import Generator
 from google.adk import Agent
 from google.adk import Event
 from google.adk import Workflow
+from google.adk.apps._configs import ResumabilityConfig
+from google.adk.apps.app import App
 from google.adk.workflow import node
 from pydantic import BaseModel
 from pydantic import Field
@@ -29,18 +31,45 @@ class CustomerLookupArgs(BaseModel):
   user_id: str = Field(description="The customer's unique identifier.")
 
 
+from google.adk import Context
+from google.adk.events import RequestInput
+
+
 # 2. Define a regular Node using the @node decorator.
 # This Node is wrapped as a NodeTool automatically by the Agent.
 # As a NodeTool, it has the ability to yield intermediate Events during execution.
-@node
-def calculate_discount(tier: str, ctx) -> Generator[Event | str, None, None]:
+@node(rerun_on_resume=True)
+def calculate_discount(
+    tier: str, ctx: Context
+) -> Generator[Event | RequestInput | str, None, None]:
   """Calculates the discount percentage based on customer tier.
 
   Args:
     tier: The customer's membership tier (e.g., VIP, Standard).
   """
   yield Event(message=f"Checking discount rules for tier '{tier}'...")
-  discount = "20% off" if "VIP" in tier else "5% off"
+
+  resume_input = ctx.resume_inputs.get("confirm_vip_discount")
+  if "VIP" in tier:
+    if not resume_input:
+      yield RequestInput(
+          interrupt_id="confirm_vip_discount",
+          message=f"Apply VIP discount for tier '{tier}'?",
+      )
+      return
+
+    user_response = (
+        resume_input.get("text")
+        if isinstance(resume_input, dict)
+        else resume_input
+    )
+    if str(user_response).lower() in ("yes", "y", "true"):
+      discount = "20% off"
+    else:
+      discount = "5% off (VIP declined)"
+  else:
+    discount = "5% off"
+
   yield discount
 
 
@@ -70,4 +99,14 @@ root_agent = Agent(
     Summarize these details for the customer.
     """,
     tools=[customer_lookup_workflow, calculate_discount],
+)
+
+
+# Wrap the agent in an App and enable resumability. This is required because
+# the `calculate_discount` tool yields a RequestInput event which pauses
+# execution, and we need to resume the agent in a subsequent turn.
+app = App(
+    name="node_as_tool",
+    root_agent=root_agent,
+    resumability_config=ResumabilityConfig(is_resumable=True),
 )

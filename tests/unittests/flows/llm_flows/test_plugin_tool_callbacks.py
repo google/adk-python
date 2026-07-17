@@ -180,10 +180,9 @@ async def test_async_on_tool_error_fallback_to_runner(
 ):
   mock_plugin.enable_on_tool_error_callback = False
 
-  try:
+  with pytest.raises(ClientError) as exc_info:
     await invoke_tool_with_plugin(mock_error_tool, mock_plugin)
-  except Exception as e:
-    assert e == mock_error
+  assert exc_info.value == mock_error
 
 
 async def invoke_tool_with_plugin_live(
@@ -258,10 +257,9 @@ async def test_live_on_tool_error_fallback_to_runner(
 ):
   mock_plugin.enable_on_tool_error_callback = False
 
-  try:
+  with pytest.raises(ClientError) as exc_info:
     await invoke_tool_with_plugin_live(mock_error_tool, mock_plugin)
-  except Exception as e:
-    assert e == mock_error
+  assert exc_info.value == mock_error
 
 
 @pytest.mark.asyncio

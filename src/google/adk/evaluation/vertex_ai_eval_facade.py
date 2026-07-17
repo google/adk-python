@@ -30,6 +30,7 @@ from .app_details import AgentDetails
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -157,6 +158,7 @@ class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
   ) -> EvaluationResult:
     if self._expected_invocations_required and expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
     del conversation_scenario  # not supported for per-invocation evaluation.
 
     # If expected_invocation are not required by the metric and if they are not
@@ -170,7 +172,9 @@ class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
     total_score = 0.0
     num_invocations = 0
     per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, expected_invocations, strict=True
+    ):
       prompt = self._get_text(actual.user_content)
       reference = self._get_text(expected.final_response) if expected else None
       response = self._get_text(actual.final_response)
@@ -224,6 +228,9 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
       conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     del conversation_scenario
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
+    if not actual_invocations:
+      return EvaluationResult()
 
     per_invocation_results = []
     # If expected_invocation are not required by the metric and if they are not
@@ -236,7 +243,7 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
 
     # We mark all the n-1 turns as NOT-EVALUATED for these metrics.
     for actual, expected in zip(
-        actual_invocations[:-1], expected_invocations[:-1]
+        actual_invocations[:-1], expected_invocations[:-1], strict=True
     ):
       per_invocation_results.append(
           PerInvocationResult(
