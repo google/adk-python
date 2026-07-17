@@ -387,7 +387,7 @@ def _build_task_input_user_content(
         try:
           import json as _json
 
-          text = _json.dumps(dict(fc.args))
+          text = _json.dumps(dict(fc.args), ensure_ascii=False)
         except (TypeError, ValueError):
           text = str(fc.args)
         parts = [types.Part(text=text)]

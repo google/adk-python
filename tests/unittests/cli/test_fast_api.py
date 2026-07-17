@@ -1275,6 +1275,56 @@ def test_get_adk_app_info_non_llm_agent(test_app, mock_agent_loader):
     assert "Root agent is not an LlmAgent" in response.json()["detail"]
 
 
+def test_get_adk_app_info_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test app-info returns 404 when the app_name matches no agent."""
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.get("/apps/unknown_app/app-info")
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_sse_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run_sse returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
 def test_create_session_with_id(test_app, test_session_info):
   """Test creating a session with a specific ID."""
   new_session_id = "new_session_id"
@@ -2555,10 +2605,10 @@ def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
 def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "root_agent.yaml").write_text("name: app\n")
+  (app_root / "root_agent.yaml").write_bytes(b"name: app\n")
   nested_dir = app_root / "nested"
   nested_dir.mkdir(parents=True, exist_ok=True)
-  (nested_dir / "nested.yaml").write_text("nested: true\n")
+  (nested_dir / "nested.yaml").write_bytes(b"nested: true\n")
 
   assert not (app_root / "tmp").exists()
   response = builder_test_client.get("/dev/apps/app/builder?tmp=true")
@@ -2716,8 +2766,8 @@ def test_builder_get_allows_yaml_file_paths(builder_test_client, tmp_path):
   """GET /dev/apps/{app_name}/builder?file_path=... allows YAML extensions."""
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "sub_agent.yaml").write_text("name: sub\n")
-  (app_root / "tool.yml").write_text("name: tool\n")
+  (app_root / "sub_agent.yaml").write_bytes(b"name: sub\n")
+  (app_root / "tool.yml").write_bytes(b"name: tool\n")
 
   response = builder_test_client.get(
       "/dev/apps/app/builder?file_path=sub_agent.yaml"

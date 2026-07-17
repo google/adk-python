@@ -40,7 +40,7 @@ def test_list_accessible_data_agents_success(mock_get_session):
   assert result["response"] == ["agent1", "agent2"]
   mock_get_session.assert_called_once_with(mock_creds)
   mock_session.get.assert_called_once_with(
-      "https://geminidataanalytics.googleapis.com/v1beta/projects/test-project/locations/global/dataAgents:listAccessible",
+      "https://geminidataanalytics.googleapis.com/v1/projects/test-project/locations/global/dataAgents:listAccessible",
       headers={
           "Content-Type": "application/json",
           "X-Goog-API-Client": "GOOGLE_ADK",
@@ -94,7 +94,7 @@ def test_get_data_agent_info_success(mock_get_session, mock_get_endpoint):
   mock_get_session.assert_called_once_with(mock_creds)
   mock_get_endpoint.assert_called_once()
   mock_session.get.assert_called_once_with(
-      "https://geminidataanalytics.googleapis.com/v1beta/agent_name",
+      "https://geminidataanalytics.googleapis.com/v1/agent_name",
       headers={
           "Content-Type": "application/json",
           "X-Goog-API-Client": "GOOGLE_ADK",
@@ -171,7 +171,7 @@ def test_ask_data_agent_success(
   mock_get_session.assert_called_once_with(mock_creds)
   mock_get_stream.assert_called_once_with(
       mock_session,
-      "https://geminidataanalytics.googleapis.com/v1beta/projects/p/locations/l:chat",
+      "https://geminidataanalytics.googleapis.com/v1/projects/p/locations/l:chat",
       {
           "messages": [{"userMessage": {"text": "query"}}],
           "dataAgentContext": {
