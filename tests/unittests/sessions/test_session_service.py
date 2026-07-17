@@ -354,19 +354,13 @@ async def test_create_get_session(session_service):
   assert session.user_id == user_id
   assert session.id
   assert session.state == state
-  assert (
-      session.last_update_time
-      <= datetime.now().astimezone(timezone.utc).timestamp()
-  )
+  assert session.last_update_time <= time.time()
 
   got_session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert got_session == session
-  assert (
-      got_session.last_update_time
-      <= datetime.now().astimezone(timezone.utc).timestamp()
-  )
+  assert got_session.last_update_time <= time.time()
 
   session_id = session.id
   await session_service.delete_session(
@@ -1042,11 +1036,12 @@ async def test_get_session_with_config(session_service):
   user_id = 'user'
 
   num_test_events = 5
+  base_timestamp = int(time.time())
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
   )
   for i in range(1, num_test_events + 1):
-    event = Event(author='user', timestamp=i)
+    event = Event(author='user', timestamp=base_timestamp + i)
     await session_service.append_event(session, event)
 
   # No config, expect all events to be returned.
@@ -1071,20 +1066,24 @@ async def test_get_session_with_config(session_service):
   )
   events = session.events
   assert len(events) == num_recent_events
-  assert events[0].timestamp == num_test_events - num_recent_events + 1
+  assert (
+      events[0].timestamp
+      == base_timestamp + num_test_events - num_recent_events + 1
+  )
 
-  # Only expect events after timestamp 4.0 (inclusive), i.e., 2 events.
-  after_timestamp = 4.0
+  # Only expect events after the fourth timestamp (inclusive), i.e., 2 events.
+  after_event_index = 4
+  after_timestamp = base_timestamp + after_event_index
   config = GetSessionConfig(after_timestamp=after_timestamp)
   session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
   )
   events = session.events
-  assert len(events) == num_test_events - after_timestamp + 1
+  assert len(events) == num_test_events - after_event_index + 1
   assert events[0].timestamp == after_timestamp
 
   # Expect no events if none are > after_timestamp.
-  way_after_timestamp = num_test_events * 10
+  way_after_timestamp = base_timestamp + num_test_events * 10
   config = GetSessionConfig(after_timestamp=way_after_timestamp)
   session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
@@ -1100,7 +1099,7 @@ async def test_get_session_with_config(session_service):
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
   )
   events = session.events
-  assert len(events) == num_test_events - after_timestamp + 1
+  assert len(events) == num_test_events - after_event_index + 1
 
 
 @pytest.mark.asyncio
