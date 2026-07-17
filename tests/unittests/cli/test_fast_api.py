@@ -2605,10 +2605,10 @@ def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
 def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "root_agent.yaml").write_text("name: app\n")
+  (app_root / "root_agent.yaml").write_bytes(b"name: app\n")
   nested_dir = app_root / "nested"
   nested_dir.mkdir(parents=True, exist_ok=True)
-  (nested_dir / "nested.yaml").write_text("nested: true\n")
+  (nested_dir / "nested.yaml").write_bytes(b"nested: true\n")
 
   assert not (app_root / "tmp").exists()
   response = builder_test_client.get("/dev/apps/app/builder?tmp=true")
@@ -2766,8 +2766,8 @@ def test_builder_get_allows_yaml_file_paths(builder_test_client, tmp_path):
   """GET /dev/apps/{app_name}/builder?file_path=... allows YAML extensions."""
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "sub_agent.yaml").write_text("name: sub\n")
-  (app_root / "tool.yml").write_text("name: tool\n")
+  (app_root / "sub_agent.yaml").write_bytes(b"name: sub\n")
+  (app_root / "tool.yml").write_bytes(b"name: tool\n")
 
   response = builder_test_client.get(
       "/dev/apps/app/builder?file_path=sub_agent.yaml"
