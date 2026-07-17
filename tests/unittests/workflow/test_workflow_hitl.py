@@ -87,17 +87,7 @@ def long_running_tool_func():
   return None
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False, marks=pytest.mark.xfail(reason='Fails in non-resumable mode')
-        ),
-        pytest.param(
-            True, marks=pytest.mark.xfail(reason='Resumability broken in V2')
-        ),
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_workflow_pause_and_resume(
     request: pytest.FixtureRequest,
@@ -228,17 +218,17 @@ async def test_workflow_pause_and_resume(
             }
         },
     )
-  # Verify end_of_agent was emitted.
-  end_events = [
-      e
-      for e in simplified_events2
-      if e[0] == 'test_workflow_agent_hitl'
-      and e[1] == testing_utils.END_OF_AGENT
-  ]
-  assert len(end_events) == 1
+    # Verify end_of_agent was emitted. Checkpoints and the end-of-agent
+    # marker are only produced in resumable mode.
+    end_events = [
+        e
+        for e in simplified_events2
+        if e[0] == 'test_workflow_agent_hitl'
+        and e[1] == testing_utils.END_OF_AGENT
+    ]
+    assert len(end_events) == 1
 
 
-@pytest.mark.xfail(reason='Resumability broken in V2')
 @pytest.mark.asyncio
 async def test_workflow_interrupt_allows_parallel_execution(
     request: pytest.FixtureRequest,
@@ -310,15 +300,7 @@ async def test_workflow_interrupt_allows_parallel_execution(
   )
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        False,
-        pytest.param(
-            True, marks=pytest.mark.xfail(reason='Resumability broken in V2')
-        ),
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_workflow_request_input_resume(
     request: pytest.FixtureRequest, resumable: bool
@@ -552,9 +534,7 @@ async def test_workflow_allows_mixing_output_and_request_input(
   assert simplified[1][1].function_call.args['interruptId'] == 'req1'
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_workflow_rerun_on_resume(
     request: pytest.FixtureRequest, resumable: bool
@@ -682,9 +662,7 @@ async def test_workflow_rerun_on_resume(
     )
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_workflow_rerun_with_multiple_inputs(
     request: pytest.FixtureRequest,
@@ -920,9 +898,7 @@ class _MultiHitlRerunNode(BaseNode):
     yield Event(output='final_output')
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_rerun_with_multiple_hitl_and_outputs(
     request: pytest.FixtureRequest,
@@ -1024,7 +1000,15 @@ async def test_rerun_with_multiple_hitl_and_outputs(
     [
         False,
         pytest.param(
-            True, marks=pytest.mark.xfail(reason='Resumability broken in V2')
+            True,
+            marks=pytest.mark.xfail(
+                reason=(
+                    'A rerun_on_resume node is re-run as soon as one interrupt'
+                    ' resolves instead of waiting for all pending interrupts;'
+                    ' fixing this needs a change to the shared replay'
+                    ' interception logic.'
+                )
+            ),
         ),
     ],
 )
@@ -1198,9 +1182,7 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_wrapped_response_unwrapped_for_node(
     request: pytest.FixtureRequest, resumable: bool
@@ -1246,9 +1228,7 @@ async def test_wrapped_response_unwrapped_for_node(
   assert node_b.received_inputs == ['hello world']
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_dict_response_not_unwrapped(
     request: pytest.FixtureRequest, resumable: bool
@@ -1375,9 +1355,7 @@ async def test_request_input_rerun_with_same_interrupt_id(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_function_node_auth_config(
     request: pytest.FixtureRequest, resumable: bool
@@ -1463,9 +1441,7 @@ async def test_function_node_auth_config(
   assert node_b.received_inputs == [{'result': 'authed'}]
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_second_auth_node_skips_auth_when_credential_exists(
     request: pytest.FixtureRequest, resumable: bool
@@ -1573,16 +1549,7 @@ class _InputCapturingRerunNode(BaseNode):
       yield RequestInput(message='Need approval', interrupt_id='approval')
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(reason='Fails in non-resumable mode'),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_resume_preserves_node_input(
     request: pytest.FixtureRequest, resumable: bool
@@ -1637,16 +1604,7 @@ async def test_resume_preserves_node_input(
   assert node_c.received_inputs[0] == {'approved': {'yes': True}}
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(reason='Fails in non-resumable mode'),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_resume_preserves_input_from_start(
     request: pytest.FixtureRequest, resumable: bool
@@ -1689,16 +1647,7 @@ async def test_resume_preserves_input_from_start(
   assert len(node_a.captured_inputs) == 2
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(reason='Fails in non-resumable mode'),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_resume_fan_in_both_predecessors_completed(
     request: pytest.FixtureRequest, resumable: bool
@@ -1756,16 +1705,7 @@ async def test_resume_fan_in_both_predecessors_completed(
   assert node_c.captured_inputs[-1] in ('output_from_a', 'output_from_b')
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(reason='Fails in non-resumable mode'),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_resume_loop_receives_latest_input(
     request: pytest.FixtureRequest, resumable: bool

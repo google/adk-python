@@ -34,6 +34,7 @@ from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
 from .eval_metrics import RubricScore
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
@@ -123,6 +124,7 @@ class LlmAsJudge(Evaluator):
   ) -> EvaluationResult:
     if self._expected_invocations_required and expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
     del conversation_scenario  # not supported for per-invocation evaluation.
 
     # If expected_invocation are not required by the metric and if they are not
@@ -134,7 +136,9 @@ class LlmAsJudge(Evaluator):
     )
 
     per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, expected_invocations, strict=True
+    ):
       auto_rater_prompt = self.format_auto_rater_prompt(actual, expected)
       llm_request = LlmRequest(
           model=self._judge_model_options.judge_model,
