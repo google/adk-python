@@ -149,6 +149,54 @@ class TestValidateSchema:
     result = validate_schema(dict[str, int], json_text)
     assert result == {'key1': 1, 'key2': 2}
 
+  def test_json_code_fence_is_stripped(self):
+    """Test that a ```json fenced payload is unwrapped before validation."""
+    json_text = '```json\n{"name": "test", "value": 42}\n```'
+    result = validate_schema(SampleModel, json_text)
+    assert result == {'name': 'test', 'value': 42}
+
+  def test_uppercase_json_code_fence_is_stripped(self):
+    """Test that an uppercase language tag is not left in the payload."""
+    json_text = '```JSON\n{"name": "test", "value": 42}\n```'
+    result = validate_schema(SampleModel, json_text)
+    assert result == {'name': 'test', 'value': 42}
+
+  def test_other_language_tag_code_fence_is_stripped(self):
+    """Test that any language tag on the fence is unwrapped."""
+    json_text = '```python\n{"name": "test", "value": 42}\n```'
+    result = validate_schema(SampleModel, json_text)
+    assert result == {'name': 'test', 'value': 42}
+
+  def test_bare_code_fence_is_stripped(self):
+    """Test that a fence without a language tag is unwrapped."""
+    json_text = '```\n{"name": "test", "value": 42}\n```'
+    result = validate_schema(SampleModel, json_text)
+    assert result == {'name': 'test', 'value': 42}
+
+  def test_code_fence_with_surrounding_whitespace_is_stripped(self):
+    """Test that whitespace around the fence does not break unwrapping."""
+    json_text = '  \n```json\n{"name": "test", "value": 42}\n```  \n'
+    result = validate_schema(SampleModel, json_text)
+    assert result == {'name': 'test', 'value': 42}
+
+  def test_list_schema_code_fence_is_stripped(self):
+    """Test that a fenced list[BaseModel] payload is unwrapped."""
+    json_text = '```json\n[{"name": "item1", "value": 1}]\n```'
+    result = validate_schema(list[SampleModel], json_text)
+    assert result == [{'name': 'item1', 'value': 1}]
+
+  def test_plain_json_is_unaffected(self):
+    """Test that unfenced JSON is validated unchanged."""
+    json_text = '{"name": "test", "value": 42}'
+    result = validate_schema(SampleModel, json_text)
+    assert result == {'name': 'test', 'value': 42}
+
+  def test_backticks_inside_value_are_preserved(self):
+    """Test that triple backticks inside a valid JSON value are not stripped."""
+    json_text = '{"name": "```", "value": 42}'
+    result = validate_schema(SampleModel, json_text)
+    assert result == {'name': '```', 'value': 42}
+
 
 class TestValidateNodeData:
   """Tests for validate_node_data function."""

@@ -142,13 +142,16 @@ class NodeTool(BaseTool):
     tool_branch = f'{base_branch}.{segment}' if base_branch else segment
 
     try:
-      return await tool_context.run_node(
+      res = await tool_context.run_node(
           self.node,
           node_input=node_input,
           override_branch=tool_branch,
           use_sub_branch=False,
           raise_on_wait=True,
       )
+      if res is None:
+        return {'result': None}
+      return res
     except NodeInterruptedError as nie:
       # Propagates the interrupt up so the runner pauses the invocation
       raise nie
