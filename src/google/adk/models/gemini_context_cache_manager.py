@@ -34,11 +34,23 @@ from .llm_response import LlmResponse
 
 logger = logging.getLogger("google_adk." + __name__)
 
-# Gemini API requires a minimum of 4096 tokens for cached content.
-_GEMINI_MIN_CACHE_TOKENS = 4096
+# Named Gemini model families have documented explicit-cache floors. For
+# opaque tuned-model and endpoint IDs, the server remains authoritative.
+_GEMINI_2_5_MIN_CACHE_TOKENS = 2048
+_GEMINI_3_MIN_CACHE_TOKENS = 4096
 
 if TYPE_CHECKING:
   from google.genai import Client
+
+
+def _minimum_cache_tokens(model: Optional[str]) -> Optional[int]:
+  """Return the explicit-cache token floor for a named Gemini model."""
+  model_name = (model or "").rsplit("/", maxsplit=1)[-1]
+  if model_name.startswith("gemini-2.5-"):
+    return _GEMINI_2_5_MIN_CACHE_TOKENS
+  if model_name.startswith("gemini-3"):
+    return _GEMINI_3_MIN_CACHE_TOKENS
+  return None
 
 
 @experimental
@@ -104,16 +116,26 @@ class GeminiContextCacheManager:
           )
           await self.cleanup_cache(old_cache_metadata.cache_name)
 
-        # Calculate current fingerprint using contents count from old metadata
-        cache_contents_count = old_cache_metadata.contents_count
+        # Validate the previously fingerprinted prefix before growing it.
+        previous_cache_contents_count = old_cache_metadata.contents_count
         current_fingerprint = self._generate_cache_fingerprint(
-            llm_request, cache_contents_count
+            llm_request, previous_cache_contents_count
         )
 
         # If fingerprints match, create new cache (expired but same content)
         if current_fingerprint == old_cache_metadata.fingerprint:
           logger.debug(
               "Fingerprints match after invalidation, creating new cache"
+          )
+          current_cacheable_contents_count = (
+              self._find_count_of_contents_to_cache(llm_request.contents)
+          )
+          cache_contents_count = max(
+              previous_cache_contents_count,
+              current_cacheable_contents_count,
+          )
+          current_fingerprint = self._generate_cache_fingerprint(
+              llm_request, cache_contents_count
           )
           cache_metadata = await self._create_new_cache_with_contents(
               llm_request, cache_contents_count
@@ -124,9 +146,8 @@ class GeminiContextCacheManager:
             )
             return cache_metadata
 
-          # Cache creation failed (e.g., below Gemini's 4096 token minimum).
-          # Preserve the original contents_count so the fingerprint stays
-          # stable for subsequent calls instead of resetting to total.
+          # Cache creation failed (for example, below the model's minimum).
+          # Preserve the largest stable prefix for the next attempt.
           logger.debug(
               "Cache creation failed, preserving prefix fingerprint "
               "(contents_count=%d)",
@@ -358,11 +379,15 @@ class GeminiContextCacheManager:
     cacheable_prefix_tokens = self._estimate_cacheable_prefix_tokens(
         llm_request, cache_contents_count
     )
-    if cacheable_prefix_tokens < _GEMINI_MIN_CACHE_TOKENS:
+    minimum_cache_tokens = _minimum_cache_tokens(llm_request.model)
+    if (
+        minimum_cache_tokens is not None
+        and cacheable_prefix_tokens < minimum_cache_tokens
+    ):
       logger.info(
           "Cacheable prefix below Gemini minimum cache size (%d < %d tokens)",
           cacheable_prefix_tokens,
-          _GEMINI_MIN_CACHE_TOKENS,
+          minimum_cache_tokens,
       )
       return None
 

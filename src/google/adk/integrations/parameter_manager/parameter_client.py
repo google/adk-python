@@ -96,7 +96,7 @@ class ParameterManagerClient:
       except Exception as e:
         raise ValueError(
             "'service_account_json' or 'auth_token' are both missing, and"
-            " error occurred while trying to use default credentials: {e}"
+            f" error occurred while trying to use default credentials: {e}"
         ) from e
 
     if not credentials:

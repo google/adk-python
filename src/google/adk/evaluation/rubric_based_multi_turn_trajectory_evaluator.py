@@ -27,6 +27,7 @@ from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalStatus
 from .eval_metrics import RubricsBasedCriterion
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
 from .rubric_based_evaluator import RubricBasedEvaluator
@@ -278,6 +279,9 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
         "Local evaluator start (invocations: %d)",
         len(actual_invocations),
     )
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
+    if not actual_invocations:
+      return EvaluationResult()
     self._assemble_dialogue_history(actual_invocations)
 
     # If expected_invocations are not supplied, provide a list of None.
@@ -290,7 +294,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
     # Mark the first N-1 turns as NOT_EVALUATED.
     per_invocation_results = []
     for actual, expected in zip(
-        actual_invocations[:-1], expected_invocations[:-1]
+        actual_invocations[:-1], expected_invocations[:-1], strict=True
     ):
       per_invocation_results.append(
           PerInvocationResult(

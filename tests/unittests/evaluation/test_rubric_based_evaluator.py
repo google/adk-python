@@ -159,8 +159,7 @@ class TestDefaultAutoRaterResponseParser:
       Rationale: It was not bad.
       """  # Missing Verdict
     parsed = DefaultAutoRaterResponseParser().parse(response)
-    assert len(parsed) == 1  # zip will only create one item
-    assert parsed[0].property_text == "Is the response good?"
+    assert parsed == []
 
   def test_parse_auto_rater_response_with_case_insensitive_verdict(self):
     """Tests _parse_auto_rater_response is case-insensitive for verdicts."""

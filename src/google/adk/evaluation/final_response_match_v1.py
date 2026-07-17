@@ -23,6 +23,7 @@ from ..dependencies.rouge_scorer import rouge_scorer
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -47,12 +48,15 @@ class RougeEvaluator(Evaluator):
   ) -> EvaluationResult:
     if expected_invocations is None:
       raise ValueError("expected_invocations is required for this metric.")
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
     del conversation_scenario  # not used by this metric.
 
     total_score = 0.0
     num_invocations = 0
     per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, expected_invocations, strict=True
+    ):
       reference = _get_text_from_content(expected.final_response)
       response = _get_text_from_content(actual.final_response)
       rouge_1_scores = _calculate_rouge_1_scores(response, reference)

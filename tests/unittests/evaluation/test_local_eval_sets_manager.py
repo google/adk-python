@@ -319,7 +319,7 @@ class TestLocalEvalSetsManager:
   """Tests for LocalEvalSetsManager."""
 
   @pytest.fixture
-  def local_eval_sets_manager(tmp_path):
+  def local_eval_sets_manager(self, tmp_path):
     agents_dir = str(tmp_path)
     return LocalEvalSetsManager(agents_dir=agents_dir)
 
