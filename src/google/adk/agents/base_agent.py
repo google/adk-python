@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import abc
-import inspect
 import logging
 from typing import Any
 from typing import AsyncGenerator
@@ -47,6 +46,9 @@ from ..features import FeatureName
 from ..telemetry import _instrumentation
 from ..utils.context_utils import Aclosing
 from ..workflow import BaseNode
+from ._callback_pipeline import _CallbackPipeline
+from ._callback_pipeline import _normalize_callbacks
+from ._callback_pipeline import _stop_on_truthy
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
@@ -447,11 +449,7 @@ class BaseAgent(BaseNode, abc.ABC):
 
     This method is only for use by Agent Development Kit.
     """
-    if not self.before_agent_callback:
-      return []
-    if isinstance(self.before_agent_callback, list):
-      return self.before_agent_callback
-    return [self.before_agent_callback]
+    return _normalize_callbacks(self.before_agent_callback)
 
   @property
   def canonical_after_agent_callbacks(self) -> list[_SingleAgentCallback]:
@@ -459,11 +457,7 @@ class BaseAgent(BaseNode, abc.ABC):
 
     This method is only for use by Agent Development Kit.
     """
-    if not self.after_agent_callback:
-      return []
-    if isinstance(self.after_agent_callback, list):
-      return self.after_agent_callback
-    return [self.after_agent_callback]
+    return _normalize_callbacks(self.after_agent_callback)
 
   async def _handle_before_agent_callback(
       self, ctx: InvocationContext
@@ -487,18 +481,15 @@ class BaseAgent(BaseNode, abc.ABC):
 
     # If no overrides are provided from the plugins, further run the canonical
     # callbacks.
-    if (
-        not before_agent_callback_content
-        and self.canonical_before_agent_callbacks
-    ):
-      for callback in self.canonical_before_agent_callbacks:
-        before_agent_callback_content = callback(
-            callback_context=callback_context
-        )
-        if inspect.isawaitable(before_agent_callback_content):
-          before_agent_callback_content = await before_agent_callback_content
-        if before_agent_callback_content:
-          break
+    callbacks = self.canonical_before_agent_callbacks
+    if not before_agent_callback_content and callbacks:
+      pipeline = _CallbackPipeline(
+          callbacks,
+          _stop_condition=_stop_on_truthy,
+      )
+      before_agent_callback_content = await pipeline.execute(
+          callback_context=callback_context
+      )
 
     # Process the override content if exists, and further process the state
     # change if exists.
@@ -547,18 +538,15 @@ class BaseAgent(BaseNode, abc.ABC):
 
     # If no overrides are provided from the plugins, further run the canonical
     # callbacks.
-    if (
-        not after_agent_callback_content
-        and self.canonical_after_agent_callbacks
-    ):
-      for callback in self.canonical_after_agent_callbacks:
-        after_agent_callback_content = callback(
-            callback_context=callback_context
-        )
-        if inspect.isawaitable(after_agent_callback_content):
-          after_agent_callback_content = await after_agent_callback_content
-        if after_agent_callback_content:
-          break
+    callbacks = self.canonical_after_agent_callbacks
+    if not after_agent_callback_content and callbacks:
+      pipeline = _CallbackPipeline(
+          callbacks,
+          _stop_condition=_stop_on_truthy,
+      )
+      after_agent_callback_content = await pipeline.execute(
+          callback_context=callback_context
+      )
 
     # Process the override content if exists, and further process the state
     # change if exists.

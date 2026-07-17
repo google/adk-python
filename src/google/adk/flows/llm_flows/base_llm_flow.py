@@ -30,6 +30,9 @@ from websockets.exceptions import ConnectionClosedOK
 
 from . import _output_schema_processor
 from . import functions
+from ...agents._callback_pipeline import _CallbackPipeline
+from ...agents._callback_pipeline import _stop_on_non_none
+from ...agents._callback_pipeline import _stop_on_truthy
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
@@ -236,16 +239,16 @@ async def _handle_before_model_callback(
 
   # If no overrides are provided from the plugins, further run the canonical
   # callbacks.
-  if not agent.canonical_before_model_callbacks:
-    return
-  for callback in agent.canonical_before_model_callbacks:
-    callback_response = callback(
-        callback_context=callback_context, llm_request=llm_request
-    )
-    if inspect.isawaitable(callback_response):
-      callback_response = await callback_response
-    if callback_response:
-      return callback_response
+  pipeline = _CallbackPipeline(
+      agent.canonical_before_model_callbacks,
+      _stop_condition=_stop_on_truthy,
+  )
+  callback_response = await pipeline.execute(
+      callback_context=callback_context,
+      llm_request=llm_request,
+  )
+  if callback_response:
+    return callback_response
 
 
 async def _handle_after_model_callback(
@@ -307,16 +310,16 @@ async def _handle_after_model_callback(
 
   # If no overrides are provided from the plugins, further run the canonical
   # callbacks.
-  if not agent.canonical_after_model_callbacks:
-    return await _maybe_add_grounding_metadata()
-  for callback in agent.canonical_after_model_callbacks:
-    callback_response = callback(
-        callback_context=callback_context, llm_response=llm_response
-    )
-    if inspect.isawaitable(callback_response):
-      callback_response = await callback_response
-    if callback_response:
-      return await _maybe_add_grounding_metadata(callback_response)
+  pipeline = _CallbackPipeline(
+      agent.canonical_after_model_callbacks,
+      _stop_condition=_stop_on_truthy,
+  )
+  callback_response = await pipeline.execute(
+      callback_context=callback_context,
+      llm_response=llm_response,
+  )
+  if callback_response:
+    return await _maybe_add_grounding_metadata(callback_response)
   return await _maybe_add_grounding_metadata()
 
 
@@ -372,18 +375,15 @@ async def _run_and_handle_error(
     if error_response is not None:
       return error_response
 
-    for callback in agent.canonical_on_model_error_callbacks:
-      error_response = callback(
-          callback_context=callback_context,
-          llm_request=llm_request,
-          error=error,
-      )
-      if inspect.isawaitable(error_response):
-        error_response = await error_response
-      if error_response is not None:
-        return error_response
-
-    return None
+    pipeline = _CallbackPipeline(
+        agent.canonical_on_model_error_callbacks,
+        _stop_condition=_stop_on_non_none,
+    )
+    return await pipeline.execute(
+        callback_context=callback_context,
+        llm_request=llm_request,
+        error=error,
+    )
 
   try:
     async with _instrumentation.record_inference_telemetry(
