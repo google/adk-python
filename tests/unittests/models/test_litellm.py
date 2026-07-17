@@ -5104,6 +5104,7 @@ async def test_get_content_pdf_openai_uses_file_id(mocker):
 
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_id"] == "file-abc123"
+  assert content[0]["file"]["format"] == "application/pdf"
   assert "file_data" not in content[0]["file"]
 
   mock_acreate_file.assert_called_once_with(
@@ -5144,6 +5145,7 @@ async def test_get_content_pdf_azure_uses_file_id(mocker):
 
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_id"] == "file-xyz789"
+  assert content[0]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once_with(
       file=b"test_pdf_data",
@@ -5189,6 +5191,7 @@ async def test_get_completion_inputs_openai_file_upload(mocker):
   assert content[0]["text"] == "Analyze this PDF"
   assert content[1]["type"] == "file"
   assert content[1]["file"]["file_id"] == "file-uploaded123"
+  assert content[1]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once()
 
@@ -6335,3 +6338,14 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
   assert args_by_name["my_func"] == json.loads(full_args_a)
   assert args_by_name["other_func"] == json.loads(full_args_b)
+
+
+def test_model_dump_json_excludes_llm_client():
+  lite_llm_model = LiteLlm(model="test_model")
+
+  dumped = lite_llm_model.model_dump(mode="json")
+  dumped_json = lite_llm_model.model_dump_json()
+
+  assert "llm_client" not in dumped
+  assert "llm_client" not in json.loads(dumped_json)
+  assert dumped["model"] == "test_model"
