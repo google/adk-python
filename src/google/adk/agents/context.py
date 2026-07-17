@@ -613,18 +613,18 @@ class Context(ReadonlyContext):
           curr_parent_ctx._interrupt_ids.update(child_ctx.interrupt_ids)
           raise NodeInterruptedError()
         # When the caller passes raise_on_wait=True, surface a child
-        # that's WAITING (wait_for_output, no output, not transferring)
+        # execution that's WAITING (wait_for_output, no output, not transferring)
         # as NodeInterruptedError so the parent's NodeRunner records
         # the parent as WAITING instead of falsely COMPLETED.
-        if (
-            raise_on_wait
-            and curr_node.wait_for_output
-            and child_ctx.output is None
-            and not transfer_to_agent
-        ):
-          from ..workflow._errors import NodeInterruptedError
+        if raise_on_wait and child_ctx.output is None and not transfer_to_agent:
+          from ..workflow._workflow import Workflow
 
-          raise NodeInterruptedError()
+          if isinstance(curr_node, Workflow) or getattr(
+              curr_node, 'wait_for_output', False
+          ):
+            from ..workflow._errors import NodeInterruptedError
+
+            raise NodeInterruptedError()
 
       # Handle Agent Transfer: If a transfer was requested, we resolve the target agent
       # and its parent context, update loop pointers, and continue to the next iteration.

@@ -448,6 +448,7 @@ async def _process_agent_tools(
   """
   agent = invocation_context.agent
   if agent is None or not hasattr(agent, 'tools') or not agent.tools:
+    invocation_context.canonical_tools_cache = []
     return
 
   multiple_tools = len(agent.tools) > 1
@@ -491,6 +492,12 @@ async def _process_agent_tools(
 
   if invocation_context.live_request_queue is not None:
     _mark_live_async_tools_non_blocking(llm_request)
+
+  # Reuse this exact, current-step resolution in after-model processing. Tool
+  # sets can change between model steps, so the cache is refreshed each time.
+  invocation_context.canonical_tools_cache = [
+      tool for tools in resolved_tools_per_union for tool in tools
+  ]
 
 
 def _mark_live_async_tools_non_blocking(llm_request: LlmRequest) -> None:

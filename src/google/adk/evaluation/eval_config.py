@@ -31,6 +31,7 @@ from ..evaluation.eval_metrics import EvalMetric
 from .eval_metrics import BaseCriterion
 from .eval_metrics import MetricInfo
 from .eval_metrics import Threshold
+from .simulation._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
 from .simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -38,7 +39,9 @@ logger = logging.getLogger("google_adk." + __name__)
 # The set of user-simulator config subclasses that `EvalConfig` can
 # deserialize into via the `type` discriminator. Add any new subclass to
 # this Union (each with a unique `Literal[...]` for its `type` field).
-_UserSimulatorConfig = Union[LlmBackedUserSimulatorConfig]
+_UserSimulatorConfig = Union[
+    LlmBackedUserSimulatorConfig, LlmAudioUserSimulatorConfig
+]
 
 # Legacy default preserved for backward compatibility with eval configs authored
 # before the `type` discriminator existed. See

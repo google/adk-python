@@ -302,9 +302,15 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
           eval_status=EvalStatus.NOT_EVALUATED,
       )
 
+    user_text = get_text_from_content(first_invocation.user_content)
+    if user_text is None:
+      return PerInvocationResult(
+          actual_invocation=first_invocation,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      )
+
     score = int(
-        get_text_from_content(first_invocation.user_content).strip()
-        == conversation_scenario.starting_prompt.strip()
+        user_text.strip() == conversation_scenario.starting_prompt.strip()
     )
     return PerInvocationResult(
         actual_invocation=first_invocation,
