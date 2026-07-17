@@ -126,9 +126,7 @@ def mock_async_before_cb_side_effect(
     tool_context: ToolContext,
     ret_value: Optional[Dict[str, Any]] = None,
 ):
-  if ret_value:
-    return ret_value
-  return None
+  return ret_value
 
 
 def mock_sync_before_cb_side_effect(
@@ -137,9 +135,7 @@ def mock_sync_before_cb_side_effect(
     tool_context: ToolContext,
     ret_value: Optional[Dict[str, Any]] = None,
 ):
-  if ret_value:
-    return ret_value
-  return None
+  return ret_value
 
 
 async def mock_async_after_cb_side_effect(
@@ -149,9 +145,7 @@ async def mock_async_after_cb_side_effect(
     tool_response: Dict[str, Any],
     ret_value: Optional[Dict[str, Any]] = None,
 ):
-  if ret_value:
-    return ret_value
-  return None
+  return ret_value
 
 
 def mock_sync_after_cb_side_effect(
@@ -161,9 +155,7 @@ def mock_sync_after_cb_side_effect(
     tool_response: Dict[str, Any],
     ret_value: Optional[Dict[str, Any]] = None,
 ):
-  if ret_value:
-    return ret_value
-  return None
+  return ret_value
 
 
 CALLBACK_PARAMS = [
@@ -197,6 +189,27 @@ CALLBACK_PARAMS = [
         {"test": "callback_1_response"},
         [1, 0],
         id="first_sync_callback_returns",
+    ),
+    pytest.param(
+        [
+            ({}, CallbackType.SYNC),
+            ({"test": "callback_2_response"}, CallbackType.ASYNC),
+        ],
+        {"test": "callback_2_response"},
+        [1, 1],
+        id="empty_dict_does_not_stop_chain",
+    ),
+    pytest.param(
+        [(None, CallbackType.SYNC), ({}, CallbackType.ASYNC)],
+        {},
+        [1, 1],
+        id="empty_dict_is_final_result",
+    ),
+    pytest.param(
+        [({}, CallbackType.SYNC), (None, CallbackType.ASYNC)],
+        {"initial": "response"},
+        [1, 1],
+        id="final_none_allows_tool_result",
     ),
 ]
 
