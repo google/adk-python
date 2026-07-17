@@ -27,6 +27,7 @@ from typing import TypeVar
 
 from mcp import ClientSession
 from mcp import SamplingCapability
+from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 
 from ...features import FeatureName
@@ -96,6 +97,7 @@ class SessionContext:
       *,
       sampling_callback: Optional[SamplingFnT] = None,
       sampling_capabilities: Optional[SamplingCapability] = None,
+      elicitation_callback: Optional[ElicitationFnT] = None,
   ):
     """
     Args:
@@ -108,6 +110,8 @@ class SessionContext:
         sampling_callback: Optional callback to handle sampling requests from the
             MCP server.
         sampling_capabilities: Optional capabilities for sampling.
+        elicitation_callback: Optional callback to handle elicitation requests
+            from the MCP server (``elicitation/create``).
     """
     self._client = client
     self._timeout = timeout
@@ -120,6 +124,7 @@ class SessionContext:
     self._task_lock = asyncio.Lock()
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
+    self._elicitation_callback = elicitation_callback
 
   @property
   def session(self) -> Optional[ClientSession]:
@@ -320,6 +325,7 @@ class SessionContext:
                   else None,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
+                  elicitation_callback=self._elicitation_callback,
               )
           )
         else:
@@ -333,6 +339,7 @@ class SessionContext:
                   else None,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
+                  elicitation_callback=self._elicitation_callback,
               )
           )
         # pylint: disable-next=protected-access

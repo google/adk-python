@@ -32,6 +32,7 @@ import warnings
 
 from mcp import SamplingCapability
 from mcp import StdioServerParameters
+from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 from mcp.shared.session import ProgressFnT
 from mcp.types import ListResourcesResult
@@ -121,6 +122,7 @@ class McpToolset(BaseToolset):
       use_mcp_resources: Optional[bool] = False,
       sampling_callback: Optional[SamplingFnT] = None,
       sampling_capabilities: Optional[SamplingCapability] = None,
+      elicitation_callback: Optional[ElicitationFnT] = None,
       credential_key: str | None = None,
   ):
     """Initializes the McpToolset.
@@ -161,6 +163,11 @@ class McpToolset(BaseToolset):
       sampling_callback: Optional callback to handle sampling requests from the
         MCP server.
       sampling_capabilities: Optional capabilities for sampling.
+      elicitation_callback: Optional callback to handle elicitation requests
+        from the MCP server (``elicitation/create``), including URL-mode
+        elicitations used for out-of-band flows such as auth challenges.
+        Providing a callback makes the client declare the elicitation
+        capability during initialization.
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
     """
@@ -169,6 +176,7 @@ class McpToolset(BaseToolset):
 
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
+    self._elicitation_callback = elicitation_callback
 
     if not connection_params:
       raise ValueError("Missing connection params in McpToolset.")
@@ -184,6 +192,7 @@ class McpToolset(BaseToolset):
         errlog=self._errlog,
         sampling_callback=self._sampling_callback,
         sampling_capabilities=self._sampling_capabilities,
+        elicitation_callback=self._elicitation_callback,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential

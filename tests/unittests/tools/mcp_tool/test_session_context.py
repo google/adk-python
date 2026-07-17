@@ -117,6 +117,36 @@ class TestSessionContext:
       await session_context.close()
 
   @pytest.mark.asyncio
+  async def test_elicitation_callback_passed_to_client_session(self):
+    """Elicitation callback is forwarded to the ClientSession."""
+
+    async def elicitation_callback(context, params):
+      return {'action': 'decline'}
+
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client,
+        timeout=5.0,
+        sse_read_timeout=None,
+        elicitation_callback=elicitation_callback,
+    )
+
+    mock_session = MockClientSession()
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = mock_session
+
+      await session_context.start()
+
+      mock_session_class.assert_called_once()
+      _, kwargs = mock_session_class.call_args
+      assert kwargs['elicitation_callback'] is elicitation_callback
+
+      await session_context.close()
+
+  @pytest.mark.asyncio
   async def test_start_raises_connection_error_on_exception(self):
     """Test that start() raises ConnectionError when exception occurs."""
     test_exception = ValueError('Connection failed')
