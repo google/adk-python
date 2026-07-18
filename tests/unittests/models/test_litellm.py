@@ -668,6 +668,118 @@ async def test_get_completion_inputs_inserts_missing_tool_results():
   assert tool_message["content"] == _MISSING_TOOL_RESULT_MESSAGE
 
 
+@pytest.mark.asyncio
+async def test_get_completion_inputs_serializes_native_only_tool():
+  llm_request = LlmRequest(
+      config=types.GenerateContentConfig(
+          tools=[types.Tool(google_search=types.GoogleSearch())]
+      )
+  )
+
+  _, tools, _, _ = await _get_completion_inputs(
+      llm_request, model="openai/gpt-4o"
+  )
+
+  assert tools == [
+      types.Tool(google_search=types.GoogleSearch()).model_dump(
+          by_alias=True, exclude_none=True
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_mixed_native_and_function_tools():
+  llm_request = LlmRequest(
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(google_search=types.GoogleSearch()),
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="get_weather",
+                          description="Gets the weather.",
+                          parameters=types.Schema(
+                              type=types.Type.OBJECT,
+                              properties={
+                                  "city": types.Schema(type=types.Type.STRING)
+                              },
+                          ),
+                      )
+                  ]
+              ),
+          ]
+      )
+  )
+
+  _, tools, _, _ = await _get_completion_inputs(
+      llm_request, model="openai/gpt-4o"
+  )
+
+  assert len(tools) == 2
+  native_tools = [t for t in tools if "type" not in t]
+  function_tools = [t for t in tools if t.get("type") == "function"]
+  assert len(native_tools) == 1
+  assert len(function_tools) == 1
+  assert function_tools[0]["function"]["name"] == "get_weather"
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_collects_tools_beyond_index_zero():
+  llm_request = LlmRequest(
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="first_tool", description="First tool."
+                      )
+                  ]
+              ),
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="second_tool", description="Second tool."
+                      )
+                  ]
+              ),
+          ]
+      )
+  )
+
+  _, tools, _, _ = await _get_completion_inputs(
+      llm_request, model="openai/gpt-4o"
+  )
+
+  assert [t["function"]["name"] for t in tools] == [
+      "first_tool",
+      "second_tool",
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_no_tools_returns_none():
+  llm_request = LlmRequest(config=types.GenerateContentConfig())
+
+  _, tools, _, _ = await _get_completion_inputs(
+      llm_request, model="openai/gpt-4o"
+  )
+
+  assert tools is None
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_empty_tool_ignored():
+  llm_request = LlmRequest(
+      config=types.GenerateContentConfig(tools=[types.Tool()])
+  )
+
+  _, tools, _, _ = await _get_completion_inputs(
+      llm_request, model="openai/gpt-4o"
+  )
+
+  assert tools is None
+
+
 def test_schema_to_dict_filters_none_enum_values():
   # Use model_construct to bypass strict enum validation.
   top_level_schema = types.Schema.model_construct(
@@ -5005,7 +5117,6 @@ def test_model_response_to_generate_content_response_safety_finish_reason():
   assert llm_response.error_message == "Finished with SAFETY"
 
 
-@pytest.mark.skip(reason="LiteLLM finish_reason mapping behaviour changed")
 @pytest.mark.asyncio
 async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance
@@ -5105,6 +5216,7 @@ async def test_get_content_pdf_openai_uses_file_id(mocker):
 
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_id"] == "file-abc123"
+  assert content[0]["file"]["format"] == "application/pdf"
   assert "file_data" not in content[0]["file"]
 
   mock_acreate_file.assert_called_once_with(
@@ -5145,6 +5257,7 @@ async def test_get_content_pdf_azure_uses_file_id(mocker):
 
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_id"] == "file-xyz789"
+  assert content[0]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once_with(
       file=b"test_pdf_data",
@@ -5190,6 +5303,7 @@ async def test_get_completion_inputs_openai_file_upload(mocker):
   assert content[0]["text"] == "Analyze this PDF"
   assert content[1]["type"] == "file"
   assert content[1]["file"]["file_id"] == "file-uploaded123"
+  assert content[1]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once()
 
@@ -6336,3 +6450,14 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
   assert args_by_name["my_func"] == json.loads(full_args_a)
   assert args_by_name["other_func"] == json.loads(full_args_b)
+
+
+def test_model_dump_json_excludes_llm_client():
+  lite_llm_model = LiteLlm(model="test_model")
+
+  dumped = lite_llm_model.model_dump(mode="json")
+  dumped_json = lite_llm_model.model_dump_json()
+
+  assert "llm_client" not in dumped
+  assert "llm_client" not in json.loads(dumped_json)
+  assert dumped["model"] == "test_model"

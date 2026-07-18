@@ -435,12 +435,49 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      results = [
-          event
-          for event in results
-          if event.branch == self.branch
-          or (event.branch is None and event.author == "user")
-      ]
+
+      def _is_branch_match(event: Event) -> bool:
+        """Determines if an event belongs to the current branch or any descendant sub-branch."""
+        if getattr(event, "author", None) == "user":
+          frs = event.get_function_responses()
+          if frs and self.branch and self.session:
+            fr_ids = {fr.id for fr in frs if fr.id is not None}
+            if fr_ids:
+              # Gather function calls issued on this branch or descendant sub-branches
+              # to verify the user response targets a call originated within this branch tree.
+              branch_events = [
+                  e
+                  for e in self.session.events
+                  if e.branch
+                  and (
+                      e.branch == self.branch
+                      or e.branch.startswith(f"{self.branch}.")
+                  )
+              ]
+              branch_fc_ids = {
+                  fc.id
+                  for e in branch_events
+                  for fc in e.get_function_calls()
+                  if fc.id is not None
+              }
+              # If user's response IDs do not match any function call on this branch tree,
+              # prevent event leakage across parallel or unrelated branches.
+              if not (fr_ids & branch_fc_ids):
+                return False
+
+          # Match events yielded directly on this branch or on descendant sub-branches
+          # (e.g. child NodeTool/WorkflowTool execution trees).
+          if (
+              event.branch is None
+              or self.branch is None
+              or event.branch == self.branch
+              or (self.branch and event.branch.startswith(f"{self.branch}."))
+          ):
+            return True
+          return False
+        return event.branch == self.branch
+
+      results = [e for e in results if _is_branch_match(e)]
     return results
 
   def should_pause_invocation(self, event: Event) -> bool:
