@@ -230,5 +230,7 @@ async def send_pinned_async(
     except httpx.HTTPError as exc:
       last_error = exc
 
-  assert last_error is not None  # loop ran at least once: addresses is non-empty
+  assert (
+      last_error is not None
+  )  # loop ran at least once: addresses is non-empty
   raise last_error

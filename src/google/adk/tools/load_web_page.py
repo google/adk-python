@@ -17,6 +17,8 @@ from __future__ import annotations
 """Tool for web browse."""
 
 from dataclasses import dataclass
+import ipaddress
+import socket
 from typing import Any
 from urllib.parse import ParseResult
 from urllib.parse import urlparse
@@ -26,17 +28,11 @@ from requests.adapters import HTTPAdapter
 from requests.utils import get_environ_proxies
 from requests.utils import select_proxy
 
-from ._ssrf_protection import _ALLOWED_URL_SCHEMES
-from ._ssrf_protection import _build_host_header
-from ._ssrf_protection import _parse_ip_literal
-from ._ssrf_protection import _ResolvedAddress
-from ._ssrf_protection import is_blocked_address as _is_blocked_address
-from ._ssrf_protection import is_blocked_hostname as _is_blocked_hostname
-from ._ssrf_protection import resolve_host_addresses as _resolve_host_addresses
-from ._ssrf_protection import rewrite_url_host as _rewrite_url_host
-
+_ALLOWED_URL_SCHEMES = frozenset({'http', 'https'})
+_DEFAULT_PORT_BY_SCHEME = {'http': 80, 'https': 443}
 # Default timeout in seconds for HTTP requests.
 _DEFAULT_TIMEOUT_SECONDS = 30
+_ResolvedAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
 @dataclass(frozen=True)
@@ -102,6 +98,25 @@ def _failed_to_fetch_message(url: str) -> str:
   return f'Failed to fetch url: {url}'
 
 
+def _format_host(hostname: str) -> str:
+  if ':' in hostname:
+    return f'[{hostname}]'
+  return hostname
+
+
+def _default_port_for_scheme(scheme: str) -> int:
+  return _DEFAULT_PORT_BY_SCHEME[scheme]
+
+
+def _build_host_header(
+    *, hostname: str, scheme: str, explicit_port: int | None
+) -> str:
+  formatted_hostname = _format_host(hostname)
+  if explicit_port is None or explicit_port == _default_port_for_scheme(scheme):
+    return formatted_hostname
+  return f'{formatted_hostname}:{explicit_port}'
+
+
 def _parse_request_target(url: str) -> _RequestTarget:
   parsed_url = urlparse(url)
   scheme = parsed_url.scheme.lower()
@@ -129,6 +144,52 @@ def _parse_request_target(url: str) -> _RequestTarget:
   )
 
 
+def _parse_ip_literal(hostname: str) -> _ResolvedAddress | None:
+  try:
+    return ipaddress.ip_address(hostname)
+  except ValueError:
+    return None
+
+
+def _is_blocked_hostname(hostname: str) -> bool:
+  normalized_hostname = hostname.rstrip('.').lower()
+  return normalized_hostname == 'localhost' or normalized_hostname.endswith(
+      '.localhost'
+  )
+
+
+def _is_blocked_address(address: _ResolvedAddress) -> bool:
+  return not address.is_global
+
+
+def _resolve_host_addresses(hostname: str) -> tuple[_ResolvedAddress, ...]:
+  resolved_address = _parse_ip_literal(hostname)
+
+  if resolved_address is not None:
+    return (resolved_address,)
+
+  try:
+    address_info = socket.getaddrinfo(
+        hostname,
+        None,
+        type=socket.SOCK_STREAM,
+        proto=socket.IPPROTO_TCP,
+    )
+  except (socket.gaierror, UnicodeError) as exc:
+    raise ValueError(f'Unable to resolve host: {hostname}') from exc
+
+  resolved_addresses: list[_ResolvedAddress] = []
+  for family, _, _, _, sockaddr in address_info:
+    if family not in (socket.AF_INET, socket.AF_INET6):
+      continue
+    resolved_addresses.append(ipaddress.ip_address(sockaddr[0]))
+
+  if not resolved_addresses:
+    raise ValueError(f'Unable to resolve host: {hostname}')
+
+  return tuple(resolved_addresses)
+
+
 def _get_proxy_url(url: str) -> str | None:
   proxies = get_environ_proxies(url)
   return select_proxy(url, proxies)
@@ -139,6 +200,16 @@ def _resolve_direct_addresses(hostname: str) -> tuple[_ResolvedAddress, ...]:
   if any(_is_blocked_address(address) for address in resolved_addresses):
     raise ValueError(f'Blocked host: {hostname}')
   return resolved_addresses
+
+
+def _rewrite_url_host(parsed_url: ParseResult, hostname: str) -> str:
+  explicit_port = parsed_url.port
+  formatted_hostname = _format_host(hostname)
+  if explicit_port is None:
+    rewritten_netloc = formatted_hostname
+  else:
+    rewritten_netloc = f'{formatted_hostname}:{explicit_port}'
+  return parsed_url._replace(netloc=rewritten_netloc).geturl()
 
 
 def _fetch_direct_response(

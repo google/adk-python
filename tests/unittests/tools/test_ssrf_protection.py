@@ -91,15 +91,15 @@ class TestResolveHostAddresses:
   def test_resolve_returns_all_records(self, monkeypatch):
     def fake(host, port, *args, **kwargs):
       return [
-          (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.5", 0)),
-          (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.6", 0)),
+          (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+          (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.4.4", 0)),
       ]
 
     monkeypatch.setattr(socket, "getaddrinfo", fake)
     addrs = resolve_host_addresses("multi.example.com")
     assert addrs == (
-        ipaddress.ip_address("203.0.113.5"),
-        ipaddress.ip_address("203.0.113.6"),
+        ipaddress.ip_address("8.8.8.8"),
+        ipaddress.ip_address("8.8.4.4"),
     )
 
   def test_resolve_failure_raises_value_error(self, monkeypatch):
@@ -116,9 +116,9 @@ def patch_dns(monkeypatch):
   """Map a few example hostnames to canned addresses for validate_url tests."""
 
   responses = {
-      "api.example.com": [("203.0.113.5", socket.AF_INET)],
+      "api.example.com": [("8.8.8.8", socket.AF_INET)],
       "rebinder.example.com": [
-          ("203.0.113.7", socket.AF_INET),
+          ("8.8.4.4", socket.AF_INET),
           ("127.0.0.1", socket.AF_INET),
       ],
       "internal.example.com": [("10.0.0.5", socket.AF_INET)],
@@ -170,7 +170,7 @@ class TestValidateUrl:
     target = validate_url("https://api.example.com/v1/resource")
     assert target.hostname == "api.example.com"
     assert target.scheme == "https"
-    assert target.addresses == (ipaddress.ip_address("203.0.113.5"),)
+    assert target.addresses == (ipaddress.ip_address("8.8.8.8"),)
 
   def test_rebinder_blocked_when_any_record_is_private(self, patch_dns):
     # rebinder.example.com resolves to one public IP and one loopback IP.
@@ -196,28 +196,22 @@ class TestRewriteUrlHost:
     from urllib.parse import urlparse
 
     parsed = urlparse("https://api.example.com/v1/resource")
-    assert (
-        rewrite_url_host(parsed, "203.0.113.5")
-        == "https://203.0.113.5/v1/resource"
-    )
+    assert rewrite_url_host(parsed, "8.8.8.8") == "https://8.8.8.8/v1/resource"
 
   def test_preserves_explicit_port(self):
     from urllib.parse import urlparse
 
     parsed = urlparse("https://api.example.com:8443/v1/resource")
     assert (
-        rewrite_url_host(parsed, "203.0.113.5")
-        == "https://203.0.113.5:8443/v1/resource"
+        rewrite_url_host(parsed, "8.8.8.8")
+        == "https://8.8.8.8:8443/v1/resource"
     )
 
   def test_ipv6_brackets(self):
     from urllib.parse import urlparse
 
     parsed = urlparse("https://api.example.com/x")
-    assert (
-        rewrite_url_host(parsed, "2001:db8::1")
-        == "https://[2001:db8::1]/x"
-    )
+    assert rewrite_url_host(parsed, "2001:db8::1") == "https://[2001:db8::1]/x"
 
 
 class TestSendPinnedAsync:
@@ -245,7 +239,7 @@ class TestSendPinnedAsync:
     sent = captured[0]
     # The URL should hit the validated IP literally so DNS at send time
     # can't redirect to a private IP.
-    assert sent.url.host == "203.0.113.5"
+    assert sent.url.host == "8.8.8.8"
     # The Host header keeps the original hostname so the remote server
     # routes the request to the right vhost.
     assert sent.headers["Host"] == "api.example.com"
@@ -288,8 +282,8 @@ class TestSendPinnedAsync:
     def fake_getaddrinfo(host, port, *args, **kwargs):
       if host == "two.example.com":
         return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.10", 0)),
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.11", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.4.4", 0)),
         ]
       raise socket.gaierror(8, "no")
 
@@ -299,7 +293,7 @@ class TestSendPinnedAsync:
 
     def mock_handler(request: httpx.Request) -> httpx.Response:
       seen_hosts.append(request.url.host)
-      if request.url.host == "203.0.113.10":
+      if request.url.host == "8.8.8.8":
         raise httpx.ConnectError("simulated connect failure")
       return httpx.Response(200, text="ok")
 
@@ -310,4 +304,4 @@ class TestSendPinnedAsync:
       response = await send_pinned_async(client, target, method="GET")
 
     assert response.status_code == 200
-    assert seen_hosts == ["203.0.113.10", "203.0.113.11"]
+    assert seen_hosts == ["8.8.8.8", "8.8.4.4"]
