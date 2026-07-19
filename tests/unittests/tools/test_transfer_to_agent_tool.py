@@ -120,7 +120,7 @@ def test_transfer_to_agent_tool_preserves_description():
 
   assert decl is not None
   assert decl.description is not None
-  assert 'Transfer the question to another agent' in decl.description
+  assert 'Transfer the query to another agent' in decl.description
 
 
 def test_transfer_to_agent_tool_maintains_inheritance():

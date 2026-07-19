@@ -32,7 +32,9 @@ def _should_retry_node(
     return False
 
   attempt_count = node_state.attempt_count
-  max_attempts = retry_config.max_attempts or 5
+  max_attempts = (
+      retry_config.max_attempts if retry_config.max_attempts is not None else 5
+  )
 
   # attempt_count starts at 1 for the original request.
   # So if attempt_count >= max_attempts, we have reached the limit.

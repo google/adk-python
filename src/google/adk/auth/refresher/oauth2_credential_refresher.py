@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Optional
 
@@ -25,8 +24,6 @@ from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.oauth2_credential_util import create_oauth2_session
 from google.adk.auth.oauth2_credential_util import update_credential_with_tokens
 from google.adk.utils.feature_decorator import experimental
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from typing_extensions import override
 
 from .base_credential_refresher import BaseCredentialRefresher
@@ -66,10 +63,12 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
       if not AUTHLIB_AVAILABLE:
         return False
 
-      return OAuth2Token({
-          "expires_at": auth_credential.oauth2.expires_at,
-          "expires_in": auth_credential.oauth2.expires_in,
-      }).is_expired()
+      return bool(
+          OAuth2Token({
+              "expires_at": auth_credential.oauth2.expires_at,
+              "expires_in": auth_credential.oauth2.expires_in,
+          }).is_expired()
+      )
 
     return False
 

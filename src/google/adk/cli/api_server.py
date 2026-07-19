@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import sys
+import time
 import traceback
 import typing
 from typing import Any
@@ -87,7 +88,6 @@ from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
-from .utils import envs
 from .utils.base_agent_loader import BaseAgentLoader
 from .utils.shared_value import SharedValue
 
@@ -165,6 +165,48 @@ def _get_scope_header(
   return None
 
 
+import ipaddress as _ipaddress
+
+_LOOPBACK_HOSTNAMES = frozenset({"localhost"})
+
+
+def _is_loopback_address(host: str) -> bool:
+  """Return True if *host* (with or without a port) refers to a loopback address.
+
+  Handles all four forms produced by browsers and uvicorn:
+    - Plain IPv4:          "127.0.0.1"
+    - IPv4 with port:      "127.0.0.1:8000"
+    - Bracketed IPv6:      "[::1]"
+    - Bracketed IPv6+port: "[::1]:8000"
+    - Plain IPv6 (scope):  "::1"  (ASGI server tuple value)
+    - Hostname:            "localhost"
+    - Hostname with port:  "localhost:8000"
+  """
+  bare = host
+  if bare.startswith("["):
+    # Bracketed IPv6: [addr] or [addr]:port
+    end = bare.find("]")
+    if end != -1:
+      bare = bare[1:end]
+  elif bare.count(":") == 1:
+    # IPv4:port or hostname:port (IPv6 without brackets has > 1 colon)
+    bare = bare.rsplit(":", 1)[0]
+  if bare in _LOOPBACK_HOSTNAMES:
+    return True
+  try:
+    return _ipaddress.ip_address(bare).is_loopback
+  except ValueError:
+    return False
+
+
+def _get_server_host(scope: dict[str, Any]) -> Optional[str]:
+  """Return the host the server is actually bound to (from ASGI server port)."""
+  server = scope.get("server")
+  if server and len(server) == 2:
+    return str(server[0])
+  return None
+
+
 def _get_request_origin(scope: dict[str, Any]) -> Optional[str]:
   """Compute the effective origin for the current HTTP/WebSocket request."""
   forwarded = _get_scope_header(scope, b"forwarded")
@@ -201,11 +243,38 @@ def _is_request_origin_allowed(
     allowed_origin_regex: Optional[re.Pattern[str]],
     has_configured_allowed_origins: bool,
 ) -> bool:
-  """Validate an Origin header against explicit config or same-origin."""
+  """Validate an Origin header against explicit config or same-origin.
+
+  DNS-rebinding protection: when the server is bound to a loopback address
+  (127.0.0.1 / ::1 / localhost) and no explicit allow-origins have been
+  configured, we additionally require that the request's Origin header also
+  resolves to a loopback host.  This prevents a DNS-rebinding attack where
+  an external page temporarily resolves to 127.0.0.1 and then POSTs to the
+  local development server by matching its own (evil.com) origin against the
+  Host header it controls.
+  """
   if has_configured_allowed_origins and _is_origin_allowed(
       origin, allowed_literal_origins, allowed_origin_regex
   ):
     return True
+
+  # DNS-rebinding guard: if the server is on loopback and no explicit
+  # allow-origins list is configured, only permit origins whose host is also
+  # loopback.  This mirrors the protection used by the MCP go-sdk SSEHandler.
+  server_host = _get_server_host(scope)
+  if (
+      not has_configured_allowed_origins
+      and server_host is not None
+      and _is_loopback_address(server_host)
+  ):
+    try:
+      from urllib.parse import urlparse  # noqa: PLC0415  (local import OK here)
+
+      origin_host = urlparse(origin).hostname or ""
+    except Exception:  # pylint: disable=broad-except
+      return False
+    if not _is_loopback_address(origin_host):
+      return False
 
   request_origin = _get_request_origin(scope)
   if request_origin is None:
@@ -569,6 +638,11 @@ def _setup_instrumentation_lib_if_installed():
       )
 
 
+def _get_app_basename(name: str) -> str:
+  """Returns the last segment of a dot-delimited app name."""
+  return name.split(".")[-1]
+
+
 class ApiServer:
   """Helper class for setting up and running the ADK web server on FastAPI.
 
@@ -604,6 +678,8 @@ class ApiServer:
       runner_dict: A dict of instantiated runners for each app.
   """
 
+  _allow_special_agents: bool = False
+
   def __init__(
       self,
       *,
@@ -637,7 +713,7 @@ class ApiServer:
     # Internal properties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
-    self.runner_dict = {}
+    self.runner_dict: dict[str, Runner] = {}
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
@@ -646,19 +722,30 @@ class ApiServer:
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
+    if app_name.startswith("__") and not self._allow_special_agents:
+      raise HTTPException(
+          status_code=403,
+          detail=(
+              "Access to internal special agents is disabled in API server"
+              " mode."
+          ),
+      )
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
       runner = self.runner_dict.pop(app_name, None)
-      await cleanup.close_runners(list([runner]))
+      if runner is not None:
+        await cleanup.close_runners([runner])
 
     # Return cached runner if exists
     if app_name in self.runner_dict:
       return self.runner_dict[app_name]
 
     # Create new runner
-    envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
-    agent_or_app = self.agent_loader.load_agent(app_name)
+    try:
+      agent_or_app = self.agent_loader.load_agent(app_name)
+    except ValueError as ve:
+      raise HTTPException(status_code=404, detail=str(ve)) from ve
 
     if self.default_llm_model:
       from .cli import _override_default_llm_model
@@ -712,7 +799,7 @@ class ApiServer:
             plugins=plugins,
         )
       return App(
-          name=app_name,
+          name=_get_app_basename(app_name),
           root_agent=agent_or_app,
           plugins=plugins,
       )
@@ -737,7 +824,7 @@ class ApiServer:
     if is_visual_builder_agent:
       object.__setattr__(agentic_app, "_is_visual_builder_app", True)
 
-    runner = self._create_runner(agentic_app)
+    runner = self._create_runner(agentic_app, app_name)
     self.runner_dict[app_name] = runner
     return runner
 
@@ -747,10 +834,11 @@ class ApiServer:
       return agent_or_app.root_agent
     return agent_or_app
 
-  def _create_runner(self, agentic_app: App) -> Runner:
+  def _create_runner(self, agentic_app: App, app_name: str) -> Runner:
     """Create a runner with common services."""
     return Runner(
         app=agentic_app,
+        app_name=app_name,
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
@@ -908,8 +996,8 @@ class ApiServer:
     Returns:
       A FastAPI app instance.
     """
-    trace_dict = {}
-    session_trace_dict = {}
+    trace_dict: dict[str, Any] = {}
+    session_trace_dict: dict[str, Any] = {}
     self._trace_dict = trace_dict
     self._session_trace_dict = session_trace_dict
 
@@ -1069,7 +1157,18 @@ class ApiServer:
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      if app_name.startswith("__") and not self._allow_special_agents:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Access to internal special agents is disabled in API server"
+                " mode."
+            ),
+        )
+      try:
+        agent_or_app = self.agent_loader.load_agent(app_name)
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
         return AppInfo(
@@ -1219,29 +1318,40 @@ class ApiServer:
       return session
 
     @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}/metadata",
+        response_model=ArtifactVersion,
         response_model_exclude_none=True,
     )
-    async def load_artifact(
+    async def get_artifact_version_metadata(
         app_name: str,
         user_id: str,
         session_id: str,
         artifact_name: str,
-        version: Optional[int] = Query(None),
-    ) -> Optional[types.Part]:
-      artifact = await self.artifact_service.load_artifact(
+        version_id: str,
+    ) -> ArtifactVersion:
+      version: int | None = None
+      if version_id != "latest":
+        try:
+          version = int(version_id)
+        except ValueError:
+          raise HTTPException(
+              status_code=422, detail="Invalid version ID"
+          ) from None
+      artifact_version = await self.artifact_service.get_artifact_version(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
           filename=artifact_name,
           version=version,
       )
-      if not artifact:
-        raise HTTPException(status_code=404, detail="Artifact not found")
-      return artifact
+      if not artifact_version:
+        raise HTTPException(
+            status_code=404, detail="Artifact version not found"
+        )
+      return artifact_version
 
     @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/metadata",
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/metadata",
         response_model=list[ArtifactVersion],
         response_model_exclude_none=True,
     )
@@ -1257,28 +1367,6 @@ class ApiServer:
           session_id=session_id,
           filename=artifact_name,
       )
-
-    @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
-        response_model_exclude_none=True,
-    )
-    async def load_artifact_version(
-        app_name: str,
-        user_id: str,
-        session_id: str,
-        artifact_name: str,
-        version_id: int,
-    ) -> Optional[types.Part]:
-      artifact = await self.artifact_service.load_artifact(
-          app_name=app_name,
-          user_id=user_id,
-          session_id=session_id,
-          filename=artifact_name,
-          version=version_id,
-      )
-      if not artifact:
-        raise HTTPException(status_code=404, detail="Artifact not found")
-      return artifact
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
@@ -1329,29 +1417,34 @@ class ApiServer:
       return artifact_version
 
     @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}/metadata",
-        response_model=ArtifactVersion,
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}",
         response_model_exclude_none=True,
     )
-    async def get_artifact_version_metadata(
+    async def load_artifact_version(
         app_name: str,
         user_id: str,
         session_id: str,
         artifact_name: str,
-        version_id: int,
-    ) -> ArtifactVersion:
-      artifact_version = await self.artifact_service.get_artifact_version(
+        version_id: str,
+    ) -> types.Part | None:
+      version: int | None = None
+      if version_id != "latest":
+        try:
+          version = int(version_id)
+        except ValueError:
+          raise HTTPException(
+              status_code=422, detail="Invalid version ID"
+          ) from None
+      artifact = await self.artifact_service.load_artifact(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
           filename=artifact_name,
-          version=version_id,
+          version=version,
       )
-      if not artifact_version:
-        raise HTTPException(
-            status_code=404, detail="Artifact version not found"
-        )
-      return artifact_version
+      if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+      return artifact
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
@@ -1365,7 +1458,7 @@ class ApiServer:
       )
 
     @app.get(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions",
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions",
         response_model_exclude_none=True,
     )
     async def list_artifact_versions(
@@ -1378,8 +1471,33 @@ class ApiServer:
           filename=artifact_name,
       )
 
+    # Keep this catch-all artifact route after the version-specific routes.
+    # Artifact names may contain '/', so {artifact_name:path} would otherwise
+    # capture requests for /versions/... endpoints.
+    @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}",
+        response_model_exclude_none=True,
+    )
+    async def load_artifact(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+        version: int | None = Query(None),
+    ) -> types.Part | None:
+      artifact = await self.artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+          version=version,
+      )
+      if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+      return artifact
+
     @app.delete(
-        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}",
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}",
     )
     async def delete_artifact(
         app_name: str, user_id: str, session_id: str, artifact_name: str
@@ -1580,7 +1698,18 @@ class ApiServer:
                 yield f"data: {sse_event}\n\n"
           except Exception as e:
             logger.exception("Error in event_generator: %s", e)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            error_details = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "timestamp": time.time(),
+            }
+            if logger.isEnabledFor(logging.DEBUG):
+              error_details["stacktrace"] = traceback.format_exc()
+
+            yield (
+                "data:"
+                f" {json.dumps({'error': f'{type(e).__name__}: {e}', 'error_details': error_details})}\n\n"
+            )
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1601,6 +1730,7 @@ class ApiServer:
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
         save_live_blob: bool = Query(default=False),
+        explicit_vad_signal: bool | None = Query(default=None),
     ) -> None:
       resolved_app_name = app_name or self.default_app_name
       if not resolved_app_name:
@@ -1657,6 +1787,7 @@ class ApiServer:
                 else None
             ),
             save_live_blob=save_live_blob,
+            explicit_vad_signal=explicit_vad_signal,
         )
         async with Aclosing(
             runner.run_live(

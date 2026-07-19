@@ -72,9 +72,9 @@ _RETRY_OPTIONS = types.HttpRetryOptions(
     http_status_codes=[429, 503],
 )
 
-# Use gemini-3-pro-preview for planning and summary (better quality)
+# Use gemini-3.1-pro-preview for planning and summary (better quality)
 GEMINI_PRO_WITH_RETRY = Gemini(
-    model="gemini-3-pro-preview",
+    model="gemini-3.1-pro-preview",
     retry_options=_RETRY_OPTIONS,
 )
 
@@ -559,6 +559,7 @@ summary_agent = Agent(
     name="summary_agent",
     description="Compiles recommendations and creates the GitHub issue.",
     instruction=summary_instruction,
+    include_contents="none",
     tools=[
         get_all_recommendations,
         create_issue,

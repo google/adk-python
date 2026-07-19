@@ -33,7 +33,6 @@ import warnings
 from google.genai import types
 
 from .agents.base_agent import BaseAgent
-from .agents.base_agent import BaseAgentState
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
@@ -41,7 +40,6 @@ from .agents.live_request_queue import LiveRequestQueue
 from .agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from .agents.run_config import RunConfig
-from .apps.app import App
 from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
@@ -58,17 +56,45 @@ from .plugins.plugin_manager import PluginManager
 from .sessions.base_session_service import BaseSessionService
 from .sessions.base_session_service import GetSessionConfig
 from .sessions.session import Session
+from .telemetry import _instrumentation
 from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
 from .utils._debug_output import print_event
 
 if TYPE_CHECKING:
+  from .apps.app import App
   from .apps.app import ResumabilityConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+# Silence unused warning.
+# tracer is imported for backwards compatibility, to avoid breaking change in the API.
+_ = tracer
 
-def _find_active_task_isolation_scope(session) -> Optional[str]:
+
+async def _notify_run_error(
+    plugin_manager: PluginManager,
+    invocation_context: InvocationContext,
+    error: Exception,
+) -> None:
+  """Best-effort on_run_error notification; never masks the original error.
+
+  on_run_error_callback is notification-only: the triggering exception is
+  always re-raised by the caller, so any exception from the callback itself
+  (or from a test double that does not implement it) is logged and suppressed.
+  """
+  try:
+    await plugin_manager.run_on_run_error_callback(
+        invocation_context=invocation_context, error=error
+    )
+  except Exception:  # pylint: disable=broad-except
+    logger.exception(
+        'on_run_error_callback raised; suppressing so the original run error'
+        ' propagates.'
+    )
+
+
+def _find_active_task_scope(session) -> Optional[tuple[str, str]]:
   """Walk session backwards; find the active paused task agent's scope.
 
   Two flavors of task scope:
@@ -88,6 +114,10 @@ def _find_active_task_isolation_scope(session) -> Optional[str]:
 
   Used by ``Runner._append_user_event`` to scope the new user message
   to that task agent's view.
+
+  Returns:
+    A tuple of (isolation_scope, invocation_id) for the active task if found,
+    or None if no active task scope is found.
   """
   finished_scopes: set[str] = set()
   for event in reversed(session.events):
@@ -103,12 +133,8 @@ def _find_active_task_isolation_scope(session) -> Optional[str]:
             finished_scopes.add(scope)
           break
     if scope not in finished_scopes:
-      return scope
+      return scope, event.invocation_id
   return None
-
-
-def _is_tool_call_or_response(event: Event) -> bool:
-  return bool(event.get_function_calls() or event.get_function_responses())
 
 
 def _get_function_responses_from_content(
@@ -119,21 +145,6 @@ def _get_function_responses_from_content(
   return [
       part.function_response for part in content.parts if part.function_response
   ]
-
-
-def _is_transcription(event: Event) -> bool:
-  return (
-      event.input_transcription is not None
-      or event.output_transcription is not None
-  )
-
-
-def _has_non_empty_transcription_text(
-    transcription: types.Transcription,
-) -> bool:
-  return bool(
-      transcription and transcription.text and transcription.text.strip()
-  )
 
 
 def _apply_run_config_custom_metadata(
@@ -212,8 +223,8 @@ class Runner:
     Args:
         app: An `App` instance. Mutually exclusive with `agent` and `node`.
         app_name: The application name. Required when `agent` is provided.
-          Optional override for `app.name` when `app` is provided. Defaults
-          to `node.name` when only `node` is provided.
+          Optional override for `app.name` when `app` is provided. Defaults to
+          `node.name` when only `node` is provided.
         agent: The root agent to run. Mutually exclusive with `app` and `node`.
         node: The root node to run. Mutually exclusive with `app` and `agent`.
         plugins: Deprecated. A list of plugins for the runner. Please use the
@@ -223,8 +234,8 @@ class Runner:
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
         plugin_close_timeout: The timeout in seconds for plugin close methods.
-        auto_create_session: Whether to automatically create a session when
-          not found. Defaults to False. If False, a missing session raises
+        auto_create_session: Whether to automatically create a session when not
+          found. Defaults to False. If False, a missing session raises
           ValueError with a helpful message.
 
     Raises:
@@ -296,6 +307,9 @@ class Runner:
           ' to provide plugins instead.',
           DeprecationWarning,
       )
+
+    # Lazy import keeps apps.app off the `import google.adk` cold-start path.
+    from .apps.app import App
 
     # Normalize to App — wrap bare agent or node. Uses model_construct to
     # bypass App._validate for the legacy (app_name, agent) API, which v1
@@ -465,18 +479,23 @@ class Runner:
       run_config: Optional[RunConfig] = None,
       yield_user_message: bool = False,
       node: Optional['BaseNode'] = None,
+      session: Optional[Session] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a BaseNode through NodeRunner.
 
     Events flow through ic._event_queue via NodeRunner.
     """
-    from .workflow._node_runner import NodeRunner
 
-    with tracer.start_as_current_span('invocation'):
+    with _instrumentation.record_invocation(
+        entrypoint_node=node or self.agent, conversation_id=session_id
+    ):
       # 1. Setup
-      session = await self._get_or_create_session(
-          user_id=user_id, session_id=session_id
-      )
+      if session is None:
+        session = await self._get_or_create_session(
+            user_id=user_id,
+            session_id=session_id,
+            get_session_config=(run_config or RunConfig()).get_session_config,
+        )
 
       # Validate and resolve resume inputs
       resume_inputs = self._extract_resume_inputs(new_message)
@@ -486,6 +505,11 @@ class Runner:
         invocation_id = self._resolve_invocation_id_from_fr(
             session, new_message
         )
+        if not invocation_id:
+          active_scope = _find_active_task_scope(session)
+          if active_scope:
+            _, inv_id = active_scope
+            invocation_id = inv_id
 
       ic = self._new_invocation_context(
           session,
@@ -509,32 +533,42 @@ class Runner:
         # Fresh: use user message as node_input
         node_input = new_message
 
-      # Run callbacks on user message
-      if new_message:
-        modified_user_message = (
-            await ic.plugin_manager.run_on_user_message_callback(
-                invocation_context=ic, user_message=new_message
-            )
-        )
-        if modified_user_message is not None:
-          new_message = modified_user_message
-          ic.user_content = new_message
+      # Failures in the setup hooks below (on_user_message_callback, the
+      # user-event session append, and before_run_callback) must also notify
+      # on_run_error_callback: they are part of runner execution even though
+      # they run before the main event loop. Notification-only; the original
+      # exception is always re-raised, and after_run stays success-only.
+      try:
+        # Run callbacks on user message
+        if new_message:
+          modified_user_message = (
+              await ic.plugin_manager.run_on_user_message_callback(
+                  invocation_context=ic, user_message=new_message
+              )
+          )
+          if modified_user_message is not None:
+            new_message = modified_user_message
+            ic.user_content = new_message
 
-      # Append user message to session for history
-      if new_message:
-        user_event = await self._append_user_event(
-            ic, new_message, state_delta=state_delta
-        )
-        if yield_user_message and user_event:
-          yield user_event
+        # Append user message to session for history
+        if new_message:
+          user_event = await self._append_user_event(
+              ic, new_message, state_delta=state_delta
+          )
+          if yield_user_message and user_event:
+            yield user_event
 
-      # Run before_run callbacks
-      await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
+        # Run before_run callbacks
+        await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
+      except Exception as e:
+        await _notify_run_error(ic.plugin_manager, ic, e)
+        raise
 
       # 3. Start root node in background
-      from .agents.base_agent import BaseAgent
       from .agents.context import Context
       from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
+      from .workflow._errors import DynamicNodeFailError
+      from .workflow._errors import NodeInterruptedError
       from .workflow._workflow import _LoopState
 
       root_ctx = Context(ic)
@@ -553,9 +587,6 @@ class Runner:
       # originating function-call id and so remain invisible to the
       # coordinator's view.
 
-      if not use_scheduler:
-        root_node_runner = NodeRunner(node=root_agent, parent_ctx=root_ctx)
-
       done_sentinel = object()
 
       async def _drive_root_node():
@@ -565,44 +596,75 @@ class Runner:
             # Stateful live EUC/LRO streams may rehydrate freshly if not yet persisted.
             scheduler = DynamicNodeScheduler(state=_LoopState())
             root_ctx._workflow_scheduler = scheduler
-            ctx = await scheduler(
-                root_ctx,
+
+          try:
+            await root_ctx._run_node_internal(
                 root_agent,
-                node_input,
-                run_id='1',
-            )
-          else:
-            ctx = await root_node_runner.run(
                 node_input=node_input,
                 resume_inputs=resume_inputs,
             )
-          if ctx.error:
-            raise ctx.error
+          except NodeInterruptedError:
+            # The node was interrupted (e.g. for HITL).
+            pass
+          except DynamicNodeFailError as e:
+            raise e.error
         finally:
           await ic._event_queue.put((done_sentinel, None))
 
       task = asyncio.create_task(_drive_root_node())
 
       # 4. Main loop: consume events, persist, yield
+      run_error = None
       try:
-        async with aclosing(
-            self._consume_event_queue(ic, done_sentinel)
-        ) as agen:
-          async for event in agen:
-            yield event
+        try:
+          async with aclosing(
+              self._consume_event_queue(ic, done_sentinel)
+          ) as agen:
+            async for event in agen:
+              yield event
+        finally:
+          # _cleanup_root_task re-raises a root-node Exception (if any) after
+          # the event stream has drained.
+          await self._cleanup_root_task(task, self.agent.name)
+      except Exception as e:
+        # An unhandled exception escaped runner execution. Notify plugins
+        # (notification-only) and re-raise. after_run stays success-only.
+        run_error = e
+        await _notify_run_error(ic.plugin_manager, ic, e)
+        raise
       finally:
-        await self._cleanup_root_task(task, self.agent.name)
-        await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
-        if self.app and self.app.events_compaction_config:
-          logger.debug('Running event compactor.')
-          from google.adk.apps.compaction import _run_compaction_for_sliding_window
+        # Success path (also caller early-stop via GeneratorExit, which is not
+        # an Exception): run after_run and compaction. _cleanup_root_task has
+        # already run in the inner finally above. A failure in this success
+        # cleanup (e.g. an after_run plugin raising, which PluginManager
+        # surfaces as a RuntimeError) is itself an unhandled runner error, so
+        # notify on_run_error_callback once and re-raise. on_run_error is
+        # notification-only and never raises, so there is no recursive
+        # notification.
+        if run_error is None:
+          try:
+            await ic.plugin_manager.run_after_run_callback(
+                invocation_context=ic
+            )
+            if self.app and self.app.events_compaction_config:
+              logger.debug('Running event compactor.')
+              from google.adk.apps.compaction import _run_compaction_for_sliding_window
 
-          await _run_compaction_for_sliding_window(
-              self.app,
-              session,
-              self.session_service,
-              skip_token_compaction=ic.token_compaction_checked,
-          )
+              async with aclosing(
+                  _run_compaction_for_sliding_window(
+                      self.app,
+                      session,
+                      self.session_service,
+                      skip_token_compaction=ic.token_compaction_checked,
+                  )
+              ) as compaction_events:
+                async for compaction_event in compaction_events:
+                  await self.session_service.append_event(
+                      session=session, event=compaction_event
+                  )
+          except Exception as e:
+            await _notify_run_error(ic.plugin_manager, ic, e)
+            raise
 
   async def _run_node_live(
       self,
@@ -614,7 +676,8 @@ class Runner:
     """Run a non-agent BaseNode in live mode."""
     from .agents.context import Context
     from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
-    from .workflow._node_runner import NodeRunner
+    from .workflow._errors import DynamicNodeFailError
+    from .workflow._errors import NodeInterruptedError
     from .workflow._workflow import _LoopState
     from .workflow._workflow import Workflow
 
@@ -629,9 +692,6 @@ class Runner:
     root_agent = self.agent
     is_workflow = isinstance(root_agent, Workflow)
 
-    if not is_workflow:
-      root_node_runner = NodeRunner(node=root_agent, parent_ctx=root_ctx)
-
     done_sentinel = object()
 
     async def _drive_root_node():
@@ -639,29 +699,36 @@ class Runner:
         if is_workflow:
           scheduler = DynamicNodeScheduler(state=_LoopState())
           root_ctx._workflow_scheduler = scheduler
-          ctx = await scheduler(
-              root_ctx,
+
+        try:
+          await root_ctx.run_node(
               root_agent,
-              None,
-              run_id='1',
-          )
-        else:
-          ctx = await root_node_runner.run(
               node_input=None,
           )
-        if ctx.error:
-          raise ctx.error
+        except NodeInterruptedError:
+          pass
+        except DynamicNodeFailError as e:
+          raise e.error
       finally:
         await ic._event_queue.put((done_sentinel, None))
 
     task = asyncio.create_task(_drive_root_node())
 
     try:
-      async with aclosing(self._consume_event_queue(ic, done_sentinel)) as agen:
-        async for event in agen:
-          yield event
-    finally:
-      await self._cleanup_root_task(task, self.agent.name)
+      try:
+        async with aclosing(
+            self._consume_event_queue(ic, done_sentinel)
+        ) as agen:
+          async for event in agen:
+            yield event
+      finally:
+        # _cleanup_root_task re-raises a root-node Exception (if any).
+        await self._cleanup_root_task(task, self.agent.name)
+    except Exception as e:
+      # An unhandled exception escaped live runner execution. Notify plugins
+      # (notification-only) and re-raise.
+      await _notify_run_error(ic.plugin_manager, ic, e)
+      raise
 
   def _extract_resume_inputs(
       self, message: Optional[types.Content]
@@ -736,6 +803,8 @@ class Runner:
       state_delta: Optional[dict[str, Any]] = None,
   ) -> Event:
     """Append a user message event to the session and return it."""
+    if content.parts and any(p.function_call for p in content.parts):
+      raise ValueError('User message cannot contain function calls.')
     if state_delta:
       event = Event(
           invocation_id=ic.invocation_id,
@@ -753,9 +822,11 @@ class Runner:
     # the new user message with that task's isolation_scope so the
     # task agent's content-build (scoped to <fc_id>) sees it.
     if event.isolation_scope is None:
-      iso = _find_active_task_isolation_scope(ic.session)
-      if iso is not None:
-        event.isolation_scope = iso
+      active_scope = _find_active_task_scope(ic.session)
+      if active_scope is not None:
+        event.isolation_scope, _ = active_scope
+    _apply_run_config_custom_metadata(event, ic.run_config)
+    ic.stamp_event_branch_context(event)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -887,6 +958,7 @@ class Runner:
       user_id: str,
       session_id: str,
       new_message: types.Content,
+      state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
   ) -> Generator[Event, None, None]:
     """Runs the agent.
@@ -904,6 +976,7 @@ class Runner:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
       new_message: A new message to append to the session.
+      state_delta: Optional state changes to apply to the session.
       run_config: The run config for the agent.
 
     Yields:
@@ -919,6 +992,7 @@ class Runner:
                 user_id=user_id,
                 session_id=session_id,
                 new_message=new_message,
+                state_delta=state_delta,
                 run_config=run_config,
             )
         ) as agen:
@@ -998,7 +1072,9 @@ class Runner:
 
       if self.agent.mode == 'chat':
         session = await self._get_or_create_session(
-            user_id=user_id, session_id=session_id
+            user_id=user_id,
+            session_id=session_id,
+            get_session_config=run_config.get_session_config,
         )
         # when the chat coordinator has task-mode sub-agents,
         # the wrapper handles delegation via ctx.run_node. Don't let
@@ -1011,9 +1087,9 @@ class Runner:
           agent_to_run = self.agent
         else:
           agent_to_run = self._find_agent_to_run(session, self.agent)
-        from .workflow.utils._workflow_graph_utils import build_node  # pylint: disable=g-import-not-at-top
 
-        agent_to_run = build_node(agent_to_run)
+        # The agent_to_run will be built/cloned inside Context.run_node,
+        # so we don't call build_node here to avoid double cloning.
       else:
         raise ValueError(
             "LlmAgent as root agent must have mode='chat', but got"
@@ -1029,6 +1105,7 @@ class Runner:
               run_config=run_config,
               yield_user_message=yield_user_message,
               node=agent_to_run,
+              session=session,
           )
       ) as agen:
         async for event in agen:
@@ -1059,7 +1136,9 @@ class Runner:
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      with tracer.start_as_current_span('invocation'):
+      with _instrumentation.record_invocation(
+          entrypoint_node=self.agent, conversation_id=session_id
+      ):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
@@ -1088,6 +1167,7 @@ class Runner:
               new_message=new_message,
               run_config=run_config,
               state_delta=state_delta,
+              invocation_id=invocation_id,
           )
         else:
           invocation_id = self._resolve_invocation_id(
@@ -1139,12 +1219,18 @@ class Runner:
           logger.debug('Running event compactor.')
           from google.adk.apps.compaction import _run_compaction_for_sliding_window
 
-          await _run_compaction_for_sliding_window(
-              self.app,
-              invocation_context.session,
-              self.session_service,
-              skip_token_compaction=invocation_context.token_compaction_checked,
-          )
+          async with aclosing(
+              _run_compaction_for_sliding_window(
+                  self.app,
+                  invocation_context.session,
+                  self.session_service,
+                  skip_token_compaction=invocation_context.token_compaction_checked,
+              )
+          ) as compaction_events:
+            async for compaction_event in compaction_events:
+              await self.session_service.append_event(
+                  session=invocation_context.session, event=compaction_event
+              )
 
     async with aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
@@ -1370,118 +1456,81 @@ class Runner:
 
     plugin_manager = invocation_context.plugin_manager
 
-    # Step 1: Run the before_run callbacks to see if we should early exit.
-    early_exit_result = await plugin_manager.run_before_run_callback(
-        invocation_context=invocation_context
-    )
-    if isinstance(early_exit_result, types.Content):
-      early_exit_event = Event(
-          invocation_id=invocation_context.invocation_id,
-          author='model',
-          content=early_exit_result,
+    try:
+      # Step 1: Run the before_run callbacks to see if we should early exit.
+      early_exit_result = await plugin_manager.run_before_run_callback(
+          invocation_context=invocation_context
       )
-      _apply_run_config_custom_metadata(
-          early_exit_event, invocation_context.run_config
-      )
-      if self._should_append_event(early_exit_event, is_live_call):
-        await self.session_service.append_event(
-            session=invocation_context.session,
-            event=early_exit_event,
+      if isinstance(early_exit_result, types.Content):
+        early_exit_event = Event(
+            invocation_id=invocation_context.invocation_id,
+            author='model',
+            content=early_exit_result,
         )
-      yield early_exit_event
-    else:
-      # Step 2: Otherwise continue with normal execution
-      # Note for live/bidi:
-      # the transcription may arrive later than the action(function call
-      # event and thus function response event). In this case, the order of
-      # transcription and function call event will be wrong if we just
-      # append as it arrives. To address this, we should check if there is
-      # transcription going on. If there is transcription going on, we
-      # should hold on appending the function call event until the
-      # transcription is finished. The transcription in progress can be
-      # identified by checking if the transcription event is partial. When
-      # the next transcription event is not partial, it means the previous
-      # transcription is finished. Then if there is any buffered function
-      # call event, we should append them after this finished(non-partial)
-      # transcription event.
-      buffered_events: list[Event] = []
-      is_transcribing: bool = False
+        _apply_run_config_custom_metadata(
+            early_exit_event, invocation_context.run_config
+        )
+        if self._should_append_event(early_exit_event, is_live_call):
+          await self.session_service.append_event(
+              session=invocation_context.session,
+              event=early_exit_event,
+          )
+        yield early_exit_event
+      else:
+        # Step 2: Otherwise continue with normal execution
+        async with aclosing(execute_fn(invocation_context)) as agen:
+          async for event in agen:
+            _apply_run_config_custom_metadata(
+                event, invocation_context.run_config
+            )
+            # Step 3: Run the on_event callbacks before persisting so callback
+            # changes are stored in the session and match the streamed event.
+            modified_event = await plugin_manager.run_on_event_callback(
+                invocation_context=invocation_context, event=event
+            )
+            output_event = self._get_output_event(
+                original_event=event,
+                modified_event=modified_event,
+                run_config=invocation_context.run_config,
+            )
 
-      async with aclosing(execute_fn(invocation_context)) as agen:
-        async for event in agen:
-          _apply_run_config_custom_metadata(
-              event, invocation_context.run_config
-          )
-          # Step 3: Run the on_event callbacks before persisting so callback
-          # changes are stored in the session and match the streamed event.
-          modified_event = await plugin_manager.run_on_event_callback(
-              invocation_context=invocation_context, event=event
-          )
-          output_event = self._get_output_event(
-              original_event=event,
-              modified_event=modified_event,
-              run_config=invocation_context.run_config,
-          )
-
-          if is_live_call:
-            if event.partial and _is_transcription(event):
-              is_transcribing = True
-            if is_transcribing and _is_tool_call_or_response(event):
-              # only buffer function call and function response event which is
-              # non-partial
-              buffered_events.append(output_event)
-              continue
-            # Note for live/bidi: for audio response, it's considered as
-            # non-partial event(event.partial=None)
-            # event.partial=False and event.partial=None are considered as
-            # non-partial event; event.partial=True is considered as partial
-            # event.
-            if event.partial is not True:
-              if _is_transcription(event) and (
-                  _has_non_empty_transcription_text(event.input_transcription)
-                  or _has_non_empty_transcription_text(
-                      event.output_transcription
-                  )
+            if is_live_call:
+              # Skip partial transcriptions for Live
+              if event.partial is not True and self._should_append_event(
+                  event, is_live_call
               ):
-                # transcription end signal, append buffered events
-                is_transcribing = False
-                logger.debug(
-                    'Appending transcription finished event: %s', event
+                logger.debug('Appending live event: %s', output_event)
+                await self.session_service.append_event(
+                    session=invocation_context.session, event=output_event
                 )
-                if self._should_append_event(event, is_live_call):
-                  await self.session_service.append_event(
-                      session=invocation_context.session, event=output_event
-                  )
+            else:
+              if event.partial is not True:
+                await self.session_service.append_event(
+                    session=invocation_context.session, event=output_event
+                )
 
-                for buffered_event in buffered_events:
-                  logger.debug('Appending buffered event: %s', buffered_event)
-                  await self.session_service.append_event(
-                      session=invocation_context.session, event=buffered_event
-                  )
-                  yield buffered_event  # yield buffered events to caller
-                buffered_events = []
-              else:
-                # non-transcription event or empty transcription event, for
-                # example, event that stores blob reference, should be appended.
-                if self._should_append_event(event, is_live_call):
-                  logger.debug('Appending non-buffered event: %s', event)
-                  await self.session_service.append_event(
-                      session=invocation_context.session, event=output_event
-                  )
-          else:
-            if event.partial is not True:
-              await self.session_service.append_event(
-                  session=invocation_context.session, event=output_event
-              )
-
-          yield output_event
+            yield output_event
+    except Exception as e:
+      # Notify plugins of the unhandled execution error. Covers failures in
+      # before_run_callback, early-exit, and the main execution loop.
+      # Notification-only; the original exception is always re-raised.
+      await _notify_run_error(plugin_manager, invocation_context, e)
+      raise
 
     # Step 4: Run the after_run callbacks to perform global cleanup tasks or
     # finalizing logs and metrics data.
-    # This does NOT emit any event.
-    await plugin_manager.run_after_run_callback(
-        invocation_context=invocation_context
-    )
+    # This does NOT emit any event. Only runs on success. A failure here (e.g.
+    # an after_run plugin raising, which PluginManager surfaces as a
+    # RuntimeError) is still an unhandled runner error, so notify
+    # on_run_error_callback once and re-raise. on_run_error is
+    # notification-only and never raises, so there is no recursive notification.
+    try:
+      await plugin_manager.run_after_run_callback(
+          invocation_context=invocation_context
+      )
+    except Exception as e:
+      await _notify_run_error(plugin_manager, invocation_context, e)
+      raise
 
   async def _append_new_message_to_session(
       self,
@@ -1503,6 +1552,9 @@ class Runner:
     """
     if not new_message.parts:
       raise ValueError('No parts in the new_message.')
+
+    if any(p.function_call for p in new_message.parts):
+      raise ValueError('User message cannot contain function calls.')
 
     if self.artifact_service and save_input_blobs_as_artifacts:
       # Issue deprecation warning
@@ -1546,10 +1598,7 @@ class Runner:
           content=new_message,
       )
     _apply_run_config_custom_metadata(event, invocation_context.run_config)
-    # If new_message is a function response, find the matching function call
-    # and use its branch as the new event's branch.
-    if function_call := invocation_context._find_matching_function_call(event):
-      event.branch = function_call.branch
+    invocation_context.stamp_event_branch_context(event)
 
     await self.session_service.append_event(
         session=invocation_context.session, event=event
@@ -1621,7 +1670,7 @@ class Runner:
     # Some native audio models requires the modality to be set. So we set it to
     # AUDIO by default.
     if run_config.response_modalities is None:
-      run_config.response_modalities = ['AUDIO']
+      run_config.response_modalities = [types.Modality.AUDIO]
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
@@ -1902,6 +1951,7 @@ class Runner:
       new_message: types.Content,
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
+      invocation_id: Optional[str] = None,
   ) -> InvocationContext:
     """Sets up the context for a new invocation.
 
@@ -1910,6 +1960,7 @@ class Runner:
       new_message: The new message to process and append to the session.
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
+      invocation_id: Optional invocation identifier.
 
     Returns:
       The invocation context for the new invocation.
@@ -1919,6 +1970,7 @@ class Runner:
         session,
         new_message=new_message,
         run_config=run_config,
+        invocation_id=invocation_id,
     )
     # Step 2: Handle new message, by running callbacks and appending to
     # session.
@@ -2085,7 +2137,7 @@ class Runner:
     # For live multi-agents system, we need model's text transcription as
     # context for the transferred agent.
     if hasattr(self.agent, 'sub_agents') and self.agent.sub_agents:
-      if 'AUDIO' in run_config.response_modalities:
+      if types.Modality.AUDIO in run_config.response_modalities:
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()
@@ -2156,10 +2208,12 @@ class Runner:
 
     # This maintains the same task context throughout cleanup
     for toolset in toolsets_to_close:
+      cleanup_task = asyncio.create_task(
+          asyncio.wait_for(toolset.close(), timeout=10.0)
+      )
       try:
         logger.info('Closing toolset: %s', type(toolset).__name__)
-        # Use asyncio.wait_for to add timeout protection
-        await asyncio.wait_for(toolset.close(), timeout=10.0)
+        await asyncio.shield(cleanup_task)
         logger.info('Successfully closed toolset: %s', type(toolset).__name__)
       except asyncio.TimeoutError:
         logger.warning('Toolset %s cleanup timed out', type(toolset).__name__)
@@ -2174,8 +2228,35 @@ class Runner:
         # improved context propagation across task boundaries, and better cancellation
         # handling prevent the cross-task cancel scope violation.
         logger.warning(
-            'Toolset %s cleanup cancelled: %s', type(toolset).__name__, e
+            'Toolset %s cleanup cancellation requested: %s',
+            type(toolset).__name__,
+            e,
         )
+        try:
+          await cleanup_task
+          logger.info(
+              'Successfully closed toolset after cancellation request: %s',
+              type(toolset).__name__,
+          )
+        except asyncio.TimeoutError:
+          cleanup_task.cancel()
+          logger.warning(
+              'Toolset %s cleanup timed out after cancellation request',
+              type(toolset).__name__,
+          )
+        except asyncio.CancelledError as close_cancelled:
+          logger.warning(
+              'Toolset %s cleanup cancelled: %s',
+              type(toolset).__name__,
+              close_cancelled,
+          )
+        except Exception as close_error:
+          logger.error(
+              'Error closing toolset %s after cancellation request: %s',
+              type(toolset).__name__,
+              close_error,
+          )
+        raise
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 

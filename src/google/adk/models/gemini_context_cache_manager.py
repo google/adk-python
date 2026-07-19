@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import hashlib
 import json
 import logging
 import time
+from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -32,11 +34,23 @@ from .llm_response import LlmResponse
 
 logger = logging.getLogger("google_adk." + __name__)
 
-# Gemini API requires a minimum of 4096 tokens for cached content.
-_GEMINI_MIN_CACHE_TOKENS = 4096
+# Named Gemini model families have documented explicit-cache floors. For
+# opaque tuned-model and endpoint IDs, the server remains authoritative.
+_GEMINI_2_5_MIN_CACHE_TOKENS = 2048
+_GEMINI_3_MIN_CACHE_TOKENS = 4096
 
 if TYPE_CHECKING:
   from google.genai import Client
+
+
+def _minimum_cache_tokens(model: Optional[str]) -> Optional[int]:
+  """Return the explicit-cache token floor for a named Gemini model."""
+  model_name = (model or "").rsplit("/", maxsplit=1)[-1]
+  if model_name.startswith("gemini-2.5-"):
+    return _GEMINI_2_5_MIN_CACHE_TOKENS
+  if model_name.startswith("gemini-3"):
+    return _GEMINI_3_MIN_CACHE_TOKENS
+  return None
 
 
 @experimental
@@ -102,16 +116,26 @@ class GeminiContextCacheManager:
           )
           await self.cleanup_cache(old_cache_metadata.cache_name)
 
-        # Calculate current fingerprint using contents count from old metadata
-        cache_contents_count = old_cache_metadata.contents_count
+        # Validate the previously fingerprinted prefix before growing it.
+        previous_cache_contents_count = old_cache_metadata.contents_count
         current_fingerprint = self._generate_cache_fingerprint(
-            llm_request, cache_contents_count
+            llm_request, previous_cache_contents_count
         )
 
         # If fingerprints match, create new cache (expired but same content)
         if current_fingerprint == old_cache_metadata.fingerprint:
           logger.debug(
               "Fingerprints match after invalidation, creating new cache"
+          )
+          current_cacheable_contents_count = (
+              self._find_count_of_contents_to_cache(llm_request.contents)
+          )
+          cache_contents_count = max(
+              previous_cache_contents_count,
+              current_cacheable_contents_count,
+          )
+          current_fingerprint = self._generate_cache_fingerprint(
+              llm_request, cache_contents_count
           )
           cache_metadata = await self._create_new_cache_with_contents(
               llm_request, cache_contents_count
@@ -122,9 +146,8 @@ class GeminiContextCacheManager:
             )
             return cache_metadata
 
-          # Cache creation failed (e.g., below Gemini's 4096 token minimum).
-          # Preserve the original contents_count so the fingerprint stays
-          # stable for subsequent calls instead of resetting to total.
+          # Cache creation failed (for example, below the model's minimum).
+          # Preserve the largest stable prefix for the next attempt.
           logger.debug(
               "Cache creation failed, preserving prefix fingerprint "
               "(contents_count=%d)",
@@ -135,17 +158,21 @@ class GeminiContextCacheManager:
               contents_count=cache_contents_count,
           )
 
-        # Fingerprints don't match - recalculate with total contents
+        # Fingerprints don't match - recalculate with the current cacheable
+        # prefix. Request-scoped user contents, such as dynamic instructions,
+        # should not become part of the fingerprint-only chain.
         logger.debug(
             "Fingerprints don't match, returning fingerprint-only metadata"
         )
-        total_contents_count = len(llm_request.contents)
-        fingerprint_for_all = self._generate_cache_fingerprint(
-            llm_request, total_contents_count
+        cache_contents_count = self._find_count_of_contents_to_cache(
+            llm_request.contents
+        )
+        fingerprint = self._generate_cache_fingerprint(
+            llm_request, cache_contents_count
         )
         return CacheMetadata(
-            fingerprint=fingerprint_for_all,
-            contents_count=total_contents_count,
+            fingerprint=fingerprint,
+            contents_count=cache_contents_count,
         )
 
     # No existing cache metadata - return fingerprint-only metadata
@@ -153,13 +180,15 @@ class GeminiContextCacheManager:
     logger.debug(
         "No existing cache metadata, creating fingerprint-only metadata"
     )
-    total_contents_count = len(llm_request.contents)
+    cache_contents_count = self._find_count_of_contents_to_cache(
+        llm_request.contents
+    )
     fingerprint = self._generate_cache_fingerprint(
-        llm_request, total_contents_count
+        llm_request, cache_contents_count
     )
     return CacheMetadata(
         fingerprint=fingerprint,
-        contents_count=total_contents_count,
+        contents_count=cache_contents_count,
     )
 
   def _find_count_of_contents_to_cache(
@@ -256,25 +285,37 @@ class GeminiContextCacheManager:
     Returns:
         16-character hexadecimal fingerprint representing the cached state
     """
-    # Create fingerprint from system instruction, tools, tool_config, and first N contents
-    fingerprint_data = {}
+    # Explicit caches are model-specific, so the model is part of their
+    # compatibility boundary along with the cached request fields.
+    fingerprint_data: dict[str, Any] = {
+        "model": llm_request.model,
+        "cache_scope": self._cache_scope(),
+    }
 
     if llm_request.config and llm_request.config.system_instruction:
-      fingerprint_data["system_instruction"] = (
-          llm_request.config.system_instruction
-      )
+      try:
+        fingerprint_data["system_instruction"] = llm_request.config.model_dump(
+            mode="json", include={"system_instruction"}
+        )["system_instruction"]
+      except Exception:  # pylint: disable=broad-except
+        # Preserve support for SDK-accepted objects without a JSON serializer
+        # (for example PIL images). Their string form is the best available
+        # compatibility boundary.
+        fingerprint_data["system_instruction"] = str(
+            llm_request.config.system_instruction
+        )
 
     if llm_request.config and llm_request.config.tools:
       # Simplified: just dump types.Tool instances to JSON
       tools_data = []
       for tool in llm_request.config.tools:
         if isinstance(tool, types.Tool):
-          tools_data.append(tool.model_dump())
+          tools_data.append(tool.model_dump(mode="json"))
       fingerprint_data["tools"] = tools_data
 
     if llm_request.config and llm_request.config.tool_config:
       fingerprint_data["tool_config"] = (
-          llm_request.config.tool_config.model_dump()
+          llm_request.config.tool_config.model_dump(mode="json")
       )
 
     # Include first N contents in fingerprint
@@ -282,11 +323,18 @@ class GeminiContextCacheManager:
       contents_data = []
       for i in range(min(cache_contents_count, len(llm_request.contents))):
         content = llm_request.contents[i]
-        contents_data.append(content.model_dump())
+        contents_data.append(content.model_dump(mode="json"))
       fingerprint_data["cached_contents"] = contents_data
 
-    # Generate hash using str() instead of json.dumps() to handle bytes
-    fingerprint_str = str(fingerprint_data)
+    # Canonical JSON makes semantically identical mappings produce the same
+    # cache identity regardless of their insertion order. SDK model dumps in
+    # JSON mode also encode binary parts deterministically.
+    fingerprint_str = json.dumps(
+        fingerprint_data,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
     return hashlib.sha256(fingerprint_str.encode()).hexdigest()[:16]
 
   async def _create_new_cache_with_contents(
@@ -320,12 +368,26 @@ class GeminiContextCacheManager:
       )
       return None
 
-    # Check client-side to avoid unnecessary API round-trips.
-    if llm_request.cacheable_contents_token_count < _GEMINI_MIN_CACHE_TOKENS:
+    # `cacheable_contents_token_count` is the token count of the whole previous
+    # prompt (system instruction + tools + every content). The cache, however,
+    # only stores the prefix `contents[:cache_contents_count]` plus the system
+    # instruction and tools (see `_create_gemini_cache`). On a long conversation
+    # the full-prompt count can clear Gemini's minimum while the cached prefix
+    # is far smaller, which makes `caches.create` fail with 400
+    # INVALID_ARGUMENT.
+    # Gate on the estimated prefix size so we never send a sub-minimum payload.
+    cacheable_prefix_tokens = self._estimate_cacheable_prefix_tokens(
+        llm_request, cache_contents_count
+    )
+    minimum_cache_tokens = _minimum_cache_tokens(llm_request.model)
+    if (
+        minimum_cache_tokens is not None
+        and cacheable_prefix_tokens < minimum_cache_tokens
+    ):
       logger.info(
-          "Request below Gemini minimum cache size (%d < %d tokens)",
-          llm_request.cacheable_contents_token_count,
-          _GEMINI_MIN_CACHE_TOKENS,
+          "Cacheable prefix below Gemini minimum cache size (%d < %d tokens)",
+          cacheable_prefix_tokens,
+          minimum_cache_tokens,
       )
       return None
 
@@ -336,13 +398,37 @@ class GeminiContextCacheManager:
       logger.warning("Failed to create cache: %s", e)
       return None
 
-  def _estimate_request_tokens(self, llm_request: LlmRequest) -> int:
-    """Estimate token count for the request.
+  def _cache_scope(self) -> dict[str, Any]:
+    """Return the backend namespace that owns explicit cache resources."""
+    is_vertex = bool(self.genai_client.vertexai)
+    scope: dict[str, Any] = {
+        "backend": "vertex" if is_vertex else "gemini",
+    }
+    api_client = getattr(self.genai_client, "_api_client", None)
+    if is_vertex and api_client is not None:
+      scope["project"] = getattr(api_client, "project", None)
+      scope["location"] = getattr(api_client, "location", None)
+
+    http_options = getattr(api_client, "_http_options", None)
+    base_url = getattr(http_options, "base_url", None)
+    if base_url:
+      scope["base_url"] = base_url
+    return scope
+
+  def _estimate_request_tokens(
+      self,
+      llm_request: LlmRequest,
+      cache_contents_count: Optional[int] = None,
+  ) -> int:
+    """Estimate token count for the request (or its cacheable prefix).
 
     This is a rough estimation based on content text length.
 
     Args:
         llm_request: Request to estimate tokens for
+        cache_contents_count: When provided, only the first
+            ``cache_contents_count`` contents are counted (the prefix that gets
+            cached); the system instruction and tools are always included.
 
     Returns:
         Estimated token count
@@ -360,14 +446,53 @@ class GeminiContextCacheManager:
           tool_str = json.dumps(tool.model_dump())
           total_chars += len(tool_str)
 
-    # Contents
-    for content in llm_request.contents:
+    # Contents (optionally limited to the cacheable prefix)
+    contents = llm_request.contents
+    if cache_contents_count is not None:
+      contents = contents[:cache_contents_count]
+    for content in contents:
       for part in content.parts:
         if part.text:
           total_chars += len(part.text)
 
     # Rough estimate: 4 characters per token
     return total_chars // 4
+
+  def _estimate_cacheable_prefix_tokens(
+      self, llm_request: LlmRequest, cache_contents_count: int
+  ) -> int:
+    """Estimate the token count of the prefix that will actually be cached.
+
+    The only accurate token count available is
+    ``cacheable_contents_token_count``, which covers the entire previous prompt.
+    Since the cache stores just the prefix ``contents[:cache_contents_count]``
+    (plus system instruction and tools), we scale that accurate count by the
+    prefix's estimated share of the request. When the prefix already spans the
+    whole request the scale factor is 1 and the accurate count is returned
+    unchanged.
+
+    Args:
+        llm_request: Request to estimate the cacheable prefix tokens for
+        cache_contents_count: Number of leading contents that get cached
+
+    Returns:
+        Estimated token count of the cacheable prefix
+    """
+    full_tokens = llm_request.cacheable_contents_token_count
+    if not full_tokens:
+      return 0
+
+    full_estimate = self._estimate_request_tokens(llm_request)
+    if full_estimate <= 0:
+      # No text to estimate from (e.g. non-text parts); fall back to the
+      # accurate full count rather than incorrectly skipping the cache.
+      return full_tokens
+
+    prefix_estimate = self._estimate_request_tokens(
+        llm_request, cache_contents_count
+    )
+    ratio = min(1.0, prefix_estimate / full_estimate)
+    return int(full_tokens * ratio)
 
   async def _create_gemini_cache(
       self, llm_request: LlmRequest, cache_contents_count: int
@@ -385,7 +510,7 @@ class GeminiContextCacheManager:
 
     with tracer.start_as_current_span("create_cache") as span:
       # Prepare cache contents (first N contents + system instruction + tools)
-      cache_contents = llm_request.contents[:cache_contents_count]
+      cache_contents = llm_request.contents[:cache_contents_count] or None
 
       cache_config = types.CreateCachedContentConfig(
           contents=cache_contents,
@@ -411,6 +536,13 @@ class GeminiContextCacheManager:
       if llm_request.config and llm_request.config.tool_config:
         cache_config.tool_config = llm_request.config.tool_config
 
+      # Pass through HTTP options (e.g. timeout) from cache config
+      if (
+          llm_request.cache_config
+          and llm_request.cache_config.create_http_options
+      ):
+        cache_config.http_options = llm_request.cache_config.create_http_options
+
       span.set_attribute("cache_contents_count", cache_contents_count)
       span.set_attribute("model", llm_request.model)
       span.set_attribute("ttl_seconds", llm_request.cache_config.ttl_seconds)
@@ -426,6 +558,12 @@ class GeminiContextCacheManager:
       )
       # Set precise creation timestamp right after cache creation
       created_at = time.time()
+      server_expire_time = getattr(cached_content, "expire_time", None)
+      expire_time = (
+          server_expire_time.timestamp()
+          if isinstance(server_expire_time, datetime)
+          else created_at + llm_request.cache_config.ttl_seconds
+      )
       logger.info("Cache created successfully: %s", cached_content.name)
 
       span.set_attribute("cache_name", cached_content.name)
@@ -433,7 +571,7 @@ class GeminiContextCacheManager:
       # Return complete cache metadata with precise timing
       return CacheMetadata(
           cache_name=cached_content.name,
-          expire_time=created_at + llm_request.cache_config.ttl_seconds,
+          expire_time=expire_time,
           fingerprint=self._generate_cache_fingerprint(
               llm_request, cache_contents_count
           ),

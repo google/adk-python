@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 from typing import Dict
 from typing import List
@@ -55,7 +54,7 @@ async def read_files(
     session_state = tool_context._invocation_context.session.state
     resolved_paths = resolve_file_paths(file_paths, session_state)
 
-    result = {
+    result: Dict[str, Any] = {
         "success": True,
         "files": {},
         "successful_reads": 0,

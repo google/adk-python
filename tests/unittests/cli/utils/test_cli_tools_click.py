@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -885,70 +886,6 @@ def test_cli_deploy_cloud_run_passthrough_args(
   assert "--cpu=1" in extra_args
 
 
-def test_cli_deploy_cloud_run_rejects_args_without_separator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-  """Args without '--' separator should be rejected with helpful error message."""
-  rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
-
-  agent_dir = tmp_path / "agent_no_sep"
-  agent_dir.mkdir()
-  runner = CliRunner()
-  result = runner.invoke(
-      cli_tools_click.main,
-      [
-          "deploy",
-          "cloud_run",
-          "--project",
-          "test-project",
-          "--region",
-          "us-central1",
-          str(agent_dir),
-          "--labels=test-label=test",  # This should be rejected
-      ],
-  )
-
-  assert result.exit_code == 2
-  assert "Unexpected arguments:" in result.output
-  assert "Use '--' to separate gcloud arguments" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
-
-
-def test_cli_deploy_cloud_run_rejects_args_before_separator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-  """Args before '--' separator should be rejected."""
-  rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
-
-  agent_dir = tmp_path / "agent_before_sep"
-  agent_dir.mkdir()
-  runner = CliRunner()
-  result = runner.invoke(
-      cli_tools_click.main,
-      [
-          "deploy",
-          "cloud_run",
-          "--project",
-          "test-project",
-          "--region",
-          "us-central1",
-          str(agent_dir),
-          "unexpected_arg",  # This should be rejected
-          "--",
-          "--labels=test-label=test",
-      ],
-  )
-
-  assert result.exit_code == 2
-  assert (
-      "Unexpected arguments after agent path and before '--':" in result.output
-  )
-  assert "unexpected_arg" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
-
-
 def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -981,6 +918,94 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
   called_kwargs = rec.calls[0][1]
   extra_args = called_kwargs.get("extra_gcloud_args")
   assert extra_args == ()
+
+
+def test_cli_deploy_cloud_run_interspersed_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Options placed after the positional argument should be parsed correctly."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_interspersed"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          str(agent_dir),
+          "--project",
+          "test-project",
+          "--region",
+          "us-central1",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+
+  called_kwargs = rec.calls[0][1]
+  assert called_kwargs.get("project") == "test-project"
+  assert called_kwargs.get("region") == "us-central1"
+
+
+def test_cli_deploy_cloud_run_rejects_unknown_option_before_separator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Unknown option placed before '--' separator should be rejected by Click."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_bad_order"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--project",
+          "test-project",
+          str(agent_dir),
+          "--labels=test-label=test",
+          "--",
+      ],
+  )
+
+  assert result.exit_code == 2
+  assert "No such option" in result.output
+  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
+
+
+def test_cli_deploy_cloud_run_forwards_extra_positional_arg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Extra positional argument before '--' is forwarded to the deployment runner."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_extra_pos"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--project",
+          "test-project",
+          str(agent_dir),
+          "unexpected_arg",
+          "--",
+          "--labels=test-label=test",
+      ],
+  )
+
+  assert result.exit_code == 0
+  extra_args = rec.calls[0][1].get("extra_gcloud_args")
+  assert extra_args == ("unexpected_arg", "--labels=test-label=test")
 
 
 # cli deploy agent_engine
@@ -1538,3 +1563,73 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
       " command."
   )
   assert expected_msg in result.output
+
+
+@pytest.mark.parametrize(
+    "cli_args,expected_log_level",
+    [
+        pytest.param(
+            [],
+            "INFO",
+            id="default_info",
+        ),
+        pytest.param(
+            ["--log_level", "DEBUG"],
+            "DEBUG",
+            id="explicit_debug",
+        ),
+        pytest.param(
+            ["--log_level", "WARNING"],
+            "WARNING",
+            id="explicit_warning",
+        ),
+        pytest.param(
+            ["-v"],
+            "DEBUG",
+            id="verbose_flag",
+        ),
+        pytest.param(
+            ["--verbose"],
+            "DEBUG",
+            id="verbose_long_flag",
+        ),
+        pytest.param(
+            ["-v", "--log_level", "WARNING"],
+            "WARNING",
+            id="both_verbose_and_explicit_warning",
+        ),
+    ],
+)
+def test_cli_run_log_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cli_args: list[str],
+    expected_log_level: str,
+) -> None:
+  """`adk run` should configure log level correctly based on flags."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock logs.log_to_tmp_folder
+  mock_log_to_tmp_folder = mock.Mock()
+  monkeypatch.setattr(
+      cli_tools_click.logs, "log_to_tmp_folder", mock_log_to_tmp_folder
+  )
+
+  # Mock asyncio.run to do nothing, preventing full run
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", *cli_args, str(agent_dir)],
+  )
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+
+  # Check if log_to_tmp_folder was called with the correct log level object from `logging` module
+  expected_logging_level = getattr(logging, expected_log_level)
+  mock_log_to_tmp_folder.assert_called_once()
+  kwargs = mock_log_to_tmp_folder.call_args[1]
+  assert kwargs.get("level") == expected_logging_level

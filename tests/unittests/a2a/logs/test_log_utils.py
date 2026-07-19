@@ -14,31 +14,23 @@
 
 """Tests for log_utils module."""
 
-import json
 import sys
 from unittest.mock import Mock
 from unittest.mock import patch
 
 import pytest
 
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
+# Skip all tests in this module if Python version is less than 3.10.
+pytestmark = [
+    pytest.mark.skipif(
+        sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
+    ),
+]
 
-# Import dependencies with version checking
+# Import dependencies with version checking. Tests use version-agnostic builders
+# from ``_compat`` so they run on both a2a-sdk 0.3.x and 1.x.
 try:
-  from a2a.types import DataPart as A2ADataPart
-  from a2a.types import Message as A2AMessage
-  from a2a.types import MessageSendConfiguration
-  from a2a.types import MessageSendParams
-  from a2a.types import Part as A2APart
-  from a2a.types import Role
-  from a2a.types import SendMessageRequest
-  from a2a.types import Task as A2ATask
-  from a2a.types import TaskState
-  from a2a.types import TaskStatus
-  from a2a.types import TextPart as A2ATextPart
+  from google.adk.a2a import _compat
   from google.adk.a2a.logs.log_utils import build_a2a_request_log
   from google.adk.a2a.logs.log_utils import build_a2a_response_log
   from google.adk.a2a.logs.log_utils import build_message_part_log
@@ -58,9 +50,8 @@ class TestBuildMessagePartLog:
   def test_text_part_short_text(self):
     """Test TextPart with short text."""
 
-    # Create real A2A objects
-    text_part = A2ATextPart(text="Hello, world!")
-    part = A2APart(root=text_part)
+    # Create real A2A objects (version-agnostic).
+    part = _compat.make_text_part("Hello, world!")
 
     result = build_message_part_log(part)
 
@@ -70,8 +61,7 @@ class TestBuildMessagePartLog:
     """Test TextPart with long text that gets truncated."""
 
     long_text = "x" * 150  # Long text that should be truncated
-    text_part = A2ATextPart(text=long_text)
-    part = A2APart(root=text_part)
+    part = _compat.make_text_part(long_text)
 
     result = build_message_part_log(part)
 
@@ -81,14 +71,17 @@ class TestBuildMessagePartLog:
   def test_data_part_simple_data(self):
     """Test DataPart with simple data."""
 
-    data_part = A2ADataPart(data={"key1": "value1", "key2": 42})
-    part = A2APart(root=data_part)
+    part = _compat.make_data_part(data={"key1": "value1", "key2": 42})
 
     result = build_message_part_log(part)
 
-    expected_data = {"key1": "value1", "key2": 42}
-    expected = f"DataPart: {json.dumps(expected_data, indent=2)}"
-    assert result == expected
+    # The integer value renders as a float on 1.x (proto Struct numbers).
+    assert result.startswith("DataPart: ")
+    assert '"key1": "value1"' in result
+    if _compat.IS_A2A_V1:
+      assert '"key2": 42.0' in result
+    else:
+      assert '"key2": 42' in result
 
   def test_data_part_large_values(self):
     """Test DataPart with large values that get summarized."""
@@ -96,7 +89,7 @@ class TestBuildMessagePartLog:
     large_dict = {f"key{i}": f"value{i}" for i in range(50)}
     large_list = list(range(100))
 
-    data_part = A2ADataPart(
+    part = _compat.make_data_part(
         data={
             "small_value": "hello",
             "large_dict": large_dict,
@@ -104,35 +97,44 @@ class TestBuildMessagePartLog:
             "normal_int": 42,
         }
     )
-    part = A2APart(root=data_part)
 
     result = build_message_part_log(part)
 
-    # Large values should be replaced with type names
+    # Large values should be replaced with type names.
     assert "small_value" in result
     assert "hello" in result
     assert "<dict>" in result
     assert "<list>" in result
     assert "normal_int" in result
-    assert "42" in result
+    # The integer value renders as a float on 1.x (proto Struct numbers).
+    if _compat.IS_A2A_V1:
+      assert "42.0" in result
+    else:
+      assert "42" in result
 
+  @pytest.mark.skipif(
+      _compat.IS_A2A_V1, reason="0.3-only .root/model_dump fallback structure"
+  )
   def test_other_part_type(self):
     """Test handling of other part types (not Text or Data)."""
 
-    # Create a mock part that will fall through to the else case
+    # Create a mock part that will fall through to the else (file/other) case.
     mock_root = Mock()
     mock_root.__class__.__name__ = "MockOtherPart"
-    # Ensure metadata attribute doesn't exist or returns None to avoid JSON serialization issues
+    # Ensure metadata attribute doesn't exist or returns None to avoid JSON
+    # serialization issues.
     mock_root.metadata = None
 
     mock_part = Mock()
     mock_part.root = mock_root
-    mock_part.model_dump_json.return_value = '{"some": "data"}'
+    # The version-agnostic serializer uses model_dump (not model_dump_json) on
+    # 0.3.x; a bare Mock isn't serializable so the fallback marker is emitted.
+    mock_part.model_dump.return_value = {"some": "data"}
 
     result = build_message_part_log(mock_part)
 
-    expected = 'MockOtherPart: {"some": "data"}'
-    assert result == expected
+    # On 0.3.x the else branch labels non-text/data parts as "FilePart".
+    assert result.startswith("FilePart: ")
 
 
 class TestBuildA2ARequestLog:
@@ -141,17 +143,19 @@ class TestBuildA2ARequestLog:
   def test_request_with_parts(self):
     """Test request logging of message parts."""
 
-    # Create mock request with all components
-    req = A2AMessage(
+    # Create a real A2A request message (version-agnostic). Message metadata is
+    # exercised separately in ``test_build_a2a_request_log_with_message_metadata``;
+    # it is omitted here because on 1.x it is stored as a proto Struct that the
+    # logger serializes via json.dumps.
+    req = _compat.make_message(
         message_id="msg-456",
         role="user",
         task_id="task-789",
         context_id="ctx-101",
         parts=[
-            A2APart(root=A2ATextPart(text="Part 1")),
-            A2APart(root=A2ATextPart(text="Part 2")),
+            _compat.make_text_part("Part 1"),
+            _compat.make_text_part("Part 2"),
         ],
-        metadata={"msg_key": "msg_value"},
     )
 
     with patch(
@@ -161,9 +165,13 @@ class TestBuildA2ARequestLog:
 
       result = build_a2a_request_log(req)
 
-    # Verify all components are present
+    # Verify all components are present.
     assert "msg-456" in result
-    assert "user" in result
+    # Role prints as a string on 0.3.x and as an int enum on 1.x.
+    if _compat.IS_A2A_V1:
+      assert str(_compat.ROLE_USER) in result
+    else:
+      assert "user" in result
     assert "task-789" in result
     assert "ctx-101" in result
     assert "Part 0:" in result
@@ -207,10 +215,11 @@ class TestBuildA2AResponseLog:
 
   def test_success_response_with_client_event(self):
     """Test success response logging with Task result."""
-    # Use module-level imported types consistently
 
-    task_status = TaskStatus(state=TaskState.working)
-    task = A2ATask(id="task-123", context_id="ctx-456", status=task_status)
+    task_status = _compat.make_task_status(_compat.TS_WORKING)
+    task = _compat.make_task(
+        id="task-123", context_id="ctx-456", status=task_status
+    )
 
     resp = (task, None)
 
@@ -220,29 +229,34 @@ class TestBuildA2AResponseLog:
     assert "Result Type: ClientEvent" in result
     assert "Task ID: task-123" in result
     assert "Context ID: ctx-456" in result
-    # Handle both structured format and JSON fallback due to potential isinstance failures
-    assert (
-        "Status State: TaskState.working" in result
-        or "Status State: working" in result
-        or '"state":"working"' in result
-        or '"state": "working"' in result
-    )
+    # The state renders as an enum/string on 0.3.x and as an int on 1.x.
+    if _compat.IS_A2A_V1:
+      assert f"Status State: {_compat.TS_WORKING}" in result
+    else:
+      assert (
+          "Status State: TaskState.working" in result
+          or "Status State: working" in result
+          or '"state":"working"' in result
+          or '"state": "working"' in result
+      )
 
   def test_success_response_with_task_and_status_message(self):
     """Test success response with Task that has status message."""
 
-    # Create status message using module-level imported types
-    status_message = A2AMessage(
+    # Create status message (version-agnostic).
+    status_message = _compat.make_message(
         message_id="status-msg-123",
-        role=Role.agent,
+        role=_compat.ROLE_AGENT,
         parts=[
-            A2APart(root=A2ATextPart(text="Status part 1")),
-            A2APart(root=A2ATextPart(text="Status part 2")),
+            _compat.make_text_part("Status part 1"),
+            _compat.make_text_part("Status part 2"),
         ],
     )
 
-    task_status = TaskStatus(state=TaskState.working, message=status_message)
-    task = A2ATask(
+    task_status = _compat.make_task_status(
+        _compat.TS_WORKING, message=status_message
+    )
+    task = _compat.make_task(
         id="task-123",
         context_id="ctx-456",
         status=task_status,
@@ -255,25 +269,28 @@ class TestBuildA2AResponseLog:
     result = build_a2a_response_log(resp)
 
     assert "ID: status-msg-123" in result
-    # Handle both structured format and JSON fallback
-    assert (
-        "Role: Role.agent" in result
-        or "Role: agent" in result
-        or '"role":"agent"' in result
-        or '"role": "agent"' in result
-    )
+    # Role prints as a string on 0.3.x and as an int enum on 1.x.
+    if _compat.IS_A2A_V1:
+      assert f"Role: {_compat.ROLE_AGENT}" in result
+    else:
+      assert (
+          "Role: Role.agent" in result
+          or "Role: agent" in result
+          or '"role":"agent"' in result
+          or '"role": "agent"' in result
+      )
     assert "Message Parts:" in result
 
   def test_success_response_with_message(self):
     """Test success response logging with Message result."""
 
-    # Use module-level imported types consistently
-    message = A2AMessage(
+    # Create a real A2A message (version-agnostic).
+    message = _compat.make_message(
         message_id="msg-123",
-        role=Role.agent,
+        role=_compat.ROLE_AGENT,
         task_id="task-456",
         context_id="ctx-789",
-        parts=[A2APart(root=A2ATextPart(text="Message part 1"))],
+        parts=[_compat.make_text_part("Message part 1")],
     )
 
     resp = message
@@ -283,20 +300,23 @@ class TestBuildA2AResponseLog:
     assert "Type: SUCCESS" in result
     assert "Result Type: Message" in result
     assert "Message ID: msg-123" in result
-    # Handle both structured format and JSON fallback
-    assert (
-        "Role: Role.agent" in result
-        or "Role: agent" in result
-        or '"role":"agent"' in result
-        or '"role": "agent"' in result
-    )
+    # Role prints as a string on 0.3.x and as an int enum on 1.x.
+    if _compat.IS_A2A_V1:
+      assert f"Role: {_compat.ROLE_AGENT}" in result
+    else:
+      assert (
+          "Role: Role.agent" in result
+          or "Role: agent" in result
+          or '"role":"agent"' in result
+          or '"role": "agent"' in result
+      )
     assert "Task ID: task-456" in result
     assert "Context ID: ctx-789" in result
 
   def test_success_response_with_message_no_parts(self):
     """Test success response with Message that has no parts."""
 
-    # Use mock for this case since we want to test empty parts handling
+    # Use mock for this case since we want to test empty parts handling.
     message = Mock()
     message.__class__.__name__ = "Message"
     message.message_id = "msg-empty"
@@ -304,6 +324,7 @@ class TestBuildA2AResponseLog:
     message.task_id = "task-empty"
     message.context_id = "ctx-empty"
     message.parts = None  # No parts
+    message.metadata = None  # No metadata (keep json.dumps happy)
     message.model_dump_json.return_value = '{"message": "empty"}'
 
     resp = message
@@ -334,7 +355,7 @@ class TestBuildA2AResponseLog:
 
     other_result = Mock()
     other_result.__class__.__name__ = "SimpleResult"
-    # Don't add model_dump_json method
+    # Don't add model_dump_json method.
     del other_result.model_dump_json
 
     resp = other_result
@@ -344,6 +365,9 @@ class TestBuildA2AResponseLog:
     assert "Type: SUCCESS" in result
     assert "Result Type: SimpleResult" in result
 
+  @pytest.mark.skipif(
+      _compat.IS_A2A_V1, reason="0.3-only .root/model_dump fallback structure"
+  )
   def test_build_message_part_log_with_metadata(self):
     """Test build_message_part_log with metadata in the part."""
 
@@ -353,11 +377,11 @@ class TestBuildA2AResponseLog:
 
     mock_part = Mock()
     mock_part.root = mock_root
-    mock_part.model_dump_json.return_value = '{"content": "test"}'
+    mock_part.model_dump.return_value = {"content": "test"}
 
     result = build_message_part_log(mock_part)
 
-    assert "MockPartWithMetadata:" in result
+    # On 0.3.x the part metadata is read from ``part.root.metadata``.
     assert "Part Metadata:" in result
     assert '"key": "value"' in result
     assert '"nested"' in result

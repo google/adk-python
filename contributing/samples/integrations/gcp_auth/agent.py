@@ -34,9 +34,18 @@ MAPS_API_AUTH_PROVIDER_ID = os.environ.get("MAPS_API_AUTH_PROVIDER_ID")
 SPOTIFY_2LO_AUTH_PROVIDER_ID = os.environ.get("SPOTIFY_2LO_AUTH_PROVIDER_ID")
 SPOTIFY_3LO_AUTH_PROVIDER_ID = os.environ.get("SPOTIFY_3LO_AUTH_PROVIDER_ID")
 
-MAPS_API_AUTH_PROVIDER = f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/{MAPS_API_AUTH_PROVIDER_ID}"
-SPOTIFY_2LO_AUTH_PROVIDER = f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/{SPOTIFY_2LO_AUTH_PROVIDER_ID}"
-SPOTIFY_3LO_AUTH_PROVIDER = f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/{SPOTIFY_3LO_AUTH_PROVIDER_ID}"
+MAPS_API_AUTH_PROVIDER = (
+    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/"
+    f"{MAPS_API_AUTH_PROVIDER_ID}"
+)
+SPOTIFY_2LO_AUTH_PROVIDER = (
+    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/"
+    f"{SPOTIFY_2LO_AUTH_PROVIDER_ID}"
+)
+SPOTIFY_3LO_AUTH_PROVIDER = (
+    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/"
+    f"{SPOTIFY_3LO_AUTH_PROVIDER_ID}"
+)
 
 MAPS_MCP_ENDPOINT = "https://mapstools.googleapis.com/mcp"
 CONTINUE_URI = "http://localhost:8080/commit"

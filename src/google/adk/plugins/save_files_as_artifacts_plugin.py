@@ -21,15 +21,17 @@ import urllib.parse
 
 from google.genai import types
 
+from ..agents.base_agent import BaseAgent
+from ..agents.callback_context import CallbackContext
 from ..agents.invocation_context import InvocationContext
 from .base_plugin import BasePlugin
 
-logger = logging.getLogger('google_adk.' + __name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 # Schemes supported by our current LLM connectors. Vertex exposes `gs://` while
 # hosted endpoints use HTTPS. Expand this list when BaseLlm surfaces provider
 # capabilities.
-_MODEL_ACCESSIBLE_URI_SCHEMES = {'gs', 'https', 'http'}
+_MODEL_ACCESSIBLE_URI_SCHEMES = {"gs", "https", "http"}
 
 
 class SaveFilesAsArtifactsPlugin(BasePlugin):
@@ -49,7 +51,7 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
 
   def __init__(
       self,
-      name: str = 'save_files_as_artifacts_plugin',
+      name: str = "save_files_as_artifacts_plugin",
       *,
       attach_file_reference: bool = True,
   ):
@@ -74,8 +76,8 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
     """Process user message and save any attached files as artifacts."""
     if not invocation_context.artifact_service:
       logger.warning(
-          'Artifact service is not set. SaveFilesAsArtifactsPlugin'
-          ' will not be enabled.'
+          "Artifact service is not set. SaveFilesAsArtifactsPlugin"
+          " will not be enabled."
       )
       return user_message
 
@@ -96,9 +98,9 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         inline_data = part.inline_data
         file_name = inline_data.display_name
         if not file_name:
-          file_name = f'artifact_{invocation_context.invocation_id}_{i}'
+          file_name = f"artifact_{invocation_context.invocation_id}_{i}"
           logger.info(
-              f'No display_name found, using generated filename: {file_name}'
+              f"No display_name found, using generated filename: {file_name}"
           )
 
         # Store original filename for display to user/ placeholder
@@ -131,10 +133,10 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         pending_delta[file_name] = version
 
         modified = True
-        logger.info(f'Successfully saved artifact: {file_name}')
+        logger.info(f"Successfully saved artifact: {file_name}")
 
       except Exception as e:
-        logger.error(f'Failed to save artifact for part {i}: {e}')
+        logger.error(f"Failed to save artifact for part {i}: {e}")
         # Keep the original part if saving fails
         new_parts.append(part)
         continue
@@ -142,8 +144,8 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
     if modified:
       # Store pending delta in state until it can be written to event actions.
       state = invocation_context.session.state
-      state.setdefault(self.name + ':pending_delta', {})
-      state[self.name + ':pending_delta'] |= pending_delta
+      state.setdefault(self.name + ":pending_delta", {})
+      state[self.name + ":pending_delta"] |= pending_delta
       return types.Content(role=user_message.role, parts=new_parts)
     else:
       return None
@@ -152,14 +154,14 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> Optional[types.Content]:
     """Writes the pending delta to event actions."""
-    pending_delta = callback_context.state.get(self.name + ':pending_delta')
+    pending_delta = callback_context.state.get(self.name + ":pending_delta")
     if pending_delta:
       try:
         callback_context.actions.artifact_delta |= pending_delta
       except TypeError as e:
-        logger.warning('Incompatible pending_delta type: %s', e)
+        logger.warning("Incompatible pending_delta type: %s", e)
       finally:
-        callback_context.state[self.name + ':pending_delta'] = {}
+        callback_context.state[self.name + ":pending_delta"] = {}
     return None
 
   async def _build_file_reference_part(
@@ -187,7 +189,7 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
       )
     except Exception as exc:  # pylint: disable=broad-except
       logger.warning(
-          'Failed to resolve artifact version for %s: %s', filename, exc
+          "Failed to resolve artifact version for %s: %s", filename, exc
       )
       return None
 

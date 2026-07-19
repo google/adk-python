@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import logging
-import os
 import sys
 from typing import Optional
 from unittest import mock
@@ -30,6 +29,7 @@ from google.adk.models.google_llm import _ResourceExhaustedError
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.tools import load_artifacts_tool
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
 from google.adk.utils._google_client_headers import get_tracking_headers
@@ -146,12 +146,13 @@ def llm_request_with_computer_use():
 
 def test_supported_models():
   models = Gemini.supported_models()
-  assert len(models) == 4
+  assert len(models) == 5
   assert models[0] == r"gemini-.*"
-  assert models[1] == r"model-optimizer-.*"
-  assert models[2] == r"projects\/.+\/locations\/.+\/endpoints\/.+"
+  assert models[1] == r"gemma-4.*"
+  assert models[2] == r"model-optimizer-.*"
+  assert models[3] == r"projects\/.+\/locations\/.+\/endpoints\/.+"
   assert (
-      models[3]
+      models[4]
       == r"projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+"
   )
 
@@ -164,7 +165,7 @@ def test_gemini_api_client_creation_with_projects_prefix():
     _ = model.api_client
     mock_client.assert_called_once()
     _, kwargs = mock_client.call_args
-    assert kwargs["vertexai"] is True
+    assert kwargs["enterprise"] is True
     assert "project" not in kwargs
     assert "location" not in kwargs
 
@@ -179,7 +180,66 @@ def test_gemini_live_api_client_creation_with_projects_prefix():
 
     # Second call is for _live_api_client
     _, kwargs = mock_client.call_args_list[1]
-    assert kwargs["vertexai"] is True
+    assert kwargs["enterprise"] is True
+
+
+def test_gemini_api_client_creation_with_client_kwargs():
+  mock_credentials = mock.MagicMock()
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={
+          "enterprise": True,
+          "project": "my-project",
+          "location": "my-location",
+          "api_key": "my-key",
+          "credentials": mock_credentials,
+      },
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert kwargs["enterprise"] is True
+    assert kwargs["project"] == "my-project"
+    assert kwargs["location"] == "my-location"
+    assert kwargs["api_key"] == "my-key"
+    assert kwargs["credentials"] == mock_credentials
+
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+    mock_client.assert_called_once()
+    _, kwargs = mock_client.call_args
+    assert kwargs["enterprise"] is True
+    assert kwargs["project"] == "my-project"
+    assert kwargs["location"] == "my-location"
+    assert kwargs["api_key"] == "my-key"
+    assert kwargs["credentials"] == mock_credentials
+
+
+def test_gemini_serialization_excludes_client_kwargs():
+  mock_credentials = mock.MagicMock()
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={
+          "enterprise": True,
+          "credentials": mock_credentials,
+      },
+  )
+  dumped = model.model_dump()
+  assert "client_kwargs" not in dumped
+
+
+def test_gemini_repr_excludes_client_kwargs():
+  mock_credentials = mock.MagicMock()
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={
+          "enterprise": True,
+          "credentials": mock_credentials,
+      },
+  )
+  repr_str = repr(model)
+  assert "client_kwargs" not in repr_str
 
 
 def test_client_version_header():
@@ -732,16 +792,31 @@ def test_live_api_version_gemini_api(gemini_llm):
     assert gemini_llm._live_api_version == "v1alpha"
 
 
-def test_live_api_client_uses_api_version_from_google_base_url():
+@pytest.mark.parametrize(
+    "base_url, expected_base_url",
+    [
+        (
+            "https://generativelanguage.googleapis.com/v1alpha",
+            "https://generativelanguage.googleapis.com/",
+        ),
+        (
+            "https://generativelanguage.mtls.googleapis.com/v1alpha",
+            "https://generativelanguage.mtls.googleapis.com/",
+        ),
+    ],
+)
+def test_live_api_client_uses_api_version_from_google_base_url(
+    base_url, expected_base_url
+):
   gemini_llm = Gemini(
       model="gemini-2.5-flash",
-      base_url="https://generativelanguage.googleapis.com/v1alpha",
+      base_url=base_url,
   )
 
   client = gemini_llm._live_api_client
   http_options = client._api_client._http_options
 
-  assert http_options.base_url == "https://generativelanguage.googleapis.com/"
+  assert http_options.base_url == expected_base_url
   assert http_options.api_version == "v1alpha"
 
 
@@ -832,7 +907,7 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
     with mock.patch(
         "google.adk.models.google_llm.GeminiLlmConnection"
     ) as MockGeminiLlmConnection:
-      async with gemini_llm.connect(llm_request) as connection:
+      async with gemini_llm.connect(llm_request):
         # Verify that the connect method was called with the right config
         mock_live_client.aio.live.connect.assert_called_once()
         call_args = mock_live_client.aio.live.connect.call_args
@@ -850,6 +925,36 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
             api_backend=gemini_llm._api_backend,
             model_version=llm_request.model,
         )
+
+
+@pytest.mark.asyncio
+async def test_connect_forwards_thinking_config(gemini_llm, llm_request):
+  """Test that live sessions keep the request thinking_config."""
+  thinking_config = types.ThinkingConfig(thinking_budget=128)
+  llm_request.config.thinking_config = thinking_config
+  llm_request.live_connect_config = types.LiveConnectConfig()
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    async with gemini_llm.connect(llm_request) as connection:
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      assert config_arg.thinking_config == thinking_config
+      assert isinstance(connection, GeminiLlmConnection)
 
 
 @pytest.mark.parametrize(
@@ -931,6 +1036,42 @@ async def test_preprocess_request_handles_backend_specific_fields(
     assert file_part.file_data.display_name == expected_file_display_name
     assert inline_part.inline_data.display_name == expected_inline_display_name
     assert llm_request_with_files.config.labels == expected_labels
+
+
+@pytest.mark.asyncio
+async def test_preprocess_request_converts_inline_data_safely():
+  """Tests that _preprocess_request uses _as_safe_part_for_llm to sanitize inline data."""
+  with mock.patch.object(
+      load_artifacts_tool, "_as_safe_part_for_llm", autospec=True
+  ) as mock_safe_part:
+    # Arrange
+    mock_safe_part.return_value = Part.from_text(text="safe_text")
+    my_gemini_llm = Gemini(model="gemini-2.5-flash")
+
+    my_llm_request = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=[
+            Content(
+                role="user",
+                parts=[
+                    Part(
+                        inline_data=types.Blob(
+                            data=b"some bytes",
+                            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        )
+                    )
+                ],
+            )
+        ],
+    )
+
+    # Act
+    await my_gemini_llm._preprocess_request(my_llm_request)  # pylint: disable=protected-access
+
+    # Assert
+    mock_safe_part.assert_called_once()
+    assert mock_safe_part.call_args[0][1] == "inline-file"
+    assert my_llm_request.contents[0].parts[0].text == "safe_text"
 
 
 @pytest.mark.asyncio
@@ -2264,6 +2405,47 @@ async def test_connect_speech_config_remains_none_when_both_are_none(
       # Verify the final speech_config is still None
       assert config_arg.speech_config is None
       assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log_level,should_call",
+    [
+        (logging.WARNING, False),
+        (logging.INFO, False),
+        (logging.DEBUG, True),
+    ],
+)
+async def test_generate_content_async_skips_request_log_build_above_debug(
+    gemini_llm,
+    llm_request,
+    generate_content_response,
+    log_level,
+    should_call,
+):
+  gemini_logger = logging.getLogger("google_adk.google.adk.models.google_llm")
+  original_level = gemini_logger.level
+  gemini_logger.setLevel(log_level)
+  try:
+    with mock.patch(
+        "google.adk.models.google_llm._build_request_log",
+        return_value="log",
+    ) as mock_build:
+      with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+        async def mock_coro():
+          return generate_content_response
+
+        mock_client.aio.models.generate_content.return_value = mock_coro()
+
+        async for _ in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        ):
+          pass
+
+      assert mock_build.called is should_call
+  finally:
+    gemini_logger.setLevel(original_level)
 
 
 @pytest.mark.asyncio

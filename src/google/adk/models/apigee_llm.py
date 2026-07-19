@@ -35,7 +35,7 @@ import httpx
 import tenacity
 from typing_extensions import override
 
-from ..utils.env_utils import is_env_enabled
+from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
 
@@ -49,7 +49,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 _APIGEE_PROXY_URL_ENV_VARIABLE_NAME = 'APIGEE_PROXY_URL'
-_GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_USE_VERTEXAI'
 _PROJECT_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_PROJECT'
 _LOCATION_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_LOCATION'
 
@@ -79,7 +78,7 @@ class ApigeeLlm(Gemini):
     GENAI = 'genai'
 
     @classmethod
-    def _missing_(cls, value):
+    def _missing_(cls, value: object) -> Any:
       # Empty string or None should return UNKNOWN.
       if not value:
         return cls.UNKNOWN
@@ -104,9 +103,9 @@ class ApigeeLlm(Gemini):
 
         Components
           `provider` (optional): `vertex_ai` or `gemini`. If omitted, behavior
-            depends on the `GOOGLE_GENAI_USE_VERTEXAI` environment variable. If
+            depends on the `GOOGLE_GENAI_USE_ENTERPRISE` environment variable. If
             that is not set to TRUE or 1, it defaults to `gemini`. `provider`
-            takes precedence over `GOOGLE_GENAI_USE_VERTEXAI`.
+            takes precedence over `GOOGLE_GENAI_USE_ENTERPRISE`.
           `version` (optional): The API version (e.g., `v1`, `v1beta`). If
             omitted, the default version for the provider is used.
           `model_id` (required): The model identifier (e.g.,
@@ -243,7 +242,7 @@ class ApigeeLlm(Gemini):
     )
 
     kwargs_for_client = {}
-    kwargs_for_client['vertexai'] = self._isvertexai
+    kwargs_for_client['enterprise'] = self._isvertexai
     if self._isvertexai:
       kwargs_for_client['project'] = self._project
       kwargs_for_client['location'] = self._location
@@ -265,8 +264,8 @@ def _identify_vertexai(model: str, api_type: ApigeeLlm.ApiType) -> bool:
   """Returns if a model is Vertex AI.
 
   1. The api_type is GENAI or UNKNOWN.
-  2. The model is provider is Vertex AI model or the
-    GOOGLE_GENAI_USE_VERTEXAI environment variable is set to TRUE or 1.
+  2. The model provider is a Vertex AI model or the
+    enterprise mode is enabled.
 
   Args:
     model: The model string.
@@ -278,9 +277,7 @@ def _identify_vertexai(model: str, api_type: ApigeeLlm.ApiType) -> bool:
     return False
   if model.startswith('apigee/openai/'):
     return False
-  return model.startswith('apigee/vertex_ai/') or is_env_enabled(
-      _GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME
-  )
+  return model.startswith('apigee/vertex_ai/') or is_enterprise_mode_enabled()
 
 
 def _identify_api_version(model: str) -> str:
@@ -668,8 +665,8 @@ class CompletionsHTTPClient:
     if role == 'model':
       role = 'assistant'
 
-    tool_calls = []
-    content_parts = []
+    tool_calls: list[dict[str, Any]] = []
+    content_parts: list[dict[str, Any]] = []
     refusals: list[str] = []
 
     function_responses = []
@@ -687,7 +684,7 @@ class CompletionsHTTPClient:
     if function_responses:
       return function_responses
 
-    message = {'role': role}
+    message: dict[str, Any] = {'role': role}
     if refusals:
       message['refusal'] = '\n'.join(refusals)
     if tool_calls:
@@ -859,15 +856,15 @@ class ChatCompletionsResponseHandler:
   Useful for both streaming and non-streaming responses.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self.content_parts = ''
-    self.tool_call_parts = {}
+    self.tool_call_parts: dict[int, types.Part] = {}
     self.role = ''
     self.streaming_complete = False
     self.model = ''
-    self.usage = {}
-    self.logprobs = {}
-    self.custom_metadata = {}
+    self.usage: dict[str, Any] = {}
+    self.logprobs: dict[str, Any] = {}
+    self.custom_metadata: dict[str, Any] = {}
     self._refusal_started = False
 
   def process_response(self, response: dict[str, Any]) -> LlmResponse:
@@ -1086,7 +1083,7 @@ class ChatCompletionsResponseHandler:
 
   def _add_chat_completion_message(
       self, message: dict[str, Any]
-  ) -> (list[types.Part], str):
+  ) -> tuple[list[types.Part], str]:
     """Adds a complete chat completion message to the accumulator.
 
     This method processes a single message from a non-streaming chat completions

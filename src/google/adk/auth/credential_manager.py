@@ -27,7 +27,6 @@ from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
 from .auth_provider_registry import AuthProviderRegistry
-from .auth_schemes import AuthScheme
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import CustomAuthScheme
 from .auth_schemes import ExtendedOAuth2
@@ -35,7 +34,6 @@ from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 from .base_auth_provider import BaseAuthProvider
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
-from .exchanger.base_credential_exchanger import ExchangeResult
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
 from .oauth2_discovery import OAuth2DiscoveryManager
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
@@ -44,7 +42,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 def _rehydrate_custom_scheme(
-    scheme: CustomAuthScheme, supported_schemes: Sequence[type[AuthScheme]]
+    scheme: CustomAuthScheme,
+    supported_schemes: Sequence[type[CustomAuthScheme]],
 ) -> CustomAuthScheme:
   """Rehydrate a CustomAuthScheme into one of the given supported_schemes."""
   incoming_type = scheme.type_
@@ -232,10 +231,11 @@ class CredentialManager:
     await self._validate_credential()
 
     # Step 2: Check if credential is already ready (no processing needed)
-    if self._is_credential_ready():
+    raw_auth_credential = self._auth_config.raw_auth_credential
+    if self._is_credential_ready() and raw_auth_credential is not None:
       # Return a copy to avoid leaking mutations across invocations/users when
       # tools share a long-lived AuthConfig instance.
-      return self._auth_config.raw_auth_credential.model_copy(deep=True)
+      return raw_auth_credential.model_copy(deep=True)
 
     # Step 3: Try to load existing processed credential
     credential = await self._load_existing_credential(context)
@@ -439,7 +439,7 @@ class CredentialManager:
     auth_scheme = self._auth_config.auth_scheme
     if isinstance(auth_scheme, OAuth2):
       flows = auth_scheme.flows
-      return (
+      return bool(
           flows.implicit
           and not flows.implicit.authorizationUrl
           or flows.password

@@ -18,7 +18,9 @@ import importlib.util
 import logging
 import os
 import sys
+from types import ModuleType
 from typing import Any
+from typing import cast
 from typing import Optional
 
 import click
@@ -59,15 +61,17 @@ DEFAULT_CRITERIA = {
 }
 
 
-def _import_from_path(module_name, file_path):
+def _import_from_path(module_name: str, file_path: str) -> ModuleType:
   spec = importlib.util.spec_from_file_location(module_name, file_path)
+  if spec is None or spec.loader is None:
+    raise ImportError(f"Cannot import module {module_name} from {file_path}")
   module = importlib.util.module_from_spec(spec)
   sys.modules[module_name] = module
   spec.loader.exec_module(module)
   return module
 
 
-def _get_agent_module(agent_module_file_path: str):
+def _get_agent_module(agent_module_file_path: str) -> ModuleType:
   file_path = os.path.join(agent_module_file_path, "__init__.py")
   module_name = "agent"
   return _import_from_path(module_name, file_path)
@@ -90,7 +94,7 @@ def get_root_agent(agent_module_file_path: str) -> Agent:
   """Returns root agent given the agent module."""
   agent_module = _get_agent_module(agent_module_file_path)
   root_agent = agent_module.agent.root_agent
-  return root_agent
+  return cast(Agent, root_agent)
 
 
 def try_get_reset_func(agent_module_file_path: str) -> Any:
@@ -110,7 +114,7 @@ def parse_and_get_evals_to_run(
       each string actually is formatted with the following convention:
       <eval_set_file_path | eval_set_id>:[comma separated eval case ids]
   """
-  eval_set_to_evals = {}
+  eval_set_to_evals: dict[str, list[str]] = {}
   for input_eval_set in evals_to_run_info:
     evals = []
     if ":" not in input_eval_set:
@@ -188,7 +192,7 @@ def _convert_tool_calls_to_text(
   return "\n".join([str(t) for t in tool_calls])
 
 
-def pretty_print_eval_result(eval_result: EvalCaseResult):
+def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
   """Pretty prints eval result."""
   try:
     import pandas as pd

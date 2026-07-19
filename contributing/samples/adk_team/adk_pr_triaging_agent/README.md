@@ -1,6 +1,6 @@
 # ADK Pull Request Triaging Assistant
 
-The ADK Pull Request (PR) Triaging Assistant is a Python-based agent designed to help manage and triage GitHub pull requests for the `google/adk-python` repository. It uses a large language model to analyze new and unlabelled pull requests, recommend appropriate labels, assign a reviewer, and check contribution guides based on a predefined set of rules.
+The ADK Pull Request (PR) Triaging Assistant is a Python-based agent designed to help manage and triage GitHub pull requests for the `google/adk-python` repository. It uses a large language model to analyze new and unlabelled pull requests, recommend appropriate labels, and assign the component owner based on a predefined set of rules.
 
 This agent can be operated in two distinct modes:
 
@@ -16,7 +16,7 @@ This mode allows you to run the agent locally to review its recommendations in r
 ### Features
 
 - **Web Interface**: The agent's interactive mode can be rendered in a web browser using the ADK's `adk web` command.
-- **User Approval**: In interactive mode, the agent is instructed to ask for your confirmation before applying a label or posting a comment to a GitHub pull request.
+- **User Approval**: In interactive mode, the agent is instructed to ask for your confirmation before applying a label or assigning an owner to a GitHub pull request.
 
 ### Running in Interactive Mode
 
@@ -42,7 +42,7 @@ The GitHub workflow is configured to run on specific triggers:
 
 ### Automated Labeling
 
-When running as part of the GitHub workflow, the agent operates non-interactively. It identifies and applies the best label or posts a comment directly without requiring user approval. This behavior is configured by setting the `INTERACTIVE` environment variable to `0` in the workflow file.
+When running as part of the GitHub workflow, the agent operates non-interactively. It identifies and applies the best label and assigns the component owner directly without requiring user approval. This behavior is configured by setting the `INTERACTIVE` environment variable to `0` in the workflow file.
 
 ### Workflow Configuration
 

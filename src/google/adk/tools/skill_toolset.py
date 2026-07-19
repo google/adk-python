@@ -36,6 +36,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..utils import instructions_utils
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .base_toolset import ToolPredicate
@@ -93,6 +94,14 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "needed.\n"
       f"5. If `{p}load_skill_resource` returns any error, do not retry any "
       "path. Report the error to the user and stop.\n"
+      f"6. If `{p}run_skill_script` returns an error (for example "
+      f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
+      "different script path. Report the error to the user and stop.\n"
+      f"7. Loading a skill only retrieves its instructions; it does NOT "
+      f"complete your turn. After a `{p}load_skill` call returns, continue "
+      "in the SAME turn: call whatever tools the skill's steps require "
+      "(search, data retrieval, render), then write your reply. Never end "
+      "your turn with an empty response right after loading a skill.\n"
   )
 
 
@@ -248,9 +257,16 @@ class LoadSkillTool(BaseTool):
       activated_skills.append(skill_name)
       tool_context.state[state_key] = activated_skills
 
+    instructions = skill.instructions
+    if skill.frontmatter.metadata.get("adk_inject_state"):
+      instructions = await instructions_utils.inject_session_state(
+          instructions,
+          tool_context,
+      )
+
     return {
         "skill_name": skill_name,
-        "instructions": skill.instructions,
+        "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
     }
 
@@ -548,8 +564,13 @@ class _SkillScriptCodeExecutor:
             stdout = parsed.get("stdout", "")
             stderr = parsed.get("stderr", "")
             rc = parsed.get("returncode", 0)
-            if rc != 0 and not stderr:
-              stderr = f"Exit code {rc}"
+            if rc != 0 and not parsed.get("timeout", False):
+              exit_code_message = f"Exit code {rc}"
+              stderr = (
+                  f"{stderr.rstrip()}\n{exit_code_message}"
+                  if stderr
+                  else exit_code_message
+              )
         except (json.JSONDecodeError, ValueError):
           pass
 
@@ -669,7 +690,10 @@ class _SkillScriptCodeExecutor:
         "      full_path = os.path.join(os.path.abspath(td), norm_rel)",
         "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
         "      mode = 'wb' if isinstance(content, bytes) else 'w'",
-        "      with open(full_path, mode) as f:",
+        (
+            "      with open(full_path, mode, encoding='utf-8' if mode == 'w'"
+            " else None) as f:"
+        ),
         "        f.write(content)",
         "    os.chdir(td)",
         "    try:",
@@ -726,6 +750,8 @@ class _SkillScriptCodeExecutor:
           "        _r = subprocess.run(",
           f"          {arr!r},",
           "          capture_output=True, text=True,",
+          # Keep shell output decoding independent from the host locale.
+          "          encoding='utf-8', errors='replace',",
           f"          timeout={timeout!r}, cwd=td,",
           "        )",
           "        print(_json.dumps({",
@@ -740,6 +766,7 @@ class _SkillScriptCodeExecutor:
           "            'stdout': _e.stdout or '',",
           f"            'stderr': 'Timed out after {timeout}s',",
           "            'returncode': -1,",
+          "            'timeout': True,",
           "        }))",
       ])
     else:
@@ -891,6 +918,25 @@ class RunSkillScriptTool(BaseTool):
       script = skill.resources.get_script(file_path)
 
     if script is None:
+      # Invocation-scoped failure counter. Counts SCRIPT_NOT_FOUND across ALL
+      # paths so the guard fires even when the LLM hallucinates a different
+      # script path on each retry. The `temp:` prefix prevents persistence to
+      # durable session storage; invocation_id isolates in-memory backends.
+      counter_key = (
+          f"temp:_adk_skill_script_not_found_count_{tool_context.invocation_id}"
+      )
+      fail_count = int(tool_context.state.get(counter_key) or 0) + 1
+      tool_context.state[counter_key] = fail_count
+      if fail_count > 1:
+        return {
+            "error": (
+                f"Script '{file_path}' not found in skill '{skill_name}'."
+                f" This is script lookup failure #{fail_count} this"
+                " invocation. Do not retry any script path — report the"
+                " error to the user and stop."
+            ),
+            "error_code": "SCRIPT_NOT_FOUND_FATAL",
+        }
       return {
           "error": f"Script '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "SCRIPT_NOT_FOUND",
@@ -1119,6 +1165,26 @@ class SkillToolset(BaseToolset):
   def _list_skills(self) -> list[models.Skill]:
     """Lists all available skills."""
     return list(self._skills.values())
+
+  @property
+  def skills(self) -> list[models.Skill]:
+    """Returns the list of available skills."""
+    return self._list_skills()
+
+  def clone_with_updated_skills(
+      self, skills: list[models.Skill]
+  ) -> SkillToolset:
+    """Creates a new SkillToolset with identical configuration but modified skills."""
+    additional_tools = (
+        list(self._provided_tools_by_name.values()) + self._provided_toolsets
+    )
+    return SkillToolset(
+        skills=skills,
+        registry=self._registry,
+        code_executor=self._code_executor,
+        script_timeout=self._script_timeout,
+        additional_tools=additional_tools,
+    )
 
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest

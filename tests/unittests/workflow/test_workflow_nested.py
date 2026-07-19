@@ -27,9 +27,10 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import BaseNode
 from google.adk.workflow import JoinNode
+from google.adk.workflow import node
+from google.adk.workflow import Workflow
 from google.adk.workflow._base_node import START
 from google.adk.workflow._node_status import NodeStatus
-from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
@@ -1125,37 +1126,49 @@ async def test_nested_workflow_partial_resume():
 
 
 @pytest.mark.asyncio
-async def test_scan_child_events_ignores_descendant_run_id_resets():
-  """_scan_child_events only resets run_id from direct child events."""
-  from unittest.mock import MagicMock
-
-  from google.adk.events.event import Event
-  from google.adk.events.event import NodeInfo
-
-  # We create a Workflow instance to test its private method _scan_child_events.
-  wf = Workflow(name='wf', edges=[])
-
-  # Given a direct child event and a descendant event.
-  event1 = Event(
-      author='node',
-      node_info=NodeInfo(path='wf@1/child@1', run_id='1'),
-      invocation_id='test_inv',
+async def test_nested_workflow_with_task_agent(request: pytest.FixtureRequest):
+  """Tests that a task-mode LlmAgent inside a nested Workflow re-runs on user reply."""
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_text(text='Please provide the secret code:'),
+          types.Part.from_function_call(
+              name='finish_task',
+              args={'result': 'Success with secret'},
+          ),
+      ]
   )
-  event2 = Event(
-      author='node',
-      node_info=NodeInfo(path='wf@1/child@1/grandchild@2', run_id='2'),
-      invocation_id='test_inv',
+  task_agent = LlmAgent(
+      name='inner_task_agent',
+      model=mock_model,
+      mode='task',
+  )
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[('START', task_agent)],
   )
 
-  ctx = MagicMock()
-  ctx._invocation_context = MagicMock()
-  ctx._invocation_context.invocation_id = 'test_inv'
-  ctx._invocation_context.session = MagicMock()
-  ctx._invocation_context.session.events = [event1, event2]
-  # _scan_child_events reads ctx.node_path to determine the base workflow path.
-  ctx.node_path = 'wf@1'
+  @node(rerun_on_resume=True)
+  async def outer_driver(ctx: Context, node_input: Any):
+    res = await ctx.run_node(inner_wf, node_input='start', raise_on_wait=True)
+    yield Event(output=f'outer: {res}')
 
-  children = wf._scan_child_events(ctx)
+  outer_wf = Workflow(
+      name='outer_wf',
+      edges=[('START', outer_driver)],
+  )
 
-  # Assert child 'child' run_id remains '1' (not '2' from the descendant).
-  assert children[0]['child@1'].run_id == '1'
+  app = App(name=request.function.__name__, root_agent=outer_wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async('hello')
+  texts1 = [
+      p.text
+      for e in events1
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ]
+  assert 'Please provide the secret code:' in texts1
+
+  events2 = await runner.run_async('secret_code_123')
+  assert any('outer: ' in str(e.output) for e in events2)

@@ -16,6 +16,8 @@
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.remote_a2a_agent import AGENT_CARD_WELL_KNOWN_PATH
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+from google.adk.apps import App
+from google.adk.apps import ResumabilityConfig
 from google.genai import types
 
 
@@ -48,4 +50,19 @@ root_agent = Agent(
     tools=[reimburse],
     sub_agents=[approval_agent],
     generate_content_config=types.GenerateContentConfig(temperature=0.1),
+)
+
+# The human-in-the-loop approval runs as a long-running tool on the remote
+# approval_agent. When the manager approves (or rejects) the request, the ADK
+# Web UI sends back a FunctionResponse for that pending long-running call. For
+# the next turn to be routed back to the (remote) approval_agent so it can
+# resume the paused tool instead of restarting at the root reimbursement_agent,
+# the app must be resumable. Without this, the confirmation is delivered to the
+# root agent, which has no pending call, and nothing happens (see issue #5871).
+app = App(
+    name='a2a_human_in_loop',
+    root_agent=root_agent,
+    resumability_config=ResumabilityConfig(
+        is_resumable=True,
+    ),
 )

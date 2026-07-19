@@ -1130,7 +1130,6 @@ class TestRestApiTool:
     httpx defaults to a 5-second timeout, which is too short for many
     real-world API calls. Verify that we explicitly disable the timeout
     to match the previous requests-library behavior (no timeout).
-    Regression test for https://github.com/google/adk-python/issues/4431.
     """
     mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
@@ -1455,7 +1454,6 @@ class TestRestApiTool:
     in the OpenAPI path (e.g. '...execute?triggerId=api_trigger/Name#action').
     These must be moved into the explicit query_params dict so httpx does not
     strip them when it replaces the URL query string with the `params` arg.
-    Regression test for https://github.com/google/adk-python/issues/4555.
     """
     integration_path = (
         "/v2/projects/my-proj/locations/us-central1"

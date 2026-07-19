@@ -21,9 +21,11 @@ from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+from anthropic import NOT_GIVEN
 from anthropic import types as anthropic_types
 from google.adk import version as adk_version
 from google.adk.models import anthropic_llm
+from google.adk.models import AnthropicGenerateContentConfig
 from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.anthropic_llm import content_to_message_param
@@ -577,7 +579,7 @@ function_declaration_test_cases = [
     function_declaration_test_cases,
     ids=[case[0] for case in function_declaration_test_cases],
 )
-async def test_function_declaration_to_tool_param(
+def test_function_declaration_to_tool_param(
     _, function_declaration, expected_tool_param
 ):
   """Test function_declaration_to_tool_param."""
@@ -1632,6 +1634,64 @@ def test_message_to_generate_content_response_with_thinking():
   assert text_part.thought is not True
 
 
+def test_message_to_generate_content_response_reports_cache_read_tokens():
+  """cache_read_input_tokens maps to usage_metadata.cached_content_token_count."""
+  from google.adk.models.anthropic_llm import message_to_generate_content_response
+
+  message = anthropic_types.Message(
+      id="msg_cache_read",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=100,
+          output_tokens=20,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=75,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert response.usage_metadata.cached_content_token_count == 75
+
+
+def test_message_to_generate_content_response_no_cache_read_tokens():
+  """Absent cache_read_input_tokens yields cached_content_token_count=None."""
+  from google.adk.models.anthropic_llm import message_to_generate_content_response
+
+  message = anthropic_types.Message(
+      id="msg_no_cache",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=100,
+          output_tokens=20,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=None,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert response.usage_metadata.cached_content_token_count is None
+
+
 def test_part_to_message_block_thinking_roundtrip():
   """Part with thought=True and signature creates ThinkingBlockParam."""
   part = Part(
@@ -2134,3 +2194,374 @@ async def test_generate_content_async_pairs_invalid_tool_ids(
   ]
   assert len(set(use_ids)) == expected_unique
   assert set(use_ids) == set(result_ids)
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_no_system_instruction_passes_not_given():
+  """system=NOT_GIVEN when LlmRequest has no system_instruction."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  mock_message = anthropic_types.Message(
+      id="msg_test",
+      content=[
+          anthropic_types.TextBlock(text="ok", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=1,
+          output_tokens=1,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(return_value=mock_message)
+
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+  assert request.config.system_instruction is None
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(request, stream=False)]
+
+  mock_client.messages.create.assert_called_once()
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["system"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_streaming_no_system_instruction_passes_not_given():
+  """system=NOT_GIVEN on the streaming path when no system_instruction."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(usage=MagicMock(input_tokens=1, output_tokens=0)),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="ok", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+  assert request.config.system_instruction is None
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [r async for r in llm.generate_content_async(request, stream=True)]
+
+  mock_client.messages.create.assert_called_once()
+  _, kwargs = mock_client.messages.create.call_args
+  assert kwargs["system"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_generation_config(
+    generate_content_response, generate_llm_response
+):
+  claude_llm = Claude(model="claude-3-5-sonnet-v2@20241022")
+  llm_request = LlmRequest(
+      model="claude-3-5-sonnet-v2@20241022",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          top_p=0.9,
+          top_k=50,
+          stop_sequences=["##"],
+          max_output_tokens=1024,
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      _ = [
+          resp
+          async for resp in claude_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      assert kwargs["temperature"] == 0.7
+      assert kwargs["top_p"] == 0.9
+      assert kwargs["top_k"] == 50
+      assert kwargs["stop_sequences"] == ["##"]
+      assert kwargs["max_tokens"] == 1024
+
+
+@pytest.mark.asyncio
+async def test_generate_content_streaming_with_generation_config(
+    generate_content_response,
+):
+  claude_llm = Claude(model="claude-3-5-sonnet-v2@20241022")
+  llm_request = LlmRequest(
+      model="claude-3-5-sonnet-v2@20241022",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          top_p=0.9,
+          top_k=50,
+          stop_sequences=["##"],
+          max_output_tokens=1024,
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+
+    async def mock_coro(*args, **kwargs):
+      async def async_gen():
+        if False:
+          yield None
+
+      return async_gen()
+
+    mock_client.messages.create.side_effect = mock_coro
+
+    _ = [
+        resp
+        async for resp in claude_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+    mock_client.messages.create.assert_called_once()
+    _, kwargs = mock_client.messages.create.call_args
+    assert kwargs["temperature"] == 0.7
+    assert kwargs["top_p"] == 0.9
+    assert kwargs["top_k"] == 50
+    assert kwargs["stop_sequences"] == ["##"]
+    assert kwargs["max_tokens"] == 1024
+    assert kwargs["stream"]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_thinking_level_warns_and_ignores(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Tests that generate_content_async with standard thinking_level warns and ignores it."""
+  claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(
+              thinking_budget=-1,
+              thinking_level=types.ThinkingLevel.MINIMAL,
+          )
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      with pytest.warns(
+          UserWarning,
+          match="Standard thinking_config.thinking_level is not supported",
+      ):
+        _ = [
+            resp
+            async for resp in claude_llm.generate_content_async(
+                llm_request, stream=False
+            )
+        ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      # Verify that thinking_level was ignored (but budget -1 still enabled adaptive thinking).
+      assert kwargs["thinking"] == {"type": "adaptive"}
+      assert "output_config" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_anthropic_config_with_thinking_level_raises_error():
+  """Tests that AnthropicGenerateContentConfig with standard thinking_level raises ValueError."""
+  with pytest.raises(
+      ValueError,
+      match="thinking_level is not supported in AnthropicGenerateContentConfig",
+  ):
+    _ = AnthropicGenerateContentConfig(
+        effort="xhigh",
+        thinking_config=types.ThinkingConfig(
+            thinking_budget=-1,
+            thinking_level=types.ThinkingLevel.MINIMAL,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_anthropic_config_effort(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Tests generate_content_async with Anthropic-specific effort configuration."""
+  claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=AnthropicGenerateContentConfig(
+          effort="xhigh",
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      _ = [
+          resp
+          async for resp in claude_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      assert kwargs["output_config"] == {"effort": "xhigh"}
+      assert kwargs["thinking"] is NOT_GIVEN
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_excludes_sampling_when_thinking(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Tests that sampling parameters are excluded when thinking is enabled."""
+  claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          top_p=0.9,
+          top_k=50,
+          thinking_config=types.ThinkingConfig(
+              thinking_budget=1024,
+          ),
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      with pytest.warns(
+          UserWarning, match="Sampling parameters .* are ignored"
+      ):
+        _ = [
+            resp
+            async for resp in claude_llm.generate_content_async(
+                llm_request, stream=False
+            )
+        ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      assert "temperature" not in kwargs
+      assert "top_p" not in kwargs
+      assert "top_k" not in kwargs
+      assert kwargs["max_tokens"] == 8192
+      assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_excludes_sampling_when_effort(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Tests that sampling parameters are excluded when effort is enabled."""
+  claude_llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=AnthropicGenerateContentConfig(
+          temperature=0.7,
+          top_p=0.9,
+          top_k=50,
+          effort="xhigh",
+      ),
+  )
+  with mock.patch.object(claude_llm, "_anthropic_client") as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.messages.create.return_value = mock_coro()
+
+      with pytest.warns(
+          UserWarning, match="Sampling parameters .* are ignored"
+      ):
+        _ = [
+            resp
+            async for resp in claude_llm.generate_content_async(
+                llm_request, stream=False
+            )
+        ]
+      mock_client.messages.create.assert_called_once()
+      _, kwargs = mock_client.messages.create.call_args
+      assert "temperature" not in kwargs
+      assert "top_p" not in kwargs
+      assert "top_k" not in kwargs
+      assert kwargs["output_config"] == {"effort": "xhigh"}

@@ -494,10 +494,12 @@ class SandboxClient:
       direction: The scroll direction.
       magnitude: The scroll amount in pixels.
     """
-    direction = direction.lower()
-    sign = -1 if direction in ("left", "up") else 1
-    delta_x = sign * magnitude if direction in ("left", "right") else 0
-    delta_y = sign * magnitude if direction in ("up", "down") else 0
+    normalized_direction = direction.lower()
+    sign = -1 if normalized_direction in ("left", "up") else 1
+    delta_x = (
+        sign * magnitude if normalized_direction in ("left", "right") else 0
+    )
+    delta_y = sign * magnitude if normalized_direction in ("up", "down") else 0
 
     await self.make_cdp_request(
         _CDP_COMMAND_INPUT_DISPATCH_MOUSE_EVENT,
@@ -568,8 +570,8 @@ class SandboxClient:
       elif upper_key in _META_KEY_MAP:
         # Special key like Enter, Backspace
         cdp_key = _META_KEY_MAP[upper_key]
-        params_down = {"type": "keyDown", "key": cdp_key}
-        params_up = {"type": "keyUp", "key": cdp_key}
+        params_down: dict[str, Any] = {"type": "keyDown", "key": cdp_key}
+        params_up: dict[str, Any] = {"type": "keyUp", "key": cdp_key}
         if cdp_key == "Enter":
           params_down["windowsVirtualKeyCode"] = 13
           params_up["windowsVirtualKeyCode"] = 13

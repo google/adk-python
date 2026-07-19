@@ -17,9 +17,11 @@ from __future__ import annotations
 """A node that wraps an ADK Tool."""
 
 from collections.abc import AsyncGenerator
+import json
 from typing import Any
 import uuid
 
+from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
@@ -28,6 +30,7 @@ from ..agents.context import Context
 from ..events.event import Event
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
+from ..utils.content_utils import extract_text_from_content
 from ._base_node import BaseNode
 from ._retry_config import RetryConfig
 
@@ -67,6 +70,19 @@ class _ToolNode(BaseNode):
     )
 
     args = node_input
+    if isinstance(args, types.Content):
+      args = extract_text_from_content(args)
+
+    if isinstance(args, str):
+      args = args.strip()
+      if not args:
+        args = None
+      else:
+        try:
+          args = json.loads(args)
+        except json.JSONDecodeError:
+          pass
+
     if args is None:
       args = {}
     elif not isinstance(args, dict):

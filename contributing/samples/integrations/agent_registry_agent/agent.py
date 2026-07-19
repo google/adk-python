@@ -45,6 +45,22 @@ endpoints = registry.list_endpoints()
 for endpoint in endpoints.get("endpoints", []):
   print(f"- Endpoint: {endpoint.get('displayName')} ({endpoint.get('name')})")
 
+# Search agents and MCP servers matching a query
+print(f"\nSearching agents matching 'Workspace' in {project_id}/{location}...")
+matching_agents = registry.search_agents(search_string="Workspace")
+for agent in matching_agents.get("agents", []):
+  print(f"- Found Agent: {agent.get('displayName')} ({agent.get('name')})")
+
+print(
+    "\nSearching MCP servers matching 'agentregistry' in"
+    f" {project_id}/{location}..."
+)
+matching_servers = registry.search_mcp_servers(search_string="agentregistry")
+for server in matching_servers.get("mcpServers", []):
+  print(
+      f"- Found MCP Server: {server.get('displayName')} ({server.get('name')})"
+  )
+
 # Example of using a specific agent or MCP server from the registry:
 # (Note: These names should be full resource names as returned by list methods)
 

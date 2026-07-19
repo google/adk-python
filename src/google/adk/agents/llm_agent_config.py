@@ -30,7 +30,9 @@ from .common_configs import CodeConfig
 
 
 @deprecated(
-    'LlmAgentConfig is deprecated and will be removed in future versions.'
+    'LlmAgentConfig is deprecated and will be removed in future versions. '
+    'Config is now loaded via reflection so the separate config class is no '
+    'longer needed.'
 )
 class LlmAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a LlmAgent."""
@@ -55,9 +57,9 @@ class LlmAgentConfig(BaseAgentConfig):
       default=None,
       description=(
           'Optional. LlmAgent.model. Provide a model name string (e.g.'
-          ' "gemini-3-flash-preview"). If not set, the model will be inherited'
+          ' "gemini-3.5-flash"). If not set, the model will be inherited'
           ' from the ancestor or fall back to the system default'
-          ' (gemini-3-flash-preview unless overridden via'
+          ' (gemini-3.5-flash unless overridden via'
           ' LlmAgent.set_default_model). To construct a model instance from'
           ' code, use model_code.'
       ),

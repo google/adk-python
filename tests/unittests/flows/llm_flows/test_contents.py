@@ -15,10 +15,13 @@
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
+from google.adk.flows.llm_flows import _nl_planning
 from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.labs.openai import OpenAIResponsesLlm
 from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -249,6 +252,99 @@ async def test_include_contents_none_multi_branch_current_turn():
   assert llm_request.contents[0].parts == [
       types.Part(text="For context:"),
       types.Part(text="[sibling_agent] said: Sibling agent response"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_events_with_transfer_to_agent_are_included():
+  """Test that the user input is retained across a transfer_to_agent handoff.
+
+  When include_contents='none' and control is transferred to a sub-agent, the
+  current turn must anchor on the latest user input rather than the trailing
+  transfer_to_agent events, while still including those transfer events as
+  context.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First user message"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="parent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          args={"agent_name": "test_agent"},
+                          id="call_inv1",
+                          name="transfer_to_agent",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="parent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_inv1",
+                          name="transfer_to_agent",
+                          response={"result": None},
+                      ),
+                  ),
+              ],
+              role="user",
+          ),
+          actions=EventActions(transfer_to_agent="test_agent"),
+      ),
+  ]
+
+  invocation_context.session.events = events
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("First user message"),
+      types.Content(
+          parts=[
+              types.Part(text="For context:"),
+              types.Part(
+                  text=(
+                      "[parent] called tool `transfer_to_agent` with"
+                      " parameters: {'agent_name': 'test_agent'}"
+                  )
+              ),
+          ],
+          role="user",
+      ),
+      types.Content(
+          parts=[
+              types.Part(text="For context:"),
+              types.Part(
+                  text=(
+                      "[parent] `transfer_to_agent` tool returned result:"
+                      " {'result': None}"
+                  )
+              ),
+          ],
+          role="user",
+      ),
   ]
 
 
@@ -1001,6 +1097,122 @@ async def test_adk_function_call_ids_are_stripped_for_non_interactions_model():
 
 
 @pytest.mark.asyncio
+async def test_stripping_function_call_ids_does_not_mutate_session_events():
+  """Stripping ``adk-`` ids must not mutate the session-owned events."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Shared id so the history rearrange logic can pair call and response.
+  function_call_id = "adk-test-call-id"
+  fc_part = types.Part(
+      function_call=types.FunctionCall(
+          id=function_call_id,
+          name="test_tool",
+          args={"x": 1},
+      )
+  )
+  fr_part = types.Part(
+      function_response=types.FunctionResponse(
+          id=function_call_id,
+          name="test_tool",
+          response={"result": 2},
+      )
+  )
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(role="model", parts=[fc_part]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(role="user", parts=[fr_part]),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call.id is None
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response.id is None
+
+  assert fc_part.function_call.id == function_call_id
+  assert fr_part.function_response.id == function_call_id
+  assert events[1].content.parts[0].function_call.id == function_call_id
+  assert events[2].content.parts[0].function_response.id == function_call_id
+  assert model_fc_part is not fc_part
+  assert user_fr_part is not fr_part
+
+
+@pytest.mark.asyncio
+async def test_downstream_part_mutation_does_not_corrupt_session_events():
+  """Request parts must survive in-place mutation by later processors."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # A thought=True function-call part survives context filtering.
+  fc_part = types.Part(
+      function_call=types.FunctionCall(id="fc1", name="t", args={"x": 1}),
+  )
+  fc_part.thought = True
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(role="model", parts=[fc_part]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="fc1", name="t", response={"r": 2}
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # nl_planning clears thoughts in place on the request parts.
+  _nl_planning._remove_thought_from_request(llm_request)
+
+  assert fc_part.thought is True
+  assert events[1].content.parts[0].thought is True
+
+
+@pytest.mark.asyncio
 async def test_adk_function_call_ids_preserved_for_interactions_model():
   """Test ADK generated ids are preserved for interactions requests."""
   agent = Agent(
@@ -1145,6 +1357,78 @@ async def test_adk_function_call_ids_preserved_for_anthropic_model():
   assert user_fr_part.function_response.id == function_call_id
 
 
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_lite_llm_model():
+  """LiteLLM-backed providers (e.g. OpenAI) pair tool calls with their
+  results by id, so `adk-*` fallback ids must survive replay.
+  """
+  from google.adk.models.lite_llm import LiteLlm
+
+  agent = Agent(
+      model=LiteLlm(model="openai/gpt-4o-mini"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="openai/gpt-4o-mini")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
 def test_is_other_agent_reply_live_session():
   """Test _is_other_agent_reply when live_session_id is present."""
   event = Event(author="another_agent", live_session_id="session_123")
@@ -1170,6 +1454,74 @@ def test_is_other_agent_reply_non_live_session():
 
   event = Event(author="another_agent")
   assert contents._is_other_agent_reply("", event) is False
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_openai_responses_model():
+  """Responses API replay needs call_id values to match tool outputs."""
+  agent = Agent(
+      model=OpenAIResponsesLlm(model="gpt-5.5"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="gpt-5.5")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
 
 
 @pytest.mark.asyncio
@@ -1306,3 +1658,348 @@ def test_get_contents_live_history_rebuild():
 
   assert result[1].role == "user"
   assert "returned result" in result[1].parts[1].text
+
+
+def test_rearrange_async_function_responses_early_returns_when_no_responses():
+  """Rearrangement is a no-op when no event carries function_responses."""
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("hello"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="adk-1", name="tool", args={}
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+  assert result is events
+
+
+def _long_running_call_event() -> Event:
+  return Event(
+      invocation_id="inv2",
+      author="model",
+      timestamp=2.0,
+      long_running_tool_ids={"lr-1"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-1", name="lr_tool", args={}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def _long_running_response_event(response: dict[str, str]) -> Event:
+  return Event(
+      invocation_id="inv2",
+      author="user",
+      timestamp=4.0,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="lr-1", name="lr_tool", response=response
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def test_recover_compacted_function_calls_reinjects_missing_call():
+  """A response whose call was compacted gets its call re-injected before it."""
+  summary_event = Event(
+      invocation_id="compacted",
+      author="model",
+      timestamp=3.0,
+      content=types.Content(role="model", parts=[types.Part(text="summary")]),
+  )
+  call_event = _long_running_call_event()
+  resume_response = _long_running_response_event({"result": "done"})
+
+  # After compaction the call is gone from the effective list but survives in
+  # the source (pre-compaction) list.
+  effective = [summary_event, resume_response]
+  source = [call_event, resume_response]
+
+  result = contents._recover_compacted_function_calls(effective, source)  # pylint: disable=protected-access
+
+  assert result == [summary_event, call_event, resume_response]
+
+
+def test_recover_compacted_function_calls_noop_when_call_present():
+  """No change when every response already has its call in the list."""
+  call_event = _long_running_call_event()
+  resume_response = _long_running_response_event({"result": "done"})
+  effective = [call_event, resume_response]
+
+  result = contents._recover_compacted_function_calls(effective, effective)  # pylint: disable=protected-access
+
+  assert result is effective
+
+
+def test_recover_compacted_function_calls_uses_latest_sibling_response():
+  """A recovered sibling contributes its real result, not a stale placeholder.
+
+  Two long-running calls (lr-1, lr-2) are issued together. lr-2 resumes and
+  completes (placeholder then real result), then the whole exchange is
+  compacted; lr-1 resumes later and survives. Recovering lr-2's compacted
+  response must pick its latest (real) result, not the earlier placeholder.
+  """
+
+  def _response_event(
+      call_id: str, response: dict[str, str], timestamp: float
+  ) -> Event:
+    return Event(
+        invocation_id="inv2",
+        author="user",
+        timestamp=timestamp,
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id=call_id, name="lr_tool", response=response
+                    )
+                )
+            ],
+        ),
+    )
+
+  parallel_call = Event(
+      invocation_id="inv2",
+      author="model",
+      timestamp=2.0,
+      long_running_tool_ids={"lr-1", "lr-2"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-1", name="lr_tool_1", args={}
+                  )
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-2", name="lr_tool_2", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  lr2_placeholder = _response_event("lr-2", {"status": "pending"}, 3.0)
+  lr2_result = _response_event("lr-2", {"result": "done-2"}, 4.0)
+  summary_event = Event(
+      invocation_id="compacted",
+      author="model",
+      timestamp=5.0,
+      content=types.Content(role="model", parts=[types.Part(text="summary")]),
+  )
+  lr1_result = _response_event("lr-1", {"result": "done-1"}, 7.0)
+
+  # After compaction the call event and both lr-2 responses are gone; only
+  # lr-1's later result survives. Both lr-2 responses remain in the source.
+  effective = [summary_event, lr1_result]
+  source = [parallel_call, lr2_placeholder, lr2_result, lr1_result]
+
+  result = contents._recover_compacted_function_calls(effective, source)  # pylint: disable=protected-access
+
+  assert result == [summary_event, parallel_call, lr2_result, lr1_result]
+  # The recovered lr-2 response is the real result, not the pending placeholder.
+  assert result[2].get_function_responses()[0].response == {"result": "done-2"}
+
+
+def test_get_contents_recovers_compacted_long_running_call_on_resume():
+  """A long-running call compacted before resume is restored during assembly.
+
+  Reproduces issue #5602: the call and its intermediate placeholder response are
+  summarized away, then the real result arrives on resume. Without recovery,
+  assembly raises because the resumed response has no matching call.
+  """
+  compaction = EventCompaction(
+      start_timestamp=1.0,
+      end_timestamp=3.0,
+      compacted_content=types.Content(
+          role="model", parts=[types.Part(text="summary of earlier turns")]
+      ),
+  )
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          timestamp=1.0,
+          content=types.UserContent("start the long job"),
+      ),
+      _long_running_call_event(),
+      # Intermediate placeholder response (same invocation as the call).
+      _long_running_response_event({"status": "pending"}).model_copy(
+          update={"timestamp": 3.0}
+      ),
+      Event(
+          invocation_id="compacted",
+          author="model",
+          timestamp=3.0,
+          content=compaction.compacted_content,
+          actions=EventActions(compaction=compaction),
+      ),
+      # Real result delivered on resume; the runner stamps it with the call's
+      # invocation id, and its timestamp is outside the compacted range.
+      _long_running_response_event({"result": "done"}),
+  ]
+
+  result = contents._get_contents(None, events, agent_name="model")  # pylint: disable=protected-access
+
+  assert len(result) == 3
+  assert result[0].parts[0].text == "summary of earlier turns"
+  assert result[1].parts[0].function_call.id == "lr-1"
+  assert result[2].parts[0].function_response.id == "lr-1"
+  assert result[2].parts[0].function_response.response == {"result": "done"}
+
+
+def test_recover_compacted_parallel_call_reinjects_sibling_response():
+  """A recovered parallel call keeps every part and restores sibling responses.
+
+  The call event issues a long-running call (lr-1) and a regular call (reg-1)
+  together. Both, plus reg-1's response, are compacted; only lr-1 is resumed.
+  The whole call event is re-injected (so parallel-call thought signatures on
+  the first part survive), and reg-1's compacted response is restored so reg-1
+  is not surfaced as a phantom pending call.
+  """
+  parallel_call = Event(
+      invocation_id="inv2",
+      author="model",
+      timestamp=2.0,
+      long_running_tool_ids={"lr-1"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-1", name="lr_tool", args={}
+                  )
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="reg-1", name="reg_tool", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  compaction = EventCompaction(
+      start_timestamp=1.0,
+      end_timestamp=3.5,
+      compacted_content=types.Content(
+          role="model", parts=[types.Part(text="summary")]
+      ),
+  )
+  events = [
+      parallel_call,
+      # reg-1's response and lr-1's placeholder, both compacted.
+      _long_running_response_event({"status": "pending"}).model_copy(
+          update={"timestamp": 3.0}
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          timestamp=3.5,
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="reg-1", name="reg_tool", response={"result": "ok"}
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="compacted",
+          author="model",
+          timestamp=3.5,
+          content=compaction.compacted_content,
+          actions=EventActions(compaction=compaction),
+      ),
+      _long_running_response_event({"result": "done"}),
+  ]
+
+  result = contents._get_contents(None, events, agent_name="model")  # pylint: disable=protected-access
+
+  assert len(result) == 3
+  # The whole parallel call event is preserved (both parts, so a thought
+  # signature on the first part is not stripped).
+  call_ids = {
+      part.function_call.id for part in result[1].parts if part.function_call
+  }
+  assert call_ids == {"lr-1", "reg-1"}
+  # Both responses are present, so neither call looks pending.
+  response_ids = {
+      part.function_response.id
+      for part in result[2].parts
+      if part.function_response
+  }
+  assert response_ids == {"lr-1", "reg-1"}
+
+
+def test_task_input_user_content_preserves_non_ascii():
+  """Delegated task input must not escape non-ASCII FC args.
+
+  A chat coordinator delegates to a task sub-agent via a function call; the
+  task agent's first user turn is rebuilt from the FC args. Escaping non-Latin
+  characters to ``\\uXXXX`` there bloats prompt tokens and degrades responses.
+  """
+  fc_id = "fc_task_1"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="coordinator",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=fc_id,
+                          name="delegate",
+                          args={"query": "שלום עולם", "city": "北京"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+
+  content = contents._build_task_input_user_content(  # pylint: disable=protected-access
+      events, isolation_scope=fc_id
+  )
+
+  assert content is not None and content.parts
+  text = content.parts[0].text
+  assert "שלום עולם" in text
+  assert "北京" in text
+  assert "\\u" not in text

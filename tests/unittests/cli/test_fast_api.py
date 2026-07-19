@@ -22,15 +22,15 @@ import tempfile
 from typing import Any
 from typing import Optional
 from unittest.mock import AsyncMock
-from unittest.mock import call
 from unittest.mock import MagicMock
 from unittest.mock import patch
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
+from google.adk.a2a import _compat
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
-from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.fast_api import get_fast_api_app
@@ -45,7 +45,6 @@ from google.adk.events.event_actions import EventActions
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.sessions.session import Session
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -526,6 +525,12 @@ def _create_test_client(
       ),
       patch.object(
           fast_api_module,
+          "NestedAgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
           "LocalEvalSetsManager",
           autospec=True,
           return_value=mock_eval_sets_manager,
@@ -587,6 +592,12 @@ bigquery_agent_analytics:
       patch.object(
           fast_api_module,
           "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "NestedAgentLoader",
           autospec=True,
           return_value=mock_agent_loader,
       ),
@@ -678,6 +689,43 @@ def test_get_runner_async_accepts_internal_special_agent_name(
   mock_agent_loader.load_agent.assert_called_once_with(special_app_name)
 
 
+def test_api_server_get_runner_async_rejects_internal_special_agent_name(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  from fastapi import HTTPException
+  from google.adk.cli.api_server import ApiServer
+
+  special_app_name = "__adk_agent_builder_assistant"
+  special_agent = DummyAgent(name="agent_builder_assistant")
+  mock_agent_loader.load_agent = MagicMock(return_value=special_agent)
+
+  api_server = ApiServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+  with pytest.raises(HTTPException) as exc_info:
+    asyncio.run(api_server.get_runner_async(special_app_name))
+
+  assert exc_info.value.status_code == 403
+  assert (
+      "Access to internal special agents is disabled in API server mode"
+      in exc_info.value.detail
+  )
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,
@@ -732,6 +780,12 @@ def builder_test_client(
       patch.object(
           fast_api_module,
           "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "NestedAgentLoader",
           autospec=True,
           return_value=mock_agent_loader,
       ),
@@ -822,8 +876,11 @@ def temp_agents_dir_with_a2a():
         "name": "test_a2a_agent",
         "description": "Test A2A agent",
         "version": "1.0.0",
-        "author": "test",
-        "capabilities": ["text"],
+        "url": "http://localhost:8000/a2a/test_a2a_agent",
+        "capabilities": {},
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": [],
     }
 
     with open(agent_dir / "agent.json", "w") as f:
@@ -1216,6 +1273,56 @@ def test_get_adk_app_info_non_llm_agent(test_app, mock_agent_loader):
     response = test_app.get("/apps/test_app/app-info")
     assert response.status_code == 400
     assert "Root agent is not an LlmAgent" in response.json()["detail"]
+
+
+def test_get_adk_app_info_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test app-info returns 404 when the app_name matches no agent."""
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.get("/apps/unknown_app/app-info")
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_sse_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run_sse returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
 
 
 def test_create_session_with_id(test_app, test_session_info):
@@ -1626,7 +1733,7 @@ def test_agent_run_sse_does_not_split_artifact_delta_for_function_resume(
 def test_agent_run_sse_yields_error_object_on_exception(
     test_app, create_test_session, monkeypatch
 ):
-  """Test /run_sse streams an error object if streaming raises."""
+  """Test /run_sse streams structured error details on exception."""
   info = create_test_session
 
   async def run_async_raises(self, **kwargs):
@@ -1643,15 +1750,42 @@ def test_agent_run_sse_yields_error_object_on_exception(
       "streaming": True,
   }
 
-  response = test_app.post("/run_sse", json=payload)
-  assert response.status_code == 200
+  # 1. Test without DEBUG enabled
+  with patch(
+      "google.adk.cli.api_server.logger.isEnabledFor", return_value=False
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 200
+    sse_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert len(sse_events) == 1
+    error_event = sse_events[0]
+    assert error_event["error"] == "ValueError: boom"
+    assert "error_details" in error_event
+    assert error_event["error_details"]["error_type"] == "ValueError"
+    assert error_event["error_details"]["error_message"] == "boom"
+    assert "stacktrace" not in error_event["error_details"]
+    assert "timestamp" in error_event["error_details"]
 
-  sse_events = [
-      json.loads(line.removeprefix("data: "))
-      for line in response.text.splitlines()
-      if line.startswith("data: ")
-  ]
-  assert sse_events == [{"error": "boom"}]
+  # 2. Test with DEBUG enabled
+  with patch(
+      "google.adk.cli.api_server.logger.isEnabledFor", return_value=True
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 200
+    sse_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert len(sse_events) == 1
+    error_event = sse_events[0]
+    assert error_event["error"] == "ValueError: boom"
+    assert "stacktrace" in error_event["error_details"]
+    assert "ValueError: boom" in error_event["error_details"]["stacktrace"]
 
 
 def test_list_artifact_names(test_app, create_test_session):
@@ -1698,6 +1832,145 @@ def test_save_artifact(test_app, create_test_session, mock_artifact_service):
   )
   stored = mock_artifact_service._artifacts[key][0]
   assert stored["artifact"].text == "hello world"
+
+
+def test_save_artifact_reference(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test saving an artifact reference through the FastAPI endpoint."""
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+  payload = {
+      "filename": "reference.txt",
+      "artifact": {
+          "fileData": {
+              "fileUri": (
+                  f"artifact://apps/{info['app_name']}/users/{info['user_id']}/"
+                  f"sessions/{info['session_id']}/artifacts/target_file/versions/0"
+              ),
+              "mimeType": "text/plain",
+          }
+      },
+  }
+
+  response = test_app.post(url, json=payload)
+  assert response.status_code == 200
+  data = response.json()
+  assert data["version"] == 0
+  assert data["customMetadata"] == {}
+  assert data["mimeType"] in (None, "text/plain")
+  assert data["canonicalUri"].endswith(
+      f"/sessions/{info['session_id']}/artifacts/"
+      f"{payload['filename']}/versions/0"
+  )
+  assert isinstance(data["createTime"], float)
+
+  key = (
+      f"{info['app_name']}:{info['user_id']}:{info['session_id']}:"
+      f"{payload['filename']}"
+  )
+  stored = mock_artifact_service._artifacts[key][0]
+  assert stored["artifact"].file_data is not None
+  assert (
+      stored["artifact"].file_data.file_uri
+      == payload["artifact"]["fileData"]["fileUri"]
+  )
+  assert stored["artifact"].file_data.mime_type == "text/plain"
+
+
+def test_artifact_endpoints_support_nested_names(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test artifact endpoints support names containing path separators."""
+  info = create_test_session
+  filename = "reports/summary.txt"
+  encoded_filename = quote(filename, safe="")
+  base_url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+
+  mock_artifact_service.add_artifact(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      filename=filename,
+      artifact=types.Part(text="v0"),
+  )
+  mock_artifact_service.add_artifact(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      filename=filename,
+      artifact=types.Part(text="v1"),
+      custom_metadata={"rev": "one"},
+      mime_type="text/plain",
+  )
+
+  response = test_app.get(base_url)
+  assert response.status_code == 200
+  assert filename in response.json()
+
+  for artifact_path in (filename, encoded_filename):
+    response = test_app.get(f"{base_url}/{artifact_path}")
+    assert response.status_code == 200
+    assert response.json()["text"] == "v1"
+
+  response = test_app.get(f"{base_url}/{encoded_filename}?version=0")
+  assert response.status_code == 200
+  assert response.json()["text"] == "v0"
+
+  response = test_app.get(f"{base_url}/{filename}/versions/0")
+  assert response.status_code == 200
+  assert response.json()["text"] == "v0"
+
+  response = test_app.get(f"{base_url}/{encoded_filename}/versions/1")
+  assert response.status_code == 200
+  assert response.json()["text"] == "v1"
+
+  response = test_app.get(f"{base_url}/{filename}/versions")
+  assert response.status_code == 200
+  assert response.json() == [0, 1]
+
+  response = test_app.get(f"{base_url}/{encoded_filename}/versions/metadata")
+  assert response.status_code == 200
+  versions_metadata = response.json()
+  assert len(versions_metadata) == 2
+  assert versions_metadata[1]["customMetadata"] == {"rev": "one"}
+
+  response = test_app.get(f"{base_url}/{filename}/versions/1/metadata")
+  assert response.status_code == 200
+  version_metadata = response.json()
+  assert version_metadata["version"] == 1
+  assert version_metadata["customMetadata"] == {"rev": "one"}
+
+  # Test loading latest version via path
+  for path in (filename, encoded_filename):
+    response = test_app.get(f"{base_url}/{path}/versions/latest")
+    assert response.status_code == 200
+    assert response.json()["text"] == "v1"
+
+    response = test_app.get(f"{base_url}/{path}/versions/latest/metadata")
+    assert response.status_code == 200
+    assert response.json()["version"] == 1
+
+  # Test invalid version ID
+  response = test_app.get(f"{base_url}/{filename}/versions/invalid")
+  assert response.status_code == 422
+  assert "Invalid version ID" in response.json()["detail"]
+
+  response = test_app.get(f"{base_url}/{filename}/versions/invalid/metadata")
+  assert response.status_code == 422
+  assert "Invalid version ID" in response.json()["detail"]
+
+  response = test_app.delete(f"{base_url}/{encoded_filename}")
+  assert response.status_code == 200
+
+  response = test_app.get(f"{base_url}/{encoded_filename}")
+  assert response.status_code == 404
 
 
 def test_save_artifact_returns_400_on_validation_error(
@@ -1856,6 +2129,12 @@ def test_openapi_json_schema_accessible(test_app):
   logger.info("OpenAPI /openapi.json endpoint is accessible")
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_agent_discovery(test_app_with_a2a):
   """Test that A2A agents are properly discovered and configured."""
   # This test mainly verifies that the A2A setup doesn't break the app
@@ -1864,6 +2143,12 @@ def test_a2a_agent_discovery(test_app_with_a2a):
   logger.info("A2A agent discovery test passed")
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_request_handler_uses_push_config_store(
     mock_session_service,
     mock_artifact_service,
@@ -1946,6 +2231,12 @@ def test_a2a_request_handler_uses_push_config_store(
     )
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_request_handler_uses_task_store_uri(
     mock_session_service,
     mock_artifact_service,
@@ -2026,6 +2317,12 @@ def test_a2a_request_handler_uses_task_store_uri(
     assert call_kwargs["task_store"] is custom_task_store
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_task_store_engine_disposed_on_shutdown(
     mock_session_service,
     mock_artifact_service,
@@ -2107,6 +2404,12 @@ def test_a2a_task_store_engine_disposed_on_shutdown(
     mock_engine.dispose.assert_awaited_once()
 
 
+@pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason=(
+        "0.3.x-only: mocks server.apps.A2AStarletteApplication (gone in 1.x)"
+    ),
+)
 def test_a2a_in_memory_task_store_no_engine_dispose(
     mock_session_service,
     mock_artifact_service,
@@ -2302,10 +2605,10 @@ def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
 def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "root_agent.yaml").write_text("name: app\n")
+  (app_root / "root_agent.yaml").write_bytes(b"name: app\n")
   nested_dir = app_root / "nested"
   nested_dir.mkdir(parents=True, exist_ok=True)
-  (nested_dir / "nested.yaml").write_text("nested: true\n")
+  (nested_dir / "nested.yaml").write_bytes(b"nested: true\n")
 
   assert not (app_root / "tmp").exists()
   response = builder_test_client.get("/dev/apps/app/builder?tmp=true")
@@ -2441,7 +2744,10 @@ tools:
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
-  """GET /dev/apps/{app_name}/builder?file_path=... rejects non-YAML extensions."""
+  """GET /dev/apps/{app_name}/builder?file_path=...
+
+  rejects non-YAML extensions.
+  """
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
   (app_root / ".env").write_text("SECRET=supersecret\n")
@@ -2460,8 +2766,8 @@ def test_builder_get_allows_yaml_file_paths(builder_test_client, tmp_path):
   """GET /dev/apps/{app_name}/builder?file_path=... allows YAML extensions."""
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "sub_agent.yaml").write_text("name: sub\n")
-  (app_root / "tool.yml").write_text("name: tool\n")
+  (app_root / "sub_agent.yaml").write_bytes(b"name: sub\n")
+  (app_root / "tool.yml").write_bytes(b"name: tool\n")
 
   response = builder_test_client.get(
       "/dev/apps/app/builder?file_path=sub_agent.yaml"
@@ -2697,6 +3003,12 @@ async def test_independent_telemetry_context(
       patch.object(
           fast_api_module,
           "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "NestedAgentLoader",
           autospec=True,
           return_value=mock_agent_loader,
       ),

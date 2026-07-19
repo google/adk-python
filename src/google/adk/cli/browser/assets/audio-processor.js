@@ -1,5 +1,5 @@
 /**
- * Copyright 2026 Google LLC
+ * Copyright 2025 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 class AudioProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
-        this.targetSampleRate = 22000;  // Change to your desired rate
+        this.targetSampleRate = 16000;  // Live API expects 16 kHz PCM input
         this.originalSampleRate = sampleRate; // Browser's sample rate
         this.resampleRatio = this.originalSampleRate / this.targetSampleRate;
     }
@@ -26,7 +26,7 @@ class AudioProcessor extends AudioWorkletProcessor {
         const input = inputs[0];
         if (input.length > 0) {
             let audioData = input[0]; // Get first channel's data
-
+            
             if (this.resampleRatio !== 1) {
                 audioData = this.resample(audioData);
             }
@@ -40,9 +40,15 @@ class AudioProcessor extends AudioWorkletProcessor {
         const newLength = Math.round(audioData.length / this.resampleRatio);
         const resampled = new Float32Array(newLength);
 
+        // Linear interpolation resampling (higher quality than nearest neighbor)
+        const lastIndex = audioData.length - 1;
         for (let i = 0; i < newLength; i++) {
-            const srcIndex = Math.floor(i * this.resampleRatio);
-            resampled[i] = audioData[srcIndex]; // Nearest neighbor resampling
+            const srcPos = i * this.resampleRatio;
+            const srcIndex = Math.floor(srcPos);
+            const nextIndex = Math.min(srcIndex + 1, lastIndex);
+            const frac = srcPos - srcIndex;
+            resampled[i] =
+                audioData[srcIndex] * (1 - frac) + audioData[nextIndex] * frac;
         }
         return resampled;
     }
