@@ -400,6 +400,58 @@ async def test_create_and_list_sessions(session_service):
 
 
 @pytest.mark.asyncio
+async def test_sqlite_session_service_list_sessions_orders_by_update_time_then_id(
+    tmp_path,
+):
+  """Sqlite list_sessions returns least-active sessions first, with stable ties."""
+  db_path = tmp_path / 'sessions.db'
+  service = SqliteSessionService(str(db_path))
+  app_name = 'my_app'
+  user_id = 'test_user'
+  for session_id in ['orphan', 'active_b', 'middle', 'active_a']:
+    await service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+    )
+
+  create_times = {
+      'active_b': datetime(2026, 1, 1, tzinfo=timezone.utc),
+      'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+      'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+      'orphan': datetime(2026, 1, 4, tzinfo=timezone.utc),
+  }
+  update_times = {
+      'orphan': datetime(2026, 1, 1, tzinfo=timezone.utc),
+      'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+      'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+      'active_b': datetime(2026, 1, 3, tzinfo=timezone.utc),
+  }
+  with sqlite3.connect(db_path) as connection:
+    for session_id, create_time in create_times.items():
+      connection.execute(
+          'UPDATE sessions SET create_time=?, update_time=? WHERE app_name=?'
+          ' AND user_id=? AND id=?',
+          (
+              create_time.timestamp(),
+              update_times[session_id].timestamp(),
+              app_name,
+              user_id,
+              session_id,
+          ),
+      )
+
+  response = await service.list_sessions(app_name=app_name, user_id=user_id)
+
+  assert [session.id for session in response.sessions] == [
+      'orphan',
+      'middle',
+      'active_a',
+      'active_b',
+  ]
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_all_users(session_service):
   app_name = 'my_app'
   user_id_1 = 'user1'
