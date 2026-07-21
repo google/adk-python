@@ -173,4 +173,4 @@ def _is_gemini_3_x_live(model_string: Optional[str]) -> bool:
   if not model_string:
     return False
   model_name = extract_model_name(model_string)
-return model_name.startswith('gemini-3.') and '-live' in model_name
+  return model_name.startswith('gemini-3.') and '-live' in model_name
