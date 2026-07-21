@@ -59,7 +59,7 @@ jobs:
             echo "manifest_file=.github/.release-please-manifest.json" >> $GITHUB_OUTPUT
           fi
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         if: steps.check.outputs.is_release_pr == 'true'
         with:
           ref: ${{ github.event.pull_request.base.ref }}
