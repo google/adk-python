@@ -189,7 +189,7 @@ class TestBasicLlmRequestProcessor:
 
     # Should have set the model name
     assert llm_request.model == 'gemini-2.5-flash'
-  
+
   @pytest.mark.asyncio
   async def test_disables_affective_dialog_and_proactivity_for_gemini_3_x_live(
       self,
