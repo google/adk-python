@@ -178,4 +178,3 @@ def _is_gemini_3_x_live(model_string: Optional[str]) -> bool:
       and '-live' in model_name
       and not is_gemini_3_5_live_translate(model_string)
   )
-
