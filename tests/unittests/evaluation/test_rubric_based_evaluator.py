@@ -176,6 +176,82 @@ class TestDefaultAutoRaterResponseParser:
     assert parsed[0].score == 1.0
     assert parsed[1].score == 0.0
 
+  def test_parse_auto_rater_response_with_id(self):
+    """Tests the parser captures a rubric id echoed by the auto-rater."""
+    response = """
+      ID: 1
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].rubric_id == "1"
+    assert parsed[0].property_text == "Is the response good?"
+    assert parsed[0].score == 1.0
+
+  def test_parse_auto_rater_response_without_id_leaves_id_none(self):
+    """Tests that a response with no ID line leaves rubric_id as None."""
+    response = """
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].rubric_id is None
+    assert parsed[0].property_text == "Is the response good?"
+
+  def test_parse_auto_rater_response_with_first_id_present_second_absent(self):
+    """An id stays with its own property when a later property omits its id."""
+    response = """
+      ID: 1
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+
+      Property: Is the response bad?
+      Rationale: It was not bad.
+      Verdict: no
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 2
+    assert parsed[0].rubric_id == "1"
+    assert parsed[0].property_text == "Is the response good?"
+    assert parsed[1].rubric_id is None
+    assert parsed[1].property_text == "Is the response bad?"
+
+  def test_parse_auto_rater_response_with_first_id_omitted_second_present(self):
+    """A later id is not shifted onto an earlier property that omitted its id."""
+    response = """
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+
+      ID: 2
+      Property: Is the response bad?
+      Rationale: It was not bad.
+      Verdict: no
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 2
+    assert parsed[0].rubric_id is None
+    assert parsed[0].property_text == "Is the response good?"
+    assert parsed[1].rubric_id == "2"
+    assert parsed[1].property_text == "Is the response bad?"
+
+  def test_parse_auto_rater_response_ignores_mid_line_id_substring(self):
+    """A mid-line 'ID: ' (e.g. inside 'UUID: ') is not captured as an id."""
+    response = """
+      Property: Is the response good?
+      Rationale: The session UUID: abc-123 was fine.
+      Verdict: yes
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].rubric_id is None
+    assert parsed[0].property_text == "Is the response good?"
+
 
 class TestMajorityVotePerInvocationResultsAggregator:
 
@@ -694,3 +770,74 @@ class TestRubricBasedEvaluator:
         "2",
         "test_type_rubric",
     }
+
+  def test_convert_matches_by_id_when_text_paraphrased(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """A rubric is matched by echoed id even when its text is paraphrased."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    ID: 1
+    Property: Is the reply excellent?
+    Rationale: It was good.
+    Verdict: yes
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert len(auto_rater_score.rubric_scores) == 1
+    assert auto_rater_score.rubric_scores[0].rubric_id == "1"
+    assert auto_rater_score.rubric_scores[0].score == 1.0
+
+  def test_convert_does_not_misattribute_when_first_id_omitted(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """An omitted leading id must not shift a later id onto an earlier property."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    Property: Is the reply excellent?
+    Rationale: It was good.
+    Verdict: yes
+
+    ID: 2
+    Property: Is the reply awful?
+    Rationale: It was not bad.
+    Verdict: no
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    # The first (paraphrased, id-less) property matches no rubric; the second is
+    # matched to rubric "2" by its id and keeps its own "no" verdict.
+    assert len(auto_rater_score.rubric_scores) == 1
+    assert auto_rater_score.rubric_scores[0].rubric_id == "2"
+    assert auto_rater_score.rubric_scores[0].score == 0.0
+
+  def test_convert_falls_back_to_text_when_id_absent(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """Without an id, matching falls back to normalized property text."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    Property: Is the response good?
+    Rationale: It was good.
+    Verdict: yes
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert len(auto_rater_score.rubric_scores) == 1
+    assert auto_rater_score.rubric_scores[0].rubric_id == "1"
+    assert auto_rater_score.rubric_scores[0].score == 1.0

@@ -215,6 +215,8 @@ class AuthHandler:
     }
     if auth_credential.oauth2.audience:
       params["audience"] = auth_credential.oauth2.audience
+    if auth_credential.oauth2.nonce:
+      params["nonce"] = auth_credential.oauth2.nonce
 
     # If using PKCE with S256, ensure a code_verifier exists.
     # If not provided in the credential, generate a cryptographically secure
