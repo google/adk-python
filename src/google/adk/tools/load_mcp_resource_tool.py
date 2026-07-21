@@ -110,13 +110,15 @@ NOTE: Call when you need access to resources.""",
     try:
       resource_names = await self._mcp_toolset.list_resources()
       if resource_names:
-        llm_request.append_instructions([f"""You have a list of MCP resources:
+        llm_request._append_dynamic_instructions(
+            [f"""You have a list of MCP resources:
 {json.dumps(resource_names)}
 
 When the user asks questions about any of the resources, you should call the
 `load_mcp_resource` function to load the resource. Always call load_mcp_resource
 before answering questions related to the resources.
-"""])
+"""]
+        )
     except Exception as e:
       logger.warning("Failed to list MCP resources: %s", e)
 

@@ -473,19 +473,37 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
   def test_events_compaction_config_rejects_partial_sliding_fields(
       self,
   ):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match='must be set together'):
       EventsCompactionConfig(
           compaction_interval=2,
       )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match='must be set together'):
       EventsCompactionConfig(
           overlap_size=0,
       )
 
   def test_events_compaction_config_rejects_missing_modes(self):
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match='At least one compaction trigger'
+    ):
       EventsCompactionConfig()
+
+  def test_events_compaction_config_accepts_token_only_without_sliding_window(
+      self,
+  ):
+    config = EventsCompactionConfig(
+        token_threshold=160_000,
+        event_retention_size=50,
+    )
+    self.assertIsNone(config.compaction_interval)
+    self.assertIsNone(config.overlap_size)
+    self.assertEqual(config.token_threshold, 160_000)
+    self.assertEqual(config.event_retention_size, 50)
+
+  def test_events_compaction_config_rejects_zero_compaction_interval(self):
+    with pytest.raises(ValidationError):
+      EventsCompactionConfig(compaction_interval=0, overlap_size=1)
 
   def test_latest_prompt_token_count_fallback_applies_compaction(self):
     events = [
