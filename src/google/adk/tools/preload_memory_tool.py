@@ -86,7 +86,7 @@ They may be useful for answering the user's current query.
 {full_memory_text}
 </PAST_CONVERSATIONS>
 """
-    llm_request.append_instructions([si])
+    llm_request._append_dynamic_instructions([si])
 
 
 preload_memory_tool = PreloadMemoryTool()

@@ -1484,10 +1484,9 @@ class BatchProcessor:
     }
 
   async def flush(self) -> None:
-    """Flushes the queue by waiting for it to be empty."""
-    if self._queue.empty():
-      return
-    # Wait for all items in the queue to be processed
+    """Flushes the queue, blocking until in-flight writes complete."""
+    # empty() turns true as soon as an item is dequeued, before its write
+    # finishes; join() waits for the unfinished-task count to reach zero.
     await self._queue.join()
 
   async def start(self) -> None:
