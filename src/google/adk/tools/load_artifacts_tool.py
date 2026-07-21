@@ -272,8 +272,7 @@ web UI)."""),
     if not artifact_names:
       return
 
-    # Tell the model about the available artifacts.
-    llm_request.append_instructions([f"""You have a list of artifacts:
+    instruction_text = f"""You have a list of artifacts:
   {json.dumps(artifact_names)}
 
   When the user asks questions about any of the artifacts, you should call the
@@ -281,7 +280,8 @@ web UI)."""),
   before answering questions related to the artifacts, regardless of whether the
   artifacts have been loaded before. Do not depend on prior answers about the
   artifacts.
-  """])
+  """
+    llm_request._append_dynamic_instructions([instruction_text])
 
     # Attach the content of the artifacts if the model requests them.
     # This only adds the content to the model request, instead of the session.

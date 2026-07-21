@@ -230,3 +230,143 @@ async def test_send_to_model_with_intermediate_text_content(
       content, partial=True
   )
   invocation_context.session_service.append_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_applies_state_delta(mock_llm_connection):
+  """Test _send_to_model applies state_delta as a state-delta event."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+
+  invocation_context.live_request_queue.send(
+      LiveRequest(state_delta={'k': 'v'})
+  )
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(mock_llm_connection, invocation_context)
+
+  assert invocation_context.session.state['k'] == 'v'
+  mock_llm_connection._send_content.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_state_delta_with_content(mock_llm_connection):
+  """Test _send_to_model applies state_delta and forwards content together."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+
+  content = types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+  invocation_context.live_request_queue.send(
+      LiveRequest(content=content, state_delta={'k': 'v'})
+  )
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(mock_llm_connection, invocation_context)
+
+  assert invocation_context.session.state['k'] == 'v'
+  # The state delta rides on the single user content event (no extra event).
+  events = invocation_context.session.events
+  assert len(events) == 1
+  assert events[0].content == content
+  assert events[0].actions.state_delta == {'k': 'v'}
+  mock_llm_connection._send_content.assert_called_once_with(
+      content, partial=False
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_state_delta_with_partial_content(
+    mock_llm_connection,
+):
+  """state_delta applies even when the partial turn skips the content event."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+
+  content = types.Content(
+      role='user', parts=[types.Part.from_text(text='progress')]
+  )
+  invocation_context.live_request_queue.send(
+      LiveRequest(content=content, state_delta={'k': 'v'}, partial=True)
+  )
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(mock_llm_connection, invocation_context)
+
+  assert invocation_context.session.state['k'] == 'v'
+  # The partial content does not create a user content event.
+  assert all(e.content is None for e in invocation_context.session.events)
+  mock_llm_connection._send_content.assert_called_once_with(
+      content, partial=True
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_state_delta_with_function_response(
+    mock_llm_connection,
+):
+  """state_delta applies even when the content is a function response."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part.from_function_response(
+              name='tool', response={'result': 'ok'}
+          )
+      ],
+  )
+  invocation_context.live_request_queue.send(
+      LiveRequest(content=content, state_delta={'k': 'v'})
+  )
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(mock_llm_connection, invocation_context)
+
+  assert invocation_context.session.state['k'] == 'v'
+  # Function responses do not create a user content event.
+  assert all(e.content is None for e in invocation_context.session.events)
+  mock_llm_connection._send_content.assert_called_once_with(
+      content, partial=False
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_state_delta_with_close(mock_llm_connection):
+  """state_delta is flushed even when the request also closes the connection."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+
+  invocation_context.live_request_queue.send(
+      LiveRequest(state_delta={'k': 'v'}, close=True)
+  )
+
+  await flow._send_to_model(mock_llm_connection, invocation_context)
+
+  assert invocation_context.session.state['k'] == 'v'
+  mock_llm_connection.close.assert_called_once()

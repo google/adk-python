@@ -59,6 +59,7 @@ from ..tools.tool_context import ToolContext
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
+from ..utils.instructions_utils import InstructionProvider as InstructionProvider
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -130,9 +131,6 @@ OnToolErrorCallback: TypeAlias = Union[
     list[_SingleOnToolErrorCallback],
 ]
 
-InstructionProvider: TypeAlias = Callable[
-    [ReadonlyContext], Union[str, Awaitable[str]]
-]
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
 
 
