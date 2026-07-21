@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.36.2](https://github.com/google/adk-python/compare/v1.36.1...v1.36.2) (2026-07-21)
+
+
+### Bug Fixes
+
+* Update custom gemini llm connection logic to be used for all 3_x models, not just 3.1 ([#6438](https://github.com/google/adk-python/issues/6438)) ([4ef72fe](https://github.com/google/adk-python/commit/4ef72fef0e607d61285f1a12da6edd55b21a1c1d))
+
 ## [1.36.1](https://github.com/google/adk-python/compare/v1.36.0...v1.36.1) (2026-07-06)
 
 
