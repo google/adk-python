@@ -79,3 +79,13 @@ async def test_get():
 
     assert result == res
     mock_get.assert_called_once()
+
+
+def test_state_delta_defaults_to_none():
+  assert LiveRequest().state_delta is None
+
+
+def test_state_delta_json_round_trip():
+  req = LiveRequest(state_delta={"a": 1})
+  restored = LiveRequest.model_validate_json(req.model_dump_json())
+  assert restored.state_delta == {"a": 1}

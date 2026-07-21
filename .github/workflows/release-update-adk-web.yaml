@@ -36,7 +36,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v6
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       with:
         persist-credentials: false
 
@@ -78,7 +78,7 @@ jobs:
         echo "email=$(echo "$USER_JSON" | jq -r '.id')+$(echo "$USER_JSON" | jq -r '.login')@users.noreply.github.com" >> $GITHUB_OUTPUT
 
     - name: Create Pull Request
-      uses: peter-evans/create-pull-request@v6
+      uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6
       with:
         token: ${{ secrets.RELEASE_PAT }}
         commit-message: "Update compiled adk web files from ${{ github.event.inputs.adk_web_repo }}@${{ github.event.inputs.adk_web_tag || 'latest' }}"
