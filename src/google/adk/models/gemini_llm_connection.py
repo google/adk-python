@@ -50,7 +50,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     self._output_transcription_text: str = ''
     self._api_backend = api_backend
     self._model_version = model_version
-    self._is_gemini_3_x_live = model_name_utils.is_gemini_3_1_flash_live(
+    self._is_gemini_3_x_live = model_name_utils._is_gemini_3_x_live(
         model_version
     )
 
