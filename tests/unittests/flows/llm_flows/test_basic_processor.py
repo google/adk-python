@@ -188,3 +188,49 @@ class TestBasicLlmRequestProcessor:
 
     # Should have set the model name
     assert llm_request.model == 'gemini-2.5-flash'
+  
+  @pytest.mark.asyncio
+  async def test_disables_affective_dialog_and_proactivity_for_gemini_3_x_live(
+      self,
+  ):
+    """Gemini 3.x Live does not support affective_dialog/proactivity."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-3.5-flash-lite-live-preview',
+    )
+    invocation_context = await _create_invocation_context(agent)
+    invocation_context.run_config = RunConfig(
+        enable_affective_dialog=True,
+        proactivity=types.ProactivityConfig(),
+    )
+    llm_request = LlmRequest()
+    processor = _BasicLlmRequestProcessor()
+
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.live_connect_config.enable_affective_dialog is None
+    assert llm_request.live_connect_config.proactivity is None
+
+  @pytest.mark.asyncio
+  async def test_keeps_affective_dialog_and_proactivity_for_non_gemini_3_x_live(
+      self,
+  ):
+    """Non-3.x live models keep the configured affective_dialog/proactivity."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash-live',
+    )
+    invocation_context = await _create_invocation_context(agent)
+    invocation_context.run_config = RunConfig(
+        enable_affective_dialog=True,
+        proactivity=types.ProactivityConfig(),
+    )
+    llm_request = LlmRequest()
+    processor = _BasicLlmRequestProcessor()
+
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.live_connect_config.enable_affective_dialog is True
+    assert llm_request.live_connect_config.proactivity is not None
