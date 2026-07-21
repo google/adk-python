@@ -36,9 +36,6 @@ from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
 from ..evaluation.eval_metrics import EvalMetric
-from ..evaluation.eval_metrics import Interval
-from ..evaluation.eval_metrics import MetricInfo
-from ..evaluation.eval_metrics import MetricValueInfo
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..utils.context_utils import Aclosing
@@ -77,19 +74,6 @@ def _get_agent_module(agent_module_file_path: str) -> ModuleType:
   return _import_from_path(module_name, file_path)
 
 
-def get_default_metric_info(
-    metric_name: str, description: str = ""
-) -> MetricInfo:
-  """Returns a default MetricInfo for a metric."""
-  return MetricInfo(
-      metric_name=metric_name,
-      description=description,
-      metric_value_info=MetricValueInfo(
-          interval=Interval(min_value=0.0, max_value=1.0)
-      ),
-  )
-
-
 def get_root_agent(agent_module_file_path: str) -> Agent:
   """Returns root agent given the agent module."""
   agent_module = _get_agent_module(agent_module_file_path)
@@ -117,15 +101,27 @@ def parse_and_get_evals_to_run(
   eval_set_to_evals: dict[str, list[str]] = {}
   for input_eval_set in evals_to_run_info:
     evals = []
-    if ":" not in input_eval_set:
+    drive_letter = input_eval_set[:1]
+    has_windows_drive_prefix = (
+        len(input_eval_set) >= 3
+        and drive_letter.isascii()
+        and drive_letter.isalpha()
+        and input_eval_set[1] == ":"
+        and input_eval_set[2] in ("\\", "/")
+    )
+    selector_separator_index = input_eval_set.find(
+        ":", 3 if has_windows_drive_prefix else 0
+    )
+    if selector_separator_index == -1:
       # We don't have any eval cases specified. This would be the case where the
       # the user wants to run all eval cases in the eval set.
       eval_set = input_eval_set
     else:
       # There are eval cases that we need to parse. The user wants to run
       # specific eval cases from the eval set.
-      eval_set = input_eval_set.split(":")[0]
-      evals = input_eval_set.split(":")[1].split(",")
+      eval_set = input_eval_set[:selector_separator_index]
+      selector_list = input_eval_set[selector_separator_index + 1 :]
+      evals = selector_list.split(":")[0].split(",")
       evals = [s for s in evals if s.strip()]
 
     if eval_set not in eval_set_to_evals:

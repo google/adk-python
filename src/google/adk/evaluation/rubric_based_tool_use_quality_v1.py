@@ -42,12 +42,13 @@ _RUBRIC_BASED_TOOL_USE_QUALITY_V1_PROMPT = """# Mission
 "no": The agent's response did not fulfill the property.
 
 # For each property started with a new line, follow these steps:
-STEP 1: Repeat the property, word for word, without making any changes. Keep everything including punctuation and capitalization as-is.
+STEP 1: Repeat the property text (excluding the "[id: ...]" tag), word for word, without making any changes. Keep everything including punctuation and capitalization as-is.
 STEP 2: Determine the steps needed to **exactly**, **precisely** and **completely** determine whether the agent's response fulfilled the property.
 STEP 3: Follow the steps outlined in STEP 2, thinking out loud.
 STEP 4: Review the thoughts and the original property.
 STEP 5: Output the final verdict.
-Property: [[Repeat the property in STEP 1 again.]]
+ID: [[Copy the id shown in the "[id: ...]" tag for this property, verbatim. Omit this line only if no tag is shown.]]
+Property: [[Repeat the property in STEP 1 again, without the "[id: ...]" tag.]]
 Rationale: [[Explain your reasoning for the verdict.]]
 Verdict: [[yes|no]]
 
@@ -57,6 +58,7 @@ STEP 2: ...
 STEP 3: ...
 STEP 4: ...
 STEP 5: ...
+ID: ...
 Property: ...
 Rationale: ...
 Verdict: ...
@@ -69,6 +71,7 @@ STEP 2: I need to check if the agent runs the function call with exact function 
 STEP 3: The response includes a function call 'default_api.grammar_check'.
 STEP 4: The function call format and the function name are correct.
 STEP 5: yes
+ID: 1
 Property: Does the agent run function call 'default_api.grammar_check'?
 Rationale: The agent's response contains the function call 'default_api.grammar_check' within a proper code block and with the correct function name.
 Verdict: yes
@@ -78,6 +81,7 @@ STEP 2: I need to check if the function call 'default_api.grammar_check' include
 STEP 3: The agent's response includes the function call `default_api.grammar_check(sentence="the dog walks on the a park")`. The parameter 'sentence' is present, and the value assigned to it is "the dog walks on the a park", which is identical to the reference value.
 STEP 4: The parameter 'sentence' is present and its value is exactly the same as the reference value.
 STEP 5: yes
+ID: 2
 Property: Does the agent provide function call 'default_api.grammar_check' with input parameter 'sentence' that is valid compared to the reference 'sentence'= 'the dog walks on the a park' and based on the following guideline? Guideline for 'sentence': 'The wording can differ. The agent response is valid if it conveys similar core content as the reference response. Less efficient and minor inaccurate phrasing is acceptable. The default value is None, if the reference response includes this parameter with value equal to the default value but it is not provided in the agent response, then evaluate it as valid.'
 Rationale: The agent's response includes the 'sentence' parameter in the function call 'default_api.grammar_check', and the value assigned to it is exactly the same as the reference value, thus satisfying the given guideline.
 Verdict: yes
@@ -89,6 +93,7 @@ STEP 2: I need to check if the agent runs the function call with exact function 
 STEP 3: The response includes a function call `default_api.get_web_search_results`, which does not match 'default_api.search_via_perplexity'.
 STEP 4: The function name does not match.
 STEP 5: no
+ID: 1
 Property: Does the agent run function call 'default_api.search_via_perplexity'?
 Rationale: The agent called 'default_api.get_web_search_results', not 'default_api.search_via_perplexity'.
 Verdict: no
@@ -98,6 +103,7 @@ STEP 2: Since the previous property is no, this property is not applicable.
 STEP 3: N/A
 STEP 4: N/A
 STEP 5: yes
+ID: 2
 Property: Does the agent provide function call 'default_api.search_via_perplexity' with input parameter 'keyword' that is valid compared to the reference 'keyword'= 'GPT-4o vs GPT-3.5 cost comparison' and based on the following guideline? Guideline for 'keyword': 'The wording can differ. The agent response is valid if it conveys similar core content as the reference response. Less efficient and minor inaccurate phrasing is acceptable.'
 Rationale: The agent did not use the function call 'default_api.search_via_perplexity'.
 Verdict: yes
@@ -178,7 +184,7 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
     )
 
     rubrics_text = "\n".join([
-        f"*  {r.rubric_content.text_property}"
+        f"*  [id: {r.rubric_id}] {r.rubric_content.text_property}"
         for r in self._effective_rubrics_list
     ])
 

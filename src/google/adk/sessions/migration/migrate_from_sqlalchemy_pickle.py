@@ -220,7 +220,12 @@ def _row_to_event(
       author=row.get("author", "agent"),
       branch=row.get("branch"),
       actions=actions,
-      timestamp=timestamp.replace(tzinfo=timezone.utc).timestamp(),
+      # v0 wrote this column as a naive datetime in local time (via
+      # datetime.fromtimestamp) and read it back the same way, so interpret a
+      # naive value as local time here too. Forcing UTC would shift every
+      # migrated timestamp by the host's UTC offset. datetime.timestamp()
+      # treats naive datetimes as local and honors tzinfo when present.
+      timestamp=timestamp.timestamp(),
       long_running_tool_ids=long_running_tool_ids,
       partial=row.get("partial"),
       turn_complete=row.get("turn_complete"),

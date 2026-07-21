@@ -42,6 +42,7 @@ logger = logging.getLogger("google_adk." + __name__)
 class RubricResponse(EvalBaseModel):
   """Internal data model to represent a rubric's response from the auto-rater."""
 
+  rubric_id: Optional[str] = None
   property_text: Optional[str] = None
   rationale: Optional[str] = None
   score: Optional[float] = None
@@ -56,7 +57,8 @@ class AutoRaterResponseParser(abc.ABC):
     raise NotImplementedError
 
 
-_PROPERTY_PATTERN = r"(?<=Property: )(.*)"
+_ID_PATTERN = r"(?m)^\s*ID: (.*)$"
+_PROPERTY_PATTERN = r"(?m)^\s*Property: (.*)$"
 _RATIONALE_PATTERN = r"(?<=Rationale: )(.*)"
 _VERDICT_PATTERN = r"(?<=Verdict: )(.*)"
 
@@ -66,7 +68,8 @@ class DefaultAutoRaterResponseParser(AutoRaterResponseParser):
 
   def parse(self, auto_rater_response: str) -> list[RubricResponse]:
     """Returns a list of RubricResponse parsed from the AutoRater's response."""
-    properties = re.findall(_PROPERTY_PATTERN, auto_rater_response)
+    property_matches = list(re.finditer(_PROPERTY_PATTERN, auto_rater_response))
+    id_matches = list(re.finditer(_ID_PATTERN, auto_rater_response))
     rationales = re.findall(_RATIONALE_PATTERN, auto_rater_response)
     scores = []
 
@@ -81,13 +84,27 @@ class DefaultAutoRaterResponseParser(AutoRaterResponseParser):
       scores.append(score)
 
     # A partial parse can silently omit a failed rubric and inflate the score.
-    if not len(properties) == len(rationales) == len(scores):
+    if not len(property_matches) == len(rationales) == len(scores):
       return []
 
     rubric_responses = []
-    for p, r, s in zip(properties, rationales, scores, strict=True):
+    for i, (property_match, rationale, score) in enumerate(
+        zip(property_matches, rationales, scores, strict=True)
+    ):
+      # Match each id to the property it immediately precedes (not by index) so
+      # an omitted id line can't shift a later id onto an earlier property.
+      previous_start = property_matches[i - 1].start() if i > 0 else -1
+      rubric_id = None
+      for id_match in id_matches:
+        if previous_start < id_match.start() < property_match.start():
+          rubric_id = id_match.group(1).strip() or None
       rubric_responses.append(
-          RubricResponse(property_text=p.strip(), rationale=r.strip(), score=s)
+          RubricResponse(
+              rubric_id=rubric_id,
+              property_text=property_match.group(1).strip(),
+              rationale=rationale.strip(),
+              score=score,
+          )
       )
 
     return rubric_responses
@@ -406,14 +423,21 @@ class RubricBasedEvaluator(LlmAsJudge):
     rubric_scores = []
 
     normalized_rubric_to_rubric_map = {}
+    rubric_by_id = {}
     for r in self.get_effective_rubrics_list():
       normalized_rubric_to_rubric_map[
           _normalize_text(r.rubric_content.text_property)
       ] = r
+      rubric_by_id[r.rubric_id] = r
 
     for rubric_response in rubric_responses:
-      normalized_rubric_text = _normalize_text(rubric_response.property_text)
-      rubric = normalized_rubric_to_rubric_map.get(normalized_rubric_text, None)
+      rubric = None
+      if rubric_response.rubric_id:
+        rubric = rubric_by_id.get(rubric_response.rubric_id)
+      if rubric is None:
+        rubric = normalized_rubric_to_rubric_map.get(
+            _normalize_text(rubric_response.property_text)
+        )
       if rubric:
         rubric_scores.append(
             RubricScore(

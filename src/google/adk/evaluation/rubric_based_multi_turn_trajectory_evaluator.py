@@ -59,6 +59,7 @@ STEP 2: Determine the steps needed to check if all the assistant responses in th
 STEP 3: Follow the steps outlined in STEP 2, thinking out loud. As you think, refer to specific assistant responses and count their turn numbers within the <conversation_history>.
 STEP 4: Review the thoughts and the original property.
 STEP 5: Output the final verdict.
+ID: [[Copy the "id" field of this property from the properties list, verbatim. Omit this line only if the property has no "id" field.]]
 Property: [[Repeat the property in STEP 1 again.]]
 Rationale: [[Explain your reasoning for the verdict.]]
 Verdict: [[yes|no]]
@@ -69,6 +70,7 @@ STEP 2: ...
 STEP 3: ...
 STEP 4: ...
 STEP 5: ...
+ID: ...
 Property: ...
 Rationale: ...
 Verdict: ...
@@ -80,6 +82,7 @@ STEP 2: I need to check if any assistant response in the <conversation_history> 
 STEP 3: Reviewing the <conversation_history>, I find that in Assistant Turn 2, the agent includes the function call default_api.grammar_check(sentence="the dog walks on the a park"). This matches the required function name.
 STEP 4: The assistant successfully called the specified function in Turn 2.
 STEP 5: yes
+ID: 1
 Property: Does the agent run function call 'default_api.grammar_check'?
 Rationale: The agent's response in Assistant Turn 2 contains the function call 'default_api.grammar_check' within a proper code block and with the correct function name.
 Verdict: yes
@@ -89,6 +92,7 @@ STEP 2: I need to check if the function call 'default_api.grammar_check' (if pre
 STEP 3: In Assistant Turn 2, the agent's response includes the function call default_api.grammar_check(sentence="the dog walks on the a park"). The parameter 'sentence' is present, and the value assigned to it is "the dog walks on the a park", which is identical to the reference value.
 STEP 4: The parameter 'sentence' is present and its value is exactly the same as the reference value in Assistant Turn 2.
 STEP 5: yes
+ID: 2
 Property: The sentence parameter in the grammar_check function call must be 'the dog walks on the a park'.
 Rationale: The agent's response in Assistant Turn 2 includes the 'sentence' parameter in the function call 'default_api.grammar_check', and the value assigned to it is exactly the same as the reference value.
 Verdict: yes
@@ -100,6 +104,7 @@ STEP 2: I need to check if any assistant response in the <conversation_history> 
 STEP 3: Reviewing the <conversation_history>, I find that in Assistant Turn 2, the agent includes a function call default_api.get_web_search_results. This does not match the required 'default_api.search_via_perplexity'. I checked all other assistant turns and no other function call matches.
 STEP 4: The agent did not use the function 'default_api.search_via_perplexity' in any turn.
 STEP 5: no
+ID: 1
 Property: Does the agent run function call 'default_api.search_via_perplexity'?
 Rationale: The agent called 'default_api.get_web_search_results' in Assistant Turn 2, not 'default_api.search_via_perplexity'. The correct function was not called in any turn.
 Verdict: no
@@ -109,6 +114,7 @@ STEP 2: I need to check if the agent runs the function call with exact function 
 STEP 3: Based on the previous evaluation, the agent did not include a function call 'default_api.search_via_perplexity' in any of its turns. Therefore, this property cannot be fulfilled.
 STEP 4: The property cannot be fulfilled because the agent did not use the specified function call.
 STEP 5: no
+ID: 2
 Property: Does the agent provide function call 'default_api.search_via_perplexity' with input parameter 'keyword' that is valid compared to the reference 'keyword'= 'GPT-4o vs GPT-3.5 cost comparison' and based on the following guideline? Guideline for 'keyword': 'The wording can differ. The agent response is valid if it conveys similar core content as the reference response. Less efficient and minor inaccurate phrasing is acceptable.'
 Rationale: The agent did not use the function call 'default_api.search_via_perplexity' in any of its responses throughout the conversation.
 Verdict: no
@@ -353,6 +359,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
     rubrics_list = []
     for r in self._effective_rubrics_list:
       rubrics_dict = {
+          "id": r.rubric_id,
           "property": r.rubric_content.text_property,
       }
       if r.type:

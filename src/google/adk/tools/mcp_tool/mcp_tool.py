@@ -21,7 +21,6 @@ import inspect
 import logging
 from typing import Any
 from typing import Callable
-from typing import cast
 from typing import Protocol
 from typing import runtime_checkable
 import warnings
@@ -283,54 +282,6 @@ class McpTool(BaseAuthenticatedTool):
     else:
       return target(**args_to_call)
 
-  def _prepare_callable_args(
-      self,
-      target: Callable[..., Any],
-      args: dict[str, Any],
-      tool_context: ToolContext,
-  ) -> dict[str, Any]:
-    """Prepares arguments for invoking a user-provided callable."""
-    args_to_call = args.copy()
-    try:
-      signature = inspect.signature(target)
-    except (ValueError, TypeError):
-      return args_to_call
-
-    valid_params = set(signature.parameters.keys())
-    has_kwargs = any(
-        param.kind == inspect.Parameter.VAR_KEYWORD
-        for param in signature.parameters.values()
-    )
-
-    # Detect context parameter by type or fallback to 'tool_context' name
-    context_param = find_context_parameter(target) or "tool_context"
-    if context_param in valid_params or has_kwargs:
-      args_to_call[context_param] = tool_context
-
-    # Filter args_to_call only if there's no **kwargs
-    if not has_kwargs:
-      # Add context param to valid_params if it was added to args_to_call
-      if context_param in args_to_call:
-        valid_params.add(context_param)
-      args_to_call = {
-          k: v for k, v in args_to_call.items() if k in valid_params
-      }
-    return args_to_call
-
-  @override
-  async def check_require_confirmation(
-      self, args: dict[str, Any], tool_context: ToolContext
-  ) -> bool:
-    if callable(self._require_confirmation):
-      args_to_call = self._prepare_callable_args(
-          self._require_confirmation, args, tool_context
-      )
-      return cast(
-          bool,
-          await self._invoke_callable(self._require_confirmation, args_to_call),
-      )
-    return bool(self._require_confirmation)
-
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
@@ -342,9 +293,40 @@ class McpTool(BaseAuthenticatedTool):
         else None
     )
     try:
-      require_confirmation = await self.check_require_confirmation(
-          args, tool_context
-      )
+      if isinstance(self._require_confirmation, Callable):
+        args_to_call = args.copy()
+        try:
+          signature = inspect.signature(self._require_confirmation)
+          valid_params = set(signature.parameters.keys())
+          has_kwargs = any(
+              param.kind == inspect.Parameter.VAR_KEYWORD
+              for param in signature.parameters.values()
+          )
+
+          # Detect context parameter by type or fallback to 'tool_context' name
+          context_param = (
+              find_context_parameter(self._require_confirmation)
+              or "tool_context"
+          )
+          if context_param in valid_params or has_kwargs:
+            args_to_call[context_param] = tool_context
+
+          # Filter args_to_call only if there's no **kwargs
+          if not has_kwargs:
+            # Add context param to valid_params if it was added to args_to_call
+            if context_param in args_to_call:
+              valid_params.add(context_param)
+            args_to_call = {
+                k: v for k, v in args_to_call.items() if k in valid_params
+            }
+        except ValueError:
+          args_to_call = args
+
+        require_confirmation = await self._invoke_callable(
+            self._require_confirmation, args_to_call
+        )
+      else:
+        require_confirmation = bool(self._require_confirmation)
 
       if require_confirmation:
         if not tool_context.tool_confirmation:
