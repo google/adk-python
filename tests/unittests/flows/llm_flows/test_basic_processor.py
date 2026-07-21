@@ -23,6 +23,7 @@ from google.adk.flows.llm_flows.basic import _BasicLlmRequestProcessor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 import pytest
