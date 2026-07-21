@@ -64,7 +64,7 @@ class InvocationEvent(EvalBaseModel):
   author: str
   """The name of the agent that authored/owned this event."""
 
-  content: Optional[genai_types.Content]
+  content: Optional[genai_types.Content] = None
   """The content of the event."""
 
 
