@@ -17,6 +17,7 @@ from typing import Any
 from typing import Dict
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.models.google_llm import Gemini
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
@@ -52,7 +53,10 @@ non_blocking_tool.response_scheduling = (
 
 
 root_agent = Agent(
-    model="gemini-live-2.5-flash-native-audio",
+    model=Gemini(
+        model="gemini-live-2.5-flash-native-audio",
+        client_kwargs={"location": "us-central1"},
+    ),
     name="non_blocking_tool_agent",
     description=(
         "Agent demonstrating non-blocking tool execution in ADK Live mode."

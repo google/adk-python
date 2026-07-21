@@ -42,6 +42,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 import graphviz
 from pydantic import Field
+from pydantic import TypeAdapter
 from pydantic import ValidationError
 from typing_extensions import deprecated
 import yaml
@@ -52,6 +53,7 @@ from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
+from ..evaluation.eval_config import UserSimulatorConfig
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
@@ -100,6 +102,22 @@ class RunEvalRequest(common.BaseModel):
       ),
   )
   eval_metrics: list[EvalMetric]
+  use_live: bool = Field(
+      default=False,
+      description=(
+          "Whether to run inference in live (bidirectional streaming) mode."
+          " Required for Live API models (e.g. `gemini-*-live-*`)."
+      ),
+  )
+  # A raw mapping, not the typed `UserSimulatorConfig` union: the union is not
+  # JSON-schema-able and would break OpenAPI generation. `run_eval` validates it.
+  user_simulator_config: Optional[dict[str, Any]] = Field(
+      default=None,
+      description=(
+          "Optional user-simulator configuration. The concrete type is selected"
+          ' via the `type` discriminator (e.g. `{"type": "llm_audio", ...}`).'
+      ),
+  )
 
 
 class RunEvalResult(common.BaseModel):
@@ -1029,6 +1047,7 @@ class DevServer(ApiServer):
       # run.
       try:
         from ..evaluation.local_eval_service import LocalEvalService
+        from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
         from .cli_eval import _collect_eval_results
         from .cli_eval import _collect_inferences
 
@@ -1044,18 +1063,31 @@ class DevServer(ApiServer):
 
         eval_case_results = []
 
+        # The request carries the config as a raw mapping (OpenAPI-safe), so
+        # validate it into the typed `UserSimulatorConfig` union here.
+        if req.user_simulator_config is not None:
+          user_simulator_config = TypeAdapter(
+              UserSimulatorConfig
+          ).validate_python(req.user_simulator_config)
+          user_simulator_provider = UserSimulatorProvider(
+              user_simulator_config=user_simulator_config
+          )
+        else:
+          user_simulator_provider = UserSimulatorProvider()
+
         eval_service = LocalEvalService(
             root_agent=root_agent,
             eval_sets_manager=self.eval_sets_manager,
             eval_set_results_manager=self.eval_set_results_manager,
             session_service=self.session_service,
             artifact_service=self.artifact_service,
+            user_simulator_provider=user_simulator_provider,
         )
         inference_request = InferenceRequest(
             app_name=app_name,
             eval_set_id=eval_set.eval_set_id,
             eval_case_ids=req.eval_case_ids or req.eval_ids,
-            inference_config=InferenceConfig(),
+            inference_config=InferenceConfig(use_live=req.use_live),
         )
         inference_results = await _collect_inferences(
             inference_requests=[inference_request], eval_service=eval_service

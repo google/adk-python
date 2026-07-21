@@ -156,6 +156,8 @@ class AgentEvaluator:
         user_simulator_config=eval_config.user_simulator_config
     )
 
+    use_live = eval_config.use_live
+
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
         agent_for_eval=agent_for_eval,
@@ -163,6 +165,7 @@ class AgentEvaluator:
         eval_metrics=eval_metrics,
         num_runs=num_runs,
         user_simulator_provider=user_simulator_provider,
+        use_live=use_live,
     )
 
     # Step 2: Post-process the results!
@@ -554,6 +557,7 @@ class AgentEvaluator:
       eval_metrics: list[EvalMetric],
       num_runs: int,
       user_simulator_provider: UserSimulatorProvider,
+      use_live: bool = False,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -584,7 +588,7 @@ class AgentEvaluator:
         InferenceRequest(
             app_name=app_name,
             eval_set_id=eval_set.eval_set_id,
-            inference_config=InferenceConfig(),
+            inference_config=InferenceConfig(use_live=use_live),
         )
     ] * num_runs  # Repeat inference request num_runs times.
 

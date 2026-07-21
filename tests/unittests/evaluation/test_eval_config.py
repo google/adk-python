@@ -285,3 +285,18 @@ def test_user_simulator_config_python_construction():
       eval_config.user_simulator_config, LlmBackedUserSimulatorConfig
   )
   assert eval_config.user_simulator_config.model == "py-model"
+
+
+def test_use_live_defaults_to_false():
+  eval_config = EvalConfig(criteria={})
+  assert eval_config.use_live is False
+
+
+def test_use_live_from_json():
+  eval_config = EvalConfig.model_validate({"criteria": {}, "use_live": True})
+  assert eval_config.use_live is True
+
+
+def test_use_live_from_camel_case_json():
+  eval_config = EvalConfig.model_validate({"criteria": {}, "useLive": True})
+  assert eval_config.use_live is True

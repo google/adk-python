@@ -153,8 +153,16 @@ class _CloudTTSLlm(BaseLlm):
       A single ``LlmResponse`` with audio data in ``inline_data``.
     """
     # Lazy imports to avoid mandatory dependency when TTS is not used.
-    from google.cloud.texttospeech_v1 import TextToSpeechAsyncClient
-    from google.cloud.texttospeech_v1.types import cloud_tts
+    try:
+      from google.cloud.texttospeech_v1 import TextToSpeechAsyncClient
+      from google.cloud.texttospeech_v1.types import cloud_tts
+    except ImportError as e:
+      raise ImportError(
+          "The 'cloud_tts' audio model requires the"
+          " 'google-cloud-texttospeech' package. Install it with `pip install"
+          " google-cloud-texttospeech`, or set `audio_model` to a Gemini TTS"
+          " model."
+      ) from e
 
     # Initialise client lazily.
     if self._tts_client is None:

@@ -39,7 +39,7 @@ logger = logging.getLogger("google_adk." + __name__)
 # The set of user-simulator config subclasses that `EvalConfig` can
 # deserialize into via the `type` discriminator. Add any new subclass to
 # this Union (each with a unique `Literal[...]` for its `type` field).
-_UserSimulatorConfig = Union[
+UserSimulatorConfig = Union[
     LlmBackedUserSimulatorConfig, LlmAudioUserSimulatorConfig
 ]
 
@@ -156,7 +156,7 @@ Example:
 """,
   )
 
-  user_simulator_config: Optional[_UserSimulatorConfig] = Field(
+  user_simulator_config: Optional[UserSimulatorConfig] = Field(
       default=None,
       discriminator="type",
       description=(
@@ -166,6 +166,14 @@ Example:
           " predate the `type` field are treated as"
           f' `type="{_LEGACY_DEFAULT_USER_SIMULATOR_TYPE}"` for backward'
           " compatibility."
+      ),
+  )
+
+  use_live: bool = Field(
+      default=False,
+      description=(
+          "Whether to use live (bidirectional streaming) mode for inference."
+          " Required for Live API models (e.g. `gemini-*-live-*`)."
       ),
   )
 

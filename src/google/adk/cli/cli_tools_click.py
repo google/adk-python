@@ -1032,6 +1032,10 @@ def cli_eval(
   print(f"Using evaluation criteria: {eval_config}")
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
+  # Live mode is resolved from the eval config, consistent with how
+  # `user_simulator_config` and other eval settings are sourced.
+  inference_config = InferenceConfig(use_live=eval_config.use_live)
+
   root_agent = asyncio.run(get_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
@@ -1090,7 +1094,7 @@ def cli_eval(
               app_name=app_name,
               eval_set_id=eval_set.eval_set_id,
               eval_case_ids=eval_case_ids,
-              inference_config=InferenceConfig(),
+              inference_config=inference_config,
           )
       )
   else:
@@ -1107,7 +1111,7 @@ def cli_eval(
               app_name=app_name,
               eval_set_id=eval_set_id_key,
               eval_case_ids=eval_case_ids,
-              inference_config=InferenceConfig(),
+              inference_config=inference_config,
           )
       )
 
