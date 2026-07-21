@@ -17,6 +17,7 @@ from enum import Enum
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools import _automatic_function_calling_util
+from google.adk.tools import _function_parameter_parse_util
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
@@ -197,6 +198,44 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.parameters.type == 'OBJECT'
     assert function_decl.parameters.properties['input_str'].type == 'STRING'
     assert 'tool_context' not in function_decl.parameters.properties
+
+  def test_get_required_fields_no_properties_returns_empty_list(self):
+    # A schema without properties must yield [] rather than None for any
+    # caller that relies on the declared list[str] return.
+    assert (
+        _function_parameter_parse_util._get_required_fields(
+            types.Schema(type='OBJECT')
+        )
+        == []
+    )
+    assert (
+        _function_parameter_parse_util._get_required_fields(
+            types.Schema(type='OBJECT', properties={})
+        )
+        == []
+    )
+
+  def test_build_declaration_includes_required_parameters(self):
+    def simple_function(input_str: str) -> str:
+      return {'result': input_str}
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.parameters.required == ['input_str']
+
+  def test_all_parameters_ignored_results_in_no_parameters_schema(self):
+    def only_context(tool_context: ToolContext) -> str:
+      return ''
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=only_context, ignore_params=['tool_context']
+    )
+
+    # No parameters remain after ignoring tool_context, so the declaration
+    # carries no parameter schema instead of one with required=None.
+    assert function_decl.parameters is None
 
   def test_basemodel(self):
     class SimpleFunction(BaseModel):

@@ -15,12 +15,16 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from ..errors.not_found_error import NotFoundError
 from ..utils.feature_decorator import experimental
 from .custom_metric_evaluator import _CustomMetricEvaluator
+from .eval_config import EvalConfig
 from .eval_metrics import EvalMetric
+from .eval_metrics import Interval
 from .eval_metrics import MetricInfo
+from .eval_metrics import MetricValueInfo
 from .eval_metrics import PrebuiltMetrics
 from .evaluator import Evaluator
 from .final_response_match_v2 import FinalResponseMatchV2Evaluator
@@ -175,3 +179,51 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
 
 
 DEFAULT_METRIC_EVALUATOR_REGISTRY = _get_default_metric_evaluator_registry()
+
+
+def _get_default_metric_info(
+    metric_name: str, description: str = ""
+) -> MetricInfo:
+  """Returns a default MetricInfo for a metric."""
+  return MetricInfo(
+      metric_name=metric_name,
+      description=description,
+      metric_value_info=MetricValueInfo(
+          interval=Interval(min_value=0.0, max_value=1.0)
+      ),
+  )
+
+
+def register_custom_metrics_from_config(
+    eval_config: EvalConfig,
+    metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
+) -> MetricEvaluatorRegistry:
+  """Registers custom metrics declared in the given eval config.
+
+  Args:
+    eval_config: The eval config whose custom_metrics entries should be
+      registered. Entries without a metric_info get a default one with a
+      [0.0, 1.0] value interval.
+    metric_evaluator_registry: The registry to register the metrics in.
+      Defaults to DEFAULT_METRIC_EVALUATOR_REGISTRY.
+
+  Returns:
+    The registry the metrics were registered in.
+  """
+  if metric_evaluator_registry is None:
+    metric_evaluator_registry = DEFAULT_METRIC_EVALUATOR_REGISTRY
+  if not eval_config.custom_metrics:
+    return metric_evaluator_registry
+
+  for metric_name, config in eval_config.custom_metrics.items():
+    if config.metric_info:
+      metric_info = config.metric_info.model_copy()
+      metric_info.metric_name = metric_name
+    else:
+      metric_info = _get_default_metric_info(
+          metric_name=metric_name, description=config.description
+      )
+    metric_evaluator_registry.register_evaluator(
+        metric_info, _CustomMetricEvaluator
+    )
+  return metric_evaluator_registry

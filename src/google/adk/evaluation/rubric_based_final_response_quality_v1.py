@@ -70,7 +70,8 @@ For each property follow these internal steps:
 6. Output the final verdict in the required output format.
 
 # Output Format (repeat this format for every property, starting with a new line):
-Property: [Repeat the property, word for word, without making any changes. Keep everything including punctuation and capitalization as-is.]
+ID: [Copy the id shown in the "[id: ...]" tag for this property, verbatim. Omit this line only if no tag is shown.]
+Property: [Repeat the property text that follows the "[id: ...]" tag, word for word, without making any changes and without the tag. Keep everything including punctuation and capitalization as-is.]
 Evidence: [List all trusted evidence from tool calls or the user prompt that is relevant to the property (referencing the Step Index). Alternatively, if either no trusted evidence is required, or no trusted evidence exists (e.g., flawed process, missing tool call, tool error), explain why.]
 Rationale: [Explain your reasoning, detailing how the evidence (or lack thereof) supports or contradicts the final answer, or why the property is not applicable.]
 Verdict: [yes|no]
@@ -149,46 +150,53 @@ REMEMBER: Your answer will help improve the AI agent. It is important to determi
 </response>
 
 <properties>
-* The final answer correctly identifies the total number of employees.
-* The final answer correctly identifies the name of Alice Smith's manager, or correctly states that it cannot be determined and why.
-* The final answer correctly states the average salary for the Marketing department.
-* The final answer correctly identifies the employee with the highest salary.
-* The final answer correctly identifies the gender of the employee with the highest salary, or correctly states that it cannot be determined and why.
-* The final answer is formatted as a numbered list.
-* If the company has fewer than 100 employees, then the final answer states that it has fewer than 100 employees.
+*  [id: 1] The final answer correctly identifies the total number of employees.
+*  [id: 2] The final answer correctly identifies the name of Alice Smith's manager, or correctly states that it cannot be determined and why.
+*  [id: 3] The final answer correctly states the average salary for the Marketing department.
+*  [id: 4] The final answer correctly identifies the employee with the highest salary.
+*  [id: 5] The final answer correctly identifies the gender of the employee with the highest salary, or correctly states that it cannot be determined and why.
+*  [id: 6] The final answer is formatted as a numbered list.
+*  [id: 7] If the company has fewer than 100 employees, then the final answer states that it has fewer than 100 employees.
 </properties>
 
 ## Output
+ID: 1
 Property: The final answer correctly identifies the total number of employees.
 Evidence: The trusted evidence is "110 employees". The tool call in Step 0 is procedurally sound and provides the total number of employees (110) by calling the load_hr_data_from_file tool with the correct file name.
 Rationale: The final answer's claim ("110 employees") is fully consistent with the trusted evidence.
 Verdict: yes
 
+ID: 2
 Property: The final answer correctly identifies the name of Alice Smith's manager, or correctly states that it cannot be determined and why.
 Evidence: No trusted evidence exists. The agent did not perform a tool call to determine the manager of Alice Smith, despite having the necessary information (the employee name) and access to the necessary tools (get_manager) to do so.
 Rationale: The agent incorrectly stated that the final answer cannot be determined, despite having the necessary information (the employee name) and tools (get_manager) to determine it.
 Verdict: no
 
+ID: 3
 Property: The final answer correctly states the average salary for the Marketing department.
 Evidence: No trusted evidence exists for the Marketing department's average salary. The tool call in Step 1 is procedurally flawed; the agent searched for "Engineering" instead of "Marketing".
 Rationale: There is no trusted evidence for the Marketing department's average salary.
 Verdict: no
 
+ID: 4
 Property: The final answer correctly identifies the employee with the highest salary.
 Evidence: The trusted evidence is "John Smith". The tool call in Step 2 produces trusted evidence for the employee with the highest salary by calling the load_hr_data_from_file tool with the correct file name and then using the idxmax() method to find the employee with the highest salary.
 Rationale: The final answer's claim ("John Doe") is inconsistent with the trusted evidence ("John Smith").
 Verdict: no
 
+ID: 5
 Property: The final answer correctly identifies the gender of the employee with the highest salary, or correctly states that it cannot be determined and why.
 Evidence: No trusted evidence exists. The agent did not perform a tool call to determine the gender of the employee with the highest salary.
 Rationale: There is no trusted evidence to confirm the gender of the employee with the highest salary that the final answer states (male). Even if the gender is coincidentally actually male, the claim in the final answer cannot be unambiguously verified using the evidence.
 Verdict: no
 
+ID: 7
 Property: If the company has fewer than 100 employees, then the final answer should state that it has fewer than 100 employees.
 Evidence: The trusted evidence is "110 employees". The tool call in Step 0 correctly counts the total number of employees as 110 by calling the load_hr_data_from_file tool with the correct file name.
 Rationale: The total number of employees is 110, so the condition for this property (fewer than 100 employees) was not met. Therefore, the property is not applicable to this response.
 Verdict: yes
 
+ID: 6
 Property: The final answer is formatted as a numbered list.
 Evidence: N/A. Trusted evidence from tool calls or the user prompt is not required in order to determine the format of the final answer.
 Rationale: The final answer is formatted as a numbered list from 1 to 4, e.g. "1. The total number of employees is 110\n2...".
@@ -287,7 +295,7 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     )
 
     rubrics_text = "\n".join([
-        f"*  {r.rubric_content.text_property}"
+        f"*  [id: {r.rubric_id}] {r.rubric_content.text_property}"
         for r in self._effective_rubrics_list
     ])
 

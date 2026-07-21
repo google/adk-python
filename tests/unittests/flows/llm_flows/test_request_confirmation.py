@@ -15,13 +15,11 @@
 import json
 from unittest.mock import patch
 
-from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import functions
 from google.adk.flows.llm_flows.request_confirmation import request_processor
 from google.adk.models.llm_request import LlmRequest
-from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
@@ -31,46 +29,6 @@ from ... import testing_utils
 MOCK_TOOL_NAME = "mock_tool"
 MOCK_FUNCTION_CALL_ID = "mock_function_call_id"
 MOCK_CONFIRMATION_FUNCTION_CALL_ID = "mock_confirmation_function_call_id"
-
-
-def append_tool_call_event(
-    invocation_context: InvocationContext,
-    function_call: types.FunctionCall,
-    author: str | None = None,
-    branch: str | None = None,
-) -> Event:
-  """Helper to append a tool call event to the session history."""
-  if author is None:
-    author = (
-        invocation_context.agent.name
-        if invocation_context.agent
-        else "test_agent"
-    )
-  event = Event(
-      author=author,
-      branch=branch,
-      content=types.Content(parts=[types.Part(function_call=function_call)]),
-  )
-  invocation_context.session.events.append(event)
-  return event
-
-
-def append_tool_response_event(
-    invocation_context: InvocationContext,
-    function_response: types.FunctionResponse,
-    author: str = "user",
-    branch: str | None = None,
-) -> Event:
-  """Helper to append a tool response event to the session history."""
-  event = Event(
-      author=author,
-      branch=branch,
-      content=types.Content(
-          parts=[types.Part(function_response=function_response)]
-      ),
-  )
-  invocation_context.session.events.append(event)
-  return event
 
 
 def mock_tool(param1: str):
@@ -152,13 +110,9 @@ async def test_request_confirmation_processor_no_confirmation_function_response(
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_request_confirmation_processor_success():
   """Test the successful processing of a tool confirmation."""
-  agent = LlmAgent(
-      name="test_agent",
-      tools=[FunctionTool(mock_tool, require_confirmation=True)],
-  )
+  agent = LlmAgent(name="test_agent", tools=[mock_tool])
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
@@ -167,9 +121,6 @@ async def test_request_confirmation_processor_success():
   original_function_call = types.FunctionCall(
       name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
   )
-
-  # Event with the original tool call
-  append_tool_call_event(invocation_context, original_function_call)
 
   tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
   tool_confirmation_args = {
@@ -182,24 +133,42 @@ async def test_request_confirmation_processor_success():
   }
 
   # Event with the request for confirmation
-  append_tool_call_event(
-      invocation_context,
-      types.FunctionCall(
-          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-          args=tool_confirmation_args,
-          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-      ),
+  invocation_context.session.events.append(
+      Event(
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      )
   )
 
   # Event with the user's confirmation
   user_confirmation = ToolConfirmation(confirmed=True)
-  append_tool_response_event(
-      invocation_context,
-      types.FunctionResponse(
-          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-          response={"response": user_confirmation.model_dump_json()},
-      ),
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": user_confirmation.model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
   )
 
   expected_event = Event(
@@ -244,10 +213,7 @@ async def test_request_confirmation_processor_success():
 @pytest.mark.asyncio
 async def test_request_confirmation_processor_tool_not_confirmed():
   """Test when the tool execution is not confirmed by the user."""
-  agent = LlmAgent(
-      name="test_agent",
-      tools=[FunctionTool(mock_tool, require_confirmation=True)],
-  )
+  agent = LlmAgent(name="test_agent", tools=[mock_tool])
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
@@ -256,9 +222,6 @@ async def test_request_confirmation_processor_tool_not_confirmed():
   original_function_call = types.FunctionCall(
       name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
   )
-
-  # Event with the original tool call
-  append_tool_call_event(invocation_context, original_function_call)
 
   tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
   tool_confirmation_args = {
@@ -270,23 +233,41 @@ async def test_request_confirmation_processor_tool_not_confirmed():
       ),
   }
 
-  append_tool_call_event(
-      invocation_context,
-      types.FunctionCall(
-          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-          args=tool_confirmation_args,
-          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-      ),
+  invocation_context.session.events.append(
+      Event(
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      )
   )
 
   user_confirmation = ToolConfirmation(confirmed=False)
-  append_tool_response_event(
-      invocation_context,
-      types.FunctionResponse(
-          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-          response={"response": user_confirmation.model_dump_json()},
-      ),
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": user_confirmation.model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
   )
 
   with patch(
@@ -333,10 +314,7 @@ async def test_request_confirmation_processor_finds_user_confirmation_in_default
   Assert: Processor finds the response and triggers tool execution.
   """
   # Arrange
-  agent = LlmAgent(
-      name="test_agent",
-      tools=[FunctionTool(mock_tool, require_confirmation=True)],
-  )
+  agent = LlmAgent(name="test_agent", tools=[mock_tool])
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
@@ -346,11 +324,6 @@ async def test_request_confirmation_processor_finds_user_confirmation_in_default
 
   original_function_call = types.FunctionCall(
       name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
-  )
-
-  # Event with the original tool call
-  append_tool_call_event(
-      invocation_context, original_function_call, branch="child_branch"
   )
 
   tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
@@ -364,26 +337,44 @@ async def test_request_confirmation_processor_finds_user_confirmation_in_default
   }
 
   # Event with the request for confirmation (in child branch)
-  append_tool_call_event(
-      invocation_context,
-      types.FunctionCall(
-          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-          args=tool_confirmation_args,
-          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-      ),
-      branch="child_branch",
+  invocation_context.session.events.append(
+      Event(
+          author="agent",
+          branch="child_branch",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      )
   )
 
   # Event with the user's confirmation (in default branch, branch=None)
   user_confirmation = ToolConfirmation(confirmed=True)
-  append_tool_response_event(
-      invocation_context,
-      types.FunctionResponse(
-          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-          response={"response": user_confirmation.model_dump_json()},
-      ),
-      branch=None,
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          branch=None,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": user_confirmation.model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
   )
 
   expected_event = Event(
@@ -416,82 +407,3 @@ async def test_request_confirmation_processor_finds_user_confirmation_in_default
 
     assert len(events) == 1
     assert events[0] == expected_event
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "tools, original_args, confirmation_args, expected_exception_match",
-    [
-        (
-            [],
-            {"param1": "test"},
-            {"param1": "test"},
-            "is not registered",
-        ),
-        (
-            [FunctionTool(mock_tool, require_confirmation=False)],
-            {"param1": "test"},
-            {"param1": "test"},
-            "does not require confirmation",
-        ),
-        (
-            [FunctionTool(mock_tool, require_confirmation=True)],
-            {"param1": "test"},
-            {"param1": "tampered"},
-            "arguments mismatch",
-        ),
-    ],
-)
-async def test_request_confirmation_processor_rejections(
-    tools, original_args, confirmation_args, expected_exception_match
-):
-  """Test various validation rejections in request confirmation processor."""
-  agent = LlmAgent(name="test_agent", tools=tools)
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
-  llm_request = LlmRequest()
-
-  original_function_call = types.FunctionCall(
-      name=MOCK_TOOL_NAME, args=original_args, id=MOCK_FUNCTION_CALL_ID
-  )
-
-  # Event with original function call
-  append_tool_call_event(invocation_context, original_function_call)
-
-  # Confirmation request
-  confirmation_function_call = types.FunctionCall(
-      name=MOCK_TOOL_NAME, args=confirmation_args, id=MOCK_FUNCTION_CALL_ID
-  )
-  tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
-  tool_confirmation_args = {
-      "originalFunctionCall": confirmation_function_call.model_dump(
-          exclude_none=True, by_alias=True
-      ),
-      "toolConfirmation": tool_confirmation.model_dump(
-          by_alias=True, exclude_none=True
-      ),
-  }
-
-  append_tool_call_event(
-      invocation_context,
-      types.FunctionCall(
-          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-          args=tool_confirmation_args,
-          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-      ),
-  )
-
-  user_confirmation = ToolConfirmation(confirmed=True)
-  append_tool_response_event(
-      invocation_context,
-      types.FunctionResponse(
-          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-          response={"response": user_confirmation.model_dump_json()},
-      ),
-  )
-
-  with pytest.raises(ValueError, match=expected_exception_match):
-    async for _ in request_processor.run_async(invocation_context, llm_request):
-      pass

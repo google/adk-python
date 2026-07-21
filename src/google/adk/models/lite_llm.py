@@ -27,7 +27,6 @@ import re
 import sys
 from typing import Any
 from typing import AsyncGenerator
-from typing import cast
 from typing import Dict
 from typing import Generator
 from typing import Iterable
@@ -2376,15 +2375,24 @@ async def _get_completion_inputs(
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict[str, Any]]] = None
-  if (
-      llm_request.config
-      and llm_request.config.tools
-      and llm_request.config.tools[0].function_declarations
-  ):
-    tools = [
-        _function_declaration_to_tool_param(tool)
-        for tool in llm_request.config.tools[0].function_declarations
-    ]
+  if llm_request.config and llm_request.config.tools:
+    tools = []
+    for tool in llm_request.config.tools:
+      if not isinstance(tool, types.Tool):
+        continue
+      if tool.function_declarations:
+        tools.extend(
+            _function_declaration_to_tool_param(func_decl)
+            for func_decl in tool.function_declarations
+        )
+      else:
+        # Native/built-in tools (e.g. google_search) carry no
+        # function_declarations; serialize them as-is so they reach the
+        # provider or proxy instead of being silently dropped.
+        dumped_tool = tool.model_dump(by_alias=True, exclude_none=True)
+        if dumped_tool:
+          tools.append(dumped_tool)
+    tools = tools or None
 
   # 3. Handle response format
   response_format: dict[str, Any] | None = None
@@ -2458,10 +2466,12 @@ def _build_request_log(req: LlmRequest) -> str:
     The request log.
   """
 
-  function_decls: list[types.FunctionDeclaration] = cast(
-      list[types.FunctionDeclaration],
-      req.config.tools[0].function_declarations if req.config.tools else [],
-  )
+  function_decls: list[types.FunctionDeclaration] = [
+      func_decl
+      for tool in req.config.tools or []
+      if isinstance(tool, types.Tool) and tool.function_declarations
+      for func_decl in tool.function_declarations
+  ]
   function_logs = (
       [
           _build_function_declaration_log(func_decl)
