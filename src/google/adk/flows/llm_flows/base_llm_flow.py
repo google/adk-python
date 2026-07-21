@@ -1091,6 +1091,9 @@ class BaseLlmFlow(ABC):
     # Run processors for tools.
     await _process_agent_tools(invocation_context, llm_request)
 
+    # Finalize dynamic instructions from tools.
+    await _finalize_dynamic_instructions(invocation_context, llm_request)
+
   async def _postprocess_async(
       self,
       invocation_context: InvocationContext,
@@ -1614,3 +1617,36 @@ class BaseLlmFlow(ABC):
           f' but got {type(agent)}'
       )
     return agent.canonical_model
+
+
+async def _finalize_dynamic_instructions(
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+) -> None:
+  """Finalizes and resolves dynamic instructions from LlmRequest."""
+  if not llm_request._dynamic_instructions:
+    return
+
+  combined_text = '\n\n'.join(llm_request._dynamic_instructions)
+
+  from ...features import FeatureName
+  from ...features import is_feature_enabled
+
+  # TODO: Deprecate system_instruction fallback and make user content routing standard.
+  if is_feature_enabled(FeatureName.DYNAMIC_INSTRUCTION_ROUTING):
+    from .contents import _add_instructions_to_user_content
+
+    instruction_content = types.Content(
+        role='user',
+        parts=[types.Part.from_text(text=combined_text)],
+    )
+    await _add_instructions_to_user_content(
+        invocation_context,
+        llm_request,
+        [instruction_content],
+    )
+  else:
+    llm_request.append_instructions([combined_text])
+
+  # Clear dynamic instructions to prevent double finalization.
+  llm_request._dynamic_instructions.clear()
