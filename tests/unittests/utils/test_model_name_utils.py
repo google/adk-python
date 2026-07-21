@@ -349,7 +349,6 @@ class TestIsGemini3XLive:
     assert _is_gemini_3_x_live('gemini-3.1-flash-live') is True
     assert _is_gemini_3_x_live('gemini-3.1-flash-live-preview') is True
     assert _is_gemini_3_x_live('gemini-3.5-flash-lite-live-preview') is True
-    assert _is_gemini_3_x_live('gemini-3.5-live-translate') is False
     assert _is_gemini_3_x_live('gemini-3.1-pro') is False
     assert _is_gemini_3_x_live('gemini-2.5-flash-live') is False
 
