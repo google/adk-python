@@ -83,14 +83,14 @@ def _build_basic_request(
       getattr(getattr(agent, 'canonical_live_model', None), 'model', None)
       or llm_request.model
   )
-  is_gemini_31 = model_name_utils.is_gemini_3_1_flash_live(active_model_name)
+  is_gemini_3_x = model_name_utils._is_gemini_3_x_live(active_model_name)
   llm_request.live_connect_config.enable_affective_dialog = (
       None
-      if is_gemini_31
+      if is_gemini_3_x
       else invocation_context.run_config.enable_affective_dialog
   )
   llm_request.live_connect_config.proactivity = (
-      None if is_gemini_31 else invocation_context.run_config.proactivity
+      None if is_gemini_3_x else invocation_context.run_config.proactivity
   )
   llm_request.live_connect_config.session_resumption = (
       invocation_context.run_config.session_resumption
