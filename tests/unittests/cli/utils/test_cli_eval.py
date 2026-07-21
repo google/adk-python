@@ -19,6 +19,67 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
+
+@pytest.mark.parametrize(
+    ("input_eval_set", "expected"),
+    [
+        pytest.param(
+            r"C:\tmp\agent\eval.evalset.json",
+            {r"C:\tmp\agent\eval.evalset.json": []},
+            id="windows-backslash-path-without-selectors",
+        ),
+        pytest.param(
+            r"C:\tmp\agent\eval.evalset.json:case1",
+            {r"C:\tmp\agent\eval.evalset.json": ["case1"]},
+            id="windows-backslash-path-with-one-selector",
+        ),
+        pytest.param(
+            r"C:\tmp\agent\eval.evalset.json:case1,case2",
+            {r"C:\tmp\agent\eval.evalset.json": ["case1", "case2"]},
+            id="windows-backslash-path-with-multiple-selectors",
+        ),
+        pytest.param(
+            "C:/tmp/agent/eval.evalset.json:case1",
+            {"C:/tmp/agent/eval.evalset.json": ["case1"]},
+            id="windows-forward-slash-path",
+        ),
+        pytest.param(
+            r"d:\tmp\agent\eval.evalset.json:case1",
+            {r"d:\tmp\agent\eval.evalset.json": ["case1"]},
+            id="lowercase-windows-drive",
+        ),
+        pytest.param(
+            "/tmp/agent/eval.evalset.json:case1,case2",
+            {"/tmp/agent/eval.evalset.json": ["case1", "case2"]},
+            id="posix-path-with-selectors",
+        ),
+        pytest.param(
+            "my_eval_set:case1,case2",
+            {"my_eval_set": ["case1", "case2"]},
+            id="eval-set-id-with-selectors",
+        ),
+        pytest.param(
+            "my_eval_set",
+            {"my_eval_set": []},
+            id="eval-set-id-without-selectors",
+        ),
+        pytest.param(
+            "/tmp/agent/eval.evalset.json",
+            {"/tmp/agent/eval.evalset.json": []},
+            id="posix-path-without-selectors",
+        ),
+    ],
+)
+def test_parse_and_get_evals_to_run_parses_eval_set_and_selectors(
+    input_eval_set: str, expected: dict[str, list[str]]
+):
+  """Eval-set paths and IDs retain their optional case selectors."""
+  from google.adk.cli.cli_eval import parse_and_get_evals_to_run
+
+  assert parse_and_get_evals_to_run([input_eval_set]) == expected
+
 
 def test_get_eval_sets_manager_local(monkeypatch):
   mock_local_manager = mock.MagicMock()

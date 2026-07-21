@@ -38,6 +38,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
+from ...events.event_actions import EventActions
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.google_llm import Gemini
 from ...models.google_llm import GoogleLLMVariant
@@ -795,6 +796,29 @@ class BaseLlmFlow(ABC):
       # Yield to event loop for cooperative multitasking
       await asyncio.sleep(0)
 
+      # State changes ride on the user content event when one is created below;
+      # otherwise a standalone content-less event applies them.
+      is_function_response = bool(
+          live_request.content
+          and live_request.content.parts
+          and any(part.function_response for part in live_request.content.parts)
+      )
+      content_event_created = bool(
+          live_request.content
+          and not live_request.close
+          and not live_request.partial
+          and not is_function_response
+      )
+      if live_request.state_delta and not content_event_created:
+        await invocation_context.session_service.append_event(
+            session=invocation_context.session,
+            event=Event(
+                invocation_id=invocation_context.invocation_id,
+                author='user',
+                actions=EventActions(state_delta=live_request.state_delta),
+            ),
+        )
+
       if live_request.close:
         await llm_connection.close()
         return
@@ -817,9 +841,6 @@ class BaseLlmFlow(ABC):
           raise ValueError('User message cannot contain function calls.')
         # Persist user text content to session (similar to non-live mode)
         # Skip function responses - they are already handled separately
-        is_function_response = content.parts and any(
-            part.function_response for part in content.parts
-        )
         if not is_function_response and not content.role:
           content.role = 'user'
         if not is_function_response and not live_request.partial:
@@ -828,6 +849,9 @@ class BaseLlmFlow(ABC):
               invocation_id=invocation_context.invocation_id,
               author='user',
               content=content,
+              actions=EventActions(state_delta=live_request.state_delta)
+              if live_request.state_delta
+              else EventActions(),
           )
           await invocation_context.session_service.append_event(
               session=invocation_context.session,
@@ -1019,8 +1043,10 @@ class BaseLlmFlow(ABC):
             )
         ) as agen:
           async for event in agen:
-            # Update the mutable event id to avoid conflict
-            model_response_event.id = Event.new_id()
+            # Partial chunks of one streaming response share the base id; mint a
+            # fresh id only after a complete event so distinct responses differ.
+            if not event.partial:
+              model_response_event.id = Event.new_id()
             model_response_event.timestamp = platform_time.get_time()
             yield event
 
@@ -1064,6 +1090,9 @@ class BaseLlmFlow(ABC):
 
     # Run processors for tools.
     await _process_agent_tools(invocation_context, llm_request)
+
+    # Finalize dynamic instructions from tools.
+    await _finalize_dynamic_instructions(invocation_context, llm_request)
 
   async def _postprocess_async(
       self,
@@ -1588,3 +1617,36 @@ class BaseLlmFlow(ABC):
           f' but got {type(agent)}'
       )
     return agent.canonical_model
+
+
+async def _finalize_dynamic_instructions(
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+) -> None:
+  """Finalizes and resolves dynamic instructions from LlmRequest."""
+  if not llm_request._dynamic_instructions:
+    return
+
+  combined_text = '\n\n'.join(llm_request._dynamic_instructions)
+
+  from ...features import FeatureName
+  from ...features import is_feature_enabled
+
+  # TODO: Deprecate system_instruction fallback and make user content routing standard.
+  if is_feature_enabled(FeatureName.DYNAMIC_INSTRUCTION_ROUTING):
+    from .contents import _add_instructions_to_user_content
+
+    instruction_content = types.Content(
+        role='user',
+        parts=[types.Part.from_text(text=combined_text)],
+    )
+    await _add_instructions_to_user_content(
+        invocation_context,
+        llm_request,
+        [instruction_content],
+    )
+  else:
+    llm_request.append_instructions([combined_text])
+
+  # Clear dynamic instructions to prevent double finalization.
+  llm_request._dynamic_instructions.clear()

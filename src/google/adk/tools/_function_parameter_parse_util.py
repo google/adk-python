@@ -548,7 +548,7 @@ def _parse_schema_from_parameter(
 
 def _get_required_fields(schema: types.Schema) -> list[str]:
   if not schema.properties:
-    return
+    return []
   return [
       field_name
       for field_name, field_schema in schema.properties.items()

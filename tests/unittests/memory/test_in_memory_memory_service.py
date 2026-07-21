@@ -17,6 +17,7 @@ import threading
 
 from google.adk.events.event import Event
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.platform import thread as platform_thread
 from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
@@ -438,9 +439,9 @@ def test_search_memory_is_thread_safe_against_concurrent_writes():
       loop.close()
 
   threads = [
-      threading.Thread(target=writer),
-      threading.Thread(target=reader),
-      threading.Thread(target=reader),
+      platform_thread.create_thread(writer),
+      platform_thread.create_thread(reader),
+      platform_thread.create_thread(reader),
   ]
   for thread in threads:
     thread.start()
