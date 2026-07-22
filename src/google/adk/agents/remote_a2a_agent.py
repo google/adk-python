@@ -543,21 +543,26 @@ class RemoteA2aAgent(BaseAgent):
             for part in event.content.parts:
               part.thought = True
           _add_mock_function_call(event, update.status.state)
-        elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
-            not update.append or update.last_chunk
-        ):
+        elif isinstance(update, A2ATaskArtifactUpdateEvent):
           # This is a streaming task artifact update.
-          # We only handle full artifact updates and ignore partial updates.
-          # Note: Depends on the server implementation, there is no clear
-          # definition of what a partial update is currently. We use the two
-          # signals:
-          # 1. append: True for partial updates, False for full updates.
-          # 2. last_chunk: True for full updates, False for partial updates.
-          event = convert_a2a_task_to_event(
-              task, self.name, ctx, self._a2a_part_converter
+          # Convert only the parts carried by this update. Converting the
+          # accumulated task here would re-emit earlier chunks of the same
+          # artifact, duplicating already-streamed content.
+          if not update.artifact.parts:
+            return None
+          event = convert_a2a_message_to_event(
+              _compat.make_message(
+                  message_id="",
+                  role="agent",
+                  parts=update.artifact.parts,
+              ),
+              self.name,
+              ctx,
+              self._a2a_part_converter,
           )
           if not event:
             return None
+          event.partial = not update.last_chunk
         else:
           # This is a streaming update without a message (e.g. status change)
           # or a partial artifact update. We don't emit an event for these
