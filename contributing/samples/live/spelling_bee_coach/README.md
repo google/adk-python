@@ -109,3 +109,10 @@ Native-audio live models do not support typed text chat: use the microphone in
 `adk web`. To test over text, temporarily switch the agent to a half-cascade
 live model (pick one from the supported-model links in the comments in
 `agent.py`).
+
+`adk web` also prints input and output audio transcriptions in the Events pane
+as you play — a debugging feature of the dev UI. For a spelling bee, the
+transcript of the pronounced word necessarily shows its written form, so don't
+peek mid-round. An end-user deployment would use an audio-only client; the
+transcript on screen is, in effect, the sample's own thesis demonstrated — any
+text view of the session gives the word away.
