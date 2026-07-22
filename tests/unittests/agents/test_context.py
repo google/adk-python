@@ -135,6 +135,12 @@ class TestContextInitialization:
 
     assert context.actions is context._event_actions
 
+  def test_custom_metadata_property(self, mock_invocation_context):
+    """Test that custom_metadata property delegates to invocation context."""
+    mock_invocation_context._custom_metadata = {"key": "value"}
+    context = Context(mock_invocation_context)
+    assert context.custom_metadata == {"key": "value"}
+
 
 class TestContextListArtifacts:
   """Test the list_artifacts method in Context."""
