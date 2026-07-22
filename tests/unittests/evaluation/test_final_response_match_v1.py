@@ -141,6 +141,19 @@ def test_rouge_evaluator_multiple_invocations(
   assert evaluation_result.overall_eval_status == expected_status
 
 
+def test_calculate_rouge_1_scores_non_english_identical():
+  """Non-English (Thai) text that is identical should score 1.0 (issue #3111)."""
+  text = "สวัสดี"
+  rouge_1_score = _calculate_rouge_1_scores(text, text)
+  assert rouge_1_score.fmeasure == pytest.approx(1.0)
+
+
+def test_calculate_rouge_1_scores_non_english_different():
+  """Non-English text with no overlap should score 0.0."""
+  rouge_1_score = _calculate_rouge_1_scores("สวัสดี", "ขอบคุณ")
+  assert rouge_1_score.fmeasure == pytest.approx(0.0)
+
+
 @pytest.mark.parametrize(
     "actual_count, expected_count",
     [

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from google.genai import types as genai_types
@@ -28,6 +29,25 @@ from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+
+
+class _UnicodeTokenizer:
+  """A tokenizer that preserves non-ASCII (Unicode) characters.
+
+  The default rouge_score tokenizer strips all non-ASCII characters using a
+  ``[^a-z0-9]+`` pattern, which causes non-English text (e.g. Thai, Chinese,
+  Arabic) to be reduced to an empty token list and always score 0.  This
+  tokenizer keeps Unicode word characters so that multilingual content is
+  evaluated correctly.
+  """
+
+  _SPLIT_RE = re.compile(r"\s+")
+  _VALID_RE = re.compile(r"\S")
+
+  def tokenize(self, text: str) -> list[str]:
+    text = text.lower()
+    tokens = self._SPLIT_RE.split(text)
+    return [t for t in tokens if self._VALID_RE.search(t)]
 
 
 class RougeEvaluator(Evaluator):
@@ -114,7 +134,9 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  scorer = rouge_scorer.RougeScorer(
+      ["rouge1"], use_stemmer=True, tokenizer=_UnicodeTokenizer()
+  )
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.
