@@ -15,10 +15,12 @@
 from __future__ import annotations
 
 import logging
+from typing import AsyncGenerator
 
 from google.genai import types
 
 from ..agents.base_agent import BaseAgent
+from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -79,7 +81,7 @@ def _valid_compactions(
   """Returns compaction events with fully-defined compaction ranges."""
   compactions: list[tuple[int, float, float, Event]] = []
   for i, event in enumerate(events):
-    if not (event.actions and event.actions.compaction):
+    if not event.actions.compaction:
       continue
     compaction = event.actions.compaction
     if (
@@ -135,9 +137,9 @@ def _estimate_prompt_token_count(
   """
   # Deferred import: contents depends on agents.invocation_context which
   # imports from apps, so a top-level import would create a circular dependency.
-  from ..flows.llm_flows import contents
+  from ..flows.llm_flows import contents as _contents
 
-  effective_contents = contents._get_contents(
+  effective_contents = _contents._get_contents(
       current_branch=current_branch,
       events=events,
       agent_name=agent_name,
@@ -252,7 +254,7 @@ def _events_to_compact_for_token_threshold(
   candidate_events = [
       event
       for event in events
-      if not (event.actions and event.actions.compaction)
+      if not event.actions.compaction
       and event.timestamp > last_compacted_end_timestamp
   ]
   if len(candidate_events) <= event_retention_size:
@@ -266,16 +268,12 @@ def _events_to_compact_for_token_threshold(
         event_retention_size=event_retention_size,
     )
     events_to_compact = candidate_events[:split_index]
-  pending_ids = _pending_function_call_ids(events)
-  events_to_compact = _truncate_events_before_pending_function_call(
-      events_to_compact, pending_ids
-  )
+  events_to_compact = _longest_self_contained_prefix(events_to_compact)
   if not events_to_compact:
     return []
 
   if (
       latest_compaction_event
-      and latest_compaction_event.actions
       and latest_compaction_event.actions.compaction
       and latest_compaction_event.actions.compaction.start_timestamp is not None
       and latest_compaction_event.actions.compaction.compacted_content
@@ -311,37 +309,28 @@ def _event_function_response_ids(event: Event) -> set[str]:
   return function_response_ids
 
 
-def _pending_function_call_ids(events: list[Event]) -> set[str]:
-  """Returns function call IDs that have no matching response in the session.
+def _longest_self_contained_prefix(events: list[Event]) -> list[Event]:
+  """Returns the longest prefix of `events` that is safe to compact.
 
-  Scans the session once, collecting function call IDs and response IDs, then
-  returns the call IDs that are not covered by any response. Events containing
-  these IDs represent pending (unanswered) function calls that must not be
-  compacted.
+  Performs a single left-to-right pass tracking "open" obligations keyed by call
+  id: a function call or a tool-confirmation / auth request opens one, and a
+  function response with the same id closes it. Responses are applied before
+  opens within each event so a response only closes an obligation opened by an
+  earlier event. The prefix is safe to summarize only at points where no
+  obligation is open, so the longest prefix ending at such a balanced point is
+  returned (empty if the window never reaches a balanced point).
   """
-  all_call_ids: set[str] = set()
-  all_response_ids: set[str] = set()
-  for event in events:
-    all_call_ids.update(_event_function_call_ids(event))
-    all_response_ids.update(_event_function_response_ids(event))
-
-  return all_call_ids - all_response_ids
-
-
-def _has_pending_function_call(event: Event, pending_ids: set[str]) -> bool:
-  """Returns True if the event contains any pending function call."""
-  call_ids = _event_function_call_ids(event)
-  return bool(call_ids and not call_ids.isdisjoint(pending_ids))
-
-
-def _truncate_events_before_pending_function_call(
-    events: list[Event], pending_ids: set[str]
-) -> list[Event]:
-  """Returns the leading contiguous events that avoid pending function calls."""
+  open_ids: set[str] = set()
+  safe_length = 0
   for index, event in enumerate(events):
-    if _has_pending_function_call(event, pending_ids):
-      return events[:index]
-  return events
+    open_ids -= _event_function_response_ids(event)
+    open_ids |= _event_function_call_ids(event)
+    if event.actions:
+      open_ids |= set(event.actions.requested_tool_confirmations)
+      open_ids |= set(event.actions.requested_auth_configs)
+    if not open_ids:
+      safe_length = index + 1
+  return events[:safe_length]
 
 
 def _safe_token_compaction_split_index(
@@ -398,8 +387,14 @@ async def _run_compaction_for_token_threshold_config(
   if config.token_threshold is None or config.event_retention_size is None:
     return False
 
+  # Drop rewound invocations so the summary covers only live events, consistent
+  # with prompt building and sliding-window compaction (all route through
+  # _apply_rewinds); otherwise rewound content would leak back into future
+  # prompts via the compaction summary.
+  events = _apply_rewinds(session.events)
+
   prompt_token_count = _latest_prompt_token_count(
-      session.events,
+      events,
       current_branch=current_branch,
       agent_name=agent_name,
   )
@@ -407,7 +402,7 @@ async def _run_compaction_for_token_threshold_config(
     return False
 
   events_to_compact = _events_to_compact_for_token_threshold(
-      events=session.events,
+      events=events,
       event_retention_size=config.event_retention_size,
   )
   if not events_to_compact:
@@ -438,6 +433,8 @@ async def _run_compaction_for_token_threshold(
   If triggered, this compacts older raw events and keeps the last
   `event_retention_size` raw events un-compacted.
   """
+  if app.root_agent is None:
+    return None
   return await _run_compaction_for_token_threshold_config(
       config=app.events_compaction_config,
       session=session,
@@ -454,7 +451,7 @@ async def _run_compaction_for_sliding_window(
     session_service: BaseSessionService,
     *,
     skip_token_compaction: bool = False,
-):
+) -> AsyncGenerator[Event, None]:
   """Runs compaction for SlidingWindowCompactor.
 
   This method implements the sliding window compaction logic. It determines
@@ -532,16 +529,25 @@ async def _run_compaction_for_sliding_window(
   Args:
     app: The application instance.
     session: The session containing events to compact.
-    session_service: The session service for appending events.
+    session_service: The session service, used by the token-threshold fallback.
     skip_token_compaction: Whether to skip token-threshold compaction.
+
+  Yields:
+    The sliding-window compaction event, if one is produced. The caller (the
+    runner loop) is responsible for appending it to the session, so that
+    persistence of this event stays at the runtime's synchronization point.
   """
-  events = session.events
+  # Drop rewound invocations first so the summary covers only live events. This
+  # keeps the compactor consistent with prompt building (the contents processor
+  # also applies rewinds); otherwise rewound content would leak back into future
+  # prompts via the compaction summary.
+  events = _apply_rewinds(session.events)
   if not events:
-    return None
+    return
 
   config = app.events_compaction_config
   if config is None:
-    return None
+    return
 
   # Prefer token-threshold compaction if configured and triggered.
   if not skip_token_compaction and _has_token_threshold_config(config):
@@ -549,22 +555,18 @@ async def _run_compaction_for_sliding_window(
         app, session, session_service
     )
     if token_compacted:
-      return None
+      return
 
   if not _has_sliding_window_config(config):
-    return None
+    return
 
   if config.compaction_interval is None or config.overlap_size is None:
-    return None
+    return
 
   # Find the last compaction event and its range.
   last_compacted_end_timestamp = 0.0
   for event in reversed(events):
-    if (
-        event.actions
-        and event.actions.compaction
-        and event.actions.compaction.end_timestamp
-    ):
+    if event.actions.compaction and event.actions.compaction.end_timestamp:
       last_compacted_end_timestamp = event.actions.compaction.end_timestamp
       break
 
@@ -572,7 +574,7 @@ async def _run_compaction_for_sliding_window(
   invocation_latest_timestamps = {}
   for event in events:
     # Only consider non-compaction events for unique invocation IDs.
-    if event.invocation_id and not (event.actions and event.actions.compaction):
+    if event.invocation_id and not event.actions.compaction:
       invocation_latest_timestamps[event.invocation_id] = max(
           invocation_latest_timestamps.get(event.invocation_id, 0.0),
           event.timestamp,
@@ -588,7 +590,7 @@ async def _run_compaction_for_sliding_window(
   ]
 
   if len(new_invocation_ids) < config.compaction_interval:
-    return None  # Not enough new invocations to trigger compaction.
+    return  # Not enough new invocations to trigger compaction.
 
   # Determine the range of invocations to compact.
   # The end of the compaction range is the last of the new invocations.
@@ -623,21 +625,18 @@ async def _run_compaction_for_sliding_window(
       events_to_compact = events[first_event_start_inv_idx : last_event_idx + 1]
       # Filter out any existing compaction events from the list.
       events_to_compact = [
-          e
-          for e in events_to_compact
-          if not (e.actions and e.actions.compaction)
+          e for e in events_to_compact if not e.actions.compaction
       ]
-      pending_ids = _pending_function_call_ids(events)
-      events_to_compact = _truncate_events_before_pending_function_call(
-          events_to_compact, pending_ids
-      )
+      events_to_compact = _longest_self_contained_prefix(events_to_compact)
 
   if not events_to_compact:
-    return None
+    return
 
+  if app.root_agent is None:
+    return
   _ensure_compaction_summarizer(config=config, agent=app.root_agent)
   if config.summarizer is None:
-    return None
+    return
 
   compaction_event = await _summarize_events_with_trace(
       session=session,
@@ -645,6 +644,6 @@ async def _run_compaction_for_sliding_window(
       events_to_compact=events_to_compact,
       trigger='sliding_window',
   )
-  if compaction_event:
-    await session_service.append_event(session=session, event=compaction_event)
   logger.debug('Event compactor finished.')
+  if compaction_event:
+    yield compaction_event

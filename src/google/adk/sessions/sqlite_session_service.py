@@ -141,6 +141,7 @@ class SqliteSessionService(BaseSessionService):
     self._db_path, self._db_connect_path, self._db_connect_uri = _parse_db_path(
         db_path
     )
+    self._schema_ready = False
 
     if self._is_migration_needed():
       raise RuntimeError(
@@ -360,6 +361,13 @@ class SqliteSessionService(BaseSessionService):
       await db.commit()
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    async with self._get_db_connection() as db:
+      return await self._get_user_state(db, app_name, user_id)
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     if event.partial:
       return event
@@ -391,7 +399,7 @@ class SqliteSessionService(BaseSessionService):
 
       # Apply state delta if present
       has_session_state_delta = False
-      if event.actions and event.actions.state_delta:
+      if event.actions.state_delta:
         state_deltas = _session_util.extract_state_delta(
             event.actions.state_delta
         )
@@ -466,7 +474,9 @@ class SqliteSessionService(BaseSessionService):
     ) as db:
       db.row_factory = aiosqlite.Row
       await db.execute(PRAGMA_FOREIGN_KEYS)
-      await db.executescript(CREATE_SCHEMA_SQL)
+      if not self._schema_ready:
+        await db.executescript(CREATE_SCHEMA_SQL)
+        self._schema_ready = True
       yield db
 
   async def _get_state(

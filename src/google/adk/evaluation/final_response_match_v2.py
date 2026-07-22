@@ -102,7 +102,7 @@ def _parse_critique(response: str) -> Label:
   )
   # Remove any trailing whitespace, commas, or end-brackets from the label.
   if label_match_is_response_valid:
-    label = label_match_is_response_valid.group(1).strip(r"\s,\}")
+    label = label_match_is_response_valid.group(1).strip().rstrip(",}")
     if label in [
         Label.INVALID.value,
         Label.ALMOST.value,
@@ -115,7 +115,7 @@ def _parse_critique(response: str) -> Label:
     else:
       label = Label.NOT_FOUND
   elif label_match_is_response_invalid:
-    label = label_match_is_response_invalid.group(1).strip(r"\s,\}")
+    label = label_match_is_response_invalid.group(1).strip().rstrip(",}")
     label = (
         Label.INVALID
         if label in [Label.TRUE.value, Label.INVALID.value]
@@ -159,13 +159,22 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
     if expected_invocation is None:
       raise ValueError("expected_invocation is required for this metric.")
 
-    reference = get_text_from_content(expected_invocation.final_response)
-    response = get_text_from_content(actual_invocation.final_response)
+    include_intermediate = (
+        self._criterion.include_intermediate_responses_in_final
+    )
+    reference = get_text_from_content(
+        expected_invocation,
+        include_intermediate_responses_in_final=include_intermediate,
+    )
+    response = get_text_from_content(
+        actual_invocation,
+        include_intermediate_responses_in_final=include_intermediate,
+    )
     user_prompt = get_text_from_content(expected_invocation.user_content)
     return self._auto_rater_prompt_template.format(
         prompt=user_prompt,
-        response=response,
-        golden_response=reference,
+        response=response or "",
+        golden_response=reference or "",
     )
 
   @override
@@ -221,13 +230,21 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
       self, per_invocation_results: list[PerInvocationResult]
   ) -> EvaluationResult:
     """Computes the fraction of invocation results that are valid."""
-    num_valid = 0
+    num_valid: float = 0
     num_evaluated = 0
     for result in per_invocation_results:
       if result.score is None or result.eval_status == EvalStatus.NOT_EVALUATED:
         continue
       num_evaluated += 1
       num_valid += result.score
+
+    if num_evaluated == 0:
+      return EvaluationResult(
+          overall_score=None,
+          overall_eval_status=EvalStatus.NOT_EVALUATED,
+          per_invocation_results=per_invocation_results,
+      )
+
     overall_score = num_valid / num_evaluated
     return EvaluationResult(
         overall_score=overall_score,

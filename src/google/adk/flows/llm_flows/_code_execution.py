@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import dataclasses
@@ -70,12 +71,22 @@ class DataFileUtil:
 _DATA_FILE_UTIL_MAP = {
     'text/csv': DataFileUtil(
         extension='.csv',
-        loader_code_template="pd.read_csv('{filename}')",
+        # Note: The template does not quote {filename} because repr() in
+        # _get_data_file_preprocessing_code supplies quotes and escaping.
+        loader_code_template='pd.read_csv({filename})',
     ),
 }
 
 _DATA_FILE_HELPER_LIB = '''
 import pandas as pd
+
+def crop(s: str, max_chars: int = 64) -> str:
+  """Crops a string to max_chars characters."""
+  if len(s) <= max_chars:
+    return s
+  if max_chars >= 3:
+    return s[:max_chars - 3] + '...'
+  return s[:max_chars]
 
 def explore_df(df: pd.DataFrame) -> None:
   """Prints some information about a pandas DataFrame."""
@@ -235,7 +246,8 @@ async def _run_pre_processor(
         content=code_content,
     )
 
-    code_execution_result = code_executor.execute_code(
+    code_execution_result = await asyncio.to_thread(
+        code_executor.execute_code,
         invocation_context,
         CodeExecutionInput(
             code=code_str,
@@ -345,7 +357,8 @@ async def _run_post_processor(
       actions=EventActions(),
   )
 
-  code_execution_result = code_executor.execute_code(
+  code_execution_result = await asyncio.to_thread(
+      code_executor.execute_code,
       invocation_context,
       CodeExecutionInput(
           code=code_str,
@@ -521,7 +534,7 @@ def _get_data_file_preprocessing_code(file: File) -> Optional[str]:
 
   var_name = _get_normalized_file_name(file.name)
   loader_code = _DATA_FILE_UTIL_MAP[file.mime_type].loader_code_template.format(
-      filename=file.name
+      filename=repr(file.name)
   )
   return f"""
 {_DATA_FILE_HELPER_LIB}

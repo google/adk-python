@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
+from typing import cast
 from typing import List
 from typing import Optional
 from typing import Union
@@ -29,6 +31,7 @@ from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
@@ -42,8 +45,8 @@ from .integration_connector_tool import IntegrationConnectorTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-# TODO(cheliu): Apply a common toolset interface
-class ApplicationIntegrationToolset(BaseToolset):
+# TODO: Apply a common toolset interface
+class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
   """ApplicationIntegrationToolset generates tools from a given Application
   Integration or Integration Connector resource.
 
@@ -100,6 +103,7 @@ class ApplicationIntegrationToolset(BaseToolset):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      credential_key: Optional[str] = None,
   ):
     """Args:
 
@@ -143,12 +147,14 @@ class ApplicationIntegrationToolset(BaseToolset):
     self._service_account_json = service_account_json
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._credential_key = credential_key
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
         AuthConfig(
             auth_scheme=auth_scheme,
             raw_auth_credential=auth_credential,
+            credential_key=credential_key,
         )
         if auth_scheme
         else None
@@ -182,11 +188,15 @@ class ApplicationIntegrationToolset(BaseToolset):
           "Invalid request, Either integration or (connection and"
           " (entity_operations or actions)) should be provided."
       )
-    self._openapi_toolset = None
-    self._tools = []
+    self._openapi_toolset: Optional[OpenAPIToolset] = None
+    self._tools: list[IntegrationConnectorTool] = []
     self._parse_spec_to_toolset(spec, connection_details)
 
-  def _parse_spec_to_toolset(self, spec_dict, connection_details):
+  def _parse_spec_to_toolset(
+      self,
+      spec_dict: dict[str, Any],
+      connection_details: dict[str, Any],
+  ) -> None:
     """Parses the spec dict to OpenAPI toolset."""
     if self._service_account_json:
       sa_credential = ServiceAccountCredential.model_validate_json(
@@ -214,6 +224,7 @@ class ApplicationIntegrationToolset(BaseToolset):
           spec_dict=spec_dict,
           auth_credential=auth_credential,
           auth_scheme=auth_scheme,
+          credential_key=self._credential_key,
           tool_filter=self.tool_filter,
       )
       return
@@ -267,35 +278,69 @@ class ApplicationIntegrationToolset(BaseToolset):
               rest_api_tool=rest_api_tool,
               auth_scheme=connector_auth_scheme,
               auth_credential=connector_auth_credential,
+              credential_key=self._credential_key,
           )
       )
+
+  def _clone_connector_tool_with_auth_credential(
+      self,
+      tool: IntegrationConnectorTool,
+      auth_credential: AuthCredential,
+  ) -> IntegrationConnectorTool:
+    return IntegrationConnectorTool(
+        name=tool.name,
+        description=tool.description,
+        connection_name=tool._connection_name,
+        connection_host=tool._connection_host,
+        connection_service_name=tool._connection_service_name,
+        entity=tool._entity,
+        action=tool._action,
+        operation=tool._operation,
+        rest_api_tool=tool._rest_api_tool,
+        auth_scheme=tool._auth_scheme,
+        auth_credential=auth_credential,
+    )
 
   @override
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
-  ) -> List[RestApiTool]:
-    return (
-        [
-            tool
-            for tool in self._tools
-            if self._is_tool_selected(tool, readonly_context)
-        ]
-        if self._openapi_toolset is None
-        else await self._openapi_toolset.get_tools(readonly_context)
+  ) -> List[BaseTool]:
+    if self._openapi_toolset is not None:
+      return cast(
+          List[BaseTool],
+          await self._openapi_toolset.get_tools(readonly_context),
+      )
+
+    exchanged_auth_credential = (
+        self._auth_config.exchanged_auth_credential
+        if self._auth_config
+        else None
     )
+
+    selected_tools = [
+        tool
+        for tool in self._tools
+        if self._is_tool_selected(tool, readonly_context)
+    ]
+
+    if not exchanged_auth_credential:
+      return selected_tools
+
+    resolved_tools: List[BaseTool] = []
+    for tool in selected_tools:
+      if isinstance(tool, IntegrationConnectorTool) and tool._auth_scheme:
+        resolved_tools.append(
+            self._clone_connector_tool_with_auth_credential(
+                tool, exchanged_auth_credential
+            )
+        )
+      else:
+        resolved_tools.append(tool)
+
+    return resolved_tools
 
   @override
   async def close(self) -> None:
     if self._openapi_toolset:
       await self._openapi_toolset.close()
-
-  @override
-  def get_auth_config(self) -> Optional[AuthConfig]:
-    """Returns the auth config for this toolset.
-
-    ADK will populate exchanged_auth_credential on this config before calling
-    get_tools(). The toolset can then access the ready-to-use credential via
-    self._auth_config.exchanged_auth_credential.
-    """
-    return self._auth_config

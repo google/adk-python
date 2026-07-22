@@ -16,14 +16,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from enum import Enum
 import logging
+import os
 import re
 from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Literal
 from typing import Mapping
 from typing import TypedDict
 from urllib.parse import urlparse
@@ -39,17 +40,17 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import google.auth
-import google.auth.transport.requests
+from google.auth.transport import mtls
+from google.auth.transport import requests as requests_auth
 import httpx
 from mcp import StdioServerParameters
+import requests
 from typing_extensions import override
 
 # pylint: disable=g-import-not-at-top
 try:
-  from a2a.types import AgentCapabilities
-  from a2a.types import AgentCard
   from a2a.types import AgentSkill
-  from a2a.types import TransportProtocol as A2ATransport
+  from google.adk.a2a import _compat
   from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 except ImportError as e:
   raise ImportError(
@@ -60,12 +61,13 @@ except ImportError as e:
 
 logger = logging.getLogger("google_adk." + __name__)
 
-AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1alpha"
+AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1"
+AGENT_REGISTRY_MTLS_BASE_URL = "https://agentregistry.mtls.googleapis.com/v1"
 
 _TRANSPORT_MAPPING = {
-    "HTTP_JSON": A2ATransport.http_json,
-    "JSONRPC": A2ATransport.jsonrpc,
-    "GRPC": A2ATransport.grpc,
+    "HTTP_JSON": _compat.TP_HTTP_JSON,
+    "JSONRPC": _compat.TP_JSONRPC,
+    "GRPC": _compat.TP_GRPC,
 }
 
 
@@ -104,7 +106,7 @@ class AgentRegistrySingleMcpToolset(McpToolset):
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> List[BaseTool]:
-    tools = await super().get_tools(readonly_context)
+    tools: List[BaseTool] = await super().get_tools(readonly_context)
 
     # Noop if there is no destination_resource_id
     if self.destination_resource_id is None:
@@ -118,6 +120,14 @@ class AgentRegistrySingleMcpToolset(McpToolset):
           self.destination_resource_id
       )
     return tools
+
+
+class _MtlsEndpoint(Enum):
+  """The mTLS endpoint setting."""
+
+  AUTO = "auto"
+  ALWAYS = "always"
+  NEVER = "never"
 
 
 class _ProtocolType(str, Enum):
@@ -199,6 +209,21 @@ class AgentRegistry:
           f"Failed to get default Google Cloud credentials: {e}"
       ) from e
 
+    # Instantiate and configure AuthorizedSession once during initialization.
+    self._session = requests_auth.AuthorizedSession(
+        credentials=self._credentials
+    )
+    use_client_cert = _use_client_cert_effective()
+    client_cert_source = None
+    if use_client_cert:
+      client_cert_source = (
+          mtls.default_client_cert_source()
+          if mtls.has_default_client_cert_source()
+          else None
+      )
+      self._session.configure_mtls_channel(client_cert_source)
+    self._base_url = _get_agent_registry_base_url(client_cert_source)
+
   def _get_auth_headers(self) -> Dict[str, str]:
     """Refreshes credentials and returns authorization headers."""
     try:
@@ -208,9 +233,6 @@ class AgentRegistry:
           "Authorization": f"Bearer {self._credentials.token}",
           "Content-Type": "application/json",
       }
-      quota_project_id = getattr(self._credentials, "quota_project_id", None)
-      if quota_project_id:
-        headers["x-goog-user-project"] = quota_project_id
       return headers
     except google.auth.exceptions.RefreshError as e:
       raise RuntimeError(
@@ -218,36 +240,77 @@ class AgentRegistry:
       ) from e
 
   def _make_request(
-      self, path: str, params: Dict[str, Any] | None = None
+      self,
+      path: str,
+      method: str = "GET",
+      params: Dict[str, Any] | None = None,
+      json_data: Dict[str, Any] | None = None,
   ) -> Dict[str, Any]:
-    """Helper function to make GET requests to the Agent Registry API."""
+    """Helper function to make requests to the Agent Registry API."""
     if path.startswith("projects/"):
-      url = f"{AGENT_REGISTRY_BASE_URL}/{path}"
+      url = f"{self._base_url}/{path}"
     else:
-      url = f"{AGENT_REGISTRY_BASE_URL}/{self._base_path}/{path}"
-
+      url = f"{self._base_url}/{self._base_path}/{path}"
+    quota_project_id = (
+        getattr(self._credentials, "quota_project_id", None) or self.project_id
+    )
+    headers = (
+        {"x-goog-user-project": quota_project_id} if quota_project_id else {}
+    )
     try:
-      headers = self._get_auth_headers()
-      with httpx.Client() as client:
-        response = client.get(url, headers=headers, params=params)
-        response.raise_for_status()
-        return response.json()
-    except httpx.HTTPStatusError as e:
+      # Using AuthorizedSession for internal API calls to handle mTLS/Auth.
+      if method == "POST":
+        response = self._session.post(url, headers=headers, json=json_data)
+      else:
+        response = self._session.get(url, headers=headers, params=params)
+      response.raise_for_status()
+      data: Dict[str, Any] = response.json()
+      return data
+    except requests.exceptions.HTTPError as e:
       raise RuntimeError(
           f"API request failed with status {e.response.status_code}:"
           f" {e.response.text}"
       ) from e
-    except httpx.RequestError as e:
+    except requests.exceptions.RequestException as e:
       raise RuntimeError(f"API request failed (network error): {e}") from e
     except Exception as e:
       raise RuntimeError(f"API request failed: {e}") from e
+
+  def _search(
+      self,
+      resource_type: str,
+      *,
+      search_string: str | None = None,
+      search_type: Literal["KEYWORD", "SEMANTIC"] | None = None,
+      filter_str: str | None = None,
+      order_by: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
+  ) -> Dict[str, Any]:
+    """Helper function to execute search requests."""
+    json_data: dict[str, Any] = {}
+    if search_string is not None:
+      json_data["searchString"] = search_string
+    if search_type is not None:
+      json_data["searchType"] = search_type
+    if filter_str is not None:
+      json_data["filter"] = filter_str
+    if order_by is not None:
+      json_data["orderBy"] = order_by
+    if page_size is not None:
+      json_data["pageSize"] = page_size
+    if page_token is not None:
+      json_data["pageToken"] = page_token
+    return self._make_request(
+        f"{resource_type}:search", method="POST", json_data=json_data
+    )
 
   def _get_connection_uri(
       self,
       resource_details: Mapping[str, Any],
       protocol_type: _ProtocolType | None = None,
-      protocol_binding: A2ATransport | None = None,
-  ) -> str | None:
+      protocol_binding: _compat.TransportProtocol | None = None,
+  ) -> tuple[str | None, str | None, _compat.TransportProtocol | None]:
     """Extracts the first matching URI based on type and binding filters."""
     protocols = list(resource_details.get("protocols", []))
     if "interfaces" in resource_details:
@@ -293,6 +356,27 @@ class AgentRegistry:
       params["pageToken"] = page_token
     return self._make_request("mcpServers", params=params)
 
+  def search_mcp_servers(
+      self,
+      *,
+      search_string: str | None = None,
+      search_type: Literal["KEYWORD", "SEMANTIC"] | None = None,
+      filter_str: str | None = None,
+      order_by: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
+  ) -> Dict[str, Any]:
+    """Searches registered MCP Servers."""
+    return self._search(
+        "mcpServers",
+        search_string=search_string,
+        search_type=search_type,
+        filter_str=filter_str,
+        order_by=order_by,
+        page_size=page_size,
+        page_token=page_token,
+    )
+
   def get_mcp_server(self, name: str) -> Dict[str, Any]:
     """Retrieves details of a specific MCP Server."""
     return self._make_request(name)
@@ -327,11 +411,11 @@ class AgentRegistry:
       mcp_server_id = None
 
     endpoint_uri, _, _ = self._get_connection_uri(
-        server_details, protocol_binding=A2ATransport.jsonrpc
+        server_details, protocol_binding=_compat.TP_JSONRPC
     )
     if not endpoint_uri:
       endpoint_uri, _, _ = self._get_connection_uri(
-          server_details, protocol_binding=A2ATransport.http_json
+          server_details, protocol_binding=_compat.TP_HTTP_JSON
       )
     if not endpoint_uri:
       raise ValueError(
@@ -448,6 +532,27 @@ class AgentRegistry:
       params["pageToken"] = page_token
     return self._make_request("agents", params=params)
 
+  def search_agents(
+      self,
+      *,
+      search_string: str | None = None,
+      search_type: Literal["KEYWORD", "SEMANTIC"] | None = None,
+      filter_str: str | None = None,
+      order_by: str | None = None,
+      page_size: int | None = None,
+      page_token: str | None = None,
+  ) -> Dict[str, Any]:
+    """Searches registered A2A Agents."""
+    return self._search(
+        "agents",
+        search_string=search_string,
+        search_type=search_type,
+        filter_str=filter_str,
+        order_by=order_by,
+        page_size=page_size,
+        page_token=page_token,
+    )
+
   def get_agent_info(self, name: str) -> Dict[str, Any]:
     """Retrieves detailed metadata of a specific A2A Agent."""
     return self._make_request(name)
@@ -465,7 +570,7 @@ class AgentRegistry:
     card = agent_info.get("card", {})
     card_content = card.get("content")
     if card.get("type") == "A2A_AGENT_CARD" and card_content:
-      agent_card = AgentCard(**card_content)
+      agent_card = _compat.parse_agent_card(card_content)
       # Clean the name to be a valid identifier
       name = self._clean_name(agent_card.name)
 
@@ -498,17 +603,17 @@ class AgentRegistry:
           )
       )
 
-    agent_card = AgentCard(
+    binding = protocol_binding or _compat.TP_HTTP_JSON
+    agent_card = _compat.build_agent_card(
         name=name,
         description=description,
         version=version,
-        preferredTransport=protocol_binding or A2ATransport.http_json,
-        protocolVersion=protocol_version or "0.3.0",
         url=url,
+        protocol_binding=getattr(binding, "value", binding),
+        protocol_version=protocol_version,
         skills=skills,
-        capabilities=AgentCapabilities(streaming=False, polling=False),
-        defaultInputModes=["text"],
-        defaultOutputModes=["text"],
+        default_input_modes=["text"],
+        default_output_modes=["text"],
     )
 
     return RemoteA2aAgent(
@@ -517,3 +622,32 @@ class AgentRegistry:
         description=description,
         httpx_client=httpx_client,
     )
+
+
+def _use_client_cert_effective() -> bool:
+  """Returns whether client certificate should be used for mTLS."""
+  try:
+    # If the google.auth.transport.mtls.should_use_client_cert function is
+    # available, use it to determine whether client certificate should be used.
+    return bool(mtls.should_use_client_cert())
+  except (ImportError, AttributeError):
+    use_client_cert_str = os.getenv(
+        "GOOGLE_API_USE_CLIENT_CERTIFICATE", "false"
+    ).lower()
+    return use_client_cert_str == "true"
+
+
+def _get_agent_registry_base_url(client_cert_source: Any | None = None) -> str:
+  """Returns the base URL based on mTLS configuration and cert availability."""
+  use_mtls_endpoint_str = os.getenv(
+      "GOOGLE_API_USE_MTLS_ENDPOINT", _MtlsEndpoint.AUTO.value
+  ).lower()
+  try:
+    use_mtls_endpoint = _MtlsEndpoint(use_mtls_endpoint_str)
+  except ValueError:
+    use_mtls_endpoint = _MtlsEndpoint.AUTO
+  if (use_mtls_endpoint is _MtlsEndpoint.ALWAYS) or (
+      use_mtls_endpoint is _MtlsEndpoint.AUTO and client_cert_source is not None
+  ):
+    return AGENT_REGISTRY_MTLS_BASE_URL
+  return AGENT_REGISTRY_BASE_URL

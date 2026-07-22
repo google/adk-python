@@ -52,6 +52,10 @@ class SetModelResponseTool(BaseTool):
         - dict: Raw dict schemas
         - Schema: Google's Schema type
     """
+    # Convert types.Schema instance to raw dict to avoid unhashable crash
+    if isinstance(output_schema, types.Schema):
+      output_schema = output_schema.model_dump(exclude_none=True)
+
     self.output_schema = output_schema
     self._is_basemodel = is_basemodel_schema(output_schema)
     self._is_list_of_basemodel = is_list_of_basemodel(output_schema)
@@ -87,8 +91,22 @@ class SetModelResponseTool(BaseTool):
               annotation=list[inner_type],
           )
       ]
+    elif isinstance(output_schema, dict):
+      # For raw dict schemas (e.g. {"type": "object", "properties": {...}}),
+      # use the `dict` type itself as the annotation rather than the dict
+      # instance. Passing the instance would later trigger
+      # `annotation in _py_builtin_type_to_schema_type.keys()` inside
+      # `_function_parameter_parse_util`, which calls `__hash__` on the
+      # annotation and raises `TypeError: unhashable type: 'dict'`.
+      params = [
+          inspect.Parameter(
+              'response',
+              inspect.Parameter.KEYWORD_ONLY,
+              annotation=dict,
+          )
+      ]
     else:
-      # For other schema types (list[str], dict, etc.),
+      # For other schema types (list[str], dict[str, int], etc.),
       # create a single parameter with the actual schema type
       params = [
           inspect.Parameter(
@@ -140,14 +158,19 @@ class SetModelResponseTool(BaseTool):
     if self._is_basemodel:
       # For regular BaseModel, validate directly
       validated_response = self.output_schema.model_validate(args)
-      return validated_response.model_dump(exclude_none=True)
+      result = validated_response.model_dump(exclude_none=True)
     elif self._is_list_of_basemodel:
       # For list[BaseModel], extract and validate the 'items' field
       items = args.get('items', [])
       type_adapter = TypeAdapter(self.output_schema)
       validated_response = type_adapter.validate_python(items)
-      return [item.model_dump(exclude_none=True) for item in validated_response]
+      result = [
+          item.model_dump(exclude_none=True) for item in validated_response
+      ]
     else:
       # For other schema types (list[str], dict, etc.),
       # return the value directly without pydantic validation
-      return args.get('response')
+      result = args.get('response')
+
+    tool_context.actions.set_model_response = result
+    return result

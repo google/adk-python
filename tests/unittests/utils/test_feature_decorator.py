@@ -1,3 +1,17 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import tempfile
 import warnings
@@ -292,8 +306,11 @@ def test_experimental_class_not_bypassed_for_false_env_var(monkeypatch):
       assert "[EXPERIMENTAL] ExperimentalClass:" in str(w[0].message)
 
 
-def test_experimental_class_no_parens_warns():
+def test_experimental_class_no_parens_warns(monkeypatch):
   """Test that experimental class without parentheses shows default warning."""
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 
@@ -309,8 +326,11 @@ def test_experimental_class_no_parens_warns():
     )
 
 
-def test_experimental_class_empty_parens_warns():
+def test_experimental_class_empty_parens_warns(monkeypatch):
   """Test that experimental class with empty parentheses shows default warning."""
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 
@@ -326,8 +346,11 @@ def test_experimental_class_empty_parens_warns():
     )
 
 
-def test_experimental_function_no_parens_warns():
+def test_experimental_function_no_parens_warns(monkeypatch):
   """Test that experimental function without parentheses shows default warning."""
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 
@@ -342,8 +365,11 @@ def test_experimental_function_no_parens_warns():
     )
 
 
-def test_experimental_function_empty_parens_warns():
+def test_experimental_function_empty_parens_warns(monkeypatch):
   """Test that experimental function with empty parentheses shows default warning."""
+  monkeypatch.delenv(
+      "ADK_SUPPRESS_EXPERIMENTAL_FEATURE_WARNINGS", raising=False
+  )
   with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
 

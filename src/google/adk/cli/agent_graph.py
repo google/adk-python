@@ -41,9 +41,9 @@ else:
 async def build_graph(
     graph: graphviz.Digraph,
     agent: BaseAgent,
-    highlight_pairs,
-    parent_agent=None,
-):
+    highlight_pairs: list[tuple[str, str]] | None,
+    parent_agent: BaseAgent | None = None,
+) -> None:
   """
   Build a graph of the agent and its sub-agents.
   Args:
@@ -55,12 +55,15 @@ async def build_graph(
   Returns:
     None
   """
+  from ..workflow._base_node import START
+  from ..workflow._workflow import Workflow
+
   dark_green = '#0F5223'
   light_green = '#69CB87'
   light_gray = '#cccccc'
   white = '#ffffff'
 
-  def get_node_name(tool_or_agent: Union[BaseAgent, BaseTool]):
+  def get_node_name(tool_or_agent: Union[BaseAgent, BaseTool]) -> str:
     if isinstance(tool_or_agent, BaseAgent):
       # Added Workflow Agent checks for different agent types
       if isinstance(tool_or_agent, SequentialAgent):
@@ -73,10 +76,12 @@ async def build_graph(
         return tool_or_agent.name
     elif isinstance(tool_or_agent, BaseTool):
       return tool_or_agent.name
+    elif hasattr(tool_or_agent, 'name'):
+      return tool_or_agent.name
     else:
       raise ValueError(f'Unsupported tool type: {tool_or_agent}')
 
-  def get_node_caption(tool_or_agent: Union[BaseAgent, BaseTool]):
+  def get_node_caption(tool_or_agent: Union[BaseAgent, BaseTool]) -> str:
 
     if isinstance(tool_or_agent, BaseAgent):
       return '🤖 ' + tool_or_agent.name
@@ -90,6 +95,8 @@ async def build_graph(
       return '🤖 ' + tool_or_agent.name
     elif isinstance(tool_or_agent, BaseTool):
       return '🔧 ' + tool_or_agent.name
+    elif hasattr(tool_or_agent, 'name'):
+      return tool_or_agent.name
     else:
       logger.warning(
           'Unsupported tool, type: %s, obj: %s',
@@ -98,10 +105,9 @@ async def build_graph(
       )
       return f'❓ Unsupported tool type: {type(tool_or_agent)}'
 
-  def get_node_shape(tool_or_agent: Union[BaseAgent, BaseTool]):
+  def get_node_shape(tool_or_agent: Union[BaseAgent, BaseTool]) -> str:
     if isinstance(tool_or_agent, BaseAgent):
       return 'ellipse'
-
     elif retrieval_tool_module_loaded and isinstance(
         tool_or_agent, BaseRetrievalTool
     ):
@@ -109,6 +115,8 @@ async def build_graph(
     elif isinstance(tool_or_agent, FunctionTool):
       return 'box'
     elif isinstance(tool_or_agent, BaseTool):
+      return 'box'
+    elif hasattr(tool_or_agent, 'name'):
       return 'box'
     else:
       logger.warning(
@@ -118,8 +126,12 @@ async def build_graph(
       )
       return 'cylinder'
 
-  def should_build_agent_cluster(tool_or_agent: Union[BaseAgent, BaseTool]):
-    if isinstance(tool_or_agent, BaseAgent):
+  def should_build_agent_cluster(
+      tool_or_agent: Union[BaseAgent, BaseTool],
+  ) -> bool:
+    if isinstance(tool_or_agent, Workflow):
+      return True
+    elif isinstance(tool_or_agent, BaseAgent):
       if isinstance(tool_or_agent, SequentialAgent):
         return True
       elif isinstance(tool_or_agent, LoopAgent):
@@ -137,14 +149,11 @@ async def build_graph(
     elif isinstance(tool_or_agent, BaseTool):
       return False
     else:
-      logger.warning(
-          'Unsupported tool, type: %s, obj: %s',
-          type(tool_or_agent),
-          tool_or_agent,
-      )
       return False
 
-  async def build_cluster(child: graphviz.Digraph, agent: BaseAgent, name: str):
+  async def build_cluster(
+      child: graphviz.Digraph, agent: BaseAgent, name: str
+  ) -> None:
     if isinstance(agent, LoopAgent):
       # Draw the edge from the parent agent to the first sub-agent
       if parent_agent:
@@ -188,6 +197,16 @@ async def build_graph(
         await build_graph(child, sub_agent, highlight_pairs)
         if parent_agent:
           draw_edge(parent_agent.name, sub_agent.name)
+    elif isinstance(agent, Workflow) and agent._graph is not None:
+      for wf_node in agent._graph.nodes:
+        if wf_node.name == START.name:
+          continue
+        await build_graph(child, wf_node, highlight_pairs)
+      for edge in agent._graph.edges:
+        if edge.from_node.name == START.name:
+          continue
+        label = str(edge.route) if edge.route is not None else ''
+        draw_edge(edge.from_node.name, edge.to_node.name)
     else:
       for sub_agent in agent.sub_agents:
         await build_graph(child, sub_agent, highlight_pairs)
@@ -200,7 +219,7 @@ async def build_graph(
         fontcolor=light_gray,
     )
 
-  async def draw_node(tool_or_agent: Union[BaseAgent, BaseTool]):
+  async def draw_node(tool_or_agent: Union[BaseAgent, BaseTool]) -> None:
     name = get_node_name(tool_or_agent)
     shape = get_node_shape(tool_or_agent)
     caption = get_node_caption(tool_or_agent)
@@ -228,7 +247,6 @@ async def build_graph(
           return
     # if not in highlight, draw non-highlight node
     if as_cluster:
-
       cluster = graphviz.Digraph(
           name='cluster_' + name
       )  # adding "cluster_" to the name makes the graph render as a cluster subgraph
@@ -247,7 +265,7 @@ async def build_graph(
 
       return
 
-  def draw_edge(from_name, to_name):
+  def draw_edge(from_name: str, to_name: str) -> None:
     if highlight_pairs:
       for highlight_from, highlight_to in highlight_pairs:
         if from_name == highlight_from and to_name == highlight_to:
@@ -268,14 +286,15 @@ async def build_graph(
       graph.edge(from_name, to_name, arrowhead='none', color=light_gray)
 
   await draw_node(agent)
-  for sub_agent in agent.sub_agents:
-    await build_graph(graph, sub_agent, highlight_pairs, agent)
-    if not should_build_agent_cluster(
-        sub_agent
-    ) and not should_build_agent_cluster(
-        agent
-    ):  # This is to avoid making a node for a Workflow Agent
-      draw_edge(agent.name, sub_agent.name)
+  if hasattr(agent, 'sub_agents'):
+    for sub_agent in agent.sub_agents:
+      await build_graph(graph, sub_agent, highlight_pairs, agent)
+      if not should_build_agent_cluster(
+          sub_agent
+      ) and not should_build_agent_cluster(
+          agent
+      ):  # This is to avoid making a node for a Workflow Agent
+        draw_edge(agent.name, sub_agent.name)
   if isinstance(agent, LlmAgent):
     for tool in await agent.canonical_tools():
       await draw_node(tool)

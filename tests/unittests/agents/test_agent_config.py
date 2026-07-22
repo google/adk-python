@@ -260,51 +260,35 @@ sub_agents:
   assert config.root.agent_class == agent_class_value
 
 
-def test_agent_config_litellm_model_with_custom_args(tmp_path: Path):
+def test_agent_config_model_code_resolves_preconfigured_client(tmp_path: Path):
+  """model_code references a pre-built model instance by fully qualified name.
+
+  Configured clients (custom api_base, etc.) must be constructed in Python
+  and referenced from YAML; YAML cannot pass constructor arguments.
+  """
+  preconfigured = LiteLlm(
+      model="kimi/k2", api_base="https://proxy.litellm.ai/v1"
+  )
+
   yaml_content = """\
 name: managed_api_agent
 description: Agent using LiteLLM managed endpoint
 instruction: Respond concisely.
 model_code:
-  name: google.adk.models.lite_llm.LiteLlm
-  args:
-    - name: model
-      value: kimi/k2
-    - name: api_base
-      value: https://proxy.litellm.ai/v1
+  name: my_library.clients.my_litellm
 """
   config_file = tmp_path / "litellm_agent.yaml"
   config_file.write_text(yaml_content)
 
-  agent = config_agent_utils.from_config(str(config_file))
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_code_reference",
+      return_value=preconfigured,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, LlmAgent)
-  assert isinstance(agent.model, LiteLlm)
-  assert agent.model.model == "kimi/k2"
-  assert agent.model._additional_args.get("api_base") == (
-      "https://proxy.litellm.ai/v1"
-  )
-
-
-def test_agent_config_legacy_model_mapping_still_supported(tmp_path: Path):
-  yaml_content = """\
-name: managed_api_agent
-description: Agent using LiteLLM managed endpoint
-instruction: Respond concisely.
-model:
-  name: google.adk.models.lite_llm.LiteLlm
-  args:
-    - name: model
-      value: kimi/k2
-"""
-  config_file = tmp_path / "legacy_litellm_agent.yaml"
-  config_file.write_text(yaml_content)
-
-  agent = config_agent_utils.from_config(str(config_file))
-
-  assert isinstance(agent, LlmAgent)
-  assert isinstance(agent.model, LiteLlm)
-  assert agent.model.model == "kimi/k2"
+  assert agent.model is preconfigured
 
 
 def test_agent_config_discriminator_custom_agent():
@@ -333,6 +317,66 @@ other_field: other value
       config.root.model_dump()
   )
   assert my_custom_config.other_field == "other value"
+
+
+def test_from_config_passes_extra_yaml_fields_to_custom_agent_constructor(
+    tmp_path: Path,
+):
+  """Custom agent fields in YAML reach the constructor without a custom config_type.
+
+  Mirrors the 1.x AgentConfigMapper behavior: a custom agent subclass with
+  extra Pydantic fields declared on the agent (not on a config_type) can
+  populate those fields directly from YAML.
+  """
+
+  class MyCustomAgent(BaseAgent):
+    custom_field: str = ""
+
+  yaml_content = """\
+agent_class: mylib.agents.MyCustomAgent
+name: custom_agent
+description: a custom agent
+custom_field: hello from yaml
+"""
+  config_file = tmp_path / "custom_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_fully_qualified_name",
+      return_value=MyCustomAgent,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(agent, MyCustomAgent)
+  assert agent.custom_field == "hello from yaml"
+
+
+def test_from_config_ignores_extra_yaml_fields_not_on_agent(tmp_path: Path):
+  """Extra YAML keys that don't map to constructor params are silently dropped."""
+
+  class MyCustomAgent(BaseAgent):
+    custom_field: str = ""
+
+  yaml_content = """\
+agent_class: mylib.agents.MyCustomAgent
+name: custom_agent
+description: a custom agent
+custom_field: kept
+unknown_field: dropped
+"""
+  config_file = tmp_path / "custom_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_fully_qualified_name",
+      return_value=MyCustomAgent,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert agent.custom_field == "kept"
+  assert not hasattr(agent, "unknown_field")
 
 
 @pytest.mark.parametrize(
@@ -423,21 +467,162 @@ def test_resolve_agent_reference_uses_windows_dirname():
   assert recorded["path"] == expected_path
 
 
-def test_load_config_from_path_blocks_args_when_enforced(tmp_path):
-  """Verify _load_config_from_path blocks 'args' when enforcement is enabled."""
-  config_file = tmp_path / "malicious.yaml"
-  config_file.write_text("""
-  name: malicious_agent
-  tools:
-    - name: some_tool
-      args:
-        cmd: "rm -rf /"
-  """)
+def test_resolve_agent_reference_blocks_absolute_path():
+  """Verify resolve_agent_reference raises ValueError for absolute paths."""
+  ref_config = AgentRefConfig(config_path="/etc/passwd")
+  with pytest.raises(
+      ValueError,
+      match="Absolute paths are not allowed in AgentRefConfig config_path",
+  ):
+    config_agent_utils.resolve_agent_reference(
+        ref_config, "/workspace/main.yaml"
+    )
 
-  config_agent_utils._set_enforce_denylist(True)
+
+def test_resolve_agent_reference_blocks_path_traversal():
+  """Verify resolve_agent_reference raises ValueError for path traversal."""
+  ref_config = AgentRefConfig(config_path="../outside.yaml")
+  with pytest.raises(ValueError, match="Path traversal detected"):
+    config_agent_utils.resolve_agent_reference(
+        ref_config, "/workspace/agents/main.yaml"
+    )
+
+
+# --- Security tests: module blocklist for YAML agent config code references ---
+
+
+def test_resolve_code_reference_blocks_os_when_enforced():
+  """Verify resolve_code_reference blocks os module directly."""
+  from google.adk.agents.common_configs import CodeConfig
+
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name="os.system"))
+
+
+def test_resolve_fully_qualified_name_blocks_subprocess_when_enforced():
+  """Verify resolve_fully_qualified_name blocks subprocess module.
+
+  resolve_fully_qualified_name wraps all exceptions in
+  ValueError("Invalid fully qualified name: ..."), so we check the wrapper
+  and verify the __cause__ carries the blocklist message.
+  """
+  with pytest.raises(
+      ValueError, match="Invalid fully qualified name"
+  ) as exc_info:
+    config_agent_utils.resolve_fully_qualified_name("subprocess.Popen")
+  assert "Blocked module reference" in str(exc_info.value.__cause__)
+
+
+def test_allowed_module_passes_when_enforced(tmp_path: Path):
+  """Verify that google.adk modules are NOT blocked by the module denylist."""
+  # This should NOT raise — google.adk modules must remain allowed
+  result = config_agent_utils.resolve_fully_qualified_name(
+      "google.adk.agents.llm_agent.LlmAgent"
+  )
+  assert result is LlmAgent
+
+
+@pytest.mark.parametrize(
+    "blocked_module",
+    [
+        "os.system",
+        "posix.system",
+        "nt.system",
+        "subprocess.call",
+        "_posixsubprocess.fork_exec",
+        "socket.socket",
+        "_socket.socket",
+        "builtins.exec",
+    ],
+)
+def test_resolve_agent_code_reference_blocks_when_enforced(
+    blocked_module: str,
+):
+  """Verify _resolve_agent_code_reference blocks dangerous modules."""
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils._resolve_agent_code_reference(blocked_module)
+
+
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        "os.system",
+        "posix.system",
+        "nt.system",
+        "subprocess.call",
+        "_posixsubprocess.fork_exec",
+        "socket.socket",
+        "_socket.socket",
+        "builtins.exec",
+        "pickle.loads",
+    ],
+)
+def test_resolve_tools_blocks_dangerous_modules(blocked_ref: str):
+  """Verify _resolve_tools blocks dangerous modules for user-defined tools."""
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.tools.tool_configs import ToolConfig
+
+  tool_config = ToolConfig(name=blocked_ref)
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+
+
+def test_resolve_tools_allows_builtin_adk_tools():
+  """Verify _resolve_tools allows ADK built-in tools (no dot in name)."""
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.tools.tool_configs import ToolConfig
+
+  # Built-in tools have no dot — they import from google.adk.tools
+  tool_config = ToolConfig(name="google_search")
+  # Should NOT raise — this is a safe, hardcoded import path
+  resolved = LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+  assert len(resolved) == 1
+
+
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        "ftplib.FTP",
+        "smtplib.SMTP",
+        "xmlrpc.client",
+        "telnetlib.Telnet",
+        "poplib.POP3",
+        "imaplib.IMAP4",
+        "asyncio.run",
+        "pathlib.Path",
+    ],
+)
+def test_newly_blocked_network_modules_are_rejected(blocked_ref: str):
+  """Verify newly added network-capable modules are blocked.
+
+  resolve_fully_qualified_name wraps errors, so we check the cause.
+  """
+  with pytest.raises(
+      ValueError, match="Invalid fully qualified name"
+  ) as exc_info:
+    config_agent_utils.resolve_fully_qualified_name(blocked_ref)
+  assert "Blocked module reference" in str(exc_info.value.__cause__)
+
+
+def test_denylist_can_be_disabled():
+  """Verify _set_enforce_denylist(False) disables module blocking."""
+  config_agent_utils._set_enforce_denylist(False)
+  try:
+    # os.getcwd is a real, importable reference — should succeed
+    result = config_agent_utils.resolve_fully_qualified_name("os.getcwd")
+    assert callable(result)
+  finally:
+    config_agent_utils._set_enforce_denylist(True)
+
+
+def test_load_config_from_path_blocks_args_when_enforced(tmp_path: Path):
+  """_load_config_from_path blocks the 'args' key when enforcement is on."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text("name: my_agent\nargs:\n  key: value\n")
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
   try:
     with pytest.raises(ValueError) as exc_info:
       config_agent_utils._load_config_from_path(str(config_file))
     assert "Blocked key 'args' found" in str(exc_info.value)
   finally:
-    config_agent_utils._set_enforce_denylist(False)
+    config_agent_utils._set_enforce_yaml_key_denylist(False)

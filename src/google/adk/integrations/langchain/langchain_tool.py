@@ -73,7 +73,11 @@ class LangchainTool(FunctionTool):
       if func is None and hasattr(tool, 'coroutine') and tool.coroutine:
         func = tool.coroutine
     elif hasattr(tool, '_run') or hasattr(tool, 'run'):
-      func = tool._run if hasattr(tool, '_run') else tool.run
+      func = (
+          getattr(tool, '_run')
+          if hasattr(tool, '_run')
+          else getattr(tool, 'run')
+      )
     else:
       raise ValueError(
           "This is not supported. Tool must be a Langchain tool, have a 'run'"
@@ -142,6 +146,8 @@ class LangchainTool(FunctionTool):
       # as the original function names are mostly ".run" and the descriptions
       # may not meet users' needs
       function_decl = super()._get_declaration()
+      if function_decl is None:
+        raise ValueError('The tool declaration could not be built.')
       function_decl.name = self.name
       function_decl.description = self.description
       return function_decl

@@ -39,6 +39,6 @@ class AutoFlow(SingleFlow):
   active to handle next user message.)
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     super().__init__()
     self.request_processors += [agent_transfer.request_processor]

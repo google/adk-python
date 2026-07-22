@@ -20,6 +20,7 @@ from functools import lru_cache
 import importlib
 import logging
 import re
+from typing import cast
 from typing import TYPE_CHECKING
 from typing import Union
 
@@ -47,10 +48,37 @@ class LLMRegistry:
         The LLM instance.
     """
 
-    return LLMRegistry.resolve(model)(model=model)
+    prefix, actual_model = LLMRegistry._parse_model(model)
+    cls = LLMRegistry.resolve(model)
+
+    if prefix and LLMRegistry._match_prefix(prefix, cls.__name__):
+      return cls(model=actual_model)
+
+    return cls(model=model)
 
   @staticmethod
-  def _register(model_name_regex: str, llm_cls: type[BaseLlm]):
+  def _parse_model(model: str) -> tuple[str | None, str]:
+    """Parses a model name into prefix and actual model.
+
+    Example: "openai:gpt-4" -> ("openai", "gpt-4")
+             "gpt-4" -> (None, "gpt-4")
+    """
+    if ':' in model:
+      prefix, actual_model = model.split(':', 1)
+      return prefix, actual_model
+    return None, model
+
+  @staticmethod
+  def _match_prefix(prefix: str, class_name: str) -> bool:
+    """Checks if a prefix matches a class name."""
+    prefix_lower = prefix.lower()
+    norm_class_name = class_name.lower()
+    if norm_class_name.endswith('llm'):
+      norm_class_name = norm_class_name[:-3]
+    return prefix_lower == norm_class_name or prefix_lower == class_name.lower()
+
+  @staticmethod
+  def _register(model_name_regex: str, llm_cls: type[BaseLlm]) -> None:
     """Registers a new LLM class.
 
     Args:
@@ -69,7 +97,7 @@ class LLMRegistry:
     _llm_registry_dict[model_name_regex] = llm_cls
 
   @staticmethod
-  def register(llm_cls: type[BaseLlm]):
+  def register(llm_cls: type[BaseLlm]) -> None:
     """Registers a new LLM class.
 
     Args:
@@ -82,7 +110,7 @@ class LLMRegistry:
   @staticmethod
   def _register_lazy(
       model_name_regexes: list[str], module_path: str, class_name: str
-  ):
+  ) -> None:
     """Pre-registers a lazily-imported LLM class."""
     for regex in model_name_regexes:
       _llm_registry_dict[regex] = (module_path, class_name)
@@ -101,6 +129,20 @@ class LLMRegistry:
         ValueError: If the model is not found.
     """
 
+    # Support [model_class]:model_name format to override resolution
+    prefix, _ = LLMRegistry._parse_model(model)
+    if prefix:
+      for regex, entry in list(_llm_registry_dict.items()):
+        class_name = entry[1] if isinstance(entry, tuple) else entry.__name__
+        if LLMRegistry._match_prefix(prefix, class_name):
+          if isinstance(entry, tuple):
+            module_path, c_name = entry
+            # We let ImportError bubble up because the user explicitly
+            # requested this provider via prefix.
+            module = importlib.import_module(module_path)
+            return cast('type[BaseLlm]', getattr(module, c_name))
+          return entry
+
     for regex, entry in list(_llm_registry_dict.items()):
       if not re.compile(regex).fullmatch(model):
         continue
@@ -111,7 +153,7 @@ class LLMRegistry:
         except ImportError:
           _llm_registry_dict.pop(regex, None)
           continue
-        llm_class = getattr(module, class_name)
+        llm_class = cast('type[BaseLlm]', getattr(module, class_name))
         _llm_registry_dict[regex] = llm_class
         return llm_class
       return entry

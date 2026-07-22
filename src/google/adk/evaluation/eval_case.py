@@ -19,13 +19,14 @@ from typing import Optional
 from typing import Union
 
 from google.genai import types as genai_types
+import pydantic
 from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import TypeAlias
 
 from .app_details import AppDetails
 from .common import EvalBaseModel
-from .conversation_scenarios import ConversationScenario
+from .conversation_scenarios import ConversationScenario as ConversationScenario
 from .eval_rubrics import Rubric
 
 
@@ -63,7 +64,7 @@ class InvocationEvent(EvalBaseModel):
   author: str
   """The name of the agent that authored/owned this event."""
 
-  content: Optional[genai_types.Content]
+  content: Optional[genai_types.Content] = None
   """The content of the event."""
 
 
@@ -115,6 +116,8 @@ SessionState: TypeAlias = dict[str, Any]
 class SessionInput(EvalBaseModel):
   """Values that help initialize a Session."""
 
+  model_config = pydantic.ConfigDict(extra="allow")
+
   app_name: str
   """The name of the app."""
 
@@ -131,6 +134,8 @@ StaticConversation: TypeAlias = list[Invocation]
 
 class EvalCase(EvalBaseModel):
   """An eval case."""
+
+  model_config = pydantic.ConfigDict(extra="allow")
 
   eval_id: str
   """Unique identifier for the evaluation case."""
@@ -240,7 +245,9 @@ def get_all_tool_calls_with_responses(
     intermediate_data: Optional[IntermediateDataType],
 ) -> list[ToolCallAndResponse]:
   """Returns tool calls with the corresponding responses, if available."""
-  tool_responses_by_call_id: dict[str, genai_types.FunctionResponse] = {
+  tool_responses_by_call_id: dict[
+      Optional[str], genai_types.FunctionResponse
+  ] = {
       tool_response.id: tool_response
       for tool_response in get_all_tool_responses(intermediate_data)
   }

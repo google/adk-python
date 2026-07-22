@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import functools
 import textwrap
+from typing import Any
+from typing import Awaitable
 from typing import Callable
 
 from google.auth.credentials import Credentials
@@ -35,7 +37,7 @@ async def execute_sql(
     credentials: Credentials,
     settings: SpannerToolSettings,
     tool_context: ToolContext,
-) -> dict:
+) -> dict[str, Any]:
   """Run a Spanner Read-Only query in the spanner database and return the result.
 
   Args:
@@ -166,7 +168,9 @@ Note:
 """)
 
 
-def get_execute_sql(settings: SpannerToolSettings) -> Callable[..., dict]:
+def get_execute_sql(
+    settings: SpannerToolSettings,
+) -> Callable[..., Awaitable[dict[str, Any]]]:
   """Get the execute_sql tool customized as per the given tool settings.
 
   Args:
@@ -181,7 +185,7 @@ def get_execute_sql(settings: SpannerToolSettings) -> Callable[..., dict]:
   if settings and settings.query_result_mode is QueryResultMode.DICT_LIST:
 
     @functools.wraps(execute_sql)
-    async def execute_sql_wrapper(*args, **kwargs) -> dict:
+    async def execute_sql_wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
       return await execute_sql(*args, **kwargs)
 
     execute_sql_wrapper.__doc__ = _EXECUTE_SQL_DICT_LIST_MODE_DOCSTRING

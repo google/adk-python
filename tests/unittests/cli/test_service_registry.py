@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 
+from google.adk.cli import service_registry
 import pytest
 
 
@@ -124,6 +128,33 @@ def test_create_artifact_service_gcs(registry, mock_services):
   )
 
 
+def test_file_artifact_factory_normalizes_windows_file_uri(monkeypatch):
+  monkeypatch.setattr(service_registry, "os", SimpleNamespace(name="nt"))
+  mocked_url2pathname = mock.Mock(return_value=r"C:\tmp\adk artifacts")
+  monkeypatch.setattr(service_registry, "url2pathname", mocked_url2pathname)
+
+  registry = service_registry.ServiceRegistry()
+  service_registry._register_builtin_services(registry)
+
+  with mock.patch(
+      "google.adk.artifacts.file_artifact_service.FileArtifactService"
+  ) as mock_file_artifact_service:
+    registry.create_artifact_service("file:///C:/tmp/adk%20artifacts")
+
+  mocked_url2pathname.assert_called_once_with("/C:/tmp/adk artifacts")
+  mock_file_artifact_service.assert_called_once_with(
+      root_dir=Path(r"C:\tmp\adk artifacts")
+  )
+
+
+def test_file_artifact_factory_rejects_non_local_authority():
+  registry = service_registry.ServiceRegistry()
+  service_registry._register_builtin_services(registry)
+
+  with pytest.raises(ValueError, match="local filesystem"):
+    registry.create_artifact_service("file://example.com/tmp/adk_artifacts")
+
+
 # Memory Service Tests
 @patch("google.adk.cli.utils.envs.load_dotenv_for_agent")
 def test_create_memory_service_rag(
@@ -172,6 +203,27 @@ def test_create_memory_service_memory(registry):
   assert isinstance(memory_service, InMemoryMemoryService)
 
 
+# Task Store Tests
+def test_create_task_store_memory(registry):
+  from a2a.server.tasks import InMemoryTaskStore
+
+  task_store = registry._create_task_store_service("memory://")
+  assert isinstance(task_store, InMemoryTaskStore)
+
+
+@patch("sqlalchemy.ext.asyncio.create_async_engine")
+@patch("a2a.server.tasks.DatabaseTaskStore")
+def test_create_task_store_postgresql(
+    mock_db_task_store, mock_create_engine, registry
+):
+  mock_engine = mock_create_engine.return_value
+  registry._create_task_store_service("postgresql+asyncpg://user:pass@host/db")
+  mock_create_engine.assert_called_once_with(
+      "postgresql+asyncpg://user:pass@host/db"
+  )
+  mock_db_task_store.assert_called_once_with(engine=mock_engine)
+
+
 # General Tests
 def test_unsupported_scheme(registry, mock_services):
   session_service = registry.create_session_service("unsupported://foo")
@@ -180,6 +232,8 @@ def test_unsupported_scheme(registry, mock_services):
   assert session_service is None
   assert artifact_service is None
   assert memory_service is None
+  with pytest.raises(ValueError, match="Unsupported A2A task store URI scheme"):
+    registry._create_task_store_service("unsupported://foo")
   for service in [
       "vertex_session",
       "db_session",

@@ -1,0 +1,92 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "Release: Update ADk Web"
+
+on:
+  workflow_dispatch:
+    inputs:
+      adk_web_repo:
+        description: 'Source adk-web repository'
+        required: true
+        default: 'google/adk-web'  # Default source repo
+      adk_web_tag:
+        description: 'Tag of the release to download (e.g. v1.0.0).'
+        required: false
+        default: ''
+
+jobs:
+  update-frontend:
+    if: github.repository == 'google/adk-python'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        persist-credentials: false
+
+    - name: Fetch and unzip frontend assets
+      run: |
+        TARGET_DIR="src/google/adk/cli/browser"
+        REPO="${{ github.event.inputs.adk_web_repo }}"
+        TAG="${{ github.event.inputs.adk_web_tag }}"
+        # Clean target directory
+        rm -rf "$TARGET_DIR"/*
+        mkdir -p "$TARGET_DIR"
+        if [ -z "$TAG" ]; then
+          echo "Fetching latest release metadata for $REPO..."
+          RELEASE_JSON=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
+        else
+          echo "Fetching release metadata for $REPO tag $TAG..."
+          RELEASE_JSON=$(curl -s "https://api.github.com/repos/$REPO/releases/tags/$TAG")
+        fi
+        # Extract download URL for adk-web-browser.zip
+        DOWNLOAD_URL=$(echo "$RELEASE_JSON" | grep -o -E '"browser_download_url": "[^"]+"' | grep -o -E 'https://[^"]+' | grep 'adk-web-browser.zip' | head -n 1)
+        if [ -z "$DOWNLOAD_URL" ]; then
+          echo "Error: Could not find adk-web-browser.zip asset in the release."
+          exit 1
+        fi
+        echo "Downloading assets from: $DOWNLOAD_URL"
+        curl -L -o frontend.zip "$DOWNLOAD_URL"
+        echo "Extracting assets to $TARGET_DIR..."
+        unzip -o frontend.zip -d "$TARGET_DIR"
+        rm frontend.zip
+        echo "Assets extracted successfully."
+
+    - name: Extract Bot Identity
+      id: bot-identity
+      env:
+        GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+      run: |
+        USER_JSON=$(gh api user)
+        echo "name=$(echo "$USER_JSON" | jq -r '.login')" >> $GITHUB_OUTPUT
+        echo "email=$(echo "$USER_JSON" | jq -r '.id')+$(echo "$USER_JSON" | jq -r '.login')@users.noreply.github.com" >> $GITHUB_OUTPUT
+
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6
+      with:
+        token: ${{ secrets.RELEASE_PAT }}
+        commit-message: "Update compiled adk web files from ${{ github.event.inputs.adk_web_repo }}@${{ github.event.inputs.adk_web_tag || 'latest' }}"
+        branch: update-frontend-assets
+        delete-branch: true
+        title: "chore: update compiled adk web assets"
+        committer: "${{ steps.bot-identity.outputs.name }} <${{ steps.bot-identity.outputs.email }}>"
+        author: "${{ steps.bot-identity.outputs.name }} <${{ steps.bot-identity.outputs.email }}>"
+        body: |
+          This PR automatically updates the compiled adk web files in `src/google/adk/cli/browser/` using the assets from `${{ github.event.inputs.adk_web_repo }}@${{ github.event.inputs.adk_web_tag || 'latest' }}`.
+          Please review the diff before merging.

@@ -20,6 +20,7 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 
 class CacheMetadata(BaseModel):
@@ -47,7 +48,7 @@ class CacheMetadata(BaseModel):
           None when no active cache exists.
       contents_count: Number of contents. When active cache exists, this is
           the count of cached contents. When no active cache exists, this is
-          the total count of contents in the request.
+          the count of the cacheable content prefix used for fingerprinting.
       created_at: Unix timestamp when the cache was created. None when
           no active cache exists.
   """
@@ -86,7 +87,7 @@ class CacheMetadata(BaseModel):
       ge=0,
       description=(
           "Number of contents (cached contents when active cache exists, "
-          "total contents in request when no active cache)"
+          "cacheable content prefix when no active cache)"
       ),
   )
 
@@ -96,6 +97,16 @@ class CacheMetadata(BaseModel):
           "Unix timestamp when cache was created (None if no active cache)"
       ),
   )
+
+  @model_validator(mode="after")
+  def _enforce_active_state_invariant(self) -> "CacheMetadata":
+    active = (self.cache_name, self.expire_time, self.invocations_used)
+    if len({f is not None for f in active}) > 1:
+      raise ValueError(
+          "cache_name, expire_time, and invocations_used must all be set "
+          "(active cache) or all be None (fingerprint-only state)"
+      )
+    return self
 
   @property
   def expire_soon(self) -> bool:
@@ -113,12 +124,6 @@ class CacheMetadata(BaseModel):
           f"fingerprint={self.fingerprint[:8]}..."
       )
     cache_id = self.cache_name.split("/")[-1]
-    if self.expire_time is None:
-      return (
-          f"Cache {cache_id}: used {self.invocations_used} invocations, "
-          f"cached {self.contents_count} contents, "
-          "expires unknown"
-      )
     time_until_expiry_minutes = (self.expire_time - time.time()) / 60
     return (
         f"Cache {cache_id}: used {self.invocations_used} invocations, "

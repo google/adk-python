@@ -13,9 +13,11 @@
 # limitations under the License.
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.llm_agent import InstructionProvider as LlmAgentInstructionProvider
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.sessions.session import Session
 from google.adk.utils import instructions_utils
+from google.adk.utils.instructions_utils import InstructionProvider
 import pytest
 
 from .. import testing_utils
@@ -70,6 +72,19 @@ async def test_inject_session_state():
       instruction_template, invocation_context
   )
   assert populated_instruction == "Hello Foo, you are in active state."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_without_placeholders_returns_template():
+  instruction_template = "A static instruction with no placeholders."
+  invocation_context = await _create_test_readonly_context(
+      state={"user_name": "Foo"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == instruction_template
 
 
 @pytest.mark.asyncio
@@ -267,3 +282,13 @@ async def test_inject_session_state_with_optional_missing_state_returns_empty():
       instruction_template, invocation_context
   )
   assert populated_instruction == "Optional value: "
+
+
+def test_module_exposes_instruction_provider_alias():
+  assert instructions_utils.InstructionProvider is InstructionProvider
+
+
+def test_llm_agent_reexports_same_instruction_provider():
+  # Existing importers rely on `from ...llm_agent import InstructionProvider`;
+  # it must remain the exact same object after moving the alias here.
+  assert LlmAgentInstructionProvider is InstructionProvider

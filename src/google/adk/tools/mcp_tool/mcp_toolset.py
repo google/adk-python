@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import logging
-import os
 import sys
 from typing import Any
 from typing import Awaitable
@@ -83,7 +83,6 @@ class McpToolset(BaseToolset):
 
     # Use in an agent
     agent = LlmAgent(
-        model='gemini-2.5-flash',
         name='enterprise_assistant',
         instruction='Help user accessing their file systems',
         tools=[toolset],
@@ -109,9 +108,13 @@ class McpToolset(BaseToolset):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
+      header_provider: (
+          Callable[
+              [ReadonlyContext],
+              dict[str, str] | Awaitable[dict[str, str]],
+          ]
+          | None
+      ) = None,
       progress_callback: Optional[
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
@@ -161,15 +164,6 @@ class McpToolset(BaseToolset):
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
     """
-
-    # --- BEGIN BOUND TOKEN PATCH ---
-    # Set GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES to false
-    # to disable bound token sharing. Tracking on
-    # https://github.com/google/adk-python/issues/5361
-    os.environ["GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"] = (
-        "false"
-    )
-    # --- END BOUND TOKEN  PATCH ---
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
@@ -292,6 +286,41 @@ class McpToolset(BaseToolset):
 
     return headers
 
+  @property
+  def connection_params(self) -> Union[
+      StdioServerParameters,
+      StdioConnectionParams,
+      SseConnectionParams,
+      StreamableHTTPConnectionParams,
+  ]:
+    return self._connection_params
+
+  @property
+  def auth_scheme(self) -> Optional[AuthScheme]:
+    return self._auth_scheme
+
+  @property
+  def auth_credential(self) -> Optional[AuthCredential]:
+    return self._auth_credential
+
+  @property
+  def require_confirmation(self) -> Union[bool, Callable[..., bool]]:
+    return self._require_confirmation
+
+  @property
+  def header_provider(
+      self,
+  ) -> Optional[
+      Callable[
+          [ReadonlyContext], Union[Dict[str, str], Awaitable[Dict[str, str]]]
+      ]
+  ]:
+    return self._header_provider
+
+  @property
+  def errlog(self) -> TextIO:
+    return self._errlog
+
   async def _execute_with_session(
       self,
       coroutine_func: Callable[[Any], Awaitable[T]],
@@ -304,6 +333,8 @@ class McpToolset(BaseToolset):
     # Add headers from header_provider if available
     if self._header_provider and readonly_context:
       provider_headers = self._header_provider(readonly_context)
+      if inspect.isawaitable(provider_headers):
+        provider_headers = await provider_headers
       if provider_headers:
         headers.update(provider_headers)
 
@@ -368,6 +399,11 @@ class McpToolset(BaseToolset):
 
       if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
+
+    # Sort by name for a stable order across turns. The MCP server's
+    # list_tools() order is not contractual; an unstable order would
+    # invalidate the context cache every turn.
+    tools.sort(key=lambda tool: tool.name)
 
     if self._use_mcp_resources:
       load_resource_tool = LoadMcpResourceTool(
@@ -436,7 +472,7 @@ class McpToolset(BaseToolset):
       await self._mcp_session_manager.close()
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
-      print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+      logger.warning("Error during McpToolset cleanup: %s", e)
 
   @override
   def get_auth_config(self) -> Optional[AuthConfig]:

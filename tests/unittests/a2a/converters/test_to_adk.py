@@ -14,26 +14,49 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock
 
-from a2a.types import Artifact
 from a2a.types import Message
 from a2a.types import Part as A2APart
 from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
-from a2a.types import TaskState
-from a2a.types import TaskStatus
-from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
+from google.adk.a2a import _compat
+from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
+from google.adk.a2a.converters.to_adk_event import _extract_genai_metadata
 from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_message_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_status_update_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_task_to_event
+from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
+from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event
 from google.genai import types as genai_types
 import pytest
+
+
+def _make_a2a_part_for_test(metadata=None):
+  """Returns a real proto Part on 1.x, or Mock(spec=A2APart) on 0.3."""
+  if _compat.IS_A2A_V1:
+    p = _compat.make_text_part("test")
+    if metadata:
+      _compat.set_part_metadata(p, metadata)
+    return p
+  else:
+    from unittest.mock import Mock
+
+    from a2a.types import TextPart
+
+    m = Mock(spec=A2APart)
+    m.root = Mock(spec=TextPart)
+    m.root.metadata = metadata or {}
+    return m
 
 
 class TestToAdk:
@@ -47,10 +70,10 @@ class TestToAdk:
 
   def test_convert_a2a_message_to_event_success(self):
     """Test successful conversion of A2A message to Event."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
-    message = Message(message_id="msg-1", role="user", parts=[a2a_part])
+    a2a_part = _make_a2a_part_for_test({})
+    message = Message(
+        message_id="msg-1", role=_compat.ROLE_USER, parts=[a2a_part]
+    )
 
     mock_genai_part = genai_types.Part.from_text(text="hello")
     mock_part_converter = Mock(return_value=[mock_genai_part])
@@ -75,12 +98,10 @@ class TestToAdk:
 
   def test_convert_a2a_message_to_event_restores_actions_from_metadata(self):
     """Test A2A message conversion restores ADK actions metadata."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
+    a2a_part = _make_a2a_part_for_test({})
     message = Message(
         message_id="msg-1",
-        role="user",
+        role=_compat.ROLE_USER,
         parts=[a2a_part],
         metadata={
             _get_adk_metadata_key("actions"): {
@@ -107,7 +128,7 @@ class TestToAdk:
     """Test A2A message conversion returns action-only events."""
     message = Message(
         message_id="msg-1",
-        role="user",
+        role=_compat.ROLE_USER,
         parts=[],
         metadata={
             _get_adk_metadata_key("actions"): {
@@ -129,18 +150,20 @@ class TestToAdk:
 
   def test_convert_a2a_task_to_event_success(self):
     """Test successful conversion of A2A task to Event."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
+    a2a_part = _make_a2a_part_for_test({})
     task = Task(
         id="task-1",
-        status=TaskStatus(
-            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
+        status=_compat.make_task_status(
+            _compat.TS_SUBMITTED, timestamp="2024-01-01T00:00:00Z"
         ),
         context_id="context-1",
-        history=[Message(message_id="msg-1", role="agent", parts=[a2a_part])],
+        history=[
+            Message(
+                message_id="msg-1", role=_compat.ROLE_AGENT, parts=[a2a_part]
+            )
+        ],
         artifacts=[
-            Artifact(
+            _compat.make_artifact(
                 artifact_id="art-1", artifact_type="message", parts=[a2a_part]
             )
         ],
@@ -165,12 +188,12 @@ class TestToAdk:
     """Test A2A task conversion returns action-only events."""
     task = Task(
         id="task-1",
-        status=TaskStatus(
-            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
+        status=_compat.make_task_status(
+            _compat.TS_SUBMITTED, timestamp="2024-01-01T00:00:00Z"
         ),
         context_id="context-1",
         artifacts=[
-            Artifact(
+            _compat.make_artifact(
                 artifact_id="art-1",
                 artifact_type="message",
                 parts=[],
@@ -198,12 +221,12 @@ class TestToAdk:
     """Test task conversion merges actions across artifact metadata."""
     task = Task(
         id="task-1",
-        status=TaskStatus(
-            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
+        status=_compat.make_task_status(
+            _compat.TS_SUBMITTED, timestamp="2024-01-01T00:00:00Z"
         ),
         context_id="context-1",
         artifacts=[
-            Artifact(
+            _compat.make_artifact(
                 artifact_id="art-1",
                 artifact_type="message",
                 parts=[],
@@ -213,7 +236,7 @@ class TestToAdk:
                     }
                 },
             ),
-            Artifact(
+            _compat.make_artifact(
                 artifact_id="art-2",
                 artifact_type="message",
                 parts=[],
@@ -237,12 +260,12 @@ class TestToAdk:
     """Test task conversion preserves top-level state overwrite semantics."""
     task = Task(
         id="task-1",
-        status=TaskStatus(
-            state=TaskState.submitted, timestamp="2024-01-01T00:00:00Z"
+        status=_compat.make_task_status(
+            _compat.TS_SUBMITTED, timestamp="2024-01-01T00:00:00Z"
         ),
         context_id="context-1",
         artifacts=[
-            Artifact(
+            _compat.make_artifact(
                 artifact_id="art-1",
                 artifact_type="message",
                 parts=[],
@@ -257,7 +280,7 @@ class TestToAdk:
                     }
                 },
             ),
-            Artifact(
+            _compat.make_artifact(
                 artifact_id="art-2",
                 artifact_type="message",
                 parts=[],
@@ -283,17 +306,15 @@ class TestToAdk:
 
   def test_convert_a2a_task_to_event_merges_status_and_artifact_actions(self):
     """Test task conversion merges status and artifact actions."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
+    a2a_part = _make_a2a_part_for_test({})
     task = Task(
         id="task-1",
-        status=TaskStatus(
-            state=TaskState.input_required,
+        status=_compat.make_task_status(
+            _compat.TS_INPUT_REQUIRED,
             timestamp="2024-01-01T00:00:00Z",
             message=Message(
                 message_id="msg-1",
-                role="agent",
+                role=_compat.ROLE_AGENT,
                 parts=[a2a_part],
                 metadata={
                     _get_adk_metadata_key("actions"): {
@@ -304,7 +325,7 @@ class TestToAdk:
         ),
         context_id="context-1",
         artifacts=[
-            Artifact(
+            _compat.make_artifact(
                 artifact_id="art-1",
                 artifact_type="message",
                 parts=[],
@@ -330,28 +351,236 @@ class TestToAdk:
     assert event.actions.state_delta == {"saved_key": "saved-value"}
     assert event.actions.transfer_to_agent == "agent-2"
     assert event.content is not None
-    assert event.content.parts == [mock_genai_part]
+    assert (
+        event.content.parts[0].function_call.name
+        == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+    )
+    assert (
+        event.content.parts[0].function_call.args["input_required"]
+        == "need input"
+    )
 
-  def test_convert_a2a_task_to_event_none(self):
-    """Test convert_a2a_task_to_event with None."""
-    with pytest.raises(ValueError, match="A2A task cannot be None"):
-      convert_a2a_task_to_event(None)
-
-  def test_convert_a2a_status_update_to_event_success(self):
-    """Test successful conversion of A2A status update to Event."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {
-        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY): True
-    }
-    update = TaskStatusUpdateEvent(
-        task_id="task-1",
-        status=TaskStatus(
-            state=TaskState.input_required,
+  def test_convert_a2a_task_to_event_auth_required_uses_auth_args_key(self):
+    """Test auth-required state populates the function call with auth args."""
+    a2a_part = _make_a2a_part_for_test({})
+    task = _compat.make_task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=_compat.make_task_status(
+            _compat.TS_AUTH_REQUIRED,
             timestamp="now",
             message=Message(
                 message_id="m1",
-                role="agent",
+                role=_compat.ROLE_AGENT,
+                parts=[a2a_part],
+            ),
+        ),
+    )
+
+    mock_genai_part = genai_types.Part.from_text(text="need auth")
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_genai_part]),
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert (
+        event.content.parts[0].function_call.name
+        == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
+    )
+    # auth_required state should populate the auth_required arg key, not
+    # input_required.
+    assert (
+        event.content.parts[0].function_call.args["auth_required"]
+        == "need auth"
+    )
+    assert "input_required" not in event.content.parts[0].function_call.args
+
+  def test_convert_a2a_task_to_event_multiple_parts_replaces_last_text(self):
+    """Test converting A2A task with multiple text parts, only replacing the last text."""
+    part1 = _make_a2a_part_for_test({})
+    part2 = _make_a2a_part_for_test({})
+
+    task = _compat.make_task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=_compat.make_task_status(
+            _compat.TS_INPUT_REQUIRED,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role=_compat.ROLE_AGENT,
+                parts=[part1, part2],
+            ),
+        ),
+    )
+
+    mock_genai_part_1 = genai_types.Part.from_text(text="Part 1")
+    mock_genai_part_2 = genai_types.Part.from_text(text="Part 2")
+
+    part_converter_mock = Mock()
+    part_converter_mock.side_effect = [[mock_genai_part_1], [mock_genai_part_2]]
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=part_converter_mock,
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert len(event.content.parts) == 2
+    assert event.content.parts[0].text == "Part 1"
+    assert (
+        event.content.parts[1].function_call.name
+        == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+    )
+
+  def test_convert_a2a_task_to_event_no_text_parts(self):
+    """Test converting A2A task with no text parts should not inject function call."""
+    # A real non-text (data) part; converter output is mocked below.
+    part1 = _compat.make_data_part(data={"placeholder": True})
+
+    task = _compat.make_task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=_compat.make_task_status(
+            _compat.TS_INPUT_REQUIRED,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role=_compat.ROLE_AGENT,
+                parts=[part1],
+            ),
+        ),
+    )
+    mock_image_part = genai_types.Part(
+        inline_data=genai_types.Blob(mime_type="image/jpeg", data=b"fake")
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_image_part]),
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert event.content.parts == [mock_image_part]
+
+  def test_convert_a2a_task_to_event_data_part_input_required(self):
+    """Input-required prompt carried in a data part becomes a function call."""
+    # A real non-text (data) part; converter output is mocked below.
+    part1 = _compat.make_data_part(data={"placeholder": True})
+
+    task = _compat.make_task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=_compat.make_task_status(
+            _compat.TS_INPUT_REQUIRED,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role=_compat.ROLE_AGENT,
+                parts=[part1],
+            ),
+        ),
+    )
+
+    prompt = {
+        "id": "abc123",
+        "text": "Please confirm this action. Do you want to continue?",
+    }
+    data_part_json = json.dumps({"data": prompt, "kind": "data"}).encode(
+        "utf-8"
+    )
+    mock_data_blob_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+            data=A2A_DATA_PART_START_TAG
+            + data_part_json
+            + A2A_DATA_PART_END_TAG,
+        )
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_data_blob_part]),
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert (
+        event.content.parts[0].function_call.name
+        == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
+    )
+    assert event.content.parts[0].function_call.args["input_required"] == prompt
+    assert event.long_running_tool_ids
+
+  def test_convert_a2a_task_to_event_data_part_malformed_json(self):
+    """A malformed data-part blob is left untouched (no crash, no fc)."""
+    # A real non-text (data) part; converter output is mocked below.
+    part1 = _compat.make_data_part(data={"placeholder": True})
+
+    task = _compat.make_task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=_compat.make_task_status(
+            _compat.TS_INPUT_REQUIRED,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role=_compat.ROLE_AGENT,
+                parts=[part1],
+            ),
+        ),
+    )
+
+    mock_bad_blob_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+            data=A2A_DATA_PART_START_TAG + b"not-json" + A2A_DATA_PART_END_TAG,
+        )
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=Mock(return_value=[mock_bad_blob_part]),
+    )
+
+    assert event is not None
+    assert event.content is not None
+    assert event.content.parts == [mock_bad_blob_part]
+    assert not event.long_running_tool_ids
+
+  def test_convert_a2a_status_update_to_event_success(self):
+    """Test successful conversion of A2A status update to Event."""
+    a2a_part = _make_a2a_part_for_test({
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY): True
+    })
+    update = _compat.make_task_status_update_event(
+        task_id="task-1",
+        status=_compat.make_task_status(
+            _compat.TS_INPUT_REQUIRED,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role=_compat.ROLE_AGENT,
                 parts=[a2a_part],
             ),
         ),
@@ -385,12 +614,10 @@ class TestToAdk:
 
   def test_convert_a2a_artifact_update_to_event_success(self):
     """Test successful conversion of A2A artifact update to Event."""
-    a2a_part = Mock(spec=A2APart)
-    a2a_part.root = Mock(spec=TextPart)
-    a2a_part.root.metadata = {}
+    a2a_part = _make_a2a_part_for_test({})
     update = TaskArtifactUpdateEvent(
         task_id="task-1",
-        artifact=Artifact(
+        artifact=_compat.make_artifact(
             artifact_id="art-1", artifact_type="message", parts=[a2a_part]
         ),
         append=True,
@@ -418,3 +645,112 @@ class TestToAdk:
     """Test convert_a2a_artifact_update_to_event with None."""
     with pytest.raises(ValueError, match="A2A artifact update cannot be None"):
       convert_a2a_artifact_update_to_event(None)
+
+  def test_convert_a2a_message_to_event_user_role(self) -> None:
+    """Test that A2A user role maps to GenAI content role 'user'."""
+    a2a_part = _make_a2a_part_for_test({})
+    message = Message(
+        message_id="msg-1", role=_compat.ROLE_USER, parts=[a2a_part]
+    )
+
+    mock_genai_part = genai_types.Part.from_text(text="hello from user")
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="user",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event.content.role == "user"
+
+  def test_convert_a2a_message_to_event_agent_role(self) -> None:
+    """Test that A2A agent role maps to GenAI content role 'model'."""
+    a2a_part = _make_a2a_part_for_test({})
+    message = Message(
+        message_id="msg-1", role=_compat.ROLE_AGENT, parts=[a2a_part]
+    )
+
+    mock_genai_part = genai_types.Part.from_text(text="hello from agent")
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="test-agent",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event.content.role == "model"
+
+
+class TestExtractGenaiMetadata:
+
+  def test_grounding_metadata_round_trip(self) -> None:
+    """Tests that grounding metadata can be successfully extracted."""
+    event = Event(
+        author="agent",
+        grounding_metadata=genai_types.GroundingMetadata(
+            search_entry_point=genai_types.SearchEntryPoint(
+                rendered_content="test"
+            )
+        ),
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text="hi")]
+        ),
+    )
+    a2a_events = convert_event_to_a2a_events(
+        event, {}, task_id="t", context_id="c"
+    )
+    artifact_update = next(
+        e for e in a2a_events if isinstance(e, TaskArtifactUpdateEvent)
+    )
+    back = convert_a2a_artifact_update_to_event(artifact_update, "agent")
+    assert back is not None
+    assert back.grounding_metadata is not None
+    assert back.grounding_metadata.search_entry_point.rendered_content == "test"
+
+  def test_extract_genai_metadata_valid(self) -> None:
+    metadata_dict = {
+        _get_adk_metadata_key(
+            "grounding_metadata"
+        ): '{"search_entry_point": {"rendered_content": "test"}}'
+    }
+    result = _extract_genai_metadata(
+        metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
+    )
+    assert isinstance(result, genai_types.GroundingMetadata)
+    assert result.search_entry_point.rendered_content == "test"
+
+  def test_extract_genai_metadata_invalid_validation_error(self) -> None:
+    # A malformed dictionary that causes a ValidationError (e.g. wrong type for search_entry_point)
+    metadata_dict = {
+        _get_adk_metadata_key(
+            "grounding_metadata"
+        ): '{"search_entry_point": ["not_a_dict"]}'
+    }
+    result = _extract_genai_metadata(
+        metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
+    )
+    assert result is None
+
+  def test_extract_genai_metadata_missing(self) -> None:
+    result = _extract_genai_metadata(
+        {"other_key": "val"},
+        "grounding_metadata",
+        genai_types.GroundingMetadata,
+    )
+    assert result is None
+
+  def test_extract_genai_metadata_not_dict_but_class_provided(self) -> None:
+    # Should safely return None when JSON parsed to non-dict, but model validates expected dict/kwargs
+    metadata_dict = {
+        _get_adk_metadata_key("usage_metadata"): '["not", "a", "dict"]'
+    }
+    result = _extract_genai_metadata(
+        metadata_dict,
+        "usage_metadata",
+        genai_types.GenerateContentResponseUsageMetadata,
+    )
+    assert result is None

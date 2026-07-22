@@ -23,6 +23,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sys
 import tempfile
 import textwrap
 from typing import Optional
@@ -32,23 +33,54 @@ from click.core import ParameterSource
 from fastapi import FastAPI
 import uvicorn
 
-from . import cli_create
-from . import cli_deploy
 from .. import version
 from ..agents.run_config import StreamingMode
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..features import FeatureName
 from ..features import override_feature_enabled
 from .cli import run_cli
-from .fast_api import get_fast_api_app
 from .utils import envs
-from .utils import evals
 from .utils import logs
 
 LOG_LEVELS = click.Choice(
     ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     case_sensitive=False,
 )
+
+
+def _logging_options():
+  """Decorator to add logging options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "-v",
+        "--verbose",
+        is_flag=True,
+        show_default=True,
+        default=False,
+        help="Enable verbose (DEBUG) logging. Shortcut for --log_level DEBUG.",
+    )
+    @click.option(
+        "--log_level",
+        type=LOG_LEVELS,
+        default="INFO",
+        help="Optional. Set the logging level",
+    )
+    @functools.wraps(func)
+    @click.pass_context
+    def wrapper(ctx, *args, **kwargs):
+      # If verbose flag is set and log level is not set, set log level to DEBUG.
+      log_level_source = ctx.get_parameter_source("log_level")
+      if (
+          kwargs.pop("verbose", False)
+          and log_level_source == ParameterSource.DEFAULT
+      ):
+        kwargs["log_level"] = "DEBUG"
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
 
 
 def _apply_feature_overrides(
@@ -341,8 +373,8 @@ def cli_conformance_test(
     paths: tuple[str, ...],
     mode: str,
     generate_report: bool,
-    report_dir: Optional[str] = None,
-    streaming_mode: Optional[StreamingMode] = None,
+    report_dir: str | None = None,
+    streaming_mode: StreamingMode | None = None,
 ):
   """Run conformance tests to verify agent behavior consistency.
 
@@ -475,11 +507,11 @@ def cli_conformance_test(
 @click.argument("app_name", type=str, required=True)
 def cli_create_cmd(
     app_name: str,
-    model: Optional[str],
-    api_key: Optional[str],
-    project: Optional[str],
-    region: Optional[str],
-    type: Optional[str],
+    model: str | None,
+    api_key: str | None,
+    project: str | None,
+    region: str | None,
+    type: str | None,
 ):
   """Creates a new app in the current folder with prepopulated agent template.
 
@@ -489,6 +521,8 @@ def cli_create_cmd(
 
     adk create path/to/my_app
   """
+  from . import cli_create
+
   cli_create.run_cmd(
       app_name,
       model=model,
@@ -572,8 +606,11 @@ def adk_services_options(*, default_use_local_storage: bool = True):
         "--memory_service_uri",
         type=str,
         help=textwrap.dedent("""\
-            \b
             Optional. The URI of the memory service.
+            If set, ADK uses this service.
+
+            \b
+            If unset, ADK chooses a default memory service.
             - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
               sessions. <agent_engine> can either be the full qualified resource
@@ -605,6 +642,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
 @main.command("run", cls=HelpfulCommand)
 @feature_options()
 @adk_services_options(default_use_local_storage=True)
+@_logging_options()
 @click.option(
     "--save_session",
     type=bool,
@@ -647,50 +685,208 @@ def adk_services_options(*, default_use_local_storage: bool = True):
     ),
     callback=validate_exclusive,
 )
+@click.option(
+    "--state",
+    type=str,
+    help="Optional. Initial state for the run as a JSON string.",
+)
+@click.option(
+    "--timeout",
+    type=str,
+    help="Optional. Timeout for a single turn or query (e.g., 30s, 5m).",
+)
+@click.option(
+    "--in_memory",
+    is_flag=True,
+    help="Optional. Do not persist session data (use in-memory storage).",
+)
+@click.option(
+    "--jsonl",
+    is_flag=True,
+    help="Optional. Output structured JSONL instead of human-readable text.",
+)
+@click.option(
+    "--default_llm_model",
+    type=str,
+    help=(
+        "Optional. Sets the default LLM model used when the agent does not set"
+        " a model explicitly."
+    ),
+    default=None,
+)
 @click.argument(
     "agent",
     type=click.Path(
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
+@click.argument("query", type=str, required=False)
 def cli_run(
     agent: str,
+    query: Optional[str],
     save_session: bool,
     session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
+    state: Optional[str] = None,
+    timeout: Optional[str] = None,
+    in_memory: bool = False,
+    jsonl: bool = False,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
+    default_llm_model: Optional[str] = None,
+    log_level: str = "INFO",
 ):
-  """Runs an interactive CLI for a certain agent.
+  """Runs an agent. If no query is provided, enters interactive mode.
 
   AGENT: The path to the agent source code folder.
+  QUERY: Optional. The user message to send to the agent for a single-step run.
 
   Example:
 
     adk run path/to/my_agent
+    adk run path/to/my_agent "hello"
   """
-  logs.log_to_tmp_folder()
+  logs.log_to_tmp_folder(level=getattr(logging, log_level.upper()))
 
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
 
-  asyncio.run(
-      run_cli(
-          agent_parent_dir=agent_parent_folder,
-          agent_folder_name=agent_folder_name,
-          input_file=replay,
-          saved_session_file=resume,
-          save_session=save_session,
-          session_id=session_id,
-          session_service_uri=session_service_uri,
-          artifact_service_uri=artifact_service_uri,
-          memory_service_uri=memory_service_uri,
-          use_local_storage=use_local_storage,
+  # If query is provided, we run in single-step mode (JSONL output)
+  if query is not None:
+    from .cli import run_once_cli
+
+    exit_code = asyncio.run(
+        run_once_cli(
+            agent_parent_dir=agent_parent_folder,
+            agent_folder_name=agent_folder_name,
+            query=query,
+            state_str=state,
+            session_id=session_id,
+            replay=replay,
+            timeout=timeout,
+            in_memory=in_memory,
+            jsonl=jsonl,
+            session_service_uri=session_service_uri,
+            artifact_service_uri=artifact_service_uri,
+            memory_service_uri=memory_service_uri,
+            use_local_storage=use_local_storage,
+            default_llm_model=default_llm_model,
+        )
+    )
+    sys.exit(exit_code)
+  else:
+    # Legacy interactive mode
+    asyncio.run(
+        run_cli(
+            agent_parent_dir=agent_parent_folder,
+            agent_folder_name=agent_folder_name,
+            input_file=replay,
+            saved_session_file=resume,
+            save_session=save_session,
+            session_id=session_id,
+            state_str=state,
+            timeout=timeout,
+            in_memory=in_memory,
+            jsonl=jsonl,
+            session_service_uri=session_service_uri,
+            artifact_service_uri=artifact_service_uri,
+            memory_service_uri=memory_service_uri,
+            use_local_storage=use_local_storage,
+            default_llm_model=default_llm_model,
+        )
+    )
+
+
+@main.command(
+    "test",
+    cls=HelpfulCommand,
+    context_settings={
+        "allow_extra_args": True,
+        "allow_interspersed_args": True,
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument(
+    "folder",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+    default=".",
+)
+@click.option(
+    "--rebuild",
+    is_flag=True,
+    help="Rebuild test files by running the real agent with user messages.",
+)
+@click.pass_context
+def cli_test(ctx, folder: str, rebuild: bool):
+  """Runs pytest on agent test JSON files under the specified folder.
+
+  FOLDER: The path to the folder containing agents and tests.
+  Defaults to the current directory if not specified.
+
+  Example:
+      adk test path/to/agents
+  """
+  import sys
+
+  if rebuild:
+    from .agent_test_runner import rebuild_tests
+
+    click.echo(f"Rebuilding tests in {folder}...")
+    rebuild_tests(folder)
+    sys.exit(0)
+
+  # Parse arguments to separate pytest args (after --) from regular args
+  pytest_args = []
+  if "--" in ctx.args:
+    separator_index = ctx.args.index("--")
+    pytest_args = ctx.args[separator_index + 1 :]
+    regular_args = ctx.args[:separator_index]
+
+    if regular_args:
+      click.secho(
+          "Error: Unexpected arguments after folder and before '--':"
+          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
+          " to pytest.",
+          fg="red",
+          err=True,
       )
-  )
+      ctx.exit(2)
+  else:
+    # If no '--', all remaining arguments are passed to pytest
+    pytest_args = ctx.args
+
+  import subprocess
+
+  os.environ["ADK_TEST_FOLDER"] = folder
+
+  current_dir = Path(__file__).parent
+  test_runner_path = current_dir / "agent_test_runner.py"
+
+  if not test_runner_path.exists():
+    click.secho(
+        f"Error: Test runner not found at {test_runner_path}",
+        fg="red",
+        err=True,
+    )
+    sys.exit(1)
+
+  click.echo(f"Running tests in {folder} using runner {test_runner_path}...")
+
+  result = subprocess.run([
+      sys.executable,
+      "-m",
+      "pytest",
+      str(test_runner_path),
+      "-v",
+      "-s",
+      *pytest_args,
+  ])
+  sys.exit(result.returncode)
 
 
 def eval_options():
@@ -744,7 +940,7 @@ def cli_eval(
     eval_set_file_path_or_id: list[str],
     config_file_path: str,
     print_detailed_results: bool,
-    eval_storage_uri: Optional[str] = None,
+    eval_storage_uri: str | None = None,
     log_level: str = "INFO",
 ):
   """Evaluates an agent given the eval sets.
@@ -805,25 +1001,22 @@ def cli_eval(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
-    import importlib
+    import importlib  # noqa: F401
 
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
-    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
     from ..evaluation.eval_config import get_eval_metrics_from_config
     from ..evaluation.eval_config import get_evaluation_criteria_or_default
-    from ..evaluation.eval_result import EvalCaseResult
     from ..evaluation.evaluator import EvalStatus
     from ..evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
     from ..evaluation.local_eval_service import LocalEvalService
     from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
-    from ..evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
+    from ..evaluation.metric_evaluator_registry import register_custom_metrics_from_config
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
-    from .cli_eval import get_default_metric_info
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
@@ -841,6 +1034,8 @@ def cli_eval(
   eval_set_results_manager = None
 
   if eval_storage_uri:
+    from .utils import evals
+
     gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
         eval_storage_uri
     )
@@ -916,23 +1111,7 @@ def cli_eval(
   )
 
   try:
-    metric_evaluator_registry = DEFAULT_METRIC_EVALUATOR_REGISTRY
-    if eval_config.custom_metrics:
-      for (
-          metric_name,
-          config,
-      ) in eval_config.custom_metrics.items():
-        if config.metric_info:
-          metric_info = config.metric_info.model_copy()
-          metric_info.metric_name = metric_name
-        else:
-          metric_info = get_default_metric_info(
-              metric_name=metric_name, description=config.description
-          )
-
-        metric_evaluator_registry.register_evaluator(
-            metric_info, _CustomMetricEvaluator
-        )
+    metric_evaluator_registry = register_custom_metrics_from_config(eval_config)
 
     eval_service = LocalEvalService(
         root_agent=root_agent,
@@ -963,8 +1142,6 @@ def cli_eval(
   eval_run_summary = {}
 
   for eval_result in eval_results:
-    eval_result: EvalCaseResult
-
     if eval_result.eval_set_id not in eval_run_summary:
       eval_run_summary[eval_result.eval_set_id] = [0, 0]
 
@@ -981,7 +1158,6 @@ def cli_eval(
 
   if print_detailed_results:
     for eval_result in eval_results:
-      eval_result: EvalCaseResult
       click.echo(
           "********************************************************************"
       )
@@ -1055,14 +1231,14 @@ def cli_optimize(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
-    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
+    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator  # noqa: F401
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizer
     from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizerConfig
     from ..optimization.local_eval_sampler import LocalEvalSampler
     from ..optimization.local_eval_sampler import LocalEvalSamplerConfig
-    from .cli_eval import _collect_eval_results
-    from .cli_eval import _collect_inferences
+    from .cli_eval import _collect_eval_results  # noqa: F401
+    from .cli_eval import _collect_inferences  # noqa: F401
     from .cli_eval import get_root_agent
 
   except ModuleNotFoundError as mnf:
@@ -1134,7 +1310,7 @@ def eval_set():
 def cli_create_eval_set(
     agent_module_file_path: str,
     eval_set_id: str,
-    eval_storage_uri: Optional[str] = None,
+    eval_storage_uri: str | None = None,
     log_level: str = "INFO",
 ):
   """Creates an empty EvalSet given the agent_module_file_path and eval_set_id."""
@@ -1183,8 +1359,8 @@ def cli_add_eval_case(
     agent_module_file_path: str,
     eval_set_id: str,
     scenarios_file: str,
-    eval_storage_uri: Optional[str] = None,
-    session_input_file: Optional[str] = None,
+    eval_storage_uri: str | None = None,
+    session_input_file: str | None = None,
     log_level: str = "INFO",
 ):
   """Adds eval cases to the given eval set.
@@ -1273,7 +1449,7 @@ def cli_generate_eval_cases(
     agent_module_file_path: str,
     eval_set_id: str,
     user_simulation_config_file: str,
-    eval_storage_uri: Optional[str] = None,
+    eval_storage_uri: str | None = None,
     log_level: str = "INFO",
 ):
   """Generates eval cases dynamically and adds them to the given eval set.
@@ -1330,7 +1506,7 @@ def cli_generate_eval_cases(
     click.echo("Generating scenarios utilizing Vertex AI Eval SDK...")
     scenarios = generator.generate_scenarios(root_agent, config)
 
-    # TODO(pthodoroff): Expose initial session state when simulation library
+    # TODO: Expose initial session state when simulation library
     # supports it.
     initial_session_state = create_empty_state(root_agent)
 
@@ -1398,7 +1574,7 @@ def web_options():
   return decorator
 
 
-def _deprecate_staging_bucket(ctx, param, value):
+def _deprecate_parameter(ctx, param, value):
   if value:
     click.echo(
         click.style(
@@ -1411,47 +1587,24 @@ def _deprecate_staging_bucket(ctx, param, value):
   return value
 
 
-def deprecated_adk_services_options():
-  """Deprecated ADK services options."""
-
-  def warn(alternative_param, ctx, param, value):
-    if value:
-      click.echo(
-          click.style(
-              f"WARNING: Deprecated option --{param.name} is used. Please use"
-              f" {alternative_param} instead.",
-              fg="yellow",
-          ),
-          err=True,
-      )
-    return value
-
-  def decorator(func):
-    @click.option(
-        "--session_db_url",
-        help="Deprecated. Use --session_service_uri instead.",
-        callback=functools.partial(warn, "--session_service_uri"),
+def _deprecate_trace_to_cloud(ctx, param, value):
+  if value:
+    click.echo(
+        click.style(
+            f"WARNING: --{param} is deprecated and will be removed. Please"
+            " use --otel_to_cloud instead.",
+            fg="yellow",
+        ),
+        err=True,
     )
-    @click.option(
-        "--artifact_storage_uri",
-        type=str,
-        help="Deprecated. Use --artifact_service_uri instead.",
-        callback=functools.partial(warn, "--artifact_service_uri"),
-        default=None,
-    )
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-      return func(*args, **kwargs)
-
-    return wrapper
-
-  return decorator
+  return value
 
 
 def fast_api_common_options():
   """Decorator to add common fast api options to click commands."""
 
   def decorator(func):
+    func = _logging_options()(func)
 
     @click.option(
         "--host",
@@ -1474,20 +1627,6 @@ def fast_api_common_options():
             " 'regex:' (e.g., 'regex:https://.*\\.example\\.com')."
         ),
         multiple=True,
-    )
-    @click.option(
-        "-v",
-        "--verbose",
-        is_flag=True,
-        show_default=True,
-        default=False,
-        help="Enable verbose (DEBUG) logging. Shortcut for --log_level DEBUG.",
-    )
-    @click.option(
-        "--log_level",
-        type=LOG_LEVELS,
-        default="INFO",
-        help="Optional. Set the logging level",
     )
     @click.option(
         "--trace_to_cloud",
@@ -1571,14 +1710,6 @@ def fast_api_common_options():
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
-      # If verbose flag is set and log level is not set, set log level to DEBUG.
-      log_level_source = ctx.get_parameter_source("log_level")
-      if (
-          kwargs.pop("verbose", False)
-          and log_level_source == ParameterSource.DEFAULT
-      ):
-        kwargs["log_level"] = "DEBUG"
-
       # Parse comma-separated trigger_sources into a list.
       trigger_sources = kwargs.get("trigger_sources")
       if trigger_sources is not None:
@@ -1593,12 +1724,34 @@ def fast_api_common_options():
   return decorator
 
 
+def _check_windows_reload(reload: bool) -> bool:
+  """Checks if reload is enabled on Windows and forces it to False if so."""
+  if sys.platform == "win32" and reload:
+    click.secho(
+        "WARNING: The --reload flag is not supported on Windows because it"
+        " forces Uvicorn to use SelectorEventLoop, which does not support"
+        " subprocesses (needed for executing tools). Forcing --no-reload.",
+        fg="yellow",
+        err=True,
+    )
+    return False
+  return reload
+
+
 @main.command("web")
 @feature_options()
 @fast_api_common_options()
 @web_options()
 @adk_services_options(default_use_local_storage=True)
-@deprecated_adk_services_options()
+@click.option(
+    "--default_llm_model",
+    type=str,
+    help=(
+        "Optional. Sets the default LLM model used when the agent does not set"
+        " a model explicitly."
+    ),
+    default=None,
+)
 @click.argument(
     "agents_dir",
     type=click.Path(
@@ -1608,39 +1761,38 @@ def fast_api_common_options():
 )
 def cli_web(
     agents_dir: str,
+    default_llm_model: Optional[str] = None,
     eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
-    allow_origins: Optional[list[str]] = None,
+    allow_origins: list[str] | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
-    url_prefix: Optional[str] = None,
+    url_prefix: str | None = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload: bool = True,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = True,
-    session_db_url: Optional[str] = None,  # Deprecated
-    artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
-    extra_plugins: Optional[list[str]] = None,
-    logo_text: Optional[str] = None,
-    logo_image_url: Optional[str] = None,
-    trigger_sources: Optional[list[str]] = None,
+    extra_plugins: list[str] | None = None,
+    logo_text: str | None = None,
+    logo_image_url: str | None = None,
+    trigger_sources: list[str] | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents, where each subdirectory is a single
-  agent, containing at least `__init__.py` and `agent.py` files.
+  AGENTS_DIR: The directory of agents (where each subdirectory is a single
+  agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
+  pointing directly to a single agent folder.
 
   Example:
 
     adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
-  session_service_uri = session_service_uri or session_db_url
-  artifact_service_uri = artifact_service_uri or artifact_storage_uri
+  reload = _check_windows_reload(reload)
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
@@ -1665,6 +1817,8 @@ def cli_web(
         fg="green",
     )
 
+  from .fast_api import get_fast_api_app
+
   app = get_fast_api_app(
       agents_dir=agents_dir,
       session_service_uri=session_service_uri,
@@ -1686,6 +1840,7 @@ def cli_web(
       logo_text=logo_text,
       logo_image_url=logo_image_url,
       trigger_sources=trigger_sources,
+      default_llm_model=default_llm_model,
   )
   config = uvicorn.Config(
       app,
@@ -1711,7 +1866,6 @@ def cli_web(
 )
 @fast_api_common_options()
 @adk_services_options(default_use_local_storage=True)
-@deprecated_adk_services_options()
 @click.option(
     "--auto_create_session",
     is_flag=True,
@@ -1720,41 +1874,75 @@ def cli_web(
         "Automatically create a session if it doesn't exist when calling /run."
     ),
 )
+@click.option(
+    "--with_ui",
+    is_flag=True,
+    default=False,
+    help="Serve ADK Web UI if set.",
+)
+@click.option(
+    "--gemini_enterprise_app_name",
+    type=str,
+    default=None,
+    help=(
+        "The app_name to register with Gemini Enterprise via"
+        " https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent"
+    ),
+)
+@click.option(
+    "--express_mode",
+    is_flag=True,
+    default=False,
+    help=(
+        "Whether or not to initialize the server in express mode. This is only"
+        " supported when gemini_enterprise_app_name is set. Defaults to"
+        " False."
+    ),
+)
 def cli_api_server(
     agents_dir: str,
-    eval_storage_uri: Optional[str] = None,
+    eval_storage_uri: str | None = None,
     log_level: str = "INFO",
-    allow_origins: Optional[list[str]] = None,
+    allow_origins: list[str] | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
-    url_prefix: Optional[str] = None,
+    url_prefix: str | None = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload: bool = True,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = True,
-    session_db_url: Optional[str] = None,  # Deprecated
-    artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
     reload_agents: bool = False,
-    extra_plugins: Optional[list[str]] = None,
+    extra_plugins: list[str] | None = None,
     auto_create_session: bool = False,
-    trigger_sources: Optional[list[str]] = None,
+    trigger_sources: list[str] | None = None,
+    with_ui: bool = False,
+    gemini_enterprise_app_name: str | None = None,
+    express_mode: bool = False,
 ):
   """Starts a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents, where each subdirectory is a single
-  agent, containing at least `__init__.py` and `agent.py` files.
+  AGENTS_DIR: The directory of agents (where each subdirectory is a single
+  agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
+  pointing directly to a single agent folder.
 
   Example:
 
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
-  session_service_uri = session_service_uri or session_db_url
-  artifact_service_uri = artifact_service_uri or artifact_storage_uri
+  reload = _check_windows_reload(reload)
+  if express_mode and not gemini_enterprise_app_name:
+    raise click.UsageError(
+        "--express_mode is only supported when --gemini_enterprise_app_name is"
+        " set."
+    )
+
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
+
+  from .fast_api import get_fast_api_app
 
   config = uvicorn.Config(
       get_fast_api_app(
@@ -1765,7 +1953,7 @@ def cli_api_server(
           use_local_storage=use_local_storage,
           eval_storage_uri=eval_storage_uri,
           allow_origins=allow_origins,
-          web=False,
+          web=with_ui,
           trace_to_cloud=trace_to_cloud,
           otel_to_cloud=otel_to_cloud,
           a2a=a2a,
@@ -1776,6 +1964,8 @@ def cli_api_server(
           extra_plugins=extra_plugins,
           auto_create_session=auto_create_session,
           trigger_sources=trigger_sources,
+          gemini_enterprise_app_name=gemini_enterprise_app_name,
+          express_mode=express_mode,
       ),
       host=host,
       port=port,
@@ -1789,7 +1979,6 @@ def cli_api_server(
     "cloud_run",
     context_settings={
         "allow_extra_args": True,
-        "allow_interspersed_args": False,
     },
 )
 @click.option(
@@ -1882,11 +2071,6 @@ def cli_api_server(
     default="INFO",
     help="Optional. Set the logging level",
 )
-@click.option(
-    "--verbosity",
-    type=LOG_LEVELS,
-    help="Deprecated. Use --log_level instead.",
-)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1932,13 +2116,12 @@ def cli_api_server(
 )
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
 @adk_services_options(default_use_local_storage=False)
-@deprecated_adk_services_options()
 @click.pass_context
 def cli_deploy_cloud_run(
     ctx,
     agent: str,
-    project: Optional[str],
-    region: Optional[str],
+    project: str | None,
+    region: str | None,
     service_name: str,
     app_name: str,
     temp_folder: str,
@@ -1948,16 +2131,13 @@ def cli_deploy_cloud_run(
     with_ui: bool,
     adk_version: str,
     log_level: str,
-    verbosity: Optional[str],
     allow_origins: Optional[list[str]] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
-    session_db_url: Optional[str] = None,  # Deprecated
-    artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
-    trigger_sources: Optional[str] = None,
+    trigger_sources: str | None = None,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -1972,49 +2152,14 @@ def cli_deploy_cloud_run(
     adk deploy cloud_run --project=[project] --region=[region] path/to/my_agent
       -- --no-allow-unauthenticated --min-instances=2
   """
-  if verbosity:
-    click.secho(
-        "WARNING: The --verbosity option is deprecated. Use --log_level"
-        " instead.",
-        fg="yellow",
-        err=True,
-    )
 
   _warn_if_with_ui(with_ui)
 
-  session_service_uri = session_service_uri or session_db_url
-  artifact_service_uri = artifact_service_uri or artifact_storage_uri
-
-  # Parse arguments to separate gcloud args (after --) from regular args
-  gcloud_args = []
-  if "--" in ctx.args:
-    separator_index = ctx.args.index("--")
-    gcloud_args = ctx.args[separator_index + 1 :]
-    regular_args = ctx.args[:separator_index]
-
-    # If there are regular args before --, that's an error
-    if regular_args:
-      click.secho(
-          "Error: Unexpected arguments after agent path and before '--':"
-          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
-          " to gcloud.",
-          fg="red",
-          err=True,
-      )
-      ctx.exit(2)
-  else:
-    # No -- separator, treat all args as an error to enforce the new behavior
-    if ctx.args:
-      click.secho(
-          f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
-          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
-          " agent_path -- --min-instances=2",
-          fg="red",
-          err=True,
-      )
-      ctx.exit(2)
+  gcloud_args = ctx.args
 
   try:
+    from . import cli_deploy
+
     cli_deploy.to_cloud_run(
         agent_folder=agent,
         project=project,
@@ -2028,7 +2173,7 @@ def cli_deploy_cloud_run(
         allow_origins=allow_origins,
         with_ui=with_ui,
         log_level=log_level,
-        verbosity=verbosity,
+        verbosity=log_level,
         adk_version=adk_version,
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,
@@ -2071,15 +2216,33 @@ def migrate():
     default="INFO",
     help="Optional. Set the logging level",
 )
+@click.option(  # type: ignore[untyped-decorator]
+    "--allow-unsafe-unpickling",
+    "--allow_unsafe_unpickling",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Allow unsafe pickle loading for trusted legacy session"
+        " databases."
+    ),
+)
 def cli_migrate_session(
-    *, source_db_url: str, dest_db_url: str, log_level: str
+    *,
+    source_db_url: str,
+    dest_db_url: str,
+    log_level: str,
+    allow_unsafe_unpickling: bool,
 ):
   """Migrates a session database to the latest schema version."""
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
   try:
     from ..sessions.migration import migration_runner
 
-    migration_runner.upgrade(source_db_url, dest_db_url)
+    migration_runner.upgrade(
+        source_db_url,
+        dest_db_url,
+        allow_unsafe_unpickling=allow_unsafe_unpickling,
+    )
     click.secho("Migration check and upgrade process finished.", fg="green")
   except Exception as e:
     click.secho(f"Migration failed: {e}", fg="red", err=True)
@@ -2093,7 +2256,7 @@ def cli_migrate_session(
     help=(
         "Optional. The API key to use for Express Mode. If not"
         " provided, the API key from the GOOGLE_API_KEY environment variable"
-        " will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is"
+        " will be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is"
         " true. (It will override GOOGLE_API_KEY in the .env file if it"
         " exists.)"
     ),
@@ -2123,7 +2286,7 @@ def cli_migrate_session(
     type=str,
     default=None,
     help="Deprecated. This argument is no longer required or used.",
-    callback=_deprecate_staging_bucket,
+    callback=_deprecate_parameter,
 )
 @click.option(
     "--agent_engine_id",
@@ -2145,7 +2308,8 @@ def cli_migrate_session(
     is_flag=True,
     show_default=True,
     default=None,
-    help="Optional. Whether to enable Cloud Trace for Agent Engine.",
+    help=" NOTE: This flag is deprecated and will be removed in the future.",
+    callback=_deprecate_trace_to_cloud,
 )
 @click.option(
     "--otel_to_cloud",
@@ -2172,11 +2336,9 @@ def cli_migrate_session(
 @click.option(
     "--adk_app",
     type=str,
-    default="agent_engine_app",
-    help=(
-        "Optional. Python file for defining the ADK application"
-        " (default: a file named agent_engine_app.py)"
-    ),
+    default=None,
+    help=" NOTE: This flag is deprecated and will be removed in the future.",
+    callback=_deprecate_parameter,
 )
 @click.option(
     "--temp_folder",
@@ -2192,35 +2354,29 @@ def cli_migrate_session(
     "--adk_app_object",
     type=str,
     default=None,
-    help=(
-        "Optional. Python object corresponding to the root ADK agent or app."
-        " It can only be `root_agent` or `app`. (default: `root_agent`)"
-    ),
+    help=" NOTE: This flag is deprecated and will be removed in the future.",
+    callback=_deprecate_parameter,
 )
 @click.option(
     "--env_file",
     type=str,
     default="",
-    help=(
-        "Optional. The filepath to the `.env` file for environment variables."
-        " (default: the `.env` file in the `agent` directory, if any.)"
-    ),
+    help=" NOTE: This flag is deprecated and will be removed in the future.",
+    callback=_deprecate_parameter,
 )
 @click.option(
     "--requirements_file",
     type=str,
     default="",
-    help=(
-        "Optional. The filepath to the `requirements.txt` file to use."
-        " (default: the `requirements.txt` file in the `agent` directory, if"
-        " any.)"
-    ),
+    help=" NOTE: This flag is deprecated and will be removed in the future.",
+    callback=_deprecate_parameter,
 )
 @click.option(
     "--absolutize_imports",
     type=bool,
     default=False,
     help=" NOTE: This flag is deprecated and will be removed in the future.",
+    callback=_deprecate_parameter,
 )
 @click.option(
     "--agent_engine_config_file",
@@ -2236,22 +2392,39 @@ def cli_migrate_session(
 @click.option(
     "--validate-agent-import/--no-validate-agent-import",
     default=False,
-    help=(
-        "Optional. Validate that the agent module can be imported before"
-        " deployment. This requires your local environment to have the same"
-        " dependencies as the deployment environment. (default: disabled)"
-    ),
+    help=" NOTE: This flag is deprecated and will be removed in the future.",
+    callback=_deprecate_parameter,
 )
 @click.option(
     "--skip-agent-import-validation",
     "skip_agent_import_validation_alias",
     is_flag=True,
     default=False,
+    help=" NOTE: This flag is deprecated and will be removed in the future.",
+    callback=_deprecate_parameter,
+)
+# Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
+@click.option(
+    "--trigger_sources",
+    type=str,
     help=(
-        "Optional. Skip pre-deployment import validation of `agent.py`. This is"
-        " the default; use --validate-agent-import to enable validation."
+        "Optional. Comma-separated list of trigger sources to enable"
+        " (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints"
+        " for batch and event-driven agent invocations."
+    ),
+    default=None,
+)
+@click.option(
+    "--adk_version",
+    type=str,
+    default=version.__version__,
+    show_default=True,
+    help=(
+        "Optional. The ADK version used in Agent Engine deployment. (default: "
+        " the version in the dev environment)"
     ),
 )
+@adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
     type=click.Path(
@@ -2260,24 +2433,30 @@ def cli_migrate_session(
 )
 def cli_deploy_agent_engine(
     agent: str,
-    project: Optional[str],
-    region: Optional[str],
-    staging_bucket: Optional[str],
-    agent_engine_id: Optional[str],
-    trace_to_cloud: Optional[bool],
-    otel_to_cloud: Optional[bool],
-    api_key: Optional[str],
+    project: str | None,
+    region: str | None,
+    staging_bucket: str | None,
+    agent_engine_id: str | None,
+    trace_to_cloud: bool | None,
+    otel_to_cloud: bool | None,
+    api_key: str | None,
     display_name: str,
     description: str,
-    adk_app: str,
-    adk_app_object: Optional[str],
-    temp_folder: Optional[str],
+    adk_app: str | None,
+    adk_app_object: str | None,
+    temp_folder: str | None,
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
     agent_engine_config_file: str,
     validate_agent_import: bool = False,
     skip_agent_import_validation_alias: bool = False,
+    adk_version: str | None = None,
+    trigger_sources: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
+    session_service_uri: str | None = None,
+    use_local_storage: bool = False,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -2299,6 +2478,8 @@ def cli_deploy_agent_engine(
           "Do not pass both --validate-agent-import and"
           " --skip-agent-import-validation."
       )
+    from . import cli_deploy
+
     cli_deploy.to_agent_engine(
         agent_folder=agent,
         project=project,
@@ -2317,6 +2498,11 @@ def cli_deploy_agent_engine(
         absolutize_imports=absolutize_imports,
         agent_engine_config_file=agent_engine_config_file,
         skip_agent_import_validation=not validate_agent_import,
+        trigger_sources=trigger_sources,
+        artifact_service_uri=artifact_service_uri,
+        memory_service_uri=memory_service_uri,
+        session_service_uri=session_service_uri,
+        adk_version=adk_version,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
@@ -2453,8 +2639,8 @@ def cli_deploy_agent_engine(
 )
 def cli_deploy_gke(
     agent: str,
-    project: Optional[str],
-    region: Optional[str],
+    project: str | None,
+    region: str | None,
     cluster_name: str,
     service_name: str,
     app_name: str,
@@ -2465,12 +2651,12 @@ def cli_deploy_gke(
     with_ui: bool,
     adk_version: str,
     service_type: str,
-    log_level: Optional[str] = None,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    log_level: str | None = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = False,
-    trigger_sources: Optional[str] = None,
+    trigger_sources: str | None = None,
 ):
   """Deploys an agent to GKE.
 
@@ -2483,6 +2669,8 @@ def cli_deploy_gke(
   """
   try:
     _warn_if_with_ui(with_ui)
+    from . import cli_deploy
+
     cli_deploy.to_gke(
         agent_folder=agent,
         project=project,

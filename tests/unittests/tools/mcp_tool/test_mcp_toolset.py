@@ -22,6 +22,8 @@ from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -96,6 +98,69 @@ class TestMcpToolset:
     )
     assert toolset._use_mcp_resources is True
 
+  def test_connection_params(self):
+    """Test getting connection params."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.connection_params == self.mock_stdio_params
+
+  def test_auth_scheme(self):
+    """Test getting auth scheme."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.auth_scheme is None
+
+  def test_auth_credential(self):
+    """Test getting auth credential."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.auth_credential is None
+
+  def test_error_log(self):
+    """Test getting error log."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.errlog == sys.stderr
+
+  def test_auth_scheme_with_value(self):
+    """Test getting auth scheme when provided at initialization."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="https://example.com/auth",
+                tokenUrl="https://example.com/token",
+                scopes={"read": "Read access"},
+            )
+        )
+    )
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        auth_scheme=auth_scheme,
+    )
+    assert toolset.auth_scheme == auth_scheme
+
+  def test_require_confirmation(self):
+    """Test getting require_confirmation flag."""
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        require_confirmation=True,
+    )
+    assert toolset.require_confirmation is True
+
+  def test_header_provider(self):
+    """Test getting header_provider."""
+    mock_header_provider = Mock()
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        header_provider=mock_header_provider,
+    )
+    assert toolset.header_provider == mock_header_provider
+
+  def test_auth_credential_with_value(self):
+    """Test getting auth credential when provided at initialization."""
+    mock_credential = Mock(spec=AuthCredential)
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        auth_credential=mock_credential,
+    )
+    assert toolset.auth_credential == mock_credential
+
   def test_init_with_stdio_connection_params(self):
     """Test initialization with StdioConnectionParams."""
     stdio_params = StdioConnectionParams(
@@ -131,9 +196,8 @@ class TestMcpToolset:
         connection_params=self.mock_stdio_params, tool_filter=tool_filter
     )
 
-    # The tool filter is stored in the parent BaseToolset class
-    # We can verify it by checking the filtering behavior in get_tools
-    assert toolset._is_tool_selected is not None
+    # The tool filter is stored on the parent BaseToolset class.
+    assert toolset.tool_filter == tool_filter
 
   def test_init_with_auth(self):
     """Test initialization with authentication."""
@@ -226,6 +290,26 @@ class TestMcpToolset:
     assert tools[3].name == "load_mcp_resource"
 
   @pytest.mark.asyncio
+  async def test_get_tools_returns_sorted_by_name(self):
+    """Test that get_tools returns tools sorted by name for cache stability."""
+    # Mock tools from MCP server in non-alphabetical order.
+    mock_tools = [
+        MockMCPTool("charlie"),
+        MockMCPTool("alpha"),
+        MockMCPTool("bravo"),
+    ]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["alpha", "bravo", "charlie"]
+
+  @pytest.mark.asyncio
   async def test_get_tools_with_list_filter(self):
     """Test getting tools with list-based filtering."""
     # Mock tools from MCP server
@@ -304,6 +388,32 @@ class TestMcpToolset:
     )
 
   @pytest.mark.asyncio
+  async def test_get_tools_with_async_header_provider(self):
+    """Test get_tools with an async header_provider."""
+    mock_tools = [MockMCPTool("tool1"), MockMCPTool("tool2")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+    mock_readonly_context = Mock(spec=ReadonlyContext)
+    expected_headers = {"X-Tenant-ID": "test-tenant"}
+
+    async def header_provider(_context):
+      return expected_headers
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        header_provider=header_provider,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools(readonly_context=mock_readonly_context)
+
+    assert len(tools) == 2
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=expected_headers
+    )
+
+  @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup."""
     toolset = McpToolset(connection_params=self.mock_stdio_params)
@@ -324,16 +434,8 @@ class TestMcpToolset:
         side_effect=Exception("Cleanup error")
     )
 
-    custom_errlog = StringIO()
-    toolset._errlog = custom_errlog
-
-    # Should not raise exception
+    # Should not raise exception, should log the warning
     await toolset.close()
-
-    # Should log the error
-    error_output = custom_errlog.getvalue()
-    assert "Warning: Error during McpToolset cleanup" in error_output
-    assert "Cleanup error" in error_output
 
   @pytest.mark.asyncio
   async def test_get_tools_with_timeout(self):

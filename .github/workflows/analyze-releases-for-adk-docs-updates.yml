@@ -1,3 +1,17 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: Analyze New Release for ADK Docs Updates
 
 on:
@@ -23,6 +37,7 @@ on:
 
 jobs:
   analyze-new-release-for-adk-docs-updates:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,29 +45,31 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: '3.11'
 
       - name: Load adk-bot SSH Private Key
-        uses: webfactory/ssh-agent@v0.9.1
+        uses: webfactory/ssh-agent@a6f90b1f127823b31d4d4a8d96047790581349bd # v0.9.1
         with:
           ssh-private-key: ${{ secrets.ADK_BOT_SSH_PRIVATE_KEY }}
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests google-adk
+          pip install requests "google-adk[db]"
 
       - name: Restore session DB from cache
         if: ${{ github.event.inputs.resume == 'true' }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: contributing/samples/adk_documentation/adk_release_analyzer/sessions.db
-          key: analyzer-session-db
+          path: contributing/samples/adk_team/adk_documentation/adk_release_analyzer/sessions.db
+          key: analyzer-session-db-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            analyzer-session-db-
 
       - name: Run Analyzing Script
         env:
@@ -64,16 +81,28 @@ jobs:
           DOC_REPO: 'adk-docs'
           CODE_REPO: 'adk-python'
           INTERACTIVE: 0
-          PYTHONPATH: contributing/samples/adk_documentation
-        run: >-
-          python -m adk_release_analyzer.main
-          ${{ github.event.inputs.resume == 'true' && '--resume' || '' }}
-          ${{ github.event.inputs.start_tag && format('--start-tag {0}', github.event.inputs.start_tag) || '' }}
-          ${{ github.event.inputs.end_tag && format('--end-tag {0}', github.event.inputs.end_tag) || '' }}
+          PYTHONPATH: contributing/samples/adk_team
+          ANALYZER_RESUME: ${{ github.event.inputs.resume }}
+          ANALYZER_START_TAG: ${{ github.event.inputs.start_tag }}
+          ANALYZER_END_TAG: ${{ github.event.inputs.end_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "${ANALYZER_RESUME:-false}" == "true" ]]; then
+            args+=(--resume)
+          fi
+          if [[ -n "${ANALYZER_START_TAG:-}" ]]; then
+            args+=(--start-tag "$ANALYZER_START_TAG")
+          fi
+          if [[ -n "${ANALYZER_END_TAG:-}" ]]; then
+            args+=(--end-tag "$ANALYZER_END_TAG")
+          fi
+          python -m adk_documentation.adk_release_analyzer.main "${args[@]}"
 
       - name: Save session DB to cache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: contributing/samples/adk_documentation/adk_release_analyzer/sessions.db
-          key: analyzer-session-db
+          path: contributing/samples/adk_team/adk_documentation/adk_release_analyzer/sessions.db
+          key: analyzer-session-db-${{ github.run_id }}-${{ github.run_attempt }}

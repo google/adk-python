@@ -28,6 +28,15 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
 
+from ....utils import _mtls_utils
+
+_DEFAULT_CONNECTORS_ENDPOINT_TEMPLATE = "connectors.googleapis.com"
+_DEFAULT_MTLS_CONNECTORS_ENDPOINT_TEMPLATE = "connectors.mtls.googleapis.com"
+_DEFAULT_INTEGRATIONS_ENDPOINT_TEMPLATE = "integrations.googleapis.com"
+_DEFAULT_MTLS_INTEGRATIONS_ENDPOINT_TEMPLATE = (
+    "integrations.mtls.googleapis.com"
+)
+
 
 class ConnectionsClient:
   """Utility class for interacting with Google Cloud Connectors API."""
@@ -52,7 +61,11 @@ class ConnectionsClient:
     self.project = project
     self.location = location
     self.connection = connection
-    self.connector_url = "https://connectors.googleapis.com"
+    self.connector_url = "https://" + _mtls_utils.get_api_endpoint(
+        location,
+        _DEFAULT_CONNECTORS_ENDPOINT_TEMPLATE,
+        _DEFAULT_MTLS_CONNECTORS_ENDPOINT_TEMPLATE,
+    )
     self.service_account_json = service_account_json
     self.credential_cache = None
 
@@ -168,7 +181,16 @@ class ConnectionsClient:
             "description": "This tool can execute a query on connection",
             "version": "4",
         },
-        "servers": [{"url": "https://integrations.googleapis.com"}],
+        "servers": [{
+            "url": (
+                "https://"
+                + _mtls_utils.get_api_endpoint(
+                    "",
+                    _DEFAULT_INTEGRATIONS_ENDPOINT_TEMPLATE,
+                    _DEFAULT_MTLS_INTEGRATIONS_ENDPOINT_TEMPLATE,
+                )
+            )
+        }],
         "security": [
             {"google_auth": ["https://www.googleapis.com/auth/cloud-platform"]}
         ],

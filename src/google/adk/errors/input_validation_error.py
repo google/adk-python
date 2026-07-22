@@ -18,7 +18,7 @@ from __future__ import annotations
 class InputValidationError(ValueError):
   """Represents an error raised when user input fails validation."""
 
-  def __init__(self, message="Invalid input."):
+  def __init__(self, message: str = "Invalid input.") -> None:
     """Initializes the InputValidationError exception.
 
     Args:

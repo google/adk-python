@@ -28,7 +28,6 @@ from typing_extensions import override
 
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
@@ -40,6 +39,7 @@ from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import HallucinationsCriterion
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -705,6 +705,7 @@ class HallucinationsV1Evaluator(Evaluator):
       conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     del conversation_scenario  # not used by this metric.
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
 
     # expected_invocations are not required by the metric and if they are not
     # supplied, we provide a list of None to rest of the code.
@@ -715,7 +716,9 @@ class HallucinationsV1Evaluator(Evaluator):
     )
 
     per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, expected_invocations, strict=True
+    ):
       step_evaluations = self._get_steps_to_evaluate(actual)
 
       if not step_evaluations:

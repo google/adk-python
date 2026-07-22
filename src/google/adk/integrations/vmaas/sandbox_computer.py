@@ -90,6 +90,8 @@ class AgentEngineSandboxComputer(BaseComputer):
       location: str = "us-central1",
       service_account_email: str | None = None,
       sandbox_name: str | None = None,
+      sandbox_template_name: str | None = None,
+      sandbox_snapshot_name: str | None = None,
       sandbox_ttl_seconds: int = 3600,
       search_engine_url: str = "https://www.google.com",
       vertexai_client: "vertexai.Client | None" = None,
@@ -97,36 +99,60 @@ class AgentEngineSandboxComputer(BaseComputer):
     """Initialize the sandbox computer.
 
     Args:
-      project_id: GCP project ID. If None, uses Application Default
-        Credentials project.
+      project_id: GCP project ID. If None, uses Application Default Credentials
+        project.
       location: Vertex AI location (default: us-central1).
-      service_account_email: Service account email for token generation.
-        Must have roles/iam.serviceAccountTokenCreator permission.
-        If None, attempts to use ADC service account.
-      sandbox_name: Existing sandbox resource name (BYOS mode). If provided,
-        the agent engine name is extracted from it. If None, creates new
-        agent engine and sandbox on demand.
-        Format: projects/{project}/locations/{location}/reasoningEngines/{id}/sandboxEnvironments/{id}
+      service_account_email: Service account email for token generation. Must
+        have roles/iam.serviceAccountTokenCreator permission. If None, attempts
+        to use ADC service account.
+      sandbox_name: Existing sandbox resource name (BYOS mode). If provided, the
+        agent engine name is extracted from it. If None, creates new agent
+        engine and sandbox on demand.
+        Format:
+          projects/{project}/locations/{location}/reasoningEngines/{id}/sandboxEnvironments/{id}
+      sandbox_template_name: Sandbox template resource name to use for creating
+        new sandboxes. Templates allow faster creation and custom environments.
+        Format:
+          projects/{project}/locations/{location}/sandboxEnvironmentTemplates/{id}
+      sandbox_snapshot_name: Sandbox snapshot resource name to use for restoring
+        sandbox state, enabling faster startup.
+        Format:
+          projects/{project}/locations/{location}/reasoningEngines/{id}/sandboxEnvironmentSnapshots/{id}
       sandbox_ttl_seconds: TTL for auto-created sandboxes (default: 1 hour).
       search_engine_url: URL to navigate to for search() method.
-      vertexai_client: Optional Vertex AI client instance. If None, creates
-        one lazily using project_id and location.
+      vertexai_client: Optional Vertex AI client instance. If None, creates one
+        lazily using project_id and location.
     """
     self._project_id = project_id
     self._location = location
     self._service_account_email = service_account_email
     self._sandbox_name = sandbox_name
+    self._sandbox_template_name = sandbox_template_name
+    self._sandbox_snapshot_name = sandbox_snapshot_name
     self._sandbox_ttl_seconds = sandbox_ttl_seconds
     self._search_engine_url = search_engine_url
     self._screen_size = (1280, 720)
 
-    # Extract agent engine name from sandbox_name if provided
+    # Determine the agent engine to use. The backend requires that a sandbox
+    # is created under the same reasoning engine that owns the
+    # template/snapshot, so we derive the engine from whichever resource name
+    # is provided rather than creating a new (mismatched) engine. This lets
+    # users supply only a template or snapshot name without also pre-creating
+    # a sandbox (BYOS). All sandbox resource names embed the engine:
+    #   projects/.../reasoningEngines/{engine}/{sandboxEnvironments|
+    #   sandboxEnvironmentTemplates|sandboxEnvironmentSnapshots}/...
     self._agent_engine_name = None
-    if sandbox_name:
-      # Format: projects/.../reasoningEngines/.../sandboxEnvironments/...
-      parts = sandbox_name.split("/sandboxEnvironments/")
-      if len(parts) == 2:
-        self._agent_engine_name = parts[0]
+    for resource_name in (
+        sandbox_name,
+        sandbox_template_name,
+        sandbox_snapshot_name,
+    ):
+      if not resource_name:
+        continue
+      engine_name = resource_name.split("/sandboxEnvironment")[0]
+      if engine_name != resource_name and "/reasoningEngines/" in engine_name:
+        self._agent_engine_name = engine_name
+        break
 
     # Vertex client (lazy-initialized if not provided)
     self._client = vertexai_client
@@ -208,15 +234,29 @@ class AgentEngineSandboxComputer(BaseComputer):
         "Creating new sandbox under agent engine: %s", agent_engine_name
     )
 
-    from vertexai import types
+    config = {
+        "display_name": "adk_computer_use_sandbox",
+    }
+    spec: dict[str, Any] | None = None
+    if self._sandbox_template_name:
+      config["sandbox_environment_template"] = self._sandbox_template_name
+      logger.info(
+          "Creating sandbox from template: %s", self._sandbox_template_name
+      )
+    elif self._sandbox_snapshot_name:
+      config["sandbox_environment_snapshot"] = self._sandbox_snapshot_name
+      logger.info(
+          "Creating sandbox from snapshot: %s", self._sandbox_snapshot_name
+      )
+    else:
+      spec = {"computer_use_environment": {}}
+      logger.info("Creating sandbox with computer use environment spec")
 
     operation = await asyncio.to_thread(
         client.agent_engines.sandboxes.create,
-        spec={"computer_use_environment": {}},
+        spec=spec,
         name=agent_engine_name,
-        config=types.CreateAgentEngineSandboxConfig(
-            display_name="adk_computer_use_sandbox"
-        ),
+        config=config,
     )
 
     sandbox_name = operation.response.name
@@ -249,7 +289,6 @@ class AgentEngineSandboxComputer(BaseComputer):
     token = await asyncio.to_thread(
         client.agent_engines.sandboxes.generate_access_token,
         service_account_email=self._service_account_email,
-        sandbox_id=sandbox_name,
         timeout=_DEFAULT_TOKEN_TIMEOUT,
     )
 

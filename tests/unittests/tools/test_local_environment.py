@@ -77,6 +77,39 @@ class TestReadFileWriteFile:
     assert data == b"nested"
 
   @pytest.mark.asyncio
+  async def test_absolute_path_inside_working_dir(self, env: LocalEnvironment):
+    """Absolute paths are accepted when they stay inside the workspace."""
+    path = env.working_dir / "absolute.txt"
+    await env.write_file(path, "absolute")
+    data = await env.read_file(path)
+    assert data == b"absolute"
+
+  @pytest.mark.asyncio
+  async def test_rejects_relative_path_escape(self, env: LocalEnvironment):
+    """Parent traversal cannot escape the workspace."""
+    outside = env.working_dir.parent / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="escapes working directory"):
+      await env.read_file(Path("..") / outside.name)
+
+    with pytest.raises(ValueError, match="escapes working directory"):
+      await env.write_file(Path("..") / "write-outside.txt", "nope")
+
+    assert not (env.working_dir.parent / "write-outside.txt").exists()
+
+  @pytest.mark.asyncio
+  async def test_rejects_absolute_path_outside_working_dir(
+      self, env: LocalEnvironment
+  ):
+    """Absolute paths outside the workspace are rejected."""
+    outside = env.working_dir.parent / "outside-absolute.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="escapes working directory"):
+      await env.read_file(outside)
+
+  @pytest.mark.asyncio
   async def test_read_nonexistent_raises(self, env: LocalEnvironment):
     """Reading a missing file raises FileNotFoundError."""
     with pytest.raises(FileNotFoundError):

@@ -302,9 +302,15 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
           eval_status=EvalStatus.NOT_EVALUATED,
       )
 
+    user_text = get_text_from_content(first_invocation.user_content)
+    if user_text is None:
+      return PerInvocationResult(
+          actual_invocation=first_invocation,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      )
+
     score = int(
-        get_text_from_content(first_invocation.user_content).strip()
-        == conversation_scenario.starting_prompt.strip()
+        user_text.strip() == conversation_scenario.starting_prompt.strip()
     )
     return PerInvocationResult(
         actual_invocation=first_invocation,
@@ -325,6 +331,10 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
         previous_invocations=invocation_history,
     )
 
+    config = (
+        self._llm_options.judge_model_config
+        or genai_types.GenerateContentConfig()
+    )
     llm_request = LlmRequest(
         model=self._llm_options.judge_model,
         contents=[
@@ -333,7 +343,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
                 role="user",
             )
         ],
-        config=self._llm_options.judge_model_config,
+        config=config,
     )
     add_default_retry_options_if_not_present(llm_request)
     num_samples = self._llm_options.num_samples

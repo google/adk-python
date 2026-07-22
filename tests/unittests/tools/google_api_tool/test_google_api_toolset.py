@@ -146,7 +146,7 @@ class TestGoogleApiToolset:
     assert tool_set._additional_headers == additional_headers
 
     mock_converter_class.assert_called_once_with(
-        TEST_API_NAME, TEST_API_VERSION
+        TEST_API_NAME, TEST_API_VERSION, discovery_url=None
     )
     mock_converter_instance.convert.assert_called_once()
     spec_dict = mock_converter_instance.convert.return_value
@@ -157,6 +157,69 @@ class TestGoogleApiToolset:
     assert kwargs["spec_str_type"] == "yaml"
     assert isinstance(kwargs["auth_scheme"], OpenIdConnectWithConfig)
     assert kwargs["auth_scheme"].scopes == [DEFAULT_SCOPE]
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  def test_init_with_additional_scopes(
+      self,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    """Test GoogleApiToolset initialization with additional scopes."""
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    extra_scopes = [
+        DEFAULT_SCOPE,
+        "https://www.googleapis.com/auth/calendar.readonly",
+    ]
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME,
+        api_version=TEST_API_VERSION,
+        additional_scopes=extra_scopes,
+    )
+
+    mock_openapi_toolset_class.assert_called_once()
+    _, kwargs = mock_openapi_toolset_class.call_args
+    assert isinstance(kwargs["auth_scheme"], OpenIdConnectWithConfig)
+    assert kwargs["auth_scheme"].scopes == [
+        DEFAULT_SCOPE,
+        "https://www.googleapis.com/auth/calendar.readonly",
+    ]
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  def test_init_with_discovery_url(
+      self,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    """Test GoogleApiToolset initialization with custom discovery URL."""
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    discovery_url = "https://example.com/discovery"
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME,
+        api_version=TEST_API_VERSION,
+        discovery_url=discovery_url,
+    )
+
+    mock_converter_class.assert_called_once_with(
+        TEST_API_NAME, TEST_API_VERSION, discovery_url=discovery_url
+    )
 
   @mock.patch(
       "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiTool"
@@ -460,3 +523,88 @@ class TestGoogleApiToolset:
     )
 
     assert tool_set.tool_name_prefix == tool_name_prefix
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.MtlsClientCerts"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.use_client_cert_effective"
+  )
+  async def test_mtls_cleanup_on_close(
+      self,
+      mock_use_client_cert,
+      mock_mtls_certs_class,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+  ):
+    """Test that mTLS temp files are cleaned up on close."""
+    mock_converter_class.return_value = mock.MagicMock()
+    mock_openapi_toolset_instance = mock.MagicMock()
+    mock_openapi_toolset_instance.close = mock.AsyncMock()
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    mock_use_client_cert.return_value = True
+    mock_mtls_certs_instance = mock.MagicMock()
+    mock_mtls_certs_instance.get_certs.return_value = ("cert", "key", b"pass")
+    mock_mtls_certs_class.return_value = mock_mtls_certs_instance
+
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME, api_version=TEST_API_VERSION
+    )
+
+    assert tool_set._httpx_client_factory is not None
+
+    await tool_set.close()
+
+    mock_openapi_toolset_instance.close.assert_called_once()
+    mock_mtls_certs_instance.close.assert_called_once()
+
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.httpx.AsyncClient"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.MtlsClientCerts"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.use_client_cert_effective"
+  )
+  async def test_mtls_no_passphrase(
+      self,
+      mock_use_client_cert,
+      mock_mtls_certs_class,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      mock_async_client_class,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    """Test that mTLS is configured even if key passphrase is None."""
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    mock_use_client_cert.return_value = True
+    mock_mtls_certs_instance = mock.MagicMock()
+    mock_mtls_certs_instance.get_certs.return_value = ("cert", "key", None)
+    mock_mtls_certs_class.return_value = mock_mtls_certs_instance
+
+    tool_set = GoogleApiToolset(
+        api_name=TEST_API_NAME, api_version=TEST_API_VERSION
+    )
+
+    assert tool_set._httpx_client_factory is not None
+
+    client = tool_set._httpx_client_factory()
+    assert client is not None
+    mock_async_client_class.assert_called_once_with(cert=("cert", "key"))

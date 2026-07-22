@@ -1,0 +1,1 @@
+google-adk[a2a]==2.2.0

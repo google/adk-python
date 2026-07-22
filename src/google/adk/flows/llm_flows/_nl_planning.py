@@ -82,7 +82,11 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
       return
 
     planner = _get_planner(invocation_context)
-    if not planner or isinstance(planner, BuiltInPlanner):
+    if (
+        not planner
+        or type(planner).process_planning_response
+        is BuiltInPlanner.process_planning_response
+    ):
       return
 
     # Postprocess the LLM response.
@@ -122,7 +126,7 @@ def _get_planner(
   return PlanReActPlanner()
 
 
-def _remove_thought_from_request(llm_request: LlmRequest):
+def _remove_thought_from_request(llm_request: LlmRequest) -> None:
   if not llm_request.contents:
     return
 

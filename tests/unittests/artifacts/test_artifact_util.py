@@ -14,7 +14,10 @@
 
 """Tests for artifact_util."""
 
+from unittest import mock
+
 from google.adk.artifacts import artifact_util
+from google.adk.errors.input_validation_error import InputValidationError
 from google.genai import types
 import pytest
 
@@ -31,6 +34,21 @@ def test_parse_session_scoped_artifact_uri():
   assert parsed.version == 123
 
 
+def test_parse_session_scoped_artifact_uri_with_nested_filename():
+  """Tests parsing a session-scoped artifact URI with a nested filename."""
+  uri = (
+      "artifact://apps/app1/users/user1/sessions/session1/artifacts/"
+      "folder/file1/versions/123"
+  )
+  parsed = artifact_util.parse_artifact_uri(uri)
+  assert parsed is not None
+  assert parsed.app_name == "app1"
+  assert parsed.user_id == "user1"
+  assert parsed.session_id == "session1"
+  assert parsed.filename == "folder/file1"
+  assert parsed.version == 123
+
+
 def test_parse_user_scoped_artifact_uri():
   """Tests parsing a valid user-scoped artifact URI."""
   uri = "artifact://apps/app2/users/user2/artifacts/file2/versions/456"
@@ -43,6 +61,18 @@ def test_parse_user_scoped_artifact_uri():
   assert parsed.version == 456
 
 
+def test_parse_user_scoped_artifact_uri_with_nested_filename():
+  """Tests parsing a user-scoped artifact URI with a nested filename."""
+  uri = "artifact://apps/app2/users/user2/artifacts/folder/file2/versions/456"
+  parsed = artifact_util.parse_artifact_uri(uri)
+  assert parsed is not None
+  assert parsed.app_name == "app2"
+  assert parsed.user_id == "user2"
+  assert parsed.session_id is None
+  assert parsed.filename == "folder/file2"
+  assert parsed.version == 456
+
+
 @pytest.mark.parametrize(
     "invalid_uri",
     [
@@ -51,6 +81,7 @@ def test_parse_user_scoped_artifact_uri():
         "artifact://app1/user1/sessions/session1/artifacts/file1",
         "artifact://apps/app1/users/user1/sessions/session1/artifacts/file1",
         "artifact://apps/app1/users/user1/artifacts/file1",
+        "artifact://apps/app1/users/user1/artifacts/file1/versions/1/extra",
     ],
 )
 def test_parse_invalid_artifact_uri(invalid_uri):
@@ -107,3 +138,49 @@ def test_is_artifact_ref_true():
 def test_is_artifact_ref_false(part):
   """Tests is_artifact_ref with non-reference parts."""
   assert artifact_util.is_artifact_ref(part) is False
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["user_id", "app_name", "session_id"],
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        "user123",
+        "myapp",
+        "sess123",
+        "group/user123",
+        "has/slash",
+        "back\\slash",
+        mock.MagicMock(),
+    ],
+)
+def test_validate_path_segment_valid(value, field_name):
+  """Normal and namespaced segments should pass validation."""
+  artifact_util.validate_path_segment(value, field_name)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["user_id", "app_name", "session_id"],
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        "../escape",
+        "../../etc",
+        "foo/../../bar",
+        "..",
+        ".",
+        "null\x00byte",
+        "",
+        "/etc/passwd",
+        "/leading/slash",
+        "\\leading\\backslash",
+    ],
+)
+def test_validate_path_segment_invalid(value, field_name):
+  """Traversal segments, null bytes, and absolute paths should raise InputValidationError."""
+  with pytest.raises(InputValidationError):
+    artifact_util.validate_path_segment(value, field_name)

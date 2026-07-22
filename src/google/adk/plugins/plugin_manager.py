@@ -52,6 +52,8 @@ PluginCallbackName = Literal[
     "after_model_callback",
     "on_tool_error_callback",
     "on_model_error_callback",
+    "on_agent_error_callback",
+    "on_run_error_callback",
 ]
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -85,9 +87,24 @@ class PluginManager:
     """
     self.plugins: List[BasePlugin] = []
     self._close_timeout = close_timeout
+    self._skip_closing_plugins = False
     if plugins:
       for plugin in plugins:
         self.register_plugin(plugin)
+
+  def set_skip_closing_plugins(self, value: bool) -> None:
+    """Controls whether `close()` will tear down the registered plugins.
+
+    Set to True when the plugins are owned by another component (e.g. a parent
+    `Runner` whose plugin list this manager is sharing). When set, subsequent
+    calls to `close()` become a no-op so the shared plugins are not torn down
+    while still in use.
+
+    Args:
+      value: True to skip closing the plugins; False (default) to close them
+        normally.
+    """
+    self._skip_closing_plugins = value
 
   def register_plugin(self, plugin: BasePlugin) -> None:
     """Registers a new plugin.
@@ -139,7 +156,7 @@ class PluginManager:
       self, *, invocation_context: InvocationContext
   ) -> Optional[None]:
     """Runs the `after_run_callback` for all plugins."""
-    return await self._run_callbacks(
+    await self._run_callbacks(
         "after_run_callback", invocation_context=invocation_context
     )
 
@@ -179,7 +196,7 @@ class PluginManager:
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Runs the `before_tool_callback` for all plugins."""
     return await self._run_callbacks(
         "before_tool_callback",
@@ -194,8 +211,8 @@ class PluginManager:
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
     """Runs the `after_tool_callback` for all plugins."""
     return await self._run_callbacks(
         "after_tool_callback",
@@ -247,7 +264,7 @@ class PluginManager:
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Runs the `on_tool_error_callback` for all plugins."""
     return await self._run_callbacks(
         "on_tool_error_callback",
@@ -306,13 +323,77 @@ class PluginManager:
 
     return None
 
+  async def run_on_agent_error_callback(
+      self,
+      *,
+      agent: BaseAgent,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Runs the `on_agent_error_callback` for all plugins."""
+    await self._run_notification_callbacks(
+        "on_agent_error_callback",
+        agent=agent,
+        callback_context=callback_context,
+        error=error,
+    )
+
+  async def run_on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Runs the `on_run_error_callback` for all plugins."""
+    await self._run_notification_callbacks(
+        "on_run_error_callback",
+        invocation_context=invocation_context,
+        error=error,
+    )
+
+  async def _run_notification_callbacks(
+      self, callback_name: PluginCallbackName, **kwargs: Any
+  ) -> None:
+    """Executes a notification-only callback for all registered plugins.
+
+    Unlike ``_run_callbacks``, this method is best-effort: it always
+    iterates all plugins regardless of return values or exceptions.
+    If a plugin's callback raises, the error is logged and iteration
+    continues so that every plugin gets notified.
+
+    Args:
+      callback_name: The name of the callback method to execute.
+      **kwargs: Keyword arguments to be passed to the callback method.
+    """
+    for plugin in self.plugins:
+      callback_method = getattr(plugin, callback_name)
+      try:
+        await callback_method(**kwargs)
+      except Exception as e:
+        logger.error(
+            "Error in plugin '%s' during '%s' callback: %s",
+            plugin.name,
+            callback_name,
+            e,
+            exc_info=True,
+        )
+
   async def close(self) -> None:
     """Calls the close method on all registered plugins concurrently.
+
+    If this manager was constructed with `skip_closing_plugins=True`, this
+    method is a no-op so plugins owned by another component (e.g. a parent
+    `Runner`) are not torn down while still in use.
 
     Raises:
       RuntimeError: If one or more plugins failed to close, containing
         details of all failures.
     """
+    if self._skip_closing_plugins:
+      logger.debug(
+          "Skipping plugin close; plugins are owned by another component."
+      )
+      return
     exceptions = {}
     # We iterate sequentially to avoid creating new tasks which can cause issues
     # with some libraries (like anyio/mcp) that rely on task-local context.

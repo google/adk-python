@@ -22,8 +22,8 @@ from typing_extensions import override
 from ..agents.invocation_context import InvocationContext
 from ..agents.readonly_context import ReadonlyContext
 from ..events.event import Event
-from ..flows.llm_flows import functions
 from ..flows.llm_flows._base_llm_processor import BaseLlmRequestProcessor
+from ..flows.llm_flows.functions import handle_function_calls_async
 from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..models.llm_request import LlmRequest
 from ..sessions.state import State
@@ -34,7 +34,7 @@ from .auth_tool import AuthToolArguments
 # Prefix used by toolset auth credential IDs.
 # Auth requests with this prefix are for toolset authentication (before tool
 # listing) and don't require resuming a function call.
-TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
+TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = "_adk_toolset_auth_"
 
 
 async def _store_auth_and_collect_resume_targets(
@@ -132,9 +132,9 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = invocation_context.agent
-    if not hasattr(agent, 'canonical_tools'):
+    if agent is None or not hasattr(agent, "canonical_tools"):
       return
-    events = invocation_context.session.events
+    events = invocation_context._get_events(current_branch=True)
     if not events:
       return
 
@@ -147,7 +147,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
         last_event_with_content = event
         break
 
-    if not last_event_with_content or last_event_with_content.author != 'user':
+    if not last_event_with_content or last_event_with_content.author != "user":
       return
 
     responses = last_event_with_content.get_function_responses()
@@ -189,7 +189,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
           function_call.id in tools_to_resume
           for function_call in function_calls
       ]):
-        if function_response_event := await functions.handle_function_calls_async(
+        if function_response_event := await handle_function_calls_async(
             invocation_context,
             event,
             {

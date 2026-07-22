@@ -19,6 +19,7 @@ import logging
 import ssl
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import Final
 from typing import List
@@ -36,6 +37,7 @@ from ....auth.auth_tool import AuthConfig
 from ...base_toolset import BaseToolset
 from ...base_toolset import ToolPredicate
 from .openapi_spec_parser import OpenApiSpecParser
+from .rest_api_tool import HttpxClientFactory
 from .rest_api_tool import RestApiTool
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -77,6 +79,7 @@ class OpenAPIToolset(BaseToolset):
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
+      httpx_client_factory: Optional[HttpxClientFactory] = None,
       preserve_property_names: bool = False,
   ):
     """Initializes the OpenAPIToolset.
@@ -117,24 +120,34 @@ class OpenAPIToolset(BaseToolset):
       tool_name_prefix: The prefix to prepend to the names of the tools returned
         by the toolset. Useful when multiple OpenAPI specs have tools with
         similar names.
-      ssl_verify: SSL certificate verification option for all tools. Can be:
-        - None: Use default verification (True)
-        - True: Verify SSL certificates using system CA
-        - False: Disable SSL verification (insecure, not recommended)
-        - str: Path to a CA bundle file or directory for custom CA
-        - ssl.SSLContext: Custom SSL context for advanced configuration
-        This is useful for enterprise environments where requests go through
-        a TLS-intercepting proxy with a custom CA certificate.
+      ssl_verify: SSL certificate verification option for all tools. Can be: -
+        None: Use default verification (True) - True: Verify SSL certificates
+          using system CA - False: Disable SSL verification (insecure, not
+          recommended) - str: Path to a CA bundle file or directory for custom
+          CA - ssl.SSLContext: Custom SSL context for advanced configuration
+          This is useful for enterprise environments where requests go through a
+          TLS-intercepting proxy with a custom CA certificate.
       header_provider: A callable that returns a dictionary of headers to be
         included in API requests. The callable receives the ReadonlyContext as
         an argument, allowing dynamic header generation based on the current
         context. Useful for adding custom headers like correlation IDs,
         authentication tokens, or other request metadata.
+      httpx_client_factory: Optional zero-argument callable returning an
+        ``httpx.AsyncClient`` to use for every generated tool's API calls. When
+        provided, it takes precedence over the per-tool default client
+        construction and unlocks ``httpx.AsyncClient`` options that
+        ``ssl_verify`` can't reach (proxies, HTTP/2, custom transports such as
+        request signing). The returned client is used as an async context
+        manager and closed after each request, so the factory must return a
+        fresh client on every call. Defaults to ``None``, in which case each
+        generated tool constructs its own ``httpx.AsyncClient`` per request.
+        Mirrors the pattern exposed for MCP by
+        ``StreamableHTTPConnectionParams.httpx_client_factory``.
       preserve_property_names: If True, preserve the original property names
-        from the OpenAPI spec instead of converting them to snake_case. This
-        is useful when calling APIs that expect camelCase or other
-        non-snake_case parameter names in the request. Defaults to False for
-        backward compatibility.
+        from the OpenAPI spec instead of converting them to snake_case. This is
+        useful when calling APIs that expect camelCase or other non-snake_case
+        parameter names in the request. Defaults to False for backward
+        compatibility.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self._header_provider = header_provider
@@ -155,6 +168,7 @@ class OpenAPIToolset(BaseToolset):
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
     self._ssl_verify = ssl_verify
+    self._httpx_client_factory = httpx_client_factory
     self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
@@ -163,7 +177,7 @@ class OpenAPIToolset(BaseToolset):
 
   def _configure_auth_all(
       self, auth_scheme: AuthScheme, auth_credential: AuthCredential
-  ):
+  ) -> None:
     """Configure auth scheme and credential for all tools."""
 
     for tool in self._tools:
@@ -172,14 +186,14 @@ class OpenAPIToolset(BaseToolset):
       if auth_credential:
         tool.configure_auth_credential(auth_credential)
 
-  def _configure_credential_key_all(self, credential_key: str):
+  def _configure_credential_key_all(self, credential_key: str) -> None:
     """Configure credential key for all tools."""
     for tool in self._tools:
       tool.configure_credential_key(credential_key)
 
   def configure_ssl_verify_all(
       self, ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None
-  ):
+  ) -> None:
     """Configure SSL certificate verification for all tools.
 
     This is useful for enterprise environments where requests go through a
@@ -218,9 +232,9 @@ class OpenAPIToolset(BaseToolset):
   ) -> Dict[str, Any]:
     """Loads the OpenAPI spec string into a dictionary."""
     if spec_type == "json":
-      return json.loads(spec_str)
+      return cast(Dict[str, Any], json.loads(spec_str))
     elif spec_type == "yaml":
-      return yaml.safe_load(spec_str)
+      return cast(Dict[str, Any], yaml.safe_load(spec_str))
     else:
       raise ValueError(f"Unsupported spec type: {spec_type}")
 
@@ -237,22 +251,12 @@ class OpenAPIToolset(BaseToolset):
           o,
           ssl_verify=self._ssl_verify,
           header_provider=self._header_provider,
+          httpx_client_factory=self._httpx_client_factory,
       )
       logger.info("Parsed tool: %s", tool.name)
       tools.append(tool)
     return tools
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     pass
-
-  @override
-  def get_auth_config(self) -> Optional[AuthConfig]:
-    """Returns the auth config for this toolset.
-
-    Note: This returns a copy so any exchanged credentials populated by the ADK
-    framework do not persist on the toolset instance across invocations.
-    """
-    return (
-        self._auth_config.model_copy(deep=True) if self._auth_config else None
-    )

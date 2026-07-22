@@ -54,8 +54,8 @@ class CustomAuthScheme(BaseModelWithConfig):
 
 
 # AuthSchemes contains SecuritySchemes from OpenAPI 3.0, an extra flattened
-# OpenIdConnectWithConfig, and supports external schemes that subclasses
-# CustomAuthScheme
+# OpenIdConnectWithConfig, and supports external schemes
+# that subclass CustomAuthScheme.
 AuthScheme = Union[SecurityScheme, OpenIdConnectWithConfig, CustomAuthScheme]
 
 
@@ -68,7 +68,7 @@ class OAuthGrantType(str, Enum):
   PASSWORD = "password"
 
   @staticmethod
-  def from_flow(flow: OAuthFlows) -> "OAuthGrantType":
+  def from_flow(flow: OAuthFlows) -> Optional["OAuthGrantType"]:
     """Converts an OAuthFlows object to a OAuthGrantType."""
     if flow.clientCredentials:
       return OAuthGrantType.CLIENT_CREDENTIALS

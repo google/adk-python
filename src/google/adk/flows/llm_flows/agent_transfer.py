@@ -17,8 +17,8 @@
 from __future__ import annotations
 
 import typing
-from typing import Any
 from typing import AsyncGenerator
+from typing import Sequence
 
 from typing_extensions import override
 
@@ -30,8 +30,8 @@ from ...tools.transfer_to_agent_tool import TransferToAgentTool
 from ._base_llm_processor import BaseLlmRequestProcessor
 
 if typing.TYPE_CHECKING:
-  from ...agents import BaseAgent
-  from ...agents import LlmAgent
+  from ...agents.base_agent import BaseAgent
+  from ...agents.llm_agent import LlmAgent
 
 
 class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -72,8 +72,12 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
 request_processor = _AgentTransferLlmRequestProcessor()
 
 
-def _build_target_agents_info(target_agent: Any) -> str:
-  # TODO: Refactor the annotation of the parameters
+class _AgentLike(typing.Protocol):
+  name: str
+  description: str
+
+
+def _build_target_agents_info(target_agent: _AgentLike) -> str:
   return f"""
 Agent name: {target_agent.name}
 Agent description: {target_agent.description}
@@ -85,17 +89,16 @@ line_break = '\n'
 
 def _build_transfer_instruction_body(
     tool_name: str,
-    target_agents: list[Any],
+    target_agents: Sequence[_AgentLike],
 ) -> str:
   """Build the core transfer instruction text.
-  TODO: Refactor the annotation of the parameters
 
   This is the agent-tree-agnostic portion of transfer instructions. It
-  works with any objects having ``.name`` and ``.description`` attributes
+  works with any BaseAgent implementation.
 
   Args:
     tool_name: The name of the transfer tool (e.g. 'transfer_to_agent').
-    target_agents: Objects with ``.name`` and ``.description``.
+    target_agents: Agents available as transfer targets.
 
   Returns:
     Instruction text for the LLM about agent transfers.
@@ -128,8 +131,8 @@ call.
 
 def _build_transfer_instructions(
     tool_name: str,
-    agent: 'LlmAgent',
-    target_agents: list['BaseAgent'],
+    agent: LlmAgent,
+    target_agents: Sequence[BaseAgent],
 ) -> str:
   """Build instructions for agent transfer (agent-tree variant).
 
@@ -144,6 +147,9 @@ def _build_transfer_instructions(
   Returns:
     Instruction text for the LLM about agent transfers.
   """
+  if agent.mode in ('task', 'single_turn'):
+    return ''
+
   si = _build_transfer_instruction_body(tool_name, target_agents)
 
   if agent.parent_agent and not agent.disallow_transfer_to_parent:
@@ -154,8 +160,28 @@ If neither you nor the other agents are best for the question, transfer to your 
 
 
 def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
+  """Gets the list of agents that the current agent can transfer to.
+
+  The transfer targets include:
+  1.  Sub-agents of the current agent, excluding those in 'single_turn' mode.
+  2.  The parent agent, if it exists and the current agent does not disallow
+      transfer to the parent.
+  3.  Peer agents (other sub-agents of the parent), if the current agent does
+      not disallow transfer to peers.
+
+  Args:
+    agent: The LlmAgent for which to find transfer targets.
+
+  Returns:
+    A list of BaseAgent instances that are valid transfer targets.
+  """
   result = []
-  result.extend(agent.sub_agents)
+  result.extend([
+      sub_agent
+      for sub_agent in agent.sub_agents
+      if not hasattr(sub_agent, 'mode')
+      or sub_agent.mode not in ('single_turn', 'task')
+  ])
 
   if not agent.parent_agent or not hasattr(
       agent.parent_agent, 'disallow_transfer_to_parent'
@@ -170,6 +196,10 @@ def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
         peer_agent
         for peer_agent in agent.parent_agent.sub_agents
         if peer_agent.name != agent.name
+        and (
+            not hasattr(peer_agent, 'mode')
+            or peer_agent.mode not in ('single_turn', 'task')
+        )
     ])
 
   return result
