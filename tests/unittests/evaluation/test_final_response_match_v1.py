@@ -87,6 +87,16 @@ def test_calculate_rouge_1_scores():
   assert rouge_1_score.fmeasure == pytest.approx(8 / 11)
 
 
+def test_calculate_rouge_1_scores_non_english_identical():
+  # Thai text that is identical should score 1.0, not 0.0.
+  candidate = "สวัสดี"
+  reference = "สวัสดี"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.precision == pytest.approx(1.0)
+  assert rouge_1_score.recall == pytest.approx(1.0)
+  assert rouge_1_score.fmeasure == pytest.approx(1.0)
+
+
 @pytest.mark.parametrize(
     "candidates, references, expected_score, expected_status",
     [
