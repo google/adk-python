@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
+from typing_extensions import override
 
 from ..apps._configs import EventsCompactionConfig
 from ..apps._configs import ResumabilityConfig
@@ -271,6 +272,12 @@ class InvocationContext(BaseModel):
   """A container to keep track of different kinds of costs incurred as a part
   of this invocation.
   """
+
+  @override
+  def model_post_init(self, __context: Any) -> None:
+    super().model_post_init(__context)
+    if self.run_config and self.run_config.custom_metadata:
+      self._custom_metadata.update(self.run_config.custom_metadata)
 
   @property
   def is_resumable(self) -> bool:
