@@ -59,10 +59,72 @@ _BINARY_FILE_DETECTED_MSG = (
 )
 
 
-def _build_skill_system_instruction(prefix: str | None = None) -> str:
+def _build_skill_system_instruction(
+    prefix: str | None = None,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+) -> str:
+  """Builds the skill system instruction for the LLM.
+
+  Args:
+    prefix: Optional prefix prepended to tool names in the instruction.
+    allowed_tools: Optional set of base tool names available after filtering.
+      When None, documents all skill tools (historical default, used for
+      ``DEFAULT_SKILL_SYSTEM_INSTRUCTION``). When provided, only documents
+      tools present in the set and explicitly forbids calling filtered-out
+      script/resource tools.
+  """
   p = f"{prefix}_" if prefix else ""
 
-  return (
+  # Preserve the historical full instruction verbatim when no filter is
+  # applied so DEFAULT_SKILL_SYSTEM_INSTRUCTION and existing equality
+  # assertions stay byte-identical.
+  if allowed_tools is None:
+    return (
+        "You can use specialized 'skills' to help you with complex tasks. "
+        "You MUST use the skill tools to interact with these skills.\n\n"
+        "Skills are folders of instructions and resources that extend your "
+        "capabilities for specialized tasks. Each skill folder contains:\n"
+        "- **SKILL.md** (required): The main instruction file with skill "
+        "metadata and detailed markdown instructions.\n"
+        "- **references/** (Optional): Additional documentation or examples"
+        " for "
+        "skill usage.\n"
+        "- **assets/** (Optional): Templates, scripts or other resources"
+        " used by "
+        "the skill.\n"
+        "- **scripts/** (Optional): Executable scripts that can be run via "
+        "bash.\n\n"
+        "This is very important:\n\n"
+        "1. If a skill seems relevant to the current user query, you MUST use "
+        f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
+        "its full instructions before proceeding.\n"
+        "2. Once you have read the instructions, follow them exactly as "
+        "documented before replying to the user. For example, If the "
+        "instruction lists multiple steps, please make sure you complete all "
+        "of them in order.\n"
+        f"3. The `{p}load_skill_resource` tool is for viewing files within a "
+        "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
+        "It is ONLY for skill-bundled files — do NOT use it to access "
+        "documents or files provided by the user at runtime. Do NOT use "
+        "other tools to access skill files.\n"
+        f"4. Use `{p}run_skill_script` to run scripts from a skill's"
+        " `scripts/` "
+        f"directory. Use `{p}load_skill_resource` to view script content"
+        " first if "
+        "needed.\n"
+        f"5. If `{p}load_skill_resource` returns any error, do not retry any "
+        "path. Report the error to the user and stop.\n"
+        f"6. If `{p}run_skill_script` returns an error (for example "
+        f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
+        "different script path. Report the error to the user and stop.\n"
+        f"7. Loading a skill only retrieves its instructions; it does NOT "
+        f"complete your turn. After a `{p}load_skill` call returns, continue "
+        "in the SAME turn: call whatever tools the skill's steps require "
+        "(search, data retrieval, render), then write your reply. Never end "
+        "your turn with an empty response right after loading a skill.\n"
+    )
+
+  intro = (
       "You can use specialized 'skills' to help you with complex tasks. "
       "You MUST use the skill tools to interact with these skills.\n\n"
       "Skills are folders of instructions and resources that extend your "
@@ -76,33 +138,98 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       "- **scripts/** (Optional): Executable scripts that can be run via "
       "bash.\n\n"
       "This is very important:\n\n"
-      "1. If a skill seems relevant to the current user query, you MUST use "
-      f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
-      "its full instructions before proceeding.\n"
-      "2. Once you have read the instructions, follow them exactly as "
-      "documented before replying to the user. For example, If the "
-      "instruction lists multiple steps, please make sure you complete all "
-      "of them in order.\n"
-      f"3. The `{p}load_skill_resource` tool is for viewing files within a "
-      "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
-      "It is ONLY for skill-bundled files — do NOT use it to access "
-      "documents or files provided by the user at runtime. Do NOT use "
-      "other tools to access skill files.\n"
-      f"4. Use `{p}run_skill_script` to run scripts from a skill's `scripts/` "
-      f"directory. Use `{p}load_skill_resource` to view script content"
-      " first if "
-      "needed.\n"
-      f"5. If `{p}load_skill_resource` returns any error, do not retry any "
-      "path. Report the error to the user and stop.\n"
-      f"6. If `{p}run_skill_script` returns an error (for example "
-      f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
-      "different script path. Report the error to the user and stop.\n"
-      f"7. Loading a skill only retrieves its instructions; it does NOT "
-      f"complete your turn. After a `{p}load_skill` call returns, continue "
-      "in the SAME turn: call whatever tools the skill's steps require "
-      "(search, data retrieval, render), then write your reply. Never end "
-      "your turn with an empty response right after loading a skill.\n"
   )
+
+  has_load = "load_skill" in allowed_tools
+  has_resource = "load_skill_resource" in allowed_tools
+  has_script = "run_skill_script" in allowed_tools
+
+  steps: list[str] = []
+  step = 1
+
+  if has_load:
+    steps.append(
+        f"{step}. If a skill seems relevant to the current user query, you"
+        " MUST use "
+        f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
+        "its full instructions before proceeding.\n"
+    )
+    step += 1
+    steps.append(
+        f"{step}. Once you have read the instructions, follow them exactly"
+        " as documented before replying to the user. For example, If the "
+        "instruction lists multiple steps, please make sure you complete all "
+        "of them in order.\n"
+    )
+    step += 1
+
+  if has_resource:
+    steps.append(
+        f"{step}. The `{p}load_skill_resource` tool is for viewing files"
+        " within a skill's directory (e.g., `references/*`, `assets/*`,"
+        " `scripts/*`). It is ONLY for skill-bundled files — do NOT use it"
+        " to access documents or files provided by the user at runtime. Do"
+        " NOT use other tools to access skill files.\n"
+    )
+    step += 1
+
+  if has_script:
+    if has_resource:
+      script_step = (
+          f"{step}. Use `{p}run_skill_script` to run scripts from a skill's"
+          f" `scripts/` directory. Use `{p}load_skill_resource` to view"
+          " script content first if needed.\n"
+      )
+    else:
+      script_step = (
+          f"{step}. Use `{p}run_skill_script` to run scripts from a skill's"
+          " `scripts/` directory.\n"
+      )
+    steps.append(script_step)
+    step += 1
+
+  if has_resource:
+    steps.append(
+        f"{step}. If `{p}load_skill_resource` returns any error, do not"
+        " retry any path. Report the error to the user and stop.\n"
+    )
+    step += 1
+
+  if has_script:
+    steps.append(
+        f"{step}. If `{p}run_skill_script` returns an error (for example "
+        "`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
+        "different script path. Report the error to the user and stop.\n"
+    )
+    step += 1
+
+  if has_load:
+    steps.append(
+        f"{step}. Loading a skill only retrieves its instructions; it does"
+        f" NOT complete your turn. After a `{p}load_skill` call returns,"
+        " continue in the SAME turn: call whatever tools the skill's steps"
+        " require (search, data retrieval, render), then write your reply."
+        " Never end your turn with an empty response right after loading a"
+        " skill.\n"
+    )
+    step += 1
+
+  banned: list[str] = []
+  if not has_script:
+    banned.append(f"`{p}run_skill_script`")
+  if not has_resource:
+    banned.append(f"`{p}load_skill_resource`")
+  if banned:
+    banned_csv = ", ".join(banned)
+    steps.append(
+        f"{step}. The following tools are NOT available: {banned_csv}."
+        " Do NOT call them. After loading a skill (if available), apply"
+        " its instructions in context and write your final reply as"
+        " normal model text. Never wrap the user-facing answer inside a"
+        " tool call.\n"
+    )
+
+  return intro + "".join(steps)
 
 
 class ListSkillsTool(BaseTool):
@@ -1190,18 +1317,32 @@ class SkillToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    instructions = [
-        _build_skill_system_instruction(prefix=self.tool_name_prefix)
-    ]
+    selected_core_tools = {
+        t.name for t in self._tools if self._is_tool_selected(t, tool_context)
+    }
 
-    has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
+    # Only pass allowed_tools when a filter is configured so the unfiltered
+    # path keeps the historical DEFAULT_SKILL_SYSTEM_INSTRUCTION text.
+    if self.tool_filter is None:
+      instructions = [
+          _build_skill_system_instruction(prefix=self.tool_name_prefix)
+      ]
+    else:
+      instructions = [
+          _build_skill_system_instruction(
+              prefix=self.tool_name_prefix,
+              allowed_tools=selected_core_tools,
+          )
+      ]
+
+    has_list_skills = "list_skills" in selected_core_tools
 
     if not has_list_skills:
       skills = self._list_skills()
       skills_xml = prompt.format_skills_as_xml(skills)
       instructions.append(skills_xml)
 
-    if self._registry:
+    if self._registry and "search_skills" in selected_core_tools:
       p = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
       instructions.append(
           "\nIf the locally available skills are not sufficient to complete "
