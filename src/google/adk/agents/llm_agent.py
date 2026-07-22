@@ -59,6 +59,7 @@ from ..tools.tool_context import ToolContext
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
+from ..utils.instructions_utils import InstructionProvider as InstructionProvider
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -130,9 +131,6 @@ OnToolErrorCallback: TypeAlias = Union[
     list[_SingleOnToolErrorCallback],
 ]
 
-InstructionProvider: TypeAlias = Callable[
-    [ReadonlyContext], Union[str, Awaitable[str]]
-]
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
 
 
@@ -967,6 +965,11 @@ class LlmAgent(BaseAgent, abc.ABC):
     if not self.output_key:
       return
 
+    # Task mode agents deliver their final output via finish_task, not intermediate
+    # conversational text turns. Skip output_key processing on text responses for task mode.
+    if getattr(self, 'mode', None) == 'task':
+      return
+
     # Handle text responses
     if event.is_final_response() and event.content and event.content.parts:
 
@@ -1016,6 +1019,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     """
     if (
         not self.output_key
+        or getattr(self, 'mode', None) == 'task'
         or self.output_schema
         or event.author != self.name
         or event.partial

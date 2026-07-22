@@ -102,6 +102,14 @@ class _LoopState(DynamicNodeState):
   pending_tasks: dict[str, asyncio.Task[Context]] = field(default_factory=dict)
   """Running static node tasks."""
 
+  replayed_nodes: set[str] = field(default_factory=set)
+  """Names of nodes whose in-flight run is a replayed history fast-forward.
+
+  A node is added when it is scheduled as a no-op replay and removed when
+  that run completes, so completion handling can tell a genuine execution
+  from a fast-forward when deciding whether to emit a checkpoint.
+  """
+
   trigger_buffer: dict[str, list[Trigger]] = field(default_factory=dict)
   """Queued triggers waiting to be dispatched, keyed by target node name.
 
@@ -259,6 +267,11 @@ class Workflow(BaseNode):
     if self._has_terminal_output(loop_state):
       ctx._output_delegated = True
     self._finalize(loop_state, ctx)
+
+    # On a clean finish (no pending interrupts), record an end-of-agent marker
+    # so a resumable session can tell the workflow ran to completion.
+    if not loop_state.interrupt_ids:
+      await self._emit_end_of_agent(ctx)
     return
     yield  # required to keep _run_impl as async generator
 
@@ -278,7 +291,7 @@ class Workflow(BaseNode):
     }
 
     while True:
-      self._schedule_ready_nodes(loop_state, ctx)
+      await self._schedule_ready_nodes(loop_state, ctx)
 
       if not loop_state.pending_tasks:
         break
@@ -340,7 +353,7 @@ class Workflow(BaseNode):
             ctx._error_node_path = child_ctx.error_node_path
             error_to_raise = child_ctx.error
         else:
-          self._handle_completion(loop_state, name, node, child_ctx)
+          await self._handle_completion(loop_state, name, node, child_ctx, ctx)
 
       if error_to_raise:
         loop_state.error_shut_down = True
@@ -389,7 +402,9 @@ class Workflow(BaseNode):
           return True
     return False
 
-  def _schedule_ready_nodes(self, loop_state: _LoopState, ctx: Context) -> None:
+  async def _schedule_ready_nodes(
+      self, loop_state: _LoopState, ctx: Context
+  ) -> None:
     """Pop triggers from buffer and schedule ready nodes."""
     if self._has_waiting_task_agent(loop_state):
       return
@@ -421,7 +436,11 @@ class Workflow(BaseNode):
         continue
 
       self._prepare_node_state_for_starting(loop_state, node_name, trigger)
-      self._start_node_task(loop_state, ctx, node_name, trigger)
+      started = self._start_node_task(loop_state, ctx, node_name, trigger)
+      # Only a genuinely-executing node marks a new step; a replayed node
+      # being fast-forwarded from history should not re-announce itself.
+      if started:
+        await self._emit_node_checkpoint(loop_state, ctx)
 
   def _at_concurrency_limit(self, loop_state: _LoopState) -> bool:
     """Check if max_concurrency has been reached."""
@@ -519,8 +538,12 @@ class Workflow(BaseNode):
       ctx: Context,
       node_name: str,
       trigger: Trigger,
-  ) -> None:
-    """Start asyncio task for scheduling and executing a node."""
+  ) -> bool:
+    """Start asyncio task for scheduling and executing a node.
+
+    Returns True if the node was scheduled for real execution, or False if
+    it was fast-forwarded from recovered history (a replayed no-op run).
+    """
 
     assert self.graph is not None
 
@@ -561,6 +584,9 @@ class Workflow(BaseNode):
             ancestors=ancestors,
             branch=recovered.branch,
         )
+        # Mark this as a replayed no-op run so completion handling does not
+        # emit a fresh checkpoint for a node that only fast-forwarded history.
+        loop_state.replayed_nodes.add(node_name)
 
         async def return_ctx():
           if loop_state.sequence_barrier:
@@ -568,7 +594,7 @@ class Workflow(BaseNode):
           return mock_ctx
 
         loop_state.pending_tasks[node_name] = asyncio.create_task(return_ctx())
-        return
+        return False
 
       node_state.resume_inputs = result.resume_inputs or {}
 
@@ -603,6 +629,7 @@ class Workflow(BaseNode):
             skip_run_id_validation=True,
         )
     )
+    return True
 
   def _make_schedule_dynamic_node(
       self, loop_state: _LoopState
@@ -610,22 +637,95 @@ class Workflow(BaseNode):
     """Create a DynamicNodeScheduler for this Workflow's loop state."""
     return DynamicNodeScheduler(state=loop_state)
 
+  # --- Resumability checkpoints ---
+
+  async def _emit_node_checkpoint(
+      self, loop_state: _LoopState, ctx: Context
+  ) -> None:
+    """Record a snapshot of node statuses on the resumable event stream.
+
+    A resumable session persists these so a later run can see how far the
+    workflow progressed. Non-resumable sessions reconstruct the same state
+    by replaying prior events, so the snapshot is skipped for them.
+    """
+    ic = ctx._invocation_context
+    if not ic.is_resumable:
+      return
+    from ..events.event import Event
+    from ..events.event_actions import EventActions
+
+    nodes = {
+        name: node_state.model_dump(
+            mode="json", include={"status", "interrupts", "resume_inputs"}
+        )
+        for name, node_state in loop_state.nodes.items()
+    }
+    await ic._enqueue_event(
+        Event(
+            invocation_id=ic.invocation_id,
+            author=self.name,
+            branch=ic.branch,
+            actions=EventActions(agent_state={"nodes": nodes}),
+        )
+    )
+
+  async def _maybe_reemit_replayed_output(
+      self, child_ctx: Context, ctx: Context
+  ) -> None:
+    """Re-surface a fast-forwarded node's output on a resumable stream."""
+    ic = ctx._invocation_context
+    if not ic.is_resumable or child_ctx.output is None:
+      return
+    from ..events.event import Event
+    from ..events.event import NodeInfo
+
+    await ic._enqueue_event(
+        Event(
+            invocation_id=ic.invocation_id,
+            author=self.name,
+            branch=ic.branch,
+            output=child_ctx.output,
+            node_info=NodeInfo(path=child_ctx.node_path),
+        )
+    )
+
+  async def _emit_end_of_agent(self, ctx: Context) -> None:
+    """Record an end-of-agent marker for resumable sessions."""
+    ic = ctx._invocation_context
+    if not ic.is_resumable:
+      return
+    from ..events.event import Event
+    from ..events.event_actions import EventActions
+
+    await ic._enqueue_event(
+        Event(
+            invocation_id=ic.invocation_id,
+            author=self.name,
+            branch=ic.branch,
+            actions=EventActions(end_of_agent=True),
+        )
+    )
+
   # --- Completion handling ---
 
-  def _handle_completion(
+  async def _handle_completion(
       self,
       loop_state: _LoopState,
       node_name: str,
       node: BaseNode,
       child_ctx: Context,
+      ctx: Context,
   ) -> None:
     """Update state and trigger downstream after node completes."""
     node_state = loop_state.nodes[node_name]
+    replayed = node_name in loop_state.replayed_nodes
+    loop_state.replayed_nodes.discard(node_name)
 
     if child_ctx.interrupt_ids:
       node_state.status = NodeStatus.WAITING
       node_state.interrupts = list(child_ctx.interrupt_ids)
       loop_state.interrupt_ids.update(child_ctx.interrupt_ids)
+      await self._emit_node_checkpoint(loop_state, ctx)
       return
 
     if (
@@ -634,6 +734,7 @@ class Workflow(BaseNode):
         and child_ctx.route is None
     ):
       node_state.status = NodeStatus.WAITING
+      await self._emit_node_checkpoint(loop_state, ctx)
       return
 
     node_state.status = NodeStatus.COMPLETED
@@ -644,6 +745,14 @@ class Workflow(BaseNode):
     loop_state.node_branches[node_name] = (
         child_ctx._invocation_context.branch or ""
     )
+
+    # A genuine execution records a checkpoint on completion. A replayed
+    # fast-forward instead re-surfaces its recovered output so a resumable
+    # stream stays complete, without a redundant checkpoint.
+    if not replayed:
+      await self._emit_node_checkpoint(loop_state, ctx)
+    else:
+      await self._maybe_reemit_replayed_output(child_ctx, ctx)
 
     # Buffer downstream triggers.
     self._buffer_downstream_triggers(
