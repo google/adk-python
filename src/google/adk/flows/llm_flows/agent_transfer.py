@@ -17,8 +17,8 @@
 from __future__ import annotations
 
 import typing
-from typing import Any
 from typing import AsyncGenerator
+from typing import Sequence
 
 from typing_extensions import override
 
@@ -30,8 +30,8 @@ from ...tools.transfer_to_agent_tool import TransferToAgentTool
 from ._base_llm_processor import BaseLlmRequestProcessor
 
 if typing.TYPE_CHECKING:
-  from ...agents import BaseAgent
-  from ...agents import LlmAgent
+  from ...agents.base_agent import BaseAgent
+  from ...agents.llm_agent import LlmAgent
 
 
 class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -72,8 +72,12 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
 request_processor = _AgentTransferLlmRequestProcessor()
 
 
-def _build_target_agents_info(target_agent: Any) -> str:
-  # TODO: Refactor the annotation of the parameters
+class _AgentLike(typing.Protocol):
+  name: str
+  description: str
+
+
+def _build_target_agents_info(target_agent: _AgentLike) -> str:
   return f"""
 Agent name: {target_agent.name}
 Agent description: {target_agent.description}
@@ -85,17 +89,16 @@ line_break = '\n'
 
 def _build_transfer_instruction_body(
     tool_name: str,
-    target_agents: list[Any],
+    target_agents: Sequence[_AgentLike],
 ) -> str:
   """Build the core transfer instruction text.
-  TODO: Refactor the annotation of the parameters
 
   This is the agent-tree-agnostic portion of transfer instructions. It
-  works with any objects having ``.name`` and ``.description`` attributes
+  works with any BaseAgent implementation.
 
   Args:
     tool_name: The name of the transfer tool (e.g. 'transfer_to_agent').
-    target_agents: Objects with ``.name`` and ``.description``.
+    target_agents: Agents available as transfer targets.
 
   Returns:
     Instruction text for the LLM about agent transfers.
@@ -128,8 +131,8 @@ call.
 
 def _build_transfer_instructions(
     tool_name: str,
-    agent: 'LlmAgent',
-    target_agents: list['BaseAgent'],
+    agent: LlmAgent,
+    target_agents: Sequence[BaseAgent],
 ) -> str:
   """Build instructions for agent transfer (agent-tree variant).
 

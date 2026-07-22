@@ -1148,6 +1148,60 @@ async def test_run_async_skips_thought_parts():
   assert result == '42'
 
 
+async def _run_agent_tool_with_events(events: list[Event]) -> Any:
+  """Drives AgentTool with an inner agent that yields `events` in order."""
+
+  class _StaticAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      for event in events:
+        yield event
+
+  inner = _StaticAgent(name='inner_agent', description='static')
+  agent_tool = AgentTool(agent=inner)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=inner,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  return await agent_tool.run_async(
+      args={'request': 'test request'}, tool_context=tool_context
+  )
+
+
+@mark.asyncio
+async def test_run_async_preserves_error_event_with_no_content():
+  """An error-only event with no content surfaces its error_message."""
+  result = await _run_agent_tool_with_events([
+      Event(author='inner_agent', error_message='A2A request failed: 503'),
+  ])
+  assert result == 'A2A request failed: 503'
+
+
+@mark.asyncio
+async def test_run_async_preserves_error_when_only_thought_parts():
+  """When the final content is all thought parts, the error_message wins."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='thinking', thought=True)],
+          ),
+      ),
+      Event(author='inner_agent', error_message='A2A request failed: 503'),
+  ])
+  assert result == 'A2A request failed: 503'
+
+
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 

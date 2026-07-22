@@ -125,6 +125,28 @@ Response text appears in both places (the local ADK events and the remote
 interaction history), but ADK stores only the ids it needs to recover and reuse
 the remote state; it never re-sends prior turns.
 
+### System instruction
+
+Set `instruction` on `ManagedAgent` to send a system instruction to the Managed
+Agents API, mirroring `LlmAgent.instruction`. It accepts a plain string — which
+may embed `{state_var}` / `{artifact.name}` / `{var?}` placeholders resolved
+from session state and artifacts at request time — or an `InstructionProvider`
+callable that is invoked with a `ReadonlyContext` and bypasses placeholder
+injection. The resolved instruction is forwarded as the interaction's
+`system_instruction` on every turn, including chained turns; an empty
+`instruction` (the default) sends none.
+
+```python
+from google.adk.agents import ManagedAgent
+
+root_agent = ManagedAgent(
+    name='managed_persona_agent',
+    agent_id='antigravity-preview-05-2026',
+    environment={'type': 'remote'},
+    instruction='You are a terse assistant. Answer in a single sentence.',
+)
+```
+
 ## Advanced applications
 
 ### Tool encapsulation for orchestration
@@ -154,3 +176,4 @@ the remote state; it never re-sends prior turns.
 
 *   [Managed Agent Basic](../../../../contributing/samples/managed_agent/basic)
 *   [Managed Agent Code Execution](../../../../contributing/samples/managed_agent/code_execution)
+*   [Managed Agent System Instruction](../../../../contributing/samples/managed_agent/system_instruction)

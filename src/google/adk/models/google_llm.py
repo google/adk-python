@@ -357,8 +357,9 @@ class Gemini(BaseLlm):
     if self.model.startswith('projects/'):
       kwargs['enterprise'] = True
 
-    if self.client_kwargs:
-      kwargs.update(self.client_kwargs)
+    client_kwargs = getattr(self, 'client_kwargs', None)
+    if client_kwargs:
+      kwargs.update(client_kwargs)
 
     return Client(**kwargs)
 
@@ -405,8 +406,9 @@ class Gemini(BaseLlm):
     if self.model.startswith('projects/'):
       kwargs['enterprise'] = True
 
-    if self.client_kwargs:
-      kwargs.update(self.client_kwargs)
+    client_kwargs = getattr(self, 'client_kwargs', None)
+    if client_kwargs:
+      kwargs.update(client_kwargs)
 
     return Client(**kwargs)
 
