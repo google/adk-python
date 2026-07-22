@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -359,6 +360,53 @@ class TestAgentCardBuilder:
         skill for skill in card_dict["skills"] if skill["id"] == "writer"
     )
     assert primary_skill["description"] == "Writes a short reply."
+
+  async def test_build_omits_sync_instruction_provider(self):
+    """A static card omits a sync instruction that needs runtime context."""
+    instruction_provider = Mock(return_value="You use runtime context.")
+    agent = LlmAgent(
+        name="provider_agent",
+        description="Uses runtime instructions.",
+        instruction=instruction_provider,
+    )
+
+    card = await AgentCardBuilder(agent=agent).build()
+
+    assert card.skills[0].description == "Uses runtime instructions."
+    instruction_provider.assert_not_called()
+
+  async def test_build_omits_async_instruction_provider(self):
+    """A static card omits an async instruction that needs runtime context."""
+    instruction_provider = AsyncMock(
+        return_value="You use async runtime context."
+    )
+    agent = LlmAgent(
+        name="async_provider_agent",
+        description="Uses async runtime instructions.",
+        instruction=instruction_provider,
+    )
+
+    card = await AgentCardBuilder(agent=agent).build()
+
+    assert card.skills[0].description == "Uses async runtime instructions."
+    instruction_provider.assert_not_called()
+
+  async def test_build_omits_global_instruction_provider(self):
+    """A static card omits a global instruction that needs runtime context."""
+    global_instruction_provider = Mock(
+        return_value="You use global runtime context."
+    )
+    agent = LlmAgent(
+        name="global_provider_agent",
+        description="Answers questions.",
+        instruction="You answer user questions.",
+        global_instruction=global_instruction_provider,
+    )
+
+    card = await AgentCardBuilder(agent=agent).build()
+
+    assert card.skills[0].description == "Answers questions."
+    global_instruction_provider.assert_not_called()
 
   async def test_build_succeeds_for_workflow_with_llm_agent_node(self):
     """AgentCardBuilder.build succeeds for a Workflow (no sub_agents)."""
