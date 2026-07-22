@@ -22,10 +22,12 @@ from a2a.types import Part as A2APart
 from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
 from google.adk.a2a import _compat
+from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
+from google.adk.a2a.converters.to_adk_event import _extract_genai_metadata
 from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_message_to_event
 from google.adk.a2a.converters.to_adk_event import convert_a2a_status_update_to_event
@@ -34,6 +36,7 @@ from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIR
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event
 from google.genai import types as genai_types
 import pytest
 
@@ -680,3 +683,74 @@ class TestToAdk:
     )
 
     assert event.content.role == "model"
+
+
+class TestExtractGenaiMetadata:
+
+  def test_grounding_metadata_round_trip(self) -> None:
+    """Tests that grounding metadata can be successfully extracted."""
+    event = Event(
+        author="agent",
+        grounding_metadata=genai_types.GroundingMetadata(
+            search_entry_point=genai_types.SearchEntryPoint(
+                rendered_content="test"
+            )
+        ),
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text="hi")]
+        ),
+    )
+    a2a_events = convert_event_to_a2a_events(
+        event, {}, task_id="t", context_id="c"
+    )
+    artifact_update = next(
+        e for e in a2a_events if isinstance(e, TaskArtifactUpdateEvent)
+    )
+    back = convert_a2a_artifact_update_to_event(artifact_update, "agent")
+    assert back is not None
+    assert back.grounding_metadata is not None
+    assert back.grounding_metadata.search_entry_point.rendered_content == "test"
+
+  def test_extract_genai_metadata_valid(self) -> None:
+    metadata_dict = {
+        _get_adk_metadata_key(
+            "grounding_metadata"
+        ): '{"search_entry_point": {"rendered_content": "test"}}'
+    }
+    result = _extract_genai_metadata(
+        metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
+    )
+    assert isinstance(result, genai_types.GroundingMetadata)
+    assert result.search_entry_point.rendered_content == "test"
+
+  def test_extract_genai_metadata_invalid_validation_error(self) -> None:
+    # A malformed dictionary that causes a ValidationError (e.g. wrong type for search_entry_point)
+    metadata_dict = {
+        _get_adk_metadata_key(
+            "grounding_metadata"
+        ): '{"search_entry_point": ["not_a_dict"]}'
+    }
+    result = _extract_genai_metadata(
+        metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
+    )
+    assert result is None
+
+  def test_extract_genai_metadata_missing(self) -> None:
+    result = _extract_genai_metadata(
+        {"other_key": "val"},
+        "grounding_metadata",
+        genai_types.GroundingMetadata,
+    )
+    assert result is None
+
+  def test_extract_genai_metadata_not_dict_but_class_provided(self) -> None:
+    # Should safely return None when JSON parsed to non-dict, but model validates expected dict/kwargs
+    metadata_dict = {
+        _get_adk_metadata_key("usage_metadata"): '["not", "a", "dict"]'
+    }
+    result = _extract_genai_metadata(
+        metadata_dict,
+        "usage_metadata",
+        genai_types.GenerateContentResponseUsageMetadata,
+    )
+    assert result is None

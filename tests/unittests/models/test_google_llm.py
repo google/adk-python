@@ -242,6 +242,20 @@ def test_gemini_repr_excludes_client_kwargs():
   assert "client_kwargs" not in repr_str
 
 
+def test_gemini_api_client_when_client_kwargs_missing_from_dict():
+  model = Gemini(model="gemini-2.5-flash")
+  model.__dict__.pop("client_kwargs", None)
+  assert "client_kwargs" not in model.__dict__
+
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+    mock_client.assert_called_once()
+
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+    mock_client.assert_called_once()
+
+
 def test_client_version_header():
   model = Gemini(model="gemini-2.5-flash")
   client = model.api_client
