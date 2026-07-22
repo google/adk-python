@@ -829,6 +829,20 @@ class AnthropicLlm(BaseLlm):
               ),
               partial=True,
           )
+        elif isinstance(delta, anthropic_types.SignatureDelta):
+          # Claude streams the thinking block's cryptographic signature as a
+          # separate delta near the end of the block. Accumulate it so the
+          # aggregated thinking Part below carries ``thought_signature``.
+          # Without it the reasoning block cannot round-trip back to Claude on
+          # the next request -- extended thinking + tool use requires echoing
+          # the signed thinking blocks, and re-serializing history for the
+          # follow-up call would otherwise fail. Not surfaced as a partial (the
+          # signature is opaque, not user-visible text).
+          thinking_blocks.setdefault(
+              event.index,
+              _ThinkingAccumulator(thinking="", signature=""),
+          )
+          thinking_blocks[event.index].signature += delta.signature
         elif isinstance(delta, anthropic_types.TextDelta):
           text_blocks.setdefault(event.index, "")
           text_blocks[event.index] += delta.text

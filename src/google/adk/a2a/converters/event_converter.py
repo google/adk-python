@@ -234,7 +234,13 @@ def convert_a2a_task_to_event(
     ):
       message = a2a_task.status.message
     elif a2a_task.history:
-      message = a2a_task.history[-1]
+      # Only pick agent-role messages from history; a trailing user
+      # message should not be misattributed as agent output.
+      agent_messages = [
+          m for m in a2a_task.history if m.role == _compat.ROLE_AGENT
+      ]
+      if agent_messages:
+        message = agent_messages[-1]
 
     # Convert message if available
     if message:
@@ -288,6 +294,8 @@ def convert_a2a_message_to_event(
   if a2a_message is None:
     raise ValueError("A2A message cannot be None")
 
+  genai_role = _compat.role_to_str(a2a_message.role)
+
   if not a2a_message.parts:
     logger.warning(
         "A2A message has no parts, creating event with empty content"
@@ -300,7 +308,7 @@ def convert_a2a_message_to_event(
         ),
         author=author or "a2a agent",
         branch=invocation_context.branch if invocation_context else None,
-        content=genai_types.Content(role="model", parts=[]),
+        content=genai_types.Content(role=genai_role, parts=[]),
     )
 
   try:
@@ -355,7 +363,7 @@ def convert_a2a_message_to_event(
         if long_running_tool_ids
         else None,
         content=genai_types.Content(
-            role="model",
+            role=genai_role,
             parts=output_parts,
         ),
     )
