@@ -36,6 +36,7 @@ import uvicorn
 from .. import version
 from ..agents.run_config import StreamingMode
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+from ..evaluation.eval_result import EvalCaseResult
 from ..features import FeatureName
 from ..features import override_feature_enabled
 from .cli import run_cli
@@ -1161,7 +1162,6 @@ def cli_eval(
   eval_run_summary = {}
 
   for eval_result in eval_results:
-
     if eval_result.eval_set_id not in eval_run_summary:
       eval_run_summary[eval_result.eval_set_id] = [0, 0]
 
