@@ -239,7 +239,9 @@ def convert_genai_part_to_a2a_part(
     meta = {}
     if part.video_metadata:
       meta[_get_adk_metadata_key('video_metadata')] = (
-          part.video_metadata.model_dump(by_alias=True, exclude_none=True)
+          part.video_metadata.model_dump(
+              mode='json', by_alias=True, exclude_none=True
+          )
       )
     if part.part_metadata:
       meta.update(part.part_metadata)
@@ -274,7 +276,7 @@ def convert_genai_part_to_a2a_part(
         ).decode('utf-8')
       if part.part_metadata:
         meta.update(part.part_metadata)
-      data_dict = val.model_dump(by_alias=True, exclude_none=True)
+      data_dict = val.model_dump(mode='json', by_alias=True, exclude_none=True)
       return _compat.make_data_part(data=data_dict, metadata=meta)
 
   logger.warning(
