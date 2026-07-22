@@ -51,6 +51,24 @@ def _create_test_invocations(
   )
 
 
+def test_calculate_rouge_1_scores_non_ascii_identical():
+  """Non-ASCII text (e.g. Thai) should score 1.0 when candidate == reference."""
+  candidate = "สวัสดี"
+  reference = "สวัสดี"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.precision == pytest.approx(1.0)
+  assert rouge_1_score.recall == pytest.approx(1.0)
+  assert rouge_1_score.fmeasure == pytest.approx(1.0)
+
+
+def test_calculate_rouge_1_scores_non_ascii_no_match():
+  """Non-ASCII text should score 0.0 when candidate and reference differ."""
+  candidate = "สวัสดี"
+  reference = "hello"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.fmeasure == pytest.approx(0.0)
+
+
 def test_calculate_rouge_1_scores_empty_candidate_and_reference():
   candidate = ""
   reference = ""
