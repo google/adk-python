@@ -41,6 +41,8 @@ class FeatureName(str, Enum):
   DAYTONA_ENVIRONMENT = "DAYTONA_ENVIRONMENT"
   E2B_ENVIRONMENT = "E2B_ENVIRONMENT"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
+  EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
+  EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
   GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
   GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
   GCS_TOOLSET = "GCS_TOOLSET"
@@ -142,6 +144,12 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.EVENTARC_TOOL_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.EVENTARC_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.GCS_ADMIN_TOOLSET: FeatureConfig(
