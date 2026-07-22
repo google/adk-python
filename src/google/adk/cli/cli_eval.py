@@ -26,7 +26,7 @@ from typing import Optional
 import click
 from google.genai import types as genai_types
 
-from ..agents.llm_agent import Agent
+from ..agents.base_agent import BaseAgent
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
 from ..evaluation.base_eval_service import EvaluateRequest
@@ -74,11 +74,18 @@ def _get_agent_module(agent_module_file_path: str) -> ModuleType:
   return _import_from_path(module_name, file_path)
 
 
-def get_root_agent(agent_module_file_path: str) -> Agent:
+async def get_root_agent(agent_module_file_path: str) -> BaseAgent:
   """Returns root agent given the agent module."""
   agent_module = _get_agent_module(agent_module_file_path)
-  root_agent = agent_module.agent.root_agent
-  return cast(Agent, root_agent)
+  agent_module_with_agent = getattr(agent_module, "agent", agent_module)
+  if hasattr(agent_module_with_agent, "root_agent"):
+    return cast(BaseAgent, agent_module_with_agent.root_agent)
+  elif hasattr(agent_module_with_agent, "get_agent_async"):
+    root_agent, _ = await agent_module_with_agent.get_agent_async()
+    return cast(BaseAgent, root_agent)
+  raise ValueError(
+      "Agent module should have either `root_agent` or `get_agent_async`."
+  )
 
 
 def try_get_reset_func(agent_module_file_path: str) -> Any:

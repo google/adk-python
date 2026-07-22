@@ -36,6 +36,7 @@ _DEFAULT_INTEGRATIONS_ENDPOINT_TEMPLATE = "integrations.googleapis.com"
 _DEFAULT_MTLS_INTEGRATIONS_ENDPOINT_TEMPLATE = (
     "integrations.mtls.googleapis.com"
 )
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
 
 
 class ConnectionsClient:
@@ -886,7 +887,9 @@ class ConnectionsClient:
           "Authorization": f"Bearer {self._get_access_token()}",
       }
 
-      response = requests.get(url, headers=headers)
+      response = requests.get(
+          url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
+      )
       response.raise_for_status()
       return response
 

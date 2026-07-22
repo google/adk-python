@@ -2056,6 +2056,46 @@ async def test_generate_content_async_with_cache_metadata_integration(
       assert second_arg.invocations_used == cache_metadata.invocations_used
 
 
+@pytest.mark.asyncio
+async def test_interactions_api_does_not_apply_explicit_cache(llm_request):
+  """Interactions requests use implicit caching without mutating the prompt."""
+  gemini = Gemini(model="gemini-2.5-flash", use_interactions_api=True)
+  llm_request.cache_config = ContextCacheConfig()
+  original_request = llm_request.model_copy(deep=True)
+
+  async def generate_via_interactions(_llm_request, _stream):
+    yield LlmResponse(
+        content=Content(
+            role="model", parts=[Part.from_text(text="interaction response")]
+        )
+    )
+
+  with (
+      mock.patch.object(gemini, "_preprocess_request", new=AsyncMock()),
+      mock.patch.object(
+          gemini,
+          "_generate_content_via_interactions",
+          new=generate_via_interactions,
+      ),
+      mock.patch(
+          "google.adk.models.gemini_context_cache_manager.GeminiContextCacheManager"
+      ) as cache_manager_class,
+  ):
+    responses = [
+        response
+        async for response in gemini.generate_content_async(llm_request)
+    ]
+
+  assert responses[0].content.parts[0].text == "interaction response"
+  assert llm_request.contents == original_request.contents
+  assert (
+      llm_request.config.system_instruction
+      == original_request.config.system_instruction
+  )
+  assert llm_request.config.cached_content is None
+  cache_manager_class.assert_not_called()
+
+
 def test_build_function_declaration_log():
   """Test that _build_function_declaration_log formats function declarations correctly."""
   # Test case 1: Function with parameters and response
