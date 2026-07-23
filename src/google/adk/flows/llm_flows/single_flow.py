@@ -52,13 +52,13 @@ def _create_request_processors() -> list[BaseLlmRequestProcessor]:
       # Compaction should run before contents so compacted events are reflected
       # in the model request context.
       compaction.request_processor,
+      # Extract the Interactions chain id before contents. Chained requests
+      # only need the current turn because the service retains prior state.
+      interactions_processor.request_processor,
       contents.request_processor,
       # Context cache processor sets up cache config and finds
       # existing cache metadata.
       context_cache_processor.request_processor,
-      # Interactions processor extracts previous_interaction_id for
-      # stateful conversations via the Interactions API.
-      interactions_processor.request_processor,
       # Some implementations of NL Planning mark planning contents
       # as thoughts in the post processor.  Since these need to be
       # unmarked, NL Planning should be after contents.

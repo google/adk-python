@@ -26,7 +26,9 @@ from pathlib import Path
 import sys
 import tempfile
 import textwrap
+from typing import cast
 from typing import Optional
+from typing import TYPE_CHECKING
 
 import click
 from click.core import ParameterSource
@@ -41,6 +43,9 @@ from ..features import override_feature_enabled
 from .cli import run_cli
 from .utils import envs
 from .utils import logs
+
+if TYPE_CHECKING:
+  from ..agents.llm_agent import LlmAgent
 
 LOG_LEVELS = click.Choice(
     ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -1027,7 +1032,7 @@ def cli_eval(
   print(f"Using evaluation criteria: {eval_config}")
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
-  root_agent = get_root_agent(agent_module_file_path)
+  root_agent = asyncio.run(get_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   eval_sets_manager = None
@@ -1257,7 +1262,7 @@ def cli_optimize(
   else:
     optimizer_config = GEPARootAgentPromptOptimizerConfig()
 
-  root_agent = get_root_agent(agent_module_file_path)
+  root_agent = asyncio.run(get_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   if app_name != sampler_config.app_name:
@@ -1270,7 +1275,9 @@ def cli_optimize(
   sampler = LocalEvalSampler(sampler_config, eval_sets_manager)
   optimizer = GEPARootAgentPromptOptimizer(optimizer_config)
 
-  optimization_result = asyncio.run(optimizer.optimize(root_agent, sampler))
+  optimization_result = asyncio.run(
+      optimizer.optimize(cast("LlmAgent", root_agent), sampler)
+  )
   best_idx = optimization_result.gepa_result["best_idx"]
 
   click.echo("=" * 80)
@@ -1483,7 +1490,7 @@ def cli_generate_eval_cases(
 
   try:
     eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
-    root_agent = get_root_agent(agent_module_file_path)
+    root_agent = asyncio.run(get_root_agent(agent_module_file_path))
 
     # Try to create if it doesn't already exist.
     if (

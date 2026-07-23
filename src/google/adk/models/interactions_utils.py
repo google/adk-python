@@ -630,6 +630,7 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
         types.Part(
             function_response=types.FunctionResponse(
                 id=step.call_id or '',
+                name=step.name,
                 response=_function_result_to_response(step.result),
             )
         )
@@ -1003,6 +1004,7 @@ def _handle_function_result(
   part = types.Part(
       function_response=types.FunctionResponse(
           id=delta.call_id or '',
+          name=delta.name,
           response=_function_result_to_response(delta.result),
       )
   )

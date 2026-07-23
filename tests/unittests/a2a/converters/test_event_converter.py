@@ -29,12 +29,14 @@ from google.adk.a2a.converters.event_converter import _get_context_metadata
 from google.adk.a2a.converters.event_converter import _process_long_running_tool
 from google.adk.a2a.converters.event_converter import _serialize_metadata_value
 from google.adk.a2a.converters.event_converter import ARTIFACT_ID_SEPARATOR
+from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
 from google.adk.a2a.converters.event_converter import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
+from google.genai import types as genai_types
 import pytest
 
 
@@ -109,7 +111,7 @@ class TestEventConverter:
 
     assert result == {"key": "value"}
     mock_value.model_dump.assert_called_once_with(
-        exclude_none=True, by_alias=True
+        mode="json", exclude_none=True, by_alias=True
     )
 
   def test_serialize_metadata_value_with_model_dump_exception(self):
@@ -130,6 +132,51 @@ class TestEventConverter:
     value = "simple_string"
     result = _serialize_metadata_value(value)
     assert result == "simple_string"
+
+  def _serialized_metadata_with_bytes(self):
+    value = genai_types.FunctionResponse(
+        name="computer_use",
+        response={"inline_data": {"data": b"\x89PNG_BYTES"}},
+    )
+    result = _serialize_metadata_value(value)
+
+    # No raw bytes anywhere in the serialized structure.
+    def _assert_no_bytes(obj):
+      if isinstance(obj, bytes):
+        raise AssertionError("raw bytes leaked into serialized metadata")
+      if isinstance(obj, dict):
+        for v in obj.values():
+          _assert_no_bytes(v)
+      elif isinstance(obj, (list, tuple)):
+        for v in obj:
+          _assert_no_bytes(v)
+
+    _assert_no_bytes(result)
+    return result
+
+  @pytest.mark.skipif(
+      _compat.IS_A2A_V1, reason="0.3-only proto_utils.dict_to_struct"
+  )
+  def test_serialize_metadata_value_with_bytes_to_struct_v03(self):
+    """0.3: serialized metadata builds a proto Struct without raising."""
+    from a2a.utils import proto_utils
+
+    result = self._serialized_metadata_with_bytes()
+    struct = proto_utils.dict_to_struct({"meta": result})
+    assert struct is not None
+
+  @pytest.mark.skipif(
+      not _compat.IS_A2A_V1, reason="1.x-only ParseDict into proto Struct"
+  )
+  def test_serialize_metadata_value_with_bytes_to_struct_v1x(self):
+    """1.x: serialized metadata ParseDicts into a proto Struct."""
+    from google.protobuf import struct_pb2
+    from google.protobuf.json_format import ParseDict
+
+    result = self._serialized_metadata_with_bytes()
+    struct = struct_pb2.Struct()
+    ParseDict({"meta": result}, struct)
+    assert struct is not None
 
   def test_get_context_metadata_success(self):
     """Test successful context metadata creation."""
@@ -601,7 +648,6 @@ class TestEventConverter:
   def test_convert_event_to_a2a_message_with_multiple_parts_returned(self):
     """Test event to message conversion when part_converter returns multiple parts."""
     from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
-    from google.genai import types as genai_types
 
     # Arrange
     mock_genai_part = genai_types.Part(text="source part")
@@ -721,6 +767,7 @@ class TestA2AToEventConverters:
 
     # Create mock message and task
     mock_message = Mock(spec=Message)
+    mock_message.role = _compat.ROLE_AGENT
     mock_task = Mock(spec=Task)
     mock_task.artifacts = None
     mock_task.status = None
@@ -814,8 +861,6 @@ class TestA2AToEventConverters:
 
   def test_convert_a2a_message_to_event_success(self):
     """Test successful conversion of A2A message to event."""
-    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
-    from google.genai import types as genai_types
 
     # Use a real A2A part (production reads its metadata); the part_converter
     # callback is still mocked to return a canned genai Part.
@@ -824,6 +869,7 @@ class TestA2AToEventConverters:
     mock_convert_part = Mock(return_value=mock_genai_part)
 
     mock_message = Mock(spec=Message, parts=[mock_a2a_part])
+    mock_message.role = _compat.ROLE_AGENT
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -843,8 +889,6 @@ class TestA2AToEventConverters:
 
   def test_convert_a2a_message_to_event_with_multiple_parts_returned(self):
     """Test message to event conversion when part_converter returns multiple parts."""
-    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
-    from google.genai import types as genai_types
 
     # Arrange
     mock_a2a_part = _compat.make_text_part("part 1")
@@ -853,6 +897,7 @@ class TestA2AToEventConverters:
     mock_convert_part = Mock(return_value=[mock_genai_part1, mock_genai_part2])
 
     mock_message = Mock(spec=Message, parts=[mock_a2a_part])
+    mock_message.role = _compat.ROLE_AGENT
 
     # Act
     result = convert_a2a_message_to_event(
@@ -871,10 +916,10 @@ class TestA2AToEventConverters:
 
   def test_convert_a2a_message_to_event_with_long_running_tools(self):
     """Test conversion with long-running tools by mocking the entire flow."""
-    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     # Create mock parts and message
     mock_message = Mock(spec=Message, parts=[Mock()])
+    mock_message.role = _compat.ROLE_AGENT
 
     # Mock the part conversion to return None to simulate long-running tool detection logic
     mock_convert_part = Mock(return_value=None)
@@ -898,9 +943,9 @@ class TestA2AToEventConverters:
 
   def test_convert_a2a_message_to_event_empty_parts(self):
     """Test conversion with empty parts list."""
-    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     mock_message = Mock(spec=Message, parts=[])
+    mock_message.role = _compat.ROLE_AGENT
 
     result = convert_a2a_message_to_event(
         mock_message, "test-author", self.mock_invocation_context
@@ -914,20 +959,19 @@ class TestA2AToEventConverters:
 
   def test_convert_a2a_message_to_event_none_message(self):
     """Test converting None message raises ValueError."""
-    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     with pytest.raises(ValueError, match="A2A message cannot be None"):
       convert_a2a_message_to_event(None)
 
   def test_convert_a2a_message_to_event_part_conversion_fails(self):
     """Test handling when part conversion returns None."""
-    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     # Setup mock to return None (conversion failure)
     mock_a2a_part = Mock()
     mock_convert_part = Mock(return_value=None)
 
     mock_message = Mock(spec=Message, parts=[mock_a2a_part])
+    mock_message.role = _compat.ROLE_AGENT
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -944,8 +988,6 @@ class TestA2AToEventConverters:
 
   def test_convert_a2a_message_to_event_part_conversion_exception(self):
     """Test handling when part conversion raises exception."""
-    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
-    from google.genai import types as genai_types
 
     # Setup mock to raise exception. The A2A parts are real (production
     # reads their metadata); the converter callback drives the behavior.
@@ -961,6 +1003,7 @@ class TestA2AToEventConverters:
     )
 
     mock_message = Mock(spec=Message, parts=[mock_a2a_part1, mock_a2a_part2])
+    mock_message.role = _compat.ROLE_AGENT
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -978,10 +1021,10 @@ class TestA2AToEventConverters:
 
   def test_convert_a2a_message_to_event_missing_tool_id(self):
     """Test handling of message conversion when part conversion fails."""
-    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     # Create mock parts and message
     mock_message = Mock(spec=Message, parts=[Mock()])
+    mock_message.role = _compat.ROLE_AGENT
 
     # Mock the part conversion to return None
     mock_convert_part = Mock(return_value=None)
@@ -1003,9 +1046,9 @@ class TestA2AToEventConverters:
   @patch("google.adk.a2a.converters.event_converter.platform_uuid.new_uuid")
   def test_convert_a2a_message_to_event_default_author(self, mock_uuid):
     """Test conversion with default author and no invocation context."""
-    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     mock_message = Mock(spec=Message, parts=[])
+    mock_message.role = _compat.ROLE_AGENT
 
     # Mock UUID generation
     mock_uuid.return_value = "generated-uuid"
@@ -1016,3 +1059,116 @@ class TestA2AToEventConverters:
     assert result.author == "a2a agent"
     assert result.branch is None
     assert result.invocation_id == "generated-uuid"
+
+
+class TestRoleMappingRegression:
+  """Regression tests for issue #5186: role mapping in A2A→ADK conversion."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.mock_invocation_context = Mock(spec=InvocationContext)
+    self.mock_invocation_context.invocation_id = "test-invocation-id"
+    self.mock_invocation_context.branch = "test-branch"
+
+  def test_user_role_message_maps_to_user_content_role(self):
+    """A2A Role.user must produce content.role='user', not 'model'."""
+    message = _compat.make_message(
+        message_id="msg-1",
+        role=_compat.ROLE_USER,
+        parts=[_compat.make_text_part("user says hi")],
+    )
+
+    event = convert_a2a_message_to_event(
+        message, "test-author", self.mock_invocation_context
+    )
+
+    assert event.content.role == "user"
+
+  def test_agent_role_message_maps_to_model_content_role(self):
+    """A2A Role.agent must produce content.role='model'."""
+    message = _compat.make_message(
+        message_id="msg-1",
+        role=_compat.ROLE_AGENT,
+        parts=[_compat.make_text_part("agent reply")],
+    )
+
+    event = convert_a2a_message_to_event(
+        message, "test-author", self.mock_invocation_context
+    )
+
+    assert event.content.role == "model"
+
+  def test_empty_parts_user_message_preserves_user_role(self):
+    """Even with empty parts, Role.user must map to content.role='user'."""
+    message = _compat.make_message(
+        message_id="msg-1",
+        role=_compat.ROLE_USER,
+        parts=[],
+    )
+
+    event = convert_a2a_message_to_event(
+        message, "test-author", self.mock_invocation_context
+    )
+
+    assert event.content.role == "user"
+
+  def test_task_history_fallback_skips_trailing_user_message(self):
+    """History fallback must not return a user-role trailing message."""
+    agent_msg = _compat.make_message(
+        message_id="m1",
+        role=_compat.ROLE_AGENT,
+        parts=[_compat.make_text_part("agent reply")],
+    )
+    user_msg = _compat.make_message(
+        message_id="m2",
+        role=_compat.ROLE_USER,
+        parts=[_compat.make_text_part("follow-up question")],
+    )
+
+    status = _compat.make_task_status(_compat.TS_SUBMITTED)
+    task = _compat.make_task(
+        id="task-1",
+        status=status,
+        context_id="ctx-1",
+        history=[agent_msg, user_msg],
+    )
+
+    with patch(
+        "google.adk.a2a.converters.event_converter.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_event = Mock(spec=Event)
+      mock_convert.return_value = mock_event
+
+      convert_a2a_task_to_event(
+          task, "test-author", self.mock_invocation_context
+      )
+
+      # Must be called with the agent message, not the trailing user message
+      mock_convert.assert_called_once()
+      called_message = mock_convert.call_args[0][0]
+      assert called_message.role == _compat.ROLE_AGENT
+      assert called_message.message_id == "m1"
+
+  def test_task_history_fallback_only_user_messages_creates_minimal_event(self):
+    """History with only user messages must produce a minimal event."""
+    user_msg = _compat.make_message(
+        message_id="m1",
+        role=_compat.ROLE_USER,
+        parts=[_compat.make_text_part("question")],
+    )
+
+    status = _compat.make_task_status(_compat.TS_SUBMITTED)
+    task = _compat.make_task(
+        id="task-1",
+        status=status,
+        context_id="ctx-1",
+        history=[user_msg],
+    )
+
+    result = convert_a2a_task_to_event(
+        task, "test-author", self.mock_invocation_context
+    )
+
+    # No agent message to convert → minimal event (no content)
+    assert result.author == "test-author"
+    assert result.content is None

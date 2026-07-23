@@ -75,6 +75,7 @@ optional-dependencies.all = [
   "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-eventarc-publishing>=0.10,<1",
   "google-cloud-parametermanager>=0.4,<1",
   "google-cloud-pubsub>=2,<3",
   "google-cloud-resource-manager>=1.12,<2",
@@ -111,6 +112,7 @@ optional-dependencies.db = [
   "sqlalchemy-spanner>=1.14",
 ]
 optional-dependencies.dev = [
+  "codespell[toml]==2.4.2",
   "flit>=3.10",
   # Lint tools used by scripts/run_precommit_checks.sh (which runs them directly,
   # without the pre-commit framework). Formatters that rewrite files are pinned
@@ -173,6 +175,7 @@ optional-dependencies.gcp = [
   "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-eventarc-publishing>=0.10,<1",
   "google-cloud-parametermanager>=0.4,<1",
   "google-cloud-pubsub>=2,<3",
   "google-cloud-resource-manager>=1.12,<2",
@@ -217,6 +220,7 @@ optional-dependencies.test = [
   "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-eventarc-publishing>=0.10,<1",
   "google-cloud-firestore>=2.11,<3",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
   "google-cloud-parametermanager>=0.4,<1",
@@ -296,6 +300,17 @@ profile = "google"
 line_length = 200
 single_line_exclusions = []
 known_third_party = [ "a2a", "google.adk" ]
+
+[tool.codespell]
+# Real words/identifiers that codespell misreads as typos:
+#   hel/serie/strin -> substrings in test fixtures; te -> local variable;
+#   rouge -> the ROUGE metric; unparseable -> valid spelling variant;
+#   re-use/re-used -> intentional hyphenation; lamda -> Google LaMDA project.
+ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda"
+# CHANGELOG.md is generated from commit messages; lockfiles, notebooks, JSON
+# fixtures, bundled JS/source maps, and the vendored CLI browser bundle are
+# generated or data files, not prose we own.
+skip = "*CHANGELOG.md,*.lock,*.ipynb,*.json,*.js,*.map,*/cli/browser/*"
 
 [tool.mypy]
 mypy_path = [ "src" ]

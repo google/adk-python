@@ -17,9 +17,10 @@
 from unittest.mock import MagicMock
 
 from google.adk.events.event import Event
+from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows import interactions_processor
+from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.genai import types
-import pytest
 
 
 class TestInteractionsRequestProcessor:
@@ -222,6 +223,18 @@ class TestInteractionsRequestProcessor:
     assert (
         interactions_processor._is_event_in_branch("root.child", event) is True
     )
+
+
+def test_single_flow_extracts_interaction_state_before_contents():
+  """Chained requests expose their interaction ID to content assembly."""
+  flow = SingleFlow()
+
+  interactions_index = flow.request_processors.index(
+      interactions_processor.request_processor
+  )
+  contents_index = flow.request_processors.index(contents.request_processor)
+
+  assert interactions_index < contents_index
 
 
 def _evt(author: str, interaction_id: str | None, branch: str | None) -> Event:

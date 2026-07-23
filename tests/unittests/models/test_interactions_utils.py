@@ -824,11 +824,13 @@ class TestConvertInteractionOutputToParts:
     output = FunctionResultStep(
         type='function_result',
         call_id='call_123',
+        name='get_weather',
         result={'weather': 'Sunny'},
     )
     result_list = interactions_utils._convert_interaction_step_to_parts(output)
     result = result_list[0] if result_list else None
     assert result.function_response.id == 'call_123'
+    assert result.function_response.name == 'get_weather'
     assert result.function_response.response == {'weather': 'Sunny'}
 
   def test_function_result_output_preserves_none_values(self):
@@ -1468,6 +1470,7 @@ class TestConvertInteractionEventToLlmResponse:
         delta={
             'type': 'function_result',
             'call_id': 'call_9',
+            'name': 'get_temperature',
             'result': {'temp': 72},
         },
     )
@@ -1478,6 +1481,7 @@ class TestConvertInteractionEventToLlmResponse:
     assert result is not None
     part = result.content.parts[0]
     assert part.function_response.id == 'call_9'
+    assert part.function_response.name == 'get_temperature'
     assert part.function_response.response == {'temp': 72}
     assert len(state.parts) == 1
 

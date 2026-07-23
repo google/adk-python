@@ -711,6 +711,24 @@ class TestRubricBasedEvaluator:
     assert len(effective_rubrics) == 2
     assert {r.rubric_id for r in effective_rubrics} == {"1", "2"}
 
+  def test_create_effective_rubrics_list_with_no_rubrics_raises_error(self):
+    judge_model_options = JudgeModelOptions(
+        judge_model_config=None,
+        num_samples=3,
+    )
+    criterion = RubricsBasedCriterion(
+        threshold=0.5, judge_model_options=judge_model_options
+    )
+    metric = EvalMetric(
+        metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+        threshold=0.5,
+        criterion=criterion,
+    )
+    evaluator = FakeRubricBasedEvaluator(metric)
+
+    with pytest.raises(ValueError, match="Rubrics are required."):
+      evaluator.create_effective_rubrics_list(None)
+
   def test_get_effective_rubrics_list_before_creation_raises_error(
       self, evaluator: RubricBasedEvaluator
   ):
@@ -770,6 +788,31 @@ class TestRubricBasedEvaluator:
         "2",
         "test_type_rubric",
     }
+
+  def test_create_effective_rubrics_filters_to_empty_raises_error(self):
+    judge_model_options = JudgeModelOptions(
+        judge_model_config=None,
+        num_samples=3,
+    )
+    criterion = RubricsBasedCriterion(
+        threshold=0.5, judge_model_options=judge_model_options
+    )
+    metric = EvalMetric(
+        metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+        threshold=0.5,
+        criterion=criterion,
+    )
+    evaluator = FakeRubricBasedEvaluator(metric, rubric_type="EXPECTED_TYPE")
+    invocation_rubrics = [
+        Rubric(
+            rubric_id="wrong_type_rubric",
+            rubric_content=RubricContent(text_property="Invocation rubric"),
+            type="WRONG_TYPE",
+        )
+    ]
+
+    with pytest.raises(ValueError, match="Rubrics are required."):
+      evaluator.create_effective_rubrics_list(invocation_rubrics)
 
   def test_convert_matches_by_id_when_text_paraphrased(
       self,

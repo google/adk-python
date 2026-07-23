@@ -353,11 +353,11 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
     self.create_effective_rubrics_list(actual_invocation.rubrics)
     logger.debug(
         "format_auto_rater_prompt called (effective rubrics: %d)",
-        len(self._effective_rubrics_list),
+        len(self.get_effective_rubrics_list()),
     )
 
     rubrics_list = []
-    for r in self._effective_rubrics_list:
+    for r in self.get_effective_rubrics_list():
       rubrics_dict = {
           "id": r.rubric_id,
           "property": r.rubric_content.text_property,
