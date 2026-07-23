@@ -987,6 +987,33 @@ def _extract_thought_signature_from_tool_call(
     if len(parts) == 2:
       return _decode_thought_signature(parts[1])
 
+
+def _strip_thought_signature_from_tool_call_id(
+    tool_call_id: Optional[str],
+) -> Optional[str]:
+  """Strips an embedded thought_signature suffix from a tool call ID.
+
+  Some Gemini thinking model paths embed the thought_signature in the tool
+  call ID via the ``__thought__`` separator (see
+  ``_extract_thought_signature_from_tool_call``). The signature is surfaced
+  separately on ``part.thought_signature``, so the ID assigned to
+  ``function_call.id`` must be the clean, original ID without the suffix.
+  Otherwise the corrupted ID is persisted to session history and later
+  replayed to the model as a ``tool_call_id``, which downstream
+  OpenAI-compatible endpoints reject.
+
+  Args:
+    tool_call_id: The raw tool call ID, which may contain an embedded
+      thought_signature.
+
+  Returns:
+    The tool call ID with any ``__thought__`` suffix removed, or the value
+    unchanged when no separator is present.
+  """
+  if not tool_call_id:
+    return tool_call_id
+  return tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)[0]
+
   return None
 
 
@@ -2182,7 +2209,12 @@ def _message_to_generate_content_response(
             name=tool_call.function.name,
             args=_parse_tool_call_arguments(tool_call.function.arguments),
         )
-        part.function_call.id = tool_call.id
+        # Strip any embedded thought_signature suffix so the persisted
+        # function_call.id stays the clean, original tool call ID. The
+        # signature is preserved separately on part.thought_signature.
+        part.function_call.id = _strip_thought_signature_from_tool_call_id(
+            tool_call.id
+        )
         if thought_signature:
           part.thought_signature = thought_signature
         parts.append(part)
