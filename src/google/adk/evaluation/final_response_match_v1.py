@@ -114,7 +114,7 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=False)
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.
