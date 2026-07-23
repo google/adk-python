@@ -196,6 +196,56 @@ class TestAgentRegistry:
       # The custom_metadata shouldn't have been added
       assert tool.custom_metadata is None
 
+  def _stub_mcp_server(self, registry, url):
+    """Configures the registry to return an MCP server whose interface is `url`."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "displayName": "TestPrefix",
+        "interfaces": [{"url": url, "protocolBinding": "JSONRPC"}],
+    }
+    registry._session.get.return_value = mock_response
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+  def test_get_mcp_toolset_uses_mtls_endpoint_for_google(self, registry):
+    self._stub_mcp_server(
+        registry, "https://us-central1-aiplatform.googleapis.com/mcp"
+    )
+    with patch(
+        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+        return_value=True,
+    ):
+      toolset = registry.get_mcp_toolset("test-mcp-server")
+    assert (
+        toolset.connection_params.url
+        == "https://us-central1-aiplatform.mtls.googleapis.com/mcp"
+    )
+
+  def test_get_mcp_toolset_keeps_plain_endpoint_without_client_cert(
+      self, registry
+  ):
+    self._stub_mcp_server(
+        registry, "https://us-central1-aiplatform.googleapis.com/mcp"
+    )
+    with patch(
+        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+        return_value=False,
+    ):
+      toolset = registry.get_mcp_toolset("test-mcp-server")
+    assert (
+        toolset.connection_params.url
+        == "https://us-central1-aiplatform.googleapis.com/mcp"
+    )
+
+  def test_get_mcp_toolset_keeps_non_google_endpoint(self, registry):
+    self._stub_mcp_server(registry, "https://mcp.example.com/mcp")
+    with patch(
+        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+        return_value=True,
+    ):
+      toolset = registry.get_mcp_toolset("test-mcp-server")
+    assert toolset.connection_params.url == "https://mcp.example.com/mcp"
+
   def test_init_raises_value_error_if_params_missing(self):
     with pytest.raises(
         ValueError, match="project_id and location must be provided"

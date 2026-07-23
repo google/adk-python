@@ -39,6 +39,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.utils._mtls_utils import effective_googleapis_endpoint
 import google.auth
 from google.auth.transport import mtls
 from google.auth.transport import requests as requests_auth
@@ -421,6 +422,15 @@ class AgentRegistry:
       raise ValueError(
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
       )
+
+    # Route Google-hosted MCP servers to the mutual-TLS endpoint when a client
+    # certificate is configured. A channel-bound (Agent Identity) access token
+    # is only accepted on *.mtls.googleapis.com; presenting it to the standard
+    # endpoint returns 401 UNAUTHENTICATED even though the mTLS transport is
+    # negotiated. effective_googleapis_endpoint is a no-op for non-Google hosts,
+    # already-mTLS hosts, and when GOOGLE_API_USE_MTLS_ENDPOINT=never.
+    if _use_client_cert_effective():
+      endpoint_uri = effective_googleapis_endpoint(endpoint_uri)
 
     if mcp_server_id and not auth_scheme:
       try:
