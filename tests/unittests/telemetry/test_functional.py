@@ -175,6 +175,26 @@ def test_instrumented_with_opentelemetry_instrumentation_google_genai():
   )
 
 
+def test_instrumented_detection_normalizes_windows_path_separators(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Backslash-separated instrumentation paths are matched on Windows."""
+  windows_path = r"C:\pkg\opentelemetry\instrumentation\google_genai\patch.py"
+
+  class _FakeCode:
+    co_filename = windows_path
+
+  class _FakeInstrumentedFunction:
+    __code__ = _FakeCode
+    __wrapped__ = object()
+
+  monkeypatch.setattr(
+      tracing.Models, "generate_content", _FakeInstrumentedFunction
+  )
+
+  assert tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
+
+
 # ---------------------------------------------------------------------------
 # MCP integration: telemetry adds zero ``list_tools()`` calls of its own.
 #

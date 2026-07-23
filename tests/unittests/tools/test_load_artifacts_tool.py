@@ -453,3 +453,20 @@ def test_get_declaration_with_json_schema_feature_enabled():
           },
       },
   }
+
+
+@mark.asyncio
+async def test_load_artifacts_registers_dynamic_instructions():
+  """load_artifacts registers instructions in llm_request._dynamic_instructions."""
+  tool_context = _StubToolContext(
+      {'doc.txt': types.Part.from_text(text='hello')},
+  )
+  llm_request = LlmRequest()
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(llm_request._dynamic_instructions) == 1
+  assert 'You have a list of artifacts' in llm_request._dynamic_instructions[0]
+  assert llm_request.config.system_instruction is None
+  assert len(llm_request.contents) == 0

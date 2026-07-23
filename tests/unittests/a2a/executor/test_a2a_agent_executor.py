@@ -1154,7 +1154,7 @@ class TestA2aAgentExecutor:
     )
     self.mock_runner._new_invocation_context.return_value = Mock()
 
-    # We patch TaskResultAggregator just to avoid other errors and simplfy
+    # We patch TaskResultAggregator just to avoid other errors and simplify
     with patch(
         "google.adk.a2a.executor.a2a_agent_executor.TaskResultAggregator"
     ) as mock_agg_class:

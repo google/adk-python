@@ -200,7 +200,7 @@ class Gemini(BaseLlm):
     # Handle context caching if configured
     cache_metadata = None
     cache_manager = None
-    if llm_request.cache_config:
+    if llm_request.cache_config and not self.use_interactions_api:
       from ..telemetry.tracing import tracer
       from .gemini_context_cache_manager import GeminiContextCacheManager
 
@@ -357,8 +357,9 @@ class Gemini(BaseLlm):
     if self.model.startswith('projects/'):
       kwargs['enterprise'] = True
 
-    if self.client_kwargs:
-      kwargs.update(self.client_kwargs)
+    client_kwargs = getattr(self, 'client_kwargs', None)
+    if client_kwargs:
+      kwargs.update(client_kwargs)
 
     return Client(**kwargs)
 
@@ -405,8 +406,9 @@ class Gemini(BaseLlm):
     if self.model.startswith('projects/'):
       kwargs['enterprise'] = True
 
-    if self.client_kwargs:
-      kwargs.update(self.client_kwargs)
+    client_kwargs = getattr(self, 'client_kwargs', None)
+    if client_kwargs:
+      kwargs.update(client_kwargs)
 
     return Client(**kwargs)
 

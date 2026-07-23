@@ -296,7 +296,7 @@ There are a few options to perform similarity search:
            "from the Spanner database."
        ),
        instruction="""
-       You are a helpful assistant that answers user questions to find the most relavant information from a Spanner database.
+       You are a helpful assistant that answers user questions to find the most relevant information from a Spanner database.
        1. Always use the `similarity_search` tool to find relevant information.
        2. If no relevant information is found, say you don't know.
        3. Present all the relevant information naturally and well formatted in your response.

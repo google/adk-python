@@ -54,6 +54,14 @@ def test_eval_models_preserve_extra_metadata():
   assert dumped['session_input']['source'] == 'nightly'
 
 
+def test_invocation_event_content_defaults_to_none():
+  """An InvocationEvent can be built and round-tripped without content."""
+  event = InvocationEvent(author='agent')
+
+  assert event.content is None
+  assert InvocationEvent.model_validate(event.model_dump()).content is None
+
+
 def test_get_all_tool_calls_with_none_input():
   """Tests that an empty list is returned when intermediate_data is None."""
   assert get_all_tool_calls(None) == []

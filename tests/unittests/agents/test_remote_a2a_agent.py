@@ -106,6 +106,39 @@ def _make_stream_message(message: A2AMessage):
   return message
 
 
+def _make_artifact_chunk(text: str, *, append: bool, last_chunk: bool):
+  """Build one streamed chunk of an artifact, version-agnostically."""
+  return TaskArtifactUpdateEvent(
+      task_id="task-123",
+      context_id="context-123",
+      append=append,
+      last_chunk=last_chunk,
+      artifact=_compat.make_artifact(
+          artifact_id="artifact-1",
+          parts=[_compat.make_text_part(text)],
+      ),
+  )
+
+
+def _make_accumulated_task(part_texts):
+  """Build the running Task the stream normalizer yields alongside an update.
+
+  The task carries the artifact parts accumulated across all chunks received
+  so far, mirroring the 0.3.x ClientTaskManager / 1.x stream normalizer.
+  """
+  return _compat.make_task(
+      id="task-123",
+      status=_compat.make_task_status(_compat.TS_WORKING),
+      context_id="context-123",
+      artifacts=[
+          _compat.make_artifact(
+              artifact_id="artifact-1",
+              parts=[_compat.make_text_part(text) for text in part_texts],
+          )
+      ],
+  )
+
+
 # Helper function to create a proper AgentCard for testing
 def create_test_agent_card(
     name: str = "test-agent",
@@ -1326,11 +1359,7 @@ class TestRemoteA2aAgentMessageHandling:
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
 
-    mock_artifact = Mock(spec=Artifact)
-    mock_update = Mock(spec=TaskArtifactUpdateEvent)
-    mock_update.artifact = mock_artifact
-    mock_update.append = False
-    mock_update.last_chunk = True
+    update = _make_artifact_chunk("chunk", append=False, last_chunk=True)
 
     # Create a proper Event mock that can handle custom_metadata
     mock_event = Event(
@@ -1339,45 +1368,54 @@ class TestRemoteA2aAgentMessageHandling:
         branch=self.mock_context.branch,
     )
 
-    with patch.object(
-        remote_a2a_agent,
-        "convert_a2a_task_to_event",
-        autospec=True,
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, mock_update), self.mock_context
+          (mock_a2a_task, update), self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_task,
-          self.agent.name,
-          self.mock_context,
-          self.agent._a2a_part_converter,
-      )
+      mock_convert.assert_called_once()
+      # Only the parts carried by this update are converted, not the
+      # accumulated task.
+      converted_message = mock_convert.call_args[0][0]
+      assert list(converted_message.parts) == list(update.artifact.parts)
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
   @pytest.mark.asyncio
-  async def test_handle_a2a_response_with_partial_artifact_update(self):
-    """Test that partial artifact updates are ignored."""
+  async def test_handle_a2a_response_with_appended_artifact_chunk(self):
+    """An appended (middle) artifact chunk emits only its own parts."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
 
-    mock_update = Mock(spec=TaskArtifactUpdateEvent)
-    mock_update.artifact = Mock(spec=Artifact)
-    mock_update.append = True
-    mock_update.last_chunk = False
+    update = _make_artifact_chunk("middle", append=True, last_chunk=False)
 
-    result = await self.agent._handle_a2a_response(
-        (mock_a2a_task, mock_update), self.mock_context
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
     )
 
-    assert result is None
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, update), self.mock_context
+      )
+
+      assert result == mock_event
+      assert result.partial is True
+      converted_message = mock_convert.call_args[0][0]
+      assert list(converted_message.parts) == list(update.artifact.parts)
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_real_empty_status_message(self):
@@ -1404,6 +1442,62 @@ class TestRemoteA2aAgentMessageHandling:
     # The empty status message must be treated as absent: the converter is not
     # called and the handler produces no spurious event.
     mock_convert.assert_not_called()
+    assert result is None
+
+
+class TestRemoteA2aAgentStreamingArtifactChunks:
+  """Regression tests for chunked artifact streams (#6343)."""
+
+  def setup_method(self):
+    """Setup test fixtures."""
+    self.agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+    )
+    self.mock_context = Mock(spec=InvocationContext)
+    self.mock_context.invocation_id = "invocation-123"
+    self.mock_context.branch = "main"
+
+  @pytest.mark.asyncio
+  async def test_chunked_artifact_stream_emits_each_part_exactly_once(self):
+    """A two-chunk artifact stream renders its parts without duplication."""
+    chunk1 = _make_artifact_chunk("Hello, ", append=False, last_chunk=False)
+    chunk2 = _make_artifact_chunk("world!", append=True, last_chunk=True)
+    # (task, update) pairs as the client stream yields them: the task carries
+    # the artifact parts accumulated so far.
+    stream = [
+        (_make_accumulated_task(["Hello, "]), chunk1),
+        (_make_accumulated_task(["Hello, ", "world!"]), chunk2),
+    ]
+
+    rendered = []
+    events = []
+    for pair in stream:
+      event = await self.agent._handle_a2a_response(pair, self.mock_context)
+      events.append(event)
+      if event and event.content and event.content.parts:
+        rendered.extend(part.text for part in event.content.parts if part.text)
+
+    assert "".join(rendered) == "Hello, world!"
+    assert events[0].partial is True
+    assert events[1].partial is False
+
+  @pytest.mark.asyncio
+  async def test_artifact_update_without_parts_is_ignored(self):
+    """An artifact update carrying no parts must not emit a spurious event."""
+    update = TaskArtifactUpdateEvent(
+        task_id="task-123",
+        context_id="context-123",
+        append=False,
+        last_chunk=True,
+        artifact=_compat.make_artifact(artifact_id="artifact-1", parts=[]),
+    )
+    task = _make_accumulated_task(["already streamed"])
+
+    result = await self.agent._handle_a2a_response(
+        (task, update), self.mock_context
+    )
+
     assert result is None
 
 
@@ -1770,11 +1864,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
 
-    mock_artifact = Mock(spec=Artifact)
-    mock_update = Mock(spec=TaskArtifactUpdateEvent)
-    mock_update.artifact = mock_artifact
-    mock_update.append = False
-    mock_update.last_chunk = True
+    update = _make_artifact_chunk("chunk", append=False, last_chunk=True)
 
     # Create a proper Event mock that can handle custom_metadata
     mock_event = Event(
@@ -1783,45 +1873,54 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         branch=self.mock_context.branch,
     )
 
-    with patch.object(
-        remote_a2a_agent,
-        "convert_a2a_task_to_event",
-        autospec=True,
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
       result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, mock_update), self.mock_context
+          (mock_a2a_task, update), self.mock_context
       )
 
       assert result == mock_event
-      mock_convert.assert_called_once_with(
-          mock_a2a_task,
-          self.agent.name,
-          self.mock_context,
-          self.agent._a2a_part_converter,
-      )
+      mock_convert.assert_called_once()
+      # Only the parts carried by this update are converted, not the
+      # accumulated task.
+      converted_message = mock_convert.call_args[0][0]
+      assert list(converted_message.parts) == list(update.artifact.parts)
       # Check that metadata was added
       assert result.custom_metadata is not None
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
   @pytest.mark.asyncio
-  async def test_handle_a2a_response_with_partial_artifact_update(self):
-    """Test that partial artifact updates are ignored."""
+  async def test_handle_a2a_response_with_appended_artifact_chunk(self):
+    """An appended (middle) artifact chunk emits only its own parts."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
 
-    mock_update = Mock(spec=TaskArtifactUpdateEvent)
-    mock_update.artifact = Mock(spec=Artifact)
-    mock_update.append = True
-    mock_update.last_chunk = False
+    update = _make_artifact_chunk("middle", append=True, last_chunk=False)
 
-    result = await self.agent._handle_a2a_response(
-        (mock_a2a_task, mock_update), self.mock_context
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
     )
 
-    assert result is None
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, update), self.mock_context
+      )
+
+      assert result == mock_event
+      assert result.partial is True
+      converted_message = mock_convert.call_args[0][0]
+      assert list(converted_message.parts) == list(update.artifact.parts)
 
 
 class TestRemoteA2aAgentMessageHandlingV2:
@@ -2250,23 +2349,21 @@ class TestRemoteA2aAgentNoneConverterResults:
       assert result is None
 
   @pytest.mark.asyncio
-  async def test_legacy_task_converter_returns_none_artifact_update(self):
-    """Legacy handler must not crash when task converter returns None for artifact update."""
+  async def test_legacy_message_converter_returns_none_artifact_update(self):
+    """Legacy handler must not crash when message converter returns None for artifact update."""
     mock_task = Mock(spec=A2ATask)
     mock_task.id = "task-123"
     mock_task.context_id = None
 
-    mock_update = Mock(spec=TaskArtifactUpdateEvent)
-    mock_update.append = False
-    mock_update.last_chunk = True
+    update = _make_artifact_chunk("chunk", append=False, last_chunk=True)
 
     with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
     ) as mock_convert:
       mock_convert.return_value = None
 
       result = await self.legacy_agent._handle_a2a_response(
-          (mock_task, mock_update), self.mock_context
+          (mock_task, update), self.mock_context
       )
 
       assert result is None

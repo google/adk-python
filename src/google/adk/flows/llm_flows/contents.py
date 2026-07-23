@@ -90,7 +90,10 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     )
 
     is_single_turn = getattr(agent, 'mode', None) == 'single_turn'
-    if agent.include_contents == 'default':
+    if (
+        agent.include_contents == 'default'
+        and not llm_request.previous_interaction_id
+    ):
       # Include full conversation history
       llm_request.contents = _get_contents(
           invocation_context.branch,
@@ -103,7 +106,8 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           include_thoughts_from_other_agents=include_thoughts_from_other_agents,
       )
     else:
-      # Include current turn context only (no conversation history)
+      # Include current turn context only (no conversation history). Stateful
+      # Interactions requests already retain earlier turns server-side.
       llm_request.contents = _get_current_turn_contents(
           invocation_context.branch,
           invocation_context.session.events,

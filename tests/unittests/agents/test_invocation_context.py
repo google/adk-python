@@ -17,6 +17,7 @@ from unittest.mock import Mock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.run_config import RunConfig
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -125,6 +126,45 @@ class TestInvocationContext:
         current_branch=True,
     )
     assert not events
+
+
+class TestInvocationContextInitialization:
+  """Test suite for InvocationContext initialization."""
+
+  def test_custom_metadata_propagation(self):
+    """Tests that custom_metadata from RunConfig is propagated to InvocationContext."""
+    run_cfg = RunConfig(custom_metadata={'test_key': 'test_value'})
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        run_config=run_cfg,
+    )
+    # Access private attribute to verify
+    assert inv_ctx._custom_metadata == {'test_key': 'test_value'}
+
+  def test_custom_metadata_default_empty(self):
+    """Tests that _custom_metadata is empty by default when no RunConfig is provided."""
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert inv_ctx._custom_metadata == {}
+
+  def test_custom_metadata_empty_run_config(self):
+    """Tests that _custom_metadata is empty when RunConfig has no custom_metadata."""
+    run_cfg = RunConfig()
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        run_config=run_cfg,
+    )
+    assert inv_ctx._custom_metadata == {}
 
 
 class TestInvocationContextWithAppResumablity:

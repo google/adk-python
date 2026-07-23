@@ -1,0 +1,40 @@
+{
+  "criteria": {
+    "rubric_based_final_response_quality_v1": {
+      "threshold": 0.8,
+      "judge_model_options": {"judge_model": "gemini-2.5-flash", "num_samples": 5},
+      "rubrics": [
+        {
+          "rubric_id": "reports_device_state",
+          "rubric_content": {
+            "text_property": "The response names the specific device(s) in the requested location and states each one's current on/off status."
+          }
+        },
+        {
+          "rubric_id": "concise",
+          "rubric_content": {
+            "text_property": "The response is concise and free of filler."
+          }
+        }
+      ]
+    },
+    "rubric_based_tool_use_quality_v1": {
+      "threshold": 1.0,
+      "judge_model_options": {"judge_model": "gemini-2.5-flash", "num_samples": 5},
+      "rubrics": [
+        {
+          "rubric_id": "uses_location_filter",
+          "rubric_content": {
+            "text_property": "When the user names a room, the agent calls list_devices with a matching location filter."
+          }
+        },
+        {
+          "rubric_id": "no_unrequested_temperature_change",
+          "rubric_content": {
+            "text_property": "The agent does not call set_temperature when the user only asked to list or inspect devices."
+          }
+        }
+      ]
+    }
+  }
+}

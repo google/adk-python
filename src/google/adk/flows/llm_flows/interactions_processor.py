@@ -85,7 +85,7 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
   This processor extracts the previous_interaction_id from session events
   to enable stateful conversation chaining via the Interactions API.
   The actual content filtering (retaining only latest user messages) is
-  done in the Gemini class when using the Interactions API.
+  done by the content request processor after this processor runs.
   """
 
   async def run_async(

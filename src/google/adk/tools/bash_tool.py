@@ -18,10 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import importlib
 import logging
 import os
 import pathlib
-import resource
 import shlex
 import signal
 from typing import Any
@@ -33,6 +33,8 @@ from .base_tool import BaseTool
 from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_resource = importlib.import_module("resource") if os.name == "posix" else None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -77,21 +79,23 @@ def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
 
 def _set_resource_limits(policy: BashToolPolicy) -> None:
   """Sets resource limits for the subprocess based on the provided policy."""
+  if _resource is None:
+    return
   try:
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    _resource.setrlimit(_resource.RLIMIT_CORE, (0, 0))
     if policy.max_memory_bytes:
-      resource.setrlimit(
-          resource.RLIMIT_AS,
+      _resource.setrlimit(
+          _resource.RLIMIT_AS,
           (policy.max_memory_bytes, policy.max_memory_bytes),
       )
     if policy.max_file_size_bytes:
-      resource.setrlimit(
-          resource.RLIMIT_FSIZE,
+      _resource.setrlimit(
+          _resource.RLIMIT_FSIZE,
           (policy.max_file_size_bytes, policy.max_file_size_bytes),
       )
     if policy.max_child_processes:
-      resource.setrlimit(
-          resource.RLIMIT_NPROC,
+      _resource.setrlimit(
+          _resource.RLIMIT_NPROC,
           (policy.max_child_processes, policy.max_child_processes),
       )
   except (ValueError, OSError) as e:
@@ -170,6 +174,9 @@ class ExecuteBashTool(BaseTool):
       }
     elif not tool_context.tool_confirmation.confirmed:
       return {"error": "This tool call is rejected."}
+
+    if os.name != "posix":
+      return {"error": "ExecuteBashTool is only supported on POSIX systems."}
 
     stdout = None
     stderr = None

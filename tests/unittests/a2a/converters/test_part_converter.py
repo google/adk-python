@@ -1296,3 +1296,74 @@ class TestThoughtSignaturePreservation:
     assert result.function_call.name == "invalid_sig_tool"
     # thought_signature should be None due to decode failure
     assert result.thought_signature is None
+
+
+class TestBytesSerialization:
+  """Tests that raw bytes serialize as base64 through the A2A converters."""
+
+  def _function_response_with_bytes(self) -> genai_types.Part:
+    screenshot = b"\x89PNG\r\n\x1a\n_FAKE_SCREENSHOT_" + bytes(range(16))
+    function_response = genai_types.FunctionResponse(
+        name="computer_use",
+        response={
+            "screenshot": {"inline_data": {"data": screenshot}},
+            "status": "ok",
+        },
+    )
+    return genai_types.Part(function_response=function_response)
+
+  def _assert_bytes_serialized_as_base64_str(self, a2a_part):
+    assert a2a_part is not None
+    assert _compat.is_data_part(a2a_part)
+    # Raw bytes must be serialized to a base64 str, not kept as bytes.
+    data_dict = _compat.data_part_dict(a2a_part)
+    serialized = data_dict["response"]["screenshot"]["inline_data"]["data"]
+    assert isinstance(serialized, str)
+
+  @pytest.mark.skipif(_compat.IS_A2A_V1, reason="0.3-only proto_utils.ToProto")
+  def test_function_response_with_bytes_serializes_to_proto_struct_v03(self):
+    """0.3: the A2A DataPart serializes to a proto Struct without raising."""
+    from a2a.utils import proto_utils
+
+    a2a_part = convert_genai_part_to_a2a_part(
+        self._function_response_with_bytes()
+    )
+    self._assert_bytes_serialized_as_base64_str(a2a_part)
+
+    proto_part = proto_utils.ToProto.part(a2a_part)
+    assert proto_part is not None
+
+  @pytest.mark.skipif(
+      not _compat.IS_A2A_V1, reason="1.x-only proto Part / Struct"
+  )
+  def test_function_response_with_bytes_serializes_to_proto_struct_v1x(self):
+    """1.x: conversion builds the proto Struct in place (via ParseDict)."""
+    from google.protobuf import struct_pb2
+
+    a2a_part = convert_genai_part_to_a2a_part(
+        self._function_response_with_bytes()
+    )
+    self._assert_bytes_serialized_as_base64_str(a2a_part)
+
+    # The proto Struct build already happened during conversion; assert it.
+    assert a2a_part.WhichOneof("content") == "data"
+    assert isinstance(a2a_part.data, struct_pb2.Value)
+    assert a2a_part.data.HasField("struct_value")
+
+  def test_function_response_with_bytes_round_trip(self):
+    """genai -> a2a -> genai restores the original bytes losslessly."""
+    original = self._function_response_with_bytes()
+    a2a_part = convert_genai_part_to_a2a_part(original)
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    assert result is not None
+    assert result.function_response is not None
+    restored = result.function_response.response["screenshot"]["inline_data"][
+        "data"
+    ]
+    expected = original.function_response.response["screenshot"]["inline_data"][
+        "data"
+    ]
+    if isinstance(restored, str):
+      restored = base64.b64decode(restored)
+    assert restored == expected
