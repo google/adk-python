@@ -236,7 +236,7 @@ class VertexAiSessionService(BaseSessionService):
     async with self._get_api_client() as api_client:
       # Get session resource and events in parallel.
       list_events_kwargs = {}
-      if config and not config.num_recent_events and config.after_timestamp:
+      if config and config.after_timestamp:
         # Filter events based on timestamp.
         list_events_kwargs['config'] = {
             'filter': 'timestamp>="{}"'.format(
