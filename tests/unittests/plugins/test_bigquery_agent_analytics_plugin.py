@@ -10368,20 +10368,24 @@ class TestHardening:
 
     def run_in_fresh_loop():
       try:
-        with mock.patch.object(
-            plugin, "_lazy_setup", side_effect=fake_lazy_setup
-        ):
-          asyncio.run(plugin._ensure_started())
+        asyncio.run(plugin._ensure_started())
       except BaseException as e:  # noqa: BLE001 - collecting for assertion
         errors.append(e)
 
-    threads = [
-        platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
-    ]
-    for t in threads:
-      t.start()
-    for t in threads:
-      t.join(timeout=10)
+    # Patch once from the main thread so both worker threads share a single
+    # patch. Entering/exiting mock.patch.object on the same instance from two
+    # threads races on the class-inherited attribute: both can record it as
+    # non-local and both delattr on exit, raising AttributeError.
+    with mock.patch.object(
+        plugin, "_lazy_setup", side_effect=fake_lazy_setup
+    ):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=10)
     assert not errors, f"cross-loop startup raised: {errors}"
 
   def test_concurrent_stale_cleanup_folds_once(
