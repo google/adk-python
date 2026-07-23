@@ -439,9 +439,7 @@ class EvaluationGenerator:
     # agent so a native-audio Live model receives audio-only input. The full
     # Content (with text) is preserved in the Event above for trajectory
     # logging and autorater evaluation.
-    has_audio = bool(user_message.parts) and any(
-        p.inline_data for p in user_message.parts
-    )
+    has_audio = any(p.inline_data for p in user_message.parts or [])
     if has_audio:
       _send_audio_to_live(live_request_queue, user_message)
     else:
@@ -666,7 +664,7 @@ class EvaluationGenerator:
 
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
-      final_response = None
+      final_response: Optional[Content] = None
       final_event: Optional[Event] = None
       user_content = Content(parts=[])
       invocation_timestamp: float = 0
@@ -693,10 +691,10 @@ class EvaluationGenerator:
           if event.is_final_response():
             # A live response is both audio and a text transcript; keep the
             # text one as the gradable response.
-            final_has_text = bool(final_response) and any(
+            final_has_text = final_response is not None and any(
                 p.text for p in final_response.parts or []
             )
-            event_has_text = any(p.text for p in event.content.parts)
+            event_has_text = any(p.text for p in event.content.parts or [])
             if not final_has_text or event_has_text:
               final_response = event.content
               final_event = event

@@ -1066,11 +1066,10 @@ class DevServer(ApiServer):
         # The request carries the config as a raw mapping (OpenAPI-safe), so
         # validate it into the typed `UserSimulatorConfig` union here.
         if req.user_simulator_config is not None:
-          user_simulator_config = TypeAdapter(
-              UserSimulatorConfig
-          ).validate_python(req.user_simulator_config)
           user_simulator_provider = UserSimulatorProvider(
-              user_simulator_config=user_simulator_config
+              user_simulator_config=TypeAdapter(
+                  UserSimulatorConfig
+              ).validate_python(req.user_simulator_config)
           )
         else:
           user_simulator_provider = UserSimulatorProvider()

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Annotated
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -39,8 +40,9 @@ logger = logging.getLogger("google_adk." + __name__)
 # The set of user-simulator config subclasses that `EvalConfig` can
 # deserialize into via the `type` discriminator. Add any new subclass to
 # this Union (each with a unique `Literal[...]` for its `type` field).
-UserSimulatorConfig = Union[
-    LlmBackedUserSimulatorConfig, LlmAudioUserSimulatorConfig
+UserSimulatorConfig = Annotated[
+    Union[LlmBackedUserSimulatorConfig, LlmAudioUserSimulatorConfig],
+    Field(discriminator="type"),
 ]
 
 # Legacy default preserved for backward compatibility with eval configs authored
@@ -158,7 +160,6 @@ Example:
 
   user_simulator_config: Optional[UserSimulatorConfig] = Field(
       default=None,
-      discriminator="type",
       description=(
           "Config to be used by the user simulator. When authored as JSON,"
           " the concrete subclass is selected via the `type` discriminator"

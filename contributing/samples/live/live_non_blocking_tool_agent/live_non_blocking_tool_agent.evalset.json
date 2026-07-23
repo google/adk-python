@@ -1,7 +1,7 @@
 {
   "eval_set_id": "live_non_blocking_tool_agent",
   "name": "live_non_blocking_tool_agent",
-  "description": "Live eval cases for the non-blocking tool agent. Exercises the audio user simulator driving the native-audio live agent, then keeping the conversation going while a background task runs.",
+  "description": "Live eval cases for the non-blocking tool agent. Exercises the audio user simulator driving the live agent, then keeping the conversation going while a background task runs.",
   "eval_cases": [
     {
       "eval_id": "background_task_scenario",
