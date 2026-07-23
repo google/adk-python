@@ -148,3 +148,30 @@ async def test_get_root_agent_raises_without_supported_entrypoint(monkeypatch):
   )
   with pytest.raises(ValueError, match="root_agent|get_agent_async"):
     await get_root_agent("some/dir")
+
+
+def test_parse_evals_preserves_windows_drive_in_file_path(tmp_path):
+  from google.adk.cli.cli_eval import parse_and_get_evals_to_run
+
+  eval_set_file = tmp_path / "evals.json"
+  eval_set_file.write_text("{}", encoding="utf-8")
+
+  assert parse_and_get_evals_to_run([str(eval_set_file)]) == {
+      str(eval_set_file): []
+  }
+
+
+def test_parse_evals_preserves_missing_windows_drive_path():
+  from google.adk.cli.cli_eval import parse_and_get_evals_to_run
+
+  eval_set_file = r"C:\missing\evals.json"
+
+  assert parse_and_get_evals_to_run([eval_set_file]) == {eval_set_file: []}
+
+
+def test_parse_evals_splits_case_selector_from_right():
+  from google.adk.cli.cli_eval import parse_and_get_evals_to_run
+
+  assert parse_and_get_evals_to_run([r"C:\evals\set.json:case1,case2"]) == {
+      r"C:\evals\set.json": ["case1", "case2"]
+  }

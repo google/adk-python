@@ -1,0 +1,18 @@
+{
+  "criteria": {
+    "hallucinations_v1": {
+      "threshold": 0.8,
+      "judge_model_options": {"judge_model": "gemini-2.5-flash"},
+      "evaluate_intermediate_nl_responses": true
+    },
+    "per_turn_user_simulator_quality_v1": {
+      "threshold": 0.8,
+      "judge_model_options": {"judge_model": "gemini-2.5-flash", "num_samples": 5}
+    }
+  },
+  "user_simulator_config": {
+    "type": "llm_backed",
+    "model": "gemini-2.5-flash",
+    "max_allowed_invocations": 8
+  }
+}

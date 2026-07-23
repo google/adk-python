@@ -535,3 +535,120 @@ def test_from_function_with_options_any_type_with_default_value():
   assert declaration.parameters.properties['param'].default == 'default_string'
   # Any type maps to None (no type) in schema
   assert declaration.parameters.properties['param'].type is None
+
+
+class _UnserializableReturn:
+  """A plain class that has no genai/JSON schema representation."""
+
+
+def test_from_function_with_options_unserializable_return_vertex_degrades_gracefully():
+  """VERTEX_AI omits the response schema instead of raising when it can't be derived."""
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return type cannot be turned into a schema."""
+    return _UnserializableReturn()
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  # Parameters are still populated; only the return schema is dropped.
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['param'].type == 'STRING'
+  assert declaration.response is None
+
+
+def test_from_function_with_options_logs_warning_on_return_schema_failure(
+    caplog,
+):
+  """A warning naming the function is emitted when the return schema is dropped."""
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return type cannot be turned into a schema."""
+    return _UnserializableReturn()
+
+  with caplog.at_level(
+      'WARNING',
+      logger='google_adk.google.adk.tools._automatic_function_calling_util',
+  ):
+    _automatic_function_calling_util.from_function_with_options(
+        test_function, GoogleLLMVariant.VERTEX_AI
+    )
+
+  warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+  assert len(warnings) == 1
+  assert 'test_function' in warnings[0].getMessage()
+
+
+def test_from_function_with_options_valid_pydantic_return_still_gets_schema_vertex():
+  """A serializable pydantic return type keeps producing a response schema."""
+
+  class MyModel(pydantic.BaseModel):
+    result: str
+
+  def test_function(param: str) -> MyModel:
+    """A function that returns a valid pydantic model."""
+    return MyModel(result=param)
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.OBJECT
+
+
+def test_from_function_with_options_non_value_error_return_degrades_gracefully(
+    monkeypatch,
+):
+  """A non-ValueError from schema parsing is caught (not propagated) and degrades."""
+
+  parse_util = _automatic_function_calling_util._function_parameter_parse_util
+  original_parse = parse_util._parse_schema_from_parameter
+
+  def _raise_type_error_for_return(variant, param, func_name):
+    # Only the return-schema parse should raise; leave parameter parsing intact.
+    if param.name == 'return_value':
+      raise TypeError('simulated non-ValueError from schema parsing')
+    return original_parse(variant, param, func_name)
+
+  monkeypatch.setattr(
+      parse_util,
+      '_parse_schema_from_parameter',
+      _raise_type_error_for_return,
+  )
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return schema parsing raises a non-ValueError."""
+    return _UnserializableReturn()
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.response is None
+
+
+def test_from_function_with_options_warning_includes_original_error(caplog):
+  """The warning names both the fallback and the original parsing error."""
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return type cannot be turned into a schema."""
+    return _UnserializableReturn()
+
+  with caplog.at_level(
+      'WARNING',
+      logger='google_adk.google.adk.tools._automatic_function_calling_util',
+  ):
+    _automatic_function_calling_util.from_function_with_options(
+        test_function, GoogleLLMVariant.VERTEX_AI
+    )
+
+  warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+  assert len(warnings) == 1
+  message = warnings[0].getMessage()
+  assert 'Fallback error:' in message
+  assert 'Original error:' in message

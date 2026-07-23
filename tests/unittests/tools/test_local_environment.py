@@ -70,6 +70,15 @@ class TestReadFileWriteFile:
     assert data == raw
 
   @pytest.mark.asyncio
+  async def test_write_preserves_explicit_crlf(self, env: LocalEnvironment):
+    """Explicit CRLF sequences are written without newline translation."""
+    await env.write_file("crlf.txt", "first\r\nsecond\r\n")
+
+    data = await env.read_file("crlf.txt")
+
+    assert data == b"first\r\nsecond\r\n"
+
+  @pytest.mark.asyncio
   async def test_write_creates_parent_dirs(self, env: LocalEnvironment):
     """Parent directories are created automatically."""
     await env.write_file(Path("sub/dir/file.txt"), "nested")

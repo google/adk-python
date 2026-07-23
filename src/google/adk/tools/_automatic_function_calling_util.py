@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import collections.abc
 import inspect
+import logging
 from types import FunctionType
 import typing
 from typing import Any
@@ -38,6 +39,8 @@ from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..utils.variant_utils import GoogleLLMVariant
 from ._gemini_schema_util import _sanitize_schema_formats_for_gemini
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 _py_type_2_schema_type = {
     'str': types.Type.STRING,
@@ -486,7 +489,9 @@ def from_function_with_options(
             func.__name__,
         )
     )
-  except ValueError:
+  # Intentionally broad: schema derivation can raise non-ValueError types
+  # (newer Python/pydantic); any failure degrades with a warning below.
+  except Exception as primary_error:
     try:
       response_json_schema = (
           _function_parameter_parse_util._generate_json_schema_for_parameter(
@@ -495,8 +500,14 @@ def from_function_with_options(
       )
       response_json_schema = types.Schema.model_validate(response_json_schema)
     except Exception as e:
-      _function_parameter_parse_util._raise_for_unsupported_param(
-          return_value, func.__name__, e
+      # Degrade like GEMINI_API instead of rejecting a valid return type: omit
+      # the response schema and defer validation to the model API.
+      logger.warning(
+          'Could not generate a response schema for the return type of %s;'
+          ' omitting it. Fallback error: %s. Original error: %s',
+          func.__name__,
+          e,
+          primary_error,
       )
   if response_schema:
     declaration.response = response_schema

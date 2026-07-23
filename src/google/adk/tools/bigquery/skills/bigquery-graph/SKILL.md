@@ -168,10 +168,10 @@ commas `,`. When multiple comma-separated patterns are used:
     **equijoin** on that variable.
 
 ```sql
--- Equijoin example where 'interm' connects the two paths
+-- Equijoin example where 'interim' connects the two paths
 GRAPH <project>.<dataset>.<graph>
-MATCH (src:Account)-[t1:Transfers]->(interm:Account),
-      (interm)<-[:Owns]-(p:Person)
+MATCH (src:Account)-[t1:Transfers]->(interim:Account),
+      (interim)<-[:Owns]-(p:Person)
 RETURN src.id AS account_id, p.name AS owner_name
 ```
 
@@ -393,7 +393,7 @@ standard GoogleSQL that you **MUST** adhere to.
 In BigQuery Graph, unlike standard GoogleSQL, you **MUST** specify the graph
 name within the subquery block. If the outer query uses `GRAPH
 <project>.<dataset>.<graph>`, the internal subquery must also explicitly
-re-declare it.
+redeclare it.
 
 ```sql
 MATCH (n1)

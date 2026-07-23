@@ -248,7 +248,7 @@ class ConnectionsClient:
                 "host": {
                     "type": "string",
                     "default": "",
-                    "description": "Host name incase of tls service directory",
+                    "description": "Host name in case of tls service directory",
                 },
                 "entity": {
                     "type": "string",

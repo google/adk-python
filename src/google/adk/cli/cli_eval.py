@@ -36,6 +36,7 @@ from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
 from ..evaluation.eval_metrics import EvalMetric
+from ..evaluation.eval_metrics import RubricsBasedCriterion
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..utils.context_utils import Aclosing
@@ -219,9 +220,13 @@ def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
     )
     if metric_result.details and metric_result.details.rubric_scores:
       click.echo("Rubric Scores:")
+      rubrics = (
+          metric_result.criterion.rubrics
+          if isinstance(metric_result.criterion, RubricsBasedCriterion)
+          else None
+      ) or []
       rubrics_by_id = {
-          r["rubric_id"]: r["rubric_content"]["text_property"]
-          for r in metric_result.criterion.rubrics
+          r.rubric_id: r.rubric_content.text_property for r in rubrics
       }
       for rubric_score in metric_result.details.rubric_scores:
         rubric_text = rubrics_by_id.get(rubric_score.rubric_id)
@@ -262,9 +267,13 @@ def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
           f"Score: {metric_result.score}"
       )
       if metric_result.details and metric_result.details.rubric_scores:
+        rubrics = (
+            metric_result.criterion.rubrics
+            if isinstance(metric_result.criterion, RubricsBasedCriterion)
+            else None
+        ) or []
         rubrics_by_id = {
-            r["rubric_id"]: r["rubric_content"]["text_property"]
-            for r in metric_result.criterion.rubrics
+            r.rubric_id: r.rubric_content.text_property for r in rubrics
         }
         for rubric_score in metric_result.details.rubric_scores:
           rubric = rubrics_by_id.get(rubric_score.rubric_id)
