@@ -11,9 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from __future__ import annotations
 
+import json
 from typing import Any
 from typing import Optional
 
@@ -43,3 +43,20 @@ class ToolConfirmation(BaseModel):
   payload: Optional[Any] = None
   """The custom data payload needed from the user to continue the flow.
   It should be JSON serializable."""
+
+  @classmethod
+  def from_response_dict(cls, response: dict[str, Any]) -> ToolConfirmation:
+    """Parse ToolConfirmation from a function response dict.
+
+    Handles both the direct dict format and the ADK client's
+    ``{'response': json_string}`` wrapper format.
+    """
+    if response and len(response) == 1 and "response" in response:
+      parsed = cls.model_validate(json.loads(response["response"]))
+    else:
+      parsed = cls.model_validate(response)
+    if isinstance(parsed, ToolConfirmation):
+      return parsed
+    raise TypeError(
+        f"Expected ToolConfirmation instance, got {type(parsed).__name__}"
+    )
