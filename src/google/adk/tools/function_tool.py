@@ -25,6 +25,11 @@ from typing import get_type_hints
 from typing import Optional
 from typing import Union
 
+try:
+  from types import UnionType
+except ImportError:
+  UnionType = None
+
 from google.genai import types
 import pydantic
 from typing_extensions import override
@@ -141,9 +146,10 @@ class FunctionTool(BaseTool):
         target_type = type_hints.get(param_name, param.annotation)
         if target_type != inspect.Parameter.empty:
 
-          # Handle Optional[PydanticModel] types
-          if get_origin(param.annotation) is Union:
-            union_args = get_args(param.annotation)
+          # Handle Optional/Union types (e.g. Optional[PydanticModel], PydanticModel | None)
+          origin = get_origin(target_type)
+          if origin is Union or (UnionType is not None and origin is UnionType):
+            union_args = get_args(target_type)
             # Find the non-None type in Optional[T] (which is Union[T, None])
             non_none_types = [
                 arg for arg in union_args if arg is not type(None)
@@ -160,12 +166,12 @@ class FunctionTool(BaseTool):
                 continue
               try:
                 converted_args[param_name] = pydantic.TypeAdapter(
-                    param.annotation
+                    target_type
                 ).validate_python(args[param_name])
               except Exception as e:
                 logger.warning(
                     f"Failed to convert argument '{param_name}' to"
-                    f' {param.annotation}: {e}'
+                    f' {target_type}: {e}'
                 )
               continue
 
