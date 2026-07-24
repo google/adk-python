@@ -113,11 +113,8 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     # function_response that arrived over A2A: a remote peer is not the human
     # operator and could self-approve a pending dangerous tool call.
     run_config = invocation_context.run_config
-    if (
-        run_config
-        and run_config.custom_metadata
-        and _A2A_METADATA_KEY in run_config.custom_metadata
-    ):
+    custom_metadata = run_config.custom_metadata if run_config else None
+    if custom_metadata is not None and _A2A_METADATA_KEY in custom_metadata:
       logger.warning(
           'Ignoring tool confirmation(s) that arrived over A2A: a remote peer'
           ' cannot satisfy a human-in-the-loop confirmation.'
