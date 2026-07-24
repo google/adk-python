@@ -27,6 +27,7 @@ gains a remote connection mode.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 from typing import AsyncGenerator
@@ -52,6 +53,13 @@ _ROOT_ONLY_MESSAGE = (
     'giving it sub-agents is not supported yet (this restriction is temporary '
     'and will be lifted once the SDK supports remote connection modes).'
 )
+
+
+def _derive_conversation_id(session_id: str, agent_name: str) -> str:
+  """Returns a deterministic conversation id (>=32 chars, [a-zA-Z0-9-])."""
+  # Hashing keeps the id stable across turns (so trajectories resume) while
+  # always satisfying the Antigravity SDK's length and character constraints.
+  return hashlib.sha256(f'{session_id}/{agent_name}'.encode()).hexdigest()
 
 
 class AntigravityAgent(BaseAgent):
@@ -114,7 +122,7 @@ class AntigravityAgent(BaseAgent):
     # The SDK Agent's AsyncExitStack is single-use, so a new instance is needed
     # per turn; copying also avoids mutating the caller's config.
     config = self.config.model_copy(deep=True)
-    conversation_id = f'{ctx.session.id}_{self.name}'
+    conversation_id = _derive_conversation_id(ctx.session.id, self.name)
 
     # Resume only when a trajectory already exists; the harness errors if a
     # conversation_id is given with no matching file on disk.

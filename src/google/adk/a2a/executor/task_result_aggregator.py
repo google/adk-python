@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from a2a.server.events import Event
 from a2a.types import Message
-from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
 
+from .. import _compat
 from ..experimental import a2a_experimental
 
 
@@ -26,44 +28,52 @@ from ..experimental import a2a_experimental
 class TaskResultAggregator:
   """Aggregates the task status updates and provides the final task state."""
 
-  def __init__(self):
-    self._task_state = TaskState.working
+  def __init__(self) -> None:
+    self._task_state = _compat.TS_WORKING
     self._task_status_message = None
 
-  def process_event(self, event: Event):
+  def process_event(self, event: Event) -> None:
     """Process an event from the agent run and detect signals about the task status.
-    Priority of task state:
-    - failed
-    - auth_required
-    - input_required
-    - working
+
+    Priority of task state: - failed - auth_required - input_required - working
     """
     if isinstance(event, TaskStatusUpdateEvent):
-      if event.status.state == TaskState.failed:
-        self._task_state = TaskState.failed
-        self._task_status_message = event.status.message
+      if event.status.state == _compat.TS_FAILED:
+        self._task_state = _compat.TS_FAILED
+        self._task_status_message = _compat.normalize_message(
+            event.status.message
+        )
       elif (
-          event.status.state == TaskState.auth_required
-          and self._task_state != TaskState.failed
+          event.status.state == _compat.TS_AUTH_REQUIRED
+          and self._task_state != _compat.TS_FAILED
       ):
-        self._task_state = TaskState.auth_required
-        self._task_status_message = event.status.message
+        self._task_state = _compat.TS_AUTH_REQUIRED
+        self._task_status_message = _compat.normalize_message(
+            event.status.message
+        )
       elif (
-          event.status.state == TaskState.input_required
+          event.status.state == _compat.TS_INPUT_REQUIRED
           and self._task_state
-          not in (TaskState.failed, TaskState.auth_required)
+          not in (
+              _compat.TS_FAILED,
+              _compat.TS_AUTH_REQUIRED,
+          )
       ):
-        self._task_state = TaskState.input_required
-        self._task_status_message = event.status.message
+        self._task_state = _compat.TS_INPUT_REQUIRED
+        self._task_status_message = _compat.normalize_message(
+            event.status.message
+        )
       # final state is already recorded and make sure the intermediate state is
       # always working because other state may terminate the event aggregation
       # in a2a request handler
-      elif self._task_state == TaskState.working:
-        self._task_status_message = event.status.message
-      event.status.state = TaskState.working
+      elif self._task_state == _compat.TS_WORKING:
+        self._task_status_message = _compat.normalize_message(
+            event.status.message
+        )
+      event.status.state = _compat.TS_WORKING
 
   @property
-  def task_state(self) -> TaskState:
+  def task_state(self) -> Any:
     return self._task_state
 
   @property

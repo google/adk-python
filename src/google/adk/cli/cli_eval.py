@@ -18,13 +18,15 @@ import importlib.util
 import logging
 import os
 import sys
+from types import ModuleType
 from typing import Any
+from typing import cast
 from typing import Optional
 
 import click
 from google.genai import types as genai_types
 
-from ..agents.llm_agent import Agent
+from ..agents.base_agent import BaseAgent
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
 from ..evaluation.base_eval_service import EvaluateRequest
@@ -34,9 +36,7 @@ from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
 from ..evaluation.eval_metrics import EvalMetric
-from ..evaluation.eval_metrics import Interval
-from ..evaluation.eval_metrics import MetricInfo
-from ..evaluation.eval_metrics import MetricValueInfo
+from ..evaluation.eval_metrics import RubricsBasedCriterion
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..utils.context_utils import Aclosing
@@ -59,38 +59,34 @@ DEFAULT_CRITERIA = {
 }
 
 
-def _import_from_path(module_name, file_path):
+def _import_from_path(module_name: str, file_path: str) -> ModuleType:
   spec = importlib.util.spec_from_file_location(module_name, file_path)
+  if spec is None or spec.loader is None:
+    raise ImportError(f"Cannot import module {module_name} from {file_path}")
   module = importlib.util.module_from_spec(spec)
   sys.modules[module_name] = module
   spec.loader.exec_module(module)
   return module
 
 
-def _get_agent_module(agent_module_file_path: str):
+def _get_agent_module(agent_module_file_path: str) -> ModuleType:
   file_path = os.path.join(agent_module_file_path, "__init__.py")
   module_name = "agent"
   return _import_from_path(module_name, file_path)
 
 
-def get_default_metric_info(
-    metric_name: str, description: str = ""
-) -> MetricInfo:
-  """Returns a default MetricInfo for a metric."""
-  return MetricInfo(
-      metric_name=metric_name,
-      description=description,
-      metric_value_info=MetricValueInfo(
-          interval=Interval(min_value=0.0, max_value=1.0)
-      ),
-  )
-
-
-def get_root_agent(agent_module_file_path: str) -> Agent:
+async def get_root_agent(agent_module_file_path: str) -> BaseAgent:
   """Returns root agent given the agent module."""
   agent_module = _get_agent_module(agent_module_file_path)
-  root_agent = agent_module.agent.root_agent
-  return root_agent
+  agent_module_with_agent = getattr(agent_module, "agent", agent_module)
+  if hasattr(agent_module_with_agent, "root_agent"):
+    return cast(BaseAgent, agent_module_with_agent.root_agent)
+  elif hasattr(agent_module_with_agent, "get_agent_async"):
+    root_agent, _ = await agent_module_with_agent.get_agent_async()
+    return cast(BaseAgent, root_agent)
+  raise ValueError(
+      "Agent module should have either `root_agent` or `get_agent_async`."
+  )
 
 
 def try_get_reset_func(agent_module_file_path: str) -> Any:
@@ -110,18 +106,30 @@ def parse_and_get_evals_to_run(
       each string actually is formatted with the following convention:
       <eval_set_file_path | eval_set_id>:[comma separated eval case ids]
   """
-  eval_set_to_evals = {}
+  eval_set_to_evals: dict[str, list[str]] = {}
   for input_eval_set in evals_to_run_info:
     evals = []
-    if ":" not in input_eval_set:
+    drive_letter = input_eval_set[:1]
+    has_windows_drive_prefix = (
+        len(input_eval_set) >= 3
+        and drive_letter.isascii()
+        and drive_letter.isalpha()
+        and input_eval_set[1] == ":"
+        and input_eval_set[2] in ("\\", "/")
+    )
+    selector_separator_index = input_eval_set.find(
+        ":", 3 if has_windows_drive_prefix else 0
+    )
+    if selector_separator_index == -1:
       # We don't have any eval cases specified. This would be the case where the
       # the user wants to run all eval cases in the eval set.
       eval_set = input_eval_set
     else:
       # There are eval cases that we need to parse. The user wants to run
       # specific eval cases from the eval set.
-      eval_set = input_eval_set.split(":")[0]
-      evals = input_eval_set.split(":")[1].split(",")
+      eval_set = input_eval_set[:selector_separator_index]
+      selector_list = input_eval_set[selector_separator_index + 1 :]
+      evals = selector_list.split(":")[0].split(",")
       evals = [s for s in evals if s.strip()]
 
     if eval_set not in eval_set_to_evals:
@@ -188,7 +196,7 @@ def _convert_tool_calls_to_text(
   return "\n".join([str(t) for t in tool_calls])
 
 
-def pretty_print_eval_result(eval_result: EvalCaseResult):
+def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
   """Pretty prints eval result."""
   try:
     import pandas as pd
@@ -212,9 +220,13 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
     )
     if metric_result.details and metric_result.details.rubric_scores:
       click.echo("Rubric Scores:")
+      rubrics = (
+          metric_result.criterion.rubrics
+          if isinstance(metric_result.criterion, RubricsBasedCriterion)
+          else None
+      ) or []
       rubrics_by_id = {
-          r["rubric_id"]: r["rubric_content"]["text_property"]
-          for r in metric_result.criterion.rubrics
+          r.rubric_id: r.rubric_content.text_property for r in rubrics
       }
       for rubric_score in metric_result.details.rubric_scores:
         rubric_text = rubrics_by_id.get(rubric_score.rubric_id)
@@ -255,9 +267,13 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
           f"Score: {metric_result.score}"
       )
       if metric_result.details and metric_result.details.rubric_scores:
+        rubrics = (
+            metric_result.criterion.rubrics
+            if isinstance(metric_result.criterion, RubricsBasedCriterion)
+            else None
+        ) or []
         rubrics_by_id = {
-            r["rubric_id"]: r["rubric_content"]["text_property"]
-            for r in metric_result.criterion.rubrics
+            r.rubric_id: r.rubric_content.text_property for r in rubrics
         }
         for rubric_score in metric_result.details.rubric_scores:
           rubric = rubrics_by_id.get(rubric_score.rubric_id)

@@ -32,6 +32,7 @@ from typing import Union
 from google.genai import types
 from typing_extensions import override
 
+from . import artifact_util
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
@@ -41,6 +42,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _GCS_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
 _GCS_IS_TEXT_METADATA_KEY = "adkIsText"
+_GCS_FILE_URI_METADATA_KEY = "adkFileUri"
+_GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
 
 
 class GcsArtifactService(BaseArtifactService):
@@ -164,6 +167,8 @@ class GcsArtifactService(BaseArtifactService):
       session_id: Optional[str] = None,
   ) -> str:
     """Constructs the blob name prefix in GCS for a given artifact."""
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
@@ -171,6 +176,7 @@ class GcsArtifactService(BaseArtifactService):
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
+    artifact_util.validate_path_segment(session_id, "session_id")
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   def _get_blob_name(
@@ -243,9 +249,34 @@ class GcsArtifactService(BaseArtifactService):
           content_type="text/plain",
       )
     elif artifact.file_data:
-      raise NotImplementedError(
-          "Saving artifact with file_data is not supported yet in"
-          " GcsArtifactService."
+      file_data = artifact.file_data
+      assert file_data is not None
+      file_uri = file_data.file_uri
+      if not file_uri:
+        raise InputValidationError("Artifact file_data must have a file_uri.")
+      if artifact_util.is_artifact_ref(artifact):
+        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
+        if not parsed_uri:
+          raise InputValidationError(
+              f"Invalid artifact reference URI: {file_uri}"
+          )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
+      # Store the URI and mime_type (if any) as blob metadata; no content to upload.
+      metadata = {
+          **(blob.metadata or {}),
+          _GCS_FILE_URI_METADATA_KEY: file_uri,
+      }
+      if file_data.mime_type:
+        metadata[_GCS_FILE_MIME_TYPE_METADATA_KEY] = file_data.mime_type
+      blob.metadata = metadata
+      blob.upload_from_string(
+          b"",
+          content_type=file_data.mime_type or None,
       )
     else:
       raise InputValidationError(
@@ -280,6 +311,45 @@ class GcsArtifactService(BaseArtifactService):
     if not blob:
       return None
 
+    # If the artifact was saved as a file_data URI reference, restore or resolve it.
+    file_uri = None
+    if blob.metadata:
+      file_uri = blob.metadata.get(
+          _GCS_FILE_URI_METADATA_KEY
+      ) or blob.metadata.get("file_uri")
+
+    if file_uri:
+      if file_uri.startswith("artifact://"):
+        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
+        if not parsed_uri:
+          raise InputValidationError(
+              f"Invalid artifact reference URI: {file_uri}"
+          )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
+        return self._load_artifact(
+            app_name=parsed_uri.app_name,
+            user_id=parsed_uri.user_id,
+            session_id=parsed_uri.session_id,
+            filename=parsed_uri.filename,
+            version=parsed_uri.version,
+        )
+      mime_type = None
+      if blob.metadata:
+        mime_type = blob.metadata.get(_GCS_FILE_MIME_TYPE_METADATA_KEY)
+      if mime_type is None:
+        mime_type = blob.content_type or None
+      return types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type=mime_type,
+          )
+      )
+
     artifact_bytes = blob.download_as_bytes()
     if blob.metadata and blob.metadata.get(_GCS_IS_TEXT_METADATA_KEY) == "true":
       return types.Part(text=artifact_bytes.decode("utf-8"))
@@ -301,6 +371,10 @@ class GcsArtifactService(BaseArtifactService):
   def _list_artifact_keys(
       self, app_name: str, user_id: str, session_id: Optional[str]
   ) -> list[str]:
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
+    if session_id is not None:
+      artifact_util.validate_path_segment(session_id, "session_id")
     filenames = set()
 
     if session_id:

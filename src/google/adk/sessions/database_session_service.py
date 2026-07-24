@@ -79,6 +79,18 @@ _SQLITE_DIALECT = "sqlite"
 _MARIADB_DIALECT = "mariadb"
 _MYSQL_DIALECT = "mysql"
 _POSTGRESQL_DIALECT = "postgresql"
+# Dialects whose DATETIME/TIMESTAMP columns do not retain timezone info, so
+# timezone-aware datetimes must have their tzinfo stripped before storage. This
+# keeps the value written by create_session consistent with the value read back
+# from storage; otherwise the stale-writer marker comparison in append_event
+# raises a false positive on the first append after create_session. Cloud
+# Spanner is intentionally excluded because its TIMESTAMP is timezone-aware.
+_NAIVE_DATETIME_DIALECTS = (
+    _SQLITE_DIALECT,
+    _POSTGRESQL_DIALECT,
+    _MYSQL_DIALECT,
+    _MARIADB_DIALECT,
+)
 # Tuple key order for in-process per-session lock maps:
 # (app_name, user_id, session_id).
 _SessionLockKey: TypeAlias = tuple[str, str, str]
@@ -348,6 +360,14 @@ class DatabaseSessionService(BaseSessionService):
         _POSTGRESQL_DIALECT,
     )
 
+  def _uses_naive_datetime(self) -> bool:
+    """Returns whether the active dialect stores datetimes without timezone info.
+
+    These dialects persist timezone-naive DATETIME/TIMESTAMP values, so
+    timezone-aware datetimes must have their tzinfo stripped before storage.
+    """
+    return self.db_engine.dialect.name in _NAIVE_DATETIME_DIALECTS
+
   @asynccontextmanager
   async def _with_session_lock(
       self, *, app_name: str, user_id: str, session_id: str
@@ -531,8 +551,7 @@ class DatabaseSessionService(BaseSessionService):
       now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
-      is_mysql = self.db_engine.dialect.name == _MYSQL_DIALECT
-      if is_sqlite or is_postgresql or is_mysql:
+      if self._uses_naive_datetime():
         now = now.replace(tzinfo=None)
 
       storage_session = schema.StorageSession(
@@ -580,24 +599,28 @@ class DatabaseSessionService(BaseSessionService):
       if storage_session is None:
         return None
 
-      stmt = (
-          select(schema.StorageEvent)
-          .filter(schema.StorageEvent.app_name == app_name)
-          .filter(schema.StorageEvent.session_id == storage_session.id)
-          .filter(schema.StorageEvent.user_id == user_id)
-      )
+      if config and config.num_recent_events == 0:
+        # Existence/metadata-only read; skip the events query entirely.
+        storage_events = []
+      else:
+        stmt = (
+            select(schema.StorageEvent)
+            .filter(schema.StorageEvent.app_name == app_name)
+            .filter(schema.StorageEvent.session_id == storage_session.id)
+            .filter(schema.StorageEvent.user_id == user_id)
+        )
 
-      if config and config.after_timestamp:
-        after_dt = datetime.fromtimestamp(config.after_timestamp)
-        stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
+        if config and config.after_timestamp:
+          after_dt = datetime.fromtimestamp(config.after_timestamp)
+          stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
-      stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
+        stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
 
-      if config and config.num_recent_events is not None:
-        stmt = stmt.limit(config.num_recent_events)
+        if config and config.num_recent_events is not None:
+          stmt = stmt.limit(config.num_recent_events)
 
-      result = await sql_session.execute(stmt)
-      storage_events = result.scalars().all()
+        result = await sql_session.execute(stmt)
+        storage_events = result.scalars().all()
 
       # Fetch states from storage
       storage_app_state = await sql_session.get(

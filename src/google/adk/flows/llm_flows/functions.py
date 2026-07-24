@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextvars
 import copy
 import inspect
+import json
 import logging
 import threading
 from typing import Any
@@ -100,7 +101,7 @@ def _detect_error_type_for_telemetry(
     detector = getattr(tool, '_detect_error_in_response', None)
     if detector is None:
       return None
-    return detector(function_response)
+    return cast('str | None', detector(function_response))
   except Exception:  # pylint: disable=broad-exception-caught
     # Never let telemetry logic break tool execution.
     logger.exception(
@@ -189,7 +190,7 @@ async def _call_tool_in_thread_pool(
   if _is_sync_tool(tool):
     if isinstance(tool, FunctionTool):
       # For sync FunctionTool, call the underlying function directly.
-      def run_sync_tool():
+      def run_sync_tool() -> Any:
         args_to_call = tool._preprocess_args(args)
         signature = inspect.signature(tool.func)
         valid_params = {param for param in signature.parameters}
@@ -198,6 +199,20 @@ async def _call_tool_in_thread_pool(
         args_to_call = {
             k: v for k, v in args_to_call.items() if k in valid_params
         }
+        mandatory_args = tool._get_mandatory_args()
+        missing_mandatory_args = [
+            arg for arg in mandatory_args if arg not in args_to_call
+        ]
+        if missing_mandatory_args:
+          missing_mandatory_args_str = '\n'.join(missing_mandatory_args)
+          error_str = (
+              f'Invoking `{tool.name}()` failed as the following mandatory'
+              ' input parameters are not present:\n'
+              f'{missing_mandatory_args_str}\n'
+              'You could retry calling this tool, but it is IMPORTANT for you'
+              ' to provide all the mandatory parameters.'
+          )
+          return {'error': error_str}
         return tool.func(**args_to_call)
 
       return await loop.run_in_executor(
@@ -207,7 +222,7 @@ async def _call_tool_in_thread_pool(
     # For async tools, run them in a new event loop in a background thread.
     # This helps when async functions contain blocking I/O (common user mistake)
     # that would otherwise block the main event loop.
-    def run_async_tool_in_new_loop():
+    def run_async_tool_in_new_loop() -> Any:
       # Create a new event loop for this thread
       return asyncio.run(tool.run_async(args=args, tool_context=tool_context))
 
@@ -545,7 +560,7 @@ async def _execute_single_function_call_async(
     else:
       raise tool_error
 
-  async def _run_with_trace():
+  async def _run_with_trace() -> Event | None:
     nonlocal function_args, detected_error_type
 
     # Step 1: Check if plugin before_tool_callback overrides the function
@@ -653,7 +668,7 @@ async def handle_function_calls_live(
     invocation_context: InvocationContext,
     function_call_event: Event,
     tools_dict: dict[str, BaseTool],
-) -> Event:
+) -> Event | None:
   """Calls the functions and returns the function response event."""
   from ...agents.llm_agent import LlmAgent
 
@@ -663,8 +678,8 @@ async def handle_function_calls_live(
   if not function_calls:
     return None
 
-  # Create async lock for active_streaming_tools modifications
-  streaming_lock = asyncio.Lock()
+  # Create async lock for active_streaming_tools and active_non_blocking_tool_tasks modifications
+  active_tools_lock = asyncio.Lock()
 
   # Create tasks for parallel execution
   tasks = [
@@ -674,7 +689,7 @@ async def handle_function_calls_live(
               function_call,
               tools_dict,
               agent,
-              streaming_lock,
+              active_tools_lock,
           )
       )
       for function_call in function_calls
@@ -722,7 +737,7 @@ async def _execute_single_function_call_live(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
-    streaming_lock: asyncio.Lock,
+    active_tools_lock: asyncio.Lock,
 ) -> Optional[Event]:
   """Execute a single function call for live mode with thread safety."""
 
@@ -785,7 +800,16 @@ async def _execute_single_function_call_live(
       )
     raise tool_error
 
-  async def _run_with_trace():
+  async def _run_with_trace() -> Event | None:
+    """Executes the tool with full lifecycle management and telemetry.
+
+    This function orchestrates the tool execution pipeline, including:
+    1. Running plugin and canonical before-tool callbacks.
+    2. Executing the actual tool logic.
+    3. Running plugin and canonical after-tool callbacks.
+    4. Detecting error types for telemetry.
+    5. Building the final FunctionResponse Event to be returned.
+    """
     nonlocal function_args, detected_error_type
 
     # Do not use "args" as the variable name, because it is a reserved keyword
@@ -822,7 +846,7 @@ async def _execute_single_function_call_live(
             function_call,
             function_args,
             invocation_context,
-            streaming_lock,
+            active_tools_lock,
         )
       except Exception as tool_error:
         error_response = await _run_on_tool_error_callbacks(
@@ -889,12 +913,59 @@ async def _execute_single_function_call_live(
     )
     return function_response_event
 
-  async with _instrumentation.record_tool_execution(
-      tool, agent, function_args, invocation_context=invocation_context
-  ) as tel_ctx:
-    tel_ctx.function_response_event = await _run_with_trace()
-    tel_ctx.error_type = detected_error_type
-    return tel_ctx.function_response_event
+  is_streaming = hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
+  is_non_blocking = not is_streaming and tool.response_scheduling is not None
+  if is_non_blocking:
+    task_key = f'{tool.name}_{function_call.id}'
+
+    async def _background_task() -> None:
+      try:
+        async with _instrumentation.record_tool_execution(
+            tool, agent, function_args, invocation_context=invocation_context
+        ) as tel_ctx:
+          function_response_event = await _run_with_trace()
+          tel_ctx.function_response_event = function_response_event
+          tel_ctx.error_type = detected_error_type
+
+          if function_response_event:
+            if (
+                invocation_context.session_service
+                and invocation_context.session
+            ):
+              await invocation_context.session_service.append_event(
+                  session=invocation_context.session,
+                  event=function_response_event,
+              )
+            if (
+                invocation_context.live_request_queue
+                and function_response_event.content
+            ):
+              invocation_context.live_request_queue.send_content(
+                  function_response_event.content
+              )
+      except Exception:
+        logger.exception('Error running non-blocking tool %s', tool.name)
+      finally:
+        async with active_tools_lock:
+          if (
+              invocation_context.active_non_blocking_tool_tasks
+              and task_key in invocation_context.active_non_blocking_tool_tasks
+          ):
+            del invocation_context.active_non_blocking_tool_tasks[task_key]
+
+    task = asyncio.create_task(_background_task())
+    async with active_tools_lock:
+      if invocation_context.active_non_blocking_tool_tasks is None:
+        invocation_context.active_non_blocking_tool_tasks = {}
+      invocation_context.active_non_blocking_tool_tasks[task_key] = task
+    return None
+  else:
+    async with _instrumentation.record_tool_execution(
+        tool, agent, function_args, invocation_context=invocation_context
+    ) as tel_ctx:
+      tel_ctx.function_response_event = await _run_with_trace()
+      tel_ctx.error_type = detected_error_type
+      return tel_ctx.function_response_event
 
 
 async def _process_function_live_helper(
@@ -903,7 +974,7 @@ async def _process_function_live_helper(
     function_call,
     function_args,
     invocation_context,
-    streaming_lock: asyncio.Lock,
+    active_tools_lock: asyncio.Lock,
 ):
   function_response = None
   # Check if this is a stop_streaming function call
@@ -913,7 +984,7 @@ async def _process_function_live_helper(
   ):
     function_name = function_args['function_name']
     # Thread-safe access to active_streaming_tools
-    async with streaming_lock:
+    async with active_tools_lock:
       active_tasks = invocation_context.active_streaming_tools
       if (
           active_tasks
@@ -946,7 +1017,7 @@ async def _process_function_live_helper(
           }
       if not function_response:
         # Clean up the reference under lock
-        async with streaming_lock:
+        async with active_tools_lock:
           if (
               invocation_context.active_streaming_tools
               and function_name in invocation_context.active_streaming_tools
@@ -966,7 +1037,11 @@ async def _process_function_live_helper(
   elif hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func):
     # for streaming tool use case
     # we require the function to be an async generator function
-    async def run_tool_and_update_queue(tool, function_args, tool_context):
+    async def run_tool_and_update_queue(
+        tool: BaseTool,
+        function_args: dict[str, Any],
+        tool_context: ToolContext,
+    ) -> None:
       try:
         async with Aclosing(
             __call_tool_live(
@@ -980,7 +1055,9 @@ async def _process_function_live_helper(
             updated_content = _build_function_response_content(
                 tool, result, tool_context.function_call_id
             )
-            invocation_context.live_request_queue.send_content(updated_content)
+            invocation_context.live_request_queue.send_content(
+                updated_content, partial=True
+            )
       except asyncio.CancelledError:
         raise  # Re-raise to properly propagate the cancellation
 
@@ -988,7 +1065,7 @@ async def _process_function_live_helper(
         run_tool_and_update_queue(tool, function_args, tool_context)
     )
 
-    async with streaming_lock:
+    async with active_tools_lock:
 
       if invocation_context.active_streaming_tools is None:
         invocation_context.active_streaming_tools = {}
@@ -1042,7 +1119,7 @@ async def _process_function_live_helper(
 
 def _get_tool(
     function_call: types.FunctionCall, tools_dict: dict[str, BaseTool]
-):
+) -> BaseTool:
   """Returns the tool corresponding to the function call."""
   if function_call.name not in tools_dict:
     available = list(tools_dict.keys())
@@ -1064,7 +1141,7 @@ def _create_tool_context(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
     tool_confirmation: Optional[ToolConfirmation] = None,
-):
+) -> ToolContext:
   """Creates a ToolContext object."""
   return ToolContext(
       invocation_context=invocation_context,
@@ -1078,7 +1155,7 @@ def _get_tool_and_context(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     tool_confirmation: Optional[ToolConfirmation] = None,
-):
+) -> tuple[BaseTool, ToolContext]:
   """Returns the tool and tool context corresponding to the function call."""
   tool = _get_tool(function_call, tools_dict)
   tool_context = _create_tool_context(
@@ -1167,6 +1244,9 @@ def __build_response_event(
     tool_context: ToolContext,
     invocation_context: InvocationContext,
 ) -> Event:
+  # Capture the raw result for display purposes before any normalization.
+  display_result = function_result
+
   # Specs requires the result to be a dict.
   if not isinstance(function_result, dict):
     function_result = {'result': function_result}
@@ -1183,6 +1263,25 @@ def __build_response_event(
       tool_context.function_call_id,
       function_response_parts,
   )
+
+  # When summarization is skipped, ensure a displayable text part is added so
+  # the tool's output is not lost in UIs that don't render function responses.
+  # Control-flow tools (e.g. exit_loop) set skip_summarization but return no
+  # meaningful output; their None result is normalized to {'result': None}, so
+  # skip those to avoid emitting a noisy "null" text part.
+  has_displayable_result = display_result is not None and display_result != {
+      'result': None
+  }
+  if (
+      tool_context.actions.skip_summarization
+      and 'error' not in function_result
+      and has_displayable_result
+  ):
+    if isinstance(display_result, str):
+      result_text = display_result
+    else:
+      result_text = json.dumps(display_result, ensure_ascii=False, default=str)
+    content.parts.append(types.Part.from_text(text=result_text))
 
   function_response_event = Event(
       invocation_id=invocation_context.invocation_id,

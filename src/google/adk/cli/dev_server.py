@@ -36,6 +36,7 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi import Request as FastAPIRequest
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import PlainTextResponse
@@ -59,7 +60,11 @@ from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
+from ..utils._telemetry_config import read_telemetry_consent
+from ..utils._telemetry_config import write_telemetry_consent
 from .api_server import ApiServer
+
+NESTED_APP_SEPARATOR = "."
 from .utils import common
 from .utils import evals
 from .utils.graph_serialization import serialize_app_info
@@ -150,12 +155,54 @@ class ListMetricsInfoResponse(common.BaseModel):
   metrics_info: list[MetricInfo]
 
 
+class TelemetryConsentRequest(common.BaseModel):
+  """Request body for setting the telemetry consent configuration."""
+
+  telemetry: bool
+
+
 class DevServer(ApiServer):
   """Development server that extends ApiServer with dev-only endpoints.
 
   Inherits all production endpoints from ApiServer and adds development-specific
   endpoints for evaluation, debugging, and developer UI features.
   """
+
+  _allow_special_agents: bool = True
+
+  def _get_agent_dir(self, app_name: str) -> str:
+    """Resolves the agent directory and validates the app name to prevent path traversal."""
+    if not self.agents_dir:
+      raise HTTPException(
+          status_code=500, detail="Agents directory is not configured"
+      )
+    if not app_name:
+      raise HTTPException(status_code=400, detail="App name cannot be empty")
+
+    # Validate app_name structure (must be dot-separated identifiers)
+    parts = app_name.split(NESTED_APP_SEPARATOR)
+    for part in parts:
+      if not part or not part.isidentifier():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid app name: {app_name!r}. App names must be valid "
+                "Python identifiers or paths separated by dots."
+            ),
+        )
+
+    # Resolve path
+    app_path = app_name.replace(NESTED_APP_SEPARATOR, "/")
+    agents_base = Path(self.agents_dir).resolve()
+    resolved_path = (agents_base / app_path).resolve()
+
+    if not resolved_path.is_relative_to(agents_base):
+      raise HTTPException(
+          status_code=400,
+          detail=f"Access denied: {app_name!r} is outside the agents directory",
+      )
+
+    return str(resolved_path)
 
   def _register_dev_endpoints(
       self,
@@ -166,9 +213,27 @@ class DevServer(ApiServer):
   ):
     """Register all development-only endpoints.
 
-    This includes debug, evaluation, and graph visualization endpoints.
-    These endpoints should NOT be exposed in production deployments.
+    This includes debug, evaluation, graph visualization, and telemetry consent
+    endpoints. These endpoints should NOT be exposed in production deployments.
     """
+
+    @app.get("/config/telemetry")
+    async def get_telemetry_consent() -> dict[str, Any]:
+      """Gets the user configuration for telemetry consent."""
+      return {"telemetry": read_telemetry_consent()}
+
+    @app.post("/config/telemetry")
+    async def set_telemetry_consent(
+        req: TelemetryConsentRequest, request: FastAPIRequest
+    ) -> dict[str, Any]:
+      """Sets the user configuration for telemetry consent."""
+      if request.headers.get("x-adk-telemetry-request") != "true":
+        raise HTTPException(
+            status_code=400,
+            detail="Forbidden: missing required security header",
+        )
+      write_telemetry_consent(req.telemetry)
+      return {"telemetry": req.telemetry}
 
     # Import needed for eval endpoints
     from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -502,7 +567,8 @@ class DevServer(ApiServer):
         if self.agents_dir:
           import os
 
-          readme_path = os.path.join(self.agents_dir, app_name, "README.md")
+          agent_dir = self._get_agent_dir(app_name)
+          readme_path = os.path.join(agent_dir, "README.md")
           if os.path.exists(readme_path):
             try:
               with open(readme_path, "r", encoding="utf-8") as f:
@@ -557,7 +623,7 @@ class DevServer(ApiServer):
     @app.get("/dev/apps/{app_name}/tests")
     async def list_tests(app_name: str) -> list[str]:
       """Lists all test JSON files for the given app."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
       if not os.path.exists(tests_dir):
         return []
@@ -573,7 +639,7 @@ class DevServer(ApiServer):
         app_name: str, test_name: Optional[str] = None
     ) -> dict[str, str]:
       """Rebuilds tests for the app."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
 
       if test_name:
         if not test_name.endswith(".json"):
@@ -592,12 +658,12 @@ class DevServer(ApiServer):
         app_name: str, test_name: Optional[str] = None
     ) -> StreamingResponse:
       """Runs tests and streams pytest output."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
 
       import subprocess
       import sys
 
-      queue = asyncio.Queue()
+      queue: asyncio.Queue[str | None] = asyncio.Queue()
 
       async def run_pytest_subprocess():
         cmd_args = [
@@ -656,7 +722,7 @@ class DevServer(ApiServer):
       """Creates or updates a test file from session data."""
       # Sanitize test_name to prevent directory traversal
       test_name = os.path.basename(test_name)
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
       os.makedirs(tests_dir, exist_ok=True)
 
@@ -673,7 +739,7 @@ class DevServer(ApiServer):
     @app.delete("/dev/apps/{app_name}/tests/{test_name}")
     async def delete_test(app_name: str, test_name: str) -> dict[str, str]:
       """Deletes a specific test file."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
 
       if not test_name.endswith(".json"):
@@ -690,7 +756,7 @@ class DevServer(ApiServer):
     @app.get("/dev/apps/{app_name}/tests/{test_name}")
     async def get_test_content(app_name: str, test_name: str) -> dict[str, Any]:
       """Fetches the content of a specific test file."""
-      agent_dir = os.path.join(self.agents_dir, app_name)
+      agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
 
       if not test_name.endswith(".json"):

@@ -328,9 +328,15 @@ class FunctionNode(BaseNode):
     is passed through directly and all other non-context parameters are
     looked up in ``ctx.state``.
     """
+    from pydantic import BaseModel
+
     input_bound = self.parameter_binding == 'node_input'
+    source: Any
     if input_bound:
-      source = node_input if isinstance(node_input, dict) else {}
+      if isinstance(node_input, (dict, BaseModel)):
+        source = node_input
+      else:
+        source = {}
     else:
       source = ctx.state
     source_name = 'node_input' if input_bound else 'state'
@@ -353,8 +359,21 @@ class FunctionNode(BaseNode):
         kwargs[param_name] = value
         continue
 
-      if param_name in source:
-        value = source[param_name]
+      has_param = False
+      value = None
+      if isinstance(source, BaseModel):
+        if hasattr(source, param_name):
+          has_param = True
+          value = getattr(source, param_name)
+      else:
+        try:
+          if param_name in source:
+            has_param = True
+            value = source[param_name]
+        except (TypeError, KeyError):
+          pass
+
+      if has_param:
         if param_name in self._type_hints:
           value = self._coerce_param(
               param_name,
@@ -457,7 +476,7 @@ class FunctionNode(BaseNode):
     # If the wrapped function is a bound method of a Node, we need to clone
     # the Node and re-bind the function to the new instance.
     # This is needed if the function is referring to params like 'name' from the "self" reference.
-    # Like Workflow or LLM use that name for event node_paths or retreving session events.
+    # Like Workflow or LLM use that name for event node_paths or retrieving session events.
     func = self._func
     if inspect.ismethod(func) and isinstance(
         getattr(func, '__self__', None), BaseNode

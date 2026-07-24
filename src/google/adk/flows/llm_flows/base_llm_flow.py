@@ -38,6 +38,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
+from ...events.event_actions import EventActions
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.google_llm import Gemini
 from ...models.google_llm import GoogleLLMVariant
@@ -56,6 +57,11 @@ from .functions import build_auth_request_event
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
 
+
+class _ReconnectSentinel(Event):
+  """Internal sentinel event to signal a silent reconnection request."""
+
+
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
   from ...models.base_llm import BaseLlm
@@ -65,6 +71,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
+
+_NO_CONTENT_ERROR_CODE = 'MODEL_RETURNED_NO_CONTENT'
+_NO_CONTENT_ERROR_MESSAGE = (
+    'The model returned no content (finish_reason=STOP with empty parts).'
+)
 
 # Timing configuration
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
@@ -259,7 +270,7 @@ async def _handle_after_model_callback(
   agent = invocation_context.agent
 
   # Add grounding metadata to the response if needed.
-  # TODO(b/448114567): Remove this function once the workaround is no longer needed.
+  # TODO: Remove this function once the workaround is no longer needed.
   async def _maybe_add_grounding_metadata(
       response: Optional[LlmResponse] = None,
   ) -> Optional[LlmResponse]:
@@ -438,6 +449,7 @@ async def _process_agent_tools(
   """
   agent = invocation_context.agent
   if agent is None or not hasattr(agent, 'tools') or not agent.tools:
+    invocation_context.canonical_tools_cache = []
     return
 
   multiple_tools = len(agent.tools) > 1
@@ -482,6 +494,12 @@ async def _process_agent_tools(
   if invocation_context.live_request_queue is not None:
     _mark_live_async_tools_non_blocking(llm_request)
 
+  # Reuse this exact, current-step resolution in after-model processing. Tool
+  # sets can change between model steps, so the cache is refreshed each time.
+  invocation_context.canonical_tools_cache = [
+      tool for tools in resolved_tools_per_union for tool in tools
+  ]
+
 
 def _mark_live_async_tools_non_blocking(llm_request: LlmRequest) -> None:
   """Marks live streaming and response-scheduling tools as NON_BLOCKING.
@@ -509,7 +527,7 @@ class BaseLlmFlow(ABC):
   This flow ends when it transfers to another agent.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self.request_processors: list[BaseLlmRequestProcessor] = []
     self.response_processors: list[BaseLlmResponseProcessor] = []
 
@@ -578,18 +596,9 @@ class BaseLlmFlow(ABC):
         # initial_history_in_client_content to True. This tells the Live server
         # that the provided history already includes the model's past responses,
         # preventing the server from generating duplicate responses for those replayed turns.
-        #
-        # ``history_config`` is only supported by the Gemini Developer API
-        # backend; the Vertex AI / Gemini Enterprise Agent Platform backend has
-        # no such field on its live setup message and rejects it. On Vertex,
-        # history is instead seeded by ``send_history`` below
-        # (``send_client_content`` with prior turns), so we skip
-        # ``history_config`` for that backend.
         if (
             llm_request.contents
             and not invocation_context.live_session_resumption_handle
-            and isinstance(llm, Gemini)
-            and llm._api_backend == GoogleLLMVariant.GEMINI_API  # pylint: disable=protected-access
         ):
           if not llm_request.live_connect_config:
             llm_request.live_connect_config = types.LiveConnectConfig()
@@ -632,6 +641,7 @@ class BaseLlmFlow(ABC):
               self._send_to_model(llm_connection, invocation_context)
           )
 
+          should_reconnect = False
           try:
             async with Aclosing(
                 self._receive_from_model(
@@ -642,6 +652,9 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
+                if isinstance(event, _ReconnectSentinel):
+                  should_reconnect = True
+                  break
                 # Empty event means the queue is closed.
                 if not event:
                   break
@@ -722,6 +735,9 @@ class BaseLlmFlow(ABC):
               await send_task
             except asyncio.CancelledError:
               pass
+        if should_reconnect:
+          continue
+        break
       except (ConnectionClosed, ConnectionClosedOK) as e:
         # If we have a session resumption handle, we attempt to reconnect.
         # This handle is updated dynamically during the session.
@@ -760,7 +776,7 @@ class BaseLlmFlow(ABC):
       self,
       llm_connection: BaseLlmConnection,
       invocation_context: InvocationContext,
-  ):
+  ) -> None:
     """Sends data to model."""
     while True:
       live_request_queue = invocation_context.live_request_queue
@@ -780,6 +796,29 @@ class BaseLlmFlow(ABC):
       # Yield to event loop for cooperative multitasking
       await asyncio.sleep(0)
 
+      # State changes ride on the user content event when one is created below;
+      # otherwise a standalone content-less event applies them.
+      is_function_response = bool(
+          live_request.content
+          and live_request.content.parts
+          and any(part.function_response for part in live_request.content.parts)
+      )
+      content_event_created = bool(
+          live_request.content
+          and not live_request.close
+          and not live_request.partial
+          and not is_function_response
+      )
+      if live_request.state_delta and not content_event_created:
+        await invocation_context.session_service.append_event(
+            session=invocation_context.session,
+            event=Event(
+                invocation_id=invocation_context.invocation_id,
+                author='user',
+                actions=EventActions(state_delta=live_request.state_delta),
+            ),
+        )
+
       if live_request.close:
         await llm_connection.close()
         return
@@ -798,25 +837,29 @@ class BaseLlmFlow(ABC):
 
       if live_request.content:
         content = live_request.content
+        if content.parts and any(p.function_call for p in content.parts):
+          raise ValueError('User message cannot contain function calls.')
         # Persist user text content to session (similar to non-live mode)
         # Skip function responses - they are already handled separately
-        is_function_response = content.parts and any(
-            part.function_response for part in content.parts
-        )
-        if not is_function_response:
-          if not content.role:
-            content.role = 'user'
+        if not is_function_response and not content.role:
+          content.role = 'user'
+        if not is_function_response and not live_request.partial:
           user_content_event = Event(
               id=Event.new_id(),
               invocation_id=invocation_context.invocation_id,
               author='user',
               content=content,
+              actions=EventActions(state_delta=live_request.state_delta)
+              if live_request.state_delta
+              else EventActions(),
           )
           await invocation_context.session_service.append_event(
               session=invocation_context.session,
               event=user_content_event,
           )
-        await llm_connection.send_content(live_request.content)
+        await llm_connection._send_content(
+            live_request.content, partial=live_request.partial
+        )
 
   async def _receive_from_model(
       self,
@@ -861,9 +904,9 @@ class BaseLlmFlow(ABC):
           if llm_response.go_away:
             logger.info(f'Received go away signal: {llm_response.go_away}')
             # The server signals that it will close the connection soon.
-            # We proactively raise ConnectionClosed to trigger the reconnection
-            # logic in run_live, which will use the latest session handle.
-            raise ConnectionClosed(None, None)
+            # We yield a sentinel event to request reconnection internally.
+            yield _ReconnectSentinel()
+            return
 
           model_response_event = Event(
               id=Event.new_id(),
@@ -964,6 +1007,7 @@ class BaseLlmFlow(ABC):
     if (
         invocation_context.is_resumable
         and events
+        and not events[-1].partial
         and events[-1].get_function_calls()
     ):
       model_response_event = events[-1]
@@ -1000,8 +1044,10 @@ class BaseLlmFlow(ABC):
             )
         ) as agen:
           async for event in agen:
-            # Update the mutable event id to avoid conflict
-            model_response_event.id = Event.new_id()
+            # Partial chunks of one streaming response share the base id; mint a
+            # fresh id only after a complete event so distinct responses differ.
+            if not event.partial:
+              model_response_event.id = Event.new_id()
             model_response_event.timestamp = platform_time.get_time()
             yield event
 
@@ -1013,6 +1059,15 @@ class BaseLlmFlow(ABC):
       raise TypeError(
           'Expected agent to have tools and canonical_model attributes,'
           f' but got {type(agent)}'
+      )
+
+    # Request defaults; _BasicLlmRequestProcessor merges them onto agent config.
+    if (
+        invocation_context.run_config
+        and invocation_context.run_config.http_options
+    ):
+      llm_request.config.http_options = (
+          invocation_context.run_config.http_options.model_copy(deep=True)
       )
 
     # Runs processors.
@@ -1036,6 +1091,9 @@ class BaseLlmFlow(ABC):
 
     # Run processors for tools.
     await _process_agent_tools(invocation_context, llm_request)
+
+    # Finalize dynamic instructions from tools.
+    await _finalize_dynamic_instructions(invocation_context, llm_request)
 
   async def _postprocess_async(
       self,
@@ -1062,6 +1120,23 @@ class BaseLlmFlow(ABC):
     ) as agen:
       async for event in agen:
         yield event
+
+    # A non-streaming turn that finishes with STOP but has no content parts would
+    # otherwise be skipped below and become a silent empty final response;
+    # surface it as an actionable error instead. Streaming is excluded
+    # because a terminal finish-only chunk legitimately follows content already
+    # streamed in earlier chunks.
+    if (
+        not llm_response.partial
+        and llm_response.error_code is None
+        and llm_response.finish_reason == types.FinishReason.STOP
+        and (not llm_response.content or not llm_response.content.parts)
+        and invocation_context.run_config.streaming_mode != StreamingMode.SSE
+    ):
+      llm_response.error_code = _NO_CONTENT_ERROR_CODE
+      llm_response.error_message = (
+          llm_response.error_message or _NO_CONTENT_ERROR_MESSAGE
+      )
 
     # Skip the model response event if there is no content and no error code.
     # This is needed for the code executor to trigger another loop.
@@ -1135,6 +1210,7 @@ class BaseLlmFlow(ABC):
         and not llm_response.usage_metadata
         and not llm_response.live_session_resumption_update
         and not llm_response.grounding_metadata
+        and not llm_response.voice_activity
     ):
       return
 
@@ -1143,6 +1219,12 @@ class BaseLlmFlow(ABC):
       model_response_event.live_session_resumption_update = (
           llm_response.live_session_resumption_update
       )
+      yield model_response_event
+      return
+
+    # Handle voice activity events
+    if llm_response.voice_activity:
+      model_response_event.voice_activity = llm_response.voice_activity
       yield model_response_event
       return
 
@@ -1187,23 +1269,28 @@ class BaseLlmFlow(ABC):
 
     # Handles function calls.
     if model_response_event.get_function_calls():
-      function_response_event = await functions.handle_function_calls_live(
+      # handle_function_calls_live returns None when every call is deferred
+      # (e.g. all long-running), so guard before yielding to avoid emitting a
+      # None event into the live stream.
+      if function_response_event := await functions.handle_function_calls_live(
           invocation_context, model_response_event, llm_request.tools_dict
-      )
-      # Always yield the function response event first
-      yield function_response_event
-
-      # Check if this is a set_model_response function response
-      if json_response := _output_schema_processor.get_structured_model_response(
-          function_response_event
       ):
-        # Create and yield a final model response event
-        final_event = (
-            _output_schema_processor.create_final_model_response_event(
-                invocation_context, json_response
+        # Always yield the function response event first
+        yield function_response_event
+
+        # Check if this is a set_model_response function response
+        if json_response := (
+            _output_schema_processor.get_structured_model_response(
+                function_response_event
             )
-        )
-        yield final_event
+        ):
+          # Create and yield a final model response event
+          final_event = (
+              _output_schema_processor.create_final_model_response_event(
+                  invocation_context, json_response
+              )
+          )
+          yield final_event
 
   async def _postprocess_run_processors_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
@@ -1531,3 +1618,36 @@ class BaseLlmFlow(ABC):
           f' but got {type(agent)}'
       )
     return agent.canonical_model
+
+
+async def _finalize_dynamic_instructions(
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+) -> None:
+  """Finalizes and resolves dynamic instructions from LlmRequest."""
+  if not llm_request._dynamic_instructions:
+    return
+
+  combined_text = '\n\n'.join(llm_request._dynamic_instructions)
+
+  from ...features import FeatureName
+  from ...features import is_feature_enabled
+
+  # TODO: Deprecate system_instruction fallback and make user content routing standard.
+  if is_feature_enabled(FeatureName.DYNAMIC_INSTRUCTION_ROUTING):
+    from .contents import _add_instructions_to_user_content
+
+    instruction_content = types.Content(
+        role='user',
+        parts=[types.Part.from_text(text=combined_text)],
+    )
+    await _add_instructions_to_user_content(
+        invocation_context,
+        llm_request,
+        [instruction_content],
+    )
+  else:
+    llm_request.append_instructions([combined_text])
+
+  # Clear dynamic instructions to prevent double finalization.
+  llm_request._dynamic_instructions.clear()

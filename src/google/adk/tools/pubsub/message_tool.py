@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 from typing import Optional
 
 from google.auth.credentials import Credentials
@@ -31,7 +32,7 @@ def publish_message(
     settings: PubSubToolConfig,
     attributes: Optional[dict[str, str]] = None,
     ordering_key: str = "",
-) -> dict:
+) -> dict[str, Any]:
   """Publish a message to a Pub/Sub topic.
 
   Args:
@@ -90,7 +91,7 @@ def pull_messages(
     *,
     max_messages: int = 1,
     auto_ack: bool = False,
-) -> dict:
+) -> dict[str, Any]:
   """Pull messages from a Pub/Sub subscription.
 
   Args:
@@ -152,7 +153,7 @@ def acknowledge_messages(
     ack_ids: list[str],
     credentials: Credentials,
     settings: PubSubToolConfig,
-) -> dict:
+) -> dict[str, Any]:
   """Acknowledge messages on a Pub/Sub subscription.
 
   Args:

@@ -34,6 +34,7 @@ from .sequential_agent import SequentialAgent
 from .sequential_agent_config import SequentialAgentConfig
 
 if TYPE_CHECKING:
+  from ._managed_agent import ManagedAgent
   from .mcp_instruction_provider import McpInstructionProvider
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     'Context',
     'LlmAgent',
     'LoopAgent',
+    'ManagedAgent',
     'McpInstructionProvider',
     'ParallelAgent',
     'SequentialAgent',
@@ -57,10 +59,16 @@ __all__ = [
 ]
 
 
+_LAZY_ATTRS = {
+    'ManagedAgent': '._managed_agent',
+    'McpInstructionProvider': '.mcp_instruction_provider',
+}
+
+
 def __getattr__(name: str) -> Any:
-  if name == 'McpInstructionProvider':
-    module = importlib.import_module('.mcp_instruction_provider', __name__)
-    attr = getattr(module, 'McpInstructionProvider')
+  if name in _LAZY_ATTRS:
+    module = importlib.import_module(_LAZY_ATTRS[name], __name__)
+    attr = getattr(module, name)
     globals()[name] = attr
     return attr
   raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

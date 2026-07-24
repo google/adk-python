@@ -74,6 +74,7 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=30,
     )
 
   @patch("requests.get")
@@ -105,6 +106,7 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=30,
     )
 
   @patch("requests.get")
@@ -127,6 +129,7 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=30,
     )
 
   @patch("requests.get")
@@ -151,6 +154,7 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=30,
     )
 
   @patch("requests.get")
@@ -518,6 +522,17 @@ class TestAPIHubClient:
         ),
     ):
       client.get_spec_content("invalid-path")
+
+  def test_get_spec_content_includes_path_in_fallback_error(self, client):
+    with (
+        patch.object(
+            client, "_extract_resource_name", return_value=(None, None, None)
+        ),
+        pytest.raises(
+            ValueError, match="No API Hub resource found in path: actual-path"
+        ),
+    ):
+      client.get_spec_content("actual-path")
 
 
 if __name__ == "__main__":

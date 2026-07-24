@@ -117,7 +117,6 @@ For scenarios where the execution path cannot be predefined, nodes can use `ctx.
 
 ## Limitations
 
-- **Task-Mode Agents**: `LlmAgent` instances configured with `mode='task'` cannot be used as static nodes in a workflow graph. This is because the workflow scheduler currently overwrites the originating input on re-entry, causing the agent to lose its task brief. Use them as sub-agents or dispatch them dynamically.
 - **Unconditional Cycles**: The workflow graph validator rejects graphs with unconditional cycles to prevent infinite loops. Cycles must be conditional (i.e., controlled by routing logic).
 
 ## Related samples

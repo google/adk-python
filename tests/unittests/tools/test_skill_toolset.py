@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import json
 import logging
 import sys
 from unittest import mock
@@ -38,6 +39,7 @@ def _mock_skill1_frontmatter():
   frontmatter.name = "skill1"
   frontmatter.description = "Skill 1 description"
   frontmatter.allowed_tools = ["test_tool"]
+  frontmatter.metadata = {}
   frontmatter.model_dump.return_value = {
       "name": "skill1",
       "description": "Skill 1 description",
@@ -107,6 +109,7 @@ def _mock_skill2_frontmatter():
   frontmatter.name = "skill2"
   frontmatter.description = "Skill 2 description"
   frontmatter.allowed_tools = []
+  frontmatter.metadata = {}
   frontmatter.model_dump.return_value = {
       "name": "skill2",
       "description": "Skill 2 description",
@@ -308,6 +311,74 @@ async def test_load_skill_run_async_state_none(
   tool_context_instance.state.__setitem__.assert_called_with(
       state_key, ["skill1"]
   )
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_injects_state_when_opt_in(
+    mock_skill1, mock_skill1_frontmatter, tool_context_instance
+):
+  mock_skill1.instructions = "Hello {user_name}!"
+  mock_skill1_frontmatter.metadata = {"adk_inject_state": True}
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  with mock.patch.object(
+      skill_toolset.instructions_utils,
+      "inject_session_state",
+      autospec=True,
+  ) as mock_inject:
+    mock_inject.return_value = "Hello Alice!"
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+
+  mock_inject.assert_awaited_once()
+  call_args = mock_inject.await_args
+  assert call_args.args[0] == "Hello {user_name}!"
+  assert result["instructions"] == "Hello Alice!"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_skips_injection_when_opt_out(
+    mock_skill1, mock_skill1_frontmatter, tool_context_instance
+):
+  mock_skill1.instructions = "Hello {user_name}!"
+  mock_skill1_frontmatter.metadata = {"adk_inject_state": False}
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  with mock.patch.object(
+      skill_toolset.instructions_utils,
+      "inject_session_state",
+      autospec=True,
+  ) as mock_inject:
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+
+  mock_inject.assert_not_called()
+  assert result["instructions"] == "Hello {user_name}!"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_run_async_skips_injection_when_metadata_absent(
+    mock_skill1, tool_context_instance
+):
+  mock_skill1.instructions = "Hello {user_name}!"
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  with mock.patch.object(
+      skill_toolset.instructions_utils,
+      "inject_session_state",
+      autospec=True,
+  ) as mock_inject:
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+
+  mock_inject.assert_not_called()
+  assert result["instructions"] == "Hello {user_name}!"
 
 
 @pytest.mark.asyncio
@@ -926,6 +997,8 @@ async def test_execute_script_shell_success(mock_skill1):
   code_input = call_args[0][1]
   assert "subprocess.run" in code_input.code
   assert "bash" in code_input.code
+  assert "encoding='utf-8'" in code_input.code
+  assert "errors='replace'" in code_input.code
   assert "__shell_result__" in code_input.code
 
 
@@ -1513,7 +1586,6 @@ async def test_integration_shell_stderr_only():
 @pytest.mark.asyncio
 async def test_shell_json_envelope_parsed(mock_skill1):
   """Shell JSON envelope is correctly unpacked by run_async."""
-  import json
 
   envelope = json.dumps({
       "__shell_result__": True,
@@ -1537,7 +1609,6 @@ async def test_shell_json_envelope_parsed(mock_skill1):
 @pytest.mark.asyncio
 async def test_shell_json_envelope_nonzero_returncode(mock_skill1):
   """Non-zero returncode in shell envelope sets stderr."""
-  import json
 
   envelope = json.dumps({
       "__shell_result__": True,
@@ -1558,9 +1629,30 @@ async def test_shell_json_envelope_nonzero_returncode(mock_skill1):
 
 
 @pytest.mark.asyncio
+async def test_shell_json_envelope_nonzero_returncode_with_stderr(mock_skill1):
+  """Non-zero returncode in shell envelope appends exit code to stderr."""
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "",
+      "stderr": "some error occurred",
+      "returncode": 2,
+  })
+  executor = _make_mock_executor(stdout=envelope)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "error"
+  assert result["stderr"] == "some error occurred\nExit code 2"
+
+
+@pytest.mark.asyncio
 async def test_shell_json_envelope_with_stderr(mock_skill1):
   """Shell envelope with both stdout and stderr reports warning."""
-  import json
 
   envelope = json.dumps({
       "__shell_result__": True,
@@ -1584,13 +1676,13 @@ async def test_shell_json_envelope_with_stderr(mock_skill1):
 @pytest.mark.asyncio
 async def test_shell_json_envelope_timeout(mock_skill1):
   """Shell envelope from TimeoutExpired reports error status."""
-  import json
 
   envelope = json.dumps({
       "__shell_result__": True,
       "stdout": "partial output\n",
       "stderr": "Timed out after 300s",
       "returncode": -1,
+      "timeout": True,
   })
   executor = _make_mock_executor(stdout=envelope)
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
@@ -1603,6 +1695,7 @@ async def test_shell_json_envelope_timeout(mock_skill1):
   assert result["status"] == "error"
   assert result["stdout"] == "partial output\n"
   assert "Timed out" in result["stderr"]
+  assert "Exit code" not in result["stderr"]
 
 
 @pytest.mark.asyncio
@@ -1686,6 +1779,24 @@ def test_system_instruction_references_run_skill_script():
       "execute_skill_script"
       not in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
   )
+
+
+def test_system_instruction_marks_load_skill_as_non_terminal():
+  """Rule 7 must tell the model load_skill does not complete the turn.
+
+  Without it, some models (notably Gemini) treat the load_skill tool call as
+  the entire turn and stop with no visible output, producing empty responses.
+  """
+  instruction = skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "does NOT complete your turn" in instruction
+  assert "empty response" in instruction
+
+
+def test_prefixed_system_instruction_includes_continue_after_load_rule():
+  """The prefixed builder variant must also carry rule 7 (with the prefix)."""
+  instruction = skill_toolset._build_skill_system_instruction(prefix="my")
+  assert "does NOT complete your turn" in instruction
+  assert "my_load_skill" in instruction
 
 
 # ── Finding 2: empty files are mounted (not silently dropped) ──

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from typing import cast
 from typing import Optional
 
 from google.adk.platform import uuid as platform_uuid
@@ -25,12 +24,14 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
+from typing_extensions import override
 
 from ..apps._configs import EventsCompactionConfig
 from ..apps._configs import ResumabilityConfig
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..events._branch_path import _BranchPath
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
@@ -83,7 +84,7 @@ class _InvocationCostManager(BaseModel):
 
   def increment_and_enforce_llm_calls_limit(
       self, run_config: Optional[RunConfig]
-  ):
+  ) -> None:
     """Increments _number_of_llm_calls and enforces the limit."""
     # We first increment the counter and then check the conditions.
     self._number_of_llm_calls += 1
@@ -210,6 +211,9 @@ class InvocationContext(BaseModel):
   active_streaming_tools: Optional[dict[str, ActiveStreamingTool]] = None
   """The running streaming tools of this invocation."""
 
+  active_non_blocking_tool_tasks: Optional[dict[str, asyncio.Task[Any]]] = None
+  """The running non-blocking tool tasks of this invocation (Live only)."""
+
   transcription_cache: Optional[list[TranscriptionEntry]] = None
   """Caches necessary data, audio or contents, that are needed by transcription."""
 
@@ -259,12 +263,21 @@ class InvocationContext(BaseModel):
   credential_by_key: dict[str, AuthCredential] = Field(default_factory=dict)
   """The resolved credentials for this invocation, keyed by credential_key."""
 
+  _custom_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
+  """Custom metadata for attaching low-level execution telemetry."""
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )
   """A container to keep track of different kinds of costs incurred as a part
   of this invocation.
   """
+
+  @override
+  def model_post_init(self, __context: Any) -> None:
+    super().model_post_init(__context)
+    if self.run_config and self.run_config.custom_metadata:
+      self._custom_metadata.update(self.run_config.custom_metadata)
 
   @property
   def is_resumable(self) -> bool:
@@ -385,7 +398,7 @@ class InvocationContext(BaseModel):
 
   def increment_llm_call_count(
       self,
-  ):
+  ) -> None:
     """Tracks number of llm calls made.
 
     Raises:
@@ -429,12 +442,49 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      results = [
-          event
-          for event in results
-          if event.branch == self.branch
-          or (event.branch is None and event.author == "user")
-      ]
+
+      def _is_branch_match(event: Event) -> bool:
+        """Determines if an event belongs to the current branch or any descendant sub-branch."""
+        if getattr(event, "author", None) == "user":
+          frs = event.get_function_responses()
+          if frs and self.branch and self.session:
+            fr_ids = {fr.id for fr in frs if fr.id is not None}
+            if fr_ids:
+              # Gather function calls issued on this branch or descendant sub-branches
+              # to verify the user response targets a call originated within this branch tree.
+              branch_events = [
+                  e
+                  for e in self.session.events
+                  if e.branch
+                  and (
+                      e.branch == self.branch
+                      or e.branch.startswith(f"{self.branch}.")
+                  )
+              ]
+              branch_fc_ids = {
+                  fc.id
+                  for e in branch_events
+                  for fc in e.get_function_calls()
+                  if fc.id is not None
+              }
+              # If user's response IDs do not match any function call on this branch tree,
+              # prevent event leakage across parallel or unrelated branches.
+              if not (fr_ids & branch_fc_ids):
+                return False
+
+          # Match events yielded directly on this branch or on descendant sub-branches
+          # (e.g. child NodeTool/WorkflowTool execution trees).
+          if (
+              event.branch is None
+              or self.branch is None
+              or event.branch == self.branch
+              or (self.branch and event.branch.startswith(f"{self.branch}."))
+          ):
+            return True
+          return False
+        return event.branch == self.branch
+
+      results = [e for e in results if _is_branch_match(e)]
     return results
 
   def should_pause_invocation(self, event: Event) -> bool:
@@ -463,9 +513,28 @@ class InvocationContext(BaseModel):
     if not event.long_running_tool_ids or not event.get_function_calls():
       return False
 
+    events = self.session.events if self.session else []
     for fc in event.get_function_calls():
       if fc.id in event.long_running_tool_ids:
-        return True
+        # Check if there is a newer user event in the session that belongs to a sub-branch of this tool call.
+        # This indicates the tool call is resuming to process that nested input.
+        is_resolving_sub_branch = False
+        event_index = -1
+        # Search backwards since the checked event is typically near the end of history.
+        for i in range(len(events) - 1, -1, -1):
+          if events[i].id == event.id:
+            event_index = i
+            break
+        if event_index != -1:
+          is_resolving_sub_branch = any(
+              e.author == "user"
+              and e.branch
+              and fc.id in _BranchPath.from_string(e.branch).run_ids
+              for e in events[event_index + 1 :]
+          )
+
+        if not is_resolving_sub_branch:
+          return True
 
     return False
 
@@ -480,11 +549,26 @@ class InvocationContext(BaseModel):
     if not function_responses:
       return None
 
-    # Search backwards from the event before the current response event.
+    events = self._get_events(current_invocation=True)
+    if events and events[-1].id == function_response_event.id:
+      search_space = events[:-1]
+    else:
+      search_space = events
+
     return find_event_by_function_call_id(
-        self._get_events(current_invocation=True)[:-1], function_responses[0].id
+        search_space, function_responses[0].id
     )
+
+  def stamp_event_branch_context(self, event: Event) -> None:
+    """Stamps the event with the branch and isolation scope of its matching function call."""
+    if function_call := self._find_matching_function_call(event):
+      event.branch = function_call.branch
+      if (
+          event.isolation_scope is None
+          and function_call.isolation_scope is not None
+      ):
+        event.isolation_scope = function_call.isolation_scope
 
 
 def new_invocation_context_id() -> str:
-  return "e-" + cast(str, platform_uuid.new_uuid())
+  return "e-" + platform_uuid.new_uuid()

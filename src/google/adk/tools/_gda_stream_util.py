@@ -16,69 +16,116 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from google.auth.transport import mtls
+from google.auth.transport import requests as auth_requests
 import requests
+
+from google import auth
+
+from ..utils import _mtls_utils
+
+_GDA_DEFAULT_TEMPLATE = "https://geminidataanalytics.googleapis.com"
+_GDA_MTLS_TEMPLATE = "https://geminidataanalytics.mtls.googleapis.com"
+
+
+def get_gda_endpoint() -> str:
+  """Returns the GDA API endpoint based on mTLS configuration."""
+  return _mtls_utils.get_api_endpoint(
+      location="",
+      default_template=_GDA_DEFAULT_TEMPLATE,
+      mtls_template=_GDA_MTLS_TEMPLATE,
+  )
+
+
+def get_gda_session(
+    credentials: auth.credentials.Credentials,
+) -> tuple[requests.Session, str]:
+  """Creates an AuthorizedSession and returns it with the correct endpoint.
+
+  Args:
+      credentials: The credentials to use for the request.
+
+  Returns:
+      A tuple containing the authorized requests Session and the GDA endpoint.
+
+  Raises:
+      ValueError: If the mTLS endpoint is selected but the client certificate
+        is disabled.
+  """
+  session = auth_requests.AuthorizedSession(credentials=credentials)  # type: ignore[no-untyped-call]
+  endpoint = get_gda_endpoint()
+
+  if endpoint == _GDA_MTLS_TEMPLATE:
+    if not mtls.has_default_client_cert_source():  # type: ignore[no-untyped-call]
+      raise ValueError(
+          "mTLS endpoint is selected, but client certificate is not"
+          " provisioned."
+      )
+    session.configure_mtls_channel()  # type: ignore[no-untyped-call]
+
+  return session, endpoint
 
 
 def get_stream(
+    session: requests.Session,
     url: str,
     ca_payload: dict[str, Any],
     headers: dict[str, str],
     max_query_result_rows: int,
 ) -> list[dict[str, Any]]:
   """Sends a JSON request to a streaming API and returns a list of messages."""
-  with requests.Session() as s:
-    accumulator = ""
-    messages = []
-    data_msg_idx = -1
+  accumulator = ""
+  messages = []
+  data_msg_idx = -1
 
-    with s.post(url, json=ca_payload, headers=headers, stream=True) as resp:
-      resp.raise_for_status()
-      for line in resp.iter_lines():
-        if not line:
-          continue
+  with session.post(url, json=ca_payload, headers=headers, stream=True) as resp:
+    resp.raise_for_status()
+    for line in resp.iter_lines():
+      if not line:
+        continue
 
-        decoded_line = line.decode("utf-8")
+      decoded_line = line.decode("utf-8")
 
-        if decoded_line == "[{":
-          accumulator = "{"
-        elif decoded_line == "}]":
-          accumulator += "}"
-        elif decoded_line == ",":
-          continue
-        else:
-          accumulator += decoded_line
+      if decoded_line == "[{":
+        accumulator = "{"
+      elif decoded_line == "}]":
+        accumulator += "}"
+      elif decoded_line == ",":
+        continue
+      else:
+        accumulator += decoded_line
 
-        try:
-          data_json = json.loads(accumulator)
-        except ValueError:
-          continue
+      try:
+        data_json = json.loads(accumulator)
+      except ValueError:
+        continue
 
-        accumulator = ""
+      accumulator = ""
 
-        if not isinstance(data_json, dict):
-          messages.append(data_json)
-          continue
+      if not isinstance(data_json, dict):
+        messages.append(data_json)
+        continue
 
-        processed_msg = None
-        data_result = _extract_data_result(data_json)
-        if data_result is not None:
-          processed_msg = _format_data_retrieved(
-              data_result, max_query_result_rows
-          )
-          if data_msg_idx >= 0:
-            messages[data_msg_idx] = {
-                "Data Retrieved": "Intermediate result omitted"
-            }
-          data_msg_idx = len(messages)
-        elif isinstance(data_json.get("systemMessage"), dict):
-          processed_msg = data_json["systemMessage"]
-        else:
-          processed_msg = data_json
+      processed_msg = None
+      data_result = _extract_data_result(data_json)
+      if data_result is not None:
+        processed_msg = _format_data_retrieved(
+            data_result, max_query_result_rows
+        )
+        if data_msg_idx >= 0:
+          messages[data_msg_idx] = {
+              "Data Retrieved": "Intermediate result omitted"
+          }
+        data_msg_idx = len(messages)
+      elif isinstance(data_json.get("systemMessage"), dict):
+        processed_msg = data_json["systemMessage"]
+      else:
+        processed_msg = data_json
 
-        if processed_msg is not None:
-          messages.append(processed_msg)
+      if processed_msg is not None:
+        messages.append(processed_msg)
 
-    return messages
+  return messages
 
 
 def _extract_data_result(msg: dict[str, Any]) -> dict[str, Any] | None:

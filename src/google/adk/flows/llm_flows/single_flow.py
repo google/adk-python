@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from . import _code_execution
 from . import _nl_planning
@@ -30,10 +31,14 @@ from . import interactions_processor
 from . import request_confirmation
 from .base_llm_flow import BaseLlmFlow
 
+if TYPE_CHECKING:
+  from ._base_llm_processor import BaseLlmRequestProcessor
+  from ._base_llm_processor import BaseLlmResponseProcessor
+
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-def _create_request_processors():
+def _create_request_processors() -> list[BaseLlmRequestProcessor]:
   """Create the standard request processor list for a single-agent flow."""
   from . import compaction
   from ...auth import auth_preprocessor
@@ -47,13 +52,13 @@ def _create_request_processors():
       # Compaction should run before contents so compacted events are reflected
       # in the model request context.
       compaction.request_processor,
+      # Extract the Interactions chain id before contents. Chained requests
+      # only need the current turn because the service retains prior state.
+      interactions_processor.request_processor,
       contents.request_processor,
       # Context cache processor sets up cache config and finds
       # existing cache metadata.
       context_cache_processor.request_processor,
-      # Interactions processor extracts previous_interaction_id for
-      # stateful conversations via the Interactions API.
-      interactions_processor.request_processor,
       # Some implementations of NL Planning mark planning contents
       # as thoughts in the post processor.  Since these need to be
       # unmarked, NL Planning should be after contents.
@@ -68,7 +73,7 @@ def _create_request_processors():
   ]
 
 
-def _create_response_processors():
+def _create_response_processors() -> list[BaseLlmResponseProcessor]:
   """Create the standard response processor list for a single-agent flow."""
   return [
       _nl_planning.response_processor,
@@ -83,7 +88,7 @@ class SingleFlow(BaseLlmFlow):
   No sub-agents are allowed for single flow.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     super().__init__()
     self.request_processors += _create_request_processors()
     self.response_processors += _create_response_processors()

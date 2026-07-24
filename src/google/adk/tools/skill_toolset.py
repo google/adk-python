@@ -36,6 +36,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..utils import instructions_utils
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .base_toolset import ToolPredicate
@@ -96,6 +97,11 @@ def _build_skill_system_instruction(prefix: str | None = None) -> str:
       f"6. If `{p}run_skill_script` returns an error (for example "
       f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
       "different script path. Report the error to the user and stop.\n"
+      f"7. Loading a skill only retrieves its instructions; it does NOT "
+      f"complete your turn. After a `{p}load_skill` call returns, continue "
+      "in the SAME turn: call whatever tools the skill's steps require "
+      "(search, data retrieval, render), then write your reply. Never end "
+      "your turn with an empty response right after loading a skill.\n"
   )
 
 
@@ -251,9 +257,16 @@ class LoadSkillTool(BaseTool):
       activated_skills.append(skill_name)
       tool_context.state[state_key] = activated_skills
 
+    instructions = skill.instructions
+    if skill.frontmatter.metadata.get("adk_inject_state"):
+      instructions = await instructions_utils.inject_session_state(
+          instructions,
+          tool_context,
+      )
+
     return {
         "skill_name": skill_name,
-        "instructions": skill.instructions,
+        "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
     }
 
@@ -551,8 +564,13 @@ class _SkillScriptCodeExecutor:
             stdout = parsed.get("stdout", "")
             stderr = parsed.get("stderr", "")
             rc = parsed.get("returncode", 0)
-            if rc != 0 and not stderr:
-              stderr = f"Exit code {rc}"
+            if rc != 0 and not parsed.get("timeout", False):
+              exit_code_message = f"Exit code {rc}"
+              stderr = (
+                  f"{stderr.rstrip()}\n{exit_code_message}"
+                  if stderr
+                  else exit_code_message
+              )
         except (json.JSONDecodeError, ValueError):
           pass
 
@@ -732,6 +750,8 @@ class _SkillScriptCodeExecutor:
           "        _r = subprocess.run(",
           f"          {arr!r},",
           "          capture_output=True, text=True,",
+          # Keep shell output decoding independent from the host locale.
+          "          encoding='utf-8', errors='replace',",
           f"          timeout={timeout!r}, cwd=td,",
           "        )",
           "        print(_json.dumps({",
@@ -746,6 +766,7 @@ class _SkillScriptCodeExecutor:
           "            'stdout': _e.stdout or '',",
           f"            'stderr': 'Timed out after {timeout}s',",
           "            'returncode': -1,",
+          "            'timeout': True,",
           "        }))",
       ])
     else:

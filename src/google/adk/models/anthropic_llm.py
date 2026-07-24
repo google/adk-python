@@ -31,6 +31,7 @@ from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
+import warnings
 
 from anthropic import AsyncAnthropic
 from anthropic import AsyncAnthropicVertex
@@ -39,16 +40,19 @@ from anthropic import NotGiven
 from anthropic import types as anthropic_types
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
+from pydantic import model_validator
 from typing_extensions import override
 
 from ..utils._google_client_headers import get_tracking_headers
 from .base_llm import BaseLlm
+from .interactions_utils import extract_system_instruction
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
   from .llm_request import LlmRequest
 
-__all__ = ["AnthropicLlm", "Claude"]
+__all__ = ["AnthropicLlm", "Claude", "AnthropicGenerateContentConfig"]
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -98,6 +102,12 @@ def _build_anthropic_thinking_param(
       caller gets the canonical error message). Rejected by Claude Opus 4.7
       -- callers targeting 4.7+ must use a negative value (adaptive) or
       ``0`` (disabled).
+
+  Args:
+    config: Optional GenerateContentConfig object.
+
+  Returns:
+    Mapped thinking parameter or NotGiven.
   """
   if not config or not config.thinking_config:
     return NOT_GIVEN
@@ -130,6 +140,85 @@ def _build_anthropic_thinking_param(
   )
 
 
+class AnthropicGenerateContentConfig(types.GenerateContentConfig):
+  """Configuration options for Anthropic Claude content generation.
+
+  This specialized configuration class is the recommended way to
+  configure reasoning and extended thinking for newer Claude models.
+
+  Attributes:
+    effort: The reasoning effort level for adaptive extended thinking. Set
+      directly to guide the reasoning depth ("low", "medium", "high", "xhigh",
+      "max"). This is the preferred alternative to the deprecated manual
+      `thinking_budget` on newer Claude models.
+  """
+
+  effort: Optional[Literal["low", "medium", "high", "xhigh", "max"]] = Field(
+      default=None,
+      description=(
+          "Configures the Claude-specific reasoning effort level for adaptive"
+          " extended thinking. This is the recommended, future-proof way to"
+          " control reasoning depth on newer Claude models."
+      ),
+  )
+
+  @model_validator(mode="after")
+  def validate_no_thinking_level(self) -> "AnthropicGenerateContentConfig":
+    """Ensures thinking_level is not configured on Anthropic-specific config."""
+
+    if self.thinking_config and self.thinking_config.thinking_level is not None:
+      raise ValueError(
+          "thinking_level is not supported in AnthropicGenerateContentConfig. "
+          "Use the `effort` field directly to configure reasoning effort."
+      )
+    return self
+
+
+def _build_effort_param(
+    config: Optional[types.GenerateContentConfig],
+) -> Optional[str]:
+  """Extracts Anthropic's effort parameter from the configuration.
+
+  To configure a specific reasoning effort level for Anthropic models,
+  callers must use ``google.adk.models.AnthropicGenerateContentConfig`` and
+  set the ``effort`` field directly.
+  Using the standard ``thinking_config.thinking_level`` is explicitly
+  unsupported because the standard `ThinkingLevel` enum (4 levels) cannot map
+  consistently to Anthropic's 5 effort levels
+  ("low", "medium", "high", "xhigh", "max").
+
+  Any attempt to set `thinking_level` will not be passed to the model and will
+  log a warning.
+
+  If `effort` is not set, we return `None`.
+  If `effort` and `thinking_level` are both set, `effort` takes precedence.
+
+  Args:
+    config: Optional GenerateContentConfig object.
+
+  Returns:
+    The effort level string (e.g., "xhigh") if specified via
+    AnthropicGenerateContentConfig, or None.
+  """
+  if not config:
+    return None
+
+  if isinstance(config, AnthropicGenerateContentConfig) and config.effort:
+    return config.effort
+
+  # If effort is not set, but thinking_level is, log a warning and ignore it.
+  if config.thinking_config and config.thinking_config.thinking_level:
+    warnings.warn(
+        "Standard thinking_config.thinking_level is not supported for Anthropic"
+        " models and will be ignored. Use AnthropicGenerateContentConfig and"
+        " set the `effort` field directly to configure reasoning effort.",
+        category=UserWarning,
+        stacklevel=4,
+    )
+
+  return None
+
+
 class ClaudeRequest(BaseModel):
   system_instruction: str
   messages: Iterable[anthropic_types.MessageParam]
@@ -142,14 +231,26 @@ def to_claude_role(role: Optional[str]) -> Literal["user", "assistant"]:
   return "user"
 
 
+# Mapping of Anthropic stop_reason strings to FinishReason enum values
+_STOP_REASON_MAPPING: dict[anthropic_types.StopReason, types.FinishReason] = {
+    "end_turn": types.FinishReason.STOP,
+    "stop_sequence": types.FinishReason.STOP,
+    "tool_use": types.FinishReason.STOP,
+    "pause_turn": types.FinishReason.STOP,
+    "max_tokens": types.FinishReason.MAX_TOKENS,
+    "refusal": types.FinishReason.SAFETY,
+}
+
+
 def to_google_genai_finish_reason(
-    anthropic_stop_reason: Optional[str],
-) -> types.FinishReason:
-  if anthropic_stop_reason in ["end_turn", "stop_sequence", "tool_use"]:
-    return "STOP"
-  if anthropic_stop_reason == "max_tokens":
-    return "MAX_TOKENS"
-  return "FINISH_REASON_UNSPECIFIED"
+    anthropic_stop_reason: Optional[anthropic_types.StopReason],
+) -> types.FinishReason | None:
+  """Maps Anthropic stop_reason to Google GenAI FinishReason."""
+  if anthropic_stop_reason is None:
+    return None
+  return _STOP_REASON_MAPPING.get(
+      anthropic_stop_reason, types.FinishReason.FINISH_REASON_UNSPECIFIED
+  )
 
 
 def _is_image_part(part: types.Part) -> bool:
@@ -410,12 +511,11 @@ def message_to_generate_content_response(
           ),
           cached_content_token_count=_extract_cached_token_count(message.usage),
       ),
-      # TODO: Deal with these later.
-      # finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
 
 
-def _update_type_string(value: Any):
+def _update_type_string(value: Any) -> None:
   """Lowercases nested JSON schema type strings for Anthropic compatibility."""
   if isinstance(value, list):
     for item in value:
@@ -509,6 +609,14 @@ def function_declaration_to_tool_param(
 class AnthropicLlm(BaseLlm):
   """Integration with Claude models via the Anthropic API.
 
+  Note:
+    Anthropic Claude supports 5 distinct effort levels ("low", "medium",
+    "high", "xhigh", "max") while the standard `ThinkingLevel` enum defines 4
+    levels (MINIMAL, LOW, MEDIUM, HIGH), the standard
+    `thinking_config.thinking_level` is not supported for Anthropic models.
+    To configure thinking effort, user must use `AnthropicGenerateContentConfig`
+    and set its `effort` field directly (e.g., `effort="xhigh"`).
+
   Attributes:
     model: The name of the Claude model.
     max_tokens: The maximum number of tokens to generate.
@@ -534,11 +642,86 @@ class AnthropicLlm(BaseLlm):
         return match.group(1)
     return model
 
+  def _build_anthropic_kwargs(
+      self,
+      llm_request: LlmRequest,
+      messages: list[anthropic_types.MessageParam],
+      tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
+      tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
+      thinking: Union[
+          anthropic_types.ThinkingConfigEnabledParam,
+          anthropic_types.ThinkingConfigDisabledParam,
+          anthropic_types.ThinkingConfigAdaptiveParam,
+          NotGiven,
+      ],
+  ) -> dict[str, Any]:
+    system = NOT_GIVEN
+    if llm_request.config:
+      system_str = extract_system_instruction(llm_request.config)
+      if system_str:
+        system = system_str
+
+    model_to_use = self._resolve_model_name(llm_request.model)
+    kwargs = {
+        "model": model_to_use,
+        "system": system,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "thinking": thinking,
+    }
+
+    effort = _build_effort_param(llm_request.config)
+    if effort:
+      kwargs["output_config"] = {"effort": effort}
+
+    # Determine if thinking is enabled to avoid parameter conflicts.
+    thinking_enabled = False
+    if thinking is not NOT_GIVEN and thinking is not None:
+      if isinstance(thinking, dict):
+        thinking_enabled = thinking.get("type") in ["enabled", "adaptive"]
+
+    exclude_sampling = thinking_enabled or (effort is not None)
+
+    if llm_request.config:
+      # Models released after Claude Opus 4.6 do not support setting
+      # temperature, top_k, or top_p when thinking is enabled or effort is set.
+      if not exclude_sampling:
+        if llm_request.config.temperature is not None:
+          kwargs["temperature"] = llm_request.config.temperature
+        if llm_request.config.top_p is not None:
+          kwargs["top_p"] = llm_request.config.top_p
+        if llm_request.config.top_k is not None:
+          kwargs["top_k"] = int(llm_request.config.top_k)
+      else:
+        if (
+            llm_request.config.temperature is not None
+            or llm_request.config.top_p is not None
+            or llm_request.config.top_k is not None
+        ):
+          warnings.warn(
+              "Sampling parameters (temperature, top_p, top_k) are ignored "
+              "because thinking/effort is enabled.",
+              category=UserWarning,
+              stacklevel=3,
+          )
+
+      if llm_request.config.stop_sequences:
+        kwargs["stop_sequences"] = llm_request.config.stop_sequences
+
+      if llm_request.config.max_output_tokens is not None:
+        kwargs["max_tokens"] = llm_request.config.max_output_tokens
+      else:
+        kwargs["max_tokens"] = self.max_tokens
+    else:
+      kwargs["max_tokens"] = self.max_tokens
+
+    return kwargs
+
   @override
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
-    model_to_use = self._resolve_model_name(llm_request.model)
     sanitizer = _ToolUseIdSanitizer()
     messages = [
         _content_to_message_param(content, sanitizer)
@@ -560,24 +743,16 @@ class AnthropicLlm(BaseLlm):
         else NOT_GIVEN
     )
     thinking = _build_anthropic_thinking_param(llm_request.config)
-    system = NOT_GIVEN
-    if llm_request.config.system_instruction is not None:
-      system = llm_request.config.system_instruction
 
     if not stream:
-      message = await self._anthropic_client.messages.create(
-          model=model_to_use,
-          system=system,
-          messages=messages,
-          tools=tools,
-          tool_choice=tool_choice,
-          max_tokens=self.max_tokens,
-          thinking=thinking,
+      kwargs = self._build_anthropic_kwargs(
+          llm_request, messages, tools, tool_choice, thinking
       )
+      message = await self._anthropic_client.messages.create(**kwargs)
       yield message_to_generate_content_response(message)
     else:
       async for response in self._generate_content_streaming(
-          llm_request, messages, system, tools, tool_choice, thinking
+          llm_request, messages, tools, tool_choice, thinking
       ):
         yield response
 
@@ -585,30 +760,34 @@ class AnthropicLlm(BaseLlm):
       self,
       llm_request: LlmRequest,
       messages: list[anthropic_types.MessageParam],
-      system: Union[str, types.Content, NotGiven],
       tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
       tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
       thinking: Union[
           anthropic_types.ThinkingConfigEnabledParam,
           anthropic_types.ThinkingConfigDisabledParam,
+          anthropic_types.ThinkingConfigAdaptiveParam,
           NotGiven,
       ] = NOT_GIVEN,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
-    Yields partial LlmResponse objects as content arrives, followed by
-    a final aggregated LlmResponse with all content.
+    Args:
+      llm_request: LlmRequest containing configurations and contents.
+      messages: List of formatted Anthropic messages.
+      tools: Optional tool configurations.
+      tool_choice: Optional tool choice setting.
+      thinking: Optional thinking details.
+
+    Yields:
+      Partial LlmResponse objects as content arrives, followed by
+      a final aggregated LlmResponse with all content.
     """
-    model_to_use = self._resolve_model_name(llm_request.model)
+    kwargs = self._build_anthropic_kwargs(
+        llm_request, messages, tools, tool_choice, thinking
+    )
     raw_stream = await self._anthropic_client.messages.create(
-        model=model_to_use,
-        system=system,
-        messages=messages,
-        tools=tools,
-        tool_choice=tool_choice,
-        max_tokens=self.max_tokens,
         stream=True,
-        thinking=thinking,
+        **kwargs,
     )
 
     # Track content blocks being built during streaming.
@@ -620,6 +799,7 @@ class AnthropicLlm(BaseLlm):
     input_tokens = 0
     output_tokens = 0
     cached_input_tokens: int | None = None
+    stop_reason: Optional[anthropic_types.StopReason] = None
 
     async for event in raw_stream:
       if event.type == "message_start":
@@ -661,6 +841,20 @@ class AnthropicLlm(BaseLlm):
               ),
               partial=True,
           )
+        elif isinstance(delta, anthropic_types.SignatureDelta):
+          # Claude streams the thinking block's cryptographic signature as a
+          # separate delta near the end of the block. Accumulate it so the
+          # aggregated thinking Part below carries ``thought_signature``.
+          # Without it the reasoning block cannot round-trip back to Claude on
+          # the next request -- extended thinking + tool use requires echoing
+          # the signed thinking blocks, and re-serializing history for the
+          # follow-up call would otherwise fail. Not surfaced as a partial (the
+          # signature is opaque, not user-visible text).
+          thinking_blocks.setdefault(
+              event.index,
+              _ThinkingAccumulator(thinking="", signature=""),
+          )
+          thinking_blocks[event.index].signature += delta.signature
         elif isinstance(delta, anthropic_types.TextDelta):
           text_blocks.setdefault(event.index, "")
           text_blocks[event.index] += delta.text
@@ -677,6 +871,7 @@ class AnthropicLlm(BaseLlm):
 
       elif event.type == "message_delta":
         output_tokens = event.usage.output_tokens
+        stop_reason = event.delta.stop_reason
 
     # Build the final aggregated response with all content.
     all_parts: list[types.Part] = []
@@ -719,6 +914,7 @@ class AnthropicLlm(BaseLlm):
             total_token_count=input_tokens + output_tokens,
             cached_content_token_count=cached_input_tokens,
         ),
+        finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
     )
 
@@ -729,6 +925,15 @@ class AnthropicLlm(BaseLlm):
 
 class Claude(AnthropicLlm):
   """Integration with Claude models served from Vertex AI.
+
+  Note:
+    Because Anthropic Claude supports 5 distinct effort levels ("low", "medium",
+    "high", "xhigh", "max") while the standard `ThinkingLevel` enum defines 4
+    levels (MINIMAL, LOW, MEDIUM, HIGH), the standard
+    `thinking_config.thinking_level` is not supported for Anthropic models.
+
+    To configure thinking effort, user must use `AnthropicGenerateContentConfig`
+    and set its `effort` field directly (e.g., `effort="xhigh"`).
 
   Attributes:
     model: The name of the Claude model.

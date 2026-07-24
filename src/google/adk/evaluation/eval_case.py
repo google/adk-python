@@ -26,7 +26,7 @@ from typing_extensions import TypeAlias
 
 from .app_details import AppDetails
 from .common import EvalBaseModel
-from .conversation_scenarios import ConversationScenario
+from .conversation_scenarios import ConversationScenario as ConversationScenario
 from .eval_rubrics import Rubric
 
 
@@ -64,7 +64,7 @@ class InvocationEvent(EvalBaseModel):
   author: str
   """The name of the agent that authored/owned this event."""
 
-  content: Optional[genai_types.Content]
+  content: Optional[genai_types.Content] = None
   """The content of the event."""
 
 
@@ -245,7 +245,9 @@ def get_all_tool_calls_with_responses(
     intermediate_data: Optional[IntermediateDataType],
 ) -> list[ToolCallAndResponse]:
   """Returns tool calls with the corresponding responses, if available."""
-  tool_responses_by_call_id: dict[str, genai_types.FunctionResponse] = {
+  tool_responses_by_call_id: dict[
+      Optional[str], genai_types.FunctionResponse
+  ] = {
       tool_response.id: tool_response
       for tool_response in get_all_tool_responses(intermediate_data)
   }

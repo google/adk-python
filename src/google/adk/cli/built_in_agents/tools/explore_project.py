@@ -145,7 +145,7 @@ async def explore_project(tool_context: ToolContext) -> Dict[str, Any]:
 
 def _analyze_project_info(root_path: Path) -> Dict[str, Any]:
   """Analyze basic project information."""
-  info = {
+  info: Dict[str, Any] = {
       "name": root_path.name,
       "absolute_path": str(root_path),
       "is_empty": not any(root_path.iterdir()),
@@ -212,6 +212,7 @@ def _find_existing_configs(root_path: Path) -> List[Dict[str, Any]]:
 def _analyze_config_file(config_path: Path, root_path: Path) -> Dict[str, Any]:
   """Analyze a single configuration file."""
   # Compute relative path from project root
+  relative_path: Path | str
   try:
     relative_path = config_path.relative_to(root_path)
   except ValueError:
@@ -263,7 +264,7 @@ def _build_directory_tree(
     if current_depth > max_depth:
       return {"truncated": True}
 
-    tree = {
+    tree: Dict[str, Any] = {
         "name": path.name,
         "type": "directory" if path.is_dir() else "file",
         "path": str(path.relative_to(root_path)),

@@ -57,6 +57,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
+from pydantic import BaseModel
 import pytest
 
 try:
@@ -219,6 +220,38 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       expected_calls, any_order=True
   )
   mock_span_fixture.set_attributes.assert_called_once_with(expected_usage_attrs)
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_skips_non_recording_span(monkeypatch):
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model='gemini-pro')
+  llm_response = LlmResponse(turn_complete=True)
+  span = mock.MagicMock()
+  span.is_recording.return_value = False
+  get_telemetry_config = mock.Mock()
+  serialize_request = mock.Mock(return_value='{}')
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing._telemetry_config_from_invocation_context',
+      get_telemetry_config,
+  )
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing.safe_json_serialize', serialize_request
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      llm_request,
+      llm_response,
+      span=span,
+  )
+
+  get_telemetry_config.assert_not_called()
+  serialize_request.assert_not_called()
+  span.set_attribute.assert_not_called()
+  span.set_attributes.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1787,3 +1820,57 @@ def test_build_llm_request_for_trace_excludes_live_http_clients():
   json.dumps(result)
   assert 'httpx_async_client' not in result['config'].get('http_options', {})
   assert result['config']['temperature'] == 0.1
+
+
+# ---------------------------------------------------------------------------
+# safe_json_serialize tests
+# ---------------------------------------------------------------------------
+
+
+class _SampleToolResult(BaseModel):
+  query: str
+  total: int
+  items: list[str] = []
+
+
+class _NestedModel(BaseModel):
+  inner: _SampleToolResult
+
+
+def test_safe_json_serialize_plain_dict():
+  """Plain dicts serialize normally."""
+  result = safe_json_serialize({'key': 'value', 'num': 42})
+  assert json.loads(result) == {'key': 'value', 'num': 42}
+
+
+def test_safe_json_serialize_pydantic_model_in_dict():
+  """Pydantic models nested in a dict are serialized via model_dump."""
+  model = _SampleToolResult(query='test', total=2, items=['a', 'b'])
+  result = safe_json_serialize({'result': model})
+  parsed = json.loads(result)
+  assert parsed == {
+      'result': {'query': 'test', 'total': 2, 'items': ['a', 'b']}
+  }
+
+
+def test_safe_json_serialize_nested_pydantic_model():
+  """Nested Pydantic models are fully serialized."""
+  inner = _SampleToolResult(query='q', total=0, items=[])
+  outer = _NestedModel(inner=inner)
+  result = safe_json_serialize({'result': outer})
+  parsed = json.loads(result)
+  assert parsed['result']['inner'] == {'query': 'q', 'total': 0, 'items': []}
+
+
+def test_safe_json_serialize_top_level_pydantic_model():
+  """A top-level Pydantic model (not wrapped in a dict) is serialized."""
+  model = _SampleToolResult(query='direct', total=1, items=['x'])
+  result = safe_json_serialize(model)
+  parsed = json.loads(result)
+  assert parsed == {'query': 'direct', 'total': 1, 'items': ['x']}
+
+
+def test_safe_json_serialize_non_serializable_fallback():
+  """Objects that are neither JSON-native nor Pydantic fall back gracefully."""
+  result = safe_json_serialize({'value': object()})
+  assert '<not serializable>' in result

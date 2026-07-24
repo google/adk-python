@@ -212,13 +212,91 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         invocation_id=Event.new_id(),
     )
 
+  async def _run_sliding_window(self, app, session, session_service, **kwargs):
+    """Drains the sliding-window generator, appending like the runner loop.
+
+    Compaction now yields its event instead of appending it, so the runner is
+    the single append site. This mirrors that behavior so the existing append
+    assertions still exercise the produce-then-persist path.
+    """
+    async for compaction_event in _run_compaction_for_sliding_window(
+        app, session, session_service, **kwargs
+    ):
+      await session_service.append_event(
+          session=session, event=compaction_event
+      )
+
   async def test_run_compaction_for_sliding_window_no_events(self):
     app = App(name='test', root_agent=Mock(spec=BaseAgent))
     session = Session(app_name='test', user_id='u1', id='s1', events=[])
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
     self.mock_compactor.maybe_summarize_events.assert_not_called()
+    self.mock_session_service.append_event.assert_not_called()
+
+  async def test_sliding_window_yields_event_without_appending(self):
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=1,
+        ),
+    )
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_event(2.0, 'inv2', 'e2'),
+        self._create_event(3.0, 'inv3', 'e3'),
+        self._create_event(4.0, 'inv4', 'e4'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 4.0, 'Summary inv1-inv4'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    yielded = [
+        event
+        async for event in _run_compaction_for_sliding_window(
+            app, session, self.mock_session_service
+        )
+    ]
+
+    # The compaction event is yielded to the caller (the runner loop), and the
+    # function itself never appends -- persistence is the runner's job.
+    self.assertEqual(yielded, [mock_compacted_event])
+    self.mock_session_service.append_event.assert_not_called()
+
+  async def test_sliding_window_yields_nothing_when_no_compaction(self):
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=3,
+            overlap_size=1,
+        ),
+    )
+    session = Session(
+        app_name='test',
+        user_id='u1',
+        id='s1',
+        events=[
+            self._create_event(1.0, 'inv1', 'e1'),
+            self._create_event(2.0, 'inv2', 'e2'),
+        ],
+    )
+
+    yielded = [
+        event
+        async for event in _run_compaction_for_sliding_window(
+            app, session, self.mock_session_service
+        )
+    ]
+
+    self.assertEqual(yielded, [])
     self.mock_session_service.append_event.assert_not_called()
 
   async def test_run_compaction_for_sliding_window_not_enough_new_invocations(
@@ -243,9 +321,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
             self._create_event(2.0, 'inv2', 'e2'),
         ],
     )
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
     self.mock_compactor.maybe_summarize_events.assert_not_called()
     self.mock_session_service.append_event.assert_not_called()
 
@@ -274,9 +350,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     # Expected events to compact: inv1, inv2, inv3, inv4
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
@@ -326,9 +400,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     # New invocations are inv3, inv4, inv5 (3 new) > threshold (2).
     # Overlap size is 1, so start from 1 inv before inv3, which is inv2.
@@ -361,9 +433,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
 
     self.mock_compactor.maybe_summarize_events.return_value = None
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     self.mock_compactor.maybe_summarize_events.assert_called_once()
     self.mock_session_service.append_event.assert_not_called()
@@ -403,19 +473,37 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
   def test_events_compaction_config_rejects_partial_sliding_fields(
       self,
   ):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match='must be set together'):
       EventsCompactionConfig(
           compaction_interval=2,
       )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match='must be set together'):
       EventsCompactionConfig(
           overlap_size=0,
       )
 
   def test_events_compaction_config_rejects_missing_modes(self):
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match='At least one compaction trigger'
+    ):
       EventsCompactionConfig()
+
+  def test_events_compaction_config_accepts_token_only_without_sliding_window(
+      self,
+  ):
+    config = EventsCompactionConfig(
+        token_threshold=160_000,
+        event_retention_size=50,
+    )
+    self.assertIsNone(config.compaction_interval)
+    self.assertIsNone(config.overlap_size)
+    self.assertEqual(config.token_threshold, 160_000)
+    self.assertEqual(config.event_retention_size, 50)
+
+  def test_events_compaction_config_rejects_zero_compaction_interval(self):
+    with pytest.raises(ValidationError):
+      EventsCompactionConfig(compaction_interval=0, overlap_size=1)
 
   def test_latest_prompt_token_count_fallback_applies_compaction(self):
     events = [
@@ -483,9 +571,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -535,9 +621,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -581,9 +665,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -618,7 +700,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         ],
     )
 
-    await _run_compaction_for_sliding_window(
+    await self._run_sliding_window(
         app,
         session,
         self.mock_session_service,
@@ -662,9 +744,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -714,9 +794,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -769,9 +847,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -830,9 +906,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1021,9 +1095,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1058,9 +1130,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         )
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     appended_event = self.mock_session_service.append_event.call_args[1][
         'event'
@@ -1104,9 +1174,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1143,9 +1211,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         )
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     appended_event = self.mock_session_service.append_event.call_args[1][
         'event'
@@ -1188,9 +1254,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1294,9 +1358,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1333,9 +1395,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1374,9 +1434,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1415,9 +1473,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1447,9 +1503,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     ]
     session = Session(app_name='test', user_id='u1', id='s1', events=events)
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     self.mock_compactor.maybe_summarize_events.assert_not_called()
     self.mock_session_service.append_event.assert_not_called()
@@ -1483,9 +1537,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1525,9 +1577,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1565,9 +1615,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1676,9 +1724,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1727,9 +1773,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1772,9 +1816,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1815,9 +1857,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         mock_compacted_event
     )
 
-    await _run_compaction_for_sliding_window(
-        app, session, self.mock_session_service
-    )
+    await self._run_sliding_window(app, session, self.mock_session_service)
 
     compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
         1
@@ -1929,7 +1969,10 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
   )
   session_service = AsyncMock(spec=BaseSessionService)
 
-  await _run_compaction_for_sliding_window(app, session, session_service)
+  async for _ in _run_compaction_for_sliding_window(
+      app, session, session_service
+  ):
+    pass
 
   spans = span_exporter.get_finished_spans()
   summary_span = next(

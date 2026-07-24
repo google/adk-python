@@ -18,6 +18,7 @@ import time
 
 from adk_pr_triaging_agent import agent
 from adk_pr_triaging_agent.settings import OWNER
+from adk_pr_triaging_agent.settings import PR_COUNT_TO_PROCESS
 from adk_pr_triaging_agent.settings import PULL_REQUEST_NUMBER
 from adk_pr_triaging_agent.settings import REPO
 from adk_pr_triaging_agent.utils import call_agent_async
@@ -41,13 +42,20 @@ async def main():
   )
 
   pr_number = parse_number_string(PULL_REQUEST_NUMBER)
-  if not pr_number:
+  if pr_number:
+    prompt = f"Please triage pull request #{pr_number}!"
+  else:
+    pr_count = parse_number_string(PR_COUNT_TO_PROCESS, default_value=10)
     print(
-        f"Error: Invalid pull request number received: {PULL_REQUEST_NUMBER}."
+        "No pull request number received. Operating in batch mode (limit:"
+        f" {pr_count})."
     )
-    return
+    prompt = (
+        f"Please use 'list_untriaged_pull_requests' to find {pr_count} pull"
+        " requests that need triaging, then triage each one according to your"
+        " instructions."
+    )
 
-  prompt = f"Please triage pull request #{pr_number}!"
   response = await call_agent_async(runner, USER_ID, session.id, prompt)
   print(f"<<<< Agent Final Output: {response}\n")
 

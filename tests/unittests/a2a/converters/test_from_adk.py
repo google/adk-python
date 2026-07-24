@@ -15,14 +15,10 @@
 from __future__ import annotations
 
 from unittest.mock import Mock
-from unittest.mock import patch
-import uuid
 
-from a2a.types import Part as A2APart
 from a2a.types import TaskArtifactUpdateEvent
-from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
+from google.adk.a2a import _compat
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.events import event_actions
 from google.adk.events.event import Event
@@ -62,8 +58,7 @@ class TestFromAdk:
     agents_artifacts = {}
 
     # Mock part converter to return a standard text part
-    mock_a2a_part = A2APart(root=TextPart(text="hello"))
-    mock_a2a_part.root.metadata = {}
+    mock_a2a_part = _compat.make_text_part("hello")
     mock_convert_part = Mock(return_value=[mock_a2a_part])
 
     result = convert_event_to_a2a_events(
@@ -179,3 +174,37 @@ class TestSerializeValue:
     dt = datetime(2025, 1, 1)
     result = self.serialize(dt)
     assert isinstance(result, str)
+
+  def test_nested_non_json_value_in_dict_stringified(self) -> None:
+    """A non-JSON-native value nested in a dict is stringified."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = {"when": dt, "count": 1, "label": "x"}
+    result = self.serialize(value)
+    assert result == {"when": str(dt), "count": 1, "label": "x"}
+    assert isinstance(result["when"], str)
+    assert isinstance(result["count"], int)
+    assert isinstance(result["label"], str)
+
+  def test_nested_non_json_value_in_list_stringified(self) -> None:
+    """A non-JSON-native value nested in a list is stringified."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = [dt, 1, "x"]
+    result = self.serialize(value)
+    assert result == [str(dt), 1, "x"]
+    assert isinstance(result[0], str)
+    assert isinstance(result[1], int)
+    assert isinstance(result[2], str)
+
+  def test_non_string_dict_key_stringified(self) -> None:
+    """Non-string dict keys are stringified so the result is JSON-encodable."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = {dt: "when", 1: "one", "label": "x"}
+    result = self.serialize(value)
+    assert result == {str(dt): "when", "1": "one", "label": "x"}
+    assert all(isinstance(k, str) for k in result)

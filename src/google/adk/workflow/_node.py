@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from typing import TypeVar
 
 from pydantic import Field
+from pydantic import model_validator
 from pydantic import PrivateAttr
 from typing_extensions import override
 
@@ -50,6 +51,7 @@ def node(
     retry_config: RetryConfig | None = None,
     timeout: float | None = None,
     parallel_worker: bool = False,
+    max_parallel_workers: int | None = None,
     auth_config: AuthConfig | None = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> Callable[
@@ -67,6 +69,7 @@ def node(
     retry_config: RetryConfig | None = None,
     timeout: float | None = None,
     parallel_worker: bool = False,
+    max_parallel_workers: int | None = None,
     auth_config: AuthConfig | None = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> base_node.BaseNode:
@@ -81,6 +84,7 @@ def node(
     retry_config: RetryConfig | None = None,
     timeout: float | None = None,
     parallel_worker: bool = False,
+    max_parallel_workers: int | None = None,
     auth_config: AuthConfig | None = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> Any:
@@ -123,6 +127,16 @@ def node(
     a BaseNode instance.
   """
 
+  if max_parallel_workers is not None:
+    if not parallel_worker:
+      raise ValueError(
+          'max_parallel_workers can only be set when parallel_worker is True.'
+      )
+    if max_parallel_workers < 1:
+      raise ValueError(
+          'max_parallel_workers must be greater than or equal to 1.'
+      )
+
   def wrapper(
       func: T,
   ) -> function_node.FunctionNode | parallel_worker_lib._ParallelWorker:
@@ -138,7 +152,9 @@ def node(
         parameter_binding=parameter_binding,
     )
     if parallel_worker:
-      return parallel_worker_lib._ParallelWorker(node=built_node)
+      return parallel_worker_lib._ParallelWorker(
+          node=built_node, max_parallel_workers=max_parallel_workers
+      )
     return built_node
 
   if node_like is None:
@@ -155,7 +171,9 @@ def node(
         parameter_binding=parameter_binding,
     )
     if parallel_worker:
-      return parallel_worker_lib._ParallelWorker(node=built_node)
+      return parallel_worker_lib._ParallelWorker(
+          node=built_node, max_parallel_workers=max_parallel_workers
+      )
     return built_node
 
 
@@ -167,7 +185,21 @@ class Node(base_node.BaseNode):
   """
 
   parallel_worker: bool = Field(default=False, frozen=True)
+  max_parallel_workers: int | None = Field(default=None, frozen=True)
   _inner_node: base_node.BaseNode | None = PrivateAttr(default=None)
+
+  @model_validator(mode='after')
+  def _validate_parallel_worker_config(self) -> Node:
+    if self.max_parallel_workers is not None:
+      if not self.parallel_worker:
+        raise ValueError(
+            'max_parallel_workers can only be set when parallel_worker is True.'
+        )
+      if self.max_parallel_workers < 1:
+        raise ValueError(
+            'max_parallel_workers must be greater than or equal to 1.'
+        )
+    return self
 
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
@@ -179,7 +211,9 @@ class Node(base_node.BaseNode):
       # original (essential for LlmAgent and Workflow subclasses).
       worker_node = self.model_copy(update={'parallel_worker': False})
 
-      inner = parallel_worker_lib._ParallelWorker(node=worker_node)
+      inner = parallel_worker_lib._ParallelWorker(
+          node=worker_node, max_parallel_workers=self.max_parallel_workers
+      )
       self._inner_node = inner
       # Synchronize rerun_on_resume with the inner node.
       self.rerun_on_resume = inner.rerun_on_resume
@@ -193,7 +227,9 @@ class Node(base_node.BaseNode):
 
     if copied.parallel_worker:
       worker_node = copied.model_copy(update={'parallel_worker': False})
-      copied._inner_node = parallel_worker_lib._ParallelWorker(node=worker_node)
+      copied._inner_node = parallel_worker_lib._ParallelWorker(
+          node=worker_node, max_parallel_workers=copied.max_parallel_workers
+      )
       copied.rerun_on_resume = copied._inner_node.rerun_on_resume
 
     return copied
