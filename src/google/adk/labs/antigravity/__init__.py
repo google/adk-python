@@ -12,17 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
+os.environ.setdefault("TEMPORARILY_DISABLE_PROTOBUF_VERSION_CHECK", "true")
+
 try:
   import google.antigravity  # noqa: F401
 except ImportError as e:
   raise ImportError(
       "The 'google-antigravity' package is required to use the ADK"
-      ' Antigravity integration. Install it with: pip install'
+      " Antigravity integration. Install it with: pip install"
       ' "google-adk[antigravity]"'
   ) from e
 
 from ._antigravity_agent import AntigravityAgent
 
 __all__ = [
-    'AntigravityAgent',
+    "AntigravityAgent",
 ]

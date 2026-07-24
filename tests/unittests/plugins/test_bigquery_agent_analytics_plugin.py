@@ -1042,6 +1042,98 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert content_dict["result"]["res"] == "A" * 100
 
   @pytest.mark.asyncio
+  async def test_after_tool_callback_logs_agent_response_for_final_tool(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """A configured final-response tool also logs AGENT_RESPONSE from its args."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        final_response_tool_names=frozenset({"submit_final_response"})
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      mock_tool = mock.create_autospec(
+          base_tool_lib.BaseTool, instance=True, spec_set=True
+      )
+      type(mock_tool).name = mock.PropertyMock(
+          return_value="submit_final_response"
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args={"answer": "The table has 241 rows."},
+          tool_context=tool_context,
+          result={"status": "SUCCESS"},
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+      assert "TOOL_COMPLETED" in event_types
+      assert event_types.count("AGENT_RESPONSE") == 1
+      agent_resp = next(r for r in rows if r["event_type"] == "AGENT_RESPONSE")
+      content_dict = json.loads(agent_resp["content"])
+      assert content_dict["response"] == {"answer": "The table has 241 rows."}
+      attributes = json.loads(agent_resp["attributes"])
+      assert attributes["source_tool"] == "submit_final_response"
+
+  @pytest.mark.asyncio
+  async def test_after_tool_callback_no_agent_response_by_default(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """With the default empty set, a tool never emits AGENT_RESPONSE."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      mock_tool = mock.create_autospec(
+          base_tool_lib.BaseTool, instance=True, spec_set=True
+      )
+      type(mock_tool).name = mock.PropertyMock(
+          return_value="submit_final_response"
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args={"answer": "hi"},
+          tool_context=tool_context,
+          result={"status": "SUCCESS"},
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+      assert "AGENT_RESPONSE" not in event_types
+
+  @pytest.mark.asyncio
   async def test_max_content_length_tool_error(
       self,
       mock_write_client,

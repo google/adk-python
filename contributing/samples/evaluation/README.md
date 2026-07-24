@@ -37,8 +37,14 @@ answer.
 
 ## Samples
 
-| Sample | Concept | Criteria |
-| ------ | ------- | -------- |
+| Sample                                            | Concept                                     | Criteria                                                                     |
+| ------------------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------- |
+| [`basic_criteria`](./basic_criteria/)             | Deterministic, reference-based scoring      | `tool_trajectory_avg_score`, `response_match_score`                          |
+| [`test_file_vs_evalset`](./test_file_vs_evalset/) | `.test.json` vs `.evalset.json` conventions | `tool_trajectory_avg_score`, `response_match_score`                          |
+| [`custom_metric`](./custom_metric/)               | Write your own metric                       | `temperature_safety_score` (custom)                                          |
+| [`llm_judge_match`](./llm_judge_match/)           | LLM-judged semantic match                   | `final_response_match_v2`                                                    |
+| [`rubric_criteria`](./rubric_criteria/)           | LLM-judged quality via rubrics              | `rubric_based_final_response_quality_v1`, `rubric_based_tool_use_quality_v1` |
+| [`user_simulation`](./user_simulation/)           | Dynamically simulated user turns            | `hallucinations_v1`, `per_turn_user_simulator_quality_v1`                    |
 
 ## Graph
 

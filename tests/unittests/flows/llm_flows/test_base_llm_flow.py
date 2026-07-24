@@ -23,6 +23,7 @@ from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
@@ -36,6 +37,7 @@ from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -2013,3 +2015,77 @@ async def test_finalize_dynamic_instructions_with_static_instruction():
   assert llm_request.contents[0].parts[0].text == 'dynamic 1\n\ndynamic 2'
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
+
+
+@pytest.mark.asyncio
+async def test_resume_short_circuit_skips_partial_function_call():
+  """A partial function_call at events[-1] must not drive the resume replay.
+
+  Partial events are SSE-display-only and never persisted to the session
+  (runners.py, invocation_context.py). If one leaks to events[-1] on a
+  resumable invocation, the resume short-circuit must ignore it and call the
+  LLM normally instead of re-executing it as a transfer.
+  """
+  sub_agent = Agent(
+      name='sub_agent',
+      model=testing_utils.MockModel.create(responses=['unused']),
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=['llm called']),
+      sub_agents=[sub_agent],
+  )
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id='i',
+          branch='root_agent',
+          author='user',
+          content=types.Content(
+              role='user', parts=[types.Part.from_text(text='go')]
+          ),
+      ),
+  )
+  # A consumer leaked a partial streaming transfer call into the session view;
+  # stock ADK filters these, a buggy consumer may not.
+  session.events.append(
+      Event(
+          invocation_id='i',
+          branch='root_agent',
+          author='root_agent',
+          partial=True,
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part.from_function_call(
+                      name='transfer_to_agent', args={'agent_name': 'sub_agent'}
+                  )
+              ],
+          ),
+      )
+  )
+
+  invocation_context = InvocationContext(
+      session_service=session_service,
+      invocation_id='i',
+      agent=root_agent,
+      session=session,
+      run_config=RunConfig(),
+      resumability_config=ResumabilityConfig(is_resumable=True),
+      branch='root_agent',
+  )
+
+  events = [
+      event
+      async for event in root_agent._llm_flow.run_async(invocation_context)
+  ]
+
+  # The LLM was called once (short-circuit skipped) and the partial call was
+  # not re-executed as a transfer.
+  assert root_agent.model.response_index == 0
+  assert not any(e.actions and e.actions.transfer_to_agent for e in events)

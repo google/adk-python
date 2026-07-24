@@ -14,6 +14,13 @@
 # limitations under the License.
 
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ADK_REAL_ROOT=$(dirname "$(realpath "$REPO_ROOT/src/google/adk/__init__.py")")
+EXCLUDE_TESTS="$ADK_REAL_ROOT/tests"
+EXCLUDE_WORKSPACE="$ADK_REAL_ROOT/open_source_workspace"
+EXCLUDE_CONTRIBUTING="$ADK_REAL_ROOT/contributing"
+
 exit_code=0
 
 get_added_files() {
@@ -33,11 +40,17 @@ get_added_files() {
 while read -r file; do
     # Check if file is not empty (happens if no new files)
     if [[ -n "$file" ]]; then
-        # Match only files in the package source (src/google/adk/) to avoid false
-        # positives in environments (e.g., monorepos) where the entire repository
-        # root is nested under a 'google/adk/' directory structure.
-        if [[ "$file" == */src/google/adk/*.py ]] || [[ "$file" == src/google/adk/*.py ]]; then
-            filename=$(basename "$file")
+        # Match only files in the package source (resolving symlinks to support both
+        # open-source and internal layouts) and exclude tests/workspace to avoid
+        # false positives.
+        abs_file=$(realpath "$file" 2>/dev/null || echo "")
+        if [[ -n "$abs_file" ]] && \
+           [[ "$abs_file" == "$ADK_REAL_ROOT"/* ]] && \
+           [[ "$abs_file" != "$EXCLUDE_TESTS"/* ]] && \
+           [[ "$abs_file" != "$EXCLUDE_WORKSPACE"/* ]] && \
+           [[ "$abs_file" != "$EXCLUDE_CONTRIBUTING"/* ]] && \
+           [[ "$abs_file" == *.py ]]; then
+            filename=$(basename "$abs_file")
             if [[ ! "$filename" == _* ]]; then
                 echo "Error: New Python file '$file' must have a '_' prefix."
                 echo "All new Python files in src/google/adk/ must be private by default."
