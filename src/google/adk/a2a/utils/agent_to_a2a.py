@@ -81,6 +81,7 @@ def to_a2a(
     host: str = "localhost",
     port: int = 8000,
     protocol: str = "http",
+    rpc_path: str = "",
     agent_card: AgentCard | str | None = None,
     push_config_store: PushNotificationConfigStore | None = None,
     task_store: TaskStore | None = None,
@@ -95,6 +96,12 @@ def to_a2a(
       host: The host for the A2A RPC URL (default: "localhost")
       port: The port for the A2A RPC URL (default: 8000)
       protocol: The protocol for the A2A RPC URL (default: "http")
+      rpc_path: Optional path prefix to serve the agent under, e.g.
+        "analysis-agent". Leading/trailing slashes are ignored. When set, both
+        the JSON-RPC route and the well-known agent-card route are mounted under
+        this prefix instead of at the root. Defaults to "" (mount at root). A
+        caller-provided agent_card's advertised url is not rewritten; a warning
+        is logged if both agent_card and a non-empty rpc_path are supplied.
       agent_card: Optional pre-built AgentCard object or path to agent card
         JSON. If not provided, will be built automatically from the agent.
       push_config_store: Optional A2A push notification config store. If not
@@ -180,8 +187,18 @@ def to_a2a(
     push_config_store = InMemoryPushNotificationConfigStore()
 
   # Use provided agent card or build one from the agent
-  rpc_url = f"{protocol}://{host}:{port}/"
+  normalized_path = rpc_path.strip("/")
+  prefix = f"/{normalized_path}" if normalized_path else ""
+  rpc_url = f"{protocol}://{host}:{port}{prefix}/"
   provided_agent_card = _load_agent_card(agent_card)
+
+  if provided_agent_card is not None and normalized_path:
+    adk_logger.warning(
+        "Both agent_card and rpc_path were provided; routes are mounted under"
+        " %r but the provided agent_card's advertised url is left unchanged, so"
+        " clients reading the card may not reach the served location.",
+        prefix,
+    )
 
   card_builder = AgentCardBuilder(
       agent=agent,
@@ -202,6 +219,7 @@ def to_a2a(
         agent_executor=agent_executor,
         task_store=task_store,
         push_config_store=push_config_store,
+        prefix=prefix,
     )
 
   # Compose a lifespan that runs A2A setup and the user's lifespan

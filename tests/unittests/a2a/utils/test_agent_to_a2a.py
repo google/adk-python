@@ -26,6 +26,7 @@ behaviorally
 (driving the app lifespan and asserting routes are attached).
 """
 
+import logging
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -223,6 +224,100 @@ class TestToA2A:
 
     mock_card_builder_class.assert_called_once_with(
         agent=self.mock_agent, rpc_url="http://example.com:9000/"
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_with_rpc_path(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_agent_executor_class,
+  ):
+    """rpc_path is threaded into the advertised RPC URL."""
+    mock_starlette_class.return_value = Mock(spec=Starlette)
+    mock_agent_executor_class.return_value = Mock(spec=A2aAgentExecutor)
+    mock_card_builder_class.return_value = Mock(spec=AgentCardBuilder)
+
+    to_a2a(self.mock_agent, rpc_path="/analysis-agent")
+
+    mock_card_builder_class.assert_called_once_with(
+        agent=self.mock_agent, rpc_url="http://localhost:8000/analysis-agent/"
+    )
+
+  @pytest.mark.parametrize(
+      "rpc_path", ["analysis-agent", "/analysis-agent", "/analysis-agent/"]
+  )
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_rpc_path_normalizes_slashes(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_agent_executor_class,
+      rpc_path,
+  ):
+    """Leading/trailing slashes on rpc_path are normalized identically."""
+    mock_starlette_class.return_value = Mock(spec=Starlette)
+    mock_agent_executor_class.return_value = Mock(spec=A2aAgentExecutor)
+    mock_card_builder_class.return_value = Mock(spec=AgentCardBuilder)
+
+    to_a2a(self.mock_agent, rpc_path=rpc_path)
+
+    mock_card_builder_class.assert_called_once_with(
+        agent=self.mock_agent, rpc_url="http://localhost:8000/analysis-agent/"
+    )
+
+  @pytest.mark.parametrize("rpc_path", ["/", "//", "///"])
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_all_slash_rpc_path_collapses_to_root(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_agent_executor_class,
+      rpc_path,
+  ):
+    """An all-slash rpc_path collapses to a root mount."""
+    mock_starlette_class.return_value = Mock(spec=Starlette)
+    mock_agent_executor_class.return_value = Mock(spec=A2aAgentExecutor)
+    mock_card_builder_class.return_value = Mock(spec=AgentCardBuilder)
+
+    to_a2a(self.mock_agent, rpc_path=rpc_path)
+
+    mock_card_builder_class.assert_called_once_with(
+        agent=self.mock_agent, rpc_url="http://localhost:8000/"
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_multi_segment_rpc_path(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_agent_executor_class,
+  ):
+    """A multi-segment rpc_path is preserved in the RPC URL."""
+    mock_starlette_class.return_value = Mock(spec=Starlette)
+    mock_agent_executor_class.return_value = Mock(spec=A2aAgentExecutor)
+    mock_card_builder_class.return_value = Mock(spec=AgentCardBuilder)
+
+    to_a2a(self.mock_agent, rpc_path="/team/agent")
+
+    mock_card_builder_class.assert_called_once_with(
+        agent=self.mock_agent, rpc_url="http://localhost:8000/team/agent/"
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -518,6 +613,26 @@ class TestToA2A:
     mock_card_builder.build.assert_called_once()
     _assert_a2a_routes_attached(app)
 
+  async def test_to_a2a_rpc_path_mounts_prefixed_routes(self):
+    """rpc_path mounts the JSON-RPC and agent-card routes under the prefix."""
+    agent = LlmAgent(
+        name="prefixed_agent", description="d", model="gemini-2.0-flash"
+    )
+    app = to_a2a(agent, port=8001, rpc_path="/analysis-agent")
+
+    async with app.router.lifespan_context(app):
+      paths = _route_paths(app)
+
+    assert (
+        "/analysis-agent" in paths
+    ), f"missing prefixed RPC route; got {paths}"
+    assert any(
+        p and p.startswith("/analysis-agent/.well-known") for p in paths
+    ), f"missing prefixed agent-card route; got {paths}"
+    assert (
+        "/" not in paths
+    ), f"root RPC route should not be mounted; got {paths}"
+
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
@@ -559,6 +674,34 @@ class TestToA2A:
 
     mock_card_builder.build.assert_not_called()
     _assert_a2a_routes_attached(app)
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_warns_when_agent_card_and_rpc_path_both_set(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_agent_executor_class,
+      caplog,
+  ):
+    """A provided agent_card plus a non-empty rpc_path logs a mismatch warning."""
+    mock_starlette_class.return_value = Mock(spec=Starlette)
+    mock_agent_executor_class.return_value = Mock(spec=A2aAgentExecutor)
+    mock_card_builder_class.return_value = Mock(spec=AgentCardBuilder)
+
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      to_a2a(
+          self.mock_agent,
+          rpc_path="/analysis-agent",
+          agent_card=_make_minimal_agent_card(),
+      )
+
+    assert any(
+        "agent_card and rpc_path" in r.message for r in caplog.records
+    ), f"expected mismatch warning; got {[r.message for r in caplog.records]}"
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
