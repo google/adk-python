@@ -8613,31 +8613,49 @@ class TestAgentResponseLogging:
     assert mock_write_client.append_rows.call_count == 0
 
 
+def _stub_arrow_prep(bp):
+  """Stubs Arrow serialization so write tests need no real row schema."""
+  fake_batch = mock.MagicMock()
+  fake_batch.serialize.return_value.to_pybytes.return_value = b"batch"
+  bp._prepare_arrow_batch = mock.MagicMock(return_value=fake_batch)
+
+
+def _make_batch_processor(
+    arrow_schema,
+    *,
+    write_stream=DEFAULT_STREAM_NAME,
+    exactly_once_delivery=False,
+    queue_max_size=10,
+    retry_config=None,
+):
+  """Builds a BatchProcessor with a mock write client (writer not started)."""
+  return bigquery_agent_analytics_plugin.BatchProcessor(
+      write_client=mock.MagicMock(),
+      arrow_schema=arrow_schema,
+      write_stream=write_stream,
+      batch_size=1,
+      flush_interval=1.0,
+      retry_config=(
+          retry_config or bigquery_agent_analytics_plugin.RetryConfig()
+      ),
+      queue_max_size=queue_max_size,
+      shutdown_timeout=10.0,
+      exactly_once_delivery=exactly_once_delivery,
+  )
+
+
 class TestDropStats:
   """Tests that dropped events are counted and exposed via get_drop_stats."""
 
   def _make_processor(
       self, arrow_schema, *, queue_max_size=10, retry_config=None
   ):
-    """Builds a BatchProcessor with a mock write client (writer not started)."""
-    return bigquery_agent_analytics_plugin.BatchProcessor(
-        write_client=mock.MagicMock(),
-        arrow_schema=arrow_schema,
-        write_stream=DEFAULT_STREAM_NAME,
-        batch_size=1,
-        flush_interval=1.0,
-        retry_config=(
-            retry_config or bigquery_agent_analytics_plugin.RetryConfig()
-        ),
-        queue_max_size=queue_max_size,
-        shutdown_timeout=10.0,
+    return _make_batch_processor(
+        arrow_schema, queue_max_size=queue_max_size, retry_config=retry_config
     )
 
   def _stub_arrow_prep(self, bp):
-    """Stubs Arrow serialization so write tests need no real row schema."""
-    fake_batch = mock.MagicMock()
-    fake_batch.serialize.return_value.to_pybytes.return_value = b"batch"
-    bp._prepare_arrow_batch = mock.MagicMock(return_value=fake_batch)
+    _stub_arrow_prep(bp)
 
   @pytest.mark.asyncio
   async def test_flush_waits_for_dequeued_write(self, dummy_arrow_schema):
@@ -8757,39 +8775,21 @@ class TestExactlyOnceDelivery:
   """
 
   def _make_processor(self, arrow_schema, *, retry_config=None):
-    return bigquery_agent_analytics_plugin.BatchProcessor(
-        write_client=mock.MagicMock(),
-        arrow_schema=arrow_schema,
+    return _make_batch_processor(
+        arrow_schema,
         write_stream=COMMITTED_STREAM_NAME,
-        batch_size=1,
-        flush_interval=1.0,
-        retry_config=(
-            retry_config or bigquery_agent_analytics_plugin.RetryConfig()
-        ),
-        queue_max_size=10,
-        shutdown_timeout=10.0,
         exactly_once_delivery=True,
+        retry_config=retry_config,
     )
 
   def _stub_arrow_prep(self, bp):
-    fake_batch = mock.MagicMock()
-    fake_batch.serialize.return_value.to_pybytes.return_value = b"batch"
-    bp._prepare_arrow_batch = mock.MagicMock(return_value=fake_batch)
+    _stub_arrow_prep(bp)
 
   @pytest.mark.asyncio
   async def test_offset_not_set_on_default_stream(self, dummy_arrow_schema):
     # `_default` rejects an explicit offset -- confirm the field stays unset
     # (not merely 0) when exactly_once_delivery is off.
-    bp = bigquery_agent_analytics_plugin.BatchProcessor(
-        write_client=mock.MagicMock(),
-        arrow_schema=dummy_arrow_schema,
-        write_stream=DEFAULT_STREAM_NAME,
-        batch_size=1,
-        flush_interval=1.0,
-        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
-        queue_max_size=10,
-        shutdown_timeout=10.0,
-    )
+    bp = _make_batch_processor(dummy_arrow_schema)
     self._stub_arrow_prep(bp)
 
     async def fake_append_rows(requests, **kwargs):

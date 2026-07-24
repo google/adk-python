@@ -1753,17 +1753,15 @@ class BatchProcessor:
       )
       req.arrow_rows.writer_schema.serialized_schema = serialized_schema
       req.arrow_rows.rows.serialized_record_batch = serialized_batch
-      # Fixed for the lifetime of this batch (including retries): only a
-      # confirmed outcome (success or ALREADY_EXISTS) below advances
-      # `self._next_offset`, so every retry of this batch targets the same
-      # offset the server saw on the first attempt. Not allowed on `_default`
-      # (see `AppendRowsRequest.offset` docs), so only set when this
-      # processor owns a dedicated stream.
-      offset_for_batch = (
-          self._next_offset if self.exactly_once_delivery else None
-      )
-      if offset_for_batch is not None:
-        req.offset = offset_for_batch
+      # `self._next_offset` is fixed for the lifetime of this batch
+      # (including retries): only a confirmed outcome (success or
+      # ALREADY_EXISTS) below advances it, and this method is only ever
+      # invoked serially for a given processor, so every retry of this batch
+      # targets the same offset the server saw on the first attempt. Not
+      # allowed on `_default` (see `AppendRowsRequest.offset` docs), so only
+      # set when this processor owns a dedicated stream.
+      if self.exactly_once_delivery:
+        req.offset = self._next_offset
     except Exception as e:
       self._dropped["arrow_prep_failed"] += len(rows)
       logger.error(
@@ -1804,7 +1802,7 @@ class BatchProcessor:
               error_message = getattr(error, "message", "Unknown error")
 
               if (
-                  offset_for_batch is not None
+                  self.exactly_once_delivery
                   and error_code == _GRPC_ALREADY_EXISTS
               ):
                 # This offset was already durably written by a prior attempt
@@ -1816,20 +1814,14 @@ class BatchProcessor:
                     "BigQuery append at offset %s for stream %s was already"
                     " applied; retry confirmed as a no-op (no duplicate"
                     " written).",
-                    offset_for_batch,
+                    self._next_offset,
                     self.write_stream,
                 )
-                self._next_offset = offset_for_batch + len(rows)
+                self._next_offset += len(rows)
                 return
 
-              logger.warning(
-                  "BigQuery Write API returned error code %s: %s",
-                  error_code,
-                  error_message,
-              )
-
               if (
-                  offset_for_batch is not None
+                  self.exactly_once_delivery
                   and error_code == _GRPC_OUT_OF_RANGE
               ):
                 # The server's next expected offset for this stream doesn't
@@ -1846,11 +1838,17 @@ class BatchProcessor:
                     " stream %s (Data Loss): local offset tracking is out of"
                     " sync with the server. Total rows dropped (offset"
                     " conflict): %s",
-                    offset_for_batch,
+                    self._next_offset,
                     self.write_stream,
                     self._dropped["offset_conflict"],
                 )
                 return
+
+              logger.warning(
+                  "BigQuery Write API returned error code %s: %s",
+                  error_code,
+                  error_message,
+              )
 
               if error_code in [
                   _GRPC_DEADLINE_EXCEEDED,
@@ -1874,11 +1872,11 @@ class BatchProcessor:
                 logger.error("Row content causing error: %s", rows)
               self._dropped["non_retryable"] += len(rows)
               return
-            elif offset_for_batch is not None:
+            elif self.exactly_once_delivery:
               # Confirmed success: advance past this batch's offset so a
               # subsequent batch (or a future retry that lands after us)
               # never reuses it.
-              self._next_offset = offset_for_batch + len(rows)
+              self._next_offset += len(rows)
           return
 
         await asyncio.wait_for(perform_write(), timeout=30.0)
@@ -3145,6 +3143,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Content formatter failed: %s", e)
       return "[FORMATTING FAILED]", False
 
+  def _table_resource_path(self) -> str:
+    """The table's BigQuery Storage API resource path (no stream suffix)."""
+    return f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}"
+
   async def _create_committed_write_stream(
       self, write_client: "BigQueryWriteAsyncClient"
   ) -> str:
@@ -3162,9 +3164,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Returns:
         The full resource name of the newly created write stream.
     """
-    parent = f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}"
     stream = await write_client.create_write_stream(
-        parent=parent,
+        parent=self._table_resource_path(),
         write_stream=bq_storage_types.WriteStream(
             type_=bq_storage_types.WriteStream.Type.COMMITTED
         ),
@@ -3229,7 +3230,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
     else:
       if not self._write_stream_name:
-        self._write_stream_name = f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}/_default"
+        self._write_stream_name = f"{self._table_resource_path()}/_default"
       write_stream_name = self._write_stream_name
 
     batch_processor = BatchProcessor(
