@@ -196,6 +196,11 @@ class TestAgentRegistry:
       # The custom_metadata shouldn't have been added
       assert tool.custom_metadata is None
 
+  _GOOGLE_MCP_URL = "https://us-central1-aiplatform.googleapis.com/mcp"
+  _GOOGLE_MCP_MTLS_URL = (
+      "https://us-central1-aiplatform.mtls.googleapis.com/mcp"
+  )
+
   def _stub_mcp_server(self, registry, url):
     """Configures the registry to return an MCP server whose interface is `url`."""
     mock_response = MagicMock()
@@ -207,42 +212,50 @@ class TestAgentRegistry:
     registry._credentials.token = "token"
     registry._credentials.refresh = MagicMock()
 
-  def test_get_mcp_toolset_uses_mtls_endpoint_for_google(self, registry):
-    self._stub_mcp_server(
-        registry, "https://us-central1-aiplatform.googleapis.com/mcp"
-    )
-    with patch(
-        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
-        return_value=True,
-    ):
+  def test_get_mcp_toolset_auto_with_cert_uses_mtls_endpoint(self, registry):
+    # auto + client certificate available -> mTLS endpoint.
+    self._stub_mcp_server(registry, self._GOOGLE_MCP_URL)
+    registry._client_cert_source = object()
+    with patch.dict(os.environ, {"GOOGLE_API_USE_MTLS_ENDPOINT": "auto"}):
       toolset = registry.get_mcp_toolset("test-mcp-server")
-    assert (
-        toolset.connection_params.url
-        == "https://us-central1-aiplatform.mtls.googleapis.com/mcp"
-    )
+    assert toolset.connection_params.url == self._GOOGLE_MCP_MTLS_URL
 
-  def test_get_mcp_toolset_keeps_plain_endpoint_without_client_cert(
+  def test_get_mcp_toolset_auto_without_cert_keeps_plain_endpoint(
       self, registry
   ):
-    self._stub_mcp_server(
-        registry, "https://us-central1-aiplatform.googleapis.com/mcp"
-    )
-    with patch(
-        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
-        return_value=False,
-    ):
+    # auto + no certificate available -> plain endpoint (avoids pointing a
+    # plain client, after mTLS fallback, at the mTLS host).
+    self._stub_mcp_server(registry, self._GOOGLE_MCP_URL)
+    registry._client_cert_source = None
+    with patch.dict(os.environ, {"GOOGLE_API_USE_MTLS_ENDPOINT": "auto"}):
       toolset = registry.get_mcp_toolset("test-mcp-server")
-    assert (
-        toolset.connection_params.url
-        == "https://us-central1-aiplatform.googleapis.com/mcp"
-    )
+    assert toolset.connection_params.url == self._GOOGLE_MCP_URL
+
+  def test_get_mcp_toolset_always_without_cert_uses_mtls_endpoint(
+      self, registry
+  ):
+    # always -> mTLS endpoint unconditionally, even without a cert.
+    self._stub_mcp_server(registry, self._GOOGLE_MCP_URL)
+    registry._client_cert_source = None
+    with patch.dict(os.environ, {"GOOGLE_API_USE_MTLS_ENDPOINT": "always"}):
+      toolset = registry.get_mcp_toolset("test-mcp-server")
+    assert toolset.connection_params.url == self._GOOGLE_MCP_MTLS_URL
+
+  def test_get_mcp_toolset_never_keeps_plain_endpoint_with_cert(
+      self, registry
+  ):
+    # never -> plain endpoint even when a cert is available.
+    self._stub_mcp_server(registry, self._GOOGLE_MCP_URL)
+    registry._client_cert_source = object()
+    with patch.dict(os.environ, {"GOOGLE_API_USE_MTLS_ENDPOINT": "never"}):
+      toolset = registry.get_mcp_toolset("test-mcp-server")
+    assert toolset.connection_params.url == self._GOOGLE_MCP_URL
 
   def test_get_mcp_toolset_keeps_non_google_endpoint(self, registry):
+    # Non-Google hosts are never rewritten, even under always + cert.
     self._stub_mcp_server(registry, "https://mcp.example.com/mcp")
-    with patch(
-        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
-        return_value=True,
-    ):
+    registry._client_cert_source = object()
+    with patch.dict(os.environ, {"GOOGLE_API_USE_MTLS_ENDPOINT": "always"}):
       toolset = registry.get_mcp_toolset("test-mcp-server")
     assert toolset.connection_params.url == "https://mcp.example.com/mcp"
 

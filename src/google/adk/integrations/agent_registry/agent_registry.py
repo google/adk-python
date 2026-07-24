@@ -223,6 +223,9 @@ class AgentRegistry:
           else None
       )
       self._session.configure_mtls_channel(client_cert_source)
+    # Retained so endpoint selection for MCP/A2A targets can mirror the base-URL
+    # policy: `auto` uses the mTLS endpoint only when a cert is actually present.
+    self._client_cert_source = client_cert_source
     self._base_url = _get_agent_registry_base_url(client_cert_source)
 
   def _get_auth_headers(self) -> Dict[str, str]:
@@ -423,13 +426,15 @@ class AgentRegistry:
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
       )
 
-    # Route Google-hosted MCP servers to the mutual-TLS endpoint when a client
-    # certificate is configured. A channel-bound (Agent Identity) access token
-    # is only accepted on *.mtls.googleapis.com; presenting it to the standard
-    # endpoint returns 401 UNAUTHENTICATED even though the mTLS transport is
-    # negotiated. effective_googleapis_endpoint is a no-op for non-Google hosts,
-    # already-mTLS hosts, and when GOOGLE_API_USE_MTLS_ENDPOINT=never.
-    if _use_client_cert_effective():
+    # Route Google-hosted MCP servers to the mutual-TLS endpoint following the
+    # same policy as the registry base URL. A channel-bound (Agent Identity)
+    # access token is only accepted on *.mtls.googleapis.com; presenting it to
+    # the standard endpoint returns 401 even though mTLS was negotiated. Gating
+    # on the resolved client cert (not just the cert-use policy) avoids pointing
+    # a plain client at the mTLS host when `auto` is set but no cert is present.
+    # effective_googleapis_endpoint is itself a no-op for non-Google hosts and
+    # already-mTLS hosts.
+    if _should_use_mtls_endpoint(self._client_cert_source):
       endpoint_uri = effective_googleapis_endpoint(endpoint_uri)
 
     if mcp_server_id and not auth_scheme:
@@ -647,8 +652,15 @@ def _use_client_cert_effective() -> bool:
     return use_client_cert_str == "true"
 
 
-def _get_agent_registry_base_url(client_cert_source: Any | None = None) -> str:
-  """Returns the base URL based on mTLS configuration and cert availability."""
+def _should_use_mtls_endpoint(client_cert_source: Any | None) -> bool:
+  """Whether Google endpoints should resolve to their .mtls.googleapis.com host.
+
+  Follows the GOOGLE_API_USE_MTLS_ENDPOINT policy (AIP-4114): ``always`` selects
+  the mTLS endpoint unconditionally, ``auto`` only when a client certificate is
+  actually available (``client_cert_source is not None``), and ``never`` never.
+  Using cert *availability* rather than cert-use *policy* avoids pointing a
+  plain client (mTLS fell back) at an mTLS-only host.
+  """
   use_mtls_endpoint_str = os.getenv(
       "GOOGLE_API_USE_MTLS_ENDPOINT", _MtlsEndpoint.AUTO.value
   ).lower()
@@ -656,8 +668,13 @@ def _get_agent_registry_base_url(client_cert_source: Any | None = None) -> str:
     use_mtls_endpoint = _MtlsEndpoint(use_mtls_endpoint_str)
   except ValueError:
     use_mtls_endpoint = _MtlsEndpoint.AUTO
-  if (use_mtls_endpoint is _MtlsEndpoint.ALWAYS) or (
+  return (use_mtls_endpoint is _MtlsEndpoint.ALWAYS) or (
       use_mtls_endpoint is _MtlsEndpoint.AUTO and client_cert_source is not None
-  ):
+  )
+
+
+def _get_agent_registry_base_url(client_cert_source: Any | None = None) -> str:
+  """Returns the base URL based on mTLS configuration and cert availability."""
+  if _should_use_mtls_endpoint(client_cert_source):
     return AGENT_REGISTRY_MTLS_BASE_URL
   return AGENT_REGISTRY_BASE_URL
