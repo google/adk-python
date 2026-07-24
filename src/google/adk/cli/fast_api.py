@@ -404,6 +404,7 @@ def get_fast_api_app(
     *,
     agents_dir: str,
     agent_loader: BaseAgentLoader | None = None,
+    app_name: str | None = None,
     session_service_uri: str | None = None,
     session_db_kwargs: Mapping[str, Any] | None = None,
     artifact_service_uri: str | None = None,
@@ -443,6 +444,13 @@ def get_fast_api_app(
       services.py/yaml), and as a base for local storage.
     agent_loader: An optional custom loader for retrieving agent instances. If
       not provided, a default AgentLoader targeting agents_dir is used.
+    app_name: Optional override for the application name used to store and look
+      up sessions and artifacts. By default the app_name is the agent's folder
+      name, which means two servers loading an identically-named agent folder
+      against a shared backend share the same session/artifact namespace. Set a
+      distinct value per server to keep their persisted data isolated without
+      renaming the folder. Falls back to the ``ADK_APP_NAME`` environment
+      variable when not provided.
     session_service_uri: A URI defining the backend for session persistence.
       Supports schemes like 'memory://', 'sqlite://', 'postgresql://',
       'mysql://', or 'agentengine://'. Defaults to per-agent local SQLite
@@ -561,6 +569,20 @@ def get_fast_api_app(
     )
   except ValueError as exc:
     raise click.ClickException(str(exc)) from exc
+
+  # Pin the app_name used for persisted storage when an override is supplied
+  # (via the app_name argument or the ADK_APP_NAME environment variable). This
+  # keeps sessions/artifacts isolated across servers that load an
+  # identically-named agent folder against a shared backend.
+  app_name = app_name or os.environ.get("ADK_APP_NAME")
+  if app_name:
+    from .utils.app_name_override import maybe_override_app_name
+
+    session_service, artifact_service = maybe_override_app_name(
+        app_name,
+        session_service=session_service,
+        artifact_service=artifact_service,
+    )
 
   # Build  the Credential service
   credential_service = InMemoryCredentialService()

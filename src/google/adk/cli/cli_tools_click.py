@@ -1714,6 +1714,20 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--app_name",
+        type=str,
+        help=(
+            "Optional. Overrides the application name used to store and look up"
+            " sessions and artifacts. By default the app_name is the agent's"
+            " folder name, so multiple servers loading an identically-named"
+            " agent folder against a shared backend share the same sessions."
+            " Set a distinct value per server to keep their persisted data"
+            " isolated without renaming the folder. Also settable via the"
+            " ADK_APP_NAME environment variable."
+        ),
+        default=None,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -1788,6 +1802,7 @@ def cli_web(
     logo_text: str | None = None,
     logo_image_url: str | None = None,
     trigger_sources: list[str] | None = None,
+    app_name: str | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -1828,6 +1843,7 @@ def cli_web(
 
   app = get_fast_api_app(
       agents_dir=agents_dir,
+      app_name=app_name,
       session_service_uri=session_service_uri,
       artifact_service_uri=artifact_service_uri,
       memory_service_uri=memory_service_uri,
@@ -1929,6 +1945,7 @@ def cli_api_server(
     with_ui: bool = False,
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
+    app_name: str | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -1954,6 +1971,7 @@ def cli_api_server(
   config = uvicorn.Config(
       get_fast_api_app(
           agents_dir=agents_dir,
+          app_name=app_name,
           session_service_uri=session_service_uri,
           artifact_service_uri=artifact_service_uri,
           memory_service_uri=memory_service_uri,
