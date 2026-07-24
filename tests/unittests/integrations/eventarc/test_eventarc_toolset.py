@@ -15,9 +15,11 @@
 
 
 import unittest
+from unittest import mock
 import warnings
 
 from google.adk.features._feature_registry import _WARNED_FEATURES
+from google.adk.integrations.eventarc import _eventarc_toolset as eventarc_toolset
 from google.adk.integrations.eventarc import EventarcCredentialsConfig
 from google.adk.integrations.eventarc import EventarcToolConfig
 from google.adk.integrations.eventarc import EventarcToolset
@@ -57,6 +59,17 @@ class TestEventarcToolset(unittest.IsolatedAsyncioTestCase):
     tools = await toolset.get_tools()
     self.assertEqual(len(tools), 1)
     self.assertEqual(tools[0].name, "publish_message")
+
+  @mock.patch.object(eventarc_toolset, "eventarc_client", autospec=True)
+  async def test_close_cleans_up_clients(self, mock_client):
+    toolset = EventarcToolset(
+        credentials_config=EventarcCredentialsConfig(
+            credentials=google.oauth2.credentials.Credentials(token="fake")
+        )
+    )
+    mock_client.cleanup_clients = mock.AsyncMock()
+    await toolset.close()
+    mock_client.cleanup_clients.assert_called_once()
 
   def test_eventarc_toolset_experimental_warning(self):
     _WARNED_FEATURES.clear()

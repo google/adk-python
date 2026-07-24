@@ -53,64 +53,42 @@ class AgentProvided:
   default: Any | OmitSentinel | MissingSentinel = MISSING
 
 
+AttributeBinding = str | Callable[[Any], str] | AgentProvided
+OptionalAttributeBinding = (
+    str
+    | Callable[[Any], str | OmitSentinel]
+    | AgentProvided
+    | OmitSentinel
+    | MissingSentinel
+    | None
+)
+CustomAttributeBinding = (
+    str | Callable[[Any], str | OmitSentinel] | AgentProvided | OmitSentinel
+)
+SpecVersionBinding = (
+    str | Callable[[Any], str] | AgentProvided | MissingSentinel | None
+)
+
+
 @dataclass
 class CloudEventAttributesBinding:
   """Configuration for binding CloudEvent attributes to static values, lambdas, or AgentProvided fields."""
 
-  type: str | Callable[[Any], str] | AgentProvided
-  source: str | Callable[[Any], str] | AgentProvided
-  datacontenttype: (
-      str
-      | Callable[[Any], str | OmitSentinel]
-      | AgentProvided
-      | OmitSentinel
-      | MissingSentinel
-      | None
-  ) = MISSING
-  subject: (
-      str
-      | Callable[[Any], str | OmitSentinel]
-      | AgentProvided
-      | OmitSentinel
-      | MissingSentinel
-      | None
-  ) = MISSING
-  time: (
-      str
-      | Callable[[Any], str | OmitSentinel]
-      | AgentProvided
-      | OmitSentinel
-      | MissingSentinel
-      | None
-  ) = MISSING
-  specversion: (
-      str | Callable[[Any], str] | AgentProvided | MissingSentinel | None
-  ) = MISSING
-  id: (
-      str
-      | Callable[[Any], str | OmitSentinel]
-      | AgentProvided
-      | OmitSentinel
-      | MissingSentinel
-      | None
-  ) = MISSING
-  custom_attributes: (
-      dict[
-          str,
-          str
-          | Callable[[Any], str | OmitSentinel]
-          | AgentProvided
-          | OmitSentinel,
-      ]
-      | None
-  ) = None
+  type: AttributeBinding
+  source: AttributeBinding
+  datacontenttype: OptionalAttributeBinding = MISSING
+  subject: OptionalAttributeBinding = MISSING
+  time: OptionalAttributeBinding = MISSING
+  specversion: SpecVersionBinding = MISSING
+  id: OptionalAttributeBinding = MISSING
+  custom_attributes: dict[str, CustomAttributeBinding] | None = None
 
 
 def build_domain_specific_tool(
     toolset: Any,  # Typed as Any to avoid circular import with EventarcToolset
     name: str,
     description: str,
-    bus: str | Callable[[Any], str] | AgentProvided,
+    bus: AttributeBinding,
     ce_attributes_binding: CloudEventAttributesBinding,
     payload_schema: type[pydantic.BaseModel] | None = None,
 ) -> GoogleTool:
@@ -361,7 +339,7 @@ def build_domain_specific_tool(
     if custom_attr_dict:
       publish_kwargs["custom_attributes"] = custom_attr_dict
 
-    return publish_message(**publish_kwargs)  # type: ignore[arg-type]
+    return await publish_message(**publish_kwargs)  # type: ignore[arg-type]
 
   # Attach signature and annotations
   _execute.__signature__ = inspect.Signature(parameters=parameters)  # type: ignore[attr-defined]

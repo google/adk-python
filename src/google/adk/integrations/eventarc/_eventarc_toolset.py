@@ -17,7 +17,13 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Callable
 
+import pydantic
+from typing_extensions import override
+
+from . import _client as eventarc_client
+from . import _domain_specific_publish as domain_specific_publish
 from ...features import experimental
 from ...features import FeatureName
 from ...tools.base_tool import BaseTool
@@ -73,3 +79,48 @@ class EventarcToolset(BaseToolset):
         for tool in self._tools
         if self._is_tool_selected(tool, readonly_context)
     ]
+
+  def create_publish_tool(
+      self,
+      *,
+      name: str,
+      description: str,
+      bus: str | Callable[[Any], str] | domain_specific_publish.AgentProvided,
+      ce_attributes_binding: domain_specific_publish.CloudEventAttributesBinding,
+      payload_schema: type[pydantic.BaseModel] | None = None,
+  ) -> GoogleTool:
+    """Creates a domain-specific publish tool with static or dynamic bindings.
+
+    This acts as a wrapper around the generic `publish_message` tool, allowing
+    developers to lock down specific CloudEvent attributes (like `bus`, `type`,
+    or `source`) or make them dynamically generated based on the payload.
+
+    Args:
+        name: The name of the tool as exposed to the LLM agent.
+        description: A prompt-friendly description of what this tool does.
+        bus: The GCP Eventarc Advanced bus resource name. Can be static,
+          callable, or agent-provided.
+        ce_attributes_binding: The configuration mapping CloudEvent attributes
+          to static values, runtime lambdas, or AgentProvided fields.
+        payload_schema: An optional Pydantic BaseModel representing the expected
+          structured data payload. If provided, the LLM will be forced to
+          provide this structured data.
+
+    Returns:
+        A GoogleTool instance that can be attached to an agent.
+    """
+    tool = domain_specific_publish.build_domain_specific_tool(
+        toolset=self,
+        name=name,
+        description=description,
+        bus=bus,
+        ce_attributes_binding=ce_attributes_binding,
+        payload_schema=payload_schema,
+    )
+    self._tools.append(tool)
+    return tool
+
+  @override
+  async def close(self) -> None:
+    """Clean up resources used by the toolset."""
+    await eventarc_client.cleanup_clients()

@@ -19,6 +19,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest import mock
 
+from google.adk.cli.cli_eval import get_root_agent
 import pytest
 
 
@@ -110,3 +111,67 @@ def test_get_eval_sets_manager_gcs(monkeypatch):
   )
   assert manager == mock_gcs_manager
   mock_create_gcs.assert_called_once_with("gs://bucket")
+
+
+@pytest.mark.asyncio
+async def test_get_root_agent_supports_root_agent(monkeypatch):
+  root_agent = mock.MagicMock()
+  agent_module = SimpleNamespace(agent=SimpleNamespace(root_agent=root_agent))
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._get_agent_module",
+      lambda _agent_module_file_path: agent_module,
+  )
+  assert await get_root_agent("some/dir") == root_agent
+
+
+@pytest.mark.asyncio
+async def test_get_root_agent_supports_get_agent_async(monkeypatch):
+  root_agent = mock.MagicMock()
+  get_agent_async = mock.AsyncMock(return_value=(root_agent, object()))
+  agent_module = SimpleNamespace(
+      agent=SimpleNamespace(get_agent_async=get_agent_async)
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._get_agent_module",
+      lambda _agent_module_file_path: agent_module,
+  )
+  assert await get_root_agent("some/dir") == root_agent
+  get_agent_async.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_root_agent_raises_without_supported_entrypoint(monkeypatch):
+  agent_module = SimpleNamespace(agent=SimpleNamespace())
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._get_agent_module",
+      lambda _agent_module_file_path: agent_module,
+  )
+  with pytest.raises(ValueError, match="root_agent|get_agent_async"):
+    await get_root_agent("some/dir")
+
+
+def test_parse_evals_preserves_windows_drive_in_file_path(tmp_path):
+  from google.adk.cli.cli_eval import parse_and_get_evals_to_run
+
+  eval_set_file = tmp_path / "evals.json"
+  eval_set_file.write_text("{}", encoding="utf-8")
+
+  assert parse_and_get_evals_to_run([str(eval_set_file)]) == {
+      str(eval_set_file): []
+  }
+
+
+def test_parse_evals_preserves_missing_windows_drive_path():
+  from google.adk.cli.cli_eval import parse_and_get_evals_to_run
+
+  eval_set_file = r"C:\missing\evals.json"
+
+  assert parse_and_get_evals_to_run([eval_set_file]) == {eval_set_file: []}
+
+
+def test_parse_evals_splits_case_selector_from_right():
+  from google.adk.cli.cli_eval import parse_and_get_evals_to_run
+
+  assert parse_and_get_evals_to_run([r"C:\evals\set.json:case1,case2"]) == {
+      r"C:\evals\set.json": ["case1", "case2"]
+  }

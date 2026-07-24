@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import inspect
 import os
 import threading
 import time
@@ -27,15 +28,17 @@ from google.api_core.gapic_v1 import client_info
 
 if typing.TYPE_CHECKING:
   from google.cloud import eventarc_publishing_v1  # type: ignore
-  from google.cloud.eventarc_publishing_v1 import PublisherClient  # type: ignore
+  from google.cloud.eventarc_publishing_v1 import PublisherAsyncClient  # type: ignore
 else:
   try:
     from google.cloud import eventarc_publishing_v1  # type: ignore
 
-    PublisherClient = eventarc_publishing_v1.PublisherClient
+    PublisherAsyncClient = getattr(
+        eventarc_publishing_v1, "PublisherAsyncClient", typing.Any
+    )
   except ImportError:
     eventarc_publishing_v1 = None
-    PublisherClient = typing.Any
+    PublisherAsyncClient = typing.Any
 
 try:
   from google.adk import version  # type: ignore
@@ -48,17 +51,19 @@ _CACHE_TTL = 1800  # 30 minutes
 _CACHE_MAX_SIZE = 10
 
 _publisher_client_cache: collections.OrderedDict[
-    tuple[str | None, str, int, str], tuple[PublisherClient, float]
+    tuple[str | None, str, int, str], tuple[PublisherAsyncClient, float]
 ] = collections.OrderedDict()
 _publisher_client_lock = threading.Lock()
 
 
-def _close_client(client: typing.Any) -> None:
+async def _close_client(client: typing.Any) -> None:
   """Explicitly closes the gRPC transport channel of the client."""
   transport = getattr(client, "transport", None)
   if transport is not None and hasattr(transport, "close"):
     try:
-      transport.close()
+      res = transport.close()
+      if inspect.isawaitable(res):
+        await res
     except Exception:  # pylint: disable=broad-except
       pass
 
@@ -131,12 +136,12 @@ def _get_cache_key(
   return (project_id, final_user_agent, os.getpid(), cred_id)
 
 
-def get_publisher_client(
+async def get_publisher_client(
     *,
     credentials: typing.Any,
     user_agent: str | None = None,
     project_id: str | None = None,
-) -> PublisherClient:
+) -> PublisherAsyncClient:
   """Gets or creates a publisher client for Eventarc."""
   if eventarc_publishing_v1 is None:
     raise RuntimeError("google-cloud-eventarc-publishing is not installed")
@@ -148,6 +153,7 @@ def get_publisher_client(
       project_id=project_id,
   )
   current_time = time.time()
+  old_client_to_close = None
   with _publisher_client_lock:
     client_entry = _publisher_client_cache.get(cache_key)
     if client_entry is not None:
@@ -161,22 +167,25 @@ def get_publisher_client(
     info = client_info.ClientInfo(user_agent=final_user_agent)  # type: ignore[no-untyped-call]
 
     client = typing.cast(
-        PublisherClient,
-        eventarc_publishing_v1.PublisherClient(
+        PublisherAsyncClient,
+        eventarc_publishing_v1.PublisherAsyncClient(
             credentials=credentials,
             client_info=info,
         ),
     )
 
     if len(_publisher_client_cache) >= _CACHE_MAX_SIZE:
-      _, (old_client, _) = _publisher_client_cache.popitem(last=False)
-      _close_client(old_client)
+      _, (old_client_to_close, _) = _publisher_client_cache.popitem(last=False)
 
     _publisher_client_cache[cache_key] = (client, current_time + _CACHE_TTL)
-    return client
+
+  if old_client_to_close is not None:
+    await _close_client(old_client_to_close)
+
+  return client
 
 
-def remove_publisher_client(
+async def remove_publisher_client(
     *,
     credentials: typing.Any,
     user_agent: str | None = None,
@@ -192,5 +201,14 @@ def remove_publisher_client(
 
   with _publisher_client_lock:
     entry = _publisher_client_cache.pop(cache_key, None)
-    if entry is not None:
-      _close_client(entry[0])
+  if entry is not None:
+    await _close_client(entry[0])
+
+
+async def cleanup_clients() -> None:
+  """Cleans up all cached publisher clients."""
+  with _publisher_client_lock:
+    clients = list(_publisher_client_cache.values())
+    _publisher_client_cache.clear()
+  for client, _ in clients:
+    await _close_client(client)

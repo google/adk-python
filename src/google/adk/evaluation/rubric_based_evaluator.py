@@ -300,7 +300,7 @@ class MeanInvocationResultsSummarizer(InvocationResultsSummarizer):
     )
 
 
-def _normalize_text(text: str) -> str:
+def _normalize_text(text: object) -> str:
   """Returns a normalized version of the passed in text."""
   if not isinstance(text, str):
     return ""
@@ -352,9 +352,7 @@ class RubricBasedEvaluator(LlmAsJudge):
     self._per_invocation_results_aggregator = per_invocation_results_aggregator
     self._invocation_results_summarizer = invocation_results_summarizer
 
-    assert self._criterion.rubrics, "Rubrics are required."
-
-    self._rubrics: list[Rubric] = self._criterion.rubrics
+    self._rubrics: list[Rubric] = self._criterion.rubrics or []
     self._effective_rubrics_list: Optional[list[Rubric]] = None
 
     self._normalized_rubric_to_id_map = {
@@ -388,6 +386,8 @@ class RubricBasedEvaluator(LlmAsJudge):
       _add_rubrics(filtered_invocation_rubrics, "invocation")
 
     self._effective_rubrics_list = list(rubrics_by_id.values())
+    if not self._effective_rubrics_list:
+      raise ValueError("Rubrics are required.")
 
   def get_effective_rubrics_list(self) -> list[Rubric]:
     """Returns the effective rubrics list."""

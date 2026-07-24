@@ -798,6 +798,26 @@ async def test_get_session_with_after_timestamp_filter():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_num_recent_events_and_after_timestamp():
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123',
+      user_id='user',
+      session_id='2',
+      config=GetSessionConfig(
+          num_recent_events=2,
+          after_timestamp=isoparse('2024-12-12T12:12:13.0Z').timestamp(),
+      ),
+  )
+  assert session is not None
+  # after_timestamp must be applied even though num_recent_events is set;
+  # without it both events would be returned.
+  assert len(session.events) == 1
+  assert session.events[0].id == '456'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_keeps_events_newer_than_update_time(
     mock_api_client_instance: MockAsyncClient,
 ) -> None:

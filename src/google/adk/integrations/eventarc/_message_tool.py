@@ -44,7 +44,7 @@ from . import _client as eventarc_client
 from . import _config as config
 
 
-def publish_message(
+async def publish_message(
     *,
     bus: str,
     type: str,
@@ -251,6 +251,9 @@ def publish_message(
   if time_attr:
     custom_attr["time"] = time_attr
 
+  if subject:
+    custom_attr["subject"] = subject
+
   # Prepare CloudEvent attributes
   attributes = {}
   for k, v in custom_attr.items():
@@ -269,9 +272,6 @@ def publish_message(
       "attributes": attributes,
   }
 
-  if subject:
-    event_kwargs["subject"] = subject
-
   if text_data is not None:
     event_kwargs["text_data"] = text_data
   if binary_data is not None:
@@ -282,7 +282,7 @@ def publish_message(
   project_id = settings.project_id if settings else None
 
   try:
-    client = eventarc_client.get_publisher_client(
+    client = await eventarc_client.get_publisher_client(
         credentials=credentials, project_id=project_id
     )
 
@@ -290,11 +290,11 @@ def publish_message(
         message_bus=bus, proto_message=event
     )
     timeout = settings.publish_timeout if settings else 15.0
-    client.publish(request=request, timeout=timeout)
+    await client.publish(request=request, timeout=timeout)
 
     return {"status": "SUCCESS", "message_id": id}
   except Exception as e:
-    eventarc_client.remove_publisher_client(
+    await eventarc_client.remove_publisher_client(
         credentials=credentials, project_id=project_id
     )
     return {"status": "ERROR", "error_details": repr(e)}

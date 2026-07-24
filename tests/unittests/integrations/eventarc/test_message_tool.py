@@ -26,16 +26,18 @@ from google.adk.integrations.eventarc import _message_tool as message_tool
 import google.oauth2.credentials
 
 
-class TestMessageTool(unittest.TestCase):
+class TestMessageTool(unittest.IsolatedAsyncioTestCase):
 
   def setUp(self):
     self.mock_client_module = mock.patch.object(
         message_tool, "eventarc_client", autospec=True
     ).start()
     self.mock_publisher_client = mock.MagicMock(spec=["publish"])
-    self.mock_client_module.get_publisher_client.return_value = (
-        self.mock_publisher_client
+    self.mock_publisher_client.publish = mock.AsyncMock()
+    self.mock_client_module.get_publisher_client = mock.AsyncMock(
+        return_value=self.mock_publisher_client
     )
+    self.mock_client_module.remove_publisher_client = mock.AsyncMock()
     self.mock_eventarc_v1 = mock.patch.object(
         message_tool, "eventarc_publishing_v1", autospec=True
     ).start()
@@ -46,8 +48,8 @@ class TestMessageTool(unittest.TestCase):
   def tearDown(self):
     mock.patch.stopall()
 
-  def test_publish_message_success_text(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_success_text(self):
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -63,11 +65,11 @@ class TestMessageTool(unittest.TestCase):
         credentials=self.credentials, project_id="test-project"
     )
 
-  def test_publish_message_custom_timeout(self):
+  async def test_publish_message_custom_timeout(self):
     custom_settings = config.EventarcToolConfig(
         project_id="test-project", publish_timeout=30.0
     )
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -80,8 +82,8 @@ class TestMessageTool(unittest.TestCase):
     call_kwargs = self.mock_publisher_client.publish.call_args.kwargs
     self.assertEqual(call_kwargs.get("timeout"), 30.0)
 
-  def test_publish_message_success_json(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_success_json(self):
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -91,9 +93,9 @@ class TestMessageTool(unittest.TestCase):
     )
     self.assertEqual(res["status"], "SUCCESS")
 
-  def test_publish_message_base64_encoded(self):
+  async def test_publish_message_base64_encoded(self):
     encoded_data = base64.b64encode(b"binary data").decode("utf-8")
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -104,8 +106,8 @@ class TestMessageTool(unittest.TestCase):
     )
     self.assertEqual(res["status"], "SUCCESS")
 
-  def test_publish_message_invalid_base64(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_invalid_base64(self):
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -117,11 +119,11 @@ class TestMessageTool(unittest.TestCase):
     self.assertEqual(res["status"], "ERROR")
     self.assertIn("Invalid base64", res["error_details"])
 
-  def test_publish_message_unserializable_json(self):
+  async def test_publish_message_unserializable_json(self):
     class CustomClass:
       pass
 
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -132,7 +134,7 @@ class TestMessageTool(unittest.TestCase):
     self.assertEqual(res["status"], "ERROR")
     self.assertIn("Failed to serialize data", res["error_details"])
 
-  def test_publish_message_invalid_inputs(self):
+  async def test_publish_message_invalid_inputs(self):
     cases = [
         {
             "name": "invalid_type",
@@ -188,11 +190,11 @@ class TestMessageTool(unittest.TestCase):
             "settings": self.settings,
         }
         kwargs.update(case["update_kwargs"])
-        res = message_tool.publish_message(**kwargs)
+        res = await message_tool.publish_message(**kwargs)
         self.assertEqual(res["status"], "ERROR")
         self.assertIn(case["expected_error"], res["error_details"])
 
-  def test_publish_message_time_valid_rfc3339(self):
+  async def test_publish_message_time_valid_rfc3339(self):
     valid_times = [
         "2026-06-03T12:00:00Z",
         "2026-06-03T12:00:00.123456Z",
@@ -203,7 +205,7 @@ class TestMessageTool(unittest.TestCase):
     for valid_time in valid_times:
       with self.subTest(time=valid_time):
         self.mock_eventarc_v1.reset_mock()
-        res = message_tool.publish_message(
+        res = await message_tool.publish_message(
             bus="bus",
             type="type",
             source="source",
@@ -219,9 +221,9 @@ class TestMessageTool(unittest.TestCase):
             ce_string=valid_time
         )
 
-  def test_publish_message_exception_eviction(self):
+  async def test_publish_message_exception_eviction(self):
     self.mock_publisher_client.publish.side_effect = RuntimeError("API failed")
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -237,7 +239,7 @@ class TestMessageTool(unittest.TestCase):
     )
 
   @mock.patch.object(message_tool, "opentelemetry", autospec=True)
-  def test_publish_message_tracing(self, mock_opentelemetry):
+  async def test_publish_message_tracing(self, mock_opentelemetry):
     def inject_mock(carrier):
       carrier["traceparent"] = "00-testtrace-testid-01"
       carrier["tracestate"] = "teststate=1"
@@ -246,7 +248,7 @@ class TestMessageTool(unittest.TestCase):
         inject_mock
     )
 
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -265,9 +267,9 @@ class TestMessageTool(unittest.TestCase):
         ce_string="00-testtrace-testid-01"
     )
 
-  def test_publish_message_empty_string_data(self):
+  async def test_publish_message_empty_string_data(self):
     # Act
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -278,9 +280,9 @@ class TestMessageTool(unittest.TestCase):
     # Assert
     self.assertEqual(res["status"], "SUCCESS")
 
-  def test_publish_message_empty_dict_data(self):
+  async def test_publish_message_empty_dict_data(self):
     # Act
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",
@@ -291,9 +293,9 @@ class TestMessageTool(unittest.TestCase):
     # Assert
     self.assertEqual(res["status"], "SUCCESS")
 
-  def test_publish_message_missing_library(self):
+  async def test_publish_message_missing_library(self):
     with mock.patch.object(message_tool, "eventarc_publishing_v1", None):
-      res = message_tool.publish_message(
+      res = await message_tool.publish_message(
           bus="bus",
           type="type",
           source="source",
@@ -303,8 +305,8 @@ class TestMessageTool(unittest.TestCase):
       self.assertEqual(res["status"], "ERROR")
       self.assertIn("not installed", res["error_details"])
 
-  def test_publish_message_time_empty_string(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_time_empty_string(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -316,8 +318,8 @@ class TestMessageTool(unittest.TestCase):
     event_kwargs = self.mock_eventarc_v1.types.CloudEvent.call_args.kwargs
     self.assertNotIn("time", event_kwargs.get("attributes", {}))
 
-  def test_publish_message_explicit_datacontenttype(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_explicit_datacontenttype(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -335,10 +337,10 @@ class TestMessageTool(unittest.TestCase):
         ce_string="application/xml"
     )
 
-  def test_publish_message_image_payload(self):
+  async def test_publish_message_image_payload(self):
     # Simulate an agent sending an image
     # "iVBORw0KGgo=" is a valid base64 snippet (e.g. PNG header)
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -357,8 +359,10 @@ class TestMessageTool(unittest.TestCase):
         ce_string="image/png"
     )
 
-  def test_publish_message_explicit_datacontenttype_json_with_binary_data(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_explicit_datacontenttype_json_with_binary_data(
+      self,
+  ):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -377,8 +381,10 @@ class TestMessageTool(unittest.TestCase):
         ce_string="application/json"
     )
 
-  def test_publish_message_explicit_datacontenttype_xml_with_dict_data(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_explicit_datacontenttype_xml_with_dict_data(
+      self,
+  ):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -396,8 +402,8 @@ class TestMessageTool(unittest.TestCase):
         ce_string="application/xml"
     )
 
-  def test_publish_message_empty_datacontenttype(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_empty_datacontenttype(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -410,8 +416,8 @@ class TestMessageTool(unittest.TestCase):
     event_kwargs = self.mock_eventarc_v1.types.CloudEvent.call_args.kwargs
     self.assertNotIn("datacontenttype", event_kwargs.get("attributes", {}))
 
-  def test_publish_message_with_subject(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_with_subject(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -422,10 +428,14 @@ class TestMessageTool(unittest.TestCase):
     )
     self.assertEqual(res["status"], "SUCCESS")
     event_kwargs = self.mock_eventarc_v1.types.CloudEvent.call_args.kwargs
-    self.assertEqual(event_kwargs.get("subject"), "test-subject")
+    self.assertNotIn("subject", event_kwargs)
+    self.assertIn("subject", event_kwargs.get("attributes", {}))
+    self.mock_eventarc_v1.types.CloudEvent.CloudEventAttributeValue.assert_any_call(
+        ce_string="test-subject"
+    )
 
-  def test_publish_message_data_integer(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_data_integer(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -440,8 +450,8 @@ class TestMessageTool(unittest.TestCase):
         ce_string="application/json"
     )
 
-  def test_publish_message_data_boolean(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_data_boolean(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -456,8 +466,8 @@ class TestMessageTool(unittest.TestCase):
         ce_string="application/json"
     )
 
-  def test_publish_message_data_list_of_dicts(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_data_list_of_dicts(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -472,8 +482,8 @@ class TestMessageTool(unittest.TestCase):
         ce_string="application/json"
     )
 
-  def test_publish_message_data_unicode(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_data_unicode(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -488,8 +498,8 @@ class TestMessageTool(unittest.TestCase):
         ce_string="text/plain"
     )
 
-  def test_publish_message_custom_attributes_type_casting(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_custom_attributes_type_casting(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -505,8 +515,8 @@ class TestMessageTool(unittest.TestCase):
         ce_string="42"
     )
 
-  def test_publish_message_explicit_specversion(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_explicit_specversion(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -518,8 +528,8 @@ class TestMessageTool(unittest.TestCase):
     event_kwargs = self.mock_eventarc_v1.types.CloudEvent.call_args.kwargs
     self.assertEqual(event_kwargs.get("spec_version"), "1.1")
 
-  def test_publish_message_explicit_id(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_explicit_id(self):
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -532,9 +542,9 @@ class TestMessageTool(unittest.TestCase):
     self.assertEqual(event_kwargs.get("id"), "custom-event-id-99")
     self.assertEqual(res["message_id"], "custom-event-id-99")
 
-  def test_publish_message_base64_without_datacontenttype(self):
+  async def test_publish_message_base64_without_datacontenttype(self):
     # Simulate an agent sending base64 but forgetting the datacontenttype
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -550,7 +560,7 @@ class TestMessageTool(unittest.TestCase):
         ce_string="application/octet-stream"
     )
 
-  def test_publish_message_data_deeply_nested_dict(self):
+  async def test_publish_message_data_deeply_nested_dict(self):
     nested_data = {
         "user": {
             "id": 101,
@@ -574,7 +584,7 @@ class TestMessageTool(unittest.TestCase):
             "version": [1, 2, {"build": "rc1"}],
         },
     }
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -589,7 +599,7 @@ class TestMessageTool(unittest.TestCase):
         ce_string="application/json"
     )
 
-  def test_publish_message_data_deeply_nested_list(self):
+  async def test_publish_message_data_deeply_nested_list(self):
     nested_list = [
         [1, 2, [3, 4, [5, {"six": 6}]]],
         {"seven": [8, 9]},
@@ -598,7 +608,7 @@ class TestMessageTool(unittest.TestCase):
         None,
         [{"eleven": {"twelve": [13, 14]}}],
     ]
-    res = message_tool.publish_message(
+    res = await message_tool.publish_message(
         bus="bus",
         type="type",
         source="source",
@@ -613,8 +623,8 @@ class TestMessageTool(unittest.TestCase):
         ce_string="application/json"
     )
 
-  def test_publish_message_auto_generated_attributes(self):
-    res = message_tool.publish_message(
+  async def test_publish_message_auto_generated_attributes(self):
+    res = await message_tool.publish_message(
         bus="projects/test/locations/global/messageBuses/my-bus",
         type="com.example.test",
         source="//test/source",

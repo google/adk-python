@@ -15,8 +15,8 @@
 import os
 import textwrap
 
-from google.adk.agents.llm_agent import LlmAgent
-from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.agents import llm_agent
+from google.adk.auth import auth_credential
 from google.adk.integrations.eventarc import EventarcCredentialsConfig
 from google.adk.integrations.eventarc import EventarcToolConfig
 from google.adk.integrations.eventarc import EventarcToolset
@@ -36,7 +36,7 @@ EVENTARC_AGENT_NAME = "adk_sample_eventarc_agent"
 # You can optionally set the project_id here, or let the agent infer it from context/user input.
 tool_config = EventarcToolConfig(project_id=os.getenv("GOOGLE_CLOUD_PROJECT"))
 
-if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
+if CREDENTIALS_TYPE == auth_credential.AuthCredentialTypes.OAUTH2:
   # Initialize the tools to do interactive OAuth
   # The environment variables OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET
   # must be set
@@ -44,7 +44,7 @@ if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
       client_id=os.getenv("OAUTH_CLIENT_ID"),
       client_secret=os.getenv("OAUTH_CLIENT_SECRET"),
   )
-elif CREDENTIALS_TYPE == AuthCredentialTypes.SERVICE_ACCOUNT:
+elif CREDENTIALS_TYPE == auth_credential.AuthCredentialTypes.SERVICE_ACCOUNT:
   # Initialize the tools to use the credentials in the service account key.
   # If this flow is enabled, make sure to replace the file path with your own
   # service account key file
@@ -59,13 +59,13 @@ else:
       credentials=application_default_credentials
   )
 
-eventarc_toolset = EventarcToolset(
+toolset = EventarcToolset(
     credentials_config=credentials_config, tool_config=tool_config
 )
 
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI
-root_agent = LlmAgent(
+root_agent = llm_agent.LlmAgent(
     name=EVENTARC_AGENT_NAME,
     description=(
         "Agent to publish structured CloudEvents to Google Cloud Eventarc."
@@ -74,5 +74,5 @@ root_agent = LlmAgent(
         You are a cloud engineer agent with access to Google Cloud Eventarc tools.
         You can publish CloudEvents structured messages to Eventarc message buses.
     """),
-    tools=[eventarc_toolset],
+    tools=[toolset],
 )

@@ -231,14 +231,26 @@ def to_claude_role(role: Optional[str]) -> Literal["user", "assistant"]:
   return "user"
 
 
+# Mapping of Anthropic stop_reason strings to FinishReason enum values
+_STOP_REASON_MAPPING: dict[anthropic_types.StopReason, types.FinishReason] = {
+    "end_turn": types.FinishReason.STOP,
+    "stop_sequence": types.FinishReason.STOP,
+    "tool_use": types.FinishReason.STOP,
+    "pause_turn": types.FinishReason.STOP,
+    "max_tokens": types.FinishReason.MAX_TOKENS,
+    "refusal": types.FinishReason.SAFETY,
+}
+
+
 def to_google_genai_finish_reason(
-    anthropic_stop_reason: Optional[str],
-) -> types.FinishReason:
-  if anthropic_stop_reason in ["end_turn", "stop_sequence", "tool_use"]:
-    return "STOP"
-  if anthropic_stop_reason == "max_tokens":
-    return "MAX_TOKENS"
-  return "FINISH_REASON_UNSPECIFIED"
+    anthropic_stop_reason: Optional[anthropic_types.StopReason],
+) -> types.FinishReason | None:
+  """Maps Anthropic stop_reason to Google GenAI FinishReason."""
+  if anthropic_stop_reason is None:
+    return None
+  return _STOP_REASON_MAPPING.get(
+      anthropic_stop_reason, types.FinishReason.FINISH_REASON_UNSPECIFIED
+  )
 
 
 def _is_image_part(part: types.Part) -> bool:
@@ -499,8 +511,7 @@ def message_to_generate_content_response(
           ),
           cached_content_token_count=_extract_cached_token_count(message.usage),
       ),
-      # TODO: Deal with these later.
-      # finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
 
 
@@ -788,6 +799,7 @@ class AnthropicLlm(BaseLlm):
     input_tokens = 0
     output_tokens = 0
     cached_input_tokens: int | None = None
+    stop_reason: Optional[anthropic_types.StopReason] = None
 
     async for event in raw_stream:
       if event.type == "message_start":
@@ -859,6 +871,7 @@ class AnthropicLlm(BaseLlm):
 
       elif event.type == "message_delta":
         output_tokens = event.usage.output_tokens
+        stop_reason = event.delta.stop_reason
 
     # Build the final aggregated response with all content.
     all_parts: list[types.Part] = []
@@ -901,6 +914,7 @@ class AnthropicLlm(BaseLlm):
             total_token_count=input_tokens + output_tokens,
             cached_content_token_count=cached_input_tokens,
         ),
+        finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
     )
 

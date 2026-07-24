@@ -136,7 +136,7 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
   """An Evaluator for rubric based assessment of the agent's usage of Tools.
 
   Example: Lets take an example of a Weather Agent that has access to two tools:
-  1: GeoCoding Tool: Coverts a city name, address or zip code into geographic
+  1: GeoCoding Tool: Converts a city name, address or zip code into geographic
   coordinates.
   2: GetWeather Tool: Gets weather for the next 10 days for the given geographic
   coordinates.
@@ -185,7 +185,7 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
 
     rubrics_text = "\n".join([
         f"*  [id: {r.rubric_id}] {r.rubric_content.text_property}"
-        for r in self._effective_rubrics_list
+        for r in self.get_effective_rubrics_list()
     ])
 
     app_details = actual_invocation.app_details

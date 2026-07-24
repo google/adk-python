@@ -652,7 +652,7 @@ def _instrumented_with_opentelemetry_instrumentation_google_genai() -> bool:
   while wrapped := getattr(maybe_wrapped_function, "__wrapped__", None):
     if (
         "opentelemetry/instrumentation/google_genai"
-        in maybe_wrapped_function.__code__.co_filename
+        in maybe_wrapped_function.__code__.co_filename.replace("\\", "/")
     ):
       return True
     maybe_wrapped_function = wrapped  # pyright: ignore[reportAny]

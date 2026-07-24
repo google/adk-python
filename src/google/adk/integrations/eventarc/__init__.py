@@ -16,10 +16,19 @@
 
 from ._config import EventarcCredentialsConfig
 from ._config import EventarcToolConfig
+# pylint: disable=g-importing-member
+from ._domain_specific_publish import AgentProvided
+from ._domain_specific_publish import CloudEventAttributesBinding
+from ._domain_specific_publish import MISSING
+from ._domain_specific_publish import OMIT
 from ._eventarc_toolset import EventarcToolset
 
 __all__ = [
+    "AgentProvided",
+    "CloudEventAttributesBinding",
     "EventarcCredentialsConfig",
     "EventarcToolConfig",
     "EventarcToolset",
+    "MISSING",
+    "OMIT",
 ]

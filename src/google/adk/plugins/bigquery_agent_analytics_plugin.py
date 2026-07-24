@@ -1015,8 +1015,14 @@ class BigQueryLoggerConfig:
         views all stay consistent); views that reference a denied column drop
         the dependent derived columns. NOTE: denying ``attributes`` also
         disables ``attributes.otel`` and ``attributes.custom_metadata``;
-        combining it with a non-empty ``custom_metadata_allowlist`` is
-        rejected at construction.
+        combining it with a non-empty ``custom_metadata_allowlist`` is rejected
+        at construction.
+      final_response_tool_names: Tool names whose successful completion carries
+        the agent's final answer. When a completed tool's name is in this set,
+        its call args are logged as an ``AGENT_RESPONSE`` event. For agents that
+        emit the final answer via a dedicated tool (e.g.
+        ``submit_final_response``) rather than a plain-text final event. Empty
+        (the default) preserves today's behavior.
   """
 
   enabled: bool = True
@@ -1080,6 +1086,17 @@ class BigQueryLoggerConfig:
   # projectable payload columns are accepted; identity/correlation columns
   # are protected (see ``_PROJECTABLE_PAYLOAD_COLUMNS``).
   payload_column_denylist: list[str] | None = None
+
+  # --- final-answer-via-tool capture ---
+  # Tool names whose successful completion carries the agent's final
+  # response.  Some agents deliver their final answer through a dedicated
+  # tool (e.g. ``submit_final_response``) instead of a plain-text final
+  # event, so the on-event ``AGENT_RESPONSE`` path (which excludes function
+  # calls/responses) never fires.  When a completed tool's name is in this
+  # set, its call args (the final-answer payload) are logged as an
+  # ``AGENT_RESPONSE`` event.  Empty (the default) preserves today's
+  # behavior.
+  final_response_tool_names: frozenset[str] = frozenset()
 
 
 # ==============================================================================
@@ -5146,6 +5163,25 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         is_truncated=is_truncated,
         event_data=event_data,
     )
+
+    # Some agents deliver their final answer through a dedicated tool
+    # (e.g. ``submit_final_response``) rather than a plain-text final event,
+    # so the on-event AGENT_RESPONSE path (which excludes function
+    # calls/responses) never fires.  When such a tool completes, log its call
+    # args (the final-answer payload the model supplied) as AGENT_RESPONSE so
+    # the visible response text is captured.  Opt-in via
+    # ``config.final_response_tool_names`` (empty by default).
+    if tool.name in self.config.final_response_tool_names:
+      args_truncated, args_is_truncated = _recursive_smart_truncate(
+          tool_args, self.config.max_content_length
+      )
+      await self._log_event(
+          "AGENT_RESPONSE",
+          tool_context,
+          raw_content={"response": args_truncated},
+          is_truncated=args_is_truncated,
+          event_data=EventData(extra_attributes={"source_tool": tool.name}),
+      )
 
   @_safe_callback
   async def on_tool_error_callback(

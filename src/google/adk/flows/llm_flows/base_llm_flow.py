@@ -1007,6 +1007,7 @@ class BaseLlmFlow(ABC):
     if (
         invocation_context.is_resumable
         and events
+        and not events[-1].partial
         and events[-1].get_function_calls()
     ):
       model_response_event = events[-1]

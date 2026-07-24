@@ -57,7 +57,7 @@ comment_on_statement = Agent(
 
 def handle_other():
   yield Event(
-      message="Sorry I can only anwer questions or comment on statements."
+      message="Sorry I can only answer questions or comment on statements."
   )
 
 

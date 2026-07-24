@@ -28,7 +28,7 @@ import google.oauth2.credentials
 import google.oauth2.service_account
 
 
-class TestEventarcClient(unittest.TestCase):
+class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
 
   def test_get_credential_id(self):
     # Service Account
@@ -225,7 +225,7 @@ class TestEventarcClient(unittest.TestCase):
     )
 
   @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
-  def test_get_publisher_client_cache(self, mock_eventarc_publishing):
+  async def test_get_publisher_client_cache(self, mock_eventarc_publishing):
     # Reset cache
     client._publisher_client_cache.clear()
 
@@ -234,31 +234,31 @@ class TestEventarcClient(unittest.TestCase):
     )
 
     mock_client_cls = mock.Mock()
-    mock_eventarc_publishing.PublisherClient = mock_client_cls
+    mock_eventarc_publishing.PublisherAsyncClient = mock_client_cls
 
     # Return a new mock instance each time
     mock_client_cls.side_effect = lambda **kwargs: mock.Mock()
 
     # First call creates the client
-    c1 = client.get_publisher_client(credentials=creds, project_id="p1")
+    c1 = await client.get_publisher_client(credentials=creds, project_id="p1")
     mock_client_cls.assert_called_once()
 
     # Second call returns cached client
-    c2 = client.get_publisher_client(credentials=creds, project_id="p1")
+    c2 = await client.get_publisher_client(credentials=creds, project_id="p1")
     mock_client_cls.assert_called_once()
     self.assertIs(c1, c2)
 
     # Different project creates new client
-    c3 = client.get_publisher_client(credentials=creds, project_id="p2")
+    c3 = await client.get_publisher_client(credentials=creds, project_id="p2")
     self.assertEqual(mock_client_cls.call_count, 2)
     self.assertIsNot(c1, c3)
 
   @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
-  def test_remove_publisher_client(self, mock_eventarc_publishing):
+  async def test_remove_publisher_client(self, mock_eventarc_publishing):
     client._publisher_client_cache.clear()
 
     mock_client_cls = mock.Mock()
-    mock_eventarc_publishing.PublisherClient = mock_client_cls
+    mock_eventarc_publishing.PublisherAsyncClient = mock_client_cls
     mock_client = mock.Mock()
     mock_client.transport = mock.Mock()
     mock_client_cls.return_value = mock_client
@@ -266,24 +266,26 @@ class TestEventarcClient(unittest.TestCase):
     creds = mock.create_autospec(
         google.auth.credentials.Credentials, instance=True
     )
-    c1 = client.get_publisher_client(credentials=creds, project_id="p1")
+    c1 = await client.get_publisher_client(credentials=creds, project_id="p1")
     self.assertEqual(len(client._publisher_client_cache), 1)
 
     # Remove client
-    client.remove_publisher_client(credentials=creds, project_id="p1")
+    await client.remove_publisher_client(credentials=creds, project_id="p1")
     self.assertEqual(len(client._publisher_client_cache), 0)
     mock_client.transport.close.assert_called_once()
 
     # Remove again is safe
-    client.remove_publisher_client(credentials=creds, project_id="p1")
+    await client.remove_publisher_client(credentials=creds, project_id="p1")
 
   @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
-  def test_publisher_client_cache_lru_eviction(self, mock_eventarc_publishing):
+  async def test_publisher_client_cache_lru_eviction(
+      self, mock_eventarc_publishing
+  ):
     """Verifies LRU eviction and transport closing when cache is full."""
     client._publisher_client_cache.clear()
 
     mock_client_cls = mock.Mock()
-    mock_eventarc_publishing.PublisherClient = mock_client_cls
+    mock_eventarc_publishing.PublisherAsyncClient = mock_client_cls
 
     # Track created mock clients and mock their transports
     clients_list = []
@@ -302,15 +304,17 @@ class TestEventarcClient(unittest.TestCase):
 
     # Fill cache to MAX_SIZE
     for i in range(client._CACHE_MAX_SIZE):
-      client.get_publisher_client(credentials=creds, project_id=f"project-{i}")
+      await client.get_publisher_client(
+          credentials=creds, project_id=f"project-{i}"
+      )
 
     # Hit project-0 to make it recently used
-    client.get_publisher_client(credentials=creds, project_id="project-0")
+    await client.get_publisher_client(credentials=creds, project_id="project-0")
 
     # Now project-1 should be the oldest.
     # Add another client to trigger eviction
     next_proj = f"project-{client._CACHE_MAX_SIZE}"
-    client.get_publisher_client(credentials=creds, project_id=next_proj)
+    await client.get_publisher_client(credentials=creds, project_id=next_proj)
 
     self.assertEqual(
         len(client._publisher_client_cache), client._CACHE_MAX_SIZE
@@ -321,21 +325,21 @@ class TestEventarcClient(unittest.TestCase):
 
     mock_client_cls.reset_mock()
     # project-1 should be evicted
-    client.get_publisher_client(credentials=creds, project_id="project-1")
+    await client.get_publisher_client(credentials=creds, project_id="project-1")
     mock_client_cls.assert_called_once()
 
     mock_client_cls.reset_mock()
     # project-0 should still be in cache
-    client.get_publisher_client(credentials=creds, project_id="project-0")
+    await client.get_publisher_client(credentials=creds, project_id="project-0")
     mock_client_cls.assert_not_called()
 
   @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
-  def test_get_publisher_client_cache_external_account(
+  async def test_get_publisher_client_cache_external_account(
       self, mock_eventarc_publishing
   ):
     client._publisher_client_cache.clear()
     mock_client_cls = mock.Mock()
-    mock_eventarc_publishing.PublisherClient = mock_client_cls
+    mock_eventarc_publishing.PublisherAsyncClient = mock_client_cls
     mock_client_cls.side_effect = lambda **kwargs: mock.Mock()
 
     creds1 = google.auth.identity_pool.Credentials(
@@ -349,21 +353,21 @@ class TestEventarcClient(unittest.TestCase):
         credential_source={"file": "path1"},
     )
 
-    c1 = client.get_publisher_client(credentials=creds1, project_id="p1")
+    c1 = await client.get_publisher_client(credentials=creds1, project_id="p1")
     mock_client_cls.assert_called_once()
 
-    c2 = client.get_publisher_client(credentials=creds2, project_id="p1")
+    c2 = await client.get_publisher_client(credentials=creds2, project_id="p1")
     # Should be a cache hit, so call count remains 1
     mock_client_cls.assert_called_once()
     self.assertIs(c1, c2)
 
   @mock.patch.object(client, "eventarc_publishing_v1", autospec=True)
-  def test_get_publisher_client_cache_user_credentials(
+  async def test_get_publisher_client_cache_user_credentials(
       self, mock_eventarc_publishing
   ):
     client._publisher_client_cache.clear()
     mock_client_cls = mock.Mock()
-    mock_eventarc_publishing.PublisherClient = mock_client_cls
+    mock_eventarc_publishing.PublisherAsyncClient = mock_client_cls
     mock_client_cls.side_effect = lambda **kwargs: mock.Mock()
 
     creds1 = google.oauth2.credentials.Credentials(
@@ -381,10 +385,10 @@ class TestEventarcClient(unittest.TestCase):
         client_secret="secret1",
     )
 
-    c1 = client.get_publisher_client(credentials=creds1, project_id="p1")
+    c1 = await client.get_publisher_client(credentials=creds1, project_id="p1")
     mock_client_cls.assert_called_once()
 
-    c2 = client.get_publisher_client(credentials=creds2, project_id="p1")
+    c2 = await client.get_publisher_client(credentials=creds2, project_id="p1")
     # Should be a cache hit, so call count remains 1
     mock_client_cls.assert_called_once()
     self.assertIs(c1, c2)
