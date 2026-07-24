@@ -14,15 +14,18 @@
 
 from __future__ import annotations
 
+from google.adk.agents.common_configs import CodeConfig
 from google.adk.agents.llm_agent import Agent
 from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import EvaluateRequest
 from google.adk.evaluation.base_eval_service import InferenceConfig
 from google.adk.evaluation.base_eval_service import InferenceRequest
 from google.adk.evaluation.base_eval_service import InferenceResult
+from google.adk.evaluation.custom_metric_evaluator import _CustomMetricEvaluator
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
+from google.adk.evaluation.eval_config import CustomMetricConfig
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
@@ -30,6 +33,7 @@ from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
 from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_sets_manager import EvalSetsManager
+from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.optimization.local_eval_sampler import _log_eval_summary
 from google.adk.optimization.local_eval_sampler import extract_single_invocation_info
 from google.adk.optimization.local_eval_sampler import extract_tool_call_data
@@ -216,6 +220,42 @@ def test_local_eval_service_interface_init(
 
   for attr, expected_value in expected_attrs.items():
     assert getattr(interface, attr) == expected_value
+
+
+def test_init_registers_custom_metrics(mocker):
+  mocker.patch.object(
+      LocalEvalSampler,
+      "_get_eval_case_ids",
+      autospec=True,
+      return_value=["t1"],
+  )
+  custom_metric_name = "custom_metric_for_sampler_test"
+  config = LocalEvalSamplerConfig(
+      eval_config=EvalConfig(
+          custom_metrics={
+              custom_metric_name: CustomMetricConfig(
+                  code_config=CodeConfig(name="math.sqrt")
+              )
+          }
+      ),
+      app_name="test_app",
+      train_eval_set="train_set",
+  )
+
+  try:
+    LocalEvalSampler(config, mocker.MagicMock(spec=EvalSetsManager))
+
+    evaluator = DEFAULT_METRIC_EVALUATOR_REGISTRY.get_evaluator(
+        EvalMetric(
+            metric_name=custom_metric_name,
+            threshold=0.5,
+            custom_function_path="math.sqrt",
+        )
+    )
+    assert isinstance(evaluator, _CustomMetricEvaluator)
+  finally:
+    # The registry dict is shared class-level state; remove what we added.
+    DEFAULT_METRIC_EVALUATOR_REGISTRY._registry.pop(custom_metric_name, None)
 
 
 @pytest.mark.asyncio

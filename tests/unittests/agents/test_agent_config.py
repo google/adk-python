@@ -526,7 +526,12 @@ def test_allowed_module_passes_when_enforced(tmp_path: Path):
     "blocked_module",
     [
         "os.system",
+        "posix.system",
+        "nt.system",
         "subprocess.call",
+        "_posixsubprocess.fork_exec",
+        "socket.socket",
+        "_socket.socket",
         "builtins.exec",
     ],
 )
@@ -542,7 +547,12 @@ def test_resolve_agent_code_reference_blocks_when_enforced(
     "blocked_ref",
     [
         "os.system",
+        "posix.system",
+        "nt.system",
         "subprocess.call",
+        "_posixsubprocess.fork_exec",
+        "socket.socket",
+        "_socket.socket",
         "builtins.exec",
         "pickle.loads",
     ],

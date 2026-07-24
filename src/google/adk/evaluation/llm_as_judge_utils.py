@@ -88,6 +88,8 @@ def get_text_from_content(
   if content and content.parts:
     return "\n".join([p.text for p in content.parts if p.text])
 
+  return None
+
 
 def get_eval_status(score: Optional[float], threshold: float) -> EvalStatus:
   if score is None:
@@ -106,13 +108,13 @@ def get_average_rubric_score(
   If non-zero score values are present, then a mean value is returned as the
   aggregated value.
   """
-  rubric_scores = [
+  scores = [
       rubric_score.score
       for rubric_score in rubric_scores
       if rubric_score.score is not None
   ]
 
-  return statistics.mean(rubric_scores) if rubric_scores else None
+  return statistics.mean(scores) if scores else None
 
 
 class _ToolDeclarations(EvalBaseModel):

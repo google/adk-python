@@ -1102,10 +1102,12 @@ async def test_fail_fast_preserves_completed_siblings(
   original_handle_completion = Workflow._handle_completion
   handle_completion_calls = []
 
-  def spy_handle_completion(self, loop_state, node_name, node_obj, child_ctx):
+  def spy_handle_completion(
+      self, loop_state, node_name, node_obj, child_ctx, ctx
+  ):
     handle_completion_calls.append(node_name)
     return original_handle_completion(
-        self, loop_state, node_name, node_obj, child_ctx
+        self, loop_state, node_name, node_obj, child_ctx, ctx
     )
 
   app = App(name=request.function.__name__, root_agent=wf)

@@ -191,6 +191,11 @@ def _create_event(
     long_running_function_ids: Optional[set[str]] = None,
     partial: bool = False,
     content_role: str = "model",
+    grounding_metadata: Any = None,
+    custom_metadata: Any = None,
+    usage_metadata: Any = None,
+    error_code: Any = None,
+    citation_metadata: Any = None,
 ) -> Optional[Event]:
   """Creates an ADK event from parts and metadata."""
   event_actions = actions or EventActions()
@@ -220,6 +225,11 @@ def _create_event(
           else None
       ),
       partial=partial,
+      grounding_metadata=grounding_metadata,
+      custom_metadata=custom_metadata,
+      usage_metadata=usage_metadata,
+      error_code=error_code,
+      citation_metadata=citation_metadata,
   )
 
   return event
@@ -239,6 +249,28 @@ def _parse_adk_metadata_value(value: Any) -> Any:
     return json.loads(value)
   except json.JSONDecodeError:
     return value
+
+
+def _extract_genai_metadata(
+    metadata_dict: dict[str, Any], key: str, model_class: Any
+) -> Any:
+  raw = metadata_dict.get(_get_adk_metadata_key(key))
+  if raw is None:
+    return None
+  parsed = _parse_adk_metadata_value(raw)
+  if not isinstance(parsed, dict) and model_class:
+    return None
+  if not model_class:
+    return parsed
+  try:
+    return model_class.model_validate(parsed)
+  except ValidationError as error:
+    logger.warning(
+        "Ignoring invalid ADK %s metadata: %d validation errors",
+        key,
+        error.error_count(),
+    )
+    return None
 
 
 def _extract_event_actions(metadata: Any) -> EventActions:
@@ -576,12 +608,28 @@ def convert_a2a_artifact_update_to_event(
     output_parts, _ = _convert_a2a_parts_to_adk_parts(
         a2a_artifact_update.artifact.parts, part_converter
     )
+    metadata_dict = _compat.meta_to_dict(a2a_artifact_update.artifact.metadata)
     return _create_event(
         output_parts,
         invocation_context,
         author,
         _extract_event_actions(a2a_artifact_update.artifact.metadata),
         partial=not a2a_artifact_update.last_chunk,
+        grounding_metadata=_extract_genai_metadata(
+            metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
+        ),
+        custom_metadata=_extract_genai_metadata(
+            metadata_dict, "custom_metadata", None
+        ),
+        usage_metadata=_extract_genai_metadata(
+            metadata_dict,
+            "usage_metadata",
+            genai_types.GenerateContentResponseUsageMetadata,
+        ),
+        error_code=_extract_genai_metadata(metadata_dict, "error_code", None),
+        citation_metadata=_extract_genai_metadata(
+            metadata_dict, "citation_metadata", genai_types.CitationMetadata
+        ),
     )
   except Exception as e:
     logger.error("Failed to convert A2A artifact update to event: %s", e)

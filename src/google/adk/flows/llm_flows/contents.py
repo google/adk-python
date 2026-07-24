@@ -24,6 +24,7 @@ from typing_extensions import override
 
 from ...agents.invocation_context import InvocationContext
 from ...events._branch_path import _BranchPath
+from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
@@ -89,7 +90,10 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     )
 
     is_single_turn = getattr(agent, 'mode', None) == 'single_turn'
-    if agent.include_contents == 'default':
+    if (
+        agent.include_contents == 'default'
+        and not llm_request.previous_interaction_id
+    ):
       # Include full conversation history
       llm_request.contents = _get_contents(
           invocation_context.branch,
@@ -102,7 +106,8 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           include_thoughts_from_other_agents=include_thoughts_from_other_agents,
       )
     else:
-      # Include current turn context only (no conversation history)
+      # Include current turn context only (no conversation history). Stateful
+      # Interactions requests already retain earlier turns server-side.
       llm_request.contents = _get_current_turn_contents(
           invocation_context.branch,
           invocation_context.session.events,
@@ -386,7 +391,7 @@ def _build_task_input_user_content(
         try:
           import json as _json
 
-          text = _json.dumps(dict(fc.args))
+          text = _json.dumps(dict(fc.args), ensure_ascii=False)
         except (TypeError, ValueError):
           text = str(fc.args)
         parts = [types.Part(text=text)]
@@ -598,11 +603,17 @@ def _recover_compacted_function_calls(
   if not call_event_by_id:
     return events
 
+  # Keep the highest-timestamp response per id so a sibling that completed
+  # before being compacted contributes its real result, not its stale
+  # placeholder; ties fall back to source order.
   response_event_by_id: dict[str, Event] = {}
   for event in source_events:
     for function_response in event.get_function_responses():
-      if function_response.id:
-        response_event_by_id.setdefault(function_response.id, event)
+      if not function_response.id:
+        continue
+      existing = response_event_by_id.get(function_response.id)
+      if existing is None or event.timestamp >= existing.timestamp:
+        response_event_by_id[function_response.id] = event
 
   result: list[Event] = []
   reinjected_ids: set[str] = set()
@@ -709,24 +720,10 @@ def _get_contents(
   accumulated_input_transcription = ''
   accumulated_output_transcription = ''
 
-  # Filter out events that are annulled by a rewind.
-  # By iterating backward, when a rewind event is found, we skip all events
-  # from that point back to the `rewind_before_invocation_id`, thus removing
-  # them from the history used for the LLM request.
-  rewind_filtered_events = []
-  i = len(events) - 1
-  while i >= 0:
-    event = events[i]
-    if event.actions and event.actions.rewind_before_invocation_id:
-      rewind_invocation_id = event.actions.rewind_before_invocation_id
-      for j in range(0, i, 1):
-        if events[j].invocation_id == rewind_invocation_id:
-          i = j
-          break
-    else:
-      rewind_filtered_events.append(event)
-    i -= 1
-  rewind_filtered_events.reverse()
+  # Filter out events that are annulled by a rewind, so the rewound history is
+  # never sent to the LLM. This is the same rewind logic the context compactor
+  # applies, keeping the two consistent (see google.adk.events._rewind_events).
+  rewind_filtered_events = _apply_rewinds(events)
 
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
@@ -1242,7 +1239,7 @@ def _add_model_input_context_to_user_content(
 async def _add_instructions_to_user_content(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
-    instruction_contents: list,
+    instruction_contents: list[types.Content],
 ) -> None:
   """Insert instruction-related contents at proper position in conversation.
 

@@ -36,6 +36,7 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi import Request as FastAPIRequest
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import PlainTextResponse
@@ -59,6 +60,8 @@ from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
+from ..utils._telemetry_config import read_telemetry_consent
+from ..utils._telemetry_config import write_telemetry_consent
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -152,6 +155,12 @@ class ListMetricsInfoResponse(common.BaseModel):
   metrics_info: list[MetricInfo]
 
 
+class TelemetryConsentRequest(common.BaseModel):
+  """Request body for setting the telemetry consent configuration."""
+
+  telemetry: bool
+
+
 class DevServer(ApiServer):
   """Development server that extends ApiServer with dev-only endpoints.
 
@@ -204,9 +213,27 @@ class DevServer(ApiServer):
   ):
     """Register all development-only endpoints.
 
-    This includes debug, evaluation, and graph visualization endpoints.
-    These endpoints should NOT be exposed in production deployments.
+    This includes debug, evaluation, graph visualization, and telemetry consent
+    endpoints. These endpoints should NOT be exposed in production deployments.
     """
+
+    @app.get("/config/telemetry")
+    async def get_telemetry_consent() -> dict[str, Any]:
+      """Gets the user configuration for telemetry consent."""
+      return {"telemetry": read_telemetry_consent()}
+
+    @app.post("/config/telemetry")
+    async def set_telemetry_consent(
+        req: TelemetryConsentRequest, request: FastAPIRequest
+    ) -> dict[str, Any]:
+      """Sets the user configuration for telemetry consent."""
+      if request.headers.get("x-adk-telemetry-request") != "true":
+        raise HTTPException(
+            status_code=400,
+            detail="Forbidden: missing required security header",
+        )
+      write_telemetry_consent(req.telemetry)
+      return {"telemetry": req.telemetry}
 
     # Import needed for eval endpoints
     from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE

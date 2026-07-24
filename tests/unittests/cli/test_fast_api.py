@@ -617,8 +617,8 @@ bigquery_agent_analytics:
           os.path,
           "exists",
           autospec=True,
-          side_effect=lambda p: p.endswith("plugins.yaml")
-          or p.endswith("root_agent.yaml"),
+          side_effect=lambda p: str(p).endswith("plugins.yaml")
+          or str(p).endswith("root_agent.yaml"),
       ),
   ):
     from google.adk.cli.adk_web_server import AdkWebServer
@@ -1273,6 +1273,56 @@ def test_get_adk_app_info_non_llm_agent(test_app, mock_agent_loader):
     response = test_app.get("/apps/test_app/app-info")
     assert response.status_code == 400
     assert "Root agent is not an LlmAgent" in response.json()["detail"]
+
+
+def test_get_adk_app_info_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test app-info returns 404 when the app_name matches no agent."""
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.get("/apps/unknown_app/app-info")
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
+
+
+def test_agent_run_sse_unknown_app_returns_404(test_app, mock_agent_loader):
+  """Test /run_sse returns 404 instead of 500 when the app_name matches no agent."""
+  payload = {
+      "app_name": "unknown_app",
+      "user_id": "test_user",
+      "session_id": "test_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+  with patch.object(
+      mock_agent_loader,
+      "load_agent",
+      side_effect=ValueError("Agent not found: unknown_app"),
+  ):
+    response = test_app.post("/run_sse", json=payload)
+    assert response.status_code == 404
+    assert "Agent not found: unknown_app" in response.json()["detail"]
 
 
 def test_create_session_with_id(test_app, test_session_info):
@@ -2555,10 +2605,10 @@ def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
 def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "root_agent.yaml").write_text("name: app\n")
+  (app_root / "root_agent.yaml").write_bytes(b"name: app\n")
   nested_dir = app_root / "nested"
   nested_dir.mkdir(parents=True, exist_ok=True)
-  (nested_dir / "nested.yaml").write_text("nested: true\n")
+  (nested_dir / "nested.yaml").write_bytes(b"nested: true\n")
 
   assert not (app_root / "tmp").exists()
   response = builder_test_client.get("/dev/apps/app/builder?tmp=true")
@@ -2716,8 +2766,8 @@ def test_builder_get_allows_yaml_file_paths(builder_test_client, tmp_path):
   """GET /dev/apps/{app_name}/builder?file_path=... allows YAML extensions."""
   app_root = tmp_path / "app"
   app_root.mkdir(parents=True, exist_ok=True)
-  (app_root / "sub_agent.yaml").write_text("name: sub\n")
-  (app_root / "tool.yml").write_text("name: tool\n")
+  (app_root / "sub_agent.yaml").write_bytes(b"name: sub\n")
+  (app_root / "tool.yml").write_bytes(b"name: tool\n")
 
   response = builder_test_client.get(
       "/dev/apps/app/builder?file_path=sub_agent.yaml"
@@ -2810,6 +2860,35 @@ def test_version_endpoint(test_app):
   assert "language" in data
   assert data["language"] == "python"
   assert "language_version" in data
+
+
+def test_telemetry_get_endpoint(test_app):
+  """Test the GET telemetry consent endpoint."""
+  with patch(
+      "google.adk.cli.dev_server.read_telemetry_consent", return_value=True
+  ):
+    response = test_app.get("/config/telemetry")
+    assert response.status_code == 200
+    assert response.json() == {"telemetry": True}
+
+
+def test_telemetry_post_endpoint_success(test_app):
+  """Test the POST telemetry consent endpoint with required header."""
+  with patch("google.adk.cli.dev_server.write_telemetry_consent") as mock_write:
+    headers = {"x-adk-telemetry-request": "true"}
+    response = test_app.post(
+        "/config/telemetry", json={"telemetry": True}, headers=headers
+    )
+    assert response.status_code == 200
+    assert response.json() == {"telemetry": True}
+    mock_write.assert_called_once_with(True)
+
+
+def test_telemetry_post_endpoint_missing_header(test_app):
+  """Test the POST telemetry consent endpoint without required header."""
+  response = test_app.post("/config/telemetry", json={"telemetry": True})
+  assert response.status_code == 400
+  assert "Forbidden: missing required security header" in response.text
 
 
 @pytest.fixture
@@ -2978,8 +3057,8 @@ async def test_independent_telemetry_context(
           os.path,
           "exists",
           autospec=True,
-          side_effect=lambda p: "yaml_app" in p
-          and p.endswith("root_agent.yaml"),
+          side_effect=lambda p: "yaml_app" in str(p)
+          and str(p).endswith("root_agent.yaml"),
       ),
   ):
     app = get_fast_api_app(

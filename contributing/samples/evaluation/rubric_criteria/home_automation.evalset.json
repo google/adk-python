@@ -1,0 +1,34 @@
+{
+  "eval_set_id": "rubric_criteria",
+  "name": "Rubric-based quality",
+  "description": "LLM-judged final-response and tool-use quality against custom rubrics.",
+  "eval_cases": [
+    {
+      "eval_id": "list_bedroom_devices",
+      "conversation": [
+        {
+          "invocation_id": "rc-1",
+          "user_content": {
+            "parts": [{"text": "What devices are in the Bedroom?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "The Bedroom has device_2, which is off."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_devices", "args": {"location": "Bedroom"}}
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    }
+  ]
+}

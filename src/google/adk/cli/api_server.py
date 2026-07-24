@@ -80,6 +80,7 @@ from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
@@ -742,7 +743,10 @@ class ApiServer:
       return self.runner_dict[app_name]
 
     # Create new runner
-    agent_or_app = self.agent_loader.load_agent(app_name)
+    try:
+      agent_or_app = self.agent_loader.load_agent(app_name)
+    except ValueError as ve:
+      raise HTTPException(status_code=404, detail=str(ve)) from ve
 
     if self.default_llm_model:
       from .cli import _override_default_llm_model
@@ -901,6 +905,9 @@ class ApiServer:
           runtime_config_path,
       )
     runtime_config["backendUrl"] = self.url_prefix if self.url_prefix else ""
+    # Inject telemetry consent on bootstrapping to avoid an extra API call
+    # when loading the UI.
+    runtime_config["telemetry"] = read_telemetry_consent()
 
     # Set custom logo config.
     if self.logo_text or self.logo_image_url:
@@ -1162,7 +1169,10 @@ class ApiServer:
                 " mode."
             ),
         )
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      try:
+        agent_or_app = self.agent_loader.load_agent(app_name)
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
         return AppInfo(

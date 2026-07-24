@@ -1631,7 +1631,7 @@ class Runner:
     *   **Other Control Events:** Most control events are saved.
 
     **Events Saved to the Session:**
-    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+    *   **Live Model Audio Events with File Data:** Both input and output audio
         data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved as event in the `file_data` to session
         if RunConfig.save_live_model_audio_to_session is True.

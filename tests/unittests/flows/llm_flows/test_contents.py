@@ -89,6 +89,44 @@ async def test_include_contents_default_full_history():
 
 
 @pytest.mark.asyncio
+async def test_chained_interactions_builds_only_current_turn_contents():
+  """Stateful Interactions requests do not copy history the server retains."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="default"
+  )
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash", previous_interaction_id="interaction-1"
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Historical message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("Historical response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Current message"),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [types.UserContent("Current message")]
+
+
+@pytest.mark.asyncio
 async def test_include_contents_none_current_turn_only():
   """Test that include_contents='none' includes only current turn context."""
   agent = Agent(
@@ -1763,6 +1801,77 @@ def test_recover_compacted_function_calls_noop_when_call_present():
   assert result is effective
 
 
+def test_recover_compacted_function_calls_uses_latest_sibling_response():
+  """A recovered sibling contributes its real result, not a stale placeholder.
+
+  Two long-running calls (lr-1, lr-2) are issued together. lr-2 resumes and
+  completes (placeholder then real result), then the whole exchange is
+  compacted; lr-1 resumes later and survives. Recovering lr-2's compacted
+  response must pick its latest (real) result, not the earlier placeholder.
+  """
+
+  def _response_event(
+      call_id: str, response: dict[str, str], timestamp: float
+  ) -> Event:
+    return Event(
+        invocation_id="inv2",
+        author="user",
+        timestamp=timestamp,
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id=call_id, name="lr_tool", response=response
+                    )
+                )
+            ],
+        ),
+    )
+
+  parallel_call = Event(
+      invocation_id="inv2",
+      author="model",
+      timestamp=2.0,
+      long_running_tool_ids={"lr-1", "lr-2"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-1", name="lr_tool_1", args={}
+                  )
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-2", name="lr_tool_2", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  lr2_placeholder = _response_event("lr-2", {"status": "pending"}, 3.0)
+  lr2_result = _response_event("lr-2", {"result": "done-2"}, 4.0)
+  summary_event = Event(
+      invocation_id="compacted",
+      author="model",
+      timestamp=5.0,
+      content=types.Content(role="model", parts=[types.Part(text="summary")]),
+  )
+  lr1_result = _response_event("lr-1", {"result": "done-1"}, 7.0)
+
+  # After compaction the call event and both lr-2 responses are gone; only
+  # lr-1's later result survives. Both lr-2 responses remain in the source.
+  effective = [summary_event, lr1_result]
+  source = [parallel_call, lr2_placeholder, lr2_result, lr1_result]
+
+  result = contents._recover_compacted_function_calls(effective, source)  # pylint: disable=protected-access
+
+  assert result == [summary_event, parallel_call, lr2_result, lr1_result]
+  # The recovered lr-2 response is the real result, not the pending placeholder.
+  assert result[2].get_function_responses()[0].response == {"result": "done-2"}
+
+
 def test_get_contents_recovers_compacted_long_running_call_on_resume():
   """A long-running call compacted before resume is restored during assembly.
 
@@ -1894,3 +2003,41 @@ def test_recover_compacted_parallel_call_reinjects_sibling_response():
       if part.function_response
   }
   assert response_ids == {"lr-1", "reg-1"}
+
+
+def test_task_input_user_content_preserves_non_ascii():
+  """Delegated task input must not escape non-ASCII FC args.
+
+  A chat coordinator delegates to a task sub-agent via a function call; the
+  task agent's first user turn is rebuilt from the FC args. Escaping non-Latin
+  characters to ``\\uXXXX`` there bloats prompt tokens and degrades responses.
+  """
+  fc_id = "fc_task_1"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="coordinator",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=fc_id,
+                          name="delegate",
+                          args={"query": "שלום עולם", "city": "北京"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+
+  content = contents._build_task_input_user_content(  # pylint: disable=protected-access
+      events, isolation_scope=fc_id
+  )
+
+  assert content is not None and content.parts
+  text = content.parts[0].text
+  assert "שלום עולם" in text
+  assert "北京" in text
+  assert "\\u" not in text

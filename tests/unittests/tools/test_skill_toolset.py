@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import json
 import logging
 import sys
 from unittest import mock
@@ -996,6 +997,8 @@ async def test_execute_script_shell_success(mock_skill1):
   code_input = call_args[0][1]
   assert "subprocess.run" in code_input.code
   assert "bash" in code_input.code
+  assert "encoding='utf-8'" in code_input.code
+  assert "errors='replace'" in code_input.code
   assert "__shell_result__" in code_input.code
 
 
@@ -1583,7 +1586,6 @@ async def test_integration_shell_stderr_only():
 @pytest.mark.asyncio
 async def test_shell_json_envelope_parsed(mock_skill1):
   """Shell JSON envelope is correctly unpacked by run_async."""
-  import json
 
   envelope = json.dumps({
       "__shell_result__": True,
@@ -1607,7 +1609,6 @@ async def test_shell_json_envelope_parsed(mock_skill1):
 @pytest.mark.asyncio
 async def test_shell_json_envelope_nonzero_returncode(mock_skill1):
   """Non-zero returncode in shell envelope sets stderr."""
-  import json
 
   envelope = json.dumps({
       "__shell_result__": True,
@@ -1628,9 +1629,30 @@ async def test_shell_json_envelope_nonzero_returncode(mock_skill1):
 
 
 @pytest.mark.asyncio
+async def test_shell_json_envelope_nonzero_returncode_with_stderr(mock_skill1):
+  """Non-zero returncode in shell envelope appends exit code to stderr."""
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "",
+      "stderr": "some error occurred",
+      "returncode": 2,
+  })
+  executor = _make_mock_executor(stdout=envelope)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "error"
+  assert result["stderr"] == "some error occurred\nExit code 2"
+
+
+@pytest.mark.asyncio
 async def test_shell_json_envelope_with_stderr(mock_skill1):
   """Shell envelope with both stdout and stderr reports warning."""
-  import json
 
   envelope = json.dumps({
       "__shell_result__": True,
@@ -1654,13 +1676,13 @@ async def test_shell_json_envelope_with_stderr(mock_skill1):
 @pytest.mark.asyncio
 async def test_shell_json_envelope_timeout(mock_skill1):
   """Shell envelope from TimeoutExpired reports error status."""
-  import json
 
   envelope = json.dumps({
       "__shell_result__": True,
       "stdout": "partial output\n",
       "stderr": "Timed out after 300s",
       "returncode": -1,
+      "timeout": True,
   })
   executor = _make_mock_executor(stdout=envelope)
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
@@ -1673,6 +1695,7 @@ async def test_shell_json_envelope_timeout(mock_skill1):
   assert result["status"] == "error"
   assert result["stdout"] == "partial output\n"
   assert "Timed out" in result["stderr"]
+  assert "Exit code" not in result["stderr"]
 
 
 @pytest.mark.asyncio

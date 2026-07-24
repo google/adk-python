@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 class AudioTranscriber:
   """Transcribes audio using Google Cloud Speech-to-Text."""
 
-  def __init__(self, init_client=False):
+  def __init__(self, init_client: bool = False) -> None:
     if init_client:
       self.client = speech.SpeechClient()
 

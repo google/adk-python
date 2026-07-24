@@ -37,9 +37,12 @@ class FeatureName(str, Enum):
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
+  DYNAMIC_INSTRUCTION_ROUTING = "DYNAMIC_INSTRUCTION_ROUTING"
   DAYTONA_ENVIRONMENT = "DAYTONA_ENVIRONMENT"
   E2B_ENVIRONMENT = "E2B_ENVIRONMENT"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
+  EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
+  EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
   GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
   GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
   GCS_TOOLSET = "GCS_TOOLSET"
@@ -131,6 +134,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.DYNAMIC_INSTRUCTION_ROUTING: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
+    ),
     FeatureName.DAYTONA_ENVIRONMENT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -138,6 +144,12 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.EVENTARC_TOOL_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.EVENTARC_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.GCS_ADMIN_TOOLSET: FeatureConfig(
