@@ -51,6 +51,14 @@ def _create_test_invocations(
   )
 
 
+def test_calculate_rouge_1_scores_non_english_identical():
+  # Thai text: identical candidate and reference should yield a perfect score.
+  candidate = "สวัสดี"
+  reference = "สวัสดี"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.fmeasure == pytest.approx(1.0)
+
+
 def test_calculate_rouge_1_scores_empty_candidate_and_reference():
   candidate = ""
   reference = ""
