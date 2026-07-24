@@ -241,9 +241,7 @@ class TestAgentRegistry:
       toolset = registry.get_mcp_toolset("test-mcp-server")
     assert toolset.connection_params.url == self._GOOGLE_MCP_MTLS_URL
 
-  def test_get_mcp_toolset_never_keeps_plain_endpoint_with_cert(
-      self, registry
-  ):
+  def test_get_mcp_toolset_never_keeps_plain_endpoint_with_cert(self, registry):
     # never -> plain endpoint even when a cert is available.
     self._stub_mcp_server(registry, self._GOOGLE_MCP_URL)
     registry._client_cert_source = object()
