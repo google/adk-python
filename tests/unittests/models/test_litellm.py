@@ -2991,12 +2991,43 @@ def test_strip_thought_signature_from_tool_call_id_handles_empty(value):
   assert _strip_thought_signature_from_tool_call_id(value) == value
 
 
-def test_strip_thought_signature_from_tool_call_id_splits_once():
-  """Only the first separator is used, mirroring signature extraction."""
-  tool_call_id = (
-      f"call_1{_THOUGHT_SIGNATURE_SEPARATOR}sig{_THOUGHT_SIGNATURE_SEPARATOR}x"
+def test_strip_thought_signature_from_tool_call_id_retains_undecodable_suffix():
+  """An ID whose __thought__ suffix is not a valid signature is untouched.
+
+  The separator can legitimately appear inside an opaque tool call ID. When the
+  text after it does not decode as a signature, no signature was extracted, so
+  the ID must be preserved exactly rather than truncated.
+  """
+  tool_call_id = f"call_keep{_THOUGHT_SIGNATURE_SEPARATOR}not-base64"
+  assert (
+      _strip_thought_signature_from_tool_call_id(tool_call_id) == tool_call_id
   )
-  assert _strip_thought_signature_from_tool_call_id(tool_call_id) == "call_1"
+
+
+def test_message_to_generate_content_response_retains_id_when_suffix_undecodable():
+  """function_call.id is preserved when the embedded suffix is not a signature.
+
+  Regression test for the review feedback: when the __thought__ suffix does not
+  decode, no signature is extracted (thought_signature stays None) and the
+  opaque ID must not be mutated before it is persisted.
+  """
+  undecodable_id = f"call_keep{_THOUGHT_SIGNATURE_SEPARATOR}not-base64"
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=undecodable_id,
+              function=Function(name="test_function", arguments="{}"),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.id == undecodable_id
+  assert fc_part.thought_signature is None
 
 
 @pytest.mark.asyncio

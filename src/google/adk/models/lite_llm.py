@@ -1002,17 +1002,30 @@ def _strip_thought_signature_from_tool_call_id(
   replayed to the model as a ``tool_call_id``, which downstream
   OpenAI-compatible endpoints reject.
 
+  The suffix is only stripped when it actually decodes as a thought_signature,
+  mirroring ``_extract_thought_signature_from_tool_call``. If the text after the
+  separator does not decode, the separator is treated as part of the opaque
+  tool call ID and the ID is returned unchanged, so an ID is never mutated
+  unless a signature was genuinely extracted from it. This matches the Gemini
+  requirement to echo back the exact function-call ID.
+
   Args:
     tool_call_id: The raw tool call ID, which may contain an embedded
       thought_signature.
 
   Returns:
-    The tool call ID with any ``__thought__`` suffix removed, or the value
-    unchanged when no separator is present.
+    The tool call ID with the ``__thought__`` suffix removed when that suffix
+    is a decodable signature; otherwise the value unchanged.
   """
-  if not tool_call_id:
+  if not tool_call_id or _THOUGHT_SIGNATURE_SEPARATOR not in tool_call_id:
     return tool_call_id
-  return tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)[0]
+  base_id, _, encoded_signature = tool_call_id.partition(
+      _THOUGHT_SIGNATURE_SEPARATOR
+  )
+  if _decode_thought_signature(encoded_signature) is None:
+    # The suffix is not a valid signature, so it belongs to the opaque ID.
+    return tool_call_id
+  return base_id
 
   return None
 
