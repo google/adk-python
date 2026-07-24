@@ -15,21 +15,24 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from google.adk import version
 from google.adk.telemetry import tracing
 from google.adk.telemetry._token_usage import TokenUsage
-from google.genai import types
 from opentelemetry import metrics
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
 from opentelemetry.semconv.attributes import error_attributes
 
 if TYPE_CHECKING:
-  from google.adk.events.event import Event
   from google.adk.models.llm_request import LlmRequest
   from google.adk.models.llm_response import LlmResponse
+  from opentelemetry.trace import Span
+  from opentelemetry.util.types import AttributeValue
+
+  from .tracing import GenerateContentSpan
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -42,7 +45,7 @@ meter = metrics.get_meter(
 )
 
 _agent_invocation_duration = meter.create_histogram(
-    "gen_ai.agent.invocation.duration",
+    "gen_ai.invoke_agent.duration",
     unit="s",
     description="Duration of agent invocations.",
     explicit_bucket_boundaries_advisory=[
@@ -61,8 +64,13 @@ _agent_invocation_duration = meter.create_histogram(
         409.6,
     ],
 )
+_workflow_invocation_duration = meter.create_histogram(
+    "gen_ai.invoke_workflow.duration",
+    unit="s",
+    description="Duration of workflow invocations.",
+)
 _tool_execution_duration = meter.create_histogram(
-    "gen_ai.tool.execution.duration",
+    "gen_ai.execute_tool.duration",
     unit="s",
     description="Duration of tool executions.",
     explicit_bucket_boundaries_advisory=[
@@ -82,70 +90,50 @@ _tool_execution_duration = meter.create_histogram(
         81.92,
     ],
 )
-_agent_request_size = meter.create_histogram(
-    "gen_ai.agent.request.size",
-    unit="By",
-    description="Size of agent requests.",
-    explicit_bucket_boundaries_advisory=[
-        1,
-        4,
-        16,
-        64,
-        256,
-        1024,
-        4096,
-        16384,
-        65536,
-        262144,
-        1048576,
-        4194304,
-        16777216,
-        67108864,
-    ],
-)
-_agent_response_size = meter.create_histogram(
-    "gen_ai.agent.response.size",
-    unit="By",
-    description="Size of agent responses.",
-    explicit_bucket_boundaries_advisory=[
-        1,
-        4,
-        16,
-        64,
-        256,
-        1024,
-        4096,
-        16384,
-        65536,
-        262144,
-        1048576,
-        4194304,
-        16777216,
-        67108864,
-    ],
-)
-_agent_workflow_steps = meter.create_histogram(
-    "gen_ai.agent.workflow.steps",
-    unit="1",
-    description="Length of agentic workflow (# of events).",
-    explicit_bucket_boundaries_advisory=[
-        1,
-        2,
-        4,
-        8,
-        16,
-        32,
-        64,
-        128,
-        256,
-        512,
-        1024,
-    ],
-)
 _client_operation_duration = (
     gen_ai_metrics.create_gen_ai_client_operation_duration(meter)
 )
 _client_token_usage = gen_ai_metrics.create_gen_ai_client_token_usage(meter)
+_invoke_agent_inference_calls = meter.create_histogram(
+    "gen_ai.invoke_agent.inference_calls",
+    unit="1",
+    description="Number of inference (model) calls per agent invocation.",
+    explicit_bucket_boundaries_advisory=[
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        12,
+        16,
+        24,
+        32,
+        64,
+    ],
+)
+_invoke_agent_tool_calls = meter.create_histogram(
+    "gen_ai.invoke_agent.tool_calls",
+    unit="1",
+    description="Number of tool calls per agent invocation.",
+    explicit_bucket_boundaries_advisory=[
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        12,
+        16,
+        24,
+        32,
+        64,
+    ],
+)
 
 
 def record_agent_invocation_duration(
@@ -160,33 +148,37 @@ def record_agent_invocation_duration(
   _agent_invocation_duration.record(elapsed_s, attributes=attrs)
 
 
-def record_agent_request_size(
-    agent_name: str, user_content: types.Content | None
-):
-  """Records the size of the agent request."""
-  size = _get_content_size(user_content)
+def record_workflow_invocation_duration(
+    *,
+    workflow_name: str,
+    elapsed_s: float,
+    nested: bool,
+    error: BaseException | None = None,
+) -> None:
+  """Records the duration of a workflow invocation."""
+  attrs: dict[str, AttributeValue] = {
+      gen_ai_attributes.GEN_AI_OPERATION_NAME: "invoke_workflow",
+  }
+  # Root workflow omits the attribute entirely; only nested ones emit it.
+  if nested:
+    attrs["gen_ai.workflow.nested"] = True
+  if error is not None:
+    attrs[error_attributes.ERROR_TYPE] = type(error).__name__
+  if workflow_name:
+    attrs["gen_ai.workflow.name"] = workflow_name
+  _workflow_invocation_duration.record(elapsed_s, attributes=attrs)
+
+
+def record_invoke_agent_inference_calls(agent_name: str, count: int) -> None:
+  """Records the number of inference (model) calls in an agent invocation."""
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
-  _agent_request_size.record(size, attributes=attrs)
+  _invoke_agent_inference_calls.record(count, attributes=attrs)
 
 
-def record_agent_response_size(agent_name: str, events: list[Event]):
-  """Records the size of the agent response by extracting content from events."""
-  response_content: types.Content | None = None
-  for event in reversed(events):
-    if event.author == agent_name and event.content:
-      response_content = event.content
-      break
-
-  size = _get_content_size(response_content)
+def record_invoke_agent_tool_calls(agent_name: str, count: int) -> None:
+  """Records the number of tool calls in an agent invocation."""
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
-  _agent_response_size.record(size, attributes=attrs)
-
-
-def record_agent_workflow_steps(agent_name: str, events: list[Event]):
-  """Records the number of steps in the agent workflow by counting the number of events."""
-  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
-  count = sum(1 for event in events if event.author == agent_name)
-  _agent_workflow_steps.record(count, attributes=attrs)
+  _invoke_agent_tool_calls.record(count, attributes=attrs)
 
 
 def record_tool_execution_duration(
@@ -287,19 +279,35 @@ def record_client_token_usage(
     _client_token_usage.record(output_token_count, attributes=output_attrs)
 
 
-def _get_content_size(
-    content: types.Content | None,
-) -> int:
-  if not content or not content.parts:
-    return 0
-  size = 0
-  for part in content.parts:
-    if part.text is not None:
-      size += len(part.text.encode("utf-8"))
-    if part.inline_data and part.inline_data.data:
-      size += len(part.inline_data.data)
-  return size
-
-
 def _get_provider_name() -> str:
   return tracing._guess_gemini_system_name()
+
+
+def get_elapsed_s(
+    span: Span | GenerateContentSpan | None,
+    fallback_start: float,
+) -> float:
+  """Guarantees consistent time source for duration calculation.
+
+  Note: This must be called with an ended span.
+
+  Args:
+    span (trace.Span | tracing.GenerateContentSpan | None): The ended span to
+      extract duration from.
+    fallback_start (float): Fallback start time in seconds (monotonic).
+
+  Returns:
+    float: Elapsed duration in seconds.
+  """
+  if span is None:
+    return time.monotonic() - fallback_start
+
+  span = span.span if hasattr(span, "span") else span
+  start_ns = getattr(span, "start_time", None)
+  end_ns = getattr(span, "end_time", None)
+
+  if isinstance(start_ns, int) and isinstance(end_ns, int):
+    return (end_ns - start_ns) / 1e9  # Convert ns to s
+
+  # Fallback if span times are missing
+  return time.monotonic() - fallback_start

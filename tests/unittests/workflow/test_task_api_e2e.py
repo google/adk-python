@@ -257,21 +257,13 @@ class _CaptureNode(BaseNode):
 
 
 @pytest.mark.asyncio
-async def test_workflow_rejects_task_mode_graph_node():
-  """A mode='task' LlmAgent cannot be used as a static workflow graph node.
-
-  Task agents are multi-turn and need their originating ``node_input``
-  preserved across re-dispatches — which the workflow scheduler doesn't
-  do yet.  Until that lands, ``Workflow`` rejects them at construction
-  time.  Task agents are still supported as chat sub-agents (FC
-  delegation) and via dynamic ``ctx.run_node`` dispatch (see
-  test_dynamic_dispatch_of_task_agent).
-  """
+async def test_workflow_accepts_task_mode_graph_node():
+  """A mode='task' LlmAgent can be used as a static workflow graph node."""
   intake = _make_task_agent(name='intake', responses=[])
   capture = _CaptureNode(name='capture')
 
-  with pytest.raises(ValueError, match="mode='task'"):
-    Workflow(name='wf', edges=[(START, intake), (intake, capture)])
+  wf = Workflow(name='wf', edges=[(START, intake), (intake, capture)])
+  assert wf is not None
 
 
 # ---------------------------------------------------------------------------

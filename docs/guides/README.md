@@ -7,10 +7,14 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Agents
 * [LlmAgent Single-Turn Mode](agents/llm_agent/single_turn.md) - Guide on using LlmAgent in single-turn mode.
 * [LlmAgent Task Mode](agents/llm_agent/task.md) - Guide on using LlmAgent in task mode.
+* [ManagedAgent](agents/managed_agent/index.md) - Guide on using ManagedAgent with server-side tools.
 
 ### Events
 * [Event and NodeInfo](events/event/index.md) - Understanding Event and NodeInfo in workflows.
 * [RequestInput](events/request_input/index.md) - How to use RequestInput for human-in-the-loop interactions.
+
+### Tools
+* [to_mcp_server](tools/mcp_tool/agent_to_mcp/index.md) - Expose an ADK agent as an MCP server so any MCP host can drive it as a single tool (the MCP counterpart of to_a2a).
 
 ### Workflows
 * [Workflow](workflow/workflow/index.md) - Graph-based orchestration of complex, multi-step agent interactions.

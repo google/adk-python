@@ -128,12 +128,14 @@ def check_interception(
 
   else:
     # Case 5: Cross-turn no events, or events contain no output, route, or interrupts.
-    # Rerun Workflow nodes to guide nested children; otherwise fall through.
+    # Rerun Workflow nodes, wait_for_output nodes, and rerun_on_resume nodes
+    # with no prior output so they can guide nested children or resume execution;
+    # otherwise fall through.
     if (
         isinstance(node, Workflow)
-        and node.wait_for_output
-        and recovered.output is None
-    ):
+        or getattr(node, "wait_for_output", False)
+        or getattr(node, "rerun_on_resume", False)
+    ) and recovered.output is None:
       should_run = True
       resume_inputs = recovered.resolved_responses
     else:

@@ -67,6 +67,8 @@ class MockOAuth2Session:
     params = f"client_id={self.client_id}&scope={self.scope}"
     if kwargs.get("audience"):
       params += f"&audience={kwargs.get('audience')}"
+    if kwargs.get("prompt"):
+      params += f"&prompt={kwargs.get('prompt')}"
     return f"{url}?{params}", "mock_state"
 
   def fetch_token(
@@ -251,6 +253,25 @@ class TestGenerateAuthUri:
     result = handler.generate_auth_uri()
 
     assert "audience=test_audience" in result.oauth2.auth_uri
+    assert "prompt=consent" in result.oauth2.auth_uri
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_with_custom_prompt(
+      self, openid_auth_scheme, oauth2_credentials
+  ):
+    """Test generating an auth URI with a custom prompt override."""
+    oauth2_credentials.oauth2.prompt = "none"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=openid_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+    handler = AuthHandler(config)
+    result = handler.generate_auth_uri()
+
+    assert "prompt=none" in result.oauth2.auth_uri
 
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_openid(
@@ -299,7 +320,7 @@ class TestGenerateAuthUri:
 
     assert (
         result.oauth2.auth_uri
-        == "https://example.com/oauth2/token?client_id=mock_client_id&scope="
+        == "https://example.com/oauth2/token?client_id=mock_client_id&scope=&prompt=consent"
     )
     assert result.oauth2.state == "mock_state"
 
@@ -333,6 +354,59 @@ class TestGenerateAuthUri:
     _, kwargs = mock_client.create_authorization_url.call_args
     assert "code_verifier" in kwargs
     assert kwargs["code_verifier"] == result.oauth2.code_verifier
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session")
+  def test_generate_auth_uri_with_nonce(
+      self, mock_oauth2_session, oauth2_auth_scheme, oauth2_credentials
+  ):
+    """Test that a nonce is forwarded to the authorization request."""
+    oauth2_credentials.oauth2.nonce = "test_nonce"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.create_authorization_url.return_value = (
+        "https://example.com/oauth2/authorize?nonce=test_nonce",
+        "mock_state",
+    )
+
+    handler = AuthHandler(config)
+    handler.generate_auth_uri()
+
+    _, kwargs = mock_client.create_authorization_url.call_args
+    assert kwargs["nonce"] == "test_nonce"
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session")
+  def test_generate_auth_uri_without_nonce(
+      self, mock_oauth2_session, oauth2_auth_scheme, oauth2_credentials
+  ):
+    """Test that no nonce is sent when the credential has none."""
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.create_authorization_url.return_value = (
+        "https://example.com/oauth2/authorize",
+        "mock_state",
+    )
+
+    handler = AuthHandler(config)
+    handler.generate_auth_uri()
+
+    _, kwargs = mock_client.create_authorization_url.call_args
+    assert "nonce" not in kwargs
 
   def test_generate_auth_uri_unsupported_pkce_method(
       self, oauth2_auth_scheme, oauth2_credentials

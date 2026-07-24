@@ -13,7 +13,10 @@
 # limitations under the License.
 from __future__ import annotations
 
+import datetime
 import json
+from typing import Any
+from typing import Callable
 
 from sqlalchemy import Dialect
 from sqlalchemy import Text
@@ -65,3 +68,19 @@ class PreciseTimestamp(TypeDecorator):
     if dialect.name == "mysql":
       return dialect.type_descriptor(mysql.DATETIME(fsp=6))
     return self.impl
+
+  def result_processor(
+      self, dialect: Dialect, coltype: object
+  ) -> Callable[[Any], Any]:  # Any: database values can be of any type
+    impl_processor = self.impl.result_processor(dialect, coltype)
+
+    def process(value: Any) -> Any:  # Any: database values can be of any type
+      if value is None:
+        return None
+      if isinstance(value, (int, float)):
+        return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+      if impl_processor:
+        value = impl_processor(value)
+      return value
+
+    return process

@@ -135,6 +135,12 @@ class TestContextInitialization:
 
     assert context.actions is context._event_actions
 
+  def test_custom_metadata_property(self, mock_invocation_context):
+    """Test that custom_metadata property delegates to invocation context."""
+    mock_invocation_context._custom_metadata = {"key": "value"}
+    context = Context(mock_invocation_context)
+    assert context.custom_metadata == {"key": "value"}
+
 
 class TestContextListArtifacts:
   """Test the list_artifacts method in Context."""
@@ -779,10 +785,10 @@ class TestContextRunNodeTransferLoop:
     )
     child_ctx_b.output = "b_output"
 
-    # Mock the scheduler boundary
-    root_ctx._workflow_scheduler = AsyncMock(
-        side_effect=[child_ctx_a, child_ctx_b]
-    )
+    # Keep a strong reference to mock_scheduler so it doesn't get garbage
+    # collected immediately (Context._workflow_scheduler uses weakref internally).
+    mock_scheduler = AsyncMock(side_effect=[child_ctx_a, child_ctx_b])
+    root_ctx._workflow_scheduler = mock_scheduler
 
     # Act
     result = await root_ctx.run_node(agent_a, node_input="a_input")

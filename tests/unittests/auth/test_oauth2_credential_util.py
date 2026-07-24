@@ -15,6 +15,7 @@
 import time
 from typing import Optional
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from authlib.oauth2.rfc6749 import OAuth2Token
 from fastapi.openapi.models import OAuth2
@@ -150,6 +151,104 @@ class TestOAuth2CredentialUtil:
 
     assert client is None
     assert token_endpoint is None
+
+  def _google_openid_scheme(self) -> OpenIdConnectWithConfig:
+    """OpenID Connect scheme that uses Google's OAuth2 token endpoint."""
+    return OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://accounts.google.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://accounts.google.com/o/oauth2/v2/auth",
+        token_endpoint="https://oauth2.googleapis.com/token",
+        scopes=["openid"],
+    )
+
+  @patch.dict("os.environ", {}, clear=True)
+  @patch("google.adk.utils._mtls_utils.configure_session_for_mtls")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
+  def test_create_oauth2_session_google_endpoint_uses_mtls(
+      self, mock_use_cert, mock_configure
+  ):
+    """Google token endpoint is switched to mTLS when a cert is mounted."""
+    mock_use_cert.return_value = True
+    mock_configure.return_value = True
+    credential = create_oauth2_auth_credential(
+        auth_type=AuthCredentialTypes.OAUTH2
+    )
+
+    client, token_endpoint = create_oauth2_session(
+        self._google_openid_scheme(), credential
+    )
+
+    assert client is not None
+    assert token_endpoint == "https://oauth2.mtls.googleapis.com/token"
+    mock_configure.assert_called_once_with(client)
+
+  @patch.dict("os.environ", {}, clear=True)
+  @patch("google.adk.utils._mtls_utils.configure_session_for_mtls")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
+  def test_create_oauth2_session_google_endpoint_no_cert_keeps_plain(
+      self, mock_use_cert, mock_configure
+  ):
+    """Without a client cert the plain Google endpoint is kept."""
+    mock_use_cert.return_value = False
+    credential = create_oauth2_auth_credential(
+        auth_type=AuthCredentialTypes.OAUTH2
+    )
+
+    _, token_endpoint = create_oauth2_session(
+        self._google_openid_scheme(), credential
+    )
+
+    assert token_endpoint == "https://oauth2.googleapis.com/token"
+    mock_configure.assert_not_called()
+
+  @patch.dict("os.environ", {}, clear=True)
+  @patch("google.adk.utils._mtls_utils.configure_session_for_mtls")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
+  def test_create_oauth2_session_cert_unavailable_keeps_plain(
+      self, mock_use_cert, mock_configure
+  ):
+    """If the adapter cannot be mounted, the endpoint is not switched."""
+    mock_use_cert.return_value = True
+    mock_configure.return_value = False
+    credential = create_oauth2_auth_credential(
+        auth_type=AuthCredentialTypes.OAUTH2
+    )
+
+    client, token_endpoint = create_oauth2_session(
+        self._google_openid_scheme(), credential
+    )
+
+    assert token_endpoint == "https://oauth2.googleapis.com/token"
+    mock_configure.assert_called_once_with(client)
+
+  @patch.dict("os.environ", {}, clear=True)
+  @patch("google.adk.utils._mtls_utils.configure_session_for_mtls")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
+  def test_create_oauth2_session_non_google_endpoint_skips_mtls(
+      self, mock_use_cert, mock_configure
+  ):
+    """Non-Google providers are never switched to an mTLS endpoint."""
+    mock_use_cert.return_value = True
+    credential = create_oauth2_auth_credential(
+        auth_type=AuthCredentialTypes.OAUTH2
+    )
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+
+    _, token_endpoint = create_oauth2_session(scheme, credential)
+
+    assert token_endpoint == "https://example.com/token"
+    mock_configure.assert_not_called()
 
   @pytest.mark.parametrize(
       "token_endpoint_auth_method, expected_auth_method",

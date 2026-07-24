@@ -17,6 +17,7 @@ from unittest.mock import Mock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.run_config import RunConfig
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -125,6 +126,45 @@ class TestInvocationContext:
         current_branch=True,
     )
     assert not events
+
+
+class TestInvocationContextInitialization:
+  """Test suite for InvocationContext initialization."""
+
+  def test_custom_metadata_propagation(self):
+    """Tests that custom_metadata from RunConfig is propagated to InvocationContext."""
+    run_cfg = RunConfig(custom_metadata={'test_key': 'test_value'})
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        run_config=run_cfg,
+    )
+    # Access private attribute to verify
+    assert inv_ctx._custom_metadata == {'test_key': 'test_value'}
+
+  def test_custom_metadata_default_empty(self):
+    """Tests that _custom_metadata is empty by default when no RunConfig is provided."""
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert inv_ctx._custom_metadata == {}
+
+  def test_custom_metadata_empty_run_config(self):
+    """Tests that _custom_metadata is empty when RunConfig has no custom_metadata."""
+    run_cfg = RunConfig()
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        run_config=run_cfg,
+    )
+    assert inv_ctx._custom_metadata == {}
 
 
 class TestInvocationContextWithAppResumablity:
@@ -655,3 +695,40 @@ class TestFindMatchingFunctionCall:
     invocation_context.stamp_event_branch_context(fr_event)
     assert fr_event.branch == 'root@1'
     assert fr_event.isolation_scope == 'task_123'
+
+  def test_find_matching_function_call_when_response_is_not_last_event(
+      self, test_invocation_context
+  ):
+    """Tests that matching function call is found even when response is not the last event in history."""
+    fc = Part.from_function_call(name='some_tool', args={})
+    fc.function_call.id = 'test_function_call_id'
+    fc_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=testing_utils.ModelContent([fc]),
+    )
+    fr = Part.from_function_response(
+        name='some_tool', response={'result': 'ok'}
+    )
+    fr.function_response.id = 'test_function_call_id'
+    fr_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=Content(role='user', parts=[fr]),
+    )
+    # Add a subsequent event to the history so that fr_event is NOT the last one
+    subsequent_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        content=Content(role='user', parts=[Part(text='next user message')]),
+    )
+    invocation_context = test_invocation_context(
+        [fc_event, fr_event, subsequent_event]
+    )
+
+    matching_fc_event = invocation_context._find_matching_function_call(
+        fr_event
+    )
+    assert testing_utils.simplify_content(
+        matching_fc_event.content
+    ) == testing_utils.simplify_content(fc_event.content)

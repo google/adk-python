@@ -53,7 +53,9 @@ def _create_patch(sandbox: mock.MagicMock):
 @pytest.mark.asyncio
 async def test_initialize_creates_sandbox(create_patch, sandbox):
   env = E2BEnvironment(image='custom', timeout=120, env_vars={'A': '1'})
+  assert env.is_initialized is False
   await env.initialize()
+  assert env.is_initialized is True
 
   create_patch.assert_awaited_once()
   _, kwargs = create_patch.call_args
@@ -75,9 +77,11 @@ async def test_initialize_is_idempotent(create_patch, sandbox):
 async def test_close_kills_sandbox_and_is_idempotent(create_patch, sandbox):
   env = E2BEnvironment()
   await env.initialize()
+  assert env.is_initialized is True
   await env.close()
   sandbox.kill.assert_awaited_once()
   assert env._sandbox is None
+  assert env.is_initialized is False
   # Second close is a no-op.
   await env.close()
   sandbox.kill.assert_awaited_once()

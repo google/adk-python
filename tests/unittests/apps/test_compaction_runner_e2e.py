@@ -150,3 +150,63 @@ async def test_runner_compaction_does_not_break_execution():
       if part.function_call is not None:
         prompt_call_ids.append(part.function_call.id)
   assert "call-1" in prompt_call_ids
+
+
+@pytest.mark.asyncio
+async def test_runner_appends_sliding_window_compaction_event():
+  """The runner loop, not compaction, persists the sliding-window event.
+
+  Compaction now yields its event and the runner is the single append site.
+  With a sliding-window config (no token threshold), the full ``run_async``
+  path must leave a compaction event persisted in the session -- proving the
+  runner performed the append the compaction function no longer does.
+  """
+  agent_model = testing_utils.MockModel.create(responses=["final answer"])
+  agent = Agent(name="agent", model=agent_model)
+  app = App(
+      name="test_app",
+      root_agent=agent,
+      events_compaction_config=EventsCompactionConfig(
+          compaction_interval=2,
+          overlap_size=0,
+          summarizer=LlmEventSummarizer(
+              llm=testing_utils.MockModel.create(responses=["summary"])
+          ),
+      ),
+  )
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+  events = [
+      Event(
+          timestamp=1.0,
+          invocation_id="inv1",
+          author="user",
+          content=Content(role="user", parts=[Part(text="hello")]),
+      ),
+      Event(
+          timestamp=2.0,
+          invocation_id="inv2",
+          author="user",
+          content=Content(role="user", parts=[Part(text="world")]),
+      ),
+  ]
+  for event in events:
+    await session_service.append_event(session=session, event=event)
+
+  runner = Runner(app=app, session_service=session_service)
+  async for _ in runner.run_async(
+      user_id="u1", session_id="s1", new_message=None
+  ):
+    pass
+
+  refreshed = await session_service.get_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+  compaction_events = [
+      event for event in refreshed.events if event.actions.compaction
+  ]
+  assert (
+      compaction_events
+  ), "runner did not append the sliding-window compaction event"

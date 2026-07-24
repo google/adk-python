@@ -18,6 +18,7 @@ from datetime import datetime
 from datetime import timezone
 import enum
 import sqlite3
+import time
 from unittest import mock
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
@@ -31,6 +32,7 @@ from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
 from sqlalchemy import delete
@@ -354,19 +356,13 @@ async def test_create_get_session(session_service):
   assert session.user_id == user_id
   assert session.id
   assert session.state == state
-  assert (
-      session.last_update_time
-      <= datetime.now().astimezone(timezone.utc).timestamp()
-  )
+  assert session.last_update_time <= time.time()
 
   got_session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert got_session == session
-  assert (
-      got_session.last_update_time
-      <= datetime.now().astimezone(timezone.utc).timestamp()
-  )
+  assert got_session.last_update_time <= time.time()
 
   session_id = session.id
   await session_service.delete_session(
@@ -907,6 +903,51 @@ async def test_append_event_complete(session_service):
   )
 
 
+# pylint: disable=redefined-outer-name
+@pytest.mark.asyncio
+async def test_append_event_with_requested_tool_confirmations(session_service):
+  """Tests that EventActions.requested_tool_confirmations is preserved in session service."""
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      actions=EventActions(
+          requested_tool_confirmations={
+              'tool_call_1': ToolConfirmation(
+                  hint='dynamic hint',
+                  confirmed=False,
+                  payload={
+                      'collection_name': 'photos',
+                      'resource_id': 'album_1',
+                  },
+              )
+          }
+      ),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  refreshed_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert refreshed_session is not None
+  assert len(refreshed_session.events) == 1
+  retrieved_event = refreshed_session.events[0]
+  assert retrieved_event.actions is not None
+  assert 'tool_call_1' in retrieved_event.actions.requested_tool_confirmations
+  tc = retrieved_event.actions.requested_tool_confirmations['tool_call_1']
+  assert tc.hint == 'dynamic hint'
+  assert tc.payload == {
+      'collection_name': 'photos',
+      'resource_id': 'album_1',
+  }
+  assert not tc.confirmed
+
+
 @pytest.mark.asyncio
 async def test_session_last_update_time_updates_on_event(session_service):
   app_name = 'my_app'
@@ -1361,11 +1402,12 @@ async def test_get_session_with_config(session_service):
   user_id = 'user'
 
   num_test_events = 5
+  base_timestamp = int(time.time())
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
   )
   for i in range(1, num_test_events + 1):
-    event = Event(author='user', timestamp=i)
+    event = Event(author='user', timestamp=base_timestamp + i)
     await session_service.append_event(session, event)
 
   # No config, expect all events to be returned.
@@ -1390,20 +1432,24 @@ async def test_get_session_with_config(session_service):
   )
   events = session.events
   assert len(events) == num_recent_events
-  assert events[0].timestamp == num_test_events - num_recent_events + 1
+  assert (
+      events[0].timestamp
+      == base_timestamp + num_test_events - num_recent_events + 1
+  )
 
-  # Only expect events after timestamp 4.0 (inclusive), i.e., 2 events.
-  after_timestamp = 4.0
+  # Only expect events after the fourth timestamp (inclusive), i.e., 2 events.
+  after_event_index = 4
+  after_timestamp = base_timestamp + after_event_index
   config = GetSessionConfig(after_timestamp=after_timestamp)
   session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
   )
   events = session.events
-  assert len(events) == num_test_events - after_timestamp + 1
+  assert len(events) == num_test_events - after_event_index + 1
   assert events[0].timestamp == after_timestamp
 
   # Expect no events if none are > after_timestamp.
-  way_after_timestamp = num_test_events * 10
+  way_after_timestamp = base_timestamp + num_test_events * 10
   config = GetSessionConfig(after_timestamp=way_after_timestamp)
   session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
@@ -1419,7 +1465,7 @@ async def test_get_session_with_config(session_service):
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
   )
   events = session.events
-  assert len(events) == num_test_events - after_timestamp + 1
+  assert len(events) == num_test_events - after_event_index + 1
 
 
 @pytest.mark.asyncio
@@ -2372,3 +2418,59 @@ async def test_database_session_service_requires_one_argument():
     DatabaseSessionService(
         db_url='sqlite+aiosqlite:///:memory:', db_engine=engine
     )
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
+    tmp_path,
+):
+  """Regression test for #6352 (SQLite REAL-affinity timestamp reads)."""
+  # SQLite REAL-affinity columns can end up storing raw Unix epoch floats
+  # instead of the text format SQLAlchemy's DateTime type normally writes
+  # (for example, if the row was written by a different code path than the
+  # SQLAlchemy ORM). Reading such a row back must not raise TypeError, since
+  # TypeDecorator.process_result_value runs after the impl's own result
+  # processor, which chokes on a float before process_result_value can run.
+  # This test forces that condition directly via raw SQL.
+  db_path = tmp_path / 'timestamp_regression.db'
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+  app_name = 'my_app'
+  user_id = 'user'
+
+  service = DatabaseSessionService(db_url)
+  try:
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+    event = Event(author='user', timestamp=time.time())
+    await service.append_event(session, event)
+  finally:
+    await service.close()
+
+  # Directly overwrite the stored timestamp with a raw float via raw SQL,
+  # simulating a REAL-affinity column value that bypassed SQLAlchemy's
+  # normal text-based DateTime serialization.
+  raw_epoch_float = time.time()
+  conn = sqlite3.connect(str(db_path))
+  try:
+    conn.execute(
+        'UPDATE events SET timestamp = ? WHERE session_id = ?',
+        (raw_epoch_float, session.id),
+    )
+    conn.commit()
+  finally:
+    conn.close()
+
+  # Read it back with a fresh service instance; this must not raise
+  # TypeError: fromisoformat: argument must be str.
+  service2 = DatabaseSessionService(db_url)
+  try:
+    retrieved_session = await service2.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+  finally:
+    await service2.close()
+
+  assert retrieved_session is not None
+  assert len(retrieved_session.events) == 1
+  assert retrieved_session.events[0].timestamp == pytest.approx(
+      raw_epoch_float, abs=1.0
+  )

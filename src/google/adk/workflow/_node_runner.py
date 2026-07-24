@@ -28,6 +28,7 @@ import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
+from ..events._branch_path import _BranchPath
 from ..telemetry import node_tracing
 
 if TYPE_CHECKING:
@@ -206,8 +207,9 @@ class NodeRunner:
     )
 
     if self._use_sub_branch:
-      segment = f"{self._node.name}@{self._run_id}"
-      branch = f"{base_branch}.{segment}" if base_branch else segment
+      branch = _BranchPath.create_sub_branch(
+          base_branch, name=self._node.name, run_id=self._run_id
+      )
       ic = ic.model_copy(update={"branch": branch})
     elif self._override_branch is not None:
       ic = ic.model_copy(update={"branch": self._override_branch})
@@ -223,6 +225,25 @@ class NodeRunner:
         use_as_output=self._use_as_output,
         attempt_count=attempt_count,
     )
+
+    if ic.session and ic.session.events:
+      from .utils._rehydration_utils import _reconstruct_node_states
+
+      states = _reconstruct_node_states(
+          events=ic.session.events,
+          base_path=ctx.node_path,
+          invocation_id=ic.invocation_id,
+      )
+      if ctx.node_path in states:
+        rehydrated = dict(states[ctx.node_path].resolved_responses)
+        if ctx._resume_inputs:
+          rehydrated.update(ctx._resume_inputs)
+        ctx._resume_inputs = rehydrated
+        logger.debug(
+            "node %s rehydrated resume_inputs: %s",
+            ctx.node_path,
+            ctx._resume_inputs,
+        )
 
     # override the inherited isolation_scope when explicitly set.
     if self._override_isolation_scope is not None:

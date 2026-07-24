@@ -223,6 +223,38 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
 
 
 @pytest.mark.asyncio
+async def test_trace_call_llm_skips_non_recording_span(monkeypatch):
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model='gemini-pro')
+  llm_response = LlmResponse(turn_complete=True)
+  span = mock.MagicMock()
+  span.is_recording.return_value = False
+  get_telemetry_config = mock.Mock()
+  serialize_request = mock.Mock(return_value='{}')
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing._telemetry_config_from_invocation_context',
+      get_telemetry_config,
+  )
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing.safe_json_serialize', serialize_request
+  )
+
+  trace_call_llm(
+      invocation_context,
+      'test_event_id',
+      llm_request,
+      llm_response,
+      span=span,
+  )
+
+  get_telemetry_config.assert_not_called()
+  serialize_request.assert_not_called()
+  span.set_attribute.assert_not_called()
+  span.set_attributes.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_trace_call_llm_with_no_usage_metadata(
     monkeypatch, mock_span_fixture
 ):

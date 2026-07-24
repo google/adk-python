@@ -79,13 +79,6 @@ class _ConstantNode(BaseNode):
 # --- Live Workflow Unit Tests (TDD) ---
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        "when scheduler preserves originating node_input on resume."
-    ),
-)
 @pytest.mark.asyncio
 async def test_hybrid_live_non_live_nodes():
   """CUJ 1: A workflow has hybrid live & non-live nodes."""
@@ -194,7 +187,9 @@ async def test_hybrid_live_non_live_nodes():
       "NonLiveNode_output",
       {"result": "LiveNode2_output"},
   ]
-  assert non_live_node.actual_input == {"result": "LiveNode1_output"}
+  assert non_live_node.shared_state.get("actual_input") == {
+      "result": "LiveNode1_output"
+  }
 
   # 2. Assert intermediate content events (conversational turns)
   content_texts = [
@@ -222,13 +217,6 @@ async def test_hybrid_live_non_live_nodes():
   ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        "when scheduler preserves originating node_input on resume."
-    ),
-)
 @pytest.mark.asyncio
 async def test_nested_workflow_has_live_node():
   """CUJ 2: A nested workflow has a live node."""
@@ -306,13 +294,6 @@ async def test_nested_workflow_has_live_node():
   ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        "when scheduler preserves originating node_input on resume."
-    ),
-)
 @pytest.mark.asyncio
 async def test_nested_live_node_and_outer_live_node():
   """CUJ 3: A nested workflow has live node & outer workflow then has a live node."""
@@ -558,13 +539,6 @@ async def test_dynamic_node_scheduling_of_live_node():
   ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        "when scheduler preserves originating node_input on resume."
-    ),
-)
 @pytest.mark.asyncio
 async def test_live_node_output_passed_to_downstream():
   """CUJ 5: Dedicated test verifying output of a live node is passed to the next node."""
@@ -617,7 +591,7 @@ async def test_live_node_output_passed_to_downstream():
 
   outputs = [e.output for e in events if e.output is not None]
   assert outputs == [{"result": "LiveNode_output"}, "NonLiveNode_output"]
-  assert non_live_node.actual_input == {
+  assert non_live_node.shared_state.get("actual_input") == {
       "result": "LiveNode_output"
   }, "The downstream node must receive the live node's exact output"
   assert [b.data for b in mock_model.live_blobs] == [b"start_msg", b"end_msg"]

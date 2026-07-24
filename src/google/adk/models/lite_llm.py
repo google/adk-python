@@ -27,7 +27,6 @@ import re
 import sys
 from typing import Any
 from typing import AsyncGenerator
-from typing import cast
 from typing import Dict
 from typing import Generator
 from typing import Iterable
@@ -543,9 +542,11 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
           continue
         if block_type == "thinking":
           thinking_text = block.get("thinking", "")
-          if thinking_text:
+          signature = block.get("signature")
+          # Anthropic streams a signature in a final chunk with empty text.
+          # Preserve signature-only blocks so the signature survives aggregation.
+          if thinking_text or signature:
             part = types.Part(text=thinking_text, thought=True)
-            signature = block.get("signature")
             if signature:
               decoded_signature = _decode_thought_signature(signature)
               part.thought_signature = decoded_signature or str(
@@ -563,6 +564,43 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
       for text in _iter_reasoning_texts(reasoning_value)
       if text
   ]
+
+
+def _aggregate_streaming_thought_parts(
+    thought_parts: Iterable[types.Part],
+) -> List[types.Part]:
+  """Aggregates fragmented streaming thought parts into clean individual parts.
+
+  During streaming, Anthropic splits a thinking block across many deltas:
+  text-only chunks followed by a signature-only chunk at block_stop. This helper
+  joins the text chunks and attaches the signature, producing clean individual
+  thought parts for session history and outbound requests.
+  """
+  parts_list = list(thought_parts)
+  if not parts_list:
+    return []
+  aggregated: List[types.Part] = []
+  current_texts: List[str] = []
+  for part in parts_list:
+    if part.text:
+      current_texts.append(part.text)
+    if part.thought_signature:
+      aggregated.append(
+          types.Part(
+              text="".join(current_texts),
+              thought=True,
+              thought_signature=part.thought_signature,
+          )
+      )
+      current_texts = []
+  if current_texts:
+    aggregated.append(
+        types.Part(
+            text="".join(current_texts),
+            thought=True,
+        )
+    )
+  return aggregated
 
 
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
@@ -585,6 +623,26 @@ def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   if reasoning_content is not None:
     return reasoning_content
   return message.get("reasoning")
+
+
+_GEMMA4_MODEL_PATTERN = re.compile(r"gemma-?4")
+
+
+def _is_gemma4_model(model: str) -> bool:
+  """Detects Gemma 4 models across naming conventions.
+
+  Ollama uses "gemma4" (e.g. "ollama/gemma4:e2b"), while Hugging Face,
+  vLLM, and llama.cpp use the hyphenated "gemma-4" (e.g.
+  "google/gemma-4-26B-A4B"). Both need role='tool_responses' for tool
+  results.
+
+  Args:
+    model: The model name to check.
+
+  Returns:
+    True if the model is a Gemma 4 model, False otherwise.
+  """
+  return bool(_GEMMA4_MODEL_PATTERN.search(model.lower()))
 
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
@@ -620,7 +678,11 @@ class LiteLLMClient:
   """Provides acompletion method (for better testability)."""
 
   async def acompletion(
-      self, model, messages, tools, **kwargs
+      self,
+      model: Any,
+      messages: Any,
+      tools: Any,
+      **kwargs: Any,
   ) -> Union[ModelResponse, CustomStreamWrapper]:
     """Asynchronously calls acompletion.
 
@@ -643,7 +705,12 @@ class LiteLLMClient:
     )
 
   def completion(
-      self, model, messages, tools, stream=False, **kwargs
+      self,
+      model: Any,
+      messages: Any,
+      tools: Any,
+      stream: bool = False,
+      **kwargs: Any,
   ) -> Union[ModelResponse, CustomStreamWrapper]:
     """Synchronously calls completion. This is used for streaming only.
 
@@ -668,7 +735,7 @@ class LiteLLMClient:
     )
 
 
-def _safe_json_serialize(obj) -> str:
+def _safe_json_serialize(obj: object) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
   Args:
@@ -768,7 +835,7 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
       if isinstance(value, int):
         return value
     elif isinstance(details, list):
-      total = sum(
+      total: int = sum(
           item.get("cached_tokens", 0)
           for item in details
           if isinstance(item, dict)
@@ -841,6 +908,28 @@ def _extract_reasoning_tokens(usage: Any) -> int:
     logger.debug("Error extracting reasoning tokens: %s", e)
 
   return 0
+
+
+def _merge_reasoning_texts(reasoning_parts: Iterable[types.Part]) -> str:
+  """Merges reasoning text fragments into a single provider payload.
+
+  Streaming providers such as vLLM can emit reasoning as token-sized chunks.
+  ADK stores those chunks as consecutive thought parts, so inserting separators
+  here changes the model's original reasoning text.
+  """
+  reasoning_texts = []
+  for part in reasoning_parts:
+    if part.text:
+      reasoning_texts.append(part.text)
+    elif (
+        part.inline_data
+        and part.inline_data.data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith("text/")
+    ):
+      reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
+
+  return "".join(reasoning_texts)
 
 
 def _extract_thought_signature_from_tool_call(
@@ -936,7 +1025,7 @@ async def _content_to_message_param(
       # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
       # Earlier Gemma versions before version 4 do not support tool use,
       # so this check is intentionally scoped to only look for "gemma4" in the model name.
-      tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
+      tool_role = "tool_responses" if _is_gemma4_model(model) else "tool"
       tool_messages.append(
           ChatCompletionToolMessage(
               role=tool_role,
@@ -1023,9 +1112,14 @@ async def _content_to_message_param(
     # For Anthropic models, rebuild thinking_blocks with signatures so that
     # thinking is preserved across tool call boundaries. Without this,
     # Anthropic silently drops thinking after the first turn.
+    #
+    # Streaming splits one Anthropic thinking block across many deltas:
+    # text-only chunks followed by a signature-only chunk at block_stop.
+    # Aggregate them back into one thinking block for outbound.
     if model and _is_anthropic_model(model) and reasoning_parts:
+      aggregated_parts = _aggregate_streaming_thought_parts(reasoning_parts)
       thinking_blocks = []
-      for part in reasoning_parts:
+      for part in aggregated_parts:
         if part.text and part.thought_signature:
           sig = part.thought_signature
           if isinstance(sig, bytes):
@@ -1043,18 +1137,6 @@ async def _content_to_message_param(
         )
         msg["thinking_blocks"] = thinking_blocks  # type: ignore[typeddict-unknown-key]
         return msg
-
-    reasoning_texts = []
-    for part in reasoning_parts:
-      if part.text:
-        reasoning_texts.append(part.text)
-      elif (
-          part.inline_data
-          and part.inline_data.data
-          and part.inline_data.mime_type
-          and part.inline_data.mime_type.startswith("text/")
-      ):
-        reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
 
     # Anthropic routes require thinking blocks to be embedded directly in the
     # message content list. LiteLLM's prompt template for Anthropic drops the
@@ -1084,9 +1166,7 @@ async def _content_to_message_param(
           tool_calls=tool_calls or None,
       )
 
-    # Preserve reasoning deltas exactly as received. Injecting separators
-    # between fragments can corrupt provider-streamed thinking text.
-    reasoning_content = "".join(text for text in reasoning_texts if text)
+    reasoning_content = _merge_reasoning_texts(reasoning_parts)
     return ChatCompletionAssistantMessage(
         role=role,
         content=final_content,
@@ -1113,7 +1193,7 @@ def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
 
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
-  expected_tool_role = "tool_responses" if "gemma4" in model.lower() else "tool"
+  expected_tool_role = "tool_responses" if _is_gemma4_model(model) else "tool"
 
   for message in messages:
     role = message.get("role")
@@ -1248,7 +1328,7 @@ async def _get_content(
           )
           content_objects.append({
               "type": "file",
-              "file": {"file_id": file_response.id},
+              "file": {"file_id": file_response.id, "format": mime_type},
           })
         else:
           content_objects.append({
@@ -1644,7 +1724,7 @@ def _parse_tool_calls_from_text(
     text_block: str,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
   """Extracts inline JSON tool calls from LiteLLM text responses."""
-  tool_calls = []
+  tool_calls: list[ChatCompletionMessageToolCall] = []
   if not text_block:
     return tool_calls, None
 
@@ -1741,7 +1821,7 @@ TYPE_LABELS = {
 }
 
 
-def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
+def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   """Recursively converts a schema object or dict to a pure-python dict.
 
   Args:
@@ -1787,7 +1867,7 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
 
 def _function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
-) -> dict:
+) -> dict[str, Any]:
   """Converts a types.FunctionDeclaration to an openapi spec dictionary.
 
   Args:
@@ -1877,6 +1957,7 @@ def _model_response_to_chunk(
         or message.get("function_call")
         or message.get("reasoning_content")
         or message.get("reasoning")
+        or message.get("thinking_blocks")
     )
 
   if isinstance(response, ModelResponseStream):
@@ -2252,9 +2333,9 @@ async def _get_completion_inputs(
     model: str,
 ) -> Tuple[
     List[Message],
-    Optional[List[Dict]],
+    Optional[List[Dict[str, Any]]],
     Optional[Dict[str, Any]],
-    Optional[Dict],
+    Optional[Dict[str, Any]],
 ]:
   """Converts an LlmRequest to litellm inputs and extracts generation params.
 
@@ -2293,16 +2374,25 @@ async def _get_completion_inputs(
   messages = _ensure_tool_results(messages, model)
 
   # 2. Convert tool declarations
-  tools: Optional[List[Dict]] = None
-  if (
-      llm_request.config
-      and llm_request.config.tools
-      and llm_request.config.tools[0].function_declarations
-  ):
-    tools = [
-        _function_declaration_to_tool_param(tool)
-        for tool in llm_request.config.tools[0].function_declarations
-    ]
+  tools: Optional[List[Dict[str, Any]]] = None
+  if llm_request.config and llm_request.config.tools:
+    tools = []
+    for tool in llm_request.config.tools:
+      if not isinstance(tool, types.Tool):
+        continue
+      if tool.function_declarations:
+        tools.extend(
+            _function_declaration_to_tool_param(func_decl)
+            for func_decl in tool.function_declarations
+        )
+      else:
+        # Native/built-in tools (e.g. google_search) carry no
+        # function_declarations; serialize them as-is so they reach the
+        # provider or proxy instead of being silently dropped.
+        dumped_tool = tool.model_dump(by_alias=True, exclude_none=True)
+        if dumped_tool:
+          tools.append(dumped_tool)
+    tools = tools or None
 
   # 3. Handle response format
   response_format: dict[str, Any] | None = None
@@ -2313,7 +2403,7 @@ async def _get_completion_inputs(
     )
 
   # 4. Extract generation parameters
-  generation_params: dict | None = None
+  generation_params: dict[str, Any] | None = None
   if llm_request.config:
     config_dict = llm_request.config.model_dump(exclude_none=True)
     # Generate LiteLlm parameters here,
@@ -2376,10 +2466,12 @@ def _build_request_log(req: LlmRequest) -> str:
     The request log.
   """
 
-  function_decls: list[types.FunctionDeclaration] = cast(
-      list[types.FunctionDeclaration],
-      req.config.tools[0].function_declarations if req.config.tools else [],
-  )
+  function_decls: list[types.FunctionDeclaration] = [
+      func_decl
+      for tool in req.config.tools or []
+      if isinstance(tool, types.Tool) and tool.function_declarations
+      for func_decl in tool.function_declarations
+  ]
   function_logs = (
       [
           _build_function_declaration_log(func_decl)
@@ -2511,6 +2603,50 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
   )
 
 
+class _BraceDepthTracker:
+  """Streams JSON characters and reports when a top-level object closes.
+
+  Only `{`/`}` are counted; `[`/`]` are ignored. Tool-call arguments per
+  the OpenAI/LiteLLM spec are always top-level JSON objects, never arrays,
+  so array depth is irrelevant for detecting when the top-level container
+  closes. Arrays nested as values (e.g. `{"a": [{"b": 1}]}`) still balance
+  correctly because chars inside the array don't change brace depth.
+  """
+
+  __slots__ = ("_depth", "_in_string", "_escaped", "_seen_open")
+
+  def __init__(self) -> None:
+    self._depth = 0
+    self._in_string = False
+    self._escaped = False
+    self._seen_open = False
+
+  def feed(self, fragment: str) -> bool:
+    """Feeds new chars; returns True iff a top-level object just closed."""
+    closed = False
+    for ch in fragment:
+      if self._in_string:
+        if self._escaped:
+          self._escaped = False
+        elif ch == "\\":
+          self._escaped = True
+        elif ch == '"':
+          self._in_string = False
+        continue
+      if ch == '"':
+        self._in_string = True
+      elif ch == "{":
+        self._depth += 1
+        self._seen_open = True
+      elif ch == "}":
+        if self._depth > 0:
+          self._depth -= 1
+          if self._depth == 0 and self._seen_open:
+            closed = True
+            self._seen_open = False
+    return closed
+
+
 def _redirect_litellm_loggers_to_stdout() -> None:
   """Redirects LiteLLM loggers from stderr to stdout.
 
@@ -2553,12 +2689,14 @@ class LiteLlm(BaseLlm):
     llm_client: The LLM client to use for the model.
   """
 
-  llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient)
+  # LiteLLMClient has no JSON serializer, so it is excluded from dumps to keep
+  # model_dump(mode="json") from raising.
+  llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient, exclude=True)
   """The LLM client to use for the model."""
 
   _additional_args: Dict[str, Any] = None
 
-  def __init__(self, model: str, **kwargs):
+  def __init__(self, model: str, **kwargs: Any) -> None:
     """Initializes the LiteLlm class.
 
     Args:
@@ -2613,7 +2751,7 @@ class LiteLlm(BaseLlm):
       # LiteLLM does not support both tools and functions together.
       tools = None
 
-    completion_args = {
+    completion_args: dict[str, Any] = {
         "model": effective_model,
         "messages": normalized_messages,
         "tools": tools,
@@ -2660,7 +2798,10 @@ class LiteLlm(BaseLlm):
       text = ""
       reasoning_parts: List[types.Part] = []
       # Track function calls by index
-      function_calls = {}  # index -> {name, args, id}
+      function_calls: dict[int, dict[str, Any]] = (
+          {}
+      )  # index -> {name, args, id}
+      tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
       aggregated_llm_response = None
@@ -2750,6 +2891,7 @@ class LiteLlm(BaseLlm):
         text = ""
         reasoning_parts = []
         function_calls.clear()
+        tool_call_trackers.clear()
 
       async for part in await self.llm_client.acompletion(**completion_args):
         # Grounding metadata can arrive on the first chunk (search queries) or
@@ -2768,13 +2910,17 @@ class LiteLlm(BaseLlm):
             if chunk.args:
               function_calls[index]["args"] += chunk.args
 
-              # check if args is completed (workaround for improper chunk
-              # indexing)
-              try:
-                json.loads(function_calls[index]["args"])
-                fallback_index += 1
-              except json.JSONDecodeError:
-                pass
+              # Detect args completion to advance fallback_index (workaround
+              # for improper chunk indexing) without O(N^2) re-parsing.
+              tracker = tool_call_trackers.setdefault(
+                  index, _BraceDepthTracker()
+              )
+              if tracker.feed(chunk.args):
+                try:
+                  json.loads(function_calls[index]["args"])
+                  fallback_index += 1
+                except json.JSONDecodeError:
+                  pass
 
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)

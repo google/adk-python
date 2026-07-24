@@ -23,11 +23,11 @@ from typing import Callable
 from typing import Optional
 from typing import Union
 
-from a2a.client.middleware import ClientCallContext
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Message as A2AMessage
 from pydantic import BaseModel
 
+from .. import _compat
 from ...a2a.converters.part_converter import A2APartToGenAIPartConverter
 from ...a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from ...a2a.converters.to_adk_event import A2AArtifactUpdateToEventConverter
@@ -46,7 +46,7 @@ class ParametersConfig(BaseModel):
   """Configuration for the parameters passed to the A2A send_message request."""
 
   request_metadata: Optional[dict[str, Any]] = None
-  client_call_context: Optional[ClientCallContext] = None
+  client_call_context: Optional[_compat.ClientCallContext] = None
   # TODO: Add support for requested_extension and
   # message_send_configuration once they are supported by the A2A client.
   #

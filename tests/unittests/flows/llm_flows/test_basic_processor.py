@@ -373,3 +373,29 @@ class TestBasicLlmRequestProcessor:
     assert (
         llm_request.config.http_options.headers['Agent-Header'] == 'agent-val'
     )
+
+  @pytest.mark.asyncio
+  async def test_merges_run_config_labels(self):
+    """RunConfig labels are merged into llm_request.config.labels."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-1.5-flash',
+        generate_content_config=types.GenerateContentConfig(
+            labels={'agent_label': 'val1'}
+        ),
+    )
+
+    invocation_context = await _create_invocation_context(agent)
+    invocation_context.run_config = RunConfig(
+        labels={'goog-originating-logical-product-id': 'prod1'}
+    )
+    llm_request = LlmRequest()
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.config.labels == {
+        'agent_label': 'val1',
+        'goog-originating-logical-product-id': 'prod1',
+    }

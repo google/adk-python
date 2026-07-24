@@ -115,7 +115,7 @@ class TestParameterManagerClient:
       "google.adk.integrations.parameter_manager.parameter_client.default_service_credential"
   )
   @patch(
-      "google.adk.integrations.parameter_manager.parameter_client._mtls_utils.get_api_endpoint"
+      "google.adk.integrations.parameter_manager.parameter_client.get_api_endpoint"
   )
   def test_init_with_location(
       self,
@@ -163,7 +163,9 @@ class TestParameterManagerClient:
     # Execute and verify
     with pytest.raises(
         ValueError,
-        match="error occurred while trying to use default credentials",
+        match=(
+            "error occurred while trying to use default credentials: Auth error"
+        ),
     ):
       ParameterManagerClient()
 

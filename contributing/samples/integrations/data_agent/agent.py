@@ -36,7 +36,7 @@ from google.genai import types
 CREDENTIALS_TYPE = None
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
-  # Initiaze the tools to do interactive OAuth
+  # Initialize the tools to do interactive OAuth
   # The environment variables OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET
   # must be set
   credentials_config = DataAgentCredentialsConfig(

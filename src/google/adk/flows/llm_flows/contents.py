@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import AsyncGenerator
 from typing import Optional
@@ -23,6 +24,7 @@ from typing_extensions import override
 
 from ...agents.invocation_context import InvocationContext
 from ...events._branch_path import _BranchPath
+from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
@@ -80,9 +82,18 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
     # Preserve all contents that were added by instruction processor
     # (since llm_request.contents will be completely reassigned below)
     instruction_related_contents = llm_request.contents
+    run_config = invocation_context.run_config
+    include_thoughts_from_other_agents = (
+        run_config.include_thoughts_from_other_agents
+        if run_config is not None
+        else False
+    )
 
     is_single_turn = getattr(agent, 'mode', None) == 'single_turn'
-    if agent.include_contents == 'default':
+    if (
+        agent.include_contents == 'default'
+        and not llm_request.previous_interaction_id
+    ):
       # Include full conversation history
       llm_request.contents = _get_contents(
           invocation_context.branch,
@@ -92,9 +103,11 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           isolation_scope=invocation_context.isolation_scope,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
+          include_thoughts_from_other_agents=include_thoughts_from_other_agents,
       )
     else:
-      # Include current turn context only (no conversation history)
+      # Include current turn context only (no conversation history). Stateful
+      # Interactions requests already retain earlier turns server-side.
       llm_request.contents = _get_current_turn_contents(
           invocation_context.branch,
           invocation_context.session.events,
@@ -103,6 +116,17 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           isolation_scope=invocation_context.isolation_scope,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
+          include_thoughts_from_other_agents=False,
+      )
+
+    if (
+        invocation_context.run_config
+        and invocation_context.run_config.model_input_context
+    ):
+      _add_model_input_context_to_user_content(
+          invocation_context,
+          llm_request,
+          copy.deepcopy(invocation_context.run_config.model_input_context),
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -263,7 +287,9 @@ def _rearrange_events_for_latest_function_response(
   return result_events
 
 
-def _is_part_invisible(p: types.Part) -> bool:
+def _is_part_invisible(
+    p: types.Part, *, include_thoughts: bool = False
+) -> bool:
   """Returns whether a part is invisible for LLM context.
 
   A part is invisible if:
@@ -283,7 +309,7 @@ def _is_part_invisible(p: types.Part) -> bool:
   if p.function_call or p.function_response:
     return False
 
-  return p.thought or not (
+  return (p.thought and not include_thoughts) or not (
       p.text
       or p.inline_data
       or p.file_data
@@ -292,7 +318,9 @@ def _is_part_invisible(p: types.Part) -> bool:
   )
 
 
-def _contains_empty_content(event: Event) -> bool:
+def _contains_empty_content(
+    event: Event, *, include_thoughts: bool = False
+) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
   This can happen to the events that only changed session state.
@@ -314,7 +342,10 @@ def _contains_empty_content(event: Event) -> bool:
       not event.content
       or not event.content.role
       or not event.content.parts
-      or all(_is_part_invisible(p) for p in event.content.parts)
+      or all(
+          _is_part_invisible(p, include_thoughts=include_thoughts)
+          for p in event.content.parts
+      )
   ) and (not event.output_transcription and not event.input_transcription)
 
 
@@ -342,7 +373,7 @@ def _build_task_input_user_content(
   When no matching FC is found (workflow-node task case — task agent
   dispatched directly by a Workflow, not via FC delegation), falls
   back to ``user_content`` (set on the InvocationContext by the
-  wrapper to ``_node_input_to_content(node_input)``).
+  wrapper to ``to_user_content(node_input)``).
 
   When ``is_single_turn`` is True, appends a second text part nudging
   the LLM that no further user replies will arrive — single-turn
@@ -360,7 +391,7 @@ def _build_task_input_user_content(
         try:
           import json as _json
 
-          text = _json.dumps(dict(fc.args))
+          text = _json.dumps(dict(fc.args), ensure_ascii=False)
         except (TypeError, ValueError):
           text = str(fc.args)
         parts = [types.Part(text=text)]
@@ -382,6 +413,8 @@ def _should_include_event_in_context(
     current_branch: Optional[str],
     event: Event,
     isolation_scope: Optional[str] = None,
+    *,
+    include_thoughts: bool = False,
 ) -> bool:
   """Determines if an event should be included in the LLM context.
 
@@ -407,7 +440,7 @@ def _should_include_event_in_context(
   if ev_iso != isolation_scope:
     return False
   return not (
-      _contains_empty_content(event)
+      _contains_empty_content(event, include_thoughts=include_thoughts)
       or not _is_event_belongs_to_branch(current_branch, event)
       or _is_adk_framework_event(event)
       or _is_auth_event(event)
@@ -511,6 +544,102 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
   return [event for _, _, event in processed_items]
 
 
+def _recover_compacted_function_calls(
+    events: list[Event],
+    source_events: list[Event],
+) -> list[Event]:
+  """Re-injects function-call events that compaction removed.
+
+  Compaction can summarize away a function_call while a matching
+  function_response survives outside the compacted range. The clearest case
+  is a long-running tool call: the call is compacted along with its
+  intermediate placeholder response, then the real result arrives on resume
+  (a later event not covered by the summary). That surviving response would
+  be orphaned, which breaks call/response pairing during prompt assembly (it
+  raises in `_rearrange_events_for_latest_function_response`).
+
+  For each response whose call is no longer present, this restores the
+  original call event from `source_events` (the pre-compaction list),
+  inserting it immediately before the first surviving response that
+  references it. The whole call event is re-injected verbatim (rather than
+  trimmed to the resumed call) so parallel-call thought signatures, which only
+  the first part carries, are preserved. Any sibling responses that compaction
+  removed are re-injected too, so a sibling is not surfaced as a phantom
+  pending call.
+
+  Args:
+    events: The post-compaction events being assembled into request contents.
+    source_events: The pre-compaction events to recover missing calls from.
+
+  Returns:
+    `events` with any recoverable missing function-call events (and their
+    compacted sibling responses) re-injected; the original list is returned
+    unchanged when nothing needs recovery.
+  """
+  call_ids_present: set[str] = set()
+  response_ids_present: set[str] = set()
+  for event in events:
+    for function_call in event.get_function_calls():
+      if function_call.id:
+        call_ids_present.add(function_call.id)
+    for function_response in event.get_function_responses():
+      if function_response.id:
+        response_ids_present.add(function_response.id)
+
+  orphaned_ids = {
+      response_id
+      for response_id in response_ids_present
+      if response_id not in call_ids_present
+  }
+  if not orphaned_ids:
+    return events
+
+  call_event_by_id: dict[str, Event] = {}
+  for event in source_events:
+    for function_call in event.get_function_calls():
+      if function_call.id in orphaned_ids:
+        call_event_by_id.setdefault(function_call.id, event)
+
+  if not call_event_by_id:
+    return events
+
+  # Keep the highest-timestamp response per id so a sibling that completed
+  # before being compacted contributes its real result, not its stale
+  # placeholder; ties fall back to source order.
+  response_event_by_id: dict[str, Event] = {}
+  for event in source_events:
+    for function_response in event.get_function_responses():
+      if not function_response.id:
+        continue
+      existing = response_event_by_id.get(function_response.id)
+      if existing is None or event.timestamp >= existing.timestamp:
+        response_event_by_id[function_response.id] = event
+
+  result: list[Event] = []
+  reinjected_ids: set[str] = set()
+  for event in events:
+    for function_response in event.get_function_responses():
+      call_event = call_event_by_id.get(function_response.id)
+      if call_event is None or function_response.id in reinjected_ids:
+        continue
+      result.append(call_event)
+      sibling_ids = [
+          function_call.id
+          for function_call in call_event.get_function_calls()
+          if function_call.id
+      ]
+      reinjected_ids.update(sibling_ids)
+      # Recover sibling responses that compaction removed so a parallel sibling
+      # is not left looking like a pending call.
+      for sibling_id in sibling_ids:
+        if sibling_id not in response_ids_present:
+          sibling_response = response_event_by_id.get(sibling_id)
+          if sibling_response is not None:
+            result.append(sibling_response)
+    result.append(event)
+  return result
+
+
 def _copy_content_for_request(
     content: types.Content,
     *,
@@ -566,6 +695,7 @@ def _get_contents(
     isolation_scope: Optional[str] = None,
     is_single_turn: bool = False,
     user_content: Optional[types.Content] = None,
+    include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
@@ -581,6 +711,8 @@ def _get_contents(
     user_content: Fallback first user turn for task agents whose
       originating delegation FC is not in session (workflow-node
       task case).
+    include_thoughts_from_other_agents: Whether to include thought parts from
+      other agents when presenting their messages as user context.
 
   Returns:
     A list of processed contents.
@@ -588,24 +720,10 @@ def _get_contents(
   accumulated_input_transcription = ''
   accumulated_output_transcription = ''
 
-  # Filter out events that are annulled by a rewind.
-  # By iterating backward, when a rewind event is found, we skip all events
-  # from that point back to the `rewind_before_invocation_id`, thus removing
-  # them from the history used for the LLM request.
-  rewind_filtered_events = []
-  i = len(events) - 1
-  while i >= 0:
-    event = events[i]
-    if event.actions and event.actions.rewind_before_invocation_id:
-      rewind_invocation_id = event.actions.rewind_before_invocation_id
-      for j in range(0, i, 1):
-        if events[j].invocation_id == rewind_invocation_id:
-          i = j
-          break
-    else:
-      rewind_filtered_events.append(event)
-    i -= 1
-  rewind_filtered_events.reverse()
+  # Filter out events that are annulled by a rewind, so the rewound history is
+  # never sent to the LLM. This is the same rewind logic the context compactor
+  # applies, keeping the two consistent (see google.adk.events._rewind_events).
+  rewind_filtered_events = _apply_rewinds(events)
 
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
@@ -613,7 +731,13 @@ def _get_contents(
       e
       for e in rewind_filtered_events
       if _should_include_event_in_context(
-          current_branch, e, isolation_scope=isolation_scope
+          current_branch,
+          e,
+          isolation_scope=isolation_scope,
+          include_thoughts=(
+              include_thoughts_from_other_agents
+              and _is_other_agent_reply(agent_name, e)
+          ),
       )
   ]
 
@@ -623,6 +747,12 @@ def _get_contents(
 
   if has_compaction_events:
     events_to_process = _process_compaction_events(raw_filtered_events)
+    # Compaction may have removed a function_call whose response survives
+    # (e.g. a long-running call resumed after it was compacted); restore it so
+    # the call/response pairing is intact.
+    events_to_process = _recover_compacted_function_calls(
+        events_to_process, raw_filtered_events
+    )
   else:
     events_to_process = raw_filtered_events
 
@@ -688,7 +818,9 @@ def _get_contents(
             break
 
     if is_other_reply:
-      if converted_event := _present_other_agent_message(event):
+      if converted_event := _present_other_agent_message(
+          event, include_thoughts=include_thoughts_from_other_agents
+      ):
         filtered_events.append(converted_event)
     else:
       filtered_events.append(event)
@@ -741,6 +873,7 @@ def _get_current_turn_contents(
     is_single_turn: bool = False,
     isolation_scope: Optional[str] = None,
     user_content: Optional[types.Content] = None,
+    include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
 
@@ -757,6 +890,8 @@ def _get_current_turn_contents(
     events: A list of all session events.
     agent_name: The name of the agent.
     preserve_function_call_ids: Whether to preserve function call ids.
+    include_thoughts_from_other_agents: Whether to include thought parts from
+      other agents when presenting their messages as user context.
 
   Returns:
     A list of contents for the current turn only, preserving context needed
@@ -765,9 +900,19 @@ def _get_current_turn_contents(
   # Find the latest event that starts the current turn and process from there
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
-    if _should_include_event_in_context(
-        current_branch, event, isolation_scope=isolation_scope
-    ) and (event.author == 'user' or _is_other_agent_reply(agent_name, event)):
+    if (
+        _should_include_event_in_context(
+            current_branch,
+            event,
+            isolation_scope=isolation_scope,
+            include_thoughts=(
+                include_thoughts_from_other_agents
+                and _is_other_agent_reply(agent_name, event)
+            ),
+        )
+        and (event.author == 'user' or _is_other_agent_reply(agent_name, event))
+        and not _is_direct_transfer(event)
+    ):
       return _get_contents(
           current_branch,
           events[i:],
@@ -776,9 +921,34 @@ def _get_current_turn_contents(
           isolation_scope=isolation_scope,
           is_single_turn=is_single_turn,
           user_content=user_content,
+          include_thoughts_from_other_agents=include_thoughts_from_other_agents,
       )
 
   return []
+
+
+def _is_direct_transfer(event: Event) -> bool:
+  """Whether the event is a direct ``transfer_to_agent`` event.
+
+  When ``include_contents='none'`` and control is handed to a sub-agent via
+  ``transfer_to_agent``, the trailing transfer events (the function call and
+  its response) must not be treated as the start of the current turn.
+  Otherwise the sub-agent's turn would anchor on the parent's transfer event
+  and drop the latest user input. Skipping these events lets the turn anchor
+  on the real user input (or a non-transfer model request) instead, while the
+  transfer events are still included as context.
+  """
+  return bool(
+      event.actions.transfer_to_agent
+      or (
+          event.content
+          and event.content.parts
+          and any(
+              p.function_call and p.function_call.name == 'transfer_to_agent'
+              for p in event.content.parts
+          )
+      )
+  )
 
 
 def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
@@ -812,7 +982,9 @@ def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
   )
 
 
-def _present_other_agent_message(event: Event) -> Optional[Event]:
+def _present_other_agent_message(
+    event: Event, *, include_thoughts: bool = False
+) -> Optional[Event]:
   """Presents another agent's message as user context for the current agent.
 
   Reformats the event with role='user' and adds '[agent_name] said:' prefix
@@ -820,6 +992,8 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
 
   Args:
     event: The event from another agent to present as context.
+    include_thoughts: Whether to include thought parts as explicit text
+      context.
 
   Returns:
     Event reformatted as user-role context with agent attribution, or None
@@ -833,7 +1007,10 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
   content.parts = [types.Part(text='For context:')]
   for part in event.content.parts:
     if part.thought:
-      # Exclude thoughts from the context.
+      if include_thoughts and part.text is not None and part.text.strip():
+        content.parts.append(
+            types.Part(text=f'[{event.author}] thought: {part.text}')
+        )
       continue
     elif part.text is not None and part.text.strip():
       content.parts.append(
@@ -1039,10 +1216,30 @@ def _content_contains_function_response(content: types.Content) -> bool:
   return False
 
 
+def _add_model_input_context_to_user_content(
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+    model_input_context: list[types.Content],
+) -> None:
+  """Insert transient model input context before the invocation user content."""
+  if not model_input_context:
+    return
+
+  insert_index = 0
+  user_content = invocation_context.user_content
+  if user_content:
+    for i in range(len(llm_request.contents) - 1, -1, -1):
+      if llm_request.contents[i] == user_content:
+        insert_index = i
+        break
+
+  llm_request.contents[insert_index:insert_index] = model_input_context
+
+
 async def _add_instructions_to_user_content(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
-    instruction_contents: list,
+    instruction_contents: list[types.Content],
 ) -> None:
   """Insert instruction-related contents at proper position in conversation.
 

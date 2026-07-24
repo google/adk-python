@@ -90,36 +90,56 @@ def _parse_source_display_name(
 
 
 class VertexAiRagMemoryService(BaseMemoryService):
-  """A memory service that uses Vertex AI RAG for storage and retrieval."""
+  """A memory service that uses Agent Platform RAG for storage and retrieval."""
 
   def __init__(
       self,
       rag_corpus: Optional[str] = None,
       similarity_top_k: Optional[int] = None,
       vector_distance_threshold: float = 10,
+      project: Optional[str] = None,
+      location: Optional[str] = None,
   ):
     """Initializes a VertexAiRagMemoryService.
 
     Args:
-        rag_corpus: The name of the Vertex AI RAG corpus to use. Format:
+        rag_corpus: The name of the Agent Platform RAG corpus to use. Format:
           ``projects/{project}/locations/{location}/ragCorpora/{rag_corpus_id}``
           or ``{rag_corpus_id}``
         similarity_top_k: The number of contexts to retrieve.
         vector_distance_threshold: Only returns contexts with vector distance
           smaller than the threshold.
+        project: The project to use for the Agent Platform RAG corpus. If not
+          set, the value of the GOOGLE_CLOUD_PROJECT environment variable is
+          used.
+        location: The location to use for the Agent Platform RAG corpus. If not
+          set, the value of the GOOGLE_CLOUD_LOCATION environment variable is
+          used.
     """
     try:
-      import vertexai  # noqa: F401
+      import agentplatform  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
       raise missing_extra("google-cloud-aiplatform", "gcp") from e
 
+    self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    self._location = location or os.environ.get("GOOGLE_CLOUD_LOCATION")
+
+    # Fallback: if the fully-qualified corpus name is provided, use it to
+    # determine the project and location, if they are not already set.
+    if (not self._project or not self._location) and (
+        rag_corpus and rag_corpus.startswith("projects/")
+    ):
+      parts = rag_corpus.split("/")
+      if len(parts) >= 4 and parts[0] == "projects" and parts[2] == "locations":
+        self._project = self._project or parts[1]
+        self._location = self._location or parts[3]
+
     self._vertex_rag_store = types.VertexRagStore(
         rag_resources=[
             types.VertexRagStoreRagResource(rag_corpus=rag_corpus),
         ],
-        similarity_top_k=similarity_top_k,
         vector_distance_threshold=vector_distance_threshold,
     )
 
@@ -153,14 +173,16 @@ class VertexAiRagMemoryService(BaseMemoryService):
     if not self._vertex_rag_store.rag_resources:
       raise ValueError("Rag resources must be set.")
 
-    from ..dependencies.vertexai import rag
+    import agentplatform
+
+    client = agentplatform.Client(
+        project=self._project, location=self._location
+    )
 
     for rag_resource in self._vertex_rag_store.rag_resources:
-      rag.upload_file(
+      client.rag.upload_file(
           corpus_name=rag_resource.rag_corpus,
           path=temp_file_path,
-          # this is the temp workaround as upload file does not support
-          # adding metadata, thus use display_name to store the session info.
           display_name=_build_source_display_name(
               session.app_name, session.user_id, session.id
           ),
@@ -173,17 +195,22 @@ class VertexAiRagMemoryService(BaseMemoryService):
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query using rag.retrieval_query."""
-    from ..dependencies.vertexai import rag
+    import agentplatform
+    from agentplatform import types as agentplatform_types
+
     from ..events.event import Event
 
-    response = rag.retrieval_query(
-        text=query,
-        rag_resources=self._vertex_rag_store.rag_resources,
-        rag_corpora=self._vertex_rag_store.rag_corpora,
-        similarity_top_k=self._vertex_rag_store.similarity_top_k,
-        vector_distance_threshold=self._vertex_rag_store.vector_distance_threshold,
+    client = agentplatform.Client(
+        project=self._project, location=self._location
     )
 
+    response = client.rag.retrieve_contexts(
+        vertex_rag_store=self._vertex_rag_store,
+        query=agentplatform_types.RagQuery(
+            text=query,
+            similarity_top_k=self._vertex_rag_store.similarity_top_k,
+        ),
+    )
     memory_results = []
     session_events_map: OrderedDict[str, list[list[Event]]] = OrderedDict()
     for context in response.contexts.contexts:

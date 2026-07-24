@@ -43,6 +43,7 @@ from .functional_test_helpers import GEN_AI_SYSTEM_MESSAGE_EVENT
 from .functional_test_helpers import GEN_AI_USER_MESSAGE_EVENT
 from .functional_test_helpers import LogDigest
 from .functional_test_helpers import MetricPoint
+from .functional_test_helpers import NESTED_WORKFLOW_NAME
 from .functional_test_helpers import NODE_NAME
 from .functional_test_helpers import NODE_RESULT
 from .functional_test_helpers import NON_DETERMINISTIC
@@ -262,12 +263,25 @@ EXPECTED_STABLE_NO_CAPTURE_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -539,12 +553,25 @@ EXPECTED_STABLE_CAPTURE_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -750,12 +777,25 @@ EXPECTED_EXPERIMENTAL_NO_CONTENT_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -1038,12 +1078,25 @@ EXPECTED_EXPERIMENTAL_SPAN_ONLY_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -1257,12 +1310,25 @@ EXPECTED_EXPERIMENTAL_EVENT_ONLY_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -1494,12 +1560,25 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V1 = SpanDigest(
                     ],
                 ),
                 SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
+                    name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
                     attributes={
-                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.operation.name": "invoke_workflow",
+                        "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                        "gen_ai.workflow.nested": True,
                         "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
                     },
+                    children=[
+                        SpanDigest(
+                            name=f"invoke_node {NODE_NAME}",
+                            attributes={
+                                "gen_ai.operation.name": "invoke_node",
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.associated_event_ids": (
+                                    PRESENT
+                                ),
+                            },
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -1513,197 +1592,160 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V1 = SpanDigest(
 
 
 EXPECTED_STABLE_NO_CAPTURE_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name=f"invoke_workflow {WORKFLOW_NAME}",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": WORKFLOW_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
-            name=f"invoke_workflow {WORKFLOW_NAME}",
+            name=f"invoke_agent {AGENT_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_workflow",
-                "gen_ai.workflow.name": WORKFLOW_NAME,
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
                 "gen_ai.conversation.id": PRESENT,
             },
             children=[
                 SpanDigest(
-                    name=f"invoke_agent {AGENT_NAME}",
+                    name="call_llm",
                     attributes={
-                        "gen_ai.operation.name": "invoke_agent",
-                        "gen_ai.agent.description": AGENT_DESCRIPTION,
-                        "gen_ai.agent.name": AGENT_NAME,
-                        "gen_ai.conversation.id": PRESENT,
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
                     },
                     children=[
                         SpanDigest(
-                            name="call_llm",
+                            name="generate_content mock",
                             attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
+                                "gen_ai.system": "gemini",
+                                "gen_ai.operation.name": "generate_content",
                                 "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
                                 "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
+                                "gcp.vertex.agent.invocation_id": PRESENT,
                                 "gen_ai.response.finish_reasons": ["stop"],
                             },
-                            children=[
-                                SpanDigest(
-                                    name="generate_content mock",
-                                    attributes={
-                                        "gen_ai.system": "gemini",
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
-                                        ),
-                                        "gen_ai.request.model": "mock",
-                                        "gen_ai.agent.name": AGENT_NAME,
-                                        "gen_ai.conversation.id": PRESENT,
-                                        "gcp.vertex.agent.event_id": PRESENT,
-                                        "gcp.vertex.agent.invocation_id": (
-                                            PRESENT
-                                        ),
-                                        "gen_ai.response.finish_reasons": [
-                                            "stop"
-                                        ],
+                            logs=[
+                                LogDigest(
+                                    event_name=GEN_AI_CHOICE_EVENT,
+                                    body={
+                                        "content": "<elided>",
+                                        "index": 0,
+                                        "finish_reason": "STOP",
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=GEN_AI_CHOICE_EVENT,
-                                            body={
-                                                "content": "<elided>",
-                                                "index": 0,
-                                                "finish_reason": "STOP",
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
-                                            body={"content": "<elided>"},
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_USER_MESSAGE_EVENT,
-                                            body={"content": "<elided>"},
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                    ],
-                                    children=[
-                                        SpanDigest(
-                                            name=f"execute_tool {TOOL_NAME}",
-                                            attributes={
-                                                "gen_ai.operation.name": (
-                                                    "execute_tool"
-                                                ),
-                                                "gen_ai.tool.description": (
-                                                    TOOL_DESCRIPTION
-                                                ),
-                                                "gen_ai.tool.name": TOOL_NAME,
-                                                "gen_ai.tool.type": (
-                                                    "FunctionTool"
-                                                ),
-                                                "gcp.vertex.agent.llm_request": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.llm_response": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.tool_call_args": (
-                                                    "{}"
-                                                ),
-                                                "gen_ai.tool.call.id": PRESENT,
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.tool_response": (
-                                                    "{}"
-                                                ),
-                                            },
-                                        ),
-                                    ],
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
                                 ),
                             ],
-                        ),
-                        SpanDigest(
-                            name="call_llm",
-                            attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
-                                "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
-                                "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
-                                "gen_ai.response.finish_reasons": ["stop"],
-                            },
                             children=[
                                 SpanDigest(
-                                    name="generate_content mock",
+                                    name=f"execute_tool {TOOL_NAME}",
                                     attributes={
-                                        "gen_ai.system": "gemini",
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
+                                        "gen_ai.operation.name": "execute_tool",
+                                        "gen_ai.tool.description": (
+                                            TOOL_DESCRIPTION
                                         ),
-                                        "gen_ai.request.model": "mock",
-                                        "gen_ai.agent.name": AGENT_NAME,
-                                        "gen_ai.conversation.id": PRESENT,
+                                        "gen_ai.tool.name": TOOL_NAME,
+                                        "gen_ai.tool.type": "FunctionTool",
+                                        "gcp.vertex.agent.llm_request": "{}",
+                                        "gcp.vertex.agent.llm_response": "{}",
+                                        "gcp.vertex.agent.tool_call_args": "{}",
+                                        "gen_ai.tool.call.id": PRESENT,
                                         "gcp.vertex.agent.event_id": PRESENT,
-                                        "gcp.vertex.agent.invocation_id": (
-                                            PRESENT
-                                        ),
-                                        "gen_ai.response.finish_reasons": [
-                                            "stop"
-                                        ],
+                                        "gcp.vertex.agent.tool_response": "{}",
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=GEN_AI_CHOICE_EVENT,
-                                            body={
-                                                "content": "<elided>",
-                                                "index": 0,
-                                                "finish_reason": "STOP",
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
-                                            body={"content": "<elided>"},
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_USER_MESSAGE_EVENT,
-                                            body={"content": "<elided>"},
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_USER_MESSAGE_EVENT,
-                                            body={"content": "<elided>"},
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_USER_MESSAGE_EVENT,
-                                            body={"content": "<elided>"},
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                    ],
                                 ),
                             ],
                         ),
                     ],
                 ),
+                SpanDigest(
+                    name="call_llm",
+                    attributes={
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
+                    },
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.system": "gemini",
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                                "gen_ai.response.finish_reasons": ["stop"],
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=GEN_AI_CHOICE_EVENT,
+                                    body={
+                                        "content": "<elided>",
+                                        "index": 0,
+                                        "finish_reason": "STOP",
+                                    },
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        SpanDigest(
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
                 SpanDigest(
                     name=f"invoke_node {NODE_NAME}",
                     attributes={
@@ -1719,264 +1761,219 @@ EXPECTED_STABLE_NO_CAPTURE_V2 = SpanDigest(
 
 
 EXPECTED_STABLE_CAPTURE_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name=f"invoke_workflow {WORKFLOW_NAME}",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": WORKFLOW_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
-            name=f"invoke_workflow {WORKFLOW_NAME}",
+            name=f"invoke_agent {AGENT_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_workflow",
-                "gen_ai.workflow.name": WORKFLOW_NAME,
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
                 "gen_ai.conversation.id": PRESENT,
             },
             children=[
                 SpanDigest(
-                    name=f"invoke_agent {AGENT_NAME}",
+                    name="call_llm",
                     attributes={
-                        "gen_ai.operation.name": "invoke_agent",
-                        "gen_ai.agent.description": AGENT_DESCRIPTION,
-                        "gen_ai.agent.name": AGENT_NAME,
-                        "gen_ai.conversation.id": PRESENT,
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
                     },
                     children=[
                         SpanDigest(
-                            name="call_llm",
+                            name="generate_content mock",
                             attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
+                                "gen_ai.system": "gemini",
+                                "gen_ai.operation.name": "generate_content",
                                 "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
                                 "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
+                                "gcp.vertex.agent.invocation_id": PRESENT,
                                 "gen_ai.response.finish_reasons": ["stop"],
                             },
-                            children=[
-                                SpanDigest(
-                                    name="generate_content mock",
+                            logs=[
+                                LogDigest(
+                                    event_name=GEN_AI_CHOICE_EVENT,
+                                    body={
+                                        "content": {
+                                            "parts": [{
+                                                "function_call": {
+                                                    "args": TOOL_ARGS,
+                                                    "name": TOOL_NAME,
+                                                }
+                                            }],
+                                            "role": "model",
+                                        },
+                                        "index": 0,
+                                        "finish_reason": "STOP",
+                                    },
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
+                                    body={"content": _NODE_SYSTEM_INSTRUCTION},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={
+                                        "content": {
+                                            "parts": [
+                                                {"text": _AGENT_USER_INPUT}
+                                            ],
+                                            "role": "user",
+                                        }
+                                    },
                                     attributes={
                                         "gen_ai.system": "gemini",
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
-                                        ),
-                                        "gen_ai.request.model": "mock",
-                                        "gen_ai.agent.name": AGENT_NAME,
-                                        "gen_ai.conversation.id": PRESENT,
-                                        "gcp.vertex.agent.event_id": PRESENT,
-                                        "gcp.vertex.agent.invocation_id": (
-                                            PRESENT
-                                        ),
-                                        "gen_ai.response.finish_reasons": [
-                                            "stop"
-                                        ],
+                                        "user.id": "some_user",
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=GEN_AI_CHOICE_EVENT,
-                                            body={
-                                                "content": {
-                                                    "parts": [{
-                                                        "function_call": {
-                                                            "args": TOOL_ARGS,
-                                                            "name": TOOL_NAME,
-                                                        }
-                                                    }],
-                                                    "role": "model",
-                                                },
-                                                "index": 0,
-                                                "finish_reason": "STOP",
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
-                                            body={
-                                                "content": (
-                                                    _NODE_SYSTEM_INSTRUCTION
-                                                )
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_USER_MESSAGE_EVENT,
-                                            body={
-                                                "content": {
-                                                    "parts": [{
-                                                        "text": (
-                                                            _AGENT_USER_INPUT
-                                                        )
-                                                    }],
-                                                    "role": "user",
-                                                }
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini",
-                                                "user.id": "some_user",
-                                            },
-                                        ),
-                                    ],
-                                    children=[
-                                        SpanDigest(
-                                            name=f"execute_tool {TOOL_NAME}",
-                                            attributes={
-                                                "gen_ai.operation.name": (
-                                                    "execute_tool"
-                                                ),
-                                                "gen_ai.tool.description": (
-                                                    TOOL_DESCRIPTION
-                                                ),
-                                                "gen_ai.tool.name": TOOL_NAME,
-                                                "gen_ai.tool.type": (
-                                                    "FunctionTool"
-                                                ),
-                                                "gcp.vertex.agent.llm_request": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.llm_response": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.tool_call_args": (
-                                                    "{}"
-                                                ),
-                                                "gen_ai.tool.call.id": PRESENT,
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.tool_response": (
-                                                    "{}"
-                                                ),
-                                            },
-                                        ),
-                                    ],
                                 ),
                             ],
-                        ),
-                        SpanDigest(
-                            name="call_llm",
-                            attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
-                                "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
-                                "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
-                                "gen_ai.response.finish_reasons": ["stop"],
-                            },
                             children=[
                                 SpanDigest(
-                                    name="generate_content mock",
+                                    name=f"execute_tool {TOOL_NAME}",
                                     attributes={
-                                        "gen_ai.system": "gemini",
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
+                                        "gen_ai.operation.name": "execute_tool",
+                                        "gen_ai.tool.description": (
+                                            TOOL_DESCRIPTION
                                         ),
-                                        "gen_ai.request.model": "mock",
-                                        "gen_ai.agent.name": AGENT_NAME,
-                                        "gen_ai.conversation.id": PRESENT,
+                                        "gen_ai.tool.name": TOOL_NAME,
+                                        "gen_ai.tool.type": "FunctionTool",
+                                        "gcp.vertex.agent.llm_request": "{}",
+                                        "gcp.vertex.agent.llm_response": "{}",
+                                        "gcp.vertex.agent.tool_call_args": "{}",
+                                        "gen_ai.tool.call.id": PRESENT,
                                         "gcp.vertex.agent.event_id": PRESENT,
-                                        "gcp.vertex.agent.invocation_id": (
-                                            PRESENT
-                                        ),
-                                        "gen_ai.response.finish_reasons": [
-                                            "stop"
-                                        ],
+                                        "gcp.vertex.agent.tool_response": "{}",
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=GEN_AI_CHOICE_EVENT,
-                                            body={
-                                                "content": {
-                                                    "parts": [
-                                                        {"text": FINAL_TEXT}
-                                                    ],
-                                                    "role": "model",
-                                                },
-                                                "index": 0,
-                                                "finish_reason": "STOP",
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
-                                            body={
-                                                "content": (
-                                                    _NODE_SYSTEM_INSTRUCTION
-                                                )
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini"
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_USER_MESSAGE_EVENT,
-                                            body={
-                                                "content": {
-                                                    "parts": [{
-                                                        "function_call": {
-                                                            "args": TOOL_ARGS,
-                                                            "name": TOOL_NAME,
-                                                        }
-                                                    }],
-                                                    "role": "model",
-                                                }
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini",
-                                                "user.id": "some_user",
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_USER_MESSAGE_EVENT,
-                                            body={
-                                                "content": {
-                                                    "parts": [{
-                                                        "function_response": {
-                                                            "name": TOOL_NAME,
-                                                            "response": {
-                                                                "result": (
-                                                                    TOOL_RESULT
-                                                                )
-                                                            },
-                                                        }
-                                                    }],
-                                                    "role": "user",
-                                                }
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini",
-                                                "user.id": "some_user",
-                                            },
-                                        ),
-                                        LogDigest(
-                                            event_name=GEN_AI_USER_MESSAGE_EVENT,
-                                            body={
-                                                "content": {
-                                                    "parts": [{
-                                                        "text": (
-                                                            _AGENT_USER_INPUT
-                                                        )
-                                                    }],
-                                                    "role": "user",
-                                                }
-                                            },
-                                            attributes={
-                                                "gen_ai.system": "gemini",
-                                                "user.id": "some_user",
-                                            },
-                                        ),
-                                    ],
                                 ),
                             ],
                         ),
                     ],
                 ),
+                SpanDigest(
+                    name="call_llm",
+                    attributes={
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
+                    },
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.system": "gemini",
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                                "gen_ai.response.finish_reasons": ["stop"],
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=GEN_AI_CHOICE_EVENT,
+                                    body={
+                                        "content": {
+                                            "parts": [{"text": FINAL_TEXT}],
+                                            "role": "model",
+                                        },
+                                        "index": 0,
+                                        "finish_reason": "STOP",
+                                    },
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
+                                    body={"content": _NODE_SYSTEM_INSTRUCTION},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={
+                                        "content": {
+                                            "parts": [{
+                                                "function_call": {
+                                                    "args": TOOL_ARGS,
+                                                    "name": TOOL_NAME,
+                                                }
+                                            }],
+                                            "role": "model",
+                                        }
+                                    },
+                                    attributes={
+                                        "gen_ai.system": "gemini",
+                                        "user.id": "some_user",
+                                    },
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={
+                                        "content": {
+                                            "parts": [{
+                                                "function_response": {
+                                                    "name": TOOL_NAME,
+                                                    "response": {
+                                                        "result": TOOL_RESULT
+                                                    },
+                                                }
+                                            }],
+                                            "role": "user",
+                                        }
+                                    },
+                                    attributes={
+                                        "gen_ai.system": "gemini",
+                                        "user.id": "some_user",
+                                    },
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={
+                                        "content": {
+                                            "parts": [
+                                                {"text": _AGENT_USER_INPUT}
+                                            ],
+                                            "role": "user",
+                                        }
+                                    },
+                                    attributes={
+                                        "gen_ai.system": "gemini",
+                                        "user.id": "some_user",
+                                    },
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        SpanDigest(
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
                 SpanDigest(
                     name=f"invoke_node {NODE_NAME}",
                     attributes={
@@ -1992,46 +1989,58 @@ EXPECTED_STABLE_CAPTURE_V2 = SpanDigest(
 
 
 EXPECTED_EXPERIMENTAL_NO_CONTENT_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name=f"invoke_workflow {WORKFLOW_NAME}",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": WORKFLOW_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
-            name=f"invoke_workflow {WORKFLOW_NAME}",
+            name=f"invoke_agent {AGENT_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_workflow",
-                "gen_ai.workflow.name": WORKFLOW_NAME,
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
                 "gen_ai.conversation.id": PRESENT,
             },
             children=[
                 SpanDigest(
-                    name=f"invoke_agent {AGENT_NAME}",
+                    name="call_llm",
                     attributes={
-                        "gen_ai.operation.name": "invoke_agent",
-                        "gen_ai.agent.description": AGENT_DESCRIPTION,
-                        "gen_ai.agent.name": AGENT_NAME,
-                        "gen_ai.conversation.id": PRESENT,
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
                     },
                     children=[
                         SpanDigest(
-                            name="call_llm",
+                            name="generate_content mock",
                             attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
+                                "gen_ai.operation.name": "generate_content",
                                 "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
                                 "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
+                                "gcp.vertex.agent.invocation_id": PRESENT,
                                 "gen_ai.response.finish_reasons": ["stop"],
+                                "gen_ai.tool.definitions": [{
+                                    "name": TOOL_NAME,
+                                    "description": TOOL_DESCRIPTION,
+                                    "type": "function",
+                                }],
                             },
-                            children=[
-                                SpanDigest(
-                                    name="generate_content mock",
+                            logs=[
+                                LogDigest(
+                                    event_name=(
+                                        GEN_AI_COMPLETION_DETAILS_EVENT
+                                    ),
+                                    body=None,
                                     attributes={
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
-                                        ),
-                                        "gen_ai.request.model": "mock",
                                         "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.conversation.id": PRESENT,
                                         "gcp.vertex.agent.event_id": PRESENT,
@@ -2047,142 +2056,97 @@ EXPECTED_EXPERIMENTAL_NO_CONTENT_V2 = SpanDigest(
                                             "type": "function",
                                         }],
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=(
-                                                GEN_AI_COMPLETION_DETAILS_EVENT
-                                            ),
-                                            body=None,
-                                            attributes={
-                                                "gen_ai.agent.name": AGENT_NAME,
-                                                "gen_ai.conversation.id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.invocation_id": (
-                                                    PRESENT
-                                                ),
-                                                "gen_ai.response.finish_reasons": [
-                                                    "stop"
-                                                ],
-                                                "gen_ai.tool.definitions": [{
-                                                    "name": TOOL_NAME,
-                                                    "description": (
-                                                        TOOL_DESCRIPTION
-                                                    ),
-                                                    "type": "function",
-                                                }],
-                                            },
-                                        ),
-                                    ],
-                                    children=[
-                                        SpanDigest(
-                                            name=f"execute_tool {TOOL_NAME}",
-                                            attributes={
-                                                "gen_ai.operation.name": (
-                                                    "execute_tool"
-                                                ),
-                                                "gen_ai.tool.description": (
-                                                    TOOL_DESCRIPTION
-                                                ),
-                                                "gen_ai.tool.name": TOOL_NAME,
-                                                "gen_ai.tool.type": (
-                                                    "FunctionTool"
-                                                ),
-                                                "gcp.vertex.agent.llm_request": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.llm_response": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.tool_call_args": (
-                                                    "{}"
-                                                ),
-                                                "gen_ai.tool.call.id": PRESENT,
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.tool_response": (
-                                                    "{}"
-                                                ),
-                                            },
-                                        ),
-                                    ],
                                 ),
                             ],
-                        ),
-                        SpanDigest(
-                            name="call_llm",
-                            attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
-                                "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
-                                "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
-                                "gen_ai.response.finish_reasons": ["stop"],
-                            },
                             children=[
                                 SpanDigest(
-                                    name="generate_content mock",
+                                    name=f"execute_tool {TOOL_NAME}",
                                     attributes={
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
+                                        "gen_ai.operation.name": "execute_tool",
+                                        "gen_ai.tool.description": (
+                                            TOOL_DESCRIPTION
                                         ),
-                                        "gen_ai.request.model": "mock",
-                                        "gen_ai.agent.name": AGENT_NAME,
-                                        "gen_ai.conversation.id": PRESENT,
+                                        "gen_ai.tool.name": TOOL_NAME,
+                                        "gen_ai.tool.type": "FunctionTool",
+                                        "gcp.vertex.agent.llm_request": "{}",
+                                        "gcp.vertex.agent.llm_response": "{}",
+                                        "gcp.vertex.agent.tool_call_args": "{}",
+                                        "gen_ai.tool.call.id": PRESENT,
                                         "gcp.vertex.agent.event_id": PRESENT,
-                                        "gcp.vertex.agent.invocation_id": (
-                                            PRESENT
-                                        ),
-                                        "gen_ai.response.finish_reasons": [
-                                            "stop"
-                                        ],
-                                        "gen_ai.tool.definitions": [{
-                                            "name": TOOL_NAME,
-                                            "description": TOOL_DESCRIPTION,
-                                            "type": "function",
-                                        }],
+                                        "gcp.vertex.agent.tool_response": "{}",
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=(
-                                                GEN_AI_COMPLETION_DETAILS_EVENT
-                                            ),
-                                            body=None,
-                                            attributes={
-                                                "gen_ai.agent.name": AGENT_NAME,
-                                                "gen_ai.conversation.id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.invocation_id": (
-                                                    PRESENT
-                                                ),
-                                                "gen_ai.response.finish_reasons": [
-                                                    "stop"
-                                                ],
-                                                "gen_ai.tool.definitions": [{
-                                                    "name": TOOL_NAME,
-                                                    "description": (
-                                                        TOOL_DESCRIPTION
-                                                    ),
-                                                    "type": "function",
-                                                }],
-                                            },
-                                        ),
-                                    ],
                                 ),
                             ],
                         ),
                     ],
                 ),
+                SpanDigest(
+                    name="call_llm",
+                    attributes={
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
+                    },
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                                "gen_ai.response.finish_reasons": ["stop"],
+                                "gen_ai.tool.definitions": [{
+                                    "name": TOOL_NAME,
+                                    "description": TOOL_DESCRIPTION,
+                                    "type": "function",
+                                }],
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=(
+                                        GEN_AI_COMPLETION_DETAILS_EVENT
+                                    ),
+                                    body=None,
+                                    attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
+                                        "gen_ai.conversation.id": PRESENT,
+                                        "gcp.vertex.agent.event_id": PRESENT,
+                                        "gcp.vertex.agent.invocation_id": (
+                                            PRESENT
+                                        ),
+                                        "gen_ai.response.finish_reasons": [
+                                            "stop"
+                                        ],
+                                        "gen_ai.tool.definitions": [{
+                                            "name": TOOL_NAME,
+                                            "description": TOOL_DESCRIPTION,
+                                            "type": "function",
+                                        }],
+                                    },
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        SpanDigest(
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
                 SpanDigest(
                     name=f"invoke_node {NODE_NAME}",
                     attributes={
@@ -2198,46 +2162,63 @@ EXPECTED_EXPERIMENTAL_NO_CONTENT_V2 = SpanDigest(
 
 
 EXPECTED_EXPERIMENTAL_SPAN_ONLY_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name=f"invoke_workflow {WORKFLOW_NAME}",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": WORKFLOW_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
-            name=f"invoke_workflow {WORKFLOW_NAME}",
+            name=f"invoke_agent {AGENT_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_workflow",
-                "gen_ai.workflow.name": WORKFLOW_NAME,
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
                 "gen_ai.conversation.id": PRESENT,
             },
             children=[
                 SpanDigest(
-                    name=f"invoke_agent {AGENT_NAME}",
+                    name="call_llm",
                     attributes={
-                        "gen_ai.operation.name": "invoke_agent",
-                        "gen_ai.agent.description": AGENT_DESCRIPTION,
-                        "gen_ai.agent.name": AGENT_NAME,
-                        "gen_ai.conversation.id": PRESENT,
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
                     },
                     children=[
                         SpanDigest(
-                            name="call_llm",
+                            name="generate_content mock",
                             attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
+                                "gen_ai.operation.name": "generate_content",
                                 "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
                                 "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
+                                "gcp.vertex.agent.invocation_id": PRESENT,
                                 "gen_ai.response.finish_reasons": ["stop"],
+                                "gen_ai.input.messages": _TURN_1_INPUT_MESSAGES,
+                                "gen_ai.system_instructions": (
+                                    _SYSTEM_INSTRUCTIONS
+                                ),
+                                "gen_ai.tool.definitions": [
+                                    _TOOL_DEFINITION_FULL
+                                ],
+                                "gen_ai.output.messages": (
+                                    _TURN_1_OUTPUT_MESSAGES
+                                ),
                             },
-                            children=[
-                                SpanDigest(
-                                    name="generate_content mock",
+                            logs=[
+                                LogDigest(
+                                    event_name=(
+                                        GEN_AI_COMPLETION_DETAILS_EVENT
+                                    ),
+                                    body=None,
                                     attributes={
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
-                                        ),
-                                        "gen_ai.request.model": "mock",
                                         "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.conversation.id": PRESENT,
                                         "gcp.vertex.agent.event_id": PRESENT,
@@ -2247,154 +2228,104 @@ EXPECTED_EXPERIMENTAL_SPAN_ONLY_V2 = SpanDigest(
                                         "gen_ai.response.finish_reasons": [
                                             "stop"
                                         ],
-                                        "gen_ai.input.messages": (
-                                            _TURN_1_INPUT_MESSAGES
-                                        ),
-                                        "gen_ai.system_instructions": (
-                                            _SYSTEM_INSTRUCTIONS
-                                        ),
                                         "gen_ai.tool.definitions": [
-                                            _TOOL_DEFINITION_FULL
+                                            _TOOL_DEFINITION_NO_CONTENT
                                         ],
-                                        "gen_ai.output.messages": (
-                                            _TURN_1_OUTPUT_MESSAGES
-                                        ),
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=(
-                                                GEN_AI_COMPLETION_DETAILS_EVENT
-                                            ),
-                                            body=None,
-                                            attributes={
-                                                "gen_ai.agent.name": AGENT_NAME,
-                                                "gen_ai.conversation.id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.invocation_id": (
-                                                    PRESENT
-                                                ),
-                                                "gen_ai.response.finish_reasons": [
-                                                    "stop"
-                                                ],
-                                                "gen_ai.tool.definitions": [
-                                                    _TOOL_DEFINITION_NO_CONTENT
-                                                ],
-                                            },
-                                        ),
-                                    ],
-                                    children=[
-                                        SpanDigest(
-                                            name=f"execute_tool {TOOL_NAME}",
-                                            attributes={
-                                                "gen_ai.operation.name": (
-                                                    "execute_tool"
-                                                ),
-                                                "gen_ai.tool.description": (
-                                                    TOOL_DESCRIPTION
-                                                ),
-                                                "gen_ai.tool.name": TOOL_NAME,
-                                                "gen_ai.tool.type": (
-                                                    "FunctionTool"
-                                                ),
-                                                "gcp.vertex.agent.llm_request": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.llm_response": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.tool_call_args": (
-                                                    "{}"
-                                                ),
-                                                "gen_ai.tool.call.id": PRESENT,
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.tool_response": (
-                                                    "{}"
-                                                ),
-                                            },
-                                        ),
-                                    ],
                                 ),
                             ],
-                        ),
-                        SpanDigest(
-                            name="call_llm",
-                            attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
-                                "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
-                                "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
-                                "gen_ai.response.finish_reasons": ["stop"],
-                            },
                             children=[
                                 SpanDigest(
-                                    name="generate_content mock",
+                                    name=f"execute_tool {TOOL_NAME}",
                                     attributes={
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
+                                        "gen_ai.operation.name": "execute_tool",
+                                        "gen_ai.tool.description": (
+                                            TOOL_DESCRIPTION
                                         ),
-                                        "gen_ai.request.model": "mock",
-                                        "gen_ai.agent.name": AGENT_NAME,
-                                        "gen_ai.conversation.id": PRESENT,
+                                        "gen_ai.tool.name": TOOL_NAME,
+                                        "gen_ai.tool.type": "FunctionTool",
+                                        "gcp.vertex.agent.llm_request": "{}",
+                                        "gcp.vertex.agent.llm_response": "{}",
+                                        "gcp.vertex.agent.tool_call_args": "{}",
+                                        "gen_ai.tool.call.id": PRESENT,
                                         "gcp.vertex.agent.event_id": PRESENT,
-                                        "gcp.vertex.agent.invocation_id": (
-                                            PRESENT
-                                        ),
-                                        "gen_ai.response.finish_reasons": [
-                                            "stop"
-                                        ],
-                                        "gen_ai.input.messages": (
-                                            _TURN_2_INPUT_MESSAGES
-                                        ),
-                                        "gen_ai.system_instructions": (
-                                            _SYSTEM_INSTRUCTIONS
-                                        ),
-                                        "gen_ai.tool.definitions": [
-                                            _TOOL_DEFINITION_FULL
-                                        ],
-                                        "gen_ai.output.messages": (
-                                            _TURN_2_OUTPUT_MESSAGES
-                                        ),
+                                        "gcp.vertex.agent.tool_response": "{}",
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=(
-                                                GEN_AI_COMPLETION_DETAILS_EVENT
-                                            ),
-                                            body=None,
-                                            attributes={
-                                                "gen_ai.agent.name": AGENT_NAME,
-                                                "gen_ai.conversation.id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.invocation_id": (
-                                                    PRESENT
-                                                ),
-                                                "gen_ai.response.finish_reasons": [
-                                                    "stop"
-                                                ],
-                                                "gen_ai.tool.definitions": [
-                                                    _TOOL_DEFINITION_NO_CONTENT
-                                                ],
-                                            },
-                                        ),
-                                    ],
                                 ),
                             ],
                         ),
                     ],
                 ),
+                SpanDigest(
+                    name="call_llm",
+                    attributes={
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
+                    },
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                                "gen_ai.response.finish_reasons": ["stop"],
+                                "gen_ai.input.messages": _TURN_2_INPUT_MESSAGES,
+                                "gen_ai.system_instructions": (
+                                    _SYSTEM_INSTRUCTIONS
+                                ),
+                                "gen_ai.tool.definitions": [
+                                    _TOOL_DEFINITION_FULL
+                                ],
+                                "gen_ai.output.messages": (
+                                    _TURN_2_OUTPUT_MESSAGES
+                                ),
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=(
+                                        GEN_AI_COMPLETION_DETAILS_EVENT
+                                    ),
+                                    body=None,
+                                    attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
+                                        "gen_ai.conversation.id": PRESENT,
+                                        "gcp.vertex.agent.event_id": PRESENT,
+                                        "gcp.vertex.agent.invocation_id": (
+                                            PRESENT
+                                        ),
+                                        "gen_ai.response.finish_reasons": [
+                                            "stop"
+                                        ],
+                                        "gen_ai.tool.definitions": [
+                                            _TOOL_DEFINITION_NO_CONTENT
+                                        ],
+                                    },
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        SpanDigest(
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
                 SpanDigest(
                     name=f"invoke_node {NODE_NAME}",
                     attributes={
@@ -2410,262 +2341,59 @@ EXPECTED_EXPERIMENTAL_SPAN_ONLY_V2 = SpanDigest(
 
 
 EXPECTED_EXPERIMENTAL_EVENT_ONLY_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
+    name=f"invoke_workflow {WORKFLOW_NAME}",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": WORKFLOW_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
     children=[
         SpanDigest(
-            name=f"invoke_workflow {WORKFLOW_NAME}",
+            name=f"invoke_agent {AGENT_NAME}",
             attributes={
-                "gen_ai.operation.name": "invoke_workflow",
-                "gen_ai.workflow.name": WORKFLOW_NAME,
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
                 "gen_ai.conversation.id": PRESENT,
             },
             children=[
                 SpanDigest(
-                    name=f"invoke_agent {AGENT_NAME}",
+                    name="call_llm",
                     attributes={
-                        "gen_ai.operation.name": "invoke_agent",
-                        "gen_ai.agent.description": AGENT_DESCRIPTION,
-                        "gen_ai.agent.name": AGENT_NAME,
-                        "gen_ai.conversation.id": PRESENT,
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
                     },
                     children=[
                         SpanDigest(
-                            name="call_llm",
+                            name="generate_content mock",
                             attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
+                                "gen_ai.operation.name": "generate_content",
                                 "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
                                 "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
+                                "gcp.vertex.agent.invocation_id": PRESENT,
                                 "gen_ai.response.finish_reasons": ["stop"],
+                                "gen_ai.tool.definitions": [
+                                    _TOOL_DEFINITION_NO_CONTENT
+                                ],
                             },
-                            children=[
-                                SpanDigest(
-                                    name="generate_content mock",
+                            logs=[
+                                LogDigest(
+                                    event_name=(
+                                        GEN_AI_COMPLETION_DETAILS_EVENT
+                                    ),
+                                    body=None,
                                     attributes={
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
-                                        ),
-                                        "gen_ai.request.model": "mock",
                                         "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.conversation.id": PRESENT,
-                                        "gcp.vertex.agent.event_id": PRESENT,
-                                        "gcp.vertex.agent.invocation_id": (
-                                            PRESENT
-                                        ),
-                                        "gen_ai.response.finish_reasons": [
-                                            "stop"
-                                        ],
-                                        "gen_ai.tool.definitions": [
-                                            _TOOL_DEFINITION_NO_CONTENT
-                                        ],
-                                    },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=(
-                                                GEN_AI_COMPLETION_DETAILS_EVENT
-                                            ),
-                                            body=None,
-                                            attributes={
-                                                "gen_ai.agent.name": AGENT_NAME,
-                                                "gen_ai.conversation.id": (
-                                                    PRESENT
-                                                ),
-                                                "user.id": "some_user",
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.invocation_id": (
-                                                    PRESENT
-                                                ),
-                                                "gen_ai.response.finish_reasons": [
-                                                    "stop"
-                                                ],
-                                                "gen_ai.input.messages": (
-                                                    _TURN_1_INPUT_MESSAGES
-                                                ),
-                                                "gen_ai.system_instructions": (
-                                                    _SYSTEM_INSTRUCTIONS
-                                                ),
-                                                "gen_ai.tool.definitions": [
-                                                    _TOOL_DEFINITION_FULL
-                                                ],
-                                                "gen_ai.output.messages": (
-                                                    _TURN_1_OUTPUT_MESSAGES
-                                                ),
-                                            },
-                                        ),
-                                    ],
-                                    children=[
-                                        SpanDigest(
-                                            name=f"execute_tool {TOOL_NAME}",
-                                            attributes={
-                                                "gen_ai.operation.name": (
-                                                    "execute_tool"
-                                                ),
-                                                "gen_ai.tool.description": (
-                                                    TOOL_DESCRIPTION
-                                                ),
-                                                "gen_ai.tool.name": TOOL_NAME,
-                                                "gen_ai.tool.type": (
-                                                    "FunctionTool"
-                                                ),
-                                                "gcp.vertex.agent.llm_request": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.llm_response": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.tool_call_args": (
-                                                    "{}"
-                                                ),
-                                                "gen_ai.tool.call.id": PRESENT,
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.tool_response": (
-                                                    "{}"
-                                                ),
-                                            },
-                                        ),
-                                    ],
-                                ),
-                            ],
-                        ),
-                        SpanDigest(
-                            name="call_llm",
-                            attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
-                                "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
-                                "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
-                                "gen_ai.response.finish_reasons": ["stop"],
-                            },
-                            children=[
-                                SpanDigest(
-                                    name="generate_content mock",
-                                    attributes={
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
-                                        ),
-                                        "gen_ai.request.model": "mock",
-                                        "gen_ai.agent.name": AGENT_NAME,
-                                        "gen_ai.conversation.id": PRESENT,
-                                        "gcp.vertex.agent.event_id": PRESENT,
-                                        "gcp.vertex.agent.invocation_id": (
-                                            PRESENT
-                                        ),
-                                        "gen_ai.response.finish_reasons": [
-                                            "stop"
-                                        ],
-                                        "gen_ai.tool.definitions": [
-                                            _TOOL_DEFINITION_NO_CONTENT
-                                        ],
-                                    },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=(
-                                                GEN_AI_COMPLETION_DETAILS_EVENT
-                                            ),
-                                            body=None,
-                                            attributes={
-                                                "gen_ai.agent.name": AGENT_NAME,
-                                                "gen_ai.conversation.id": (
-                                                    PRESENT
-                                                ),
-                                                "user.id": "some_user",
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.invocation_id": (
-                                                    PRESENT
-                                                ),
-                                                "gen_ai.response.finish_reasons": [
-                                                    "stop"
-                                                ],
-                                                "gen_ai.input.messages": (
-                                                    _TURN_2_INPUT_MESSAGES
-                                                ),
-                                                "gen_ai.system_instructions": (
-                                                    _SYSTEM_INSTRUCTIONS
-                                                ),
-                                                "gen_ai.tool.definitions": [
-                                                    _TOOL_DEFINITION_FULL
-                                                ],
-                                                "gen_ai.output.messages": (
-                                                    _TURN_2_OUTPUT_MESSAGES
-                                                ),
-                                            },
-                                        ),
-                                    ],
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-                SpanDigest(
-                    name=f"invoke_node {NODE_NAME}",
-                    attributes={
-                        "gen_ai.operation.name": "invoke_node",
-                        "gen_ai.conversation.id": PRESENT,
-                        "gcp.vertex.agent.associated_event_ids": PRESENT,
-                    },
-                ),
-            ],
-        ),
-    ],
-)
-
-
-EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2 = SpanDigest(
-    name="invocation",
-    attributes={},
-    children=[
-        SpanDigest(
-            name=f"invoke_workflow {WORKFLOW_NAME}",
-            attributes={
-                "gen_ai.operation.name": "invoke_workflow",
-                "gen_ai.workflow.name": WORKFLOW_NAME,
-                "gen_ai.conversation.id": PRESENT,
-            },
-            children=[
-                SpanDigest(
-                    name=f"invoke_agent {AGENT_NAME}",
-                    attributes={
-                        "gen_ai.operation.name": "invoke_agent",
-                        "gen_ai.agent.description": AGENT_DESCRIPTION,
-                        "gen_ai.agent.name": AGENT_NAME,
-                        "gen_ai.conversation.id": PRESENT,
-                    },
-                    children=[
-                        SpanDigest(
-                            name="call_llm",
-                            attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
-                                "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
-                                "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
-                                "gen_ai.response.finish_reasons": ["stop"],
-                            },
-                            children=[
-                                SpanDigest(
-                                    name="generate_content mock",
-                                    attributes={
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
-                                        ),
-                                        "gen_ai.request.model": "mock",
-                                        "gen_ai.agent.name": AGENT_NAME,
-                                        "gen_ai.conversation.id": PRESENT,
+                                        "user.id": "some_user",
                                         "gcp.vertex.agent.event_id": PRESENT,
                                         "gcp.vertex.agent.invocation_id": (
                                             PRESENT
@@ -2686,100 +2414,67 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2 = SpanDigest(
                                             _TURN_1_OUTPUT_MESSAGES
                                         ),
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=(
-                                                GEN_AI_COMPLETION_DETAILS_EVENT
-                                            ),
-                                            body=None,
-                                            attributes={
-                                                "gen_ai.agent.name": AGENT_NAME,
-                                                "gen_ai.conversation.id": (
-                                                    PRESENT
-                                                ),
-                                                "user.id": "some_user",
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.invocation_id": (
-                                                    PRESENT
-                                                ),
-                                                "gen_ai.response.finish_reasons": [
-                                                    "stop"
-                                                ],
-                                                "gen_ai.input.messages": (
-                                                    _TURN_1_INPUT_MESSAGES
-                                                ),
-                                                "gen_ai.system_instructions": (
-                                                    _SYSTEM_INSTRUCTIONS
-                                                ),
-                                                "gen_ai.tool.definitions": [
-                                                    _TOOL_DEFINITION_FULL
-                                                ],
-                                                "gen_ai.output.messages": (
-                                                    _TURN_1_OUTPUT_MESSAGES
-                                                ),
-                                            },
+                                ),
+                            ],
+                            children=[
+                                SpanDigest(
+                                    name=f"execute_tool {TOOL_NAME}",
+                                    attributes={
+                                        "gen_ai.operation.name": "execute_tool",
+                                        "gen_ai.tool.description": (
+                                            TOOL_DESCRIPTION
                                         ),
-                                    ],
-                                    children=[
-                                        SpanDigest(
-                                            name=f"execute_tool {TOOL_NAME}",
-                                            attributes={
-                                                "gen_ai.operation.name": (
-                                                    "execute_tool"
-                                                ),
-                                                "gen_ai.tool.description": (
-                                                    TOOL_DESCRIPTION
-                                                ),
-                                                "gen_ai.tool.name": TOOL_NAME,
-                                                "gen_ai.tool.type": (
-                                                    "FunctionTool"
-                                                ),
-                                                "gcp.vertex.agent.llm_request": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.llm_response": (
-                                                    "{}"
-                                                ),
-                                                "gcp.vertex.agent.tool_call_args": (
-                                                    "{}"
-                                                ),
-                                                "gen_ai.tool.call.id": PRESENT,
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.tool_response": (
-                                                    "{}"
-                                                ),
-                                            },
-                                        ),
-                                    ],
+                                        "gen_ai.tool.name": TOOL_NAME,
+                                        "gen_ai.tool.type": "FunctionTool",
+                                        "gcp.vertex.agent.llm_request": "{}",
+                                        "gcp.vertex.agent.llm_response": "{}",
+                                        "gcp.vertex.agent.tool_call_args": "{}",
+                                        "gen_ai.tool.call.id": PRESENT,
+                                        "gcp.vertex.agent.event_id": PRESENT,
+                                        "gcp.vertex.agent.tool_response": "{}",
+                                    },
                                 ),
                             ],
                         ),
+                    ],
+                ),
+                SpanDigest(
+                    name="call_llm",
+                    attributes={
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
+                    },
+                    children=[
                         SpanDigest(
-                            name="call_llm",
+                            name="generate_content mock",
                             attributes={
-                                "gen_ai.system": "gcp.vertex.agent",
+                                "gen_ai.operation.name": "generate_content",
                                 "gen_ai.request.model": "mock",
-                                "gcp.vertex.agent.invocation_id": PRESENT,
-                                "gcp.vertex.agent.session_id": PRESENT,
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
                                 "gcp.vertex.agent.event_id": PRESENT,
-                                "gcp.vertex.agent.llm_request": "{}",
-                                "gcp.vertex.agent.llm_response": "{}",
+                                "gcp.vertex.agent.invocation_id": PRESENT,
                                 "gen_ai.response.finish_reasons": ["stop"],
+                                "gen_ai.tool.definitions": [
+                                    _TOOL_DEFINITION_NO_CONTENT
+                                ],
                             },
-                            children=[
-                                SpanDigest(
-                                    name="generate_content mock",
+                            logs=[
+                                LogDigest(
+                                    event_name=(
+                                        GEN_AI_COMPLETION_DETAILS_EVENT
+                                    ),
+                                    body=None,
                                     attributes={
-                                        "gen_ai.operation.name": (
-                                            "generate_content"
-                                        ),
-                                        "gen_ai.request.model": "mock",
                                         "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.conversation.id": PRESENT,
+                                        "user.id": "some_user",
                                         "gcp.vertex.agent.event_id": PRESENT,
                                         "gcp.vertex.agent.invocation_id": (
                                             PRESENT
@@ -2800,47 +2495,221 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2 = SpanDigest(
                                             _TURN_2_OUTPUT_MESSAGES
                                         ),
                                     },
-                                    logs=[
-                                        LogDigest(
-                                            event_name=(
-                                                GEN_AI_COMPLETION_DETAILS_EVENT
-                                            ),
-                                            body=None,
-                                            attributes={
-                                                "gen_ai.agent.name": AGENT_NAME,
-                                                "gen_ai.conversation.id": (
-                                                    PRESENT
-                                                ),
-                                                "user.id": "some_user",
-                                                "gcp.vertex.agent.event_id": (
-                                                    PRESENT
-                                                ),
-                                                "gcp.vertex.agent.invocation_id": (
-                                                    PRESENT
-                                                ),
-                                                "gen_ai.response.finish_reasons": [
-                                                    "stop"
-                                                ],
-                                                "gen_ai.input.messages": (
-                                                    _TURN_2_INPUT_MESSAGES
-                                                ),
-                                                "gen_ai.system_instructions": (
-                                                    _SYSTEM_INSTRUCTIONS
-                                                ),
-                                                "gen_ai.tool.definitions": [
-                                                    _TOOL_DEFINITION_FULL
-                                                ],
-                                                "gen_ai.output.messages": (
-                                                    _TURN_2_OUTPUT_MESSAGES
-                                                ),
-                                            },
-                                        ),
-                                    ],
                                 ),
                             ],
                         ),
                     ],
                 ),
+            ],
+        ),
+        SpanDigest(
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
+                SpanDigest(
+                    name=f"invoke_node {NODE_NAME}",
+                    attributes={
+                        "gen_ai.operation.name": "invoke_node",
+                        "gen_ai.conversation.id": PRESENT,
+                        "gcp.vertex.agent.associated_event_ids": PRESENT,
+                    },
+                ),
+            ],
+        ),
+    ],
+)
+
+
+EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2 = SpanDigest(
+    name=f"invoke_workflow {WORKFLOW_NAME}",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": WORKFLOW_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
+    children=[
+        SpanDigest(
+            name=f"invoke_agent {AGENT_NAME}",
+            attributes={
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
+                SpanDigest(
+                    name="call_llm",
+                    attributes={
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
+                    },
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                                "gen_ai.response.finish_reasons": ["stop"],
+                                "gen_ai.input.messages": _TURN_1_INPUT_MESSAGES,
+                                "gen_ai.system_instructions": (
+                                    _SYSTEM_INSTRUCTIONS
+                                ),
+                                "gen_ai.tool.definitions": [
+                                    _TOOL_DEFINITION_FULL
+                                ],
+                                "gen_ai.output.messages": (
+                                    _TURN_1_OUTPUT_MESSAGES
+                                ),
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=(
+                                        GEN_AI_COMPLETION_DETAILS_EVENT
+                                    ),
+                                    body=None,
+                                    attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
+                                        "gen_ai.conversation.id": PRESENT,
+                                        "user.id": "some_user",
+                                        "gcp.vertex.agent.event_id": PRESENT,
+                                        "gcp.vertex.agent.invocation_id": (
+                                            PRESENT
+                                        ),
+                                        "gen_ai.response.finish_reasons": [
+                                            "stop"
+                                        ],
+                                        "gen_ai.input.messages": (
+                                            _TURN_1_INPUT_MESSAGES
+                                        ),
+                                        "gen_ai.system_instructions": (
+                                            _SYSTEM_INSTRUCTIONS
+                                        ),
+                                        "gen_ai.tool.definitions": [
+                                            _TOOL_DEFINITION_FULL
+                                        ],
+                                        "gen_ai.output.messages": (
+                                            _TURN_1_OUTPUT_MESSAGES
+                                        ),
+                                    },
+                                ),
+                            ],
+                            children=[
+                                SpanDigest(
+                                    name=f"execute_tool {TOOL_NAME}",
+                                    attributes={
+                                        "gen_ai.operation.name": "execute_tool",
+                                        "gen_ai.tool.description": (
+                                            TOOL_DESCRIPTION
+                                        ),
+                                        "gen_ai.tool.name": TOOL_NAME,
+                                        "gen_ai.tool.type": "FunctionTool",
+                                        "gcp.vertex.agent.llm_request": "{}",
+                                        "gcp.vertex.agent.llm_response": "{}",
+                                        "gcp.vertex.agent.tool_call_args": "{}",
+                                        "gen_ai.tool.call.id": PRESENT,
+                                        "gcp.vertex.agent.event_id": PRESENT,
+                                        "gcp.vertex.agent.tool_response": "{}",
+                                    },
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+                SpanDigest(
+                    name="call_llm",
+                    attributes={
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
+                    },
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                                "gen_ai.response.finish_reasons": ["stop"],
+                                "gen_ai.input.messages": _TURN_2_INPUT_MESSAGES,
+                                "gen_ai.system_instructions": (
+                                    _SYSTEM_INSTRUCTIONS
+                                ),
+                                "gen_ai.tool.definitions": [
+                                    _TOOL_DEFINITION_FULL
+                                ],
+                                "gen_ai.output.messages": (
+                                    _TURN_2_OUTPUT_MESSAGES
+                                ),
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=(
+                                        GEN_AI_COMPLETION_DETAILS_EVENT
+                                    ),
+                                    body=None,
+                                    attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
+                                        "gen_ai.conversation.id": PRESENT,
+                                        "user.id": "some_user",
+                                        "gcp.vertex.agent.event_id": PRESENT,
+                                        "gcp.vertex.agent.invocation_id": (
+                                            PRESENT
+                                        ),
+                                        "gen_ai.response.finish_reasons": [
+                                            "stop"
+                                        ],
+                                        "gen_ai.input.messages": (
+                                            _TURN_2_INPUT_MESSAGES
+                                        ),
+                                        "gen_ai.system_instructions": (
+                                            _SYSTEM_INSTRUCTIONS
+                                        ),
+                                        "gen_ai.tool.definitions": [
+                                            _TOOL_DEFINITION_FULL
+                                        ],
+                                        "gen_ai.output.messages": (
+                                            _TURN_2_OUTPUT_MESSAGES
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+        SpanDigest(
+            name=f"invoke_workflow {NESTED_WORKFLOW_NAME}",
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
                 SpanDigest(
                     name=f"invoke_node {NODE_NAME}",
                     attributes={
@@ -2857,13 +2726,13 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2 = SpanDigest(
 
 # Expected metric points, grouped by metric name.
 EXPECTED_NODE_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
-    "gen_ai.agent.invocation.duration": frozenset({
+    "gen_ai.invoke_agent.duration": frozenset({
         MetricPoint(
             attributes={"gen_ai.agent.name": AGENT_NAME},
             value=NON_DETERMINISTIC,
         ),
     }),
-    "gen_ai.tool.execution.duration": frozenset({
+    "gen_ai.execute_tool.duration": frozenset({
         MetricPoint(
             attributes={
                 "gen_ai.agent.name": AGENT_NAME,
@@ -2872,21 +2741,6 @@ EXPECTED_NODE_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
             },
             value=NON_DETERMINISTIC,
         ),
-    }),
-    "gen_ai.agent.request.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(USER_PROMPT),
-        ),
-    }),
-    "gen_ai.agent.response.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(FINAL_TEXT),
-        ),
-    }),
-    "gen_ai.agent.workflow.steps": frozenset({
-        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=3),
     }),
     "gen_ai.client.operation.duration": frozenset({
         MetricPoint(
@@ -2899,18 +2753,43 @@ EXPECTED_NODE_METRICS_V1: dict[str, frozenset[MetricPoint]] = {
             },
             value=NON_DETERMINISTIC,
         ),
+    }),
+    "gen_ai.invoke_workflow.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": WORKFLOW_NAME,
+            },
+            value=NON_DETERMINISTIC,
+        ),
+        # Nested workflow carries the `gen_ai.workflow.nested` dimension; the
+        # root workflow above omits it.
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=2),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
     }),
 }
 
 
 EXPECTED_NODE_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
-    "gen_ai.agent.invocation.duration": frozenset({
+    "gen_ai.invoke_agent.duration": frozenset({
         MetricPoint(
             attributes={"gen_ai.agent.name": AGENT_NAME},
             value=NON_DETERMINISTIC,
         ),
     }),
-    "gen_ai.tool.execution.duration": frozenset({
+    "gen_ai.execute_tool.duration": frozenset({
         MetricPoint(
             attributes={
                 "gen_ai.agent.name": AGENT_NAME,
@@ -2919,21 +2798,6 @@ EXPECTED_NODE_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
             },
             value=NON_DETERMINISTIC,
         ),
-    }),
-    "gen_ai.agent.request.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(USER_PROMPT),
-        ),
-    }),
-    "gen_ai.agent.response.size": frozenset({
-        MetricPoint(
-            attributes={"gen_ai.agent.name": AGENT_NAME},
-            value=len(FINAL_TEXT),
-        ),
-    }),
-    "gen_ai.agent.workflow.steps": frozenset({
-        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=3),
     }),
     "gen_ai.client.operation.duration": frozenset({
         MetricPoint(
@@ -2946,6 +2810,31 @@ EXPECTED_NODE_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
             },
             value=NON_DETERMINISTIC,
         ),
+    }),
+    "gen_ai.invoke_workflow.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": WORKFLOW_NAME,
+            },
+            value=NON_DETERMINISTIC,
+        ),
+        # Nested workflow carries the `gen_ai.workflow.nested` dimension; the
+        # root workflow above omits it.
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": NESTED_WORKFLOW_NAME,
+                "gen_ai.workflow.nested": True,
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=2),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
     }),
 }
 

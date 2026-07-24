@@ -47,15 +47,16 @@ class SequentialAgentState(BaseAgentState):
 
 
 @deprecated(
-    'SequentialAgent is deprecated and will be removed in future versions.'
-    ' Please use Workflow instead.'
+    'SequentialAgent is deprecated in favor of Workflow and will be removed'
+    ' in a future version. Workflow cannot yet be used as an LlmAgent'
+    ' sub-agent.'
 )
 class SequentialAgent(BaseAgent):
   """A shell agent that runs its sub-agents in sequence.
 
   .. deprecated::
-    SequentialAgent is deprecated and will be removed in future versions.
-    Please use Workflow instead.
+    SequentialAgent is deprecated in favor of Workflow and will be removed in
+    a future version. Workflow cannot yet be used as an LlmAgent sub-agent.
   """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = SequentialAgentConfig
@@ -107,7 +108,7 @@ class SequentialAgent(BaseAgent):
 
   def _get_start_index(
       self,
-      agent_state: SequentialAgentState,
+      agent_state: SequentialAgentState | None,
   ) -> int:
     """Calculates the start index for the sub-agent loop."""
     if not agent_state:
@@ -151,7 +152,7 @@ class SequentialAgent(BaseAgent):
     # There is no way to know if it's using live during init phase so we have to init it here
     for sub_agent in self.sub_agents:
       # add tool
-      def task_completed():
+      def task_completed() -> str:
         """
         Signals that the agent has successfully completed the user's question
         or task.

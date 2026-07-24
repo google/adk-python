@@ -23,3 +23,8 @@ The `Event` class represents a single event in the conversation history or workf
 - `get_function_calls()`: Returns function calls in the event.
 - `get_function_responses()`: Returns function responses in the event.
 - `is_final_response()`: Returns whether the event is the final response of an agent.
+
+## State Lifecycle & Immutability
+- **Event Immutability**: Event history is immutable. Never assume that events are mutated or cleared after they are saved to a session.
+- **Signal & Action Persistence**: When checking if a signal or action is "pending" versus "resolved", do not rely on events being modified in place.
+- **Compaction Side-Effects**: Be aware that storing stateful flags on events (such as requested actions or transient status) can have permanent unintended effects on background compaction when those events age but remain in history.

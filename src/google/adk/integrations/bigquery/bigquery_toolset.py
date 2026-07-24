@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
 from typing import List
 from typing import Optional
 from typing import Union
@@ -50,7 +52,7 @@ class BigQueryToolset(BaseToolset):
     )
 
   def _is_tool_selected(
-      self, tool: BaseTool, readonly_context: ReadonlyContext
+      self, tool: BaseTool, readonly_context: Optional[ReadonlyContext]
   ) -> bool:
     if self.tool_filter is None:
       return True
@@ -68,25 +70,26 @@ class BigQueryToolset(BaseToolset):
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> List[BaseTool]:
     """Get tools from the toolset."""
+    funcs: list[Callable[..., Any]] = [
+        metadata_tool.get_dataset_info,
+        metadata_tool.get_table_info,
+        metadata_tool.list_dataset_ids,
+        metadata_tool.list_table_ids,
+        metadata_tool.get_job_info,
+        query_tool.get_execute_sql(self._tool_settings),
+        query_tool.forecast,
+        query_tool.analyze_contribution,
+        query_tool.detect_anomalies,
+        data_insights_tool.ask_data_insights,
+        search_tool.search_catalog,
+    ]
     all_tools = [
         GoogleTool(
             func=func,
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,
         )
-        for func in [
-            metadata_tool.get_dataset_info,
-            metadata_tool.get_table_info,
-            metadata_tool.list_dataset_ids,
-            metadata_tool.list_table_ids,
-            metadata_tool.get_job_info,
-            query_tool.get_execute_sql(self._tool_settings),
-            query_tool.forecast,
-            query_tool.analyze_contribution,
-            query_tool.detect_anomalies,
-            data_insights_tool.ask_data_insights,
-            search_tool.search_catalog,
-        ]
+        for func in funcs
     ]
 
     return [
@@ -96,5 +99,5 @@ class BigQueryToolset(BaseToolset):
     ]
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     pass

@@ -167,6 +167,8 @@ class GcsArtifactService(BaseArtifactService):
       session_id: Optional[str] = None,
   ) -> str:
     """Constructs the blob name prefix in GCS for a given artifact."""
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
@@ -174,6 +176,7 @@ class GcsArtifactService(BaseArtifactService):
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
+    artifact_util.validate_path_segment(session_id, "session_id")
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   def _get_blob_name(
@@ -252,10 +255,17 @@ class GcsArtifactService(BaseArtifactService):
       if not file_uri:
         raise InputValidationError("Artifact file_data must have a file_uri.")
       if artifact_util.is_artifact_ref(artifact):
-        if not artifact_util.parse_artifact_uri(file_uri):
+        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
+        if not parsed_uri:
           raise InputValidationError(
               f"Invalid artifact reference URI: {file_uri}"
           )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
       # Store the URI and mime_type (if any) as blob metadata; no content to upload.
       metadata = {
           **(blob.metadata or {}),
@@ -315,6 +325,12 @@ class GcsArtifactService(BaseArtifactService):
           raise InputValidationError(
               f"Invalid artifact reference URI: {file_uri}"
           )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
         return self._load_artifact(
             app_name=parsed_uri.app_name,
             user_id=parsed_uri.user_id,
@@ -355,6 +371,10 @@ class GcsArtifactService(BaseArtifactService):
   def _list_artifact_keys(
       self, app_name: str, user_id: str, session_id: Optional[str]
   ) -> list[str]:
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
+    if session_id is not None:
+      artifact_util.validate_path_segment(session_id, "session_id")
     filenames = set()
 
     if session_id:

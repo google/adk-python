@@ -15,8 +15,11 @@
 import sys
 from typing import Any
 
+from adk_pr_triaging_agent.settings import GITHUB_BASE_URL
 from adk_pr_triaging_agent.settings import GITHUB_GRAPHQL_URL
 from adk_pr_triaging_agent.settings import GITHUB_TOKEN
+from adk_pr_triaging_agent.settings import OWNER
+from adk_pr_triaging_agent.settings import REPO
 from google.adk.agents.run_config import RunConfig
 from google.adk.runners import Runner
 from google.genai import types
@@ -64,6 +67,16 @@ def post_request(url: str, payload: Any) -> dict[str, Any]:
   response = requests.post(url, headers=headers, json=payload, timeout=60)
   response.raise_for_status()
   return response.json()
+
+
+def is_assignable(login: str) -> bool:
+  """Whether a GitHub user can be assigned to an issue/PR in this repo."""
+  # GitHub only allows assignees with repo write/triage access and silently
+  # drops others from an assignee POST; check first so callers can report the
+  # skip instead of a silent no-op.
+  url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/assignees/{login}"
+  response = requests.get(url, headers=headers, timeout=60)
+  return response.status_code == 204
 
 
 def error_response(error_message: str) -> dict[str, Any]:

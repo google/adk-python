@@ -17,14 +17,23 @@
 import logging
 from unittest.mock import AsyncMock
 
-from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
-from a2a.server.request_handlers.request_handler import RequestHandler
+try:
+  from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
+  from a2a.server.request_handlers.request_handler import RequestHandler
+except ImportError:
+  A2AFastAPIApplication = None
+  RequestHandler = None
 from a2a.types import Message as A2AMessage
 from a2a.types import Part as A2APart
 from a2a.types import Task
-from a2a.types import TaskState
 from a2a.types import TaskStatus
-from a2a.types import TextPart
+
+try:
+  # 0.3.x-only wrapper part type; these integration tests are skipped on 1.x.
+  from a2a.types import TextPart
+except ImportError:
+  TextPart = None
+from google.adk.a2a import _compat
 from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.executor.config import A2aAgentExecutorConfig
@@ -37,6 +46,11 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    _compat.IS_A2A_V1,
+    reason="integration tests use 0.3-only A2AFastAPIApplication",
+)
 
 from .client import create_a2a_client
 from .client import create_client
@@ -523,7 +537,7 @@ async def test_long_running_function_calls_error():
   assert response_1_events[0][1] is None
   task = response_1_events[0][0]
   assert isinstance(task, Task)
-  assert task.status.state == TaskState.input_required
+  assert task.status.state == _compat.TS_INPUT_REQUIRED
   extracted_task_id = task.id
   assert extracted_task_id is not None
 
@@ -660,7 +674,7 @@ async def test_user_follow_up_sends_task_id_with_input_required():
       context_id=context_id,
       kind="task",
       status=TaskStatus(
-          state=TaskState.input_required,
+          state=_compat.TS_INPUT_REQUIRED,
           message=A2AMessage(
               message_id="mocked-message-id-789",
               role="user",
@@ -678,7 +692,7 @@ async def test_user_follow_up_sends_task_id_with_input_required():
           id=task_id,
           context_id=context_id,
           kind="task",
-          status=TaskStatus(state=TaskState.completed),
+          status=TaskStatus(state=_compat.TS_COMPLETED),
           metadata={_NEW_A2A_ADK_INTEGRATION_EXTENSION: True},
       ),
   ]
@@ -740,7 +754,7 @@ async def test_user_follow_up_sends_task_id_with_input_required_legacy_impl():
       context_id=context_id,
       kind="task",
       status=TaskStatus(
-          state=TaskState.input_required,
+          state=_compat.TS_INPUT_REQUIRED,
           message=A2AMessage(
               message_id="mocked-message-id-789",
               role="user",
@@ -757,7 +771,7 @@ async def test_user_follow_up_sends_task_id_with_input_required_legacy_impl():
           id=task_id,
           context_id=context_id,
           kind="task",
-          status=TaskStatus(state=TaskState.completed),
+          status=TaskStatus(state=_compat.TS_COMPLETED),
       ),
   ]
 

@@ -20,6 +20,7 @@ from functools import lru_cache
 import importlib
 import logging
 import re
+from typing import cast
 from typing import TYPE_CHECKING
 from typing import Union
 
@@ -77,7 +78,7 @@ class LLMRegistry:
     return prefix_lower == norm_class_name or prefix_lower == class_name.lower()
 
   @staticmethod
-  def _register(model_name_regex: str, llm_cls: type[BaseLlm]):
+  def _register(model_name_regex: str, llm_cls: type[BaseLlm]) -> None:
     """Registers a new LLM class.
 
     Args:
@@ -96,7 +97,7 @@ class LLMRegistry:
     _llm_registry_dict[model_name_regex] = llm_cls
 
   @staticmethod
-  def register(llm_cls: type[BaseLlm]):
+  def register(llm_cls: type[BaseLlm]) -> None:
     """Registers a new LLM class.
 
     Args:
@@ -109,7 +110,7 @@ class LLMRegistry:
   @staticmethod
   def _register_lazy(
       model_name_regexes: list[str], module_path: str, class_name: str
-  ):
+  ) -> None:
     """Pre-registers a lazily-imported LLM class."""
     for regex in model_name_regexes:
       _llm_registry_dict[regex] = (module_path, class_name)
@@ -139,7 +140,7 @@ class LLMRegistry:
             # We let ImportError bubble up because the user explicitly
             # requested this provider via prefix.
             module = importlib.import_module(module_path)
-            return getattr(module, c_name)
+            return cast('type[BaseLlm]', getattr(module, c_name))
           return entry
 
     for regex, entry in list(_llm_registry_dict.items()):
@@ -152,7 +153,7 @@ class LLMRegistry:
         except ImportError:
           _llm_registry_dict.pop(regex, None)
           continue
-        llm_class = getattr(module, class_name)
+        llm_class = cast('type[BaseLlm]', getattr(module, class_name))
         _llm_registry_dict[regex] = llm_class
         return llm_class
       return entry

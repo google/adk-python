@@ -62,6 +62,18 @@ DEFAULT_APP_STATE_COLLECTION = "app_states"
 DEFAULT_USER_STATE_COLLECTION = "user_states"
 
 
+def _to_last_update_time(update_time: Any) -> float:
+  """Converts a Firestore updateTime value to epoch seconds, or 0.0."""
+  if not update_time:
+    return 0.0
+  if isinstance(update_time, datetime):
+    return update_time.timestamp()
+  try:
+    return float(update_time)
+  except (ValueError, TypeError):
+    return 0.0
+
+
 class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
   """Session service that uses Google Cloud Firestore as the backend.
 
@@ -143,27 +155,28 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
   @staticmethod
   def _merge_state(
-      app_state: dict[str, Any],
-      user_state: dict[str, Any],
+      app_state: Optional[dict[str, Any]],
+      user_state: Optional[dict[str, Any]],
       session_state: dict[str, Any],
   ) -> dict[str, Any]:
     """Merge app, user, and session states into a single state dictionary."""
     merged_state = copy.deepcopy(session_state)
-    for key, value in app_state.items():
+    for key, value in (app_state or {}).items():
       merged_state[State.APP_PREFIX + key] = value
-    for key, value in user_state.items():
+    for key, value in (user_state or {}).items():
       merged_state[State.USER_PREFIX + key] = value
     return merged_state
 
   def _get_sessions_ref(
       self, app_name: str, user_id: str
   ) -> firestore.AsyncCollectionReference:
-    return (
+    return cast(
+        "firestore.AsyncCollectionReference",
         self.client.collection(self.root_collection)
         .document(app_name)
         .collection("users")
         .document(user_id)
-        .collection(self.sessions_collection)
+        .collection(self.sessions_collection),
     )
 
   async def create_session(
@@ -322,18 +335,6 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
     merged_state = self._merge_state(app_state, user_state, session_state)
 
-    # Convert timestamp
-    update_time = data.get("updateTime")
-    last_update_time = 0.0
-    if update_time:
-      if isinstance(update_time, datetime):
-        last_update_time = update_time.timestamp()
-      else:
-        try:
-          last_update_time = float(update_time)
-        except (ValueError, TypeError):
-          pass
-
     current_revision = data.get("revision", 0)
     session = Session(
         id=session_id,
@@ -341,7 +342,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         user_id=user_id,
         state=merged_state,
         events=events,
-        last_update_time=last_update_time,
+        last_update_time=_to_last_update_time(data.get("updateTime")),
     )
     session._storage_update_marker = str(current_revision)
     return session
@@ -418,7 +419,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
               user_id=data["userId"],
               state=merged,
               events=[],
-              last_update_time=0.0,
+              last_update_time=_to_last_update_time(data.get("updateTime")),
           )
       )
 
@@ -526,7 +527,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
         # 2. Writes
         if app_updates and app_snap is not None:
-          current_app = app_snap.to_dict() if app_snap.exists else {}
+          current_app = (app_snap.to_dict() or {}) if app_snap.exists else {}
           current_app.update(app_updates)
           transaction.set(app_ref, current_app, merge=True)
 

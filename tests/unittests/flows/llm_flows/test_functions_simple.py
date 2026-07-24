@@ -1708,3 +1708,159 @@ async def test_streaming_tool_without_scheduling_emits_function_response():
   assert function_response.response == {'result': 'hello'}
   assert function_response.id == 'fc_stream'
   assert function_response.scheduling is None
+
+
+async def test_non_blocking_tool_handled_asynchronously():
+  """Tests that a NON_BLOCKING tool returns None inline and pushes to live request queue."""
+  import asyncio
+
+  async def slow_fn() -> dict[str, str]:
+    await asyncio.sleep(0.1)
+    return {'result': 'done'}
+
+  tool = FunctionTool(slow_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_non_blocking'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  # Inline call should return None, indicating it is handled asynchronously
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is None
+  # Verify strong reference is kept in active_non_blocking_tool_tasks while running
+  assert invocation_context.active_non_blocking_tool_tasks is not None
+  task_key = f'{tool.name}_fc_non_blocking'
+  assert task_key in invocation_context.active_non_blocking_tool_tasks
+
+  # Wait for the background task to complete and push to the queue
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=1
+  )
+
+  function_response = contents[0].parts[0].function_response
+  assert function_response.response == {'result': 'done'}
+  assert function_response.id == 'fc_non_blocking'
+  assert (
+      function_response.scheduling == types.FunctionResponseScheduling.WHEN_IDLE
+  )
+  # Give event loop a tick for finally block to clean up the completed task
+  await asyncio.sleep(0)
+  assert task_key not in invocation_context.active_non_blocking_tool_tasks
+
+
+async def test_non_blocking_tool_exception_handling_and_cleanup():
+  """Tests that an exception in a NON_BLOCKING tool is logged and cleaned up."""
+  import asyncio
+
+  async def failing_fn() -> dict[str, str]:
+    await asyncio.sleep(0.05)
+    raise RuntimeError('Tool execution failed purposely')
+
+  tool = FunctionTool(failing_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_failing_non_blocking'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is None
+  task_key = f'{tool.name}_fc_failing_non_blocking'
+  assert (
+      invocation_context.active_non_blocking_tool_tasks
+      and task_key in invocation_context.active_non_blocking_tool_tasks
+  )
+
+  # Allow background task to execute and raise its exception
+  await asyncio.sleep(0.1)
+  # Give event loop a tick for finally block to clean up the completed task
+  await asyncio.sleep(0)
+  assert task_key not in invocation_context.active_non_blocking_tool_tasks
+
+
+async def test_parallel_non_blocking_tools():
+  """Tests that multiple NON_BLOCKING tools execute in parallel and clean up independently."""
+  import asyncio
+
+  async def slow_fn_1() -> dict[str, str]:
+    await asyncio.sleep(0.05)
+    return {'result': 'done_1'}
+
+  async def slow_fn_2() -> dict[str, str]:
+    await asyncio.sleep(0.05)
+    return {'result': 'done_2'}
+
+  tool1 = FunctionTool(slow_fn_1)
+  tool1.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  tool2 = FunctionTool(slow_fn_2)
+  tool2.response_scheduling = types.FunctionResponseScheduling.SILENT
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool1, tool2])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  fc1 = types.FunctionCall(name=tool1.name, args={}, id='fc_1')
+  fc2 = types.FunctionCall(name=tool2.name, args={}, id='fc_2')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[
+              types.Part(function_call=fc1),
+              types.Part(function_call=fc2),
+          ]
+      ),
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool1.name: tool1, tool2.name: tool2}
+  )
+  assert result is None
+  assert len(invocation_context.active_non_blocking_tool_tasks) == 2
+  key1 = f'{tool1.name}_fc_1'
+  key2 = f'{tool2.name}_fc_2'
+  assert key1 in invocation_context.active_non_blocking_tool_tasks
+  assert key2 in invocation_context.active_non_blocking_tool_tasks
+
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=2
+  )
+  responses = {
+      c.parts[0].function_response.id: c.parts[0].function_response
+      for c in contents
+  }
+  assert responses['fc_1'].response == {'result': 'done_1'}
+  assert responses['fc_2'].response == {'result': 'done_2'}
+
+  await asyncio.sleep(0)
+  assert len(invocation_context.active_non_blocking_tool_tasks) == 0

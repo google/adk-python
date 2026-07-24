@@ -55,6 +55,22 @@ async def test_per_agent_session_service_creates_scoped_dot_adk(
 
 
 @pytest.mark.asyncio
+async def test_per_agent_session_service_supports_nested_agent_path(
+    tmp_path: Path,
+) -> None:
+  nested_agent = tmp_path / "multi_agent" / "hello_world_ma"
+  nested_agent.mkdir(parents=True)
+
+  async with PerAgentDatabaseSessionService(agents_root=tmp_path) as service:
+    await service.create_session(
+        app_name="multi_agent.hello_world_ma", user_id="user_a"
+    )
+
+    assert (nested_agent / ".adk" / "session.db").exists()
+    assert not (tmp_path / "multi_agent.hello_world_ma").exists()
+
+
+@pytest.mark.asyncio
 async def test_per_agent_session_service_respects_app_name_alias(
     tmp_path: Path,
 ) -> None:

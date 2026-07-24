@@ -296,20 +296,24 @@ class BaseAgent(BaseNode, abc.ABC):
 
     ctx = self._create_invocation_context(parent_context)
     async with _instrumentation.record_agent_invocation(ctx, self):
-      if event := await self._handle_before_agent_callback(ctx):
-        yield event
-      if ctx.end_invocation:
-        return
-
-      async with Aclosing(self._run_async_impl(ctx)) as agen:
-        async for event in agen:
+      try:
+        if event := await self._handle_before_agent_callback(ctx):
           yield event
+        if ctx.end_invocation:
+          return
 
-      if ctx.end_invocation:
-        return
+        async with Aclosing(self._run_async_impl(ctx)) as agen:
+          async for event in agen:
+            yield event
 
-      if event := await self._handle_after_agent_callback(ctx):
-        yield event
+        if ctx.end_invocation:
+          return
+
+        if event := await self._handle_after_agent_callback(ctx):
+          yield event
+      except Exception as e:
+        await self._handle_agent_error_callback(ctx, e)
+        raise
 
   @override
   async def _run_impl(
@@ -347,17 +351,21 @@ class BaseAgent(BaseNode, abc.ABC):
 
     ctx = self._create_invocation_context(parent_context)
     async with _instrumentation.record_agent_invocation(ctx, self):
-      if event := await self._handle_before_agent_callback(ctx):
-        yield event
-      if ctx.end_invocation:
-        return
-
-      async with Aclosing(self._run_live_impl(ctx)) as agen:
-        async for event in agen:
+      try:
+        if event := await self._handle_before_agent_callback(ctx):
           yield event
+        if ctx.end_invocation:
+          return
 
-      if event := await self._handle_after_agent_callback(ctx):
-        yield event
+        async with Aclosing(self._run_live_impl(ctx)) as agen:
+          async for event in agen:
+            yield event
+
+        if event := await self._handle_after_agent_callback(ctx):
+          yield event
+      except Exception as e:
+        await self._handle_agent_error_callback(ctx, e)
+        raise
 
   async def _run_async_impl(
       self, ctx: InvocationContext
@@ -574,6 +582,35 @@ class BaseAgent(BaseNode, abc.ABC):
       )
     return None
 
+  async def _handle_agent_error_callback(
+      self,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Runs the on_agent_error_callback for all plugins.
+
+    This is notification-only and best-effort: the triggering exception is
+    always re-raised by the caller, and any exception from the callback itself
+    (or from a test double that does not implement it) is logged and suppressed
+    so it can never mask the original error.
+
+    Args:
+      invocation_context: The invocation context for this agent.
+      error: The exception that escaped agent execution.
+    """
+    callback_context = CallbackContext(invocation_context)
+    try:
+      await invocation_context.plugin_manager.run_on_agent_error_callback(
+          agent=self,
+          callback_context=callback_context,
+          error=error,
+      )
+    except Exception:  # pylint: disable=broad-except
+      logger.exception(
+          'on_agent_error_callback raised; suppressing so the original agent'
+          ' error propagates.'
+      )
+
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
@@ -581,7 +618,7 @@ class BaseAgent(BaseNode, abc.ABC):
 
   @field_validator('name', mode='after')
   @classmethod
-  def validate_name(cls, value: str):
+  def validate_name(cls, value: str) -> str:
     if not value.isidentifier():
       raise ValueError(
           f'Found invalid agent name: `{value}`.'

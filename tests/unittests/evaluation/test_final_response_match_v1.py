@@ -139,3 +139,25 @@ def test_rouge_evaluator_multiple_invocations(
       expected_score, rel=1e-3
   )
   assert evaluation_result.overall_eval_status == expected_status
+
+
+@pytest.mark.parametrize(
+    "actual_count, expected_count",
+    [
+        pytest.param(2, 1, id="extra-actual-turn"),
+        pytest.param(1, 2, id="missing-actual-turn"),
+    ],
+)
+def test_rouge_evaluator_rejects_mismatched_invocation_lengths(
+    actual_count: int, expected_count: int
+):
+  actual, expected = _create_test_invocations("same", "same")
+  rouge_evaluator = _create_test_rouge_evaluator(threshold=0.8)
+
+  with pytest.raises(
+      ValueError,
+      match=f"same length; got {actual_count} and {expected_count}",
+  ):
+    rouge_evaluator.evaluate_invocations(
+        [actual] * actual_count, [expected] * expected_count
+    )

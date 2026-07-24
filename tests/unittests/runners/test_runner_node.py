@@ -26,9 +26,12 @@ from typing import AsyncGenerator
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.apps.app import App
 from google.adk.events.event import Event
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow import node
@@ -1393,3 +1396,43 @@ async def test_run_node_isolation_across_invocations():
   assert call_counts['child'] == 2
   outputs2 = [e.output for e in events2 if e.output is not None]
   assert 'child_out_2' in outputs2
+
+
+# ---------------------------------------------------------------------------
+# Plugin lifecycle on the node path
+# ---------------------------------------------------------------------------
+
+
+class _AfterRunCountingPlugin(BasePlugin):
+  """Counts how many times after_run_callback is dispatched."""
+
+  def __init__(self) -> None:
+    super().__init__(name='after_run_counter')
+    self.after_run_calls = 0
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    self.after_run_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_after_run_callback_dispatched_on_workflow_root():
+  """Runner dispatches plugin after_run_callback on a Workflow(BaseNode) root."""
+
+  def terminal(node_input: str) -> str:
+    return node_input.upper()
+
+  plugin = _AfterRunCountingPlugin()
+  workflow = Workflow(name='wf', edges=[(START, terminal)])
+  app = App(name='test', root_agent=workflow, plugins=[plugin])
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  async for _ in runner.run_async(
+      user_id='u', session_id=session.id, new_message=_user_message('hi')
+  ):
+    pass
+
+  assert plugin.after_run_calls == 1
