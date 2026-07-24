@@ -355,6 +355,59 @@ class TestGenerateAuthUri:
     assert "code_verifier" in kwargs
     assert kwargs["code_verifier"] == result.oauth2.code_verifier
 
+  @patch("google.adk.auth.auth_handler.OAuth2Session")
+  def test_generate_auth_uri_with_nonce(
+      self, mock_oauth2_session, oauth2_auth_scheme, oauth2_credentials
+  ):
+    """Test that a nonce is forwarded to the authorization request."""
+    oauth2_credentials.oauth2.nonce = "test_nonce"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.create_authorization_url.return_value = (
+        "https://example.com/oauth2/authorize?nonce=test_nonce",
+        "mock_state",
+    )
+
+    handler = AuthHandler(config)
+    handler.generate_auth_uri()
+
+    _, kwargs = mock_client.create_authorization_url.call_args
+    assert kwargs["nonce"] == "test_nonce"
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session")
+  def test_generate_auth_uri_without_nonce(
+      self, mock_oauth2_session, oauth2_auth_scheme, oauth2_credentials
+  ):
+    """Test that no nonce is sent when the credential has none."""
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.create_authorization_url.return_value = (
+        "https://example.com/oauth2/authorize",
+        "mock_state",
+    )
+
+    handler = AuthHandler(config)
+    handler.generate_auth_uri()
+
+    _, kwargs = mock_client.create_authorization_url.call_args
+    assert "nonce" not in kwargs
+
   def test_generate_auth_uri_unsupported_pkce_method(
       self, oauth2_auth_scheme, oauth2_credentials
   ):

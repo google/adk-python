@@ -32,6 +32,8 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
 
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+
 
 class BaseAPIHubClient(ABC):
   """Base class for API Hub clients."""
@@ -116,7 +118,7 @@ class APIHubClient(BaseAPIHubClient):
       spec_content = self._fetch_spec(api_spec_resource_name)
       return spec_content
 
-    raise ValueError("No API Hub resource found in path: {path}")
+    raise ValueError(f"No API Hub resource found in path: {path}")
 
   def list_apis(self, project: str, location: str) -> List[Dict[str, Any]]:
     """Lists all APIs in the specified project and location.
@@ -133,7 +135,9 @@ class APIHubClient(BaseAPIHubClient):
         "accept": "application/json, text/plain, */*",
         "Authorization": f"Bearer {self._get_access_token()}",
     }
-    response = requests.get(url, headers=headers)
+    response = requests.get(
+        url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
+    )
     response.raise_for_status()
     apis = response.json().get("apis", [])
     return apis
@@ -153,7 +157,9 @@ class APIHubClient(BaseAPIHubClient):
         "accept": "application/json, text/plain, */*",
         "Authorization": f"Bearer {self._get_access_token()}",
     }
-    response = requests.get(url, headers=headers)
+    response = requests.get(
+        url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
+    )
     response.raise_for_status()
     apis = response.json()
     return apis
@@ -173,7 +179,9 @@ class APIHubClient(BaseAPIHubClient):
         "accept": "application/json, text/plain, */*",
         "Authorization": f"Bearer {self._get_access_token()}",
     }
-    response = requests.get(url, headers=headers)
+    response = requests.get(
+        url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
+    )
     response.raise_for_status()
     return response.json()
 
@@ -192,7 +200,9 @@ class APIHubClient(BaseAPIHubClient):
         "accept": "application/json, text/plain, */*",
         "Authorization": f"Bearer {self._get_access_token()}",
     }
-    response = requests.get(url, headers=headers)
+    response = requests.get(
+        url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
+    )
     response.raise_for_status()
     content_base64 = response.json().get("contents", "")
     if content_base64:

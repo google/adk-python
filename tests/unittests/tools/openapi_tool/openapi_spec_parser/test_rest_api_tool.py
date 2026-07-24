@@ -673,7 +673,59 @@ class TestRestApiTool:
     request_params = tool._prepare_request_params(params, kwargs)
 
     assert request_params["files"] == {"file1": b"file_content"}
-    assert request_params["headers"]["Content-Type"] == "multipart/form-data"
+    # For multipart/form-data the boundary-bearing Content-Type must be set by
+    # httpx (from the `files` payload), not forced here. Forcing a boundary-less
+    # "multipart/form-data" header would override the boundary httpx generates
+    # and make the request body unparsable.
+    assert "Content-Type" not in request_params["headers"]
+
+  def test_prepare_request_params_multipart_content_type_has_boundary(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    mock_operation = Operation(
+        operationId="test_op",
+        requestBody=RequestBody(
+            content={
+                "multipart/form-data": MediaType(
+                    schema=OpenAPISchema(
+                        type="object",
+                        properties={
+                            "file1": OpenAPISchema(
+                                type="string", format="binary"
+                            )
+                        },
+                    )
+                )
+            }
+        ),
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="file1",
+            py_name="file1",
+            param_location="body",
+            param_schema=OpenAPISchema(type="string", format="binary"),
+        )
+    ]
+    kwargs = {"file1": b"file_content"}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    # Build the request httpx would actually send and assert the wire
+    # Content-Type carries the multipart boundary that matches the body.
+    request = httpx.Client().build_request(**request_params)
+    content_type = request.headers["Content-Type"]
+    assert content_type.startswith("multipart/form-data; boundary=")
+    boundary = content_type.split("boundary=", 1)[1]
+    assert request.read().startswith(f"--{boundary}".encode())
 
   def test_prepare_request_params_octet_stream(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential

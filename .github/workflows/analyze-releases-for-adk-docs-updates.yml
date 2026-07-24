@@ -45,15 +45,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: '3.11'
 
       - name: Load adk-bot SSH Private Key
-        uses: webfactory/ssh-agent@v0.9.1
+        uses: webfactory/ssh-agent@a6f90b1f127823b31d4d4a8d96047790581349bd # v0.9.1
         with:
           ssh-private-key: ${{ secrets.ADK_BOT_SSH_PRIVATE_KEY }}
 
@@ -64,7 +64,7 @@ jobs:
 
       - name: Restore session DB from cache
         if: ${{ github.event.inputs.resume == 'true' }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: contributing/samples/adk_team/adk_documentation/adk_release_analyzer/sessions.db
           key: analyzer-session-db-${{ github.run_id }}-${{ github.run_attempt }}
@@ -102,7 +102,7 @@ jobs:
 
       - name: Save session DB to cache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: contributing/samples/adk_team/adk_documentation/adk_release_analyzer/sessions.db
           key: analyzer-session-db-${{ github.run_id }}-${{ github.run_attempt }}

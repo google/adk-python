@@ -617,8 +617,8 @@ bigquery_agent_analytics:
           os.path,
           "exists",
           autospec=True,
-          side_effect=lambda p: p.endswith("plugins.yaml")
-          or p.endswith("root_agent.yaml"),
+          side_effect=lambda p: str(p).endswith("plugins.yaml")
+          or str(p).endswith("root_agent.yaml"),
       ),
   ):
     from google.adk.cli.adk_web_server import AdkWebServer
@@ -2862,6 +2862,35 @@ def test_version_endpoint(test_app):
   assert "language_version" in data
 
 
+def test_telemetry_get_endpoint(test_app):
+  """Test the GET telemetry consent endpoint."""
+  with patch(
+      "google.adk.cli.dev_server.read_telemetry_consent", return_value=True
+  ):
+    response = test_app.get("/config/telemetry")
+    assert response.status_code == 200
+    assert response.json() == {"telemetry": True}
+
+
+def test_telemetry_post_endpoint_success(test_app):
+  """Test the POST telemetry consent endpoint with required header."""
+  with patch("google.adk.cli.dev_server.write_telemetry_consent") as mock_write:
+    headers = {"x-adk-telemetry-request": "true"}
+    response = test_app.post(
+        "/config/telemetry", json={"telemetry": True}, headers=headers
+    )
+    assert response.status_code == 200
+    assert response.json() == {"telemetry": True}
+    mock_write.assert_called_once_with(True)
+
+
+def test_telemetry_post_endpoint_missing_header(test_app):
+  """Test the POST telemetry consent endpoint without required header."""
+  response = test_app.post("/config/telemetry", json={"telemetry": True})
+  assert response.status_code == 400
+  assert "Forbidden: missing required security header" in response.text
+
+
 @pytest.fixture
 def test_app_auto_session(
     mock_session_service,
@@ -3028,8 +3057,8 @@ async def test_independent_telemetry_context(
           os.path,
           "exists",
           autospec=True,
-          side_effect=lambda p: "yaml_app" in p
-          and p.endswith("root_agent.yaml"),
+          side_effect=lambda p: "yaml_app" in str(p)
+          and str(p).endswith("root_agent.yaml"),
       ),
   ):
     app = get_fast_api_app(

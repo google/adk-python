@@ -26,7 +26,9 @@ from pathlib import Path
 import sys
 import tempfile
 import textwrap
+from typing import cast
 from typing import Optional
+from typing import TYPE_CHECKING
 
 import click
 from click.core import ParameterSource
@@ -41,6 +43,9 @@ from ..features import override_feature_enabled
 from .cli import run_cli
 from .utils import envs
 from .utils import logs
+
+if TYPE_CHECKING:
+  from ..agents.llm_agent import LlmAgent
 
 LOG_LEVELS = click.Choice(
     ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -1005,7 +1010,6 @@ def cli_eval(
 
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
-    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
     from ..evaluation.eval_config import get_eval_metrics_from_config
     from ..evaluation.eval_config import get_evaluation_criteria_or_default
     from ..evaluation.evaluator import EvalStatus
@@ -1014,11 +1018,10 @@ def cli_eval(
     from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
-    from ..evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
+    from ..evaluation.metric_evaluator_registry import register_custom_metrics_from_config
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
-    from .cli_eval import get_default_metric_info
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
@@ -1029,7 +1032,7 @@ def cli_eval(
   print(f"Using evaluation criteria: {eval_config}")
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
-  root_agent = get_root_agent(agent_module_file_path)
+  root_agent = asyncio.run(get_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   eval_sets_manager = None
@@ -1113,23 +1116,7 @@ def cli_eval(
   )
 
   try:
-    metric_evaluator_registry = DEFAULT_METRIC_EVALUATOR_REGISTRY
-    if eval_config.custom_metrics:
-      for (
-          metric_name,
-          config,
-      ) in eval_config.custom_metrics.items():
-        if config.metric_info:
-          metric_info = config.metric_info.model_copy()
-          metric_info.metric_name = metric_name
-        else:
-          metric_info = get_default_metric_info(
-              metric_name=metric_name, description=config.description
-          )
-
-        metric_evaluator_registry.register_evaluator(
-            metric_info, _CustomMetricEvaluator
-        )
+    metric_evaluator_registry = register_custom_metrics_from_config(eval_config)
 
     eval_service = LocalEvalService(
         root_agent=root_agent,
@@ -1275,7 +1262,7 @@ def cli_optimize(
   else:
     optimizer_config = GEPARootAgentPromptOptimizerConfig()
 
-  root_agent = get_root_agent(agent_module_file_path)
+  root_agent = asyncio.run(get_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   if app_name != sampler_config.app_name:
@@ -1288,7 +1275,9 @@ def cli_optimize(
   sampler = LocalEvalSampler(sampler_config, eval_sets_manager)
   optimizer = GEPARootAgentPromptOptimizer(optimizer_config)
 
-  optimization_result = asyncio.run(optimizer.optimize(root_agent, sampler))
+  optimization_result = asyncio.run(
+      optimizer.optimize(cast("LlmAgent", root_agent), sampler)
+  )
   best_idx = optimization_result.gepa_result["best_idx"]
 
   click.echo("=" * 80)
@@ -1501,7 +1490,7 @@ def cli_generate_eval_cases(
 
   try:
     eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
-    root_agent = get_root_agent(agent_module_file_path)
+    root_agent = asyncio.run(get_root_agent(agent_module_file_path))
 
     # Try to create if it doesn't already exist.
     if (

@@ -16,15 +16,27 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Awaitable
+from typing import Callable
+from typing import Union
+
+from typing_extensions import TypeAlias
 
 from ..agents.readonly_context import ReadonlyContext
 from ..sessions.state import State
 
 __all__ = [
+    'InstructionProvider',
     'inject_session_state',
 ]
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# Type alias for agent instruction providers: a callable that receives a
+# ReadonlyContext and returns an instruction string (sync or async).
+InstructionProvider: TypeAlias = Callable[
+    [ReadonlyContext], Union[str, Awaitable[str]]
+]
 
 
 async def inject_session_state(

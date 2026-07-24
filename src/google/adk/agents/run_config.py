@@ -199,6 +199,9 @@ class RunConfig(BaseModel):
   http_options: Optional[types.HttpOptions] = None
   """HTTP options for the agent execution (e.g. custom headers)."""
 
+  labels: Optional[dict[str, str]] = None
+  """User labels for the current invocation (e.g. for billing/attribution)."""
+
   response_modalities: Optional[list[types.Modality]] = None
   """The output modalities. If not set, it's default to AUDIO."""
 

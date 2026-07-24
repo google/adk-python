@@ -89,6 +89,44 @@ async def test_include_contents_default_full_history():
 
 
 @pytest.mark.asyncio
+async def test_chained_interactions_builds_only_current_turn_contents():
+  """Stateful Interactions requests do not copy history the server retains."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="default"
+  )
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash", previous_interaction_id="interaction-1"
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Historical message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("Historical response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Current message"),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [types.UserContent("Current message")]
+
+
+@pytest.mark.asyncio
 async def test_include_contents_none_current_turn_only():
   """Test that include_contents='none' includes only current turn context."""
   agent = Agent(

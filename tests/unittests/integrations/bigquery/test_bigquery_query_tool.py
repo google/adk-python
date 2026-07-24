@@ -2183,7 +2183,7 @@ def test_tool_call_doesnt_change_global_settings(tool_call):
     # Call the tool
     result = tool_call(settings, tool_context)
 
-    # Test successfull executeion of the tool
+    # Test successful executeion of the tool
     assert result == {"status": "SUCCESS", "rows": []}
 
     # Test settings write mode after
