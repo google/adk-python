@@ -8741,6 +8741,207 @@ class TestDropStats:
     assert plugin.get_drop_stats() == {}
 
 
+COMMITTED_STREAM_NAME = (
+    f"projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}/streams/s1"
+)
+
+
+class TestExactlyOnceDelivery:
+  """Tests offset-tracked writes on an application-created COMMITTED stream.
+
+  Regression coverage for duplicate rows written when a retry after an
+  ambiguous failure (timeout, UNAVAILABLE, ...) resubmits an already-applied
+  `_default`-stream batch. `exactly_once_delivery=True` uses a dedicated
+  stream where retries carry the original offset, so BigQuery can reject a
+  duplicate append instead of writing it twice.
+  """
+
+  def _make_processor(self, arrow_schema, *, retry_config=None):
+    return bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=arrow_schema,
+        write_stream=COMMITTED_STREAM_NAME,
+        batch_size=1,
+        flush_interval=1.0,
+        retry_config=(
+            retry_config or bigquery_agent_analytics_plugin.RetryConfig()
+        ),
+        queue_max_size=10,
+        shutdown_timeout=10.0,
+        exactly_once_delivery=True,
+    )
+
+  def _stub_arrow_prep(self, bp):
+    fake_batch = mock.MagicMock()
+    fake_batch.serialize.return_value.to_pybytes.return_value = b"batch"
+    bp._prepare_arrow_batch = mock.MagicMock(return_value=fake_batch)
+
+  @pytest.mark.asyncio
+  async def test_offset_not_set_on_default_stream(self, dummy_arrow_schema):
+    # `_default` rejects an explicit offset -- confirm the field stays unset
+    # (not merely 0) when exactly_once_delivery is off.
+    bp = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=dummy_arrow_schema,
+        write_stream=DEFAULT_STREAM_NAME,
+        batch_size=1,
+        flush_interval=1.0,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=10.0,
+    )
+    self._stub_arrow_prep(bp)
+
+    async def fake_append_rows(requests, **kwargs):
+      del kwargs
+      sent = [r async for r in requests]
+      assert not sent[0]._pb.HasField("offset")
+      resp = mock.MagicMock()
+      resp.row_errors = []
+      resp.error = mock.MagicMock()
+      resp.error.code = 0
+      return _async_gen(resp)
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+    await bp._write_rows_with_retry([{"a": 1}])
+    assert bp.dropped_event_count == 0
+
+  @pytest.mark.asyncio
+  async def test_offset_advances_across_sequential_batches(
+      self, dummy_arrow_schema
+  ):
+    bp = self._make_processor(dummy_arrow_schema)
+    self._stub_arrow_prep(bp)
+    sent_offsets = []
+
+    async def fake_append_rows(requests, **kwargs):
+      del kwargs
+      sent = [r async for r in requests]
+      sent_offsets.append(sent[0].offset)
+      resp = mock.MagicMock()
+      resp.row_errors = []
+      resp.error = mock.MagicMock()
+      resp.error.code = 0
+      resp.append_result.offset = sent[0].offset
+      return _async_gen(resp)
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    await bp._write_rows_with_retry([{"a": 1}, {"a": 2}])
+    await bp._write_rows_with_retry([{"a": 3}])
+
+    assert sent_offsets == [0, 2]
+    assert bp._next_offset == 3
+    assert bp.dropped_event_count == 0
+
+  @pytest.mark.asyncio
+  async def test_ambiguous_retry_deduped_via_already_exists(
+      self, dummy_arrow_schema
+  ):
+    # Models exactly the production scenario: the first append lands
+    # server-side but the client never sees the ack (here, a timeout), so it
+    # retries. On `_default` this resubmit writes a byte-identical duplicate
+    # row. On a COMMITTED stream with the same offset resent, BigQuery
+    # returns ALREADY_EXISTS instead of writing again.
+    bp = self._make_processor(dummy_arrow_schema)
+    self._stub_arrow_prep(bp)
+    attempts = []
+
+    async def fake_append_rows(requests, **kwargs):
+      del kwargs
+      sent = [r async for r in requests]
+      attempts.append(sent[0].offset)
+      if len(attempts) == 1:
+        raise asyncio.TimeoutError("ack lost")
+      resp = mock.MagicMock()
+      resp.row_errors = []
+      resp.error = mock.MagicMock()
+      resp.error.code = bigquery_agent_analytics_plugin._GRPC_ALREADY_EXISTS
+      resp.error.message = "already applied"
+      return _async_gen(resp)
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    retry_config = bigquery_agent_analytics_plugin.RetryConfig(
+        max_retries=1, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+    )
+    bp.retry_config = retry_config
+
+    await bp._write_rows_with_retry([{"a": 1}, {"a": 2}])
+
+    # Both attempts targeted the same offset -- the retry never advanced to
+    # a fresh offset, so no duplicate offset region was ever occupied twice.
+    assert attempts == [0, 0]
+    assert bp._next_offset == 2
+    # The ambiguous retry resolved to a confirmed delivery, not a drop.
+    assert bp.dropped_event_count == 0
+
+  @pytest.mark.asyncio
+  async def test_out_of_range_drops_batch_without_advancing_offset(
+      self, dummy_arrow_schema
+  ):
+    bp = self._make_processor(dummy_arrow_schema)
+    self._stub_arrow_prep(bp)
+
+    async def fake_append_rows(requests, **kwargs):
+      del requests, kwargs
+      resp = mock.MagicMock()
+      resp.row_errors = []
+      resp.error = mock.MagicMock()
+      resp.error.code = bigquery_agent_analytics_plugin._GRPC_OUT_OF_RANGE
+      resp.error.message = "offset mismatch"
+      return _async_gen(resp)
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    await bp._write_rows_with_retry([{"a": 1}])
+
+    assert bp.get_drop_stats()["offset_conflict"] == 1
+    assert bp._next_offset == 0
+
+  @pytest.mark.asyncio
+  async def test_get_loop_state_creates_committed_stream(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    del mock_auth_default, mock_bq_client, mock_to_arrow_schema
+    del mock_asyncio_to_thread
+    created_stream = mock.MagicMock()
+    created_stream.name = COMMITTED_STREAM_NAME
+    mock_write_client.create_write_stream = mock.AsyncMock(
+        return_value=created_stream
+    )
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            exactly_once_delivery=True
+        ),
+    )
+    try:
+      await plugin._ensure_started()
+
+      mock_write_client.create_write_stream.assert_called_once()
+      _, kwargs = mock_write_client.create_write_stream.call_args
+      assert (
+          kwargs["parent"]
+          == f"projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
+      )
+      assert (
+          kwargs["write_stream"].type_
+          == bigquery_agent_analytics_plugin.bq_storage_types.WriteStream.Type.COMMITTED
+      )
+      assert plugin.write_stream == COMMITTED_STREAM_NAME
+    finally:
+      await plugin.shutdown()
+
+
 # -----------------------------------------------------------------------------
 # ADK 2.0 minimum producer cut
 #
