@@ -96,6 +96,18 @@ def _get_eval_status(score: float, threshold: float) -> EvalStatus:
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
+class _CharacterTokenizer:
+  """Tokenizes text into individual characters.
+
+  Used as a fallback for non-ASCII text (e.g. Thai, Chinese, Japanese) where
+  the default word-level tokenizer produces no tokens because it only matches
+  ASCII alphanumeric characters.
+  """
+
+  def tokenize(self, text: str) -> list[str]:
+    return list(text)
+
+
 def _calculate_rouge_1_scores(candidate: str, reference: str):
   """Calculates the ROUGE-1 score between a candidate and reference text.
 
@@ -107,6 +119,11 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   candidate.
   - F-measure: The harmonic mean of precision and recall.
 
+  For non-ASCII text (e.g. Thai, Chinese, Japanese), character-level
+  tokenization is used because the default word-level tokenizer only
+  recognises ASCII alphanumeric characters and would return no tokens for
+  such languages, resulting in a score of 0 even for identical strings.
+
   Args:
       candidate: The generated text to be evaluated.
       reference: The ground-truth text to compare against.
@@ -114,7 +131,16 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  # Fall back to character-level tokenization for non-ASCII text so that
+  # languages without ASCII word boundaries (Thai, CJK, etc.) are scored
+  # correctly.
+  if any(ord(c) > 127 for c in candidate + reference):
+    tokenizer = _CharacterTokenizer()
+    scorer = rouge_scorer.RougeScorer(
+        ["rouge1"], use_stemmer=False, tokenizer=tokenizer
+    )
+  else:
+    scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.
