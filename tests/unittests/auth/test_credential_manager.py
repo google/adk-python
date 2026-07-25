@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -328,6 +329,102 @@ class TestCredentialManager:
     manager._load_from_auth_response.assert_called_once_with(tool_context)
 
     assert result is None
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_serializes_same_credential_key(self):
+    """Concurrent managers should process a credential only once."""
+    raw_credential = Mock(spec=AuthCredential)
+    processed_credential = Mock(spec=AuthCredential)
+    auth_config = Mock(
+        spec=AuthConfig,
+        auth_scheme=Mock(spec=AuthScheme),
+        raw_auth_credential=raw_credential,
+        credential_key="shared-key",
+    )
+    managers = [CredentialManager(auth_config), CredentialManager(auth_config)]
+    context = Mock(spec=CallbackContext)
+    stored_credential = None
+    exchange_count = 0
+
+    async def load_existing_credential(_):
+      return stored_credential
+
+    async def exchange_credential(credential):
+      nonlocal exchange_count
+      if credential is processed_credential:
+        return credential, False
+      exchange_count += 1
+      await asyncio.sleep(0)
+      return processed_credential, True
+
+    async def save_credential(_, credential):
+      nonlocal stored_credential
+      stored_credential = credential
+
+    for manager in managers:
+      manager._validate_credential = AsyncMock()
+      manager._is_credential_ready = Mock(return_value=False)
+      manager._load_existing_credential = AsyncMock(
+          side_effect=load_existing_credential
+      )
+      manager._load_from_auth_response = AsyncMock(return_value=raw_credential)
+      manager._exchange_credential = AsyncMock(side_effect=exchange_credential)
+      manager._refresh_credential = AsyncMock(
+          side_effect=lambda credential: (credential, False)
+      )
+      manager._save_credential = AsyncMock(side_effect=save_credential)
+
+    results = await asyncio.gather(
+        *(manager.get_auth_credential(context) for manager in managers)
+    )
+
+    assert results == [processed_credential, processed_credential]
+    assert exchange_count == 1
+
+  @pytest.mark.asyncio
+  async def test_get_auth_credential_keeps_different_keys_concurrent(self):
+    """Credential processing for different keys should not block."""
+    both_started = asyncio.Event()
+    active_count = 0
+    max_active_count = 0
+
+    async def exchange_credential(credential):
+      nonlocal active_count, max_active_count
+      active_count += 1
+      max_active_count = max(max_active_count, active_count)
+      if active_count == 2:
+        both_started.set()
+      await asyncio.wait_for(both_started.wait(), timeout=1)
+      active_count -= 1
+      return credential, False
+
+    managers = []
+    for credential_key in ("key-a", "key-b"):
+      raw_credential = Mock(spec=AuthCredential)
+      auth_config = Mock(
+          spec=AuthConfig,
+          auth_scheme=Mock(spec=AuthScheme),
+          raw_auth_credential=raw_credential,
+          credential_key=credential_key,
+      )
+      manager = CredentialManager(auth_config)
+      manager._validate_credential = AsyncMock()
+      manager._is_credential_ready = Mock(return_value=False)
+      manager._load_existing_credential = AsyncMock(return_value=None)
+      manager._load_from_auth_response = AsyncMock(return_value=raw_credential)
+      manager._exchange_credential = AsyncMock(side_effect=exchange_credential)
+      manager._refresh_credential = AsyncMock(
+          side_effect=lambda credential: (credential, False)
+      )
+      manager._save_credential = AsyncMock()
+      managers.append(manager)
+
+    await asyncio.gather(*(
+        manager.get_auth_credential(Mock(spec=CallbackContext))
+        for manager in managers
+    ))
+
+    assert max_active_count == 2
 
   @pytest.mark.asyncio
   async def test_load_existing_credential_already_exchanged(self):

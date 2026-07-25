@@ -14,10 +14,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 import logging
 import threading
 from typing import Optional
+from weakref import WeakKeyDictionary
+from weakref import WeakValueDictionary
 
 from fastapi.openapi.models import OAuth2
 
@@ -102,6 +105,27 @@ class CredentialManager:
 
   _auth_provider_registry = AuthProviderRegistry()
   _registry_lock = threading.Lock()
+  _credential_locks_lock = threading.Lock()
+  _credential_locks: WeakKeyDictionary[
+      asyncio.AbstractEventLoop, WeakValueDictionary[str, asyncio.Lock]
+  ] = WeakKeyDictionary()
+
+  def _get_credential_lock(self) -> asyncio.Lock:
+    """Returns the event-loop-local lock for this credential."""
+    loop = asyncio.get_running_loop()
+    credential_key = getattr(self._auth_config, "credential_key", None) or (
+        f"auth_config:{id(self._auth_config)}"
+    )
+    with self._credential_locks_lock:
+      locks_for_loop = self._credential_locks.get(loop)
+      if locks_for_loop is None:
+        locks_for_loop = WeakValueDictionary()
+        self._credential_locks[loop] = locks_for_loop
+      lock = locks_for_loop.get(credential_key)
+      if lock is None:
+        lock = asyncio.Lock()
+        locks_for_loop[credential_key] = lock
+      return lock
 
   @classmethod
   def register_auth_provider(cls, provider: BaseAuthProvider) -> None:
@@ -227,51 +251,58 @@ class CredentialManager:
         return None
       return provided_credential
 
-    # Step 1: Validate credential configuration
-    await self._validate_credential()
+    async with self._get_credential_lock():
+      # Step 1: Validate credential configuration
+      await self._validate_credential()
 
-    # Step 2: Check if credential is already ready (no processing needed)
-    raw_auth_credential = self._auth_config.raw_auth_credential
-    if self._is_credential_ready() and raw_auth_credential is not None:
-      # Return a copy to avoid leaking mutations across invocations/users when
-      # tools share a long-lived AuthConfig instance.
-      return raw_auth_credential.model_copy(deep=True)
+      # Step 2: Check if credential is already ready (no processing needed)
+      raw_auth_credential = self._auth_config.raw_auth_credential
+      if self._is_credential_ready() and raw_auth_credential is not None:
+        # Return a copy to avoid leaking mutations across invocations/users when
+        # tools share a long-lived AuthConfig instance.
+        return raw_auth_credential.model_copy(deep=True)
 
-    # Step 3: Try to load existing processed credential
-    credential = await self._load_existing_credential(context)
+      # Step 3: Try to load existing processed credential
+      # This is intentionally inside the lock so an invocation that waited can
+      # observe a credential saved by the previous holder.
+      credential = await self._load_existing_credential(context)
 
-    # Step 4: If no existing credential, load from auth response
-    # TODO instead of load from auth response, we can store auth response in
-    # credential service.
-    was_from_auth_response = False
-    if not credential:
-      credential = await self._load_from_auth_response(context)
-      was_from_auth_response = True
+      # Step 4: If no existing credential, load from auth response
+      # TODO instead of load from auth response, we can store auth response in
+      # credential service.
+      was_from_auth_response = False
+      if not credential:
+        credential = await self._load_from_auth_response(context)
+        was_from_auth_response = True
 
-    # Step 5: If still no credential available, check if client credentials
-    if not credential:
-      # For client credentials flow, use raw credentials directly
-      if self._is_client_credentials_flow():
-        # Exchange/refresh steps may mutate the credential object in-place, so
-        # do not operate on the shared tool config.
-        credential = self._auth_config.raw_auth_credential.model_copy(deep=True)
-      else:
-        # For authorization code flow, return None to trigger user authorization
-        return None
+      # Step 5: If still no credential available, check if client credentials
+      if not credential:
+        # For client credentials flow, use raw credentials directly
+        if self._is_client_credentials_flow():
+          # Exchange/refresh steps may mutate the credential object in-place,
+          # so do not operate on the shared tool config.
+          raw_credential = self._auth_config.raw_auth_credential
+          assert raw_credential is not None
+          credential = raw_credential.model_copy(deep=True)
+        else:
+          # For authorization code flow, return None to trigger user
+          # authorization.
+          return None
 
-    # Step 6: Exchange credential if needed (e.g., service account to access token)
-    credential, was_exchanged = await self._exchange_credential(credential)
+      # Step 6: Exchange credential if needed (e.g., service account to access
+      # token)
+      credential, was_exchanged = await self._exchange_credential(credential)
 
-    # Step 7: Refresh credential if expired
-    was_refreshed = False
-    if not was_exchanged:
-      credential, was_refreshed = await self._refresh_credential(credential)
+      # Step 7: Refresh credential if expired
+      was_refreshed = False
+      if not was_exchanged:
+        credential, was_refreshed = await self._refresh_credential(credential)
 
-    # Step 8: Save credential if it was modified
-    if was_from_auth_response or was_exchanged or was_refreshed:
-      await self._save_credential(context, credential)
+      # Step 8: Save credential if it was modified
+      if was_from_auth_response or was_exchanged or was_refreshed:
+        await self._save_credential(context, credential)
 
-    return credential
+      return credential
 
   async def _load_existing_credential(
       self, context: CallbackContext
