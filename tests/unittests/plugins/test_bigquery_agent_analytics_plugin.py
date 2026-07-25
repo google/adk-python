@@ -2226,7 +2226,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context=callback_context,
         error=error,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
     assert log_entry["error_message"] == "Agent crashed"
@@ -2267,7 +2267,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context=callback_context,
         error=error,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
 
     # The invocation root was NOT consumed by the agent-error pop.
     assert trace_manager.get_current_span_id() == inv_span_id
@@ -2297,7 +2297,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         invocation_context=invocation_context,
         error=error,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "INVOCATION_ERROR")
     assert log_entry["error_message"] == "Invocation failed"
@@ -2376,7 +2376,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           ),
           error=error,
       )
-      await asyncio.sleep(0.05)
+      await plugin.flush()
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
       )
@@ -5698,7 +5698,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "HITL_CONFIRMATION_REQUEST" in event_types
@@ -5715,7 +5715,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "HITL_CREDENTIAL_REQUEST" in event_types
@@ -5732,7 +5732,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "HITL_CONFIRMATION_REQUEST_COMPLETED" in event_types
@@ -5749,7 +5749,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     # No HITL events should be emitted for non-HITL function calls.
     # on_event_callback only logs STATE_DELTA and HITL events; a regular
     # function call produces neither.
@@ -7903,7 +7903,7 @@ class TestCacheMetadataLogging:
         callback_context=callback_context,
         llm_response=llm_response,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
 
@@ -7938,7 +7938,7 @@ class TestCacheMetadataLogging:
         callback_context=callback_context,
         llm_response=mock_response,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
 
@@ -7986,7 +7986,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "A2A_INTERACTION" in event_types
@@ -8025,7 +8025,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "A2A_INTERACTION" in event_types
@@ -8058,7 +8058,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     # No events logged — a2a:task_id alone is not a meaningful
     # interaction payload.
     assert mock_write_client.append_rows.call_count == 0
@@ -8078,7 +8078,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
 
@@ -8392,7 +8392,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
     assert len(agent_resp_rows) == 1
@@ -8420,7 +8420,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8441,7 +8441,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8461,7 +8461,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8488,7 +8488,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     types_emitted = [r["event_type"] for r in rows]
     assert "AGENT_RESPONSE" not in types_emitted
@@ -8513,7 +8513,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8539,7 +8539,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
     assert len(agent_resp_rows) == 1
@@ -8563,7 +8563,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8582,7 +8582,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8609,7 +8609,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
 
@@ -9913,7 +9913,7 @@ class TestHardening:
               },
           ),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
       )
@@ -10460,20 +10460,21 @@ class TestHardening:
 
     def run_in_fresh_loop():
       try:
-        with mock.patch.object(
-            plugin, "_lazy_setup", side_effect=fake_lazy_setup
-        ):
-          asyncio.run(plugin._ensure_started())
+        asyncio.run(plugin._ensure_started())
       except BaseException as e:  # noqa: BLE001 - collecting for assertion
         errors.append(e)
 
-    threads = [
-        platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
-    ]
-    for t in threads:
-      t.start()
-    for t in threads:
-      t.join(timeout=10)
+    # Patch from this thread only. patch.object swaps a single shared
+    # attribute and is not itself thread safe, so entering it from both
+    # threads raced on _lazy_setup instead of on the code under test.
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=fake_lazy_setup):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=10)
     assert not errors, f"cross-loop startup raised: {errors}"
 
   def test_concurrent_stale_cleanup_folds_once(
@@ -10593,24 +10594,27 @@ class TestHardening:
 
     def run_in_fresh_loop():
       try:
-        with mock.patch.object(plugin, "_lazy_setup", side_effect=slow_setup):
-          barrier.wait(timeout=5)
-          asyncio.run(plugin._ensure_started())
+        barrier.wait(timeout=5)
+        asyncio.run(plugin._ensure_started())
       except BaseException as e:  # noqa: BLE001
         errors.append(e)
 
-    threads = [
-        platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
-    ]
-    for t in threads:
-      t.start()
-    # Deterministic rendezvous: hold the owner inside setup until BOTH
-    # threads have entered _ensure_started.
-    entered.wait(timeout=5)
-    release.set()
-    for t in threads:
-      t.join(timeout=10)
-      assert not t.is_alive(), "thread failed to terminate"
+    # Patch from this thread only. patch.object swaps a single shared
+    # attribute and is not itself thread safe, so entering it from both
+    # threads raced on _lazy_setup instead of on the code under test.
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=slow_setup):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      # Deterministic rendezvous: hold the owner inside setup until BOTH
+      # threads have entered _ensure_started.
+      entered.wait(timeout=5)
+      release.set()
+      for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive(), "thread failed to terminate"
 
     assert not errors, f"cross-loop startup raised: {errors}"
     assert len(setup_calls) == 1, f"shared setup ran {len(setup_calls)} times"
@@ -10697,7 +10701,7 @@ class TestHardening:
               extra_attributes={"point": Point(1, 2)},
           ),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
       )
@@ -10786,7 +10790,7 @@ class TestHardening:
               extra_attributes={"deep": deep},
           ),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
       )
