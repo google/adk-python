@@ -1466,6 +1466,7 @@ class BatchProcessor:
       queue_max_size: int,
       shutdown_timeout: float,
       exactly_once_delivery: bool = False,
+      create_stream: Optional[Callable[[], Coroutine[Any, Any, str]]] = None,
   ):
     """Initializes the instance.
 
@@ -1480,6 +1481,8 @@ class BatchProcessor:
         shutdown_timeout: Max time to wait for shutdown.
         exactly_once_delivery: If ``True``, ``write_stream`` must be a
           dedicated ``COMMITTED`` stream; appends carry a tracked offset.
+        create_stream: Factory for a fresh ``COMMITTED`` stream, used to
+          rotate away from a desynced stream. ``None`` disables rotation.
     """
     self.write_client = write_client
     self.arrow_schema = arrow_schema
@@ -1489,10 +1492,12 @@ class BatchProcessor:
     self.retry_config = retry_config
     self.shutdown_timeout = shutdown_timeout
     self.exactly_once_delivery = exactly_once_delivery
-    # All three only used when exactly_once_delivery is True.
+    self.create_stream = create_stream
+    # All four only used when exactly_once_delivery is True.
     self._next_offset = 0
     self._offset_desynced = False
     self._stream_finalized = False
+    self._rotation_backoff_until = 0.0
 
     self._visual_builder = _is_visual_builder.get()
 
@@ -1557,7 +1562,7 @@ class BatchProcessor:
         schema mismatch).
       ``unexpected_error``: an unexpected exception aborted the write.
       ``offset_conflict``: (exactly-once only) offset tracking is desynced
-        from the server; all batches drop until the processor is recreated.
+        from the server; batches drop until stream rotation succeeds.
 
     Returns:
         A copy of the per-reason drop counters.
@@ -1722,10 +1727,36 @@ class BatchProcessor:
       self._offset_desynced = True
       logger.error(
           "Ambiguous write failure on stream %s (Data Loss): offset tracking"
-          " is no longer trustworthy; all further batches will be dropped"
-          " until the processor is recreated.",
+          " is no longer trustworthy; batches will be dropped until rotation"
+          " to a fresh stream succeeds.",
           self.write_stream,
       )
+
+  async def _rotate_stream(self) -> bool:
+    # Swaps a desynced stream for a fresh one so delivery can resume; backs
+    # off between attempts to avoid hammering CreateWriteStream.
+    if (
+        self.create_stream is None
+        or time.monotonic() < self._rotation_backoff_until
+    ):
+      return False
+    await self._finalize_stream()
+    try:
+      new_stream = await self.create_stream()
+    except Exception as e:
+      self._rotation_backoff_until = time.monotonic() + 30.0
+      logger.warning("Failed to rotate desynced write stream: %s", e)
+      return False
+    self.write_stream = new_stream
+    self._next_offset = 0
+    self._offset_desynced = False
+    self._stream_finalized = False
+    logger.warning(
+        "Rotated to fresh write stream %s after offset desync; resuming"
+        " exactly-once writes.",
+        new_stream,
+    )
+    return True
 
   async def _write_rows_with_retry(self, rows: list[dict[str, Any]]) -> None:
     """Writes a batch of rows to BigQuery with retry logic.
@@ -1734,16 +1765,17 @@ class BatchProcessor:
         rows: list of row dictionaries to write.
     """
     if self.exactly_once_delivery and self._offset_desynced:
-      # Desync was already logged at state entry; refuse writes until the
-      # processor is recreated.
-      self._dropped["offset_conflict"] += len(rows)
-      logger.debug(
-          "Dropping batch: offset tracking for stream %s is desynced. Total"
-          " rows dropped (offset conflict): %s",
-          self.write_stream,
-          self._dropped["offset_conflict"],
-      )
-      return
+      if not await self._rotate_stream():
+        # Desync was already logged at state entry; drop until a later
+        # rotation attempt succeeds.
+        self._dropped["offset_conflict"] += len(rows)
+        logger.debug(
+            "Dropping batch: offset tracking for stream %s is desynced."
+            " Total rows dropped (offset conflict): %s",
+            self.write_stream,
+            self._dropped["offset_conflict"],
+        )
+        return
 
     attempt = 0
     delay = self.retry_config.initial_delay
@@ -3268,6 +3300,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         queue_max_size=self.config.queue_max_size,
         shutdown_timeout=self.config.shutdown_timeout,
         exactly_once_delivery=self.config.exactly_once_delivery,
+        create_stream=(
+            functools.partial(self._create_committed_write_stream, write_client)
+            if self.config.exactly_once_delivery
+            else None
+        ),
     )
     await batch_processor.start()
 

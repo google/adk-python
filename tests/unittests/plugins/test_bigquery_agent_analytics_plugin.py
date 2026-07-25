@@ -8636,6 +8636,7 @@ def _make_batch_processor(
     exactly_once_delivery=False,
     queue_max_size=10,
     retry_config=None,
+    create_stream=None,
 ):
   """Builds a BatchProcessor with a mock write client (writer not started)."""
   return bigquery_agent_analytics_plugin.BatchProcessor(
@@ -8650,6 +8651,7 @@ def _make_batch_processor(
       queue_max_size=queue_max_size,
       shutdown_timeout=10.0,
       exactly_once_delivery=exactly_once_delivery,
+      create_stream=create_stream,
   )
 
 
@@ -8771,12 +8773,15 @@ COMMITTED_STREAM_NAME = f"{TABLE_PATH}/streams/s1"
 class TestExactlyOnceDelivery:
   """Tests offset-tracked writes on an application-created COMMITTED stream."""
 
-  def _make_processor(self, arrow_schema, *, retry_config=None):
+  def _make_processor(
+      self, arrow_schema, *, retry_config=None, create_stream=None
+  ):
     return _make_batch_processor(
         arrow_schema,
         write_stream=COMMITTED_STREAM_NAME,
         exactly_once_delivery=True,
         retry_config=retry_config,
+        create_stream=create_stream,
     )
 
   @pytest.mark.asyncio
@@ -9004,6 +9009,66 @@ class TestExactlyOnceDelivery:
     assert bp._offset_desynced is True
     assert bp.get_drop_stats()["unexpected_error"] == 1
 
+  @pytest.mark.asyncio
+  async def test_rotation_recovers_after_desync(self, dummy_arrow_schema):
+    new_stream = f"{TABLE_PATH}/streams/s2"
+    bp = self._make_processor(
+        dummy_arrow_schema,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(
+            max_retries=0, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+        ),
+        create_stream=mock.AsyncMock(return_value=new_stream),
+    )
+    _stub_arrow_prep(bp)
+    bp.write_client.finalize_write_stream = mock.AsyncMock()
+    sent = []
+
+    async def fake_append_rows(requests, **kwargs):
+      del kwargs
+      reqs = [r async for r in requests]
+      sent.append((reqs[0].write_stream, reqs[0].offset))
+      if len(sent) == 1:
+        raise asyncio.TimeoutError("ack lost")
+      return _append_response()
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    await bp._write_rows_with_retry([{"a": 1}])
+    assert bp._offset_desynced is True
+
+    # The next batch rotates: old stream finalized, write resumes at offset 0.
+    await bp._write_rows_with_retry([{"a": 2}, {"a": 3}])
+
+    bp.write_client.finalize_write_stream.assert_awaited_once_with(
+        name=COMMITTED_STREAM_NAME
+    )
+    assert bp.write_stream == new_stream
+    assert sent == [(COMMITTED_STREAM_NAME, 0), (new_stream, 0)]
+    assert bp._offset_desynced is False
+    assert bp._next_offset == 2
+
+  @pytest.mark.asyncio
+  async def test_failed_rotation_drops_batch_and_backs_off(
+      self, dummy_arrow_schema
+  ):
+    create_stream = mock.AsyncMock(side_effect=RuntimeError("quota"))
+    bp = self._make_processor(dummy_arrow_schema, create_stream=create_stream)
+    _stub_arrow_prep(bp)
+    bp.write_client.finalize_write_stream = mock.AsyncMock()
+    bp._offset_desynced = True
+
+    await bp._write_rows_with_retry([{"a": 1}])
+
+    assert create_stream.await_count == 1
+    assert bp.get_drop_stats()["offset_conflict"] == 1
+    assert bp._offset_desynced is True
+
+    # Within the backoff window the next batch drops with no new attempt.
+    await bp._write_rows_with_retry([{"a": 2}])
+
+    assert create_stream.await_count == 1
+    assert bp.get_drop_stats()["offset_conflict"] == 2
+
   def test_confirm_delivered_is_assignment_not_accumulation(
       self, dummy_arrow_schema
   ):
@@ -9116,6 +9181,8 @@ class TestExactlyOnceDelivery:
           == bigquery_agent_analytics_plugin.bq_storage_types.WriteStream.Type.COMMITTED
       )
       assert plugin.write_stream == COMMITTED_STREAM_NAME
+      state = next(iter(plugin._loop_state_by_loop.values()))
+      assert state.batch_processor.create_stream is not None
     finally:
       await plugin.shutdown()
     mock_write_client.finalize_write_stream.assert_called_once_with(
