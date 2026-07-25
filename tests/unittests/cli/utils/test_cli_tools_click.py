@@ -61,10 +61,17 @@ def mock_load_eval_set_from_file():
 
 @pytest.fixture
 def mock_get_root_agent():
+  """Patches the agent resolver used by the eval CLI.
+
+  `cli_eval` resolves agents via `get_app_or_root_agent` (which returns
+  `(app, root_agent)`); the eval-set tests don't exercise the App path,
+  so we yield `(None, root_agent)`.
+  """
   with mock.patch(
-      "google.adk.cli.cli_eval.get_root_agent", new_callable=mock.AsyncMock
+      "google.adk.cli.cli_eval.get_app_or_root_agent",
+      new_callable=mock.AsyncMock,
   ) as mock_func:
-    mock_func.return_value = root_agent
+    mock_func.return_value = (None, root_agent)
     yield mock_func
 
 

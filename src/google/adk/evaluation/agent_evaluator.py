@@ -34,6 +34,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
+from ..apps.app import App
 from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .eval_case import get_all_tool_calls
@@ -147,7 +148,7 @@ class AgentEvaluator:
     if eval_config is None:
       raise ValueError("`eval_config` is required.")
 
-    agent_for_eval = await AgentEvaluator._get_agent_for_eval(
+    agent_for_eval, app = await AgentEvaluator._get_agent_for_eval(
         module_name=agent_module, agent_name=agent_name
     )
     eval_metrics = get_eval_metrics_from_config(eval_config)
@@ -163,6 +164,7 @@ class AgentEvaluator:
         eval_metrics=eval_metrics,
         num_runs=num_runs,
         user_simulator_provider=user_simulator_provider,
+        app=app,
     )
 
     # Step 2: Post-process the results!
@@ -496,7 +498,16 @@ class AgentEvaluator:
   @staticmethod
   async def _get_agent_for_eval(
       module_name: str, agent_name: Optional[str] = None
-  ) -> BaseAgent:
+  ) -> tuple[BaseAgent, Optional[App]]:
+    """Returns the (agent_for_eval, app) pair for the given module.
+
+    If the module exposes an `App` instance via `agent.app`, that App is
+    returned alongside the agent to evaluate, so `app.plugins`, context-cache,
+    and resumability configs participate in the eval run. Otherwise `app` is
+    None and only the bare agent is returned. When `agent_name` is provided,
+    the returned agent is the corresponding sub-agent, but the App (if any) is
+    still surfaced so its application-wide configuration is honored.
+    """
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
 
@@ -522,12 +533,16 @@ class AgentEvaluator:
           " get_agent_async method."
       )
 
+    app = getattr(agent_module_with_agent, "app", None)
+    if not isinstance(app, App):
+      app = None
+
     agent_for_eval = root_agent
     if agent_name:
       agent_for_eval = root_agent.find_agent(agent_name)
       assert agent_for_eval, f"Sub-Agent `{agent_name}` not found."
 
-    return agent_for_eval
+    return agent_for_eval, app
 
   @staticmethod
   def _get_eval_sets_manager(
@@ -554,6 +569,7 @@ class AgentEvaluator:
       eval_metrics: list[EvalMetric],
       num_runs: int,
       user_simulator_provider: UserSimulatorProvider,
+      app: Optional[App] = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -578,6 +594,7 @@ class AgentEvaluator:
             app_name=app_name, eval_set=eval_set
         ),
         user_simulator_provider=user_simulator_provider,
+        app=app,
     )
 
     inference_requests = [

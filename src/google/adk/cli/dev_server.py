@@ -48,6 +48,7 @@ from typing_extensions import deprecated
 import yaml
 
 from . import agent_graph
+from ..apps.app import App
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -1068,6 +1069,7 @@ class DevServer(ApiServer):
 
         agent_or_app = self.agent_loader.load_agent(app_name)
         root_agent = self._get_root_agent(agent_or_app)
+        app = agent_or_app if isinstance(agent_or_app, App) else None
 
         eval_case_results = []
 
@@ -1077,6 +1079,7 @@ class DevServer(ApiServer):
             eval_set_results_manager=self.eval_set_results_manager,
             session_service=self.session_service,
             artifact_service=self.artifact_service,
+            app=app,
         )
         inference_request = InferenceRequest(
             app_name=app_name,
