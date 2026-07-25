@@ -42,11 +42,16 @@ logger = logging.getLogger("google_adk." + __name__)
 
 def is_single_agent_directory(path: Path | str) -> bool:
   """Returns True if the directory contains a single agent configuration or file."""
-  p = Path(path).resolve()
-  return (
-      p.joinpath("agent.py").is_file()
-      or p.joinpath("root_agent.yaml").is_file()
-  )
+  try:
+    p = Path(path).resolve()
+    if not p.is_dir():
+      return False
+    return (
+        p.joinpath("agent.py").is_file()
+        or p.joinpath("root_agent.yaml").is_file()
+    )
+  except Exception:
+    return False
 
 
 # Special agents directory for agents with names starting with double underscore

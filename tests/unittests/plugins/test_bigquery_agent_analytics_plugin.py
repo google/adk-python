@@ -10752,20 +10752,21 @@ class TestHardening:
 
     def run_in_fresh_loop():
       try:
-        with mock.patch.object(
-            plugin, "_lazy_setup", side_effect=fake_lazy_setup
-        ):
-          asyncio.run(plugin._ensure_started())
+        asyncio.run(plugin._ensure_started())
       except BaseException as e:  # noqa: BLE001 - collecting for assertion
         errors.append(e)
 
-    threads = [
-        platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
-    ]
-    for t in threads:
-      t.start()
-    for t in threads:
-      t.join(timeout=10)
+    # Patch from this thread only. patch.object swaps a single shared
+    # attribute and is not itself thread safe, so entering it from both
+    # threads raced on _lazy_setup instead of on the code under test.
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=fake_lazy_setup):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=10)
     assert not errors, f"cross-loop startup raised: {errors}"
 
   def test_concurrent_stale_cleanup_folds_once(
@@ -10885,24 +10886,27 @@ class TestHardening:
 
     def run_in_fresh_loop():
       try:
-        with mock.patch.object(plugin, "_lazy_setup", side_effect=slow_setup):
-          barrier.wait(timeout=5)
-          asyncio.run(plugin._ensure_started())
+        barrier.wait(timeout=5)
+        asyncio.run(plugin._ensure_started())
       except BaseException as e:  # noqa: BLE001
         errors.append(e)
 
-    threads = [
-        platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
-    ]
-    for t in threads:
-      t.start()
-    # Deterministic rendezvous: hold the owner inside setup until BOTH
-    # threads have entered _ensure_started.
-    entered.wait(timeout=5)
-    release.set()
-    for t in threads:
-      t.join(timeout=10)
-      assert not t.is_alive(), "thread failed to terminate"
+    # Patch from this thread only. patch.object swaps a single shared
+    # attribute and is not itself thread safe, so entering it from both
+    # threads raced on _lazy_setup instead of on the code under test.
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=slow_setup):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      # Deterministic rendezvous: hold the owner inside setup until BOTH
+      # threads have entered _ensure_started.
+      entered.wait(timeout=5)
+      release.set()
+      for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive(), "thread failed to terminate"
 
     assert not errors, f"cross-loop startup raised: {errors}"
     assert len(setup_calls) == 1, f"shared setup ran {len(setup_calls)} times"
