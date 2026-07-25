@@ -1,0 +1,78 @@
+{
+  "eval_set_id": "multi_session",
+  "name": "Multi-session eval set",
+  "description": "Multiple, multi-turn sessions — the '.evalset.json' integration convention.",
+  "eval_cases": [
+    {
+      "eval_id": "list_then_turn_off",
+      "conversation": [
+        {
+          "invocation_id": "ms-1a",
+          "user_content": {
+            "parts": [{"text": "Which devices are on?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "The Living Room device (device_1) is on."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [{"name": "list_devices", "args": {"status": "ON"}}],
+            "intermediate_responses": []
+          }
+        },
+        {
+          "invocation_id": "ms-1b",
+          "user_content": {
+            "parts": [{"text": "Turn that one off."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "I have turned off the Living Room device (device_1)."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "set_device_info",
+               "args": {"device_id": "device_1", "status": "OFF"}}
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "set_bedroom_temperature",
+      "conversation": [
+        {
+          "invocation_id": "ms-2a",
+          "user_content": {
+            "parts": [{"text": "Set the Bedroom to 21 degrees."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "The Bedroom temperature is now set to 21 degrees Celsius."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "set_temperature",
+               "args": {"location": "Bedroom", "temperature": 21}}
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    }
+  ]
+}

@@ -81,6 +81,13 @@ def _build_basic_request(
 
   if run_config_http_options:
     _merge_run_config_http_options(llm_request.config, run_config_http_options)
+
+  # Merge per-invocation user labels from RunConfig into the request config
+  # (e.g. for billing, telemetry, and revenue attribution across services).
+  if invocation_context.run_config and invocation_context.run_config.labels:
+    if llm_request.config.labels is None:
+      llm_request.config.labels = {}
+    llm_request.config.labels.update(invocation_context.run_config.labels)
   # Only set output_schema if no tools are specified. as of now, model don't
   # support output_schema and tools together. we have a workaround to support
   # both output_schema and tools at the same time. see

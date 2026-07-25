@@ -1,0 +1,34 @@
+{
+  "eval_set_id": "single_turn",
+  "name": "Single-turn test file",
+  "description": "One simple session — the '.test.json' unit-test convention.",
+  "eval_cases": [
+    {
+      "eval_id": "kitchen_temperature",
+      "conversation": [
+        {
+          "invocation_id": "tf-1",
+          "user_content": {
+            "parts": [{"text": "What's the temperature in the Kitchen?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "The temperature in the Kitchen is 24 degrees Celsius."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "get_temperature", "args": {"location": "Kitchen"}}
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    }
+  ]
+}

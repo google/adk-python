@@ -32,6 +32,7 @@ from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
 from sqlalchemy import delete
@@ -724,6 +725,51 @@ async def test_append_event_complete(session_service):
       )
       == session
   )
+
+
+# pylint: disable=redefined-outer-name
+@pytest.mark.asyncio
+async def test_append_event_with_requested_tool_confirmations(session_service):
+  """Tests that EventActions.requested_tool_confirmations is preserved in session service."""
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      actions=EventActions(
+          requested_tool_confirmations={
+              'tool_call_1': ToolConfirmation(
+                  hint='dynamic hint',
+                  confirmed=False,
+                  payload={
+                      'collection_name': 'photos',
+                      'resource_id': 'album_1',
+                  },
+              )
+          }
+      ),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  refreshed_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert refreshed_session is not None
+  assert len(refreshed_session.events) == 1
+  retrieved_event = refreshed_session.events[0]
+  assert retrieved_event.actions is not None
+  assert 'tool_call_1' in retrieved_event.actions.requested_tool_confirmations
+  tc = retrieved_event.actions.requested_tool_confirmations['tool_call_1']
+  assert tc.hint == 'dynamic hint'
+  assert tc.payload == {
+      'collection_name': 'photos',
+      'resource_id': 'album_1',
+  }
+  assert not tc.confirmed
 
 
 @pytest.mark.asyncio

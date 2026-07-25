@@ -31,6 +31,7 @@ from google.adk.events import event as event_lib
 from google.adk.events import event_actions as event_actions_lib
 from google.adk.models import llm_request as llm_request_lib
 from google.adk.models import llm_response as llm_response_lib
+from google.adk.platform import thread as platform_thread
 from google.adk.plugins import bigquery_agent_analytics_plugin
 from google.adk.plugins import plugin_manager as plugin_manager_lib
 from google.adk.sessions import base_session_service as base_session_service_lib
@@ -595,7 +596,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.before_model_callback(
           callback_context=callback_context, llm_request=llm_request
       )
-      await asyncio.sleep(0.01)  # Allow background task to run
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       mock_write_client.append_rows.reset_mock()
       user_message = types.Content(parts=[types.Part(text="What is up?")])
@@ -603,7 +604,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)  # Allow background task to run
+      await plugin.flush()
       mock_write_client.append_rows.assert_not_called()
 
   @pytest.mark.asyncio
@@ -632,11 +633,11 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_not_called()
       bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
       await plugin.before_run_callback(invocation_context=invocation_context)
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
 
   @pytest.mark.asyncio
@@ -679,7 +680,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.before_model_callback(
           callback_context=callback_context, llm_request=llm_request
       )
-      await asyncio.sleep(0.01)  # Allow background task to run
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       metadata = mock_write_client.append_rows.call_args.kwargs.get("metadata")
       assert metadata is not None, "append_rows must receive routing metadata"
@@ -719,7 +720,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -758,7 +759,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -803,7 +804,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -831,7 +832,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.before_model_callback(
           callback_context=callback_context, llm_request=llm_request
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -884,7 +885,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_args={"param": "A" * 100},
           tool_context=tool_context,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -930,7 +931,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_args={"param": "A" * 100},
           tool_context=tool_context,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -979,7 +980,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_context=tool_context,
           result={"res": "A" * 100},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -1028,7 +1029,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_context=tool_context,
           result={"res": "A" * 100},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -1039,6 +1040,98 @@ class TestBigQueryAgentAnalyticsPlugin:
       content_dict = json.loads(log_entry["content"])
       assert content_dict["tool"] == "MyTool"
       assert content_dict["result"]["res"] == "A" * 100
+
+  @pytest.mark.asyncio
+  async def test_after_tool_callback_logs_agent_response_for_final_tool(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """A configured final-response tool also logs AGENT_RESPONSE from its args."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        final_response_tool_names=frozenset({"submit_final_response"})
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      mock_tool = mock.create_autospec(
+          base_tool_lib.BaseTool, instance=True, spec_set=True
+      )
+      type(mock_tool).name = mock.PropertyMock(
+          return_value="submit_final_response"
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args={"answer": "The table has 241 rows."},
+          tool_context=tool_context,
+          result={"status": "SUCCESS"},
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+      assert "TOOL_COMPLETED" in event_types
+      assert event_types.count("AGENT_RESPONSE") == 1
+      agent_resp = next(r for r in rows if r["event_type"] == "AGENT_RESPONSE")
+      content_dict = json.loads(agent_resp["content"])
+      assert content_dict["response"] == {"answer": "The table has 241 rows."}
+      attributes = json.loads(agent_resp["attributes"])
+      assert attributes["source_tool"] == "submit_final_response"
+
+  @pytest.mark.asyncio
+  async def test_after_tool_callback_no_agent_response_by_default(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """With the default empty set, a tool never emits AGENT_RESPONSE."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      mock_tool = mock.create_autospec(
+          base_tool_lib.BaseTool, instance=True, spec_set=True
+      )
+      type(mock_tool).name = mock.PropertyMock(
+          return_value="submit_final_response"
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args={"answer": "hi"},
+          tool_context=tool_context,
+          result={"status": "SUCCESS"},
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+      assert "AGENT_RESPONSE" not in event_types
 
   @pytest.mark.asyncio
   async def test_max_content_length_tool_error(
@@ -1072,7 +1165,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_context=tool_context,
           error=ValueError("Oops"),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -1099,7 +1192,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.on_user_message_callback(
         invocation_context=invocation_context, user_message=user_message
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1150,7 +1243,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -1200,7 +1293,7 @@ class TestBigQueryAgentAnalyticsPlugin:
             invocation_context=invocation_context,
             user_message=types.Content(parts=[types.Part(text="Test")]),
         )
-        await asyncio.sleep(0.01)
+        await plugin_with_fail.flush()
         mock_logger.error.assert_called_with(
             "Failed to initialize BigQuery Plugin (attempt %d, next"
             " retry in %.0fs): %s",
@@ -1234,7 +1327,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           invocation_context=invocation_context,
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       # The logger is called multiple times, check that one of them is the error message
       # Or just check that it was called with the expected message at some point
       mock_logger.error.assert_any_call(
@@ -1267,7 +1360,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           invocation_context=invocation_context,
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       mock_logger.warning.assert_any_call(
           "BigQuery Write API returned error code %s: %s",
           10,
@@ -1301,7 +1394,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           invocation_context=invocation_context,
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       mock_logger.error.assert_called_with(
           "BigQuery Schema Mismatch: %s. This usually means the"
           " table schema does not match the expected schema.",
@@ -1332,7 +1425,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_run_callback(
         invocation_context=invocation_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1351,7 +1444,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.after_run_callback(
         invocation_context=invocation_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1371,7 +1464,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_agent_callback(
         agent=mock_agent, callback_context=callback_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1391,7 +1484,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.after_agent_callback(
         agent=mock_agent, callback_context=callback_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1420,7 +1513,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1450,7 +1543,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1525,7 +1618,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1653,7 +1746,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1702,7 +1795,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1730,7 +1823,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         llm_response=llm_response,
         # latency_ms is now calculated internally via TraceManager
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1768,7 +1861,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context=callback_context,
         llm_response=llm_response,
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1792,7 +1885,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_tool_callback(
         tool=mock_tool, tool_args={"param": "value"}, tool_context=tool_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1817,7 +1910,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         tool_context=tool_context,
         result={"res": "success"},
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1847,7 +1940,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         tool_context=tool_context,
         result={"res": "success"},
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
 
     # Only TOOL_COMPLETED should be logged; STATE_DELTA is handled
     # by on_event_callback now.
@@ -1877,7 +1970,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     # Must return None to not modify the event
     assert result is None
 
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1931,7 +2024,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context,
         raw_content="test content",
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1963,7 +2056,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context,
         raw_content="test content",
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -2024,7 +2117,7 @@ class TestBigQueryAgentAnalyticsPlugin:
             source_event=event
         ),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -2048,7 +2141,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context,
         raw_content="test content",
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -2073,7 +2166,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.on_model_error_callback(
         callback_context=callback_context, llm_request=llm_request, error=error
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -2099,7 +2192,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         tool_context=tool_context,
         error=error,
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -2133,7 +2226,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context=callback_context,
         error=error,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
     assert log_entry["error_message"] == "Agent crashed"
@@ -2174,7 +2267,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context=callback_context,
         error=error,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
 
     # The invocation root was NOT consumed by the agent-error pop.
     assert trace_manager.get_current_span_id() == inv_span_id
@@ -2204,7 +2297,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         invocation_context=invocation_context,
         error=error,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "INVOCATION_ERROR")
     assert log_entry["error_message"] == "Invocation failed"
@@ -2283,7 +2376,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           ),
           error=error,
       )
-      await asyncio.sleep(0.05)
+      await plugin.flush()
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
       )
@@ -2357,18 +2450,22 @@ class TestBigQueryAgentAnalyticsPlugin:
           # that if it were called in a thread, it would work.
           # For this test, we just ensure the plugin is accessible and started.
           loop.run_until_complete(p._ensure_started())
+          return p._started, bool(p._loop_state_by_loop)
         finally:
-          loop.close()
+          try:
+            loop.run_until_complete(p.shutdown())
+          finally:
+            loop.close()
 
       # Run in a separate thread to simulate ThreadPoolExecutor-0_0
       from concurrent.futures import ThreadPoolExecutor
 
       with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_run_in_thread, plugin)
-        future.result()  # Should not raise "no current event loop"
-      assert plugin._started
-      # Verify loop states are populated
-      assert plugin._loop_state_by_loop
+        started, had_loop_state = future.result()
+      assert started
+      assert had_loop_state
+      assert not plugin._loop_state_by_loop
 
   @pytest.mark.asyncio
   async def test_multimodal_offloading(
@@ -2611,7 +2708,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     # Capture the actual LLM Span ID (pushed by before_model_callback)
     llm_span_id = (
         bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
@@ -2637,7 +2734,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.after_model_callback(
         callback_context=callback_context, llm_response=llm_response
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry_resp = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -2700,7 +2797,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_context,
           raw_content=content,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -3238,7 +3335,7 @@ class TestSafeCallbackDecorator:
       await bq_plugin_inst.before_run_callback(
           invocation_context=invocation_context,
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       mock_write_client.append_rows.assert_called_once()
 
   @pytest.mark.asyncio
@@ -3363,7 +3460,7 @@ class TestParserReuse:
         invocation_context=invocation_context,
         user_message=types.Content(parts=[types.Part(text="Hello")]),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
 
     # Parser should be the same instance, not a new one
     assert bq_plugin_inst.parser is parser_after_init
@@ -3391,7 +3488,7 @@ class TestParserReuse:
         invocation_context=invocation_context,
         user_message=types.Content(parts=[types.Part(text="Test")]),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
 
     # The shared parser's constructor-time fields are untouched; identity
     # travelled through the parse() call arguments instead.
@@ -3418,7 +3515,7 @@ class TestParserReuse:
           invocation_context=invocation_context,
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       # Constructor should NOT have been called during _log_event
       mock_parser_cls.assert_not_called()
 
@@ -3819,7 +3916,7 @@ class TestDuplicateLabels:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -3846,7 +3943,7 @@ class TestDuplicateLabels:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -3870,7 +3967,7 @@ class TestDuplicateLabels:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -4445,7 +4542,7 @@ class TestMultiSubagentToolLogging:
           tool_args={"project_id": "my-project"},
           tool_context=ctx_a,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # --- Subagent B: image_describer calls describe_this_image ---
       inv_ctx_b = self._make_invocation_context("image_describer", session)
@@ -4458,7 +4555,7 @@ class TestMultiSubagentToolLogging:
           tool_args={"image_uri": "gs://bucket/image.jpg"},
           tool_context=ctx_b,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4512,14 +4609,14 @@ class TestMultiSubagentToolLogging:
           tool_args={"project_id": "proj"},
           tool_context=ctx_1,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_1,
           tool_args={"project_id": "proj"},
           tool_context=ctx_1,
           result={"datasets": ["ds1", "ds2"]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # --- Turn 2: query_analyst calls execute_sql ---
       inv_ctx_2 = self._make_invocation_context(
@@ -4534,14 +4631,14 @@ class TestMultiSubagentToolLogging:
           tool_args={"sql": "SELECT * FROM t"},
           tool_context=ctx_2,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_2,
           tool_args={"sql": "SELECT * FROM t"},
           tool_context=ctx_2,
           result={"rows": [{"col": "val"}]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4606,7 +4703,7 @@ class TestMultiSubagentToolLogging:
       await plugin.before_agent_callback(
           agent=mock_agent, callback_context=cb_ctx
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 2. LLM_REQUEST (agent decides to call a tool)
       llm_req = llm_request_lib.LlmRequest(
@@ -4618,7 +4715,7 @@ class TestMultiSubagentToolLogging:
       await plugin.before_model_callback(
           callback_context=cb_ctx, llm_request=llm_req
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 3. LLM_RESPONSE (function call)
       llm_resp = llm_response_lib.LlmResponse(
@@ -4636,7 +4733,7 @@ class TestMultiSubagentToolLogging:
       await plugin.after_model_callback(
           callback_context=cb_ctx, llm_response=llm_resp
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 4. TOOL_STARTING
       bigquery_agent_analytics_plugin.TraceManager.push_span(tool_ctx, "tool")
@@ -4645,7 +4742,7 @@ class TestMultiSubagentToolLogging:
           tool_args={"table": "events"},
           tool_context=tool_ctx,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 5. TOOL_COMPLETED
       await plugin.after_tool_callback(
@@ -4654,13 +4751,13 @@ class TestMultiSubagentToolLogging:
           tool_context=tool_ctx,
           result={"schema": [{"name": "id", "type": "INT64"}]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 6. AGENT_COMPLETED
       await plugin.after_agent_callback(
           agent=mock_agent, callback_context=cb_ctx
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4725,7 +4822,7 @@ class TestMultiSubagentToolLogging:
           tool_context=tool_ctx,
           error=RuntimeError("Table not found"),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4774,14 +4871,14 @@ class TestMultiSubagentToolLogging:
           tool_args={"dataset": "analytics"},
           tool_context=ctx_1,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_1,
           tool_args={"dataset": "analytics"},
           tool_context=ctx_1,
           result={"tables": ["events", "metrics"]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Subagent 2: image_describer — full tool cycle
       inv_ctx_2 = self._make_invocation_context(
@@ -4795,14 +4892,14 @@ class TestMultiSubagentToolLogging:
           tool_args={"image_uri": "https://example.com/img.jpg"},
           tool_context=ctx_2,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_2,
           tool_args={"image_uri": "https://example.com/img.jpg"},
           tool_context=ctx_2,
           result={"description": "A photo of scones"},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4876,7 +4973,7 @@ class TestMultiSubagentToolLogging:
           agent=inv_ctx_t1_orch.agent,
           callback_context=cb_ctx_t1_orch,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Orchestrator delegates to schema_explorer
       inv_ctx_t1_sub = self._make_invocation_context(
@@ -4891,7 +4988,7 @@ class TestMultiSubagentToolLogging:
           agent=inv_ctx_t1_sub.agent,
           callback_context=cb_ctx_t1_sub,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # schema_explorer calls tool
       tool_1 = self._make_tool("list_dataset_ids")
@@ -4903,28 +5000,28 @@ class TestMultiSubagentToolLogging:
           tool_args={"project_id": "proj"},
           tool_context=tool_ctx_t1,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_1,
           tool_args={"project_id": "proj"},
           tool_context=tool_ctx_t1,
           result={"datasets": ["ds1"]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # schema_explorer done
       await plugin.after_agent_callback(
           agent=inv_ctx_t1_sub.agent,
           callback_context=cb_ctx_t1_sub,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Orchestrator done
       await plugin.after_agent_callback(
           agent=inv_ctx_t1_orch.agent,
           callback_context=cb_ctx_t1_orch,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # ===== Turn 2: image_describer =====
       inv_ctx_t2_orch = self._make_invocation_context(
@@ -4936,7 +5033,7 @@ class TestMultiSubagentToolLogging:
           agent=inv_ctx_t2_orch.agent,
           callback_context=cb_ctx_t2_orch,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Orchestrator delegates to image_describer
       inv_ctx_t2_sub = self._make_invocation_context(
@@ -4951,7 +5048,7 @@ class TestMultiSubagentToolLogging:
           agent=inv_ctx_t2_sub.agent,
           callback_context=cb_ctx_t2_sub,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # image_describer calls tool
       tool_2 = self._make_tool("describe_this_image")
@@ -4963,28 +5060,28 @@ class TestMultiSubagentToolLogging:
           tool_args={"image_uri": "gs://b/img.jpg"},
           tool_context=tool_ctx_t2,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_2,
           tool_args={"image_uri": "gs://b/img.jpg"},
           tool_context=tool_ctx_t2,
           result={"desc": "Scones on a table"},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # image_describer done
       await plugin.after_agent_callback(
           agent=inv_ctx_t2_sub.agent,
           callback_context=cb_ctx_t2_sub,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Orchestrator done
       await plugin.after_agent_callback(
           agent=inv_ctx_t2_orch.agent,
           callback_context=cb_ctx_t2_orch,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -5516,7 +5613,7 @@ class TestToolProvenance:
           tool_context=tool_ctx,
           error=RuntimeError("connection refused"),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -5601,7 +5698,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "HITL_CONFIRMATION_REQUEST" in event_types
@@ -5618,7 +5715,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "HITL_CREDENTIAL_REQUEST" in event_types
@@ -5635,7 +5732,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "HITL_CONFIRMATION_REQUEST_COMPLETED" in event_types
@@ -5652,7 +5749,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     # No HITL events should be emitted for non-HITL function calls.
     # on_event_callback only logs STATE_DELTA and HITL events; a regular
     # function call produces neither.
@@ -6694,7 +6791,7 @@ class TestTraceIdContinuity:
       await bq_plugin_inst.after_run_callback(
           invocation_context=invocation_context
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       # Collect all emitted rows.
       rows = await _get_captured_rows_async(
@@ -6861,7 +6958,7 @@ class TestSpanIdConsistency:
             invocation_context=invocation_context
         )
 
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -6927,7 +7024,7 @@ class TestSpanIdConsistency:
           invocation_context=invocation_context
       )
 
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -6997,7 +7094,7 @@ class TestSpanIdConsistency:
       await bq_plugin_inst.after_run_callback(
           invocation_context=invocation_context
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -7314,7 +7411,7 @@ class TestStackLeakSafety:
       await bq_plugin_inst.after_run_callback(
           invocation_context=invocation_context
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -7402,7 +7499,7 @@ class TestRootAgentNameAcrossInvocations:
           agent=inv1.agent, callback_context=cb1
       )
       await bq_plugin_inst.after_run_callback(invocation_context=inv1)
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows_inv1 = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -7421,7 +7518,7 @@ class TestRootAgentNameAcrossInvocations:
           agent=inv2.agent, callback_context=cb2
       )
       await bq_plugin_inst.after_run_callback(invocation_context=inv2)
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows_inv2 = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -7806,7 +7903,7 @@ class TestCacheMetadataLogging:
         callback_context=callback_context,
         llm_response=llm_response,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
 
@@ -7841,7 +7938,7 @@ class TestCacheMetadataLogging:
         callback_context=callback_context,
         llm_response=mock_response,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
 
@@ -7889,7 +7986,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "A2A_INTERACTION" in event_types
@@ -7928,7 +8025,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "A2A_INTERACTION" in event_types
@@ -7961,7 +8058,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     # No events logged — a2a:task_id alone is not a meaningful
     # interaction payload.
     assert mock_write_client.append_rows.call_count == 0
@@ -7981,7 +8078,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
 
@@ -8295,7 +8392,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
     assert len(agent_resp_rows) == 1
@@ -8323,7 +8420,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8344,7 +8441,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8364,7 +8461,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8391,7 +8488,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     types_emitted = [r["event_type"] for r in rows]
     assert "AGENT_RESPONSE" not in types_emitted
@@ -8416,7 +8513,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8442,7 +8539,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
     assert len(agent_resp_rows) == 1
@@ -8466,7 +8563,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8485,7 +8582,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8512,7 +8609,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
 
@@ -8541,6 +8638,19 @@ class TestDropStats:
     fake_batch = mock.MagicMock()
     fake_batch.serialize.return_value.to_pybytes.return_value = b"batch"
     bp._prepare_arrow_batch = mock.MagicMock(return_value=fake_batch)
+
+  @pytest.mark.asyncio
+  async def test_flush_waits_for_dequeued_write(self, dummy_arrow_schema):
+    bp = self._make_processor(dummy_arrow_schema)
+    await bp.append({"event": 0})
+    await bp._queue.get()
+
+    flush_task = asyncio.create_task(bp.flush())
+    await asyncio.sleep(0)
+
+    assert not flush_task.done()
+    bp._queue.task_done()
+    await flush_task
 
   @pytest.mark.asyncio
   async def test_queue_full_drops_are_counted(self, dummy_arrow_schema):
@@ -8706,7 +8816,7 @@ class TestAdkEnvelope:
         invocation_context=invocation_context,
         user_message=types.Content(role="user", parts=[types.Part(text="hi")]),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -8744,7 +8854,7 @@ class TestAdkEnvelope:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -8789,7 +8899,7 @@ class TestAdkEnvelope:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -8819,7 +8929,7 @@ class TestC4AgentTransfer:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     transfers = [r for r in rows if r["event_type"] == "AGENT_TRANSFER"]
     assert len(transfers) == 1
@@ -8856,7 +8966,7 @@ class TestC5EventCompaction:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     compactions = [r for r in rows if r["event_type"] == "EVENT_COMPACTION"]
     assert len(compactions) == 1
@@ -8887,7 +8997,7 @@ class TestC6AgentStateCheckpoint:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     cps = [r for r in rows if r["event_type"] == "AGENT_STATE_CHECKPOINT"]
     assert len(cps) == 1
@@ -8912,7 +9022,7 @@ class TestC6AgentStateCheckpoint:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     cps = [r for r in rows if r["event_type"] == "AGENT_STATE_CHECKPOINT"]
     assert len(cps) == 1
@@ -8940,7 +9050,7 @@ class TestC6AgentStateCheckpoint:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     cps = [r for r in rows if r["event_type"] == "AGENT_STATE_CHECKPOINT"]
     assert len(cps) == 1
@@ -9097,7 +9207,7 @@ class TestC8ActionAttributes:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -9803,7 +9913,7 @@ class TestHardening:
               },
           ),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
       )
@@ -10350,18 +10460,21 @@ class TestHardening:
 
     def run_in_fresh_loop():
       try:
-        with mock.patch.object(
-            plugin, "_lazy_setup", side_effect=fake_lazy_setup
-        ):
-          asyncio.run(plugin._ensure_started())
+        asyncio.run(plugin._ensure_started())
       except BaseException as e:  # noqa: BLE001 - collecting for assertion
         errors.append(e)
 
-    threads = [threading.Thread(target=run_in_fresh_loop) for _ in range(2)]
-    for t in threads:
-      t.start()
-    for t in threads:
-      t.join(timeout=10)
+    # Patch from this thread only. patch.object swaps a single shared
+    # attribute and is not itself thread safe, so entering it from both
+    # threads raced on _lazy_setup instead of on the code under test.
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=fake_lazy_setup):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=10)
     assert not errors, f"cross-loop startup raised: {errors}"
 
   def test_concurrent_stale_cleanup_folds_once(
@@ -10481,22 +10594,27 @@ class TestHardening:
 
     def run_in_fresh_loop():
       try:
-        with mock.patch.object(plugin, "_lazy_setup", side_effect=slow_setup):
-          barrier.wait(timeout=5)
-          asyncio.run(plugin._ensure_started())
+        barrier.wait(timeout=5)
+        asyncio.run(plugin._ensure_started())
       except BaseException as e:  # noqa: BLE001
         errors.append(e)
 
-    threads = [threading.Thread(target=run_in_fresh_loop) for _ in range(2)]
-    for t in threads:
-      t.start()
-    # Deterministic rendezvous: hold the owner inside setup until BOTH
-    # threads have entered _ensure_started.
-    entered.wait(timeout=5)
-    release.set()
-    for t in threads:
-      t.join(timeout=10)
-      assert not t.is_alive(), "thread failed to terminate"
+    # Patch from this thread only. patch.object swaps a single shared
+    # attribute and is not itself thread safe, so entering it from both
+    # threads raced on _lazy_setup instead of on the code under test.
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=slow_setup):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      # Deterministic rendezvous: hold the owner inside setup until BOTH
+      # threads have entered _ensure_started.
+      entered.wait(timeout=5)
+      release.set()
+      for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive(), "thread failed to terminate"
 
     assert not errors, f"cross-loop startup raised: {errors}"
     assert len(setup_calls) == 1, f"shared setup ran {len(setup_calls)} times"
@@ -10534,7 +10652,9 @@ class TestHardening:
       except BaseException as e:  # noqa: BLE001
         errors.append(e)
 
-    threads = [threading.Thread(target=run_in_fresh_loop) for _ in range(2)]
+    threads = [
+        platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+    ]
     for t in threads:
       t.start()
     entered.wait(timeout=5)
@@ -10581,7 +10701,7 @@ class TestHardening:
               extra_attributes={"point": Point(1, 2)},
           ),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
       )
@@ -10670,7 +10790,7 @@ class TestHardening:
               extra_attributes={"deep": deep},
           ),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
       )

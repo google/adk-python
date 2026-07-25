@@ -30,6 +30,7 @@ from . import envs
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
 from .agent_loader import AgentLoader
+from .agent_loader import is_single_agent_directory
 from .agent_loader import SPECIAL_AGENTS_DIR
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -41,23 +42,7 @@ class NestedAgentLoader(AgentLoader):
   @staticmethod
   def _is_valid_agent_dir(path: Path) -> bool:
     """Returns True if the directory is a valid agent directory."""
-    if not path.is_dir():
-      return False
-    if (path / "agent.py").is_file():
-      return True
-    if (path / "root_agent.yaml").is_file():
-      return True
-
-    init_py = path / "__init__.py"
-    if init_py.is_file():
-      try:
-        content = init_py.read_text(encoding="utf-8")
-        if "root_agent" in content:
-          return True
-      except Exception as e:
-        logger.warning("Error reading %s: %s", init_py, e)
-
-    return False
+    return is_single_agent_directory(path)
 
   def _has_nested_agents(self, agents_path: Path) -> bool:
     """Returns True if there are any nested agents within the directory (up to max depth)."""
@@ -84,22 +69,26 @@ class NestedAgentLoader(AgentLoader):
 
   @override
   def _init_agent_mode(self, agents_path: Path) -> None:
-    if agents_path.is_file():
+    try:
+      is_file = agents_path.is_file()
+    except Exception:
+      is_file = False
+
+    if is_file:
       # Explicit file-based single-agent mode
       self._is_single_agent = True
       self._single_agent_name = agents_path.stem
       self.agents_dir = str(agents_path.parent)
+    elif self._is_valid_agent_dir(agents_path):
+      # Single-agent directory mode: treat as single agent even if it has subfolders.
+      self._is_single_agent = True
+      self._single_agent_name = agents_path.name
+      self.agents_dir = str(agents_path.parent)
     else:
-      # It is a directory. Check if it contains any nested agents.
-      if self._has_nested_agents(agents_path):
-        # Force multi-agent (nested) mode even if the root directory itself
-        # contains an agent.py, to allow discovering the nested agents.
-        self._is_single_agent = False
-        self._single_agent_name = None
-        self.agents_dir = str(agents_path)
-      else:
-        # Fall back to parent class behavior
-        super()._init_agent_mode(agents_path)
+      # It is a multi-agent directory containing sub-directories with agents.
+      self._is_single_agent = False
+      self._single_agent_name = None
+      self.agents_dir = str(agents_path)
 
   @override
   def list_agents(self) -> list[str]:
@@ -107,7 +96,10 @@ class NestedAgentLoader(AgentLoader):
     if self._is_single_agent:
       return [self._single_agent_name]
     base_path = Path(self.agents_dir)
-    if not base_path.exists() or not base_path.is_dir():
+    try:
+      if not base_path.exists() or not base_path.is_dir():
+        return []
+    except Exception:
       return []
 
     apps = []

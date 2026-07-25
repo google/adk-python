@@ -59,6 +59,7 @@ from ..tools.tool_context import ToolContext
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
+from ..utils.instructions_utils import InstructionProvider as InstructionProvider
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -130,9 +131,6 @@ OnToolErrorCallback: TypeAlias = Union[
     list[_SingleOnToolErrorCallback],
 ]
 
-InstructionProvider: TypeAlias = Callable[
-    [ReadonlyContext], Union[str, Awaitable[str]]
-]
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
 
 
@@ -1091,6 +1089,18 @@ class LlmAgent(BaseAgent, abc.ABC):
       raise ValueError(
           'Response schema must be set via LlmAgent.output_schema.'
       )
+    if generate_content_config.http_options:
+      if generate_content_config.http_options.base_url:
+        raise ValueError(
+            'Base URL is a transport setting and must be set on the model or'
+            ' its client, not via LlmAgent.generate_content_config.'
+        )
+      if generate_content_config.http_options.extra_body:
+        raise ValueError(
+            'Extra body is merged into the request body and can overwrite the'
+            ' tools, system instruction and response schema rejected above.'
+            ' Set it on the model or its client.'
+        )
     return generate_content_config
 
   @override

@@ -80,6 +80,7 @@ from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
@@ -904,6 +905,9 @@ class ApiServer:
           runtime_config_path,
       )
     runtime_config["backendUrl"] = self.url_prefix if self.url_prefix else ""
+    # Inject telemetry consent on bootstrapping to avoid an extra API call
+    # when loading the UI.
+    runtime_config["telemetry"] = read_telemetry_consent()
 
     # Set custom logo config.
     if self.logo_text or self.logo_image_url:

@@ -61,7 +61,9 @@ def mock_load_eval_set_from_file():
 
 @pytest.fixture
 def mock_get_root_agent():
-  with mock.patch("google.adk.cli.cli_eval.get_root_agent") as mock_func:
+  with mock.patch(
+      "google.adk.cli.cli_eval.get_root_agent", new_callable=mock.AsyncMock
+  ) as mock_func:
     mock_func.return_value = root_agent
     yield mock_func
 

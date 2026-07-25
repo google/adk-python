@@ -162,6 +162,8 @@ class LocalEnvironment(BaseEnvironment):
   def _sync_write(path: Path, content: str | bytes) -> None:
     os.makedirs(path.parent, exist_ok=True)
     mode = 'w' if isinstance(content, str) else 'wb'
-    kwargs = {'encoding': 'utf-8'} if isinstance(content, str) else {}
+    kwargs = (
+        {'encoding': 'utf-8', 'newline': ''} if isinstance(content, str) else {}
+    )
     with open(path, mode, **kwargs) as f:
       f.write(content)
