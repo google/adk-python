@@ -1025,13 +1025,9 @@ class BigQueryLoggerConfig:
         emit the final answer via a dedicated tool (e.g.
         ``submit_final_response``) rather than a plain-text final event. Empty
         (the default) preserves today's behavior.
-      exactly_once_delivery: When ``True``, writes go to a dedicated
-        ``COMMITTED`` write stream (one per event loop) with append-offset
-        tracking, instead of the shared ``_default`` stream. ``_default`` is
-        at-least-once and can write duplicate rows on an ambiguous retry;
-        a ``COMMITTED`` stream lets a retry reuse the same offset, so
-        BigQuery rejects the duplicate instead of writing it again. ``False``
-        (the default) preserves today's behavior.
+      exactly_once_delivery: When ``True``, writes use a per-loop
+        ``COMMITTED`` stream with offset tracking so an ambiguous retry
+        cannot write duplicate rows. ``False`` (default) keeps ``_default``.
   """
 
   enabled: bool = True
@@ -1483,8 +1479,7 @@ class BatchProcessor:
         queue_max_size: Max size of the in-memory queue.
         shutdown_timeout: Max time to wait for shutdown.
         exactly_once_delivery: If ``True``, ``write_stream`` must be a
-          dedicated ``COMMITTED`` stream; appends carry a tracked offset so
-          retries are idempotent.
+          dedicated ``COMMITTED`` stream; appends carry a tracked offset.
     """
     self.write_client = write_client
     self.arrow_schema = arrow_schema
@@ -1494,9 +1489,10 @@ class BatchProcessor:
     self.retry_config = retry_config
     self.shutdown_timeout = shutdown_timeout
     self.exactly_once_delivery = exactly_once_delivery
-    # Both only used when exactly_once_delivery is True.
+    # All three only used when exactly_once_delivery is True.
     self._next_offset = 0
     self._offset_desynced = False
+    self._stream_finalized = False
 
     self._visual_builder = _is_visual_builder.get()
 
@@ -1560,11 +1556,8 @@ class BatchProcessor:
       ``non_retryable``: BigQuery returned a non-retryable error (e.g. a
         schema mismatch).
       ``unexpected_error``: an unexpected exception aborted the write.
-      ``offset_conflict``: (``exactly_once_delivery`` only) the processor's
-        offset tracking is desynced from the server's -- either BigQuery
-        returned ``OUT_OF_RANGE``, or a prior batch's retries were exhausted
-        after an ambiguous failure. Not auto-recovered; every subsequent
-        batch is dropped until the processor is recreated.
+      ``offset_conflict``: (exactly-once only) offset tracking is desynced
+        from the server; all batches drop until the processor is recreated.
 
     Returns:
         A copy of the per-reason drop counters.
@@ -1716,6 +1709,24 @@ class BatchProcessor:
         else:
           break
 
+  def _confirm_delivered(self, offset: Optional[int], row_count: int) -> None:
+    # Assignment, not `+=`: a late timeout plus an ALREADY_EXISTS retry can
+    # confirm the same batch twice; both must resolve to the same next offset.
+    if offset is not None:
+      self._next_offset = offset + row_count
+
+  def _mark_offset_ambiguous(self) -> None:
+    # The batch may have landed despite the failure; reusing its offset could
+    # get ALREADY_EXISTS and silently swallow a future batch. Poison instead.
+    if self.exactly_once_delivery and not self._offset_desynced:
+      self._offset_desynced = True
+      logger.error(
+          "Ambiguous write failure on stream %s (Data Loss): offset tracking"
+          " is no longer trustworthy; all further batches will be dropped"
+          " until the processor is recreated.",
+          self.write_stream,
+      )
+
   async def _write_rows_with_retry(self, rows: list[dict[str, Any]]) -> None:
     """Writes a batch of rows to BigQuery with retry logic.
 
@@ -1723,12 +1734,12 @@ class BatchProcessor:
         rows: list of row dictionaries to write.
     """
     if self.exactly_once_delivery and self._offset_desynced:
-      # A prior ambiguous failure or OUT_OF_RANGE left this processor's
-      # offset tracking untrustworthy; refuse to write until it is recreated.
+      # Desync was already logged at state entry; refuse writes until the
+      # processor is recreated.
       self._dropped["offset_conflict"] += len(rows)
-      logger.error(
-          "Dropping batch: offset tracking for stream %s is desynced and"
-          " unrecovered. Total rows dropped (offset conflict): %s",
+      logger.debug(
+          "Dropping batch: offset tracking for stream %s is desynced. Total"
+          " rows dropped (offset conflict): %s",
           self.write_stream,
           self._dropped["offset_conflict"],
       )
@@ -1754,11 +1765,8 @@ class BatchProcessor:
       )
       req.arrow_rows.writer_schema.serialized_schema = serialized_schema
       req.arrow_rows.rows.serialized_record_batch = serialized_batch
-      # Frozen for this batch's whole retry sequence: `self._next_offset`
-      # must be updated by assignment from this value (not `+=`), since a
-      # success can be followed by a late timeout that triggers a retry
-      # which then gets ALREADY_EXISTS for the same batch -- both branches
-      # must resolve to the same offset, not accumulate.
+      # Frozen for this batch's whole retry sequence; resolved only through
+      # _confirm_delivered.
       offset_for_batch = (
           self._next_offset if self.exactly_once_delivery else None
       )
@@ -1776,12 +1784,17 @@ class BatchProcessor:
       return
 
     while attempt <= self.retry_config.max_retries:
+      request_sent = False
+      in_band_rejection = False
       try:
 
         async def requests_iter() -> AsyncIterator[Any]:
+          nonlocal request_sent
+          request_sent = True
           yield req
 
         async def perform_write() -> None:
+          nonlocal in_band_rejection
           # The AppendRows streaming RPC does not auto-populate the
           # request-routing header, so writes to any region other than
           # the US multiregion fail with a "session not found" /
@@ -1816,7 +1829,7 @@ class BatchProcessor:
                     offset_for_batch,
                     self.write_stream,
                 )
-                self._next_offset = offset_for_batch + len(rows)
+                self._confirm_delivered(offset_for_batch, len(rows))
                 return
 
               if (
@@ -1849,6 +1862,9 @@ class BatchProcessor:
                   _GRPC_INTERNAL,
                   _GRPC_UNAVAILABLE,
               ]:
+                # An in-band error means the rows were not appended, so the
+                # frozen offset stays free to reuse on retry.
+                in_band_rejection = True
                 raise ServiceUnavailable(error_message)
 
               if "schema mismatch" in error_message.lower():
@@ -1866,14 +1882,14 @@ class BatchProcessor:
                 logger.error("Row content causing error: %s", rows)
               self._dropped["non_retryable"] += len(rows)
               return
-            # Exactly one response is expected per request (one row batch per
-            # connection); return now instead of waiting on the iterator for
-            # a stream-close that could time out after this already-recorded
-            # success, which would otherwise trigger a spurious retry.
-            if offset_for_batch is not None:
-              self._next_offset = offset_for_batch + len(rows)
+            # One response per request; return without waiting for the
+            # stream close, which could time out and force a spurious retry.
+            self._confirm_delivered(offset_for_batch, len(rows))
             return
-          return
+          # Zero responses: this batch's fate is unknown; refuse to confirm.
+          if offset_for_batch is not None:
+            self._dropped["unexpected_error"] += len(rows)
+            self._mark_offset_ambiguous()
 
         await asyncio.wait_for(perform_write(), timeout=30.0)
         return
@@ -1894,12 +1910,10 @@ class BatchProcessor:
               e,
               self._dropped["retry_exhausted"],
           )
-          if self.exactly_once_delivery:
-            # This batch's fate is unknown -- it may have landed server-side
-            # despite every ack being lost. Reusing `_next_offset` for a
-            # future, different batch could then get ALREADY_EXISTS and be
-            # mistaken for that batch's own success, silently losing it.
-            self._offset_desynced = True
+          # A never-sent request or an in-band rejection is definitively
+          # not applied, so only an ack-lost failure is ambiguous.
+          if request_sent and not in_band_rejection:
+            self._mark_offset_ambiguous()
           return
 
         sleep_time = min(
@@ -1923,7 +1937,25 @@ class BatchProcessor:
             self._dropped["unexpected_error"],
             exc_info=True,
         )
+        if request_sent:
+          self._mark_offset_ambiguous()
         return
+
+  async def _finalize_stream(self, timeout: float = 5.0) -> None:
+    # Best-effort, attempted once; rows in a COMMITTED stream are already
+    # visible, so failures here lose nothing.
+    if not self.exactly_once_delivery or self._stream_finalized:
+      return
+    self._stream_finalized = True
+    try:
+      await asyncio.wait_for(
+          self.write_client.finalize_write_stream(name=self.write_stream),
+          timeout=min(timeout, 5.0),
+      )
+    except Exception as e:
+      logger.warning(
+          "Failed to finalize write stream %s: %s", self.write_stream, e
+      )
 
   async def shutdown(self, timeout: float = 5.0) -> None:
     """Shuts down the BatchProcessor, draining the queue.
@@ -1932,6 +1964,7 @@ class BatchProcessor:
         timeout: Maximum time to wait for the queue to drain.
     """
     self._shutdown = True
+    finalize_deadline = time.monotonic() + timeout
     logger.info("BatchProcessor shutting down, draining queue...")
 
     # Signal the writer to wake up and check shutdown status
@@ -1971,6 +2004,8 @@ class BatchProcessor:
           )
       except Exception as e:
         logger.error("Error during BatchProcessor shutdown: %s", e)
+    # Spend only what is left of the caller's timeout budget.
+    await self._finalize_stream(max(0.0, finalize_deadline - time.monotonic()))
 
   async def close(self) -> None:
     """Closes the processor and flushes remaining items."""
@@ -1978,6 +2013,7 @@ class BatchProcessor:
       return
 
     self._shutdown = True
+    finalize_deadline = time.monotonic() + self.shutdown_timeout
     # Wait for queue to be empty
     try:
       await asyncio.wait_for(self._queue.join(), timeout=self.shutdown_timeout)
@@ -2007,6 +2043,7 @@ class BatchProcessor:
     if drained:
       self._dropped["shutdown_timeout"] += drained
       logger.warning("%d queued row(s) dropped by close timeout.", drained)
+    await self._finalize_stream(max(0.0, finalize_deadline - time.monotonic()))
 
 
 # ==============================================================================
@@ -3152,17 +3189,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   async def _create_committed_write_stream(
       self, write_client: "BigQueryWriteAsyncClient"
   ) -> str:
-    """Creates a dedicated COMMITTED write stream for exactly-once delivery.
-
-    Unlike ``_default``, a ``COMMITTED`` stream accepts an append offset,
-    letting ``BatchProcessor`` retry an ambiguous failure idempotently.
-
-    Args:
-        write_client: The loop-bound write client to create the stream with.
-
-    Returns:
-        The full resource name of the newly created write stream.
-    """
+    """Creates the dedicated COMMITTED stream that, unlike ``_default``,
+    accepts append offsets, and returns its full resource name."""
     stream = await write_client.create_write_stream(
         parent=self._table_resource_path(),
         write_stream=bq_storage_types.WriteStream(

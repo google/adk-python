@@ -53,9 +53,8 @@ import pytest
 PROJECT_ID = "test-gcp-project"
 DATASET_ID = "adk_logs"
 TABLE_ID = "agent_events"
-DEFAULT_STREAM_NAME = (
-    f"projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}/_default"
-)
+TABLE_PATH = f"projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
+DEFAULT_STREAM_NAME = f"{TABLE_PATH}/_default"
 
 
 # --- Pytest Fixtures ---
@@ -8620,6 +8619,16 @@ def _stub_arrow_prep(bp):
   bp._prepare_arrow_batch = mock.MagicMock(return_value=fake_batch)
 
 
+def _append_response(code=0, message=""):
+  """Builds a mocked append_rows response stream with the given error code."""
+  resp = mock.MagicMock()
+  resp.row_errors = []
+  resp.error = mock.MagicMock()
+  resp.error.code = code
+  resp.error.message = message
+  return _async_gen(resp)
+
+
 def _make_batch_processor(
     arrow_schema,
     *,
@@ -8654,9 +8663,6 @@ class TestDropStats:
         arrow_schema, queue_max_size=queue_max_size, retry_config=retry_config
     )
 
-  def _stub_arrow_prep(self, bp):
-    _stub_arrow_prep(bp)
-
   @pytest.mark.asyncio
   async def test_flush_waits_for_dequeued_write(self, dummy_arrow_schema):
     bp = self._make_processor(dummy_arrow_schema)
@@ -8688,7 +8694,7 @@ class TestDropStats:
         max_retries=0, initial_delay=0.0, multiplier=1.0, max_delay=0.0
     )
     bp = self._make_processor(dummy_arrow_schema, retry_config=retry_config)
-    self._stub_arrow_prep(bp)
+    _stub_arrow_prep(bp)
 
     async def fake_append_rows(requests, **kwargs):
       del requests, kwargs
@@ -8709,7 +8715,7 @@ class TestDropStats:
   @pytest.mark.asyncio
   async def test_non_retryable_drops_are_counted(self, dummy_arrow_schema):
     bp = self._make_processor(dummy_arrow_schema)
-    self._stub_arrow_prep(bp)
+    _stub_arrow_prep(bp)
 
     async def fake_append_rows(requests, **kwargs):
       del requests, kwargs
@@ -8759,9 +8765,7 @@ class TestDropStats:
     assert plugin.get_drop_stats() == {}
 
 
-COMMITTED_STREAM_NAME = (
-    f"projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}/streams/s1"
-)
+COMMITTED_STREAM_NAME = f"{TABLE_PATH}/streams/s1"
 
 
 class TestExactlyOnceDelivery:
@@ -8775,24 +8779,17 @@ class TestExactlyOnceDelivery:
         retry_config=retry_config,
     )
 
-  def _stub_arrow_prep(self, bp):
-    _stub_arrow_prep(bp)
-
   @pytest.mark.asyncio
   async def test_offset_not_set_on_default_stream(self, dummy_arrow_schema):
     # `_default` rejects an explicit offset.
     bp = _make_batch_processor(dummy_arrow_schema)
-    self._stub_arrow_prep(bp)
+    _stub_arrow_prep(bp)
 
     async def fake_append_rows(requests, **kwargs):
       del kwargs
       sent = [r async for r in requests]
       assert not sent[0]._pb.HasField("offset")
-      resp = mock.MagicMock()
-      resp.row_errors = []
-      resp.error = mock.MagicMock()
-      resp.error.code = 0
-      return _async_gen(resp)
+      return _append_response()
 
     bp.write_client.append_rows.side_effect = fake_append_rows
     await bp._write_rows_with_retry([{"a": 1}])
@@ -8803,19 +8800,14 @@ class TestExactlyOnceDelivery:
       self, dummy_arrow_schema
   ):
     bp = self._make_processor(dummy_arrow_schema)
-    self._stub_arrow_prep(bp)
+    _stub_arrow_prep(bp)
     sent_offsets = []
 
     async def fake_append_rows(requests, **kwargs):
       del kwargs
       sent = [r async for r in requests]
       sent_offsets.append(sent[0].offset)
-      resp = mock.MagicMock()
-      resp.row_errors = []
-      resp.error = mock.MagicMock()
-      resp.error.code = 0
-      resp.append_result.offset = sent[0].offset
-      return _async_gen(resp)
+      return _append_response()
 
     bp.write_client.append_rows.side_effect = fake_append_rows
 
@@ -8831,8 +8823,13 @@ class TestExactlyOnceDelivery:
       self, dummy_arrow_schema
   ):
     # First append lands but the ack is lost (timeout), so it retries.
-    bp = self._make_processor(dummy_arrow_schema)
-    self._stub_arrow_prep(bp)
+    bp = self._make_processor(
+        dummy_arrow_schema,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(
+            max_retries=1, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+        ),
+    )
+    _stub_arrow_prep(bp)
     attempts = []
 
     async def fake_append_rows(requests, **kwargs):
@@ -8841,19 +8838,12 @@ class TestExactlyOnceDelivery:
       attempts.append(sent[0].offset)
       if len(attempts) == 1:
         raise asyncio.TimeoutError("ack lost")
-      resp = mock.MagicMock()
-      resp.row_errors = []
-      resp.error = mock.MagicMock()
-      resp.error.code = bigquery_agent_analytics_plugin._GRPC_ALREADY_EXISTS
-      resp.error.message = "already applied"
-      return _async_gen(resp)
+      return _append_response(
+          bigquery_agent_analytics_plugin._GRPC_ALREADY_EXISTS,
+          "already applied",
+      )
 
     bp.write_client.append_rows.side_effect = fake_append_rows
-
-    retry_config = bigquery_agent_analytics_plugin.RetryConfig(
-        max_retries=1, initial_delay=0.0, multiplier=1.0, max_delay=0.0
-    )
-    bp.retry_config = retry_config
 
     await bp._write_rows_with_retry([{"a": 1}, {"a": 2}])
 
@@ -8866,30 +8856,22 @@ class TestExactlyOnceDelivery:
   async def test_offset_correct_for_next_batch_after_dedup(
       self, dummy_arrow_schema
   ):
-    # Regression test: an earlier /simplify pass replaced the assignment
-    # `self._next_offset = offset_for_batch + len(rows)` with
-    # `self._next_offset += len(rows)`, which double-advances if a batch's
-    # offset is resolved twice (e.g. a late timeout after a response was
-    # already processed, followed by a retry that gets ALREADY_EXISTS).
-    # A later, different batch would then be sent at a skipped-ahead
-    # offset instead of the correct next one.
+    # Regression: `+=` instead of assignment double-advances the offset when
+    # one batch resolves twice (late timeout, then ALREADY_EXISTS on retry).
     bp = self._make_processor(dummy_arrow_schema)
-    self._stub_arrow_prep(bp)
+    _stub_arrow_prep(bp)
     offsets = []
 
     async def fake_append_rows(requests, **kwargs):
       del kwargs
       sent = [r async for r in requests]
       offsets.append(sent[0].offset)
-      resp = mock.MagicMock()
-      resp.row_errors = []
-      resp.error = mock.MagicMock()
       if len(offsets) == 1:
-        resp.error.code = 0
-      else:
-        resp.error.code = bigquery_agent_analytics_plugin._GRPC_ALREADY_EXISTS
-        resp.error.message = "already applied"
-      return _async_gen(resp)
+        return _append_response()
+      return _append_response(
+          bigquery_agent_analytics_plugin._GRPC_ALREADY_EXISTS,
+          "already applied",
+      )
 
     bp.write_client.append_rows.side_effect = fake_append_rows
 
@@ -8901,92 +8883,200 @@ class TestExactlyOnceDelivery:
     assert bp.dropped_event_count == 0
 
   @pytest.mark.asyncio
-  async def test_ambiguous_retry_exhaustion_poisons_processor(
-      self, dummy_arrow_schema
+  @pytest.mark.parametrize(
+      "exc, stat_key",
+      [
+          (asyncio.TimeoutError("ack lost"), "retry_exhausted"),
+          (RuntimeError("connection aborted mid-stream"), "unexpected_error"),
+      ],
+  )
+  async def test_ambiguous_failure_poisons_processor(
+      self, dummy_arrow_schema, exc, stat_key
   ):
-    # If every retry for an ambiguous failure (timeout/UNAVAILABLE/...) also
-    # fails, this batch's fate is unknown -- it may have landed server-side.
-    # Reusing its offset for a later, unrelated batch could get
-    # ALREADY_EXISTS and be mistaken for that batch's own success, silently
-    # losing it. The processor must refuse further writes instead.
-    bp = self._make_processor(dummy_arrow_schema)
-    self._stub_arrow_prep(bp)
+    # An ambiguous failure may have landed server-side; reusing its offset
+    # could get ALREADY_EXISTS and silently swallow a later batch.
+    bp = self._make_processor(
+        dummy_arrow_schema,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(
+            max_retries=0, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+        ),
+    )
+    _stub_arrow_prep(bp)
     call_count = 0
 
     async def fake_append_rows(requests, **kwargs):
       nonlocal call_count
-      del requests, kwargs
+      del kwargs
+      # Consume the request so the failure is ambiguous (post-send).
+      _ = [r async for r in requests]
       call_count += 1
-      raise asyncio.TimeoutError("ack lost")
+      raise exc
 
     bp.write_client.append_rows.side_effect = fake_append_rows
-    bp.retry_config = bigquery_agent_analytics_plugin.RetryConfig(
-        max_retries=0, initial_delay=0.0, multiplier=1.0, max_delay=0.0
-    )
 
     await bp._write_rows_with_retry([{"a": 1}, {"a": 2}])
 
     assert call_count == 1
-    assert bp.get_drop_stats()["retry_exhausted"] == 2
+    assert bp.get_drop_stats()[stat_key] == 2
     assert bp._offset_desynced is True
 
-    # A later, different batch must be dropped outright, without attempting
-    # a write that could collide with wherever the ambiguous batch landed.
+    # A later, different batch must be dropped without attempting a write
+    # that could collide with wherever the ambiguous batch landed.
     await bp._write_rows_with_retry([{"a": 3}])
 
     assert call_count == 1
     assert bp.get_drop_stats()["offset_conflict"] == 1
 
   @pytest.mark.asyncio
-  async def test_out_of_range_drops_batch_without_advancing_offset(
+  async def test_pre_send_failure_does_not_poison(self, dummy_arrow_schema):
+    # The request never left the client, so the offset is definitively free.
+    bp = self._make_processor(dummy_arrow_schema)
+    _stub_arrow_prep(bp)
+    bp.write_client.append_rows.side_effect = RuntimeError("bad channel")
+
+    await bp._write_rows_with_retry([{"a": 1}])
+
+    assert bp.get_drop_stats()["unexpected_error"] == 1
+    assert bp._offset_desynced is False
+
+  @pytest.mark.asyncio
+  async def test_in_band_rejection_exhaustion_does_not_poison(
       self, dummy_arrow_schema
   ):
-    bp = self._make_processor(dummy_arrow_schema)
-    self._stub_arrow_prep(bp)
+    # An in-band error means the rows were not appended, so the offset stays
+    # valid and later batches must keep writing.
+    bp = self._make_processor(
+        dummy_arrow_schema,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(
+            max_retries=0, initial_delay=0.0, multiplier=1.0, max_delay=0.0
+        ),
+    )
+    _stub_arrow_prep(bp)
+    calls = 0
 
     async def fake_append_rows(requests, **kwargs):
-      del requests, kwargs
-      resp = mock.MagicMock()
-      resp.row_errors = []
-      resp.error = mock.MagicMock()
-      resp.error.code = bigquery_agent_analytics_plugin._GRPC_OUT_OF_RANGE
-      resp.error.message = "offset mismatch"
-      return _async_gen(resp)
+      nonlocal calls
+      del kwargs
+      _ = [r async for r in requests]
+      calls += 1
+      if calls == 1:
+        return _append_response(
+            bigquery_agent_analytics_plugin._GRPC_UNAVAILABLE, "server busy"
+        )
+      return _append_response()
 
     bp.write_client.append_rows.side_effect = fake_append_rows
 
     await bp._write_rows_with_retry([{"a": 1}])
 
-    assert bp.get_drop_stats()["offset_conflict"] == 1
-    assert bp._next_offset == 0
-    assert bp._offset_desynced is True
+    assert bp.get_drop_stats()["retry_exhausted"] == 1
+    assert bp._offset_desynced is False
+
+    await bp._write_rows_with_retry([{"a": 2}])
+
+    assert calls == 2
+    assert bp._next_offset == 1
 
   @pytest.mark.asyncio
-  async def test_out_of_range_poisons_future_batches(self, dummy_arrow_schema):
+  async def test_empty_response_stream_poisons_processor(
+      self, dummy_arrow_schema
+  ):
+    # Zero responses leave the batch's fate unknown; it must not be treated
+    # as a silent success.
     bp = self._make_processor(dummy_arrow_schema)
-    self._stub_arrow_prep(bp)
+    _stub_arrow_prep(bp)
+
+    async def fake_append_rows(requests, **kwargs):
+      del kwargs
+      _ = [r async for r in requests]
+
+      async def empty_gen():
+        return
+        yield
+
+      return empty_gen()
+
+    bp.write_client.append_rows.side_effect = fake_append_rows
+
+    await bp._write_rows_with_retry([{"a": 1}])
+
+    assert bp._next_offset == 0
+    assert bp._offset_desynced is True
+    assert bp.get_drop_stats()["unexpected_error"] == 1
+
+  def test_confirm_delivered_is_assignment_not_accumulation(
+      self, dummy_arrow_schema
+  ):
+    # A batch resolved twice (late timeout, then ALREADY_EXISTS on retry)
+    # must not double-advance the offset.
+    bp = self._make_processor(dummy_arrow_schema)
+
+    bp._confirm_delivered(0, 2)
+    bp._confirm_delivered(0, 2)
+
+    assert bp._next_offset == 2
+
+  @pytest.mark.asyncio
+  async def test_shutdown_finalizes_stream_once(self, dummy_arrow_schema):
+    bp = self._make_processor(dummy_arrow_schema)
+    bp.write_client.finalize_write_stream = mock.AsyncMock()
+
+    await bp.shutdown(timeout=1.0)
+    await bp.shutdown(timeout=1.0)
+
+    bp.write_client.finalize_write_stream.assert_awaited_once_with(
+        name=COMMITTED_STREAM_NAME
+    )
+
+  @pytest.mark.asyncio
+  async def test_close_finalizes_stream(self, dummy_arrow_schema):
+    bp = self._make_processor(dummy_arrow_schema)
+    bp.write_client.finalize_write_stream = mock.AsyncMock()
+
+    await bp.close()
+
+    bp.write_client.finalize_write_stream.assert_awaited_once_with(
+        name=COMMITTED_STREAM_NAME
+    )
+
+  @pytest.mark.asyncio
+  async def test_shutdown_does_not_finalize_default_stream(
+      self, dummy_arrow_schema
+  ):
+    bp = _make_batch_processor(dummy_arrow_schema)
+    bp.write_client.finalize_write_stream = mock.AsyncMock()
+
+    await bp.shutdown(timeout=1.0)
+
+    bp.write_client.finalize_write_stream.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_out_of_range_poisons_processor(self, dummy_arrow_schema):
+    bp = self._make_processor(dummy_arrow_schema)
+    _stub_arrow_prep(bp)
     call_count = 0
 
     async def fake_append_rows(requests, **kwargs):
       nonlocal call_count
       del requests, kwargs
       call_count += 1
-      resp = mock.MagicMock()
-      resp.row_errors = []
-      resp.error = mock.MagicMock()
-      resp.error.code = bigquery_agent_analytics_plugin._GRPC_OUT_OF_RANGE
-      resp.error.message = "offset mismatch"
-      return _async_gen(resp)
+      return _append_response(
+          bigquery_agent_analytics_plugin._GRPC_OUT_OF_RANGE,
+          "offset mismatch",
+      )
 
     bp.write_client.append_rows.side_effect = fake_append_rows
 
     await bp._write_rows_with_retry([{"a": 1}])
-    assert call_count == 1
 
+    assert call_count == 1
+    assert bp.get_drop_stats()["offset_conflict"] == 1
+    assert bp._next_offset == 0
+    assert bp._offset_desynced is True
+
+    # The guard drops a later batch before any RPC is made.
     await bp._write_rows_with_retry([{"a": 2}])
 
-    # No second attempt: the guard at the top of _write_rows_with_retry
-    # drops the batch before any RPC is made.
     assert call_count == 1
     assert bp.get_drop_stats()["offset_conflict"] == 2
 
@@ -9020,10 +9110,7 @@ class TestExactlyOnceDelivery:
 
       mock_write_client.create_write_stream.assert_called_once()
       _, kwargs = mock_write_client.create_write_stream.call_args
-      assert (
-          kwargs["parent"]
-          == f"projects/{PROJECT_ID}/datasets/{DATASET_ID}/tables/{TABLE_ID}"
-      )
+      assert kwargs["parent"] == TABLE_PATH
       assert (
           kwargs["write_stream"].type_
           == bigquery_agent_analytics_plugin.bq_storage_types.WriteStream.Type.COMMITTED
@@ -9031,6 +9118,9 @@ class TestExactlyOnceDelivery:
       assert plugin.write_stream == COMMITTED_STREAM_NAME
     finally:
       await plugin.shutdown()
+    mock_write_client.finalize_write_stream.assert_called_once_with(
+        name=COMMITTED_STREAM_NAME
+    )
 
 
 # -----------------------------------------------------------------------------
