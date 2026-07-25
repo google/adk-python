@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 from typing import Any
@@ -46,6 +47,13 @@ class FunctionTool(BaseTool):
   Attributes:
     func: The function to wrap.
   """
+
+  # Declaration built for the last seen (func, ignore_params, api variant).
+  # Declared on the class so instances created without __init__ (for example
+  # via copy.copy) still resolve it.
+  _declaration_cache: Optional[
+      tuple[Callable[..., Any], tuple[str, ...], Any, types.FunctionDeclaration]
+  ] = None
 
   def __init__(
       self,
@@ -92,17 +100,33 @@ class FunctionTool(BaseTool):
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
-    function_decl = types.FunctionDeclaration.model_validate(
-        build_function_declaration(
-            func=self.func,
-            # The model doesn't understand the function context.
-            # input_stream is for streaming tool
-            ignore_params=self._ignore_params,
-            variant=self._api_variant,
-        )
-    )
+    variant = self._api_variant
+    ignore_params = tuple(self._ignore_params)
+    cache = self._declaration_cache
+    if (
+        cache is None
+        or cache[0] is not self.func
+        or cache[1] != ignore_params
+        or cache[2] != variant
+    ):
+      function_decl = types.FunctionDeclaration.model_validate(
+          build_function_declaration(
+              func=self.func,
+              # The model doesn't understand the function context.
+              # input_stream is for streaming tool
+              ignore_params=self._ignore_params,
+              variant=variant,
+          )
+      )
+      cache = (self.func, ignore_params, variant, function_decl)
+      self._declaration_cache = cache
 
-    return function_decl
+    # Callers are allowed to mutate the declaration they receive:
+    # LongRunningFunctionTool appends to its description, TransferToAgentTool
+    # writes an enum into its parameter schema, and BaseToolset rewrites its
+    # name when prefixing. Hand back a private copy so the cached value stays
+    # pristine.
+    return copy.deepcopy(cache[3])
 
   def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
     """Preprocess and convert function arguments before invocation.
