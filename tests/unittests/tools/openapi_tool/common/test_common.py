@@ -392,6 +392,25 @@ class TestPydocHelper:
         == expected_doc
     )
 
+  def test_generate_return_doc_non_numeric_status_keys(self):
+    # 'default' (and range codes like '2XX') are valid OpenAPI response keys
+    # and must not crash return-doc generation.
+    responses = {
+        '200': {
+            'description': 'Successful response',
+            'content': {'application/json': {'schema': {'type': 'string'}}},
+        },
+        'default': {
+            'description': 'Unexpected error',
+            'content': {'application/json': {'schema': {'type': 'object'}}},
+        },
+    }
+    expected_doc = 'Returns (str): Successful response'
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == expected_doc
+    )
+
   def test_generate_return_doc_contentful_response(self):
     responses = {
         '200': {'description': 'No content response'},
