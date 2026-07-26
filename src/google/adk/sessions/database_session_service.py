@@ -70,6 +70,22 @@ from .state import State
 
 logger = logging.getLogger("google_adk." + __name__)
 
+
+def _redact_db_url(db_url: str) -> str:
+  """Returns the database URL with any embedded password removed.
+
+  The engine-creation error messages below include the database URL to aid
+  debugging, but a URL may embed credentials
+  (e.g. ``postgresql://user:password@host/db``). Rendering it with
+  ``hide_password=True`` keeps the useful parts (dialect, host, database) while
+  preventing the password from leaking into exceptions and logs.
+  """
+  try:
+    return make_url(db_url).render_as_string(hide_password=True)
+  except Exception:  # noqa: BLE001 - fall back to a fully redacted placeholder
+    return "[redacted]"
+
+
 _STALE_SESSION_ERROR_MESSAGE = (
     "The session has been modified in storage since it was loaded. "
     "Please reload the session before appending more events."
@@ -284,16 +300,17 @@ class DatabaseSessionService(BaseSessionService):
           event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
 
       except Exception as e:
+        safe_db_url = _redact_db_url(db_url)
         if isinstance(e, ArgumentError):
           raise ValueError(
-              f"Invalid database URL format or argument '{db_url}'."
+              f"Invalid database URL format or argument '{safe_db_url}'."
           ) from e
         if isinstance(e, ImportError):
           raise ValueError(
-              f"Database related module not found for URL '{db_url}'."
+              f"Database related module not found for URL '{safe_db_url}'."
           ) from e
         raise ValueError(
-            f"Failed to create database engine for URL '{db_url}'"
+            f"Failed to create database engine for URL '{safe_db_url}'"
         ) from e
     else:
       self._owns_db_engine = False
