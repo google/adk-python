@@ -87,6 +87,22 @@ def test_calculate_rouge_1_scores():
   assert rouge_1_score.fmeasure == pytest.approx(8 / 11)
 
 
+def test_calculate_rouge_1_scores_non_ascii_identical():
+  # Identical non-ASCII (Thai) text should yield a perfect score, not 0.
+  candidate = "สวัสดี"
+  reference = "สวัสดี"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.fmeasure == pytest.approx(1.0)
+
+
+def test_calculate_rouge_1_scores_non_ascii_different():
+  # Completely different non-ASCII text should yield a score of 0.
+  candidate = "สวัสดี"
+  reference = "ขอบคุณ"
+  rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
+  assert rouge_1_score.fmeasure == pytest.approx(0.0)
+
+
 @pytest.mark.parametrize(
     "candidates, references, expected_score, expected_status",
     [

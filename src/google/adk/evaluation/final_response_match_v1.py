@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from google.genai import types as genai_types
@@ -96,6 +97,31 @@ def _get_eval_status(score: float, threshold: float) -> EvalStatus:
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
+def _contains_non_ascii(text: str) -> bool:
+  """Returns True if the text contains any non-ASCII characters."""
+  return bool(re.search(r"[^\x00-\x7F]", text))
+
+
+class _UnicodeTokenizer:
+  """A tokenizer that handles non-ASCII text by splitting on whitespace and
+  decomposing non-ASCII tokens into individual characters."""
+
+  def tokenize(self, text: str) -> list[str]:
+    tokens = []
+    for word in text.lower().split():
+      if _contains_non_ascii(word):
+        # For non-ASCII words (e.g. Thai, Chinese, Arabic), treat each
+        # Unicode character as a separate token so that ROUGE overlap is
+        # computed at the character level instead of being discarded entirely.
+        tokens.extend(list(word))
+      else:
+        # Keep ASCII tokens as-is (drop purely punctuation-only tokens).
+        cleaned = re.sub(r"[^a-z0-9]", "", word)
+        if cleaned:
+          tokens.append(cleaned)
+    return tokens
+
+
 def _calculate_rouge_1_scores(candidate: str, reference: str):
   """Calculates the ROUGE-1 score between a candidate and reference text.
 
@@ -114,7 +140,14 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  # Use a Unicode-aware tokenizer when either text contains non-ASCII
+  # characters (e.g. Thai, Chinese, Arabic) so that the default ASCII-only
+  # tokenizer does not strip every token and return a spurious score of 0.
+  if _contains_non_ascii(candidate) or _contains_non_ascii(reference):
+    tokenizer = _UnicodeTokenizer()
+    scorer = rouge_scorer.RougeScorer(["rouge1"], tokenizer=tokenizer)
+  else:
+    scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.
