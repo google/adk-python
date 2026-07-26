@@ -291,9 +291,23 @@ class Runner:
     # Validate mutual exclusivity.
     provided = sum(x is not None for x in (app, agent, node))
     if provided > 1:
-      raise ValueError('Only one of app, agent, or node may be provided.')
+      provided_args = []
+      if app is not None:
+        provided_args.append(f'app={type(app).__name__}')
+      if agent is not None:
+        provided_args.append(f'agent={type(agent).__name__}')
+      if node is not None:
+        provided_args.append(f'node={type(node).__name__}')
+      args_str = ', '.join(provided_args)
+      raise ValueError(
+          'Only one of app, agent, or node may be provided, but got:'
+          f' {args_str}. Pass exactly one to Runner().'
+      )
     if provided == 0:
-      raise ValueError('One of app, agent, or node must be provided.')
+      raise ValueError(
+          'One of app, agent, or node must be provided. Got none.'
+          ' Pass exactly one to Runner().'
+      )
 
     # Handle deprecated plugins argument.
     if plugins is not None:
@@ -443,9 +457,13 @@ class Runner:
         session.events, function_responses[0].id
     )
     if not fc_event:
+      fr_id = function_responses[0].id
+      fr_name = function_responses[0].name
       raise ValueError(
-          'Function call event not found for function response id:'
-          f' {function_responses[0].id}'
+          'Function call event not found for function response'
+          f' (id={fr_id!r}, name={fr_name!r}). Ensure the function'
+          ' call ID matches an existing function call in the session'
+          ' history.'
       )
 
     if invocation_id and invocation_id != fc_event.invocation_id:
@@ -787,11 +805,14 @@ class Runner:
     if fr_ids:
       raise ValueError(
           f'Function call not found for function response ids: {fr_ids}.'
+          ' Ensure each function response ID matches an existing function'
+          ' call in the session history.'
       )
     if len(invocation_ids) > 1:
       raise ValueError(
           'Function responses resolve to multiple'
-          f' invocations: {invocation_ids}.'
+          f' invocations: {invocation_ids}. All function responses in a'
+          ' single message must belong to the same invocation.'
       )
     return invocation_ids.pop()
 
