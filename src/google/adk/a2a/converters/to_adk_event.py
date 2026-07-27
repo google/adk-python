@@ -408,6 +408,31 @@ def _create_mock_function_call_for_required_user_input(
   return output_parts, long_running_function_ids
 
 
+def _extract_all_metadata_fields(metadata: Any) -> dict[str, Any]:
+  """Extracts all GenAI metadata fields from A2A metadata."""
+  metadata_dict = _compat.meta_to_dict(metadata)
+  if not metadata_dict:
+    return {}
+  fields = {
+      "grounding_metadata": _extract_genai_metadata(
+          metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
+      ),
+      "custom_metadata": _extract_genai_metadata(
+          metadata_dict, "custom_metadata", None
+      ),
+      "usage_metadata": _extract_genai_metadata(
+          metadata_dict,
+          "usage_metadata",
+          genai_types.GenerateContentResponseUsageMetadata,
+      ),
+      "error_code": _extract_genai_metadata(metadata_dict, "error_code", None),
+      "citation_metadata": _extract_genai_metadata(
+          metadata_dict, "citation_metadata", genai_types.CitationMetadata
+      ),
+  }
+  return {k: v for k, v in fields.items() if v is not None}
+
+
 @a2a_experimental
 def convert_a2a_task_to_event(
     a2a_task: Task,
@@ -438,6 +463,8 @@ def convert_a2a_task_to_event(
     event_actions = EventActions()
     output_parts = []
     long_running_function_ids = set()
+    metadata_fields: dict[str, Any] = {}
+    status_message = _compat.normalize_message(a2a_task.status.message)
     if a2a_task.artifacts:
       artifact_parts = [
           part for artifact in a2a_task.artifacts for part in artifact.parts
@@ -446,10 +473,11 @@ def convert_a2a_task_to_event(
         event_actions = _merge_event_actions(
             event_actions, _extract_event_actions(artifact.metadata)
         )
+        if not metadata_fields:
+          metadata_fields = _extract_all_metadata_fields(artifact.metadata)
       output_parts, _ = _convert_a2a_parts_to_adk_parts(
           artifact_parts, part_converter
       )
-    status_message = _compat.normalize_message(a2a_task.status.message)
     if status_message and (
         a2a_task.status.state == _compat.TS_INPUT_REQUIRED
         or a2a_task.status.state == _compat.TS_AUTH_REQUIRED
@@ -458,11 +486,15 @@ def convert_a2a_task_to_event(
           event_actions,
           _extract_event_actions(status_message.metadata),
       )
+      if not metadata_fields:
+        metadata_fields = _extract_all_metadata_fields(status_message.metadata)
       parts, ids = _convert_a2a_parts_to_adk_parts(
           status_message.parts, part_converter
       )
       output_parts.extend(parts)
       long_running_function_ids.update(ids)
+    elif status_message and not metadata_fields:
+      metadata_fields = _extract_all_metadata_fields(status_message.metadata)
 
     output_parts, long_running_function_ids = (
         _create_mock_function_call_for_required_user_input(
@@ -476,6 +508,7 @@ def convert_a2a_task_to_event(
         author,
         event_actions,
         long_running_function_ids,
+        **metadata_fields,
     )
 
   except Exception as e:
@@ -515,12 +548,14 @@ def convert_a2a_message_to_event(
         a2a_message.parts, part_converter
     )
     content_role = _a2a_role_to_content_role(getattr(a2a_message, "role", None))
+    metadata_fields = _extract_all_metadata_fields(a2a_message.metadata)
     return _create_event(
         output_parts,
         invocation_context,
         author,
         _extract_event_actions(a2a_message.metadata),
         content_role=content_role,
+        **metadata_fields,
     )
 
   except Exception as e:
@@ -553,9 +588,11 @@ def convert_a2a_status_update_to_event(
     output_parts = []
     long_running_function_ids = set()
     event_actions = EventActions()
+    metadata_fields = {}
     status_message = _compat.normalize_message(a2a_status_update.status.message)
     if status_message:
       event_actions = _extract_event_actions(status_message.metadata)
+      metadata_fields = _extract_all_metadata_fields(status_message.metadata)
       parts, ids = _convert_a2a_parts_to_adk_parts(
           status_message.parts, part_converter
       )
@@ -576,6 +613,7 @@ def convert_a2a_status_update_to_event(
         author,
         event_actions,
         long_running_function_ids,
+        **metadata_fields,
     )
   except Exception as e:
     logger.error("Failed to convert A2A status update to event: %s", e)
@@ -608,28 +646,16 @@ def convert_a2a_artifact_update_to_event(
     output_parts, _ = _convert_a2a_parts_to_adk_parts(
         a2a_artifact_update.artifact.parts, part_converter
     )
-    metadata_dict = _compat.meta_to_dict(a2a_artifact_update.artifact.metadata)
+    metadata_fields = _extract_all_metadata_fields(
+        a2a_artifact_update.artifact.metadata
+    )
     return _create_event(
         output_parts,
         invocation_context,
         author,
         _extract_event_actions(a2a_artifact_update.artifact.metadata),
         partial=not a2a_artifact_update.last_chunk,
-        grounding_metadata=_extract_genai_metadata(
-            metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
-        ),
-        custom_metadata=_extract_genai_metadata(
-            metadata_dict, "custom_metadata", None
-        ),
-        usage_metadata=_extract_genai_metadata(
-            metadata_dict,
-            "usage_metadata",
-            genai_types.GenerateContentResponseUsageMetadata,
-        ),
-        error_code=_extract_genai_metadata(metadata_dict, "error_code", None),
-        citation_metadata=_extract_genai_metadata(
-            metadata_dict, "citation_metadata", genai_types.CitationMetadata
-        ),
+        **metadata_fields,
     )
   except Exception as e:
     logger.error("Failed to convert A2A artifact update to event: %s", e)

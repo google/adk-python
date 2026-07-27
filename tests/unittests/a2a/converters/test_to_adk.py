@@ -21,6 +21,7 @@ from a2a.types import Message
 from a2a.types import Part as A2APart
 from a2a.types import Task
 from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskStatusUpdateEvent
 from google.adk.a2a import _compat
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
@@ -37,6 +38,7 @@ from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIR
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
+from google.adk.events.event_actions import EventActions
 from google.genai import types as genai_types
 import pytest
 
@@ -754,3 +756,88 @@ class TestExtractGenaiMetadata:
         genai_types.GenerateContentResponseUsageMetadata,
     )
     assert result is None
+
+  def test_grounding_metadata_round_trip_task(self) -> None:
+    """Tests that grounding metadata can be successfully extracted from a Task."""
+    event = Event(
+        author="agent",
+        grounding_metadata=genai_types.GroundingMetadata(
+            search_entry_point=genai_types.SearchEntryPoint(
+                rendered_content="test-task"
+            )
+        ),
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text="hi")]
+        ),
+    )
+    a2a_events = convert_event_to_a2a_events(
+        event, {}, task_id="t", context_id="c"
+    )
+    artifact_update = next(
+        e for e in a2a_events if isinstance(e, TaskArtifactUpdateEvent)
+    )
+    # Construct a Task from the artifact update
+    task = Task(
+        id="t",
+        context_id="c",
+        artifacts=[artifact_update.artifact],
+        status=_compat.make_task_status(_compat.TS_COMPLETED),
+    )
+    back = convert_a2a_task_to_event(task, "agent")
+    assert back is not None
+    assert back.grounding_metadata is not None
+    assert (
+        back.grounding_metadata.search_entry_point.rendered_content
+        == "test-task"
+    )
+
+  def test_grounding_metadata_round_trip_status_update(self) -> None:
+    """Tests that grounding metadata can be successfully extracted from a status update."""
+    event = Event(
+        author="agent",
+        actions=EventActions(state_delta={"key": "val"}),
+        grounding_metadata=genai_types.GroundingMetadata(
+            search_entry_point=genai_types.SearchEntryPoint(
+                rendered_content="test-status"
+            )
+        ),
+    )
+    a2a_events = convert_event_to_a2a_events(
+        event, {}, task_id="t", context_id="c"
+    )
+    status_update = next(
+        e for e in a2a_events if isinstance(e, TaskStatusUpdateEvent)
+    )
+    back = convert_a2a_status_update_to_event(status_update, "agent")
+    assert back is not None
+    assert back.grounding_metadata is not None
+    assert (
+        back.grounding_metadata.search_entry_point.rendered_content
+        == "test-status"
+    )
+
+  def test_grounding_metadata_round_trip_message(self) -> None:
+    """Tests that grounding metadata can be successfully extracted from a Message."""
+    event = Event(
+        author="agent",
+        actions=EventActions(state_delta={"key": "val"}),
+        grounding_metadata=genai_types.GroundingMetadata(
+            search_entry_point=genai_types.SearchEntryPoint(
+                rendered_content="test-message"
+            )
+        ),
+    )
+    a2a_events = convert_event_to_a2a_events(
+        event, {}, task_id="t", context_id="c"
+    )
+    status_update = next(
+        e for e in a2a_events if isinstance(e, TaskStatusUpdateEvent)
+    )
+    message = status_update.status.message
+    back = convert_a2a_message_to_event(message, "agent")
+    assert back is not None
+    assert back.grounding_metadata is not None
+    assert (
+        back.grounding_metadata.search_entry_point.rendered_content
+        == "test-message"
+    )
