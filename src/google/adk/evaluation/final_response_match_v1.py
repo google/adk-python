@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from google.genai import types as genai_types
@@ -96,6 +97,30 @@ def _get_eval_status(score: float, threshold: float) -> EvalStatus:
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
+class _UnicodeTokenizer(rouge_scorer.tokenizers.Tokenizer):
+  """A tokenizer that handles non-ASCII text (e.g. Thai, Chinese, Japanese).
+
+  The default rouge_score tokenizer strips all non-ASCII characters, which
+  causes every non-English token to be discarded, resulting in a score of 0.0
+  even for identical non-English strings.  This tokenizer preserves Unicode
+  characters by splitting non-ASCII tokens into individual characters so that
+  character-level overlap can be measured correctly.
+  """
+
+  def tokenize(self, text):
+    text = text.lower()
+    tokens = re.split(r"\s+", text)
+    result = []
+    for token in tokens:
+      if re.match(r"^[a-z0-9]+$", token):
+        result.append(token)
+      elif token:
+        # For non-ASCII tokens (e.g. Thai, Chinese), fall back to character-
+        # level tokenization so that identical strings score 1.0.
+        result.extend(list(token))
+    return [t for t in result if t.strip()]
+
+
 def _calculate_rouge_1_scores(candidate: str, reference: str):
   """Calculates the ROUGE-1 score between a candidate and reference text.
 
@@ -114,7 +139,9 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  scorer = rouge_scorer.RougeScorer(
+      ["rouge1"], tokenizer=_UnicodeTokenizer()
+  )
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.

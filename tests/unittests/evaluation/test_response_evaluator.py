@@ -70,6 +70,44 @@ class TestResponseEvaluator:
     assert evaluation_result.overall_eval_status == EvalStatus.FAILED
     mock_perform_eval.assert_not_called()  # Ensure _perform_eval was not called
 
+  def test_evaluate_invocations_rouge_metric_non_english(self, mocker):
+    """Test that ROUGE metric correctly scores non-English (Thai) text."""
+    mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
+    thai_text = "สวัสดี"
+    actual_invocations = [
+        Invocation(
+            user_content=genai_types.Content(
+                parts=[genai_types.Part(text="สวัสดี?")]
+            ),
+            final_response=genai_types.Content(
+                parts=[genai_types.Part(text=thai_text)]
+            ),
+        )
+    ]
+    expected_invocations = [
+        Invocation(
+            user_content=genai_types.Content(
+                parts=[genai_types.Part(text="สวัสดี?")]
+            ),
+            final_response=genai_types.Content(
+                parts=[genai_types.Part(text=thai_text)]
+            ),
+        )
+    ]
+    evaluator = ResponseEvaluator(
+        threshold=0.5, metric_name="response_match_score"
+    )
+
+    evaluation_result = evaluator.evaluate_invocations(
+        actual_invocations, expected_invocations
+    )
+
+    # Identical Thai strings should score 1.0, not 0.0.
+    assert evaluation_result.overall_score == pytest.approx(1.0)
+    assert evaluation_result.overall_eval_status == EvalStatus.PASSED
+
   def test_evaluate_invocations_coherence_metric_passed(self, mocker):
     """Test evaluate_invocations function for Coherence metric."""
     mock_perform_eval = mocker.patch(
