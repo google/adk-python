@@ -27,7 +27,6 @@ import os
 import sys
 import threading
 from typing import Any
-from typing import AsyncIterator
 from typing import Callable
 from typing import Dict
 from typing import Optional
@@ -37,25 +36,7 @@ from typing import TextIO
 import urllib.parse
 
 import google.auth
-import google.auth.credentials
-from google.auth.transport.requests import Request
 import httpx
-
-try:
-  from google.auth.aio.credentials import Credentials as AsyncCredentials
-  from google.auth.aio.transport.sessions import AsyncAuthorizedSession
-
-  _AIO_SUPPORTED = True
-except ImportError:
-
-  class AsyncCredentials:  # pylint: disable=g-bad-classes
-    pass
-
-  class AsyncAuthorizedSession:  # pylint: disable=g-bad-classes
-    pass
-
-  _AIO_SUPPORTED = False
-
 from mcp import ClientSession
 from mcp import SamplingCapability
 from mcp import StdioServerParameters
@@ -77,6 +58,11 @@ except (ImportError, AttributeError):
 
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...utils._async_mtls_transport import _AIO_SUPPORTED
+from ...utils._async_mtls_transport import _GoogleAuthAsyncTransport
+from ...utils._async_mtls_transport import _RefreshableAsyncCredentials
+from ...utils._async_mtls_transport import _SharedAsyncTransport
+from ...utils._async_mtls_transport import AsyncAuthorizedSession
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -369,130 +355,6 @@ def retry_on_errors(func):
       return await func(self, *args, **kwargs)
 
   return wrapper
-
-
-class _RefreshableAsyncCredentials(AsyncCredentials):
-  """Adapter to refresh sync credentials asynchronously."""
-
-  def __init__(
-      self,
-      creds: google.auth.credentials.Credentials,
-      target_host: str | None = None,
-  ):
-    super().__init__()
-    self._creds = creds
-    self._target_host = target_host
-    self._lock = asyncio.Lock()
-
-  async def before_request(
-      self,
-      _request: Any,
-      _method: str,
-      url: str,
-      headers: dict[str, str],
-  ) -> None:
-    if self._target_host:
-      parsed_url = urllib.parse.urlparse(url)
-      if parsed_url.netloc != self._target_host:
-        logger.debug(
-            'Skipping token injection for redirect to %s', parsed_url.netloc
-        )
-        return
-
-    if any(k.lower() == 'authorization' for k in headers):
-      logger.debug('Authorization header already present, not overwriting')
-      return
-
-    async with self._lock:
-      await asyncio.to_thread(self._refresh_sync)
-    if self._creds.token:
-      headers['Authorization'] = f'Bearer {self._creds.token}'
-
-  def _refresh_sync(self) -> None:
-    if self._creds.expired or not self._creds.token:
-      self._creds.refresh(Request())
-
-
-class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
-  """Adapter to bridge google-auth Response.content with httpx.AsyncByteStream."""
-
-  def __init__(self, auth_response: Any):
-    self._auth_response = auth_response
-
-  async def __aiter__(self) -> AsyncIterator[bytes]:
-    async for chunk in self._auth_response.content():
-      yield chunk
-
-  async def aclose(self) -> None:
-    await self._auth_response.close()
-
-
-class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
-  """Adapter to bridge google-auth AsyncAuthorizedSession with httpx.AsyncBaseTransport."""
-
-  def __init__(self, auth_session: Any):
-    self._auth_session = auth_session
-
-  async def handle_async_request(
-      self, request: httpx.Request
-  ) -> httpx.Response:
-    content = await request.aread()
-    headers_dict = dict(request.headers)
-
-    timeout_val = 30.0
-    if request.extensions and 'timeout' in request.extensions:
-      timeout_dict = request.extensions['timeout']
-      if 'read' in timeout_dict and timeout_dict['read'] is not None:
-        timeout_val = timeout_dict['read']
-
-    if request.headers.get('accept') == 'text/event-stream':
-      # google-auth-aio translates timeout to aiohttp ClientTimeout(total=timeout).
-      # For SSE streams, we disable the total timeout (setting it to 0.0) to
-      # prevent aiohttp from forcibly closing the stream after sse_read_timeout.
-      timeout_val = 0.0
-
-    auth_response: Any = await self._auth_session.request(
-        method=request.method,
-        url=str(request.url),
-        data=content if content else None,
-        headers=headers_dict,
-        timeout=timeout_val,
-    )
-
-    # google-auth-aio uses aiohttp internally, which automatically handles
-    # decompression and decodes chunked transfer encoding, but leaves the
-    # headers intact. We must strip these headers so httpx doesn't attempt
-    # to decompress or parse chunked framing again on the raw stream.
-    response_headers = {
-        k: v
-        for k, v in auth_response.headers.items()
-        if k.lower()
-        not in ('content-encoding', 'content-length', 'transfer-encoding')
-    }
-
-    return httpx.Response(
-        status_code=auth_response.status_code,
-        headers=response_headers,
-        stream=_GoogleAuthAsyncByteStream(auth_response),
-    )
-
-  async def aclose(self) -> None:
-    await self._auth_session.close()
-
-
-class _SharedAsyncTransport(httpx.AsyncBaseTransport):
-  """Wrapper transport that prevents the wrapped transport from being closed."""
-
-  def __init__(self, transport: httpx.AsyncBaseTransport):
-    self._transport = transport
-
-  async def handle_async_request(
-      self, request: httpx.Request
-  ) -> httpx.Response:
-    return await self._transport.handle_async_request(request)
-
-  async def aclose(self) -> None:
-    pass
 
 
 def _create_mtls_client_factory(

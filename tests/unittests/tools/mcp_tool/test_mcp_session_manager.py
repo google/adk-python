@@ -23,7 +23,6 @@ from unittest.mock import patch
 
 from google.adk.platform import thread as platform_thread
 from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFactory
-from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
 from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
 from google.adk.tools.mcp_tool.mcp_session_manager import _SharedAsyncTransport
@@ -33,6 +32,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.utils._async_mtls_transport import _GoogleAuthAsyncByteStream
 import httpx
 from mcp import StdioServerParameters
 import pytest

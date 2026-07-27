@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import logging
 import os
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -663,6 +664,118 @@ class TestAgentRegistry:
 
     agent = registry.get_remote_a2a_agent("test-agent")
     _assert_preferred_transport(agent._agent_card, _compat.TP_JSONRPC)
+
+  def _stub_a2a_response(self, registry, url):
+    """Configures the registry to return an A2A agent whose interface is `url`."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "displayName": "TestAgent",
+        "description": "Test Desc",
+        "version": "1.0",
+        "protocols": [{
+            "type": _ProtocolType.A2A_AGENT,
+            "interfaces": [{"url": url, "protocolBinding": "HTTP_JSON"}],
+        }],
+    }
+    mock_response.raise_for_status = MagicMock()
+    registry._session.get.return_value = mock_response
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+  def test_get_remote_a2a_agent_enables_mtls_for_google_endpoint(
+      self, registry
+  ):
+    self._stub_a2a_response(
+        registry, "https://us-central1-aiplatform.googleapis.com/a2a"
+    )
+    with patch(
+        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+        return_value=True,
+    ):
+      agent = registry.get_remote_a2a_agent("test-agent")
+    assert agent._enable_google_auth_mtls is True
+
+  def test_get_remote_a2a_agent_no_mtls_for_non_google_endpoint(self, registry):
+    self._stub_a2a_response(registry, "https://my-agent.example.com/a2a")
+    with patch(
+        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+        return_value=True,
+    ):
+      agent = registry.get_remote_a2a_agent("test-agent")
+    assert agent._enable_google_auth_mtls is False
+
+  def test_get_remote_a2a_agent_no_mtls_without_client_cert(self, registry):
+    self._stub_a2a_response(
+        registry, "https://us-central1-aiplatform.googleapis.com/a2a"
+    )
+    with patch(
+        "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+        return_value=False,
+    ):
+      agent = registry.get_remote_a2a_agent("test-agent")
+    assert agent._enable_google_auth_mtls is False
+
+  def test_get_remote_a2a_agent_no_mtls_when_httpx_client_provided(
+      self, registry, caplog
+  ):
+    self._stub_a2a_response(
+        registry, "https://us-central1-aiplatform.googleapis.com/a2a"
+    )
+    custom_client = httpx.AsyncClient()
+    with (
+        patch(
+            "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+            return_value=True,
+        ),
+        caplog.at_level(
+            logging.WARNING, logger="google_adk.google.adk.integrations"
+        ),
+    ):
+      agent = registry.get_remote_a2a_agent(
+          "test-agent", httpx_client=custom_client
+      )
+    assert agent._enable_google_auth_mtls is False
+    assert agent._httpx_client is custom_client
+    # The suppressed-mTLS footgun must be surfaced, not silent.
+    assert any(
+        "will be rejected" in record.message for record in caplog.records
+    )
+
+  def test_get_remote_a2a_agent_no_warning_for_non_google_with_client(
+      self, registry, caplog
+  ):
+    self._stub_a2a_response(registry, "https://my-agent.example.com/a2a")
+    custom_client = httpx.AsyncClient()
+    with (
+        patch(
+            "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+            return_value=True,
+        ),
+        caplog.at_level(
+            logging.WARNING, logger="google_adk.google.adk.integrations"
+        ),
+    ):
+      agent = registry.get_remote_a2a_agent(
+          "test-agent", httpx_client=custom_client
+      )
+    assert agent._enable_google_auth_mtls is False
+    assert not any(
+        "will be rejected" in record.message for record in caplog.records
+    )
+
+  def test_get_remote_a2a_agent_no_mtls_when_endpoint_never(self, registry):
+    self._stub_a2a_response(
+        registry, "https://us-central1-aiplatform.googleapis.com/a2a"
+    )
+    with (
+        patch(
+            "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+            return_value=True,
+        ),
+        patch.dict(os.environ, {"GOOGLE_API_USE_MTLS_ENDPOINT": "never"}),
+    ):
+      agent = registry.get_remote_a2a_agent("test-agent")
+    assert agent._enable_google_auth_mtls is False
 
   def test_get_auth_headers(self, registry):
     registry._credentials.token = "fake-token"

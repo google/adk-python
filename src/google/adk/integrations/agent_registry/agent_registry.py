@@ -579,6 +579,9 @@ class AgentRegistry:
           agent_card=agent_card,
           description=agent_card.description,
           httpx_client=httpx_client,
+          enable_google_auth_mtls=_resolve_a2a_mtls_opt_in(
+              httpx_client, _compat.agent_card_url(agent_card)
+          ),
       )
 
     name = self._clean_name(agent_info.get("displayName", agent_name))
@@ -621,6 +624,7 @@ class AgentRegistry:
         agent_card=agent_card,
         description=description,
         httpx_client=httpx_client,
+        enable_google_auth_mtls=_resolve_a2a_mtls_opt_in(httpx_client, url),
     )
 
 
@@ -637,17 +641,64 @@ def _use_client_cert_effective() -> bool:
     return use_client_cert_str == "true"
 
 
-def _get_agent_registry_base_url(client_cert_source: Any | None = None) -> str:
-  """Returns the base URL based on mTLS configuration and cert availability."""
+def _mtls_endpoint_setting() -> _MtlsEndpoint:
+  """Returns the GOOGLE_API_USE_MTLS_ENDPOINT setting, defaulting to AUTO."""
   use_mtls_endpoint_str = os.getenv(
       "GOOGLE_API_USE_MTLS_ENDPOINT", _MtlsEndpoint.AUTO.value
   ).lower()
   try:
-    use_mtls_endpoint = _MtlsEndpoint(use_mtls_endpoint_str)
+    return _MtlsEndpoint(use_mtls_endpoint_str)
   except ValueError:
-    use_mtls_endpoint = _MtlsEndpoint.AUTO
+    return _MtlsEndpoint.AUTO
+
+
+def _get_agent_registry_base_url(client_cert_source: Any | None = None) -> str:
+  """Returns the base URL based on mTLS configuration and cert availability."""
+  use_mtls_endpoint = _mtls_endpoint_setting()
   if (use_mtls_endpoint is _MtlsEndpoint.ALWAYS) or (
       use_mtls_endpoint is _MtlsEndpoint.AUTO and client_cert_source is not None
   ):
     return AGENT_REGISTRY_MTLS_BASE_URL
   return AGENT_REGISTRY_BASE_URL
+
+
+def _should_use_google_auth_mtls(url: str | None) -> bool:
+  """Whether outbound A2A calls to `url` should use a google-auth mTLS transport.
+
+  Google context-aware access policies (Agent Identity) bind access tokens to an
+  mTLS channel, so a Google-hosted A2A endpoint must be reached over mTLS or it
+  rejects the bound token with a 401. This gates that behavior to Google
+  endpoints when a client certificate is configured and mTLS is not opted out.
+  """
+  return bool(
+      url
+      and _is_google_api(url)
+      and _use_client_cert_effective()
+      and _mtls_endpoint_setting() is not _MtlsEndpoint.NEVER
+  )
+
+
+def _resolve_a2a_mtls_opt_in(
+    httpx_client: httpx.AsyncClient | None, url: str | None
+) -> bool:
+  """Decides whether the RemoteA2aAgent should build a google-auth mTLS client.
+
+  A caller-supplied `httpx_client` is never overridden, but if mTLS would
+  otherwise be required for this endpoint, a plain client will have its
+  channel-bound (Agent Identity) token rejected with 401 UNAUTHENTICATED — so
+  warn loudly instead of failing silently.
+  """
+  if not _should_use_google_auth_mtls(url):
+    return False
+  if httpx_client is not None:
+    logger.warning(
+        "A custom httpx_client was supplied for the Google A2A endpoint %s"
+        " while mTLS client certificates are configured. The supplied client"
+        " will be used as-is; if it does not present the client certificate,"
+        " channel-bound credentials (e.g. Agent Identity) will be rejected"
+        " with 401 UNAUTHENTICATED. Omit httpx_client to let ADK build an"
+        " mTLS-capable client automatically.",
+        url,
+    )
+    return False
+  return True

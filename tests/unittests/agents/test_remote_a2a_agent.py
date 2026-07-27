@@ -3365,3 +3365,107 @@ class TestRemoteA2aAgentDeepcopy:
         copied_config.request_interceptors[0]
         is not config.request_interceptors[0]
     )
+
+
+class TestRemoteA2aAgentGoogleAuthMtls:
+  """Tests for the google-auth mTLS transport opt-in."""
+
+  @pytest.mark.asyncio
+  async def test_default_client_plain_when_mtls_disabled(self):
+    agent = RemoteA2aAgent(name="test_agent", agent_card=_make_agent_card())
+    with patch.object(
+        remote_a2a_agent, "create_google_auth_mtls_transport"
+    ) as mock_factory:
+      client = await agent._create_default_httpx_client()
+    assert isinstance(client, httpx.AsyncClient)
+    mock_factory.assert_not_called()
+    await client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_default_client_uses_mtls_transport_when_enabled(self):
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=_make_agent_card(url="https://foo.example.com/a2a"),
+        enable_google_auth_mtls=True,
+    )
+    mock_transport = Mock(spec=httpx.AsyncBaseTransport)
+    with patch.object(
+        remote_a2a_agent,
+        "create_google_auth_mtls_transport",
+        new=AsyncMock(return_value=mock_transport),
+    ) as mock_factory:
+      client = await agent._create_default_httpx_client()
+    assert client._transport is mock_transport
+    mock_factory.assert_awaited_once()
+    assert mock_factory.await_args.args[0] == "https://foo.example.com/a2a"
+    await client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_default_client_falls_back_when_no_mtls(self):
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=_make_agent_card(url="https://foo.example.com/a2a"),
+        enable_google_auth_mtls=True,
+    )
+    with patch.object(
+        remote_a2a_agent,
+        "create_google_auth_mtls_transport",
+        new=AsyncMock(return_value=None),
+    ):
+      client = await agent._create_default_httpx_client()
+    assert isinstance(client, httpx.AsyncClient)
+    await client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_mtls_rewrites_google_endpoint_to_mtls_variant(self):
+    """When mTLS is negotiated, both the transport and the A2A client target
+    the .mtls.googleapis.com endpoint (a bound token is rejected on the plain
+    endpoint)."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=_make_agent_card(
+            url="https://us-central1-aiplatform.googleapis.com/a2a"
+        ),
+        enable_google_auth_mtls=True,
+    )
+    mock_transport = Mock(spec=httpx.AsyncBaseTransport)
+    with patch.object(
+        remote_a2a_agent,
+        "create_google_auth_mtls_transport",
+        new=AsyncMock(return_value=mock_transport),
+    ) as mock_factory:
+      client = await agent._create_default_httpx_client()
+    # The transport is bound to the mTLS endpoint...
+    assert (
+        mock_factory.await_args.args[0]
+        == "https://us-central1-aiplatform.mtls.googleapis.com/a2a"
+    )
+    # ...and the agent card is rewritten so the A2A client dials it too.
+    assert (
+        _compat.agent_card_url(agent._agent_card)
+        == "https://us-central1-aiplatform.mtls.googleapis.com/a2a"
+    )
+    assert client._transport is mock_transport
+    await client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_mtls_does_not_rewrite_when_transport_unavailable(self):
+    """If mTLS can't be negotiated, the card endpoint is left unchanged."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=_make_agent_card(
+            url="https://us-central1-aiplatform.googleapis.com/a2a"
+        ),
+        enable_google_auth_mtls=True,
+    )
+    with patch.object(
+        remote_a2a_agent,
+        "create_google_auth_mtls_transport",
+        new=AsyncMock(return_value=None),
+    ):
+      client = await agent._create_default_httpx_client()
+    assert (
+        _compat.agent_card_url(agent._agent_card)
+        == "https://us-central1-aiplatform.googleapis.com/a2a"
+    )
+    await client.aclose()
