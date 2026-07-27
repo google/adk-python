@@ -459,7 +459,7 @@ def _validate_model_string(model: str) -> bool:
 
 # Keeps a strong reference to fire-and-forget cleanup tasks so they are not
 # garbage collected before they finish (see CompletionsHTTPClient._cleanup_client).
-_CLEANUP_TASKS: set[asyncio.Task] = set()
+_CLEANUP_TASKS: set[asyncio.Task[None]] = set()
 
 
 class CompletionsHTTPClient:
