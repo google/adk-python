@@ -30,6 +30,8 @@ from google.genai import types
 import pydantic
 from typing_extensions import override
 
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..utils._schema_utils import get_list_inner_type
 from ..utils._schema_utils import is_list_of_basemodel
 from ..utils.context_utils import Aclosing
@@ -48,11 +50,17 @@ class FunctionTool(BaseTool):
     func: The function to wrap.
   """
 
-  # Declaration built for the last seen (func, ignore_params, api variant).
-  # Declared on the class so instances created without __init__ (for example
-  # via copy.copy) still resolve it.
+  # Declaration built for the last seen function, ignored parameters, API
+  # variant, and schema representation. Declared on the class so instances
+  # created without __init__ (for example via copy.copy) still resolve it.
   _declaration_cache: Optional[
-      tuple[Callable[..., Any], tuple[str, ...], Any, types.FunctionDeclaration]
+      tuple[
+          Callable[..., Any],
+          tuple[str, ...],
+          Any,
+          bool,
+          types.FunctionDeclaration,
+      ]
   ] = None
 
   def __init__(
@@ -102,12 +110,16 @@ class FunctionTool(BaseTool):
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     variant = self._api_variant
     ignore_params = tuple(self._ignore_params)
+    json_schema_enabled = is_feature_enabled(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL
+    )
     cache = self._declaration_cache
     if (
         cache is None
         or cache[0] is not self.func
         or cache[1] != ignore_params
         or cache[2] != variant
+        or cache[3] != json_schema_enabled
     ):
       function_decl = types.FunctionDeclaration.model_validate(
           build_function_declaration(
@@ -118,7 +130,13 @@ class FunctionTool(BaseTool):
               variant=variant,
           )
       )
-      cache = (self.func, ignore_params, variant, function_decl)
+      cache = (
+          self.func,
+          ignore_params,
+          variant,
+          json_schema_enabled,
+          function_decl,
+      )
       self._declaration_cache = cache
 
     # Callers are allowed to mutate the declaration they receive:
@@ -126,7 +144,7 @@ class FunctionTool(BaseTool):
     # writes an enum into its parameter schema, and BaseToolset rewrites its
     # name when prefixing. Hand back a private copy so the cached value stays
     # pristine.
-    return copy.deepcopy(cache[3])
+    return copy.deepcopy(cache[4])
 
   def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
     """Preprocess and convert function arguments before invocation.

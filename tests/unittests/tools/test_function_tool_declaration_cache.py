@@ -22,6 +22,8 @@ declaration depends on.
 
 import copy
 
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools import _function_tool_declarations
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
@@ -198,3 +200,55 @@ def test_changing_api_variant_rebuilds_the_declaration(monkeypatch, variant):
   else:
     assert switched.response_json_schema is not None
     assert studio.response_json_schema is None
+
+
+@pytest.mark.parametrize(
+    'variant',
+    [GoogleLLMVariant.GEMINI_API, GoogleLLMVariant.VERTEX_AI],
+)
+@pytest.mark.parametrize('first_enabled', [False, True])
+def test_changing_schema_representation_rebuilds_the_declaration(
+    monkeypatch, variant, first_enabled
+):
+  """The feature flag selects legacy or JSON-schema declaration fields."""
+  tool = FunctionTool(sample_tool)
+  monkeypatch.setattr(
+      type(tool), '_api_variant', property(lambda self: variant)
+  )
+
+  with temporary_feature_override(
+      FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, first_enabled
+  ):
+    first = tool._get_declaration()
+  with temporary_feature_override(
+      FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, not first_enabled
+  ):
+    second = tool._get_declaration()
+
+  declarations = {first_enabled: first, not first_enabled: second}
+  json_schema = declarations[True]
+  legacy = declarations[False]
+  assert json_schema.parameters_json_schema is not None
+  assert json_schema.parameters is None
+  assert legacy.parameters_json_schema is None
+  assert legacy.parameters is not None
+
+
+def test_provider_environment_aliases_rebuild_the_declaration(monkeypatch):
+  """Both provider environment variables resolve into the cache's API key."""
+  tool = FunctionTool(sample_tool)
+  monkeypatch.delenv('GOOGLE_GENAI_USE_ENTERPRISE', raising=False)
+  monkeypatch.delenv('GOOGLE_GENAI_USE_VERTEXAI', raising=False)
+
+  studio = tool._get_declaration()
+  monkeypatch.setenv('GOOGLE_GENAI_USE_VERTEXAI', '1')
+  deprecated_vertex = tool._get_declaration()
+  monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', '0')
+  enterprise_precedence = tool._get_declaration()
+  monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', 'true')
+  enterprise_vertex = tool._get_declaration()
+
+  assert studio.response_json_schema is None
+  assert deprecated_vertex.response_json_schema is not None
+  assert enterprise_precedence.response_json_schema is None
+  assert enterprise_vertex.response_json_schema is not None
