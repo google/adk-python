@@ -1090,3 +1090,37 @@ async def test_parallel_worker_hitl_respects_parallel_workers_limits(
           },
       ),
   ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_simultaneous_failures_raise_lowest_index(
+    request: pytest.FixtureRequest,
+):
+  """The exception surfaced from concurrent failures is deterministic.
+
+  Setup: 2 items whose workers both fail immediately, so both tasks can
+    complete within the same asyncio.wait wake-up.
+  Assert: the propagated exception is always the lowest-index item's.
+    Previously the failed task was picked by iterating the unordered set
+    returned by asyncio.wait, so the surfaced exception could differ
+    between runs (and between record and replay).
+  """
+
+  async def _worker_always_fails(node_input: str) -> str:
+    raise ValueError(f'{node_input} failed')
+
+  for _ in range(10):
+    node_a = _ProducerNode(items=['item-0', 'item-1'], name='NodeA')
+    worker = ParallelWorker(node=_worker_always_fails)
+    agent = Workflow(
+        name='test_agent_simultaneous_fail',
+        edges=[
+            (START, node_a),
+            (node_a, worker),
+        ],
+    )
+    app = App(name=request.function.__name__, root_agent=agent)
+    runner = testing_utils.InMemoryRunner(app=app)
+
+    with pytest.raises(ValueError, match='item-0 failed'):
+      await runner.run_async(testing_utils.get_user_content('start'))

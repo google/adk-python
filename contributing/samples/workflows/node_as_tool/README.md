@@ -39,4 +39,4 @@ To expose an existing `Node` or `Workflow` as a tool callable by an `Agent`:
 
 ## Related Guides
 
-- [Workflows](../../../../docs/guides/workflows/workflows.md) - Explains building complex multi-step graphs.
+- [Workflow](../../../../docs/guides/workflow/workflow/index.md) - Explains building complex multi-step graphs.

@@ -34,6 +34,7 @@ from pydantic import Field
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ..constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -153,8 +154,11 @@ class _CloudTTSLlm(BaseLlm):
       A single ``LlmResponse`` with audio data in ``inline_data``.
     """
     # Lazy imports to avoid mandatory dependency when TTS is not used.
-    from google.cloud.texttospeech_v1 import TextToSpeechAsyncClient
-    from google.cloud.texttospeech_v1.types import cloud_tts
+    try:
+      from google.cloud.texttospeech_v1 import TextToSpeechAsyncClient
+      from google.cloud.texttospeech_v1.types import cloud_tts
+    except ImportError as e:
+      raise ImportError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
 
     # Initialise client lazily.
     if self._tts_client is None:

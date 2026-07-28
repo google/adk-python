@@ -40,6 +40,7 @@ from google.adk.telemetry.tracing import trace_tool_call
 from google.adk.telemetry.tracing import use_inference_span
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
+from google.genai import errors as genai_errors
 from google.genai import types
 from mcp import ClientSession as McpClientSession
 from mcp import ListToolsResult as McpListToolsResult
@@ -1472,6 +1473,31 @@ def test_trace_tool_call_with_standard_error(
 
   assert (
       mock.call('error.type', 'ValueError')
+      in mock_span_fixture.set_attribute.call_args_list
+  )
+
+
+def test_trace_tool_call_with_genai_api_error_uses_status_code(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  """A genai APIError surfaces its HTTP status code (not ``ClientError``)."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  test_error = genai_errors.ClientError(
+      429, {'error': {'code': 429, 'status': 'RESOURCE_EXHAUSTED'}}
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'param': 1},
+      function_response_event=None,
+      error=test_error,
+  )
+
+  assert (
+      mock.call('error.type', '429')
       in mock_span_fixture.set_attribute.call_args_list
   )
 

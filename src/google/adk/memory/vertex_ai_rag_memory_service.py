@@ -136,6 +136,9 @@ class VertexAiRagMemoryService(BaseMemoryService):
         self._project = self._project or parts[1]
         self._location = self._location or parts[3]
 
+    # Top-k belongs on the retrieval query, not on the store: the
+    # retrieveContexts request's VertexRagStore has no such field.
+    self._similarity_top_k = similarity_top_k
     self._vertex_rag_store = types.VertexRagStore(
         rag_resources=[
             types.VertexRagStoreRagResource(rag_corpus=rag_corpus),
@@ -208,7 +211,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
         vertex_rag_store=self._vertex_rag_store,
         query=agentplatform_types.RagQuery(
             text=query,
-            similarity_top_k=self._vertex_rag_store.similarity_top_k,
+            similarity_top_k=self._similarity_top_k,
         ),
     )
     memory_results = []

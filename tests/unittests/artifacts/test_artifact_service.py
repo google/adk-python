@@ -26,8 +26,8 @@ from typing import Optional
 from typing import Union
 from unittest import mock
 from unittest.mock import patch
-from urllib.parse import unquote
 from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from google.adk.artifacts import file_artifact_service
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
@@ -674,6 +674,178 @@ async def test_gcs_save_and_load_empty_text_artifact(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "session_id"),
+    [("report.txt", "session"), ("user:profile.txt", None)],
+)
+async def test_file_artifacts_are_isolated_by_app(
+    tmp_path: Path,
+    filename: str,
+    session_id: str | None,
+):
+  """Every file-artifact operation stays within its application."""
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  scope = {
+      "user_id": "user",
+      "session_id": session_id,
+      "filename": filename,
+  }
+
+  assert (
+      await service.save_artifact(
+          app_name="app-a", artifact=types.Part(text="secret-a"), **scope
+      )
+      == 0
+  )
+
+  assert await service.load_artifact(app_name="app-b", **scope) is None
+  assert (
+      await service.list_artifact_keys(
+          app_name="app-b",
+          user_id="user",
+          session_id=session_id,
+      )
+      == []
+  )
+  assert await service.list_versions(app_name="app-b", **scope) == []
+  assert await service.list_artifact_versions(app_name="app-b", **scope) == []
+  assert await service.get_artifact_version(app_name="app-b", **scope) is None
+
+  assert (
+      await service.save_artifact(
+          app_name="app-b", artifact=types.Part(text="secret-b"), **scope
+      )
+      == 0
+  )
+  assert await service.load_artifact(app_name="app-a", **scope) == types.Part(
+      text="secret-a"
+  )
+
+  await service.delete_artifact(app_name="app-b", **scope)
+  assert await service.load_artifact(app_name="app-b", **scope) is None
+  assert await service.load_artifact(app_name="app-a", **scope) == types.Part(
+      text="secret-a"
+  )
+
+
+def _write_unscoped_artifact(root: Path, *texts: str) -> None:
+  """Writes an artifact in the layout used before storage was app-scoped."""
+  versions_dir = (
+      root
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / "report.txt"
+      / "versions"
+  )
+  for version, text in enumerate(texts):
+    version_dir = versions_dir / str(version)
+    version_dir.mkdir(parents=True)
+    payload_path = version_dir / "report.txt"
+    payload_path.write_text(text, encoding="utf-8")
+    file_artifact_service._write_metadata(
+        version_dir / "metadata.json",
+        filename="report.txt",
+        mime_type=None,
+        version=version,
+        canonical_uri=payload_path.resolve().as_uri(),
+        custom_metadata=None,
+    )
+
+
+_UNSCOPED_SCOPE = {
+    "user_id": "user",
+    "session_id": "session",
+    "filename": "report.txt",
+}
+
+
+@pytest.mark.asyncio
+async def test_file_artifact_reads_fall_back_to_unscoped_layout(
+    tmp_path: Path,
+):
+  """Artifacts written before app scoping stay readable after the upgrade."""
+  root = tmp_path / "artifacts"
+  _write_unscoped_artifact(root, "older", "legacy")
+  service = FileArtifactService(root_dir=root)
+
+  assert await service.load_artifact(
+      app_name="app-a", **_UNSCOPED_SCOPE
+  ) == types.Part(text="legacy")
+  assert await service.list_versions(app_name="app-a", **_UNSCOPED_SCOPE) == [
+      0,
+      1,
+  ]
+  assert (
+      await service.get_artifact_version(app_name="app-a", **_UNSCOPED_SCOPE)
+      is not None
+  )
+  assert await service.list_artifact_keys(
+      app_name="app-a", user_id="user", session_id="session"
+  ) == ["report.txt"]
+
+
+@pytest.mark.asyncio
+async def test_file_artifact_saves_never_reuse_unscoped_layout(
+    tmp_path: Path,
+):
+  """Saving after the upgrade writes app-scoped and shadows the older copy."""
+  root = tmp_path / "artifacts"
+  _write_unscoped_artifact(root, "older", "legacy")
+  service = FileArtifactService(root_dir=root)
+
+  assert (
+      await service.save_artifact(
+          app_name="app-a",
+          artifact=types.Part(text="current"),
+          **_UNSCOPED_SCOPE,
+      )
+      == 0
+  )
+  assert (root / "apps" / "app-a" / "users" / "user").is_dir()
+  assert await service.load_artifact(
+      app_name="app-a", **_UNSCOPED_SCOPE
+  ) == types.Part(text="current")
+  # Version numbering restarts and the older versions stop being served.
+  assert await service.list_versions(app_name="app-a", **_UNSCOPED_SCOPE) == [0]
+  assert (
+      await service.load_artifact(
+          version=1, app_name="app-a", **_UNSCOPED_SCOPE
+      )
+      is None
+  )
+
+  await service.delete_artifact(app_name="app-a", **_UNSCOPED_SCOPE)
+  assert (
+      await service.load_artifact(app_name="app-a", **_UNSCOPED_SCOPE) is None
+  )
+
+
+@pytest.mark.asyncio
+async def test_file_artifact_delete_purges_unscoped_copy_for_every_app(
+    tmp_path: Path,
+):
+  """The pre-app-scoped copy is shared, so any app's delete removes it."""
+  root = tmp_path / "artifacts"
+  _write_unscoped_artifact(root, "legacy")
+  service = FileArtifactService(root_dir=root)
+
+  await service.delete_artifact(app_name="app-b", **_UNSCOPED_SCOPE)
+
+  assert (
+      await service.load_artifact(app_name="app-a", **_UNSCOPED_SCOPE) is None
+  )
+  assert (
+      await service.list_artifact_keys(
+          app_name="app-a", user_id="user", session_id="session"
+      )
+      == []
+  )
+
+
+@pytest.mark.asyncio
 async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   """Ensures FileArtifactService writes camelCase metadata without newlines."""
   artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
@@ -691,6 +863,8 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   metadata_path = (
       tmp_path
       / "artifacts"
+      / "apps"
+      / "myapp"
       / "users"
       / "user123"
       / "sessions"
@@ -718,7 +892,7 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
       "customMetadata": {},
   }
   parsed_canonical = urlparse(metadata["canonicalUri"])
-  canonical_path = Path(unquote(parsed_canonical.path))
+  canonical_path = Path(url2pathname(parsed_canonical.path))
   assert canonical_path.name == "report.txt"
   assert canonical_path.read_bytes() == b"binary-content"
 
@@ -752,6 +926,8 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   version_payload_path = (
       tmp_path
       / "artifacts"
+      / "apps"
+      / "myapp"
       / "users"
       / "user123"
       / "sessions"
@@ -766,7 +942,7 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   assert version_meta.canonical_uri == version_payload_path.as_uri()
   assert version_meta.custom_metadata == custom_metadata
   parsed_version_uri = urlparse(version_meta.canonical_uri)
-  version_uri_path = Path(unquote(parsed_version_uri.path))
+  version_uri_path = Path(url2pathname(parsed_version_uri.path))
   assert version_uri_path.read_bytes() == b"binary-content"
 
   fetched = await artifact_service.get_artifact_version(
@@ -873,13 +1049,14 @@ async def test_save_and_load_namespaced_user_id_succeeds(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
     ],
 )
 @pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
 async def test_save_artifact_rejects_traversal_in_app_name(
     service_type, app_name, match, artifact_service_factory
 ):
-  """In-memory and GCS ArtifactService implementations reject app_name values that escape directory."""
+  """Artifact services reject app names that escape their storage scope."""
   service = artifact_service_factory(service_type)
   artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
   with pytest.raises(InputValidationError, match=match):
@@ -948,13 +1125,14 @@ async def test_save_artifact_rejects_traversal_in_session_id(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
     ],
 )
 @pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
 async def test_load_artifact_rejects_traversal_in_app_name(
     service_type, app_name, match, artifact_service_factory
 ):
-  """In-memory and GCS ArtifactService implementations reject app_name values that escape directory."""
+  """Artifact services reject app names that escape their storage scope."""
   service = artifact_service_factory(service_type)
   with pytest.raises(InputValidationError, match=match):
     await service.load_artifact(
@@ -1017,13 +1195,14 @@ async def test_load_artifact_rejects_traversal_in_session_id(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
     ],
 )
 @pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
 async def test_delete_artifact_rejects_traversal_in_app_name(
     service_type, app_name, match, artifact_service_factory
 ):
-  """In-memory and GCS ArtifactService implementations reject app_name values that escape directory."""
+  """Artifact services reject app names that escape their storage scope."""
   service = artifact_service_factory(service_type)
   with pytest.raises(InputValidationError, match=match):
     await service.delete_artifact(
@@ -1086,13 +1265,14 @@ async def test_delete_artifact_rejects_traversal_in_session_id(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
     ],
 )
 @pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
 async def test_list_artifact_keys_rejects_traversal_in_app_name(
     service_type, app_name, match, artifact_service_factory
 ):
-  """In-memory and GCS ArtifactService implementations reject app_name values that escape directory."""
+  """Artifact services reject app names that escape their storage scope."""
   service = artifact_service_factory(service_type)
   with pytest.raises(InputValidationError, match=match):
     await service.list_artifact_keys(

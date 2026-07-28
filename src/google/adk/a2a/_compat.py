@@ -49,6 +49,8 @@ from a2a.types import TaskStatusUpdateEvent
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.json_format import ParseDict
 
+from ..utils.context_utils import Aclosing
+
 
 def _make_proto_timestamp(dt: Optional[datetime] = None) -> Any:
   """Build a google.protobuf.Timestamp from a datetime (or now). 1.x only."""
@@ -677,13 +679,17 @@ async def send_message(
     smr.message.CopyFrom(request)
     if request_metadata:
       smr.metadata.CopyFrom(ParseDict(request_metadata, Struct()))
-    async for item in client.send_message(smr, context=context):
-      yield item
+    async with Aclosing(client.send_message(smr, context=context)) as agen:
+      async for item in agen:
+        yield item
   else:
-    async for item in client.send_message(
-        request=request, request_metadata=request_metadata, context=context
-    ):
-      yield item
+    async with Aclosing(
+        client.send_message(
+            request=request, request_metadata=request_metadata, context=context
+        )
+    ) as agen:
+      async for item in agen:
+        yield item
 
 
 # -----------------------------------------------------------------------------

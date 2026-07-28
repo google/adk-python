@@ -42,6 +42,7 @@ from .eval_case import Invocation
 from .eval_config import EvalConfig
 from .eval_config import get_eval_metrics_from_config
 from .eval_config import get_evaluation_criteria_or_default
+from .eval_config import LiveModelConfig
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
@@ -155,6 +156,7 @@ class AgentEvaluator:
     user_simulator_provider = UserSimulatorProvider(
         user_simulator_config=eval_config.user_simulator_config
     )
+    live_model_config = eval_config.live_model_config
 
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
@@ -163,6 +165,7 @@ class AgentEvaluator:
         eval_metrics=eval_metrics,
         num_runs=num_runs,
         user_simulator_provider=user_simulator_provider,
+        live_model_config=live_model_config,
     )
 
     # Step 2: Post-process the results!
@@ -554,6 +557,7 @@ class AgentEvaluator:
       eval_metrics: list[EvalMetric],
       num_runs: int,
       user_simulator_provider: UserSimulatorProvider,
+      live_model_config: Optional[LiveModelConfig] = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -580,11 +584,19 @@ class AgentEvaluator:
         user_simulator_provider=user_simulator_provider,
     )
 
+    if live_model_config:
+      inference_config = InferenceConfig(
+          use_live=True,
+          live_timeout_seconds=live_model_config.timeout_seconds,
+      )
+    else:
+      inference_config = InferenceConfig(use_live=False)
+
     inference_requests = [
         InferenceRequest(
             app_name=app_name,
             eval_set_id=eval_set.eval_set_id,
-            inference_config=InferenceConfig(),
+            inference_config=inference_config,
         )
     ] * num_runs  # Repeat inference request num_runs times.
 

@@ -31,6 +31,7 @@ from typing_extensions import override
 
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -388,7 +389,7 @@ class SqliteSessionService(BaseSessionService):
       ) as cursor:
         row = await cursor.fetchone()
         if row is None:
-          raise ValueError(f"Session {session.id} not found.")
+          raise SessionNotFoundError(f"Session {session.id} not found.")
         storage_update_time = row["update_time"]
         if storage_update_time > session.last_update_time:
           raise ValueError(

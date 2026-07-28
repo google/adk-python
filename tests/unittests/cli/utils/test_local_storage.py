@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from google.adk.artifacts import file_artifact_service
 from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.cli.utils.local_storage import create_local_artifact_service
 from google.adk.cli.utils.local_storage import create_local_database_session_service
@@ -291,6 +292,44 @@ async def test_per_agent_artifact_service_reads_legacy_shared_root(
   assert (
       await service.get_artifact_version(filename="legacy.txt", **scope)
   ) is not None
+
+
+@pytest.mark.asyncio
+async def test_per_agent_artifact_service_reads_unscoped_legacy_layout(
+    tmp_path: Path,
+) -> None:
+  scope = {"app_name": "agent_a", "user_id": "user", "session_id": "session"}
+  # Releases before artifacts were app-scoped wrote straight under `users`.
+  version_dir = (
+      tmp_path
+      / ".adk"
+      / "artifacts"
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / "legacy.txt"
+      / "versions"
+      / "0"
+  )
+  version_dir.mkdir(parents=True)
+  payload_path = version_dir / "legacy.txt"
+  payload_path.write_text("old", encoding="utf-8")
+  file_artifact_service._write_metadata(
+      version_dir / "metadata.json",
+      filename="legacy.txt",
+      mime_type=None,
+      version=0,
+      canonical_uri=payload_path.resolve().as_uri(),
+      custom_metadata=None,
+  )
+
+  service = PerAgentFileArtifactService(agents_root=tmp_path)
+
+  loaded = await service.load_artifact(filename="legacy.txt", **scope)
+  assert loaded == types.Part(text="old")
+  assert await service.list_artifact_keys(**scope) == ["legacy.txt"]
 
 
 @pytest.mark.asyncio
