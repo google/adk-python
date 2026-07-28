@@ -151,6 +151,34 @@ class BaseSessionService(abc.ABC):
         'call get_session on each result to access the merged state.'
     )
 
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: str
+  ) -> Session:
+    """Sets a human-readable title on an existing session.
+
+    The title is client-provided metadata (e.g. for rendering a chat-history
+    list); the service only stores it. It is surfaced as ``Session.title`` by
+    both ``get_session`` and ``list_sessions``.
+
+    Args:
+      app_name: The name of the app.
+      user_id: The ID of the user.
+      session_id: The ID of the session to update.
+      title: The new title to store on the session.
+
+    Returns:
+      The updated Session.
+
+    Raises:
+      SessionNotFoundError: When the session does not exist.
+      NotImplementedError: When the concrete ``BaseSessionService``
+        implementation does not support session titles (e.g. a managed backend
+        that does not expose a client-set title).
+    """
+    raise NotImplementedError(
+        f'{type(self).__name__} does not support update_session_title.'
+    )
+
   async def append_event(self, session: Session, event: Event) -> Event:
     """Appends an event to a session object."""
     if event.partial:

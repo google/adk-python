@@ -97,6 +97,13 @@ class StorageSession(Base):
       PreciseTimestamp, default=func.now(), onupdate=func.now()
   )
 
+  # Optional client-set human-readable title (e.g. for a chat-history list).
+  # Nullable and additive: existing databases are reconciled in-place by
+  # DatabaseSessionService._ensure_schema_columns_exist on connect.
+  title: Mapped[str | None] = mapped_column(
+      String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
+  )
+
   storage_events: Mapped[list[StorageEvent]] = relationship(
       "StorageEvent",
       back_populates="storage_session",
@@ -169,6 +176,7 @@ class StorageSession(Base):
         last_update_time=self.get_update_timestamp(
             is_sqlite=is_sqlite, is_postgresql=is_postgresql
         ),
+        title=self.title,
     )
     session._storage_update_marker = self.get_update_marker()
     return session

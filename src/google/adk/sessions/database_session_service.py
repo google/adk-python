@@ -32,12 +32,16 @@ from google.adk.platform import uuid as platform_uuid
 try:
   from sqlalchemy import delete
   from sqlalchemy import event
+  from sqlalchemy import inspect
   from sqlalchemy import MetaData
   from sqlalchemy import select
+  from sqlalchemy import text
+  from sqlalchemy import update
   from sqlalchemy.engine import Connection
   from sqlalchemy.engine import make_url
   from sqlalchemy.exc import ArgumentError
   from sqlalchemy.exc import IntegrityError
+  from sqlalchemy.exc import SQLAlchemyError
   from sqlalchemy.ext.asyncio import async_sessionmaker
   from sqlalchemy.ext.asyncio import AsyncEngine
   from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
@@ -168,9 +172,75 @@ def _ensure_schema_indexes_exist(
       index.create(bind=connection, checkfirst=True)
 
 
+def _ensure_schema_columns_exist(
+    connection: Connection, metadata: MetaData
+) -> None:
+  """Adds missing additive, nullable columns to existing tables in place.
+
+  ``metadata.create_all`` only creates missing *tables*; it never alters an
+  existing table to add a newly declared column. This reconciles that gap for
+  additive nullable columns (mirroring ``_ensure_schema_indexes_exist`` for
+  indexes), so a database created before a column was introduced gains it on
+  the next connect instead of failing every subsequent read/write.
+
+  Only nullable columns are added: a non-nullable column would require a data
+  backfill and a real schema migration, so it is skipped with a warning.
+  """
+  logger.debug("Ensuring schema columns exist for metadata tables.")
+  inspector = inspect(connection)
+  existing_tables = set(inspector.get_table_names())
+  preparer = connection.dialect.identifier_preparer
+  for table in metadata.sorted_tables:
+    if table.name not in existing_tables:
+      # create_all just made it with every declared column; nothing to do.
+      continue
+    existing_columns = {
+        column["name"] for column in inspector.get_columns(table.name)
+    }
+    for column in table.columns:
+      if column.name in existing_columns:
+        continue
+      if not column.nullable:
+        logger.warning(
+            "Cannot add non-nullable column %s.%s in place; a schema"
+            " migration is required.",
+            table.name,
+            column.name,
+        )
+        continue
+      column_type = column.type.compile(dialect=connection.dialect)
+      add_column = text(
+          f"ALTER TABLE {preparer.quote(table.name)} ADD COLUMN"
+          f" {preparer.quote(column.name)} {column_type}"
+      )
+      try:
+        # SAVEPOINT so a concurrent add on another instance does not poison
+        # the surrounding setup transaction (mirrors _get_or_create_state).
+        with connection.begin_nested():
+          connection.execute(add_column)
+        logger.info(
+            "Added missing column %s.%s to existing table.",
+            table.name,
+            column.name,
+        )
+      except SQLAlchemyError:
+        refreshed_columns = {
+            column_info["name"]
+            for column_info in inspect(connection).get_columns(table.name)
+        }
+        if column.name not in refreshed_columns:
+          raise
+        logger.debug(
+            "Column %s.%s already present after a concurrent add.",
+            table.name,
+            column.name,
+        )
+
+
 def _setup_database_schema(connection: Connection, metadata: MetaData) -> None:
-  """Ensures tables and indexes declared in metadata exist."""
+  """Ensures tables, columns, and indexes declared in metadata exist."""
   metadata.create_all(bind=connection)
+  _ensure_schema_columns_exist(connection, metadata)
   _ensure_schema_indexes_exist(connection, metadata)
 
 
@@ -648,6 +718,38 @@ class DatabaseSessionService(BaseSessionService):
           is_sqlite=is_sqlite,
           is_postgresql=is_postgresql,
       )
+    return session
+
+  @override
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: str
+  ) -> Session:
+    await self.prepare_tables()
+    schema = self._get_schema_classes()
+    async with self._rollback_on_exception_session() as sql_session:
+      storage_session = await sql_session.get(
+          schema.StorageSession, (app_name, user_id, session_id)
+      )
+      if storage_session is None:
+        raise SessionNotFoundError(f"Session {session_id} not found.")
+      # Preserve update_time by passing it explicitly so onupdate=func.now()
+      # does not fire: a title is display metadata and must not invalidate an
+      # in-flight copy of the session, which would trip the stale-writer check
+      # on the next append_event.
+      await sql_session.execute(
+          update(schema.StorageSession)
+          .where(schema.StorageSession.app_name == app_name)
+          .where(schema.StorageSession.user_id == user_id)
+          .where(schema.StorageSession.id == session_id)
+          .values(title=title, update_time=storage_session.update_time)
+      )
+      await sql_session.commit()
+
+    session = await self.get_session(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+    if session is None:
+      raise SessionNotFoundError(f"Session {session_id} not found.")
     return session
 
   @override

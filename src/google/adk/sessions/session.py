@@ -68,6 +68,15 @@ class Session(BaseModel):
       ),
       examples=[1_742_000_000.0],
   )
+  title: str | None = Field(
+      default=None,
+      description=(
+          "Optional human-readable title for the session, e.g. for display in"
+          " a chat-history list. Client-set via update_session_title; the"
+          " service only stores it."
+      ),
+      examples=["Debugging the payments outage"],
+  )
 
   _storage_update_marker: str | None = PrivateAttr(default=None)
   """Internal storage revision marker used for stale-session detection."""

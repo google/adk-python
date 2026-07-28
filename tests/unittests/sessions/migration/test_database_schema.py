@@ -217,6 +217,77 @@ async def test_prepare_tables_recreates_missing_latest_events_index(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_prepare_tables_adds_missing_title_column(tmp_path):
+  """A latest-schema DB predating the title column gains it in place on connect."""
+  db_path = tmp_path / 'missing_title.db'
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+
+  # Create a latest-schema DB with a session.
+  async with DatabaseSessionService(db_url) as session_service:
+    await session_service.create_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+
+  # Simulate a database created before the title column existed.
+  engine = create_async_engine(db_url)
+  async with engine.begin() as conn:
+    await conn.execute(text('ALTER TABLE sessions DROP COLUMN title'))
+  await engine.dispose()
+
+  engine = create_async_engine(db_url)
+  async with engine.connect() as conn:
+    columns_before = await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_columns('sessions')
+    )
+  await engine.dispose()
+  assert 'title' not in {column['name'] for column in columns_before}
+
+  # Reconnecting must heal the column in place and support title updates.
+  async with DatabaseSessionService(db_url) as session_service:
+    updated = await session_service.update_session_title(
+        app_name='my_app', user_id='test_user', session_id='s1', title='Healed'
+    )
+    assert updated.title == 'Healed'
+    fetched = await session_service.get_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+    assert fetched.title == 'Healed'
+
+  engine = create_async_engine(db_url)
+  async with engine.connect() as conn:
+    columns_after = await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_columns('sessions')
+    )
+  await engine.dispose()
+  assert 'title' in {column['name'] for column in columns_after}
+
+
+@pytest.mark.asyncio
+async def test_prepare_tables_does_not_add_title_to_v0_db(tmp_path):
+  """The title column reconciliation leaves legacy v0 databases untouched."""
+  db_path = tmp_path / 'v0_no_title.db'
+  await create_v0_db(db_path)
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+
+  async with DatabaseSessionService(db_url) as session_service:
+    await session_service.create_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+    assert (
+        session_service._db_schema_version
+        == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+    )
+
+  engine = create_async_engine(db_url)
+  async with engine.connect() as conn:
+    columns = await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_columns('sessions')
+    )
+  await engine.dispose()
+  assert 'title' not in {column['name'] for column in columns}
+
+
+@pytest.mark.asyncio
 async def test_prepare_tables_recreates_missing_v0_events_index(tmp_path):
   db_path = tmp_path / 'missing_v0_index.db'
   await create_v0_db(db_path)
