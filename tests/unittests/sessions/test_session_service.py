@@ -38,6 +38,7 @@ from google.genai import types
 import pytest
 from sqlalchemy import delete
 from sqlalchemy import text
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -85,6 +86,52 @@ async def session_service(request, tmp_path):
     override_feature_enabled(
         FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
     )
+
+
+_DB_URL_WITH_PASSWORD = (
+    'postgresql+psycopg2://db_user:sup3rs3cret@localhost:5432/prod'
+)
+_DB_PASSWORD = 'sup3rs3cret'
+
+
+def test_redact_db_url_masks_embedded_password():
+  redacted = database_session_service._redact_db_url(_DB_URL_WITH_PASSWORD)
+
+  assert _DB_PASSWORD not in redacted
+  # The non-sensitive parts stay available for debugging.
+  assert 'localhost' in redacted
+  assert 'prod' in redacted
+  assert 'db_user' in redacted
+
+
+def test_redact_db_url_falls_back_to_placeholder_for_unparsable_url():
+  assert database_session_service._redact_db_url('::not a url::') == '[redacted]'
+
+
+@pytest.mark.parametrize(
+    'raised_error',
+    [
+        ArgumentError('invalid url'),
+        ImportError('missing driver'),
+        RuntimeError('unexpected failure'),
+    ],
+)
+def test_database_session_service_init_error_does_not_leak_password(
+    raised_error,
+):
+  """Engine-creation failures must not surface the URL password."""
+  with mock.patch.object(
+      database_session_service,
+      'create_async_engine',
+      side_effect=raised_error,
+  ):
+    with pytest.raises(ValueError) as exc_info:
+      database_session_service.DatabaseSessionService(_DB_URL_WITH_PASSWORD)
+
+  message = str(exc_info.value)
+  assert _DB_PASSWORD not in message
+  # The redacted URL keeps the host so the error stays actionable.
+  assert 'localhost' in message
 
 
 def test_database_session_service_enables_pool_pre_ping_by_default():
