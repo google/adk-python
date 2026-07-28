@@ -45,6 +45,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -1368,6 +1369,106 @@ def test_create_session_without_id(test_app, test_session_info):
   assert data["appName"] == test_session_info["app_name"]
   assert data["userId"] == test_session_info["user_id"]
   logger.info(f"Created session with generated ID: {data['id']}")
+
+
+class _ExpirationRecordingSessionService(InMemorySessionService):
+  """In-memory session service that accepts and records expiration kwargs."""
+
+  def __init__(self):
+    super().__init__()
+    self.recorded_kwargs: dict[str, Any] = {}
+
+  async def create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      state: Optional[dict[str, Any]] = None,
+      session_id: Optional[str] = None,
+      **kwargs: Any,
+  ) -> Session:
+    self.recorded_kwargs = dict(kwargs)
+    return await super().create_session(
+        app_name=app_name,
+        user_id=user_id,
+        state=state,
+        session_id=session_id,
+    )
+
+
+@pytest.fixture
+def expiration_session_service():
+  """Create a session service whose create_session accepts expiration kwargs."""
+  return _ExpirationRecordingSessionService()
+
+
+@pytest.fixture
+def expiration_test_app(
+    expiration_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Create a TestClient backed by an expiration-capable session service."""
+  return _create_test_client(
+      expiration_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+
+def test_create_session_forwards_expire_time(
+    expiration_test_app, expiration_session_service, test_session_info
+):
+  """Test that expire_time is forwarded to a supporting session service."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = expiration_test_app.post(
+      url, json={"expireTime": "2026-08-01T00:00:00Z"}
+  )
+
+  assert response.status_code == 200
+  assert expiration_session_service.recorded_kwargs == {
+      "expire_time": "2026-08-01T00:00:00Z"
+  }
+
+
+def test_create_session_forwards_ttl(
+    expiration_test_app, expiration_session_service, test_session_info
+):
+  """Test that ttl is forwarded to a supporting session service."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = expiration_test_app.post(url, json={"ttl": "7200s"})
+
+  assert response.status_code == 200
+  assert expiration_session_service.recorded_kwargs == {"ttl": "7200s"}
+
+
+def test_create_session_rejects_ttl_with_expire_time(
+    expiration_test_app, test_session_info
+):
+  """Test that requesting both ttl and expire_time is rejected."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = expiration_test_app.post(
+      url, json={"ttl": "7200s", "expireTime": "2026-08-01T00:00:00Z"}
+  )
+
+  assert response.status_code == 422
+
+
+def test_create_session_expiration_with_unsupported_service(
+    test_app, test_session_info
+):
+  """Test 400 when expiration is requested but the service cannot honor it."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = test_app.post(url, json={"ttl": "7200s"})
+
+  assert response.status_code == 400
+  assert "not supported" in response.json()["detail"]
 
 
 def test_get_session(test_app, create_test_session):
