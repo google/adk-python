@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import socket
 from unittest import mock
 
 from google.adk.tools.load_web_page import load_web_page
 import google.adk.tools.load_web_page as load_web_page_module
+import pytest
 import requests
 
 
@@ -359,6 +361,97 @@ def test_load_web_page_passes_timeout_to_proxied_get(monkeypatch):
       allow_redirects=False,
       timeout=load_web_page_module._DEFAULT_TIMEOUT_SECONDS,
   )
+
+
+@pytest.mark.parametrize(
+    'ipv6_address',
+    [
+        '64:ff9b::7f00:1',  # NAT64-wrapped 127.0.0.1 (loopback)
+        '64:ff9b::a9fe:a9fe',  # NAT64-wrapped 169.254.169.254 (cloud metadata)
+        '64:ff9b::a00:1',  # NAT64-wrapped 10.0.0.1 (private)
+        '::7f00:1',  # IPv4-compatible 127.0.0.1 (loopback)
+        '::a9fe:a9fe',  # IPv4-compatible 169.254.169.254 (cloud metadata)
+        '::ffff:7f00:1',  # IPv4-mapped 127.0.0.1 (loopback)
+    ],
+)
+def test_is_blocked_address_blocks_embedded_internal_ipv4(ipv6_address):
+  """Embedded IPv4 forms that resolve to internal targets must be blocked."""
+  address = ipaddress.ip_address(ipv6_address)
+  assert load_web_page_module._is_blocked_address(address)
+
+
+@pytest.mark.parametrize(
+    'ipv6_address',
+    [
+        '64:ff9b::5db8:d822',  # NAT64-wrapped 93.184.216.34 (public)
+        '2606:2800:220:1:248:1893:25c8:1946',  # ordinary global IPv6
+    ],
+)
+def test_is_blocked_address_allows_embedded_public_ipv4(ipv6_address):
+  """Embedded IPv4 forms that resolve to public targets stay allowed."""
+  address = ipaddress.ip_address(ipv6_address)
+  assert not load_web_page_module._is_blocked_address(address)
+
+
+def test_load_web_page_blocks_nat64_wrapped_metadata_literal(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  # 64:ff9b::a9fe:a9fe embeds 169.254.169.254 (the cloud metadata endpoint).
+  url = 'http://[64:ff9b::a9fe:a9fe]/latest/meta-data/'
+  result = load_web_page(url)
+
+  assert result == f'Failed to fetch url: {url}'
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_ipv4_compatible_loopback_literal(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  # ::7f00:1 is the deprecated IPv4-compatible form of 127.0.0.1.
+  url = 'http://[::7f00:1]/'
+  result = load_web_page(url)
+
+  assert result == f'Failed to fetch url: {url}'
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_hostname_resolving_to_nat64_internal(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(
+          return_value=[(
+              socket.AF_INET6,
+              socket.SOCK_STREAM,
+              socket.IPPROTO_TCP,
+              '',
+              ('64:ff9b::a9fe:a9fe', 0, 0, 0),
+          )]
+      ),
+  )
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page('http://nat64.example.test/latest/meta-data/')
+
+  assert (
+      result == 'Failed to fetch url: http://nat64.example.test/latest/meta-data/'
+  )
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
 
 
 def test_load_web_page_returns_failure_on_timeout(monkeypatch):
