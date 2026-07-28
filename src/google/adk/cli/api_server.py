@@ -380,6 +380,71 @@ class _DefaultAppRewriteMiddleware:
     await self._app(scope, receive, send)
 
 
+class _BearerAuthMiddleware:
+  """ASGI middleware that enforces Bearer token auth when ADK_API_TOKEN is set.
+
+  Behavior:
+    * If ADK_API_TOKEN is unset (the default), the middleware passes every
+      request through unchanged. This preserves the existing behavior for
+      deployments that already gate access at a different layer (reverse
+      proxy, sidecar, network policy, IAP, etc).
+    * If ADK_API_TOKEN is set, every request other than to the public health
+      and version endpoints must carry an ``Authorization: Bearer <token>``
+      header whose token equals ADK_API_TOKEN, otherwise the request is
+      rejected with HTTP 401.
+
+  The middleware exists because the ApiServer registers a number of routes
+  that reach in-process code execution (``/run``, ``/run_sse``) and per-user
+  session state (``/apps/.../users/.../sessions/...``) without per-route
+  authentication. When an operator binds the server to a network-reachable
+  address without an upstream auth layer, setting ADK_API_TOKEN is the
+  smallest mitigation that turns those routes into authenticated endpoints
+  without breaking any existing deployment.
+  """
+
+  _PUBLIC_PATHS = frozenset({"/health", "/version"})
+
+  def __init__(self, app: Any, token: Optional[str] = None) -> None:
+    self._app = app
+    self._token = token if token else None
+
+  async def __call__(
+      self,
+      scope: dict[str, Any],
+      receive: Any,
+      send: Any,
+  ) -> None:
+    if scope["type"] != "http" or self._token is None:
+      await self._app(scope, receive, send)
+      return
+
+    path = scope.get("path", "")
+    if path in self._PUBLIC_PATHS:
+      await self._app(scope, receive, send)
+      return
+
+    auth_header = _get_scope_header(scope, b"authorization")
+    expected = f"Bearer {self._token}"
+    if auth_header is not None and auth_header == expected:
+      await self._app(scope, receive, send)
+      return
+
+    response_body = b'{"error":"authentication required"}'
+    await send({
+        "type": "http.response.start",
+        "status": 401,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"www-authenticate", b'Bearer realm="adk"'),
+            (b"content-length", str(len(response_body)).encode()),
+        ],
+    })
+    await send({
+        "type": "http.response.body",
+        "body": response_body,
+    })
+
+
 class ApiServerSpanExporter(export_lib.SpanExporter):
 
   def __init__(self, trace_dict):
@@ -1069,6 +1134,11 @@ class ApiServer:
     app.add_middleware(
         _DefaultAppRewriteMiddleware,
         default_app_name=self.default_app_name,
+    )
+
+    app.add_middleware(
+        _BearerAuthMiddleware,
+        token=os.environ.get("ADK_API_TOKEN"),
     )
 
     # Register production endpoints (22 total)
