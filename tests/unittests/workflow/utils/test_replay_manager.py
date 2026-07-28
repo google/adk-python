@@ -185,3 +185,62 @@ def test_scan_workflow_events_recovers_children_from_transitive_descendant_event
   recovered, _ = mgr.scan_workflow_events(ctx)
 
   assert "child_a@1" in recovered
+
+
+def test_scan_workflow_events_sequence_excludes_prior_invocation_events():
+  """Replay sequence covers only the current invocation.
+
+  A session may hold a completed earlier invocation followed by a second
+  invocation that pauses for human input. Terminal events from the earlier
+  invocation must not enter the replay sequence, otherwise the sequence
+  barrier blocks on a node that never runs during the resume.
+  """
+  mgr = ReplayManager()
+  # Completed earlier invocation in the same session.
+  prior = _make_event(
+      path="wf@1/finish@1", output="prior_out", invocation_id="inv-1"
+  )
+  # Current invocation being resumed.
+  current_first = _make_event(
+      path="wf@1/alpha@1", output="alpha_out", invocation_id="inv-2"
+  )
+  current_second = _make_event(
+      path="wf@1/beta@1", output="beta_out", invocation_id="inv-2"
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-2"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [
+      prior,
+      current_first,
+      current_second,
+  ]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["alpha@1", "beta@1"]
+
+
+def test_prepare_parent_sequence_barrier_excludes_prior_invocation_events():
+  """Dynamic-node sequence barriers are also scoped to the current invocation."""
+  mgr = ReplayManager()
+  prior = _make_event(
+      path="wf@1/finish@1", output="prior_out", invocation_id="inv-1"
+  )
+  current = _make_event(
+      path="wf@1/alpha@1", output="alpha_out", invocation_id="inv-2"
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-2"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [prior, current]
+  ctx.node_path = "wf@1"
+
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+
+  assert barrier.sequence == ["alpha@1"]

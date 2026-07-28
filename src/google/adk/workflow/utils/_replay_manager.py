@@ -176,8 +176,17 @@ class ReplayManager:
     """Extract chronological child completion sequence under base_path."""
     base_path_builder = _NodePathBuilder.from_string(base_path)
     sequence: list[str] = []
+    invocation_id = ctx._invocation_context.invocation_id
 
     for event in events:
+      # The event index spans the whole session so multi-turn context stays
+      # visible during rehydration. The replay sequence, however, must describe
+      # only the current invocation: a terminal event from an earlier completed
+      # invocation would otherwise block the barrier on a node that never runs
+      # during this resume.
+      if invocation_id and event.invocation_id != invocation_id:
+        continue
+
       event_node_path = event.node_info.path or ""
       event_path_builder = _NodePathBuilder.from_string(event_node_path)
 
