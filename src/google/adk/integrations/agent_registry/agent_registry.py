@@ -648,7 +648,11 @@ def _use_client_cert_effective() -> bool:
 def _should_use_mtls_endpoint(client_cert_source: Any | None = None) -> bool:
   """Returns whether the mTLS endpoint should be used."""
   try:
-    return bool(mtls.should_use_mtls_endpoint())
+    return bool(
+        mtls.should_use_mtls_endpoint(
+            client_cert_available=client_cert_source is not None
+        )
+    )
   except (ImportError, AttributeError):
     pass
   use_mtls_endpoint_str = os.getenv(

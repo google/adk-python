@@ -26,8 +26,8 @@ from typing import Optional
 from typing import Union
 from unittest import mock
 from unittest.mock import patch
-from urllib.parse import unquote
 from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from google.adk.artifacts import file_artifact_service
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
@@ -892,7 +892,7 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
       "customMetadata": {},
   }
   parsed_canonical = urlparse(metadata["canonicalUri"])
-  canonical_path = Path(unquote(parsed_canonical.path))
+  canonical_path = Path(url2pathname(parsed_canonical.path))
   assert canonical_path.name == "report.txt"
   assert canonical_path.read_bytes() == b"binary-content"
 
@@ -942,7 +942,7 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   assert version_meta.canonical_uri == version_payload_path.as_uri()
   assert version_meta.custom_metadata == custom_metadata
   parsed_version_uri = urlparse(version_meta.canonical_uri)
-  version_uri_path = Path(unquote(parsed_version_uri.path))
+  version_uri_path = Path(url2pathname(parsed_version_uri.path))
   assert version_uri_path.read_bytes() == b"binary-content"
 
   fetched = await artifact_service.get_artifact_version(

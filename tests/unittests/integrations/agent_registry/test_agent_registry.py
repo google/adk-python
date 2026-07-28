@@ -25,6 +25,7 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.integrations.agent_registry import AgentRegistry
 from google.adk.integrations.agent_registry.agent_registry import _ProtocolType
+from google.adk.integrations.agent_registry.agent_registry import _should_use_mtls_endpoint
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import httpx
@@ -904,8 +905,6 @@ class TestAgentRegistryMtls:
   def test_should_use_mtls_endpoint(
       self, use_mtls_env, client_cert_source, expected, registry
   ):
-    from google.adk.integrations.agent_registry.agent_registry import _should_use_mtls_endpoint
-
     env_patch = {}
     if use_mtls_env is not None:
       env_patch["GOOGLE_API_USE_MTLS_ENDPOINT"] = use_mtls_env
@@ -913,8 +912,29 @@ class TestAgentRegistryMtls:
       # Ensure any ambient env var doesn't leak into the test
       env_patch = {"GOOGLE_API_USE_MTLS_ENDPOINT": "auto"}
 
+    # Scenario 1: Library function does not exist (fallback path)
     with patch.dict(os.environ, env_patch):
-      assert expected == _should_use_mtls_endpoint(client_cert_source)
+      with patch(
+          "google.auth.transport.mtls.should_use_mtls_endpoint", create=True
+      ) as mock_func:
+        mock_func.side_effect = AttributeError("Mocked missing attribute")
+        assert expected == _should_use_mtls_endpoint(client_cert_source)
+
+    # Scenario 2: Library function exists (standard path)
+    def mock_impl(client_cert_available=None):
+      use_mtls = os.getenv("GOOGLE_API_USE_MTLS_ENDPOINT", "auto").lower()
+      if use_mtls == "always":
+        return True
+      if use_mtls == "never":
+        return False
+      return bool(client_cert_available)
+
+    with patch.dict(os.environ, env_patch):
+      with patch(
+          "google.auth.transport.mtls.should_use_mtls_endpoint", create=True
+      ) as mock_func:
+        mock_func.side_effect = mock_impl
+        assert expected == _should_use_mtls_endpoint(client_cert_source)
 
   def test_make_request_error_handling(self, registry):
     mock_session = registry._session
