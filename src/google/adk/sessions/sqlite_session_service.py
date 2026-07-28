@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     state TEXT NOT NULL,
     create_time REAL NOT NULL,
     update_time REAL NOT NULL,
+    title TEXT,
     PRIMARY KEY (app_name, user_id, id)
 );
 """
@@ -240,7 +241,7 @@ class SqliteSessionService(BaseSessionService):
   ) -> Optional[Session]:
     async with self._get_db_connection() as db:
       async with db.execute(
-          "SELECT state, update_time FROM sessions WHERE app_name=? AND"
+          "SELECT state, update_time, title FROM sessions WHERE app_name=? AND"
           " user_id=? AND id=?",
           (app_name, user_id, session_id),
       ) as cursor:
@@ -249,6 +250,7 @@ class SqliteSessionService(BaseSessionService):
           return None
         session_state = json.loads(session_row["state"])
         last_update_time = session_row["update_time"]
+        title = session_row["title"]
 
       # Build events query
       query_parts = [
@@ -293,6 +295,7 @@ class SqliteSessionService(BaseSessionService):
           state=merged_state,
           events=events,
           last_update_time=last_update_time,
+          title=title,
       )
 
   @override
@@ -304,13 +307,13 @@ class SqliteSessionService(BaseSessionService):
       # Fetch sessions
       if user_id:
         session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
+            "SELECT id, user_id, state, update_time, title FROM sessions WHERE"
             " app_name=? AND user_id=?",
             (app_name, user_id),
         )
       else:
         session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
+            "SELECT id, user_id, state, update_time, title FROM sessions WHERE"
             " app_name=?",
             (app_name,),
         )
@@ -346,6 +349,7 @@ class SqliteSessionService(BaseSessionService):
                 state=merged_state,
                 events=[],
                 last_update_time=row["update_time"],
+                title=row["title"],
             )
         )
     return ListSessionsResponse(sessions=sessions_list)
@@ -367,6 +371,30 @@ class SqliteSessionService(BaseSessionService):
   ) -> dict[str, Any]:
     async with self._get_db_connection() as db:
       return await self._get_user_state(db, app_name, user_id)
+
+  @override
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: str
+  ) -> Session:
+    async with self._get_db_connection() as db:
+      # Preserve update_time: a title is display metadata and must not
+      # invalidate an in-flight copy of the session (which would trip the
+      # stale-session check on the next append_event).
+      async with db.execute(
+          "UPDATE sessions SET title=? WHERE app_name=? AND user_id=? AND id=?",
+          (title, app_name, user_id, session_id),
+      ) as cursor:
+        updated_rows = cursor.rowcount
+      if updated_rows == 0:
+        raise SessionNotFoundError(f"Session {session_id} not found.")
+      await db.commit()
+
+    session = await self.get_session(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+    if session is None:
+      raise SessionNotFoundError(f"Session {session_id} not found.")
+    return session
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
@@ -477,8 +505,23 @@ class SqliteSessionService(BaseSessionService):
       await db.execute(PRAGMA_FOREIGN_KEYS)
       if not self._schema_ready:
         await db.executescript(CREATE_SCHEMA_SQL)
+        await self._ensure_sessions_columns(db)
         self._schema_ready = True
       yield db
+
+  async def _ensure_sessions_columns(self, db: aiosqlite.Connection) -> None:
+    """Adds additive nullable columns missing from an existing sessions table.
+
+    CREATE TABLE IF NOT EXISTS never alters an existing table, so a database
+    created before the `title` column was introduced would lack it. Add it in
+    place (nullable, no default) so existing databases keep working instead of
+    failing on the next read/write.
+    """
+    async with db.execute("PRAGMA table_info(sessions)") as cursor:
+      columns = {row["name"] for row in await cursor.fetchall()}
+    if "title" not in columns:
+      await db.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+      await db.commit()
 
   async def _get_state(
       self, db: aiosqlite.Connection, query: str, params: tuple

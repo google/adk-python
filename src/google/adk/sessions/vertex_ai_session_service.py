@@ -382,6 +382,25 @@ class VertexAiSessionService(BaseSessionService):
     )
 
   @override
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: str
+  ) -> Session:
+    """Not supported by the Vertex AI Agent Engine backend.
+
+    The Vertex AI Agent Engine Session API does not expose a client-set title
+    field, so sessions managed by this backend cannot store a title.
+
+    Raises:
+      NotImplementedError: Always, because the Vertex AI Agent Engine API does
+        not provide a client-set session title.
+    """
+    raise NotImplementedError(
+        'VertexAiSessionService does not support update_session_title. '
+        'The Vertex AI Agent Engine API does not expose a client-set session '
+        'title.'
+    )
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
     await super().append_event(session=session, event=event)

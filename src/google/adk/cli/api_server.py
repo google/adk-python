@@ -495,10 +495,13 @@ class UpdateMemoryRequest(common.BaseModel):
 
 
 class UpdateSessionRequest(common.BaseModel):
-  """Request to update session state without running the agent."""
+  """Request to update session state and/or metadata without running the agent."""
 
-  state_delta: dict[str, Any]
+  state_delta: Optional[dict[str, Any]] = None
   """The state changes to apply to the session."""
+
+  title: Optional[str] = None
+  """A new human-readable title to set on the session."""
 
 
 class AppInfo(common.BaseModel):
@@ -1301,23 +1304,33 @@ class ApiServer:
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-      # Create an event to record the state change
-      import uuid
+      # Apply state changes (if provided) as an event so they flow through the
+      # normal state-update path and event history.
+      if req.state_delta is not None:
+        import uuid
 
-      from ..events.event import Event
-      from ..events.event import EventActions
+        from ..events.event import Event
+        from ..events.event import EventActions
 
-      state_update_event = Event(
-          invocation_id="p-" + str(uuid.uuid4()),
-          author="user",
-          actions=EventActions(state_delta=req.state_delta),
-      )
+        state_update_event = Event(
+            invocation_id="p-" + str(uuid.uuid4()),
+            author="user",
+            actions=EventActions(state_delta=req.state_delta),
+        )
+        # This will automatically update the session state through
+        # __update_session_state.
+        await self.session_service.append_event(
+            session=session, event=state_update_event
+        )
 
-      # Append the event to the session
-      # This will automatically update the session state through __update_session_state
-      await self.session_service.append_event(
-          session=session, event=state_update_event
-      )
+      # Apply a title change (if provided) as out-of-band session metadata.
+      if req.title is not None:
+        session = await self.session_service.update_session_title(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            title=req.title,
+        )
 
       return session
 

@@ -2181,3 +2181,108 @@ async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
   assert retrieved_session.events[0].timestamp == pytest.approx(
       raw_epoch_float, abs=1.0
   )
+
+
+async def test_update_session_title(session_service):
+  """A client-set title round-trips through get_session and list_sessions."""
+  app_name = 'my_app'
+  user_id = 'user'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  # Newly created sessions have no title.
+  assert session.title is None
+
+  updated = await session_service.update_session_title(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session.id,
+      title='First title',
+  )
+  assert updated.title == 'First title'
+
+  # get_session reflects the title.
+  fetched = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert fetched is not None
+  assert fetched.title == 'First title'
+
+  # list_sessions (which omits events/state) still carries the title.
+  listed = await session_service.list_sessions(
+      app_name=app_name, user_id=user_id
+  )
+  assert len(listed.sessions) == 1
+  assert listed.sessions[0].title == 'First title'
+
+  # Titles can be overwritten.
+  updated_again = await session_service.update_session_title(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session.id,
+      title='Second title',
+  )
+  assert updated_again.title == 'Second title'
+  refetched = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert refetched is not None
+  assert refetched.title == 'Second title'
+
+
+async def test_update_session_title_missing_session_raises(session_service):
+  """Updating the title of a nonexistent session raises SessionNotFoundError."""
+  with pytest.raises(SessionNotFoundError):
+    await session_service.update_session_title(
+        app_name='my_app',
+        user_id='user',
+        session_id='does-not-exist',
+        title='irrelevant',
+    )
+
+
+async def test_update_session_title_preserves_last_update_time(session_service):
+  """Setting a title is metadata-only and must not bump last_update_time.
+
+  A title update should not invalidate an in-flight copy of the session, so it
+  must leave the session's update time (and thus the stale-writer marker) alone.
+  """
+  app_name = 'my_app'
+  user_id = 'user'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  before = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  await session_service.update_session_title(
+      app_name=app_name, user_id=user_id, session_id=session.id, title='Renamed'
+  )
+  after = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert after.last_update_time == before.last_update_time
+
+
+async def test_sqlite_session_service_adds_missing_title_column(tmp_path):
+  """SqliteSessionService heals a sessions table that predates the title column."""
+  db_path = tmp_path / 'sqlite.db'
+  service = SqliteSessionService(str(db_path))
+  await service.create_session(app_name='a', user_id='u', session_id='s1')
+
+  # Simulate a database created before the title column existed.
+  conn = sqlite3.connect(str(db_path))
+  try:
+    conn.execute('ALTER TABLE sessions DROP COLUMN title')
+    conn.commit()
+  finally:
+    conn.close()
+
+  # A fresh service instance must heal the column in place on first connect.
+  healed = SqliteSessionService(str(db_path))
+  updated = await healed.update_session_title(
+      app_name='a', user_id='u', session_id='s1', title='Healed'
+  )
+  assert updated.title == 'Healed'
+  fetched = await healed.get_session(app_name='a', user_id='u', session_id='s1')
+  assert fetched.title == 'Healed'
