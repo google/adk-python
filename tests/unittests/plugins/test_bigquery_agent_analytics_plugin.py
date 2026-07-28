@@ -439,6 +439,53 @@ def test_recursive_smart_truncate_redaction():
   assert truncated["nested"]["normal"] == "value"
 
 
+def test_recursive_smart_truncate_redacts_credentials_in_free_text_values():
+  """A credential embedded in prose under an unrecognized key must still be
+  redacted, not just an exact-matching dict key.
+
+  Regression test: tool args/results, state deltas, usage metadata, A2A
+  payloads, and schemas all reach BigQuery through this function, and none
+  of them are container-shaped JSON strings in the common case, so a value
+  like an "Authorization: Bearer ..." token embedded in an ordinary status
+  or error message previously passed through completely unredacted.
+  """
+  obj = {
+      "status": "ok",
+      "message": "Authorization: Bearer sk-abcdef123456xyz",
+  }
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(obj, -1)
+  )
+  assert is_truncated
+  assert "sk-abcdef123456xyz" not in truncated["message"]
+  assert truncated["message"] == "Authorization: [REDACTED]"
+
+  obj2 = {
+      "status": "ok",
+      "message": "here is the api_key: sk-abcdef123456xyz please use it",
+  }
+  truncated2, is_truncated2 = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(obj2, -1)
+  )
+  assert is_truncated2
+  assert "sk-abcdef123456xyz" not in truncated2["message"]
+
+  # Benign prose must remain byte-identical.
+  obj3 = {"status": "ok", "message": "everything is fine, no secrets here"}
+  truncated3, is_truncated3 = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(obj3, -1)
+  )
+  assert not is_truncated3
+  assert truncated3 == obj3
+
+  # A plain (non-dict-wrapped) string leaf must also be covered.
+  leaf, leaf_truncated = bigquery_agent_analytics_plugin._recursive_smart_truncate(
+      "Authorization: Bearer sk-abcdef123456xyz", -1
+  )
+  assert leaf_truncated
+  assert "sk-abcdef123456xyz" not in leaf
+
+
 class TestBigQueryAgentAnalyticsPlugin:
   """Tests for the BigQueryAgentAnalyticsPlugin."""
 
