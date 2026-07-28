@@ -63,7 +63,12 @@ class ReplayManager:
       self._indexed_event_count = len(events)
 
   def _build_event_index(self, events: list[Event], invocation_id: str) -> None:
-    """Builds index of events grouped by parent path (both direct and transitive)."""
+    """Builds index of events grouped by parent path (both direct and transitive).
+
+    The index intentionally spans every invocation in the session so multi-turn
+    conversation context stays visible during rehydration. Consumers that need
+    a single invocation must therefore filter by `invocation_id` themselves.
+    """
     self._events_by_parent = {}
     self._transitive_events_by_parent = {}
     fc_to_parent: dict[str, str] = {}
