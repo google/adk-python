@@ -3579,5 +3579,81 @@ def test_gemini_stream_reasoning_engine_missing_class_method(
   assert response.status_code == 400
 
 
+def test_run_eval_request_live_fields_default():
+  """RunEvalRequest defaults to non-live mode."""
+  from google.adk.cli.dev_server import RunEvalRequest
+
+  req = RunEvalRequest(eval_case_ids=["a"], eval_metrics=[])
+
+  assert req.live_model_config is None
+  assert req.user_simulator_config is None
+
+
+def test_run_eval_request_accepts_live_and_audio_config():
+  """RunEvalRequest accepts live flags and an audio user-simulator config."""
+  from google.adk.cli.dev_server import RunEvalRequest
+
+  req = RunEvalRequest.model_validate({
+      "evalCaseIds": ["a"],
+      "evalMetrics": [],
+      "liveModelConfig": {"timeoutSeconds": 600},
+      "userSimulatorConfig": {"type": "llm_audio", "audioModel": "cloud_tts"},
+  })
+
+  assert req.live_model_config.timeout_seconds == 600
+  # The request keeps the raw mapping (OpenAPI-safe); it is validated into the
+  # typed union inside `run_eval`.
+  assert req.user_simulator_config == {
+      "type": "llm_audio",
+      "audioModel": "cloud_tts",
+  }
+
+
+def test_run_eval_request_config_validates_into_typed_union():
+  """A request config mapping is validated into the typed union like `run_eval`.
+
+  The request holds the config as a raw mapping; `run_eval` validates it via
+  `TypeAdapter(UserSimulatorConfig)`. This exercises that same path.
+  """
+  from google.adk.cli.dev_server import RunEvalRequest
+  from google.adk.evaluation.eval_config import _UserSimulatorConfig
+  from google.adk.evaluation.simulation._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
+  from pydantic import TypeAdapter
+
+  req = RunEvalRequest.model_validate({
+      "evalCaseIds": ["a"],
+      "evalMetrics": [],
+      "userSimulatorConfig": {"type": "llm_audio", "audioModel": "cloud_tts"},
+  })
+  config = TypeAdapter(_UserSimulatorConfig).validate_python(
+      req.user_simulator_config
+  )
+
+  assert isinstance(config, LlmAudioUserSimulatorConfig)
+  assert config.type == "llm_audio"
+  assert config.audio_model == "cloud_tts"
+
+
+def test_run_eval_request_unknown_simulator_type_rejected_on_validation():
+  """An unknown `type` passes request parsing but fails `run_eval` validation.
+
+  The raw mapping is accepted by the request model, but the union validation
+  `run_eval` performs rejects an unknown discriminator.
+  """
+  from google.adk.cli.dev_server import RunEvalRequest
+  from google.adk.evaluation.eval_config import _UserSimulatorConfig
+  from pydantic import TypeAdapter
+  from pydantic import ValidationError
+
+  req = RunEvalRequest.model_validate({
+      "evalCaseIds": ["a"],
+      "evalMetrics": [],
+      "userSimulatorConfig": {"type": "not_a_real_simulator"},
+  })
+
+  with pytest.raises(ValidationError):
+    TypeAdapter(_UserSimulatorConfig).validate_python(req.user_simulator_config)
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])

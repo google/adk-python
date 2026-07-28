@@ -43,15 +43,17 @@ def get_propagated_context(request: fastapi.Request) -> context.Context:
     )
 
   if _GOOGLE_AE_TRACEPARENT_HEADER in request.headers:
-    carrier = {"traceparent": request.headers[_GOOGLE_AE_TRACEPARENT_HEADER]}
-    ctx = baggage.set_baggage(
-        _TRACEPARENT_BAGGAGE_KEY,
-        request.headers[_GOOGLE_AE_TRACEPARENT_HEADER],
-        context=ctx,
+    ae_traceparent = request.headers[_GOOGLE_AE_TRACEPARENT_HEADER]
+    extracted_ctx = tracecontext.TraceContextTextMapPropagator().extract(
+        carrier={"traceparent": ae_traceparent}, context=ctx
     )
-    ctx = tracecontext.TraceContextTextMapPropagator().extract(
-        carrier=carrier, context=ctx
-    )
+    # extract() returns the context unchanged when it rejects the header;
+    # testing the extracted span for validity instead would false-accept,
+    # since ctx usually already carries a valid span.
+    if extracted_ctx is not ctx:
+      ctx = baggage.set_baggage(
+          _TRACEPARENT_BAGGAGE_KEY, ae_traceparent, context=extracted_ctx
+      )
 
   return ctx
 
@@ -98,9 +100,13 @@ class TopSpanProcessor(trace.SpanProcessor):
     """
     if span.parent is None or span.parent.span_id == 0:
       return True
-    if _TRACEPARENT_BAGGAGE_KEY in baggage_items:
-      parent_id_hex = str(baggage_items[_TRACEPARENT_BAGGAGE_KEY]).split("-")[2]
-      parent_id_int = int(parent_id_hex, 16)
-      if span.parent.span_id == parent_id_int:
-        return True
-    return False
+    if _TRACEPARENT_BAGGAGE_KEY not in baggage_items:
+      return False
+    traceparent_parts = str(baggage_items[_TRACEPARENT_BAGGAGE_KEY]).split("-")
+    if len(traceparent_parts) < 3:
+      return False
+    try:
+      parent_span_id = int(traceparent_parts[2], 16)
+    except ValueError:
+      return False
+    return span.parent.span_id == parent_span_id

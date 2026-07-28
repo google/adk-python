@@ -340,29 +340,18 @@ def test_validate_generate_content_config_http_options_base_url_throw():
     )
 
 
-def test_validate_generate_content_config_http_options_extra_body_throw():
-  """Tests that an extra request body cannot be set directly in config."""
-  with pytest.raises(ValueError):
-    _ = LlmAgent(
-        name='test_agent',
-        generate_content_config=types.GenerateContentConfig(
-            http_options=types.HttpOptions(
-                extra_body={'systemInstruction': {'parts': [{'text': 'hi'}]}}
-            )
-        ),
-    )
-
-
 def test_validate_generate_content_config_http_options_allowed():
   """Tests that request-time http options remain settable in config."""
+  extra_body = {'tool_config': {'function_calling_config': {'mode': 'AUTO'}}}
   agent = LlmAgent(
       name='test_agent',
       generate_content_config=types.GenerateContentConfig(
-          http_options=types.HttpOptions(timeout=1000)
+          http_options=types.HttpOptions(timeout=1000, extra_body=extra_body)
       ),
   )
 
   assert agent.generate_content_config.http_options.timeout == 1000
+  assert agent.generate_content_config.http_options.extra_body == extra_body
 
 
 def test_allow_transfer_by_default():

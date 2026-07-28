@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-import asyncio
-from enum import Enum
 import json
 from typing import Any
 from typing import Optional
@@ -24,21 +22,15 @@ from pydantic import BaseModel
 
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
-from ..utils.feature_decorator import experimental
+from ._reflect_retry_utils import GLOBAL_SCOPE_KEY as GLOBAL_SCOPE_KEY
+from ._reflect_retry_utils import REFLECT_AND_RETRY_RESPONSE_TYPE
+from ._reflect_retry_utils import resolve_scope_key
+from ._reflect_retry_utils import ScopedFailureTracker
+from ._reflect_retry_utils import TrackingScope
 from .base_plugin import BasePlugin
-
-REFLECT_AND_RETRY_RESPONSE_TYPE = "ERROR_HANDLED_BY_REFLECT_AND_RETRY_PLUGIN"
-GLOBAL_SCOPE_KEY = "__global_reflect_and_retry_scope__"
 
 # A mapping from a tool's name to its consecutive failure count.
 PerToolFailuresCounter = dict[str, int]
-
-
-class TrackingScope(Enum):
-  """Defines the lifecycle scope for tracking tool failure counts."""
-
-  INVOCATION = "invocation"
-  GLOBAL = "global"
 
 
 class ToolFailureResponse(BaseModel):
@@ -51,7 +43,6 @@ class ToolFailureResponse(BaseModel):
   reflection_guidance: str = ""
 
 
-@experimental
 class ReflectAndRetryToolPlugin(BasePlugin):
   """Provides self-healing, concurrent-safe error recovery for tool failures.
 
@@ -132,8 +123,7 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     self.max_retries = max_retries
     self.throw_exception_if_retry_exceeded = throw_exception_if_retry_exceeded
     self.scope = tracking_scope
-    self._scoped_failure_counters: dict[str, PerToolFailuresCounter] = {}
-    self._lock = asyncio.Lock()
+    self._tracker = ScopedFailureTracker()
 
   async def after_tool_callback(
       self,
@@ -246,23 +236,18 @@ class ReflectAndRetryToolPlugin(BasePlugin):
       return self._get_tool_retry_exceed_msg(tool, tool_args, error)
 
     scope_key = self._get_scope_key(tool_context)
-    async with self._lock:
-      tool_failure_counter = self._scoped_failure_counters.setdefault(
-          scope_key, {}
+    current_retries = await self._tracker.increment(scope_key, tool.name)
+
+    if current_retries <= self.max_retries:
+      return self._create_tool_reflection_response(
+          tool, tool_args, error, current_retries
       )
-      current_retries = tool_failure_counter.get(tool.name, 0) + 1
-      tool_failure_counter[tool.name] = current_retries
 
-      if current_retries <= self.max_retries:
-        return self._create_tool_reflection_response(
-            tool, tool_args, error, current_retries
-        )
-
-      # Max Retry exceeded
-      if self.throw_exception_if_retry_exceeded:
-        raise self._ensure_exception(error)
-      else:
-        return self._get_tool_retry_exceed_msg(tool, tool_args, error)
+    # Max Retry exceeded
+    if self.throw_exception_if_retry_exceeded:
+      raise self._ensure_exception(error)
+    else:
+      return self._get_tool_retry_exceed_msg(tool, tool_args, error)
 
   def _get_scope_key(self, tool_context: ToolContext) -> str:
     """Returns a unique key for the state dictionary based on the scope.
@@ -270,21 +255,14 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     This method can be overridden in a subclass to implement custom scoping
     logic, for example, tracking failures on a per-user or per-session basis.
     """
-    if self.scope is TrackingScope.INVOCATION:
-      return tool_context.invocation_id
-    elif self.scope is TrackingScope.GLOBAL:
-      return GLOBAL_SCOPE_KEY
-    raise ValueError(f"Unknown scope: {self.scope}")
+    return resolve_scope_key(self.scope, tool_context.invocation_id)
 
   async def _reset_failures_for_tool(
       self, tool_context: ToolContext, tool_name: str
   ) -> None:
     """Atomically resets the failure count for a tool and cleans up state."""
     scope = self._get_scope_key(tool_context)
-    async with self._lock:
-      if scope in self._scoped_failure_counters:
-        state = self._scoped_failure_counters[scope]
-        state.pop(tool_name, None)
+    await self._tracker.reset(scope, tool_name)
 
   def _ensure_exception(self, error: Any) -> Exception:
     """Ensures the given error is an Exception instance, wrapping if not."""

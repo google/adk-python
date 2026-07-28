@@ -64,6 +64,12 @@ repos:
         # This script documents and matches the very patterns it forbids, so
         # it must not scan itself or other dev-only tooling.
         exclude: ^scripts/
+      - id: update-constraints
+        name: update-constraints
+        entry: ./scripts/update_constraints.sh
+        language: system
+        files: ^(pyproject\.toml|constraints-.*\.txt)$
+        pass_filenames: false
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22
     hooks:

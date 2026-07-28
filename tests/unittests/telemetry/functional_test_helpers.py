@@ -516,15 +516,28 @@ def _make_llm_response(part: Part) -> LlmResponse:
   )
 
 
-def build_test_agent(*, failing: bool = False) -> Agent:
-  """Builds the canonical 1-tool, 2-LLM-turn agent."""
+def build_test_agent(
+    *, failing: bool = False, model_exception: Exception | None = None
+) -> Agent:
+  """Builds the canonical 1-tool, 2-LLM-turn agent.
+
+  If ``model_exception`` is provided, the mock model raises it instead of
+  returning any response, exercising the inference-failure telemetry path.
+  """
+  # When the model is meant to raise, leave the responses empty so the mock
+  # never yields; otherwise it returns the canonical 2-turn conversation.
   mock_model = MockModel.create(
-      responses=[
-          _make_llm_response(
-              Part.from_function_call(name=TOOL_NAME, args=TOOL_ARGS)
-          ),
-          _make_llm_response(Part.from_text(text=FINAL_TEXT)),
-      ]
+      responses=(
+          []
+          if model_exception is not None
+          else [
+              _make_llm_response(
+                  Part.from_function_call(name=TOOL_NAME, args=TOOL_ARGS)
+              ),
+              _make_llm_response(Part.from_text(text=FINAL_TEXT)),
+          ]
+      ),
+      error=model_exception,
   )
 
   def some_tool(arg1: str) -> str:
@@ -543,14 +556,22 @@ def build_test_agent(*, failing: bool = False) -> Agent:
   )
 
 
-def build_test_runner(*, failing: bool = False) -> TestInMemoryRunner:
+def build_test_runner(
+    *, failing: bool = False, model_exception: Exception | None = None
+) -> TestInMemoryRunner:
   """Builds a runner around the canonical agent (no workflow wrapper)."""
-  return TestInMemoryRunner(node=build_test_agent(failing=failing))
+  return TestInMemoryRunner(
+      node=build_test_agent(failing=failing, model_exception=model_exception)
+  )
 
 
-def build_test_workflow(*, failing: bool = False) -> Workflow:
+def build_test_workflow(
+    *, failing: bool = False, model_exception: Exception | None = None
+) -> Workflow:
   """Builds the canonical Workflow: a nested workflow feeding the agent."""
-  test_agent = build_test_agent(failing=failing)
+  test_agent = build_test_agent(
+      failing=failing, model_exception=model_exception
+  )
 
   async def some_node(ctx, node_input):
     return NODE_RESULT
@@ -623,6 +644,9 @@ class FunctionalTestCase:
   capture_content: str | None
   schema_version: Literal[1, 2]
   expected: TelemetryDigest
+  # When set, the mock model raises this instead of responding, and the
+  # scenario is expected to propagate it (inference-failure telemetry path).
+  model_exception: Exception | None = None
 
   def apply_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """Applies the per-case env vars for semconv + content capture.

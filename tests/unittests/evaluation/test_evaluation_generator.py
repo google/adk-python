@@ -23,6 +23,7 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.evaluation_generator import _LiveSession
+from google.adk.evaluation.evaluation_generator import _send_audio_to_live
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
@@ -46,6 +47,26 @@ def _build_event(
       author=author,
       content=types.Content(parts=parts),
       invocation_id=invocation_id,
+  )
+
+
+def _build_transcription_event(
+    author: str,
+    text: str,
+    invocation_id: str,
+    *,
+    partial: bool,
+    is_input: bool = False,
+) -> Event:
+  """Builds a transcription-bearing Event (text in *_transcription, no content)."""
+
+  transcription = types.Transcription(text=text)
+  return Event(
+      author=author,
+      invocation_id=invocation_id,
+      input_transcription=transcription if is_input else None,
+      output_transcription=None if is_input else transcription,
+      partial=partial,
   )
 
 
@@ -76,6 +97,35 @@ class TestConvertEventsToEvalInvocation:
     assert invocation.user_content.parts[0].text == "Hello"
     assert invocation.final_response.parts[0].text == "Hi there!"
     assert len(invocation.intermediate_data.invocation_events) == 0
+
+  def test_convert_keeps_text_response_over_trailing_audio(
+      self,
+  ):
+    """A text response is kept over trailing audio-only events of the turn."""
+    events = [
+        _build_event("user", [types.Part(text="Hi")], "inv1"),
+        _build_event("agent", [types.Part(text="Hello there.")], "inv1"),
+        _build_event(
+            "agent",
+            [
+                types.Part(
+                    inline_data=types.Blob(
+                        mime_type="audio/pcm", data=b"fake-audio"
+                    )
+                )
+            ],
+            "inv1",
+        ),
+    ]
+
+    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.final_response.parts[0].text == "Hello there."
+    intermediate = invocation.intermediate_data.invocation_events
+    assert len(intermediate) == 1
+    assert intermediate[0].content.parts[0].inline_data.data == b"fake-audio"
 
   def test_convert_single_turn_tool_call(
       self,
@@ -235,6 +285,61 @@ class TestConvertEventsToEvalInvocation:
     assert len(intermediate_events) == 1
     assert intermediate_events[0].author == "agent1"
     assert intermediate_events[0].content.parts[0].text == "First response"
+
+
+class TestNormalizeLiveTranscriptions:
+  """Test cases for EvaluationGenerator._normalize_live_transcriptions method."""
+
+  def test_output_transcription_becomes_model_content(self):
+    """A consolidated output transcription is folded into model content."""
+    events = [
+        _build_transcription_event(
+            "agent", "Hello there.", "inv1", partial=False
+        )
+    ]
+
+    normalized = EvaluationGenerator._normalize_live_transcriptions(events)
+
+    assert len(normalized) == 1
+    assert normalized[0].content.role == "model"
+    assert normalized[0].content.parts[0].text == "Hello there."
+    assert normalized[0].output_transcription is None
+
+  def test_input_transcription_becomes_user_content(self):
+    """A consolidated input transcription is folded into user content."""
+    events = [
+        _build_transcription_event(
+            "user", "Kick off a task.", "inv1", partial=False, is_input=True
+        )
+    ]
+
+    normalized = EvaluationGenerator._normalize_live_transcriptions(events)
+
+    assert len(normalized) == 1
+    assert normalized[0].content.role == "user"
+    assert normalized[0].content.parts[0].text == "Kick off a task."
+    assert normalized[0].input_transcription is None
+
+  def test_partial_transcriptions_are_passed_through(self):
+    """Partial fragments are left as-is to avoid duplicating the turn text."""
+    partial = _build_transcription_event("agent", "Hel", "inv1", partial=True)
+
+    normalized = EvaluationGenerator._normalize_live_transcriptions([partial])
+
+    assert normalized[0].content is None
+    assert normalized[0].output_transcription.text == "Hel"
+
+  def test_content_events_are_passed_through_untouched(self):
+    """Events that already carry content (text or audio) are not rewritten."""
+    audio = _build_event(
+        "agent",
+        [types.Part(inline_data=types.Blob(mime_type="audio/pcm", data=b"a"))],
+        "inv1",
+    )
+
+    normalized = EvaluationGenerator._normalize_live_transcriptions([audio])
+
+    assert normalized[0] is audio
 
 
 class TestGetAppDetailsByInvocationId:
@@ -461,8 +566,15 @@ class TestGenerateInferencesForSingleUserInvocationLive:
       await gen.__anext__()
 
   @pytest.mark.asyncio
-  async def test_generate_inferences_live_with_synthetic_events(self, mocker):
-    """Tests live inference generation with synthetic events."""
+  async def test_generate_inferences_live_yields_transcription_events_as_is(
+      self, mocker
+  ):
+    """The live loop yields transcription events unchanged, adding no synthetic events.
+
+    Transcription-to-text consolidation happens later in
+    `convert_events_to_eval_invocations`, so the inference loop must forward the
+    raw events (partial and consolidated) without emitting extra events.
+    """
     mock_live_request_queue = mocker.MagicMock()
     event_queue = asyncio.Queue()
     turn_complete_event = asyncio.Event()
@@ -470,13 +582,19 @@ class TestGenerateInferencesForSingleUserInvocationLive:
     user_content = types.Content(parts=[types.Part(text="User query")])
     invocation_id = "inv1"
 
-    transcription = types.Transcription(text="Partial transcription")
     partial_event = Event(
         author="agent",
         content=types.Content(parts=[]),
         invocation_id=invocation_id,
-        output_transcription=transcription,
+        output_transcription=types.Transcription(text="Hello "),
         partial=True,
+    )
+    final_transcription = Event(
+        author="agent",
+        content=types.Content(parts=[]),
+        invocation_id=invocation_id,
+        output_transcription=types.Transcription(text="Hello there."),
+        partial=False,
     )
 
     gen = EvaluationGenerator._generate_inferences_for_single_user_invocation_live(
@@ -486,45 +604,36 @@ class TestGenerateInferencesForSingleUserInvocationLive:
         current_invocation_id=invocation_id,
         turn_complete_event=turn_complete_event,
         live_timeout_seconds=300,
-        agent_name="custom_agent_name",
     )
 
-    # First yield should be the user message
+    # First yield should be the user message.
     first_event = await gen.__anext__()
     assert first_event.author == "user"
     assert first_event.content == user_content
     assert first_event.invocation_id == invocation_id
 
-    # Mock turn_complete_event.wait to avoid blocking
+    # Mock turn_complete_event.wait to avoid blocking.
     turn_complete_event.wait = mocker.AsyncMock()
 
-    # Put the partial event in the queue
     await event_queue.put(partial_event)
+    await event_queue.put(final_transcription)
 
-    # Now advance
-    second_event = await gen.__anext__()
-    assert second_event == partial_event
-
-    # Next should be the synthetic event
-    third_event = await gen.__anext__()
-    assert third_event.author == "custom_agent_name"
-    assert third_event.invocation_id == invocation_id
-    assert third_event.content.role == "model"
-    assert third_event.content.parts[0].text == "Partial transcription"
-
-    # The generator should be exhausted now
+    # Both transcription events are yielded unchanged, and nothing else follows.
+    assert await gen.__anext__() == partial_event
+    assert await gen.__anext__() == final_transcription
     with pytest.raises(StopAsyncIteration):
       await gen.__anext__()
 
   @pytest.mark.asyncio
-  async def test_generate_inferences_live_strips_text_from_audio_message(
+  async def test_generate_inferences_live_streams_audio_as_realtime(
       self, mocker
   ):
-    """Text parts are stripped from an audio message before it is sent.
+    """An audio message is streamed to the agent as bracketed realtime input.
 
-    The agent should receive audio-only input, while the full Content
-    (text + audio) is preserved in the yielded user Event for trajectory
-    logging and autorater evaluation.
+    The agent should receive the audio as realtime input (not a content turn),
+    bracketed by activity markers, while the full Content (text + audio) is
+    preserved in the yielded user Event for trajectory logging and autorater
+    evaluation.
     """
     mock_live_request_queue = mocker.MagicMock()
     event_queue = asyncio.Queue()
@@ -563,17 +672,16 @@ class TestGenerateInferencesForSingleUserInvocationLive:
     second_event = await gen.__anext__()
     assert second_event == agent_event
 
-    # The agent receives an audio-only message (text part stripped).
-    mock_live_request_queue.send_content.assert_called_once()
-    sent_content = mock_live_request_queue.send_content.call_args.args[0]
-    assert sent_content.role == "user"
-    assert len(sent_content.parts) == 1
-    assert sent_content.parts[0].text is None
-    assert sent_content.parts[0].inline_data.data == b"fake-audio"
+    # The agent receives the audio as realtime input, not a content turn.
+    mock_live_request_queue.send_content.assert_not_called()
+    mock_live_request_queue.send_activity_start.assert_called_once()
+    mock_live_request_queue.send_activity_end.assert_called_once()
+    sent_blob = mock_live_request_queue.send_realtime.call_args.args[0]
+    assert sent_blob.data == b"fake-audio"
 
   @pytest.mark.asyncio
   async def test_generate_inferences_live_audio_only_message(self, mocker):
-    """Audio-only messages are forwarded to the agent unchanged."""
+    """Audio-only messages are streamed to the agent as realtime input."""
     mock_live_request_queue = mocker.MagicMock()
     event_queue = asyncio.Queue()
     turn_complete_event = asyncio.Event()
@@ -605,10 +713,9 @@ class TestGenerateInferencesForSingleUserInvocationLive:
     await event_queue.put(agent_event)
     await gen.__anext__()
 
-    mock_live_request_queue.send_content.assert_called_once()
-    sent_content = mock_live_request_queue.send_content.call_args.args[0]
-    assert len(sent_content.parts) == 1
-    assert sent_content.parts[0].inline_data.data == b"fake-audio"
+    mock_live_request_queue.send_content.assert_not_called()
+    sent_blob = mock_live_request_queue.send_realtime.call_args.args[0]
+    assert sent_blob.data == b"fake-audio"
 
   @pytest.mark.asyncio
   async def test_generate_inferences_live_text_only_message_unchanged(
@@ -646,21 +753,18 @@ class TestGenerateInferencesForSingleUserInvocationLive:
     mock_live_request_queue.send_content.assert_called_once_with(user_content)
 
   @pytest.mark.asyncio
-  async def test_generate_inferences_live_audio_with_text_sends_unchanged(
+  async def test_generate_inferences_live_audio_with_text_streams_audio(
       self, mocker
   ):
-    """Falls back to the original message when stripping text leaves no parts.
+    """A part carrying both text and audio still streams its audio as realtime.
 
-    When every part carries text (even the audio-bearing part), stripping
-    text parts would produce an empty message. In that case the original
-    Content is sent to the agent unchanged rather than an empty message.
+    A single part may carry both a transcript and inline audio; its audio is
+    streamed as realtime input so the agent can decode it.
     """
     mock_live_request_queue = mocker.MagicMock()
     event_queue = asyncio.Queue()
     turn_complete_event = asyncio.Event()
 
-    # A single part that carries both text and audio, so it is excluded by the
-    # `not p.text` filter, leaving `audio_parts` empty.
     combined_part = types.Part(
         text="User query",
         inline_data=types.Blob(mime_type="audio/pcm", data=b"fake-audio"),
@@ -689,8 +793,70 @@ class TestGenerateInferencesForSingleUserInvocationLive:
     await event_queue.put(agent_event)
     await gen.__anext__()
 
-    # audio_parts is empty, so the original content object is sent as-is.
-    mock_live_request_queue.send_content.assert_called_once_with(user_content)
+    mock_live_request_queue.send_content.assert_not_called()
+    sent_blob = mock_live_request_queue.send_realtime.call_args.args[0]
+    assert sent_blob.data == b"fake-audio"
+
+
+class TestSendAudioToLive:
+  """Test cases for _send_audio_to_live."""
+
+  def test_brackets_audio_with_activity_markers(self, mocker):
+    """Audio is streamed between an activity start and end marker."""
+    queue = mocker.MagicMock()
+    content = types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                inline_data=types.Blob(mime_type="audio/pcm", data=b"1234")
+            )
+        ],
+    )
+
+    _send_audio_to_live(queue, content)
+
+    queue.send_activity_start.assert_called_once()
+    queue.send_activity_end.assert_called_once()
+    queue.send_realtime.assert_called_once()
+
+  def test_splits_audio_into_chunks(self, mocker):
+    """Audio larger than the chunk size is streamed in multiple realtime sends."""
+    queue = mocker.MagicMock()
+    # 2.5 chunks worth of audio -> 3 realtime sends.
+    data = b"\x00" * (16000 * 2 + 8000)
+    content = types.Content(
+        role="user",
+        parts=[
+            types.Part(inline_data=types.Blob(mime_type="audio/pcm", data=data))
+        ],
+    )
+
+    _send_audio_to_live(queue, content)
+
+    assert queue.send_realtime.call_count == 3
+    sent = b"".join(
+        call.args[0].data for call in queue.send_realtime.call_args_list
+    )
+    assert sent == data
+
+  def test_preserves_blob_mime_type(self, mocker):
+    """The source blob's mime type is carried on each realtime send."""
+    queue = mocker.MagicMock()
+    content = types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                inline_data=types.Blob(
+                    mime_type="audio/pcm;rate=16000", data=b"12"
+                )
+            )
+        ],
+    )
+
+    _send_audio_to_live(queue, content)
+
+    sent_blob = queue.send_realtime.call_args.args[0]
+    assert sent_blob.mime_type == "audio/pcm;rate=16000"
 
 
 @pytest.fixture

@@ -22,6 +22,7 @@ import time
 from unittest import mock
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
+from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
@@ -800,6 +801,32 @@ async def test_session_last_update_time_updates_on_event(session_service):
       event_timestamp, abs=1e-6
   )
   assert refreshed_session.last_update_time > original_update_time
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.DATABASE, SessionServiceType.SQLITE]
+)
+async def test_append_event_to_deleted_session_raises_session_not_found(
+    service_type, tmp_path
+):
+  session_service = get_session_service(service_type, tmp_path)
+  try:
+    app_name = 'my_app'
+    user_id = 'user'
+    session = await session_service.create_session(
+        app_name=app_name, user_id=user_id
+    )
+    await session_service.delete_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+
+    event = Event(invocation_id='inv1', author='user')
+    with pytest.raises(SessionNotFoundError):
+      await session_service.append_event(session, event)
+  finally:
+    if isinstance(session_service, DatabaseSessionService):
+      await session_service.close()
 
 
 @pytest.mark.asyncio

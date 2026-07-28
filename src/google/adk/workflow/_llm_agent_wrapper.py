@@ -137,11 +137,10 @@ async def _dispatch_task_fc(
   """Dispatch a task-delegation FC via ``ctx.run_node`` and return the output.
 
   ``run_id=fc.id`` makes the child run idempotent across resumes (same
-  FC always maps to the same scheduler-tracked child run).  Scope is
-  carried by ``isolation_scope`` (``override_isolation_scope=fc.id``); we
-  intentionally do NOT set a branch — task-mode and single_turn-mode
-  agents share the parent's branch and rely on isolation_scope for
-  scoping instead.
+  FC always maps to the same scheduler-tracked child run).  Each task
+  runs in a stable sub-branch so resumable LLM flow logic sees only the
+  task's own function calls.  ``isolation_scope`` remains keyed by the
+  FC id to keep task history scoped independently of branch ancestry.
   """
   target_agent = parent_agent.root_agent.find_agent(fc.name)
   if target_agent is None:
@@ -154,6 +153,7 @@ async def _dispatch_task_fc(
       wrapped_target,
       node_input=fc.args,
       run_id=fc.id,
+      use_sub_branch=True,
       override_isolation_scope=fc.id,
       raise_on_wait=True,
   )

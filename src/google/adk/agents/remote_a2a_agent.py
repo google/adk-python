@@ -68,6 +68,7 @@ from ..events.event import Event
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.contents import _present_other_agent_message
 from ..flows.llm_flows.functions import find_matching_function_call
+from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 
 __all__ = [
@@ -746,55 +747,58 @@ class RemoteA2aAgent(BaseAgent):
       # status/artifact updates are aggregated into a running task (matching the
       # 0.3.x client behavior).
       normalize_stream_item = _compat.make_stream_normalizer()
-      async for raw_a2a_response in _compat.send_message(
-          self._a2a_client,
-          request=a2a_request,
-          request_metadata=parameters.request_metadata,
-          context=parameters.client_call_context,
-      ):
-        a2a_response = normalize_stream_item(raw_a2a_response)
-        logger.debug(build_a2a_response_log(a2a_response))
-
-        metadata = None
-        if isinstance(a2a_response, tuple):
-          task = a2a_response[0]
-          if task:
-            metadata = task.metadata
-        else:
-          metadata = a2a_response.metadata
-
-        if metadata and _compat.metadata_get(
-            metadata, _NEW_A2A_ADK_INTEGRATION_EXTENSION
-        ):
-          event = await self._handle_a2a_response_v2(a2a_response, ctx)
-        else:
-          event = await self._handle_a2a_response(a2a_response, ctx)
-        if not event:
-          continue
-
-        event = await execute_after_request_interceptors(
-            self._config.request_interceptors, ctx, a2a_response, event
-        )
-        if not event:
-          continue
-
-        # Add metadata about the request and response
-        event.custom_metadata = event.custom_metadata or {}
-        event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
-            _compat.a2a_to_dict(a2a_request)
-        )
-        # If the response is a ClientEvent, record the task state; otherwise,
-        # record the message object.
-        if isinstance(a2a_response, tuple):
-          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-              _compat.a2a_to_dict(a2a_response[0])
+      async with Aclosing(
+          _compat.send_message(
+              self._a2a_client,
+              request=a2a_request,
+              request_metadata=parameters.request_metadata,
+              context=parameters.client_call_context,
           )
-        else:
-          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-              _compat.a2a_to_dict(a2a_response)
-          )
+      ) as agen:
+        async for raw_a2a_response in agen:
+          a2a_response = normalize_stream_item(raw_a2a_response)
+          logger.debug(build_a2a_response_log(a2a_response))
 
-        yield event
+          metadata = None
+          if isinstance(a2a_response, tuple):
+            task = a2a_response[0]
+            if task:
+              metadata = task.metadata
+          else:
+            metadata = a2a_response.metadata
+
+          if metadata and _compat.metadata_get(
+              metadata, _NEW_A2A_ADK_INTEGRATION_EXTENSION
+          ):
+            event = await self._handle_a2a_response_v2(a2a_response, ctx)
+          else:
+            event = await self._handle_a2a_response(a2a_response, ctx)
+          if not event:
+            continue
+
+          event = await execute_after_request_interceptors(
+              self._config.request_interceptors, ctx, a2a_response, event
+          )
+          if not event:
+            continue
+
+          # Add metadata about the request and response
+          event.custom_metadata = event.custom_metadata or {}
+          event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
+              _compat.a2a_to_dict(a2a_request)
+          )
+          # If the response is a ClientEvent, record the task state; otherwise,
+          # record the message object.
+          if isinstance(a2a_response, tuple):
+            event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                _compat.a2a_to_dict(a2a_response[0])
+            )
+          else:
+            event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                _compat.a2a_to_dict(a2a_response)
+            )
+
+          yield event
 
     except _compat.A2A_HTTP_ERRORS as e:
       error_message = f"A2A request failed: {e}"

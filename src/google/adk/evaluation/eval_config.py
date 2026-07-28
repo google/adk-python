@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Annotated
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -28,6 +29,7 @@ from pydantic import model_validator
 
 from ..agents.common_configs import CodeConfig
 from ..evaluation.eval_metrics import EvalMetric
+from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
 from .eval_metrics import BaseCriterion
 from .eval_metrics import MetricInfo
 from .eval_metrics import Threshold
@@ -39,8 +41,9 @@ logger = logging.getLogger("google_adk." + __name__)
 # The set of user-simulator config subclasses that `EvalConfig` can
 # deserialize into via the `type` discriminator. Add any new subclass to
 # this Union (each with a unique `Literal[...]` for its `type` field).
-_UserSimulatorConfig = Union[
-    LlmBackedUserSimulatorConfig, LlmAudioUserSimulatorConfig
+_UserSimulatorConfig = Annotated[
+    Union[LlmBackedUserSimulatorConfig, LlmAudioUserSimulatorConfig],
+    Field(discriminator="type"),
 ]
 
 # Legacy default preserved for backward compatibility with eval configs authored
@@ -70,6 +73,23 @@ class CustomMetricConfig(BaseModel):
   description: str = Field(
       default="",
       description="Description for the custom metric info.",
+  )
+
+
+class LiveModelConfig(BaseModel):
+  """Configuration for evaluating models in Live (bidirectional streaming) mode."""
+
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+
+  timeout_seconds: int = Field(
+      default=DEFAULT_LIVE_TIMEOUT_SECONDS,
+      description=(
+          "Timeout in seconds for waiting for model turn completion in"
+          " live mode."
+      ),
   )
 
 
@@ -158,7 +178,6 @@ Example:
 
   user_simulator_config: Optional[_UserSimulatorConfig] = Field(
       default=None,
-      discriminator="type",
       description=(
           "Config to be used by the user simulator. When authored as JSON,"
           " the concrete subclass is selected via the `type` discriminator"
@@ -166,6 +185,14 @@ Example:
           " predate the `type` field are treated as"
           f' `type="{_LEGACY_DEFAULT_USER_SIMULATOR_TYPE}"` for backward'
           " compatibility."
+      ),
+  )
+
+  live_model_config: Optional[LiveModelConfig] = Field(
+      default=None,
+      description=(
+          "Config for evaluating in live (bidirectional streaming) mode."
+          " Required for Live API models (e.g. `gemini-*-live-*`)."
       ),
   )
 

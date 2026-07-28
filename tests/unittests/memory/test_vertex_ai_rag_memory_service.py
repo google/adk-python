@@ -22,6 +22,7 @@ from google.adk.memory.vertex_ai_rag_memory_service import VertexAiRagMemoryServ
 from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
+from pytest_mock import MockerFixture
 
 
 def _rag_context(source_display_name: str, text: str) -> SimpleNamespace:
@@ -29,6 +30,34 @@ def _rag_context(source_display_name: str, text: str) -> SimpleNamespace:
       source_display_name=source_display_name,
       text=json.dumps({"author": "user", "timestamp": 1, "text": text}),
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured_top_k", [7, None])
+async def test_search_memory_forwards_similarity_top_k(
+    mocker: MockerFixture,
+    configured_top_k: int | None,
+) -> None:
+  memory_service = VertexAiRagMemoryService(
+      rag_corpus="unused",
+      similarity_top_k=configured_top_k,
+  )
+  fake_client = mocker.Mock()
+  fake_client.rag.retrieve_contexts.return_value = SimpleNamespace(
+      contexts=SimpleNamespace(contexts=[])
+  )
+  mocker.patch("agentplatform.Client", return_value=fake_client)
+
+  await memory_service.search_memory(
+      app_name="demo", user_id="alice", query="memory"
+  )
+
+  fake_client.rag.retrieve_contexts.assert_called_once()
+  kwargs = fake_client.rag.retrieve_contexts.call_args.kwargs
+  assert kwargs["query"].similarity_top_k == configured_top_k
+  # retrieveContexts reads top-k from the query; sending it on the store
+  # would put an undefined field on the request.
+  assert kwargs["vertex_rag_store"].similarity_top_k is None
 
 
 @pytest.mark.asyncio

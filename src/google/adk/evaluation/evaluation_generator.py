@@ -72,6 +72,27 @@ logger = logging.getLogger("google_adk." + __name__)
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"
 
+# Chunk size for streaming audio blobs to the Live API.
+# See https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api#technical-specifications
+_AUDIO_CHUNK_BYTES = 16000
+
+
+def _send_audio_to_live(
+    live_request_queue: LiveRequestQueue, content: Content
+) -> None:
+  """Streams a user turn's audio to the Live API as realtime input."""
+  live_request_queue.send_activity_start()
+  for part in content.parts or []:
+    blob = part.inline_data
+    if not (blob and blob.data):
+      continue
+    for start in range(0, len(blob.data), _AUDIO_CHUNK_BYTES):
+      chunk = blob.data[start : start + _AUDIO_CHUNK_BYTES]
+      live_request_queue.send_realtime(
+          types.Blob(data=chunk, mime_type=blob.mime_type)
+      )
+  live_request_queue.send_activity_end()
+
 
 class EvalCaseResponses(BaseModel):
   """Contains multiple responses associated with an EvalCase.
@@ -117,6 +138,13 @@ class _LiveSession:
           response_modalities=["AUDIO"],
           output_audio_transcription=types.AudioTranscriptionConfig(),
           input_audio_transcription=types.AudioTranscriptionConfig(),
+          # Disable server-side voice-activity detection so turn boundaries are
+          # controlled explicitly via activity markers around the sent audio.
+          realtime_input_config=types.RealtimeInputConfig(
+              automatic_activity_detection=types.AutomaticActivityDetection(
+                  disabled=True
+              )
+          ),
       )
 
       invocation_context = self.runner._new_invocation_context_for_live(
@@ -401,7 +429,6 @@ class EvaluationGenerator:
       current_invocation_id: str,
       turn_complete_event: asyncio.Event,
       live_timeout_seconds: int,
-      agent_name: str = _DEFAULT_AUTHOR,
   ) -> AsyncGenerator[Event, None]:
     """Generates inferences for a single user invocation in live mode."""
     yield Event(
@@ -410,19 +437,15 @@ class EvaluationGenerator:
         invocation_id=current_invocation_id,
     )
 
-    # If the user message contains audio parts, strip text parts before
-    # sending to the agent so the model receives audio-only input.
-    # The full Content (with text) is preserved in the Event above for
-    # trajectory logging and autorater evaluation.
-    message_for_agent = user_message
-    if user_message.parts:
-      has_audio = any(p.inline_data for p in user_message.parts)
-      if has_audio:
-        audio_parts = [p for p in user_message.parts if not p.text]
-        if audio_parts:
-          message_for_agent = Content(parts=audio_parts, role=user_message.role)
-
-    live_request_queue.send_content(message_for_agent)
+    # If the user message contains audio parts, send only the audio to the
+    # agent so a native-audio Live model receives audio-only input. The full
+    # Content (with text) is preserved in the Event above for trajectory
+    # logging and autorater evaluation.
+    has_audio = any(p.inline_data for p in user_message.parts or [])
+    if has_audio:
+      _send_audio_to_live(live_request_queue, user_message)
+    else:
+      live_request_queue.send_content(user_message)
 
     try:
       await asyncio.wait_for(
@@ -435,26 +458,12 @@ class EvaluationGenerator:
       )
       raise
 
+    # Yield raw events; transcription-bearing events are normalized later by
+    # `_normalize_live_transcriptions` before they are consumed.
     while not event_queue.empty():
       event = await event_queue.get()
       if event.invocation_id == current_invocation_id:
         yield event
-        # Emit a synthetic text event for each transcription, preserving
-        # the order in which events are received.
-        if (
-            event.author != _USER_AUTHOR
-            and event.output_transcription
-            and event.output_transcription.text
-            and event.partial
-        ):
-          yield Event(
-              content=Content(
-                  role="model",
-                  parts=[types.Part(text=event.output_transcription.text)],
-              ),
-              author=agent_name,
-              invocation_id=current_invocation_id,
-          )
 
   @staticmethod
   async def _generate_inferences_from_root_agent_live(
@@ -525,7 +534,9 @@ class EvaluationGenerator:
         while True:
           turn_idx += 1
           next_user_message = await user_simulator.get_next_user_message(
-              copy.deepcopy(events)
+              EvaluationGenerator._normalize_live_transcriptions(
+                  copy.deepcopy(events)
+              )
           )
           if next_user_message.status == UserSimulatorStatus.SUCCESS:
             live_session.current_invocation_id = Event.new_id()
@@ -542,7 +553,6 @@ class EvaluationGenerator:
                 current_invocation_id=live_session.current_invocation_id,
                 turn_complete_event=live_session.turn_complete_event,
                 live_timeout_seconds=live_timeout_seconds,
-                agent_name=runner.agent.name,
             ):
               events.append(event)
 
@@ -560,7 +570,8 @@ class EvaluationGenerator:
           )
       )
       return EvaluationGenerator.convert_events_to_eval_invocations(
-          events, app_details_by_invocation_id
+          EvaluationGenerator._normalize_live_transcriptions(events),
+          app_details_by_invocation_id,
       )
 
   @staticmethod
@@ -655,7 +666,7 @@ class EvaluationGenerator:
 
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
-      final_response = None
+      final_response: Optional[Content] = None
       final_event: Optional[Event] = None
       user_content = Content(parts=[])
       invocation_timestamp: float = 0
@@ -667,7 +678,6 @@ class EvaluationGenerator:
         app_details = app_details_per_invocation[invocation_id]
 
       events_to_add = []
-
       for event in events:
         current_author = (event.author or _DEFAULT_AUTHOR).lower()
 
@@ -681,8 +691,15 @@ class EvaluationGenerator:
 
         if event.content and event.content.parts:
           if event.is_final_response():
-            final_response = event.content
-            final_event = event
+            # A live response is both audio and a text transcript; keep the
+            # text one as the gradable response.
+            final_has_text = final_response is not None and any(
+                p.text for p in final_response.parts or []
+            )
+            event_has_text = any(p.text for p in event.content.parts or [])
+            if not final_has_text or event_has_text:
+              final_response = event.content
+              final_event = event
 
           for p in event.content.parts:
             if (
@@ -748,6 +765,37 @@ class EvaluationGenerator:
           )
 
     return app_details_by_invocation_id
+
+  @staticmethod
+  def _normalize_live_transcriptions(events: list[Event]) -> list[Event]:
+    """Rewrites native-audio Live transcription events into text content events."""
+    # Only consolidated (non-partial) transcription events are rewritten,
+    # mirroring `contents.py`; every other event passes through untouched.
+    normalized = []
+    for event in events:
+      if event.content is not None or event.partial:
+        normalized.append(event)
+        continue
+
+      if event.input_transcription and event.input_transcription.text:
+        transcription = event.input_transcription
+        role = "user"
+      elif event.output_transcription and event.output_transcription.text:
+        transcription = event.output_transcription
+        role = "model"
+      else:
+        normalized.append(event)
+        continue
+
+      rewritten = event.model_copy(deep=True)
+      rewritten.input_transcription = None
+      rewritten.output_transcription = None
+      rewritten.content = Content(
+          role=role, parts=[types.Part(text=transcription.text)]
+      )
+      normalized.append(rewritten)
+
+    return normalized
 
   @staticmethod
   def _collect_events_by_invocation_id(events: list[Event]) -> dict[str, Event]:

@@ -285,3 +285,20 @@ def test_user_simulator_config_python_construction():
       eval_config.user_simulator_config, LlmBackedUserSimulatorConfig
   )
   assert eval_config.user_simulator_config.model == "py-model"
+
+
+from google.adk.evaluation.eval_config import LiveModelConfig
+
+
+def test_live_model_config_defaults_to_none():
+  eval_config = EvalConfig(criteria={})
+  assert eval_config.live_model_config is None
+
+
+def test_live_model_config_from_json():
+  eval_config = EvalConfig.model_validate({
+      "criteria": {},
+      "liveModelConfig": {"timeoutSeconds": 600},
+  })
+  assert isinstance(eval_config.live_model_config, LiveModelConfig)
+  assert eval_config.live_model_config.timeout_seconds == 600
