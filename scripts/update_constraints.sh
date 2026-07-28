@@ -35,6 +35,12 @@ done
 # Ensure uv is in PATH
 export PATH="$HOME/.local/bin:$PATH"
 
+if ! command -v uv >/dev/null 2>&1; then
+  echo "❌ uv is required but was not found on PATH."
+  echo "   Install it from https://docs.astral.sh/uv/getting-started/installation/"
+  exit 1
+fi
+
 cleanup() {
   rm -f constraints-*.tmp
 }

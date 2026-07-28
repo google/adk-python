@@ -66,7 +66,7 @@ repos:
         exclude: ^scripts/
       - id: update-constraints
         name: update-constraints
-        entry: ./scripts/update_constraints.sh
+        entry: ./scripts/update_constraints.sh --check
         language: system
         files: ^(pyproject\.toml|constraints-.*\.txt)$
         pass_filenames: false
