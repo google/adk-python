@@ -663,6 +663,7 @@ def to_cloud_run(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    with_cloud_run_sandbox: bool = False,
     trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
 ) -> None:
@@ -785,8 +786,11 @@ def to_cloud_run(
     _validate_gcloud_extra_args(extra_gcloud_args, adk_managed_args)
 
     # Build the command with extra gcloud args
-    gcloud_cmd = [
-        _GCLOUD_CMD,
+    gcloud_cmd = [_GCLOUD_CMD]
+    if with_cloud_run_sandbox:
+      # --sandbox-launcher is only supported on the beta release track.
+      gcloud_cmd.append('beta')
+    gcloud_cmd += [
         'run',
         'deploy',
         service_name,
@@ -799,8 +803,9 @@ def to_cloud_run(
         str(port),
         '--verbosity',
         log_level.lower() if log_level else verbosity,
-        '--sandbox-launcher',
     ]
+    if with_cloud_run_sandbox:
+      gcloud_cmd.append('--sandbox-launcher')
 
     # Handle labels specially - merge user labels with ADK label
     user_labels = []
