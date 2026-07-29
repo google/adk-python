@@ -29,7 +29,7 @@ from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-RealtimeInput = Union[types.Blob, types.ActivityStart, types.ActivityEnd]
+RealtimeInput = Union[types.Blob, types.ActivityStart, types.ActivityEnd, bool]
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -173,6 +173,9 @@ class GeminiLlmConnection(BaseLlmConnection):
     elif isinstance(input, types.ActivityEnd):
       logger.debug('Sending LLM activity end signal.')
       await self._gemini_session.send_realtime_input(activity_end=input)
+    elif isinstance(input, bool) and input:
+      logger.debug('Sending LLM audio stream end signal.')
+      await self._gemini_session.send_realtime_input(audio_stream_end=True)
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
 

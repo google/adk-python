@@ -90,6 +90,18 @@ async def test_send_realtime_audio_uses_audio_channel_for_live_translate(
 
 
 @pytest.mark.asyncio
+async def test_send_realtime_audio_stream_end(
+    gemini_connection, mock_gemini_session
+):
+  """Test send_realtime with audio_stream_end=True sends the flush signal."""
+  await gemini_connection.send_realtime(True)
+
+  mock_gemini_session.send_realtime_input.assert_called_once_with(
+      audio_stream_end=True
+  )
+
+
+@pytest.mark.asyncio
 async def test_send_history(gemini_connection, mock_gemini_session):
   """Test send_history method."""
   history = [

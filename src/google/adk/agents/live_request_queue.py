@@ -57,6 +57,14 @@ class LiveRequest(BaseModel):
   activity_start > activity_end > blob > content. state_delta, if set, is always
   applied regardless of the other fields.
   """
+  audio_stream_end: Optional[bool] = None
+  """If set, signal the end of the audio stream to force flush buffered audio
+  when VAD (voice activity detection) is enabled.
+
+  When multiple fields are set, they are processed by priority (highest first):
+  activity_start > activity_end > blob > content. state_delta, if set, is always
+  applied regardless of the other fields.
+  """
   close: bool = False
   """If set, close the queue. queue.shutdown() is only supported in Python 3.13+."""
 
@@ -91,6 +99,14 @@ class LiveRequestQueue:
   def send_activity_end(self) -> None:
     """Sends an activity end signal to mark the end of user input."""
     self._queue.put_nowait(LiveRequest(activity_end=types.ActivityEnd()))
+
+  def send_audio_stream_end(self) -> None:
+    """Sends an audio stream end signal to force flush buffered audio.
+
+    Use this to signal the end of an audio stream when VAD is enabled,
+    which causes the model to process any buffered audio immediately.
+    """
+    self._queue.put_nowait(LiveRequest(audio_stream_end=True))
 
   def send(self, req: LiveRequest) -> None:
     self._queue.put_nowait(req)
