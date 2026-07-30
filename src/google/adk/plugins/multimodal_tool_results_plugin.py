@@ -81,6 +81,9 @@ class MultimodalToolResultsPlugin(BasePlugin):
   ) -> Optional[LlmResponse]:
     """Attach saved list[google.genai.types.Part] returned by the tool to llm_request."""
 
+    if not llm_request.contents:
+      return None
+
     if saved_parts := callback_context.state.get(
         PARTS_RETURNED_BY_TOOLS_ID, None
     ):

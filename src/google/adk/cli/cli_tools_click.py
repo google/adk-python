@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 import functools
@@ -26,6 +27,8 @@ from pathlib import Path
 import sys
 import tempfile
 import textwrap
+import time
+from typing import Any
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -40,6 +43,9 @@ from ..agents.run_config import StreamingMode
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..features import FeatureName
 from ..features import override_feature_enabled
+from ..utils._telemetry_config import read_telemetry_consent
+from ..utils._telemetry_config import write_telemetry_consent
+from ._telemetry._metrics_collector import MetricsCollector
 from .cli import run_cli
 from .utils import envs
 from .utils import logs
@@ -241,11 +247,161 @@ def _warn_if_with_ui(with_ui: bool) -> None:
     click.secho(f"WARNING: {_ADK_WEB_WARNING}", fg="yellow", err=True)
 
 
-@click.group(context_settings={"max_content_width": 240})
+class TelemetryGroup(click.Group):
+  """Custom Click Group to wrap execution for telemetry tracking."""
+
+  def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+    ctx.telemetry_args = list(args)  # type: ignore[attr-defined]
+    return super().parse_args(ctx, args)
+
+  def invoke(self, ctx: click.Context) -> Any:
+    start_time = time.monotonic()
+    exit_code = 0
+    exception_type = ""
+    try:
+      return super().invoke(ctx)
+    except SystemExit as e:
+      exit_code = (
+          e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+      )
+      raise
+    except BaseException as e:
+      exit_code = 1
+      exception_type = type(e).__name__
+      raise
+    finally:
+      # Exclude help requests and telemetry command group itself
+      full_args: list[str] = getattr(ctx, "telemetry_args", [])
+      if (
+          ctx.invoked_subcommand is not None
+          and ctx.invoked_subcommand != "telemetry"
+          and not any(arg in full_args for arg in ("--help", "-h"))
+      ):
+        try:
+          resolved = []
+          current_group: click.Group | click.Command = self
+          for arg in full_args:
+            if (
+                isinstance(current_group, click.Group)
+                and arg in current_group.commands
+            ):
+              resolved.append(arg)
+              cmd_obj = current_group.commands[arg]
+              if isinstance(cmd_obj, click.Group):
+                current_group = cmd_obj
+              else:
+                break
+
+          command = resolved[0] if len(resolved) > 0 else ""
+          subcommand = resolved[1] if len(resolved) > 1 else ""
+
+          sub_args = full_args[len(resolved) :]
+          sub_ctx = None
+          try:
+            # Reconstruct the subcommand context to query parameters.
+            sub_ctx = cmd_obj.make_context(command, sub_args, parent=ctx)
+          except Exception:  # pylint: disable=broad-except
+            pass
+
+          # Check consent before instantiating MetricsCollector
+          if read_telemetry_consent() is True:
+            collector = MetricsCollector()
+            with sub_ctx if sub_ctx else contextlib.nullcontext():
+              collector.record_command_run(
+                  command=command,
+                  subcommand=subcommand,
+                  exit_code=exit_code,
+                  duration_ms=int((time.monotonic() - start_time) * 1000),
+                  exception_type=exception_type,
+              )
+        except Exception:  # pylint: disable=broad-except
+          # Failsafe: telemetry errors must never crash the CLI
+          pass
+
+
+@click.group(cls=TelemetryGroup, context_settings={"max_content_width": 240})  # type: ignore[assignment]
 @click.version_option(version.__version__)
-def main():
+@click.pass_context
+def main(ctx: Optional[click.Context] = None) -> None:
   """Agent Development Kit CLI tools."""
+  if (
+      ctx is not None
+      and ctx.invoked_subcommand is not None
+      and ctx.invoked_subcommand != "telemetry"
+      and not any(arg in sys.argv for arg in ("--help", "-h"))
+      and sys.stdin.isatty()
+  ):
+    if read_telemetry_consent() is None:
+      click.echo(
+          "Help improve the ADK (CLI and Web UI) by allowing Google to collect"
+          " pseudonymized usage data?"
+      )
+      click.echo()
+      click.echo(
+          "What is collected: Names of subcommands and flags (no user-provided"
+          " values or arguments), execution metrics (duration, exit state),"
+          " environment specs (OS, Python version), and aggregated Web UI"
+          " feature interactions. No personally identifiable information (PII)"
+          " is collected."
+      )
+      click.echo()
+      click.echo(
+          "This is OFF by default. You can opt out at any time using the"
+          " 'adk telemetry disable' command or Web UI user settings."
+      )
+      click.echo()
+      try:
+        response = input("Enable telemetry? [Y/n]: ").strip().lower()
+        if response in ("", "y", "yes"):
+          write_telemetry_consent(True)
+        else:
+          write_telemetry_consent(False)
+      except (EOFError, KeyboardInterrupt):
+        click.echo()
+      except Exception as e:
+        click.secho(
+            f"Error: Failed to save telemetry settings: {e}",
+            fg="red",
+            err=True,
+        )
+
+
+@main.group("telemetry")
+def telemetry() -> None:
+  """Manage telemetry settings."""
   pass
+
+
+@telemetry.command("enable")
+def telemetry_enable() -> None:
+  """Enable telemetry collection."""
+  try:
+    write_telemetry_consent(True)
+    click.echo("Telemetry collection has been enabled.")
+  except Exception as e:
+    raise click.ClickException(f"Failed to enable telemetry: {e}")
+
+
+@telemetry.command("disable")
+def telemetry_disable() -> None:
+  """Disable telemetry collection."""
+  try:
+    write_telemetry_consent(False)
+    click.echo("Telemetry collection has been disabled.")
+  except Exception as e:
+    raise click.ClickException(f"Failed to disable telemetry: {e}")
+
+
+@telemetry.command("status")
+def telemetry_status() -> None:
+  """Show telemetry collection status."""
+  consent = read_telemetry_consent()
+  if consent is True:
+    click.echo("Telemetry collection is enabled.")
+  elif consent is False:
+    click.echo("Telemetry collection is disabled.")
+  else:
+    click.echo("Telemetry collection is not configured (defaults to OFF).")
 
 
 @main.group()
@@ -1032,6 +1188,16 @@ def cli_eval(
   print(f"Using evaluation criteria: {eval_config}")
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
+  # Live mode is resolved from the eval config, consistent with how
+  # `user_simulator_config` and other eval settings are sourced.
+  if eval_config.live_model_config:
+    inference_config = InferenceConfig(
+        use_live=True,
+        live_timeout_seconds=eval_config.live_model_config.timeout_seconds,
+    )
+  else:
+    inference_config = InferenceConfig(use_live=False)
+
   root_agent = asyncio.run(get_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
@@ -1090,7 +1256,7 @@ def cli_eval(
               app_name=app_name,
               eval_set_id=eval_set.eval_set_id,
               eval_case_ids=eval_case_ids,
-              inference_config=InferenceConfig(),
+              inference_config=inference_config,
           )
       )
   else:
@@ -1107,7 +1273,7 @@ def cli_eval(
               app_name=app_name,
               eval_set_id=eval_set_id_key,
               eval_case_ids=eval_case_ids,
-              inference_config=InferenceConfig(),
+              inference_config=inference_config,
           )
       )
 
@@ -2431,6 +2597,20 @@ def cli_migrate_session(
         " the version in the dev environment)"
     ),
 )
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
+        " is added to PYTHONPATH, so a top-level name that matches an installed"
+        " dependency will shadow it at runtime; pick distinct names."
+        " Repeatable."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2464,6 +2644,7 @@ def cli_deploy_agent_engine(
     memory_service_uri: str | None = None,
     session_service_uri: str | None = None,
     use_local_storage: bool = False,
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to Agent Engine.
 
@@ -2510,6 +2691,7 @@ def cli_deploy_agent_engine(
         memory_service_uri=memory_service_uri,
         session_service_uri=session_service_uri,
         adk_version=adk_version,
+        extra_packages=list(extra_packages),
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

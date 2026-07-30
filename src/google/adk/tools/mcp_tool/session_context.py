@@ -27,6 +27,7 @@ from typing import TypeVar
 
 from mcp import ClientSession
 from mcp import SamplingCapability
+from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 
 from ...features import FeatureName
@@ -90,36 +91,41 @@ class SessionContext:
   def __init__(
       self,
       client: AbstractAsyncContextManager[Any],
-      timeout: Optional[float],
-      sse_read_timeout: Optional[float],
+      timeout: float | None,
+      sse_read_timeout: float | None,
       is_stdio: bool = False,
       *,
-      sampling_callback: Optional[SamplingFnT] = None,
-      sampling_capabilities: Optional[SamplingCapability] = None,
+      sampling_callback: SamplingFnT | None = None,
+      sampling_capabilities: SamplingCapability | None = None,
+      elicitation_callback: ElicitationFnT | None = None,
   ):
-    """
+    """Initializes SessionContext.
+
     Args:
-        client: An MCP client context manager (e.g., from streamablehttp_client,
-            sse_client, or stdio_client).
-        timeout: Timeout in seconds for connection and initialization.
-        sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
-            server.
-        is_stdio: Whether this is a stdio connection (affects read timeout).
-        sampling_callback: Optional callback to handle sampling requests from the
-            MCP server.
-        sampling_capabilities: Optional capabilities for sampling.
+      client: An MCP client context manager (e.g., from streamablehttp_client,
+        sse_client, or stdio_client).
+      timeout: Timeout in seconds for connection and initialization.
+      sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
+        server.
+      is_stdio: Whether this is a stdio connection (affects read timeout).
+      sampling_callback: Optional callback to handle sampling requests from the
+        MCP server.
+      sampling_capabilities: Optional capabilities for sampling.
+      elicitation_callback: Optional callback to handle elicitation requests
+        from the MCP server (``elicitation/create``).
     """
     self._client = client
     self._timeout = timeout
     self._sse_read_timeout = sse_read_timeout
     self._is_stdio = is_stdio
-    self._session: Optional[ClientSession] = None
+    self._session: ClientSession | None = None
     self._ready_event = asyncio.Event()
     self._close_event = asyncio.Event()
-    self._task: Optional[asyncio.Task[None]] = None
+    self._task: asyncio.Task[None] | None = None
     self._task_lock = asyncio.Lock()
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
+    self._elicitation_callback = elicitation_callback
 
   @property
   def session(self) -> Optional[ClientSession]:
@@ -320,6 +326,7 @@ class SessionContext:
                   else None,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
+                  elicitation_callback=self._elicitation_callback,
               )
           )
         else:
@@ -333,6 +340,7 @@ class SessionContext:
                   else None,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
+                  elicitation_callback=self._elicitation_callback,
               )
           )
         # pylint: disable-next=protected-access

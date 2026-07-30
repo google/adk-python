@@ -2091,3 +2091,111 @@ async def test_trigger_buffer_insertion_order_deterministic(
   # We assert that the FIRST trigger (for from_a) was processed FIRST!
   assert interrupt_id_2_first == 'req_d_from_a'
   assert interrupt_id_2_second == 'req_e_from_b'
+
+
+class _BranchRouterNode(BaseNode):
+  """Routes the first invocation and later invocations down different branches.
+
+  Stands in for the LlmAgent classification in the original report: the model
+  is incidental, what matters is that two invocations in one session take
+  different branches, so the first invocation ends on a node the second never
+  runs.
+  """
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
+  seen_invocations: list[str] = Field(default_factory=list)
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    self.seen_invocations.append(ctx.invocation_id)
+    distinct = list(dict.fromkeys(self.seen_invocations))
+    route = 'DONE' if len(distinct) == 1 else 'NEEDS_INPUT'
+    yield Event(output=node_input, route=route)
+
+
+class _ClarifyNode(BaseNode):
+  """Pauses for input on first execution, emits the answer once resumed."""
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
+  rerun_on_resume: bool = Field(default=True)
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    interrupt_id = f'clarify:{ctx.run_id}'
+    response = ctx.resume_inputs.get(interrupt_id)
+    if response is None:
+      yield RequestInput(interrupt_id=interrupt_id, message='Which city?')
+      return
+    yield Event(output=f'resumed:{response}')
+
+
+@pytest.mark.asyncio
+async def test_request_input_resume_after_earlier_invocation_completed(
+    request: pytest.FixtureRequest,
+):
+  """A completed earlier invocation must not block a later HITL resume.
+
+  Regression test for #6497. The first invocation finishes on the `finish`
+  branch. The second invocation takes the `clarify` branch and pauses for
+  input. When the replay sequence was built from every event in the session,
+  the terminal `finish` event of the first invocation entered the sequence
+  and, being chronologically first, was the only key the sequence barrier
+  unblocked. `finish` never runs during the resume, so the pending node waited
+  out the barrier timeout and raised "Replay divergence detected".
+  """
+  prepare = _TestingNode(name='prepare_intent_text', message='prepped')
+  router = _BranchRouterNode(name='route')
+  finish = _TestingNode(name='finish', message='done')
+  clarify = _ClarifyNode(name='clarify')
+
+  agent = Workflow(
+      name='test_workflow_replay_across_invocations',
+      edges=[
+          Edge(from_node=START, to_node=prepare),
+          Edge(from_node=prepare, to_node=router),
+          Edge(from_node=router, to_node=finish, route='DONE'),
+          Edge(from_node=router, to_node=clarify, route='NEEDS_INPUT'),
+      ],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Invocation 1: runs to completion down the `finish` branch.
+  events1 = await runner.run_async(
+      testing_utils.get_user_content('who are you')
+  )
+  outputs1 = [e.output for e in events1 if e.output is not None]
+  assert 'done' in outputs1
+
+  # Invocation 2, same session: takes the `clarify` branch and pauses.
+  events2 = await runner.run_async(
+      testing_utils.get_user_content('weather please')
+  )
+  request_input_event = workflow_testing_utils.find_function_call_event(
+      events2, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert request_input_event is not None
+  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  invocation_id = request_input_event.invocation_id
+
+  # Resuming must reach the pending node instead of timing out on `finish`.
+  events3 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {'result': 'Berlin'})
+      ),
+      invocation_id=invocation_id,
+  )
+
+  outputs3 = [e.output for e in events3 if e.output is not None]
+  assert any(
+      isinstance(output, str) and output.startswith('resumed:')
+      for output in outputs3
+  ), outputs3

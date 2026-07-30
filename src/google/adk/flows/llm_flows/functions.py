@@ -32,6 +32,7 @@ from typing import cast
 from typing import Dict
 from typing import Optional
 from typing import TYPE_CHECKING
+import weakref
 
 from google.adk.platform import uuid as platform_uuid
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
@@ -62,10 +63,14 @@ REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-# Global thread pool executors for running tools in background threads.
-# This prevents blocking tools from blocking the event loop in Live API mode.
-# Key is max_workers, value is the executor.
-_TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
+# Thread pool executors for running tools in background threads, keyed by the
+# event loop they serve and then by max_workers. A pool dedicated to tools keeps
+# blocking tools from blocking the event loop in Live API mode without competing
+# with the loop's own default executor. Each pool is shut down once its loop is
+# gone, so its idle threads do not survive the loop.
+_TOOL_THREAD_POOLS: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[int, ThreadPoolExecutor]
+] = weakref.WeakKeyDictionary()
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
 
 
@@ -124,21 +129,30 @@ def _is_live_request_queue_annotation(param: inspect.Parameter) -> bool:
 
 
 def _get_tool_thread_pool(max_workers: int = 4) -> ThreadPoolExecutor:
-  """Gets or creates a thread pool executor for tool execution.
+  """Gets or creates the running loop's thread pool executor for tool execution.
+
+  The pool is only used for tool calls, so a blocking tool cannot starve work
+  the loop itself submits to its default executor, such as name resolution.
 
   Args:
     max_workers: Maximum number of worker threads in the pool.
 
   Returns:
-    A ThreadPoolExecutor with the specified max_workers.
+    A ThreadPoolExecutor with the specified max_workers, shut down when the
+    event loop that created it is collected.
   """
-  if max_workers not in _TOOL_THREAD_POOLS:
-    with _TOOL_THREAD_POOL_LOCK:
-      if max_workers not in _TOOL_THREAD_POOLS:
-        _TOOL_THREAD_POOLS[max_workers] = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix='adk_tool_executor'
-        )
-  return _TOOL_THREAD_POOLS[max_workers]
+  loop = asyncio.get_running_loop()
+  # Loops on other threads reach this registry concurrently.
+  with _TOOL_THREAD_POOL_LOCK:
+    pools = _TOOL_THREAD_POOLS.setdefault(loop, {})
+    pool = pools.get(max_workers)
+    if pool is None:
+      pool = ThreadPoolExecutor(
+          max_workers=max_workers, thread_name_prefix='adk_tool_executor'
+      )
+      pools[max_workers] = pool
+      weakref.finalize(loop, pool.shutdown, wait=False)
+    return pool
 
 
 def _is_sync_tool(tool: BaseTool) -> bool:

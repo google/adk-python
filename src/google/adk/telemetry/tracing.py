@@ -114,6 +114,24 @@ otel_logger = _logs.get_logger(
 logger = logging.getLogger("google_adk." + __name__)
 
 
+def resolve_error_type(error: BaseException) -> str:
+  """Derives a higher-resolution ``error.type`` label for a failure.
+
+  Prefers, in order: a pre-classified ``error_type`` carried by ADK errors; the
+  HTTP status code for ``google.genai`` ``APIError``s (e.g. ``429``, since the
+  SDK collapses every 4xx into ``ClientError`` and every 5xx into
+  ``ServerError``); finally the class name.
+  """
+  from google.genai import errors as genai_errors
+
+  custom_error_type = getattr(error, "error_type", None)
+  if custom_error_type is not None:
+    return str(custom_error_type)
+  if isinstance(error, genai_errors.APIError):
+    return str(error.code)
+  return type(error).__name__
+
+
 def trace_agent_invocation(
     span: trace.Span, agent: BaseAgent, ctx: InvocationContext
 ) -> None:
@@ -190,10 +208,7 @@ def trace_tool_call(
   span.set_attribute(GEN_AI_TOOL_TYPE, tool.__class__.__name__)
 
   if error is not None:
-    if hasattr(error, "error_type") and error.error_type is not None:
-      span.set_attribute(ERROR_TYPE, str(error.error_type))
-    else:
-      span.set_attribute(ERROR_TYPE, type(error).__name__)
+    span.set_attribute(ERROR_TYPE, resolve_error_type(error))
   elif error_type is not None:
     span.set_attribute(ERROR_TYPE, error_type)
 
@@ -516,10 +531,19 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
           exclude_none=True,
           exclude={
               "response_schema": True,
+              # `http_options` carries caller-supplied credentials: `headers`
+              # commonly holds an Authorization bearer token, and
+              # `extra_body` / `*client_args` are free-form passthroughs that
+              # can hold auth material too. None of it may reach an exported
+              # span attribute. The client fields are also unserializable.
               "http_options": {
                   "httpx_client": True,
                   "httpx_async_client": True,
                   "aiohttp_client": True,
+                  "headers": True,
+                  "extra_body": True,
+                  "client_args": True,
+                  "async_client_args": True,
               },
           },
           mode="json",

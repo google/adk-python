@@ -161,12 +161,12 @@ class GdaStreamUtilTest(unittest.TestCase):
       _gda_stream_util._mtls_utils, "get_api_endpoint", autospec=True
   )
   @mock.patch.object(
-      _gda_stream_util.mtls, "has_default_client_cert_source", autospec=True
+      _gda_stream_util._mtls_utils, "use_client_cert_effective", autospec=True
   )
   @mock.patch.object(
       _gda_stream_util.auth_requests, "AuthorizedSession", autospec=True
   )
-  def test_get_gda_session_use_mtls_and_cert(
+  def test_get_gda_session_use_client_cert(
       self, mock_authorized_session, mock_use_client_cert, mock_get_api_endpoint
   ):
     mock_session = mock.MagicMock()
@@ -194,45 +194,17 @@ class GdaStreamUtilTest(unittest.TestCase):
       _gda_stream_util._mtls_utils, "get_api_endpoint", autospec=True
   )
   @mock.patch.object(
-      _gda_stream_util.mtls, "has_default_client_cert_source", autospec=True
+      _gda_stream_util._mtls_utils, "use_client_cert_effective", autospec=True
   )
   @mock.patch.object(
       _gda_stream_util.auth_requests, "AuthorizedSession", autospec=True
   )
-  def test_get_gda_session_use_mtls_no_cert(
+  def test_get_gda_session_no_client_cert(
       self, mock_authorized_session, mock_use_client_cert, mock_get_api_endpoint
   ):
     mock_session = mock.MagicMock()
     mock_authorized_session.return_value = mock_session
     mock_use_client_cert.return_value = False
-    mock_get_api_endpoint.return_value = (
-        "https://geminidataanalytics.mtls.googleapis.com"
-    )
-
-    creds = mock.MagicMock()
-    with self.assertRaises(ValueError) as context:
-      _gda_stream_util.get_gda_session(creds)
-
-    self.assertIn(
-        "mTLS endpoint is selected, but client certificate is not provisioned",
-        str(context.exception),
-    )
-
-  @mock.patch.object(
-      _gda_stream_util._mtls_utils, "get_api_endpoint", autospec=True
-  )
-  @mock.patch.object(
-      _gda_stream_util.mtls, "has_default_client_cert_source", autospec=True
-  )
-  @mock.patch.object(
-      _gda_stream_util.auth_requests, "AuthorizedSession", autospec=True
-  )
-  def test_get_gda_session_regular_endpoint(
-      self, mock_authorized_session, mock_use_client_cert, mock_get_api_endpoint
-  ):
-    mock_session = mock.MagicMock()
-    mock_authorized_session.return_value = mock_session
-    mock_use_client_cert.return_value = True
     mock_get_api_endpoint.return_value = (
         "https://geminidataanalytics.googleapis.com"
     )
@@ -242,6 +214,46 @@ class GdaStreamUtilTest(unittest.TestCase):
 
     self.assertEqual(session, mock_session)
     self.assertEqual(endpoint, "https://geminidataanalytics.googleapis.com")
+    mock_session.configure_mtls_channel.assert_not_called()
+    mock_get_api_endpoint.assert_called_once_with(
+        location="",
+        default_template="https://geminidataanalytics.googleapis.com",
+        mtls_template="https://geminidataanalytics.mtls.googleapis.com",
+    )
+
+  @mock.patch.object(
+      _gda_stream_util._mtls_utils, "get_api_endpoint", autospec=True
+  )
+  @mock.patch.object(
+      _gda_stream_util._mtls_utils, "use_client_cert_effective", autospec=True
+  )
+  @mock.patch.object(
+      _gda_stream_util.auth_requests, "AuthorizedSession", autospec=True
+  )
+  def test_get_gda_session_mtls_endpoint_without_client_cert_does_not_raise(
+      self, mock_authorized_session, mock_use_client_cert, mock_get_api_endpoint
+  ):
+    """GOOGLE_API_USE_MTLS_ENDPOINT=always without a provisioned client cert.
+
+    Matches gcp_utils.py and the other ADK mTLS call sites: the session is
+    returned unconfigured rather than raising. google-auth's own
+    AuthorizedSession.configure_mtls_channel() is a no-op under the same
+    condition, so this defers the decision to the auth library.
+    """
+    mock_session = mock.MagicMock()
+    mock_authorized_session.return_value = mock_session
+    mock_use_client_cert.return_value = False
+    mock_get_api_endpoint.return_value = (
+        "https://geminidataanalytics.mtls.googleapis.com"
+    )
+
+    creds = mock.MagicMock()
+    session, endpoint = _gda_stream_util.get_gda_session(creds)
+
+    self.assertEqual(session, mock_session)
+    self.assertEqual(
+        endpoint, "https://geminidataanalytics.mtls.googleapis.com"
+    )
     mock_session.configure_mtls_channel.assert_not_called()
 
 

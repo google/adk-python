@@ -789,6 +789,37 @@ class TestMcpToolset:
     assert result["content"]["text"] == "sampling response"
 
   @pytest.mark.asyncio
+  async def test_elicitation_callback_plumbed_to_session_manager(self):
+    """Elicitation callback reaches the session manager unchanged."""
+
+    # pylint: disable=protected-access
+    async def mock_elicitation_handler(context, params):
+      del context, params
+      return {"action": "decline"}
+
+    toolset = McpToolset(
+        connection_params=StreamableHTTPConnectionParams(
+            url="http://localhost:9999",
+            timeout=10,
+        ),
+        elicitation_callback=mock_elicitation_handler,
+    )
+    assert toolset._elicitation_callback is mock_elicitation_handler
+    assert (
+        toolset._mcp_session_manager._elicitation_callback
+        is mock_elicitation_handler
+    )
+    # pylint: enable=protected-access
+
+  @pytest.mark.asyncio
+  async def test_elicitation_callback_defaults_to_none(self):
+    # pylint: disable=protected-access
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset._elicitation_callback is None
+    assert toolset._mcp_session_manager._elicitation_callback is None
+    # pylint: enable=protected-access
+
+  @pytest.mark.asyncio
   async def test_get_auth_headers_includes_additional_headers(self):
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.HTTP,

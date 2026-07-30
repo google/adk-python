@@ -167,7 +167,7 @@ def _convert_a2a_parts_to_adk_parts(
           is True
       ):
         for part in parts:
-          if part.function_call:
+          if part.function_call and part.function_call.id is not None:
             long_running_function_ids.add(part.function_call.id)
 
       output_parts.extend(parts)
@@ -258,6 +258,8 @@ def _extract_genai_metadata(
   if raw is None:
     return None
   parsed = _parse_adk_metadata_value(raw)
+  if model_class is dict:
+    return parsed if isinstance(parsed, dict) else None
   if not isinstance(parsed, dict) and model_class:
     return None
   if not model_class:
@@ -396,13 +398,14 @@ def _create_mock_function_call_for_required_user_input(
   for i in range(len(output_parts) - 1, -1, -1):
     prompt = _extract_user_input_prompt(output_parts[i])
     if prompt:
+      function_call_id = str(uuid.uuid4())
       function_call = genai_types.FunctionCall(
-          id=str(uuid.uuid4()),
+          id=function_call_id,
           name=function_name,
           args={args_key: prompt},
       )
       long_running_function_ids = set()
-      long_running_function_ids.add(function_call.id)
+      long_running_function_ids.add(function_call_id)
       output_parts[i] = genai_types.Part(function_call=function_call)
       break
   return output_parts, long_running_function_ids
@@ -418,7 +421,7 @@ def _extract_all_metadata_fields(metadata: Any) -> dict[str, Any]:
           metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
       ),
       "custom_metadata": _extract_genai_metadata(
-          metadata_dict, "custom_metadata", None
+          metadata_dict, "custom_metadata", dict
       ),
       "usage_metadata": _extract_genai_metadata(
           metadata_dict,
@@ -461,7 +464,7 @@ def convert_a2a_task_to_event(
 
   try:
     event_actions = EventActions()
-    output_parts = []
+    output_parts: list[genai_types.Part] = []
     long_running_function_ids = set()
     metadata_fields: dict[str, Any] = {}
     status_message = _compat.normalize_message(a2a_task.status.message)

@@ -12,10 +12,52 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import signal
+import multiprocessing
+import time
+import traceback
 
 from google.adk.code_executors import code_execution_utils
 from google.genai import types
+
+# The extraction itself must finish promptly. The join budget is far looser
+# because it also covers spawning the child and importing this module there.
+_REDOS_DEADLINE_SECONDS = 2.0
+_CHILD_JOIN_TIMEOUT_SECONDS = 120.0
+
+
+def _exercise_redos_candidate(result_conn) -> None:
+  """Runs the ReDoS regression payload in an independently stoppable process."""
+  failure = None
+  try:
+    ticks = "`" * 3
+    long_invalid_payload = (
+        ticks + "python\n" + "x = 1\n" * 5000 + "not_matching"
+    )
+    content = types.Content(
+        role="model",
+        parts=[types.Part(text=long_invalid_payload)],
+    )
+    delimiters = [(ticks + "python\n", "\n" + ticks)]
+
+    started = time.perf_counter()
+    code = code_execution_utils.CodeExecutionUtils.extract_code_and_truncate_content(
+        content, delimiters
+    )
+    elapsed = time.perf_counter() - started
+
+    if code is not None:
+      failure = f"expected no code to be extracted, got {code!r}"
+    elif elapsed > _REDOS_DEADLINE_SECONDS:
+      failure = (
+          f"extraction took {elapsed:.3f}s, over the"
+          f" {_REDOS_DEADLINE_SECONDS}s deadline (possible ReDoS regression)"
+      )
+  except BaseException:  # pylint: disable=broad-except
+    # Without this the parent only sees a bare exit code and has to dig the
+    # traceback out of the child's captured stderr.
+    failure = f"extraction raised in the child:\n{traceback.format_exc()}"
+  result_conn.send(failure)
+  result_conn.close()
 
 
 def test_extract_code_and_truncate_content_basic():
@@ -94,29 +136,30 @@ def test_extract_code_and_truncate_content_no_delimiter():
 
 def test_extract_code_and_truncate_content_redos_vulnerability():
   """Tests that a string that would cause ReDoS behaves reasonably."""
-  # Construct a long string that contains repeating patterns without matching delimiters.
-  # The old regex pattern would backtrack exponentially.
-  ticks = "`" * 3
-  long_invalid_payload = ticks + "python\n" + "x = 1\n" * 5000 + "not_matching"
-  content = types.Content(
-      role="model",
-      parts=[types.Part(text=long_invalid_payload)],
-  )
-  delimiters = [(ticks + "python\n", "\n" + ticks)]
-
-  def handler(_signum, _frame):
-    raise TimeoutError("Test timed out (possible ReDoS regression)")
-
-  signal.signal(signal.SIGALRM, handler)
-  signal.alarm(2)
+  context = multiprocessing.get_context("spawn")
+  receiver, sender = context.Pipe(duplex=False)
+  process = context.Process(target=_exercise_redos_candidate, args=(sender,))
+  process.start()
+  sender.close()
+  process.join(timeout=_CHILD_JOIN_TIMEOUT_SECONDS)
+  hung = process.is_alive()
+  if hung:
+    process.kill()
+    process.join()
+  exitcode = process.exitcode
   try:
-    # If ReDoS vulnerability exists, this call will hang or take a very long time.
-    code = code_execution_utils.CodeExecutionUtils.extract_code_and_truncate_content(
-        content, delimiters
-    )
+    # poll() is also true at EOF, so recv() has to carry the "child died
+    # without reporting" case rather than a poll() guard.
+    failure = receiver.recv()
+  except EOFError:
+    failure = "child exited without reporting a result"
   finally:
-    signal.alarm(0)
-  assert code is None
+    receiver.close()
+    process.close()
+
+  assert not hung, "extraction never returned (possible ReDoS regression)"
+  assert failure is None, failure
+  assert exitcode == 0, f"extraction process exited with {exitcode}"
 
 
 def test_extract_code_and_truncate_content_multiple_delimiter_pairs():

@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from google.auth.transport import mtls
 from google.auth.transport import requests as auth_requests
 import requests
 
@@ -47,23 +46,13 @@ def get_gda_session(
 
   Returns:
       A tuple containing the authorized requests Session and the GDA endpoint.
-
-  Raises:
-      ValueError: If the mTLS endpoint is selected but the client certificate
-        is disabled.
   """
-  session = auth_requests.AuthorizedSession(credentials=credentials)  # type: ignore[no-untyped-call]
-  endpoint = get_gda_endpoint()
+  session = auth_requests.AuthorizedSession(credentials=credentials)
 
-  if endpoint == _GDA_MTLS_TEMPLATE:
-    if not mtls.has_default_client_cert_source():  # type: ignore[no-untyped-call]
-      raise ValueError(
-          "mTLS endpoint is selected, but client certificate is not"
-          " provisioned."
-      )
-    session.configure_mtls_channel()  # type: ignore[no-untyped-call]
+  if _mtls_utils.use_client_cert_effective():
+    session.configure_mtls_channel()
 
-  return session, endpoint
+  return session, get_gda_endpoint()
 
 
 def get_stream(

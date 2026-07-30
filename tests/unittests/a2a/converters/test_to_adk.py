@@ -746,7 +746,6 @@ class TestExtractGenaiMetadata:
     assert result is None
 
   def test_extract_genai_metadata_not_dict_but_class_provided(self) -> None:
-    # Should safely return None when JSON parsed to non-dict, but model validates expected dict/kwargs
     metadata_dict = {
         _get_adk_metadata_key("usage_metadata"): '["not", "a", "dict"]'
     }
@@ -755,6 +754,21 @@ class TestExtractGenaiMetadata:
         "usage_metadata",
         genai_types.GenerateContentResponseUsageMetadata,
     )
+    assert result is None
+
+  def test_extract_genai_metadata_dict_valid(self) -> None:
+    metadata_dict = {
+        _get_adk_metadata_key("custom_metadata"): '{"key": "value"}'
+    }
+    result = _extract_genai_metadata(metadata_dict, "custom_metadata", dict)
+    assert isinstance(result, dict)
+    assert result == {"key": "value"}
+
+  def test_extract_genai_metadata_dict_invalid_string(self) -> None:
+    metadata_dict = {
+        _get_adk_metadata_key("custom_metadata"): "{'key': 'value'}"
+    }
+    result = _extract_genai_metadata(metadata_dict, "custom_metadata", dict)
     assert result is None
 
   def test_grounding_metadata_round_trip_task(self) -> None:

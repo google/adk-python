@@ -14,6 +14,7 @@
 
 """Tests for ReplayManager utility."""
 
+import asyncio
 from unittest.mock import MagicMock
 
 from google.adk.events.event import Event
@@ -185,3 +186,110 @@ def test_scan_workflow_events_recovers_children_from_transitive_descendant_event
   recovered, _ = mgr.scan_workflow_events(ctx)
 
   assert "child_a@1" in recovered
+
+
+def test_scan_workflow_events_sequence_excludes_prior_invocation_events():
+  """Replay sequence covers only the current invocation.
+
+  A session may hold a completed earlier invocation followed by a second
+  invocation that pauses for human input. Terminal events from the earlier
+  invocation must not enter the replay sequence, otherwise the sequence
+  barrier blocks on a node that never runs during the resume.
+  """
+  mgr = ReplayManager()
+  # Completed earlier invocation in the same session.
+  prior = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/finish@1", run_id="1"),
+      invocation_id="inv-1",
+      output="prior_out",
+  )
+  # Current invocation, ending on an unresolved RequestInput interrupt.
+  current_first = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/alpha@1", run_id="1"),
+      invocation_id="inv-2",
+      output="alpha_out",
+  )
+  current_pending = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/beta@1", run_id="1"),
+      invocation_id="inv-2",
+      long_running_tool_ids=["clarify:1"],
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-2"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [
+      prior,
+      current_first,
+      current_pending,
+  ]
+  ctx.node_path = "wf@1"
+
+  recovered, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["alpha@1", "beta@1"]
+  # Sequence and recovered state must agree; disagreement was the defect.
+  assert "finish@1" not in recovered
+  # The fix belongs in _scan_sequence, NOT in the event index: the index
+  # deliberately spans the whole session so multi-turn context stays visible
+  # during rehydration. Filtering there instead would pass the assertions
+  # above while silently breaking cross-turn context.
+  assert prior in mgr._transitive_events_by_parent["wf@1"]
+
+
+def test_prepare_parent_sequence_barrier_excludes_prior_invocation_events():
+  """Dynamic-node sequence barriers are also scoped to the current invocation."""
+  mgr = ReplayManager()
+  prior = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/finish@1", run_id="1"),
+      invocation_id="inv-1",
+      output="prior_out",
+  )
+  current = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/alpha@1", run_id="1"),
+      invocation_id="inv-2",
+      output="alpha_out",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-2"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [prior, current]
+  ctx.node_path = "wf@1"
+
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+
+  assert barrier.sequence == ["alpha@1"]
+  assert prior in mgr._events_by_parent["wf@1"]
+
+
+@pytest.mark.asyncio
+async def test_scan_workflow_events_sequence_empty_when_all_events_are_prior():
+  """A session holding only prior-invocation events yields a non-blocking barrier."""
+  mgr = ReplayManager()
+  prior = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/finish@1", run_id="1"),
+      invocation_id="inv-1",
+      output="prior_out",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-2"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [prior]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == []
+  # An empty sequence must fast-forward rather than deadlock.
+  await asyncio.wait_for(mgr.sequence_barrier.wait("anything"), timeout=1)

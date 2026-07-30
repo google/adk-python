@@ -508,7 +508,12 @@ class LocalEvalService(BaseEvalService):
       live_timeout_seconds: int,
   ) -> InferenceResult:
     initial_session = eval_case.session_input
-    session_id = self._session_id_supplier()
+    pinned_session_id = initial_session.session_id if initial_session else None
+    # Only a fallback: the generator reads a pinned id from `initial_session`.
+    generated_session_id = (
+        None if pinned_session_id else self._session_id_supplier()
+    )
+    session_id = pinned_session_id or generated_session_id
     inference_result = InferenceResult(
         app_name=app_name,
         eval_set_id=eval_set_id,
@@ -523,7 +528,7 @@ class LocalEvalService(BaseEvalService):
               root_agent=root_agent,
               user_simulator=self._user_simulator_provider.provide(eval_case),
               initial_session=initial_session,
-              session_id=session_id,
+              session_id=generated_session_id,
               session_service=self._session_service,
               artifact_service=self._artifact_service,
               memory_service=self._memory_service,
@@ -537,7 +542,7 @@ class LocalEvalService(BaseEvalService):
                       eval_case
                   ),
                   initial_session=initial_session,
-                  session_id=session_id,
+                  session_id=generated_session_id,
                   session_service=self._session_service,
                   artifact_service=self._artifact_service,
                   memory_service=self._memory_service,

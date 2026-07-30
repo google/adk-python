@@ -116,7 +116,10 @@ class _ParallelWorker(BaseNode):
         done, pending = await asyncio.wait(
             pending_tasks, return_when=asyncio.FIRST_COMPLETED
         )
-        for task in done:
+        # asyncio.wait returns completed tasks as an unordered set; iterate in
+        # input order so that, when several tasks fail in the same wake-up,
+        # the surfaced exception is deterministic across runs and replays.
+        for task in sorted(done, key=lambda t: getattr(t, '_worker_index')):
           exc = task.exception()
           if exc is not None:
             # If a task failed, cancel all other pending tasks.

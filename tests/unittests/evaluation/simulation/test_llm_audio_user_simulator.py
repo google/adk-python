@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+import array
+
+from google.adk.evaluation import _audio_utils as audio_utils
 from google.adk.evaluation import conversation_scenarios
 from google.adk.evaluation.simulation._llm_audio_user_simulator import _LlmAudioUserSimulator
 from google.adk.evaluation.simulation._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
@@ -202,7 +205,10 @@ class TestGetNextUserMessage:
     assert len(result.user_message.parts) == 2
     assert result.user_message.parts[0].text == "Book me a flight."
     assert result.user_message.parts[1].inline_data.data == b"WAV"
-    assert result.user_message.parts[1].inline_data.mime_type == "audio/pcm"
+    assert (
+        result.user_message.parts[1].inline_data.mime_type
+        == audio_utils.LIVE_INPUT_MIME_TYPE
+    )
 
   @pytest.mark.asyncio
   async def test_success_audio_only(
@@ -341,6 +347,23 @@ class TestToAudioContent:
     assert len(content.parts) == 2
     assert content.parts[0].text == "Hello there"
     assert content.parts[1].inline_data.data == b"WAV"
+
+  @pytest.mark.asyncio
+  async def test_to_audio_content_resamples_to_live_input_rate(
+      self, simulator, mocker
+  ):
+    """TTS audio is resampled to the Live API input rate before sending."""
+    # 24 kHz PCM (600 samples) downsamples to 16 kHz (400 samples).
+    tts_pcm = array.array("h", list(range(600))).tobytes()
+    simulator._audio_llm.generate_content_async.return_value = to_async_iter([
+        _audio_response(mocker, data=tts_pcm, mime_type="audio/l16;rate=24000")
+    ])
+
+    content = await simulator.to_audio_content("Hello there")
+
+    audio_part = content.parts[1]
+    assert audio_part.inline_data.mime_type == audio_utils.LIVE_INPUT_MIME_TYPE
+    assert len(audio_part.inline_data.data) == 400 * 2
 
 
 # ---------------------------------------------------------------------------

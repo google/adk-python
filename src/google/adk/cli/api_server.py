@@ -19,6 +19,8 @@ Api server with all production ADK endpoints.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from contextlib import asynccontextmanager
 import importlib
 import json
@@ -501,6 +503,19 @@ class UpdateSessionRequest(common.BaseModel):
   """The state changes to apply to the session."""
 
 
+class FinalizeAgentIdentityCredentialsRequest(common.BaseModel):
+  """Request to finalize a 3LO consent for an Agent Identity connector."""
+
+  connector_name: str
+  """Full connector resource name, e.g. projects/../connectors/github."""
+  user_id: str
+  """The end-user identity the credential is being stored for."""
+  user_id_validation_state: str
+  """The validation state returned by the connector's consent redirect."""
+  consent_nonce: str
+  """The single-use nonce from the original consent challenge."""
+
+
 class AppInfo(common.BaseModel):
   name: str
   root_agent_name: str
@@ -572,8 +587,7 @@ def _setup_gcp_telemetry(
           # TODO - use trace_to_cloud here as well once otel_to_cloud is no
           # longer experimental.
           enable_cloud_tracing=True,
-          # TODO - re-enable metrics once errors during shutdown are fixed.
-          enable_cloud_metrics=False,
+          enable_cloud_metrics=True,
           enable_cloud_logging=True,
           google_auth=(credentials, project_id),
       )
@@ -1071,7 +1085,7 @@ class ApiServer:
         default_app_name=self.default_app_name,
     )
 
-    # Register production endpoints (22 total)
+    # Register production endpoints (23 total)
     self._register_production_endpoints(
         app,
         trace_dict,
@@ -1145,6 +1159,88 @@ class ApiServer:
               f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
           ),
       }
+
+    # Agent Identity Auth Manager (3LO): finalize the user-consent handshake.
+    # The web client (adk web) opens the consent popup and, once the connector
+    # redirects back with the validation state, relays it here. We complete the
+    # OAuth exchange into the credential vault using the same IAM Connector
+    # Credentials transport as retrieve_credentials so the agent can fetch the
+    # user-delegated token on the next tool run.
+    @app.post("/agent-identity/finalize")
+    async def finalize_agent_identity_credentials(
+        req: FinalizeAgentIdentityCredentialsRequest,
+    ) -> dict[str, str]:
+      try:
+        from google.api_core.client_options import ClientOptions
+        from google.api_core.exceptions import GoogleAPICallError
+        from google.api_core.exceptions import InvalidArgument
+        from google.cloud.iamconnectorcredentials_v1alpha import FinalizeCredentialsRequest
+        from google.cloud.iamconnectorcredentials_v1alpha import IAMConnectorCredentialsServiceClient
+      except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Agent Identity support requires: pip install"
+                ' "google-adk[agent-identity]"'
+            ),
+        ) from e
+
+      # Optional endpoint override (defaults to the prod
+      # iamconnectorcredentials.googleapis.com when unset). Mirrors the retrieve
+      # client so finalize targets the same service instance; developers do not
+      # normally set this.
+      client_options = None
+      if host := os.environ.get("IAM_CONNECTOR_CREDENTIALS_TARGET_HOST"):
+        client_options = ClientOptions(api_endpoint=host)
+      client = IAMConnectorCredentialsServiceClient(
+          client_options=client_options, transport="rest"
+      )
+
+      # user_id_validation_state is a proto `bytes` field; the connector delivers
+      # it as a url-safe base64 string in the redirect query, so decode it back.
+      try:
+        state_bytes = base64.urlsafe_b64decode(
+            req.user_id_validation_state
+            + "=" * (-len(req.user_id_validation_state) % 4)
+        )
+      except (binascii.Error, ValueError, TypeError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid base64 user_id_validation_state: {e}",
+        ) from e
+
+      finalize_request = FinalizeCredentialsRequest(
+          connector=req.connector_name,
+          user_id=req.user_id,
+          user_id_validation_state=state_bytes,
+          consent_nonce=req.consent_nonce,
+      )
+      try:
+        await asyncio.to_thread(client.finalize_credentials, finalize_request)
+      except InvalidArgument as e:
+        logger.warning("Invalid argument during credential finalization: %s", e)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid credentials request: {e}",
+        ) from e
+      except GoogleAPICallError as e:
+        status_code = (
+            e.code
+            if hasattr(e, "code") and e.code and 400 <= e.code < 500
+            else 500
+        )
+        logger.error("API error during agent identity finalization: %s", e)
+        raise HTTPException(
+            status_code=status_code,
+            detail=f"Failed to finalize credentials: {e}",
+        ) from e
+      except Exception as e:  # pylint: disable=broad-except
+        logger.error("Failed to finalize agent identity credentials: %s", e)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to finalize credentials: {e}"
+        ) from e
+
+      return {"status": "ok"}
 
     @app.get("/list-apps")
     async def list_apps(

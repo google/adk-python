@@ -44,6 +44,7 @@ meter = metrics.get_meter(
     version=version.__version__,
 )
 
+
 _agent_invocation_duration = meter.create_histogram(
     "gen_ai.invoke_agent.duration",
     unit="s",
@@ -144,7 +145,7 @@ def record_agent_invocation_duration(
   """Records the duration of the agent invocation."""
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
   if error is not None:
-    attrs[error_attributes.ERROR_TYPE] = type(error).__name__
+    attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(error)
   _agent_invocation_duration.record(elapsed_s, attributes=attrs)
 
 
@@ -163,7 +164,7 @@ def record_workflow_invocation_duration(
   if nested:
     attrs["gen_ai.workflow.nested"] = True
   if error is not None:
-    attrs[error_attributes.ERROR_TYPE] = type(error).__name__
+    attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(error)
   if workflow_name:
     attrs["gen_ai.workflow.name"] = workflow_name
   _workflow_invocation_duration.record(elapsed_s, attributes=attrs)
@@ -195,7 +196,7 @@ def record_tool_execution_duration(
       gen_ai_attributes.GEN_AI_TOOL_TYPE: tool_type,
   }
   if error is not None:
-    attrs[error_attributes.ERROR_TYPE] = type(error).__name__
+    attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(error)
   _tool_execution_duration.record(elapsed_s, attributes=attrs)
 
 
@@ -222,7 +223,7 @@ def record_client_operation_duration(
       attrs[gen_ai_attributes.GEN_AI_RESPONSE_MODEL] = response_model
 
   if error is not None:
-    attrs[error_attributes.ERROR_TYPE] = type(error).__name__
+    attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(error)
 
   _client_operation_duration.record(elapsed_s, attributes=attrs)
 

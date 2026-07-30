@@ -158,7 +158,10 @@ async def _merge_agent_run_pre_3_11(
   finally:
     for task in tasks:
       task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    if tasks:
+      # Await cancellation so siblings are no longer mid-iteration when the
+      # caller `aclose()`s them (else "generator is already running").
+      await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @deprecated(

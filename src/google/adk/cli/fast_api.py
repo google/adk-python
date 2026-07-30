@@ -52,6 +52,7 @@ from watchdog.observers import Observer
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..telemetry._agent_engine import get_propagated_context
+from ..telemetry._agent_engine import maybe_install_request_metrics_middleware
 from ..telemetry._agent_engine import TopSpanProcessor
 from .api_server import ApiServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
@@ -677,6 +678,8 @@ def get_fast_api_app(
       otel_to_cloud=otel_to_cloud,
       **extra_fast_api_args,
   )
+
+  maybe_install_request_metrics_middleware(app, otel_to_cloud=otel_to_cloud)
 
   # --- Builder endpoints (agent editor UI) ---
   _register_builder_endpoints(app, web, agents_dir)

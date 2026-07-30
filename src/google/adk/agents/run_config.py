@@ -280,7 +280,9 @@ class RunConfig(BaseModel):
 
   When set, tool executions will run in a separate thread pool executor
   instead of the main event loop. When None (default), tools run in the
-  main event loop.
+  main event loop. One pool serves every invocation running on the same event
+  loop and is shut down once that loop is gone, so its worker threads do not
+  outlive it.
 
   This helps keep the event loop responsive for:
   - User interruptions to be processed immediately
@@ -300,6 +302,10 @@ class RunConfig(BaseModel):
   Thread pool does NOT help with (GIL is held):
   - Pure Python CPU-bound code: loops, calculations, recursive algorithms
   - The GIL prevents true parallel execution for Python bytecode
+
+  Cancelling an invocation drops a tool call that has not started yet, but
+  Python cannot stop a thread that is already running, so a started call keeps
+  its worker thread until it returns.
 
   For CPU-intensive Python code, consider alternatives:
   - Use C extensions that release the GIL

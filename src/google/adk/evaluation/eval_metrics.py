@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
+from pydantic import SerializeAsAny
 from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
@@ -290,7 +291,7 @@ class EvalMetric(EvalBaseModel):
       ),
   )
 
-  criterion: Optional[BaseCriterion] = Field(
+  criterion: Optional[SerializeAsAny[BaseCriterion]] = Field(
       default=None, description="""Evaluation criterion used by the metric."""
   )
 
