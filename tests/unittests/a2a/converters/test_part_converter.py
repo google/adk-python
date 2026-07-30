@@ -1172,9 +1172,9 @@ class TestThoughtSignaturePreservation:
             _get_adk_metadata_key(
                 A2A_DATA_PART_METADATA_TYPE_KEY
             ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
-            _get_adk_metadata_key("thought_signature"): (
-                base64.b64encode(b"restored_signature").decode("utf-8")
-            ),
+            _get_adk_metadata_key("thought_signature"): base64.b64encode(
+                b"restored_signature"
+            ).decode("utf-8"),
         },
     )
 

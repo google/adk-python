@@ -333,7 +333,7 @@ class StorageEvent(Base):
         session_id=session.id,
         app_name=session.app_name,
         user_id=session.user_id,
-        timestamp=datetime.fromtimestamp(event.timestamp),
+        timestamp=datetime.fromtimestamp(event.timestamp, timezone.utc).replace(tzinfo=None),
         long_running_tool_ids=event.long_running_tool_ids,
         partial=event.partial,
         turn_complete=event.turn_complete,
@@ -384,7 +384,7 @@ class StorageEvent(Base):
             if self.actions
             else EventActions()
         ),
-        timestamp=self.timestamp.timestamp(),
+        timestamp=self.timestamp.replace(tzinfo=timezone.utc).timestamp(),
         long_running_tool_ids=self.long_running_tool_ids,
         partial=self.partial,
         turn_complete=self.turn_complete,

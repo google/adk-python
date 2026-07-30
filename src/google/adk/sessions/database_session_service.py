@@ -67,6 +67,7 @@ from .schemas.v1 import StorageMetadata
 from .schemas.v1 import StorageSession as StorageSessionV1
 from .schemas.v1 import StorageUserState as StorageUserStateV1
 from .session import Session
+from .session_data_transformer import SessionDataTransformer
 from .state import State
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -236,6 +237,8 @@ class DatabaseSessionService(BaseSessionService):
       self,
       db_url: Optional[str] = None,
       db_engine: Optional[AsyncEngine] = None,
+      *,
+      transformer: Optional[SessionDataTransformer] = None,
       **kwargs: Any,
   ) -> None:
     """Initializes the database session service.
@@ -244,6 +247,8 @@ class DatabaseSessionService(BaseSessionService):
       db_url: Database URL string for creating a new engine. Mutually exclusive
         with db_engine.
       db_engine: Existing AsyncEngine instance. Mutually exclusive with db_url.
+      transformer: Optional SessionDataTransformer for encrypting/masking data
+        at the storage boundary.
       **kwargs: Additional keyword arguments passed to create_async_engine when
         db_url is provided. Ignored when db_engine is provided.
 
@@ -323,6 +328,7 @@ class DatabaseSessionService(BaseSessionService):
     self._session_locks: dict[_SessionLockKey, asyncio.Lock] = {}
     self._session_lock_ref_count: dict[_SessionLockKey, int] = {}
     self._session_locks_guard = asyncio.Lock()
+    self.transformer = transformer
 
   def _get_schema_classes(self) -> _SchemaClasses:
     return _SchemaClasses(self._db_schema_version)
@@ -537,7 +543,15 @@ class DatabaseSessionService(BaseSessionService):
       )
 
       # Extract state deltas
-      state_deltas = _session_util.extract_state_delta(state)
+      if self.transformer and state is not None:
+        import copy
+
+        transformed_state = self.transformer.before_persist_state(
+            copy.deepcopy(state)
+        )
+      else:
+        transformed_state = state
+      state_deltas = _session_util.extract_state_delta(transformed_state)
       app_state_delta = state_deltas["app"]
       user_state_delta = state_deltas["user"]
       session_state = state_deltas["session"]
@@ -569,6 +583,8 @@ class DatabaseSessionService(BaseSessionService):
       merged_state = _merge_state(
           storage_app_state.state, storage_user_state.state, session_state
       )
+      if self.transformer:
+        merged_state = self.transformer.after_load_state(merged_state)
       # Call to_session before commit to avoid post-commit lazy-load.
       await sql_session.flush()
       session = storage_session.to_session(
@@ -612,7 +628,9 @@ class DatabaseSessionService(BaseSessionService):
         )
 
         if config and config.after_timestamp:
-          after_dt = datetime.fromtimestamp(config.after_timestamp)
+          after_dt = datetime.fromtimestamp(
+              config.after_timestamp, timezone.utc
+          ).replace(tzinfo=None)
           stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
         stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
@@ -637,9 +655,16 @@ class DatabaseSessionService(BaseSessionService):
 
       # Merge states
       merged_state = _merge_state(app_state, user_state, session_state)
+      if self.transformer:
+        merged_state = self.transformer.after_load_state(merged_state)
 
       # Convert storage session to session
-      events = [e.to_event() for e in reversed(storage_events)]
+      events = []
+      for e in reversed(storage_events):
+        evt = e.to_event()
+        if self.transformer:
+          evt = self.transformer.after_load_event(evt)
+        events.append(evt)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       session = storage_session.to_session(
@@ -698,6 +723,8 @@ class DatabaseSessionService(BaseSessionService):
         session_state = storage_session.state
         user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
+        if self.transformer:
+          merged_state = self.transformer.after_load_state(merged_state)
         sessions.append(
             storage_session.to_session(
                 state=merged_state,
@@ -758,7 +785,17 @@ class DatabaseSessionService(BaseSessionService):
     is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
 
-    state_delta = event.actions.state_delta if event.actions.state_delta else {}
+    state_delta = (
+        event.actions.state_delta
+        if event.actions and event.actions.state_delta
+        else {}
+    )
+    if self.transformer:
+      import copy
+
+      state_delta = self.transformer.before_persist_state(
+          copy.deepcopy(state_delta)
+      )
     state_deltas = _session_util.extract_state_delta(state_delta)
     has_app_delta = bool(state_deltas["app"])
     has_user_delta = bool(state_deltas["user"])
@@ -849,15 +886,25 @@ class DatabaseSessionService(BaseSessionService):
               storage_session.state | state_deltas["session"]
           )
 
-        is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
-        if is_sqlite or is_postgresql:
-          update_time = datetime.fromtimestamp(
-              event.timestamp, timezone.utc
-          ).replace(tzinfo=None)
-        else:
-          update_time = datetime.fromtimestamp(event.timestamp)
+        update_time = datetime.fromtimestamp(
+            event.timestamp, timezone.utc
+        ).replace(tzinfo=None)
         storage_session.update_time = update_time
-        sql_session.add(schema.StorageEvent.from_event(session, event))
+
+        if self.transformer:
+          import copy
+
+          event_copy = (
+              event.model_copy(deep=True)
+              if hasattr(event, "model_copy")
+              else copy.deepcopy(event)
+          )
+          transformed_event = self.transformer.before_persist_event(event_copy)
+        else:
+          transformed_event = event
+        sql_session.add(
+            schema.StorageEvent.from_event(session, transformed_event)
+        )
 
         # Read revision fields before commit. Post-commit ORM attribute access
         # can lazy-load expired columns and trigger MissingGreenlet with asyncpg

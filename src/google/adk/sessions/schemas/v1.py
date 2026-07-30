@@ -229,7 +229,7 @@ class StorageEvent(Base):
         session_id=session.id,
         app_name=session.app_name,
         user_id=session.user_id,
-        timestamp=datetime.fromtimestamp(event.timestamp),
+        timestamp=datetime.fromtimestamp(event.timestamp, timezone.utc).replace(tzinfo=None),
         event_data=event.model_dump(exclude_none=True, mode="json"),
     )
 
@@ -239,7 +239,7 @@ class StorageEvent(Base):
         **self.event_data,
         "id": self.id,
         "invocation_id": self.invocation_id,
-        "timestamp": self.timestamp.timestamp(),
+        "timestamp": self.timestamp.replace(tzinfo=timezone.utc).timestamp(),
     })
 
 

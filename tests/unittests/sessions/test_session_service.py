@@ -1884,6 +1884,170 @@ async def test_append_event_locks_only_scopes_with_deltas(
     await service.close()
 
 
+import json
+
+
+class MockPIIMaskerTransformer:
+
+  def before_persist_state(self, state):
+    return {
+        k: f'{v}_masked' if isinstance(v, str) else v for k, v in state.items()
+    }
+
+  def after_load_state(self, state):
+    return {
+        k: (
+            v.replace('_masked', '')
+            if isinstance(v, str) and v.endswith('_masked')
+            else v
+        )
+        for k, v in state.items()
+    }
+
+  def before_persist_event(self, event: Event) -> Event:
+    new_event = (
+        event.model_copy() if hasattr(event, 'model_copy') else event.copy()
+    )
+    if new_event.invocation_id:
+      new_event.invocation_id += '_masked'
+    return new_event
+
+  def after_load_event(self, event: Event) -> Event:
+    new_event = (
+        event.model_copy() if hasattr(event, 'model_copy') else event.copy()
+    )
+    if new_event.invocation_id and new_event.invocation_id.endswith('_masked'):
+      new_event.invocation_id = new_event.invocation_id.replace('_masked', '')
+    return new_event
+
+
+@pytest.mark.asyncio
+async def test_session_data_transformer():
+  service = DatabaseSessionService(
+      'sqlite+aiosqlite:///:memory:', transformer=MockPIIMaskerTransformer()
+  )
+  try:
+    session = await service.create_session(
+        app_name='app',
+        user_id='user',
+        session_id='s1',
+        state={'app:secret': 'foo', 'user:pii': 'bar'},
+    )
+    assert session.state == {'app:secret': 'foo', 'user:pii': 'bar'}
+
+    # Verify persistence has been masked
+    async with service.db_engine.connect() as conn:
+      from sqlalchemy import text
+
+      result = await conn.execute(
+          text("SELECT state FROM app_states WHERE app_name = 'app'")
+      )
+      app_state_json = result.scalar()
+      assert 'foo_masked' in json.dumps(app_state_json)
+
+    event = Event(
+        invocation_id='inv1',
+        author='user',
+        actions=EventActions(state_delta={'sk1': 'pass'}),
+    )
+    returned_event = await service.append_event(session, event)
+
+    assert returned_event.invocation_id == 'inv1'
+    assert session.state.get('sk1') == 'pass'
+
+    # Check event persistence
+    async with service.db_engine.connect() as conn:
+      result = await conn.execute(
+          text("SELECT id, state FROM sessions WHERE id = 's1'")
+      )
+      row = result.fetchone()
+      assert 'pass_masked' in json.dumps(row[1])
+
+      result_evt = await conn.execute(
+          text("SELECT event_data FROM events WHERE session_id = 's1' LIMIT 1")
+      )
+      evt_payload = result_evt.scalar()
+      assert 'inv1_masked' in json.dumps(evt_payload)
+
+    # Check retrieval unmasks
+    loaded_session = await service.get_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert loaded_session.state == {
+        'app:secret': 'foo',
+        'user:pii': 'bar',
+        'sk1': 'pass',
+    }
+    assert len(loaded_session.events) == 1
+    assert loaded_session.events[0].invocation_id == 'inv1'
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_transformer_does_not_leak_mutation():
+  service = DatabaseSessionService(
+      'sqlite+aiosqlite:///:memory:', transformer=MockPIIMaskerTransformer()
+  )
+  try:
+    input_state = {'app:secret': 'foo', 'user:pii': 'bar'}
+    session = await service.create_session(
+        app_name='app',
+        user_id='user',
+        session_id='s1',
+        state=input_state,
+    )
+    # Check that input_state was not modified
+    assert input_state == {'app:secret': 'foo', 'user:pii': 'bar'}
+    assert session.state == {'app:secret': 'foo', 'user:pii': 'bar'}
+
+    event = Event(
+        invocation_id='inv1',
+        author='user',
+        actions=EventActions(state_delta={'sk1': 'pass'}),
+    )
+    returned_event = await service.append_event(session, event)
+
+    # Check that event in memory was not modified
+    assert event.invocation_id == 'inv1'
+    assert returned_event.invocation_id == 'inv1'
+    assert session.events[0].invocation_id == 'inv1'
+  finally:
+    await service.close()
+
+
+class ErrorMaskerTransformer:
+
+  def before_persist_state(self, state):
+    raise ValueError('Transformer exception test')
+
+  def after_load_state(self, state):
+    return state
+
+  def before_persist_event(self, event: Event) -> Event:
+    return event
+
+  def after_load_event(self, event: Event) -> Event:
+    return event
+
+
+@pytest.mark.asyncio
+async def test_session_data_transformer_handles_exception():
+  service = DatabaseSessionService(
+      'sqlite+aiosqlite:///:memory:', transformer=ErrorMaskerTransformer()
+  )
+  try:
+    with pytest.raises(ValueError, match='Transformer exception test'):
+      await service.create_session(
+          app_name='app',
+          user_id='user',
+          session_id='s1',
+          state={'app:secret': 'foo'},
+      )
+  finally:
+    await service.close()
+
+
 @pytest.mark.asyncio
 async def test_get_user_state_returns_empty_dict_when_no_state_exists(
     session_service,

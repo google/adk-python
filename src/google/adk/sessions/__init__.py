@@ -26,6 +26,7 @@ from .state import StateSchemaError
 if TYPE_CHECKING:
   from .database_session_service import DatabaseSessionService
   from .in_memory_session_service import InMemorySessionService
+  from .session_data_transformer import SessionDataTransformer
   from .vertex_ai_session_service import VertexAiSessionService
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     'DatabaseSessionService',
     'InMemorySessionService',
     'Session',
+    'SessionDataTransformer',
     'State',
     'StateSchemaError',
     'VertexAiSessionService',
@@ -40,6 +42,7 @@ __all__ = [
 
 _LAZY_MEMBERS: dict[str, str] = {
     'InMemorySessionService': 'in_memory_session_service',
+    'SessionDataTransformer': 'session_data_transformer',
     'VertexAiSessionService': 'vertex_ai_session_service',
 }
 

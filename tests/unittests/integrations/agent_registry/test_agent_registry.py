@@ -727,9 +727,7 @@ class TestAgentRegistry:
   def test_get_model_name_contains_projects(self, mock_get_endpoint, registry):
     mock_get_endpoint.return_value = {
         "interfaces": [{
-            "url": (
-                "https://vertexai.googleapis.com/v1/projects/p1/locations/l1/models/m1"
-            )
+            "url": "https://vertexai.googleapis.com/v1/projects/p1/locations/l1/models/m1"
         }]
     }
     model_name = registry.get_model_name("test-endpoint")
