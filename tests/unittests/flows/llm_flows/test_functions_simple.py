@@ -16,6 +16,7 @@ import asyncio
 from typing import Any
 from typing import Callable
 
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -1319,3 +1320,81 @@ async def test_handle_function_calls_live_parallel_preserves_live_session_id():
 
   assert result_parallel is not None
   assert result_parallel.live_session_id == 'test-live-session-id-parallel'
+
+
+@pytest.mark.asyncio
+async def test_response_scheduling_applied_to_function_response():
+  """response_scheduling on a tool is stamped onto the FunctionResponse part."""
+
+  def simple_fn(**kwargs) -> dict:
+    return {'result': 'test'}
+
+  tool = FunctionTool(simple_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls_async(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  function_response = result_event.content.parts[0].function_response
+  assert function_response.scheduling is types.FunctionResponseScheduling.SILENT
+
+
+@pytest.mark.asyncio
+async def test_non_blocking_tool_handled_asynchronously():
+  """Tests that a NON_BLOCKING tool returns None inline and pushes to live request queue."""
+
+  async def slow_fn() -> dict[str, str]:
+    await asyncio.sleep(0.01)
+    return {'result': 'done'}
+
+  tool = FunctionTool(slow_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_non_blocking'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is None
+  assert invocation_context.active_non_blocking_tool_tasks is not None
+  task_key = f'{tool.name}_fc_non_blocking'
+  assert task_key in invocation_context.active_non_blocking_tool_tasks
+
+  request = await asyncio.wait_for(
+      invocation_context.live_request_queue._queue.get(), timeout=5
+  )
+  function_response = request.content.parts[0].function_response
+  assert function_response.response == {'result': 'done'}
+  assert function_response.id == 'fc_non_blocking'
+  assert (
+      function_response.scheduling == types.FunctionResponseScheduling.WHEN_IDLE
+  )
+  await asyncio.sleep(0)
+  assert task_key not in invocation_context.active_non_blocking_tool_tasks

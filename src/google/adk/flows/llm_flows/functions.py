@@ -613,8 +613,8 @@ async def handle_function_calls_live(
   if not function_calls:
     return None
 
-  # Create async lock for active_streaming_tools modifications
-  streaming_lock = asyncio.Lock()
+  # Create async lock for active_streaming_tools and active_non_blocking_tool_tasks modifications
+  active_tools_lock = asyncio.Lock()
 
   # Create tasks for parallel execution
   tasks = [
@@ -624,7 +624,7 @@ async def handle_function_calls_live(
               function_call,
               tools_dict,
               agent,
-              streaming_lock,
+              active_tools_lock,
           )
       )
       for function_call in function_calls
@@ -671,7 +671,7 @@ async def _execute_single_function_call_live(
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
-    streaming_lock: asyncio.Lock,
+    active_tools_lock: asyncio.Lock,
 ) -> Optional[Event]:
   """Execute a single function call for live mode with thread safety."""
 
@@ -770,7 +770,7 @@ async def _execute_single_function_call_live(
             function_call,
             function_args,
             invocation_context,
-            streaming_lock,
+            active_tools_lock,
         )
       except Exception as tool_error:
         error_response = await _run_on_tool_error_callbacks(
@@ -830,11 +830,62 @@ async def _execute_single_function_call_live(
     )
     return function_response_event
 
-  async with _instrumentation.record_tool_execution(
-      tool, agent, function_args
-  ) as tel_ctx:
-    tel_ctx.function_response_event = await _run_with_trace()
-    return tel_ctx.function_response_event
+  is_streaming = hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
+  is_non_blocking = not is_streaming and tool.response_scheduling is not None
+  if is_non_blocking:
+    task_key = f'{tool.name}_{function_call.id}'
+
+    async def _background_task() -> None:
+      try:
+        async with _instrumentation.record_tool_execution(
+            tool, agent, function_args
+        ) as tel_ctx:
+          function_response_event = await _run_with_trace()
+          tel_ctx.function_response_event = function_response_event
+
+          if function_response_event:
+            if (
+                invocation_context.session_service
+                and invocation_context.session
+            ):
+              await invocation_context.session_service.append_event(
+                  session=invocation_context.session,
+                  event=function_response_event,
+              )
+            if (
+                invocation_context.live_request_queue
+                and function_response_event.content
+            ):
+              invocation_context.live_request_queue.send_content(
+                  function_response_event.content
+              )
+      except Exception as e:
+        logger.error(
+            'Error executing non-blocking tool %s in background: %s',
+            tool.name,
+            e,
+            exc_info=True,
+        )
+      finally:
+        async with active_tools_lock:
+          if (
+              invocation_context.active_non_blocking_tool_tasks
+              and task_key in invocation_context.active_non_blocking_tool_tasks
+          ):
+            del invocation_context.active_non_blocking_tool_tasks[task_key]
+
+    task = asyncio.create_task(_background_task())
+    async with active_tools_lock:
+      if invocation_context.active_non_blocking_tool_tasks is None:
+        invocation_context.active_non_blocking_tool_tasks = {}
+      invocation_context.active_non_blocking_tool_tasks[task_key] = task
+    return None
+  else:
+    async with _instrumentation.record_tool_execution(
+        tool, agent, function_args
+    ) as tel_ctx:
+      tel_ctx.function_response_event = await _run_with_trace()
+      return tel_ctx.function_response_event
 
 
 async def _process_function_live_helper(
@@ -843,7 +894,7 @@ async def _process_function_live_helper(
     function_call,
     function_args,
     invocation_context,
-    streaming_lock: asyncio.Lock,
+    active_tools_lock: asyncio.Lock,
 ):
   function_response = None
   # Check if this is a stop_streaming function call
@@ -853,7 +904,7 @@ async def _process_function_live_helper(
   ):
     function_name = function_args['function_name']
     # Thread-safe access to active_streaming_tools
-    async with streaming_lock:
+    async with active_tools_lock:
       active_tasks = invocation_context.active_streaming_tools
       if (
           active_tasks
@@ -886,7 +937,7 @@ async def _process_function_live_helper(
           }
       if not function_response:
         # Clean up the reference under lock
-        async with streaming_lock:
+        async with active_tools_lock:
           if (
               invocation_context.active_streaming_tools
               and function_name in invocation_context.active_streaming_tools
@@ -917,13 +968,8 @@ async def _process_function_live_helper(
             )
         ) as agen:
           async for result in agen:
-            updated_content = types.Content(
-                role='user',
-                parts=[
-                    types.Part.from_text(
-                        text=f'Function {tool.name} returned: {result}'
-                    )
-                ],
+            updated_content = _build_function_response_content(
+                tool, result, tool_context.function_call_id
             )
             invocation_context.live_request_queue.send_content(updated_content)
       except asyncio.CancelledError:
@@ -933,7 +979,7 @@ async def _process_function_live_helper(
         run_tool_and_update_queue(tool, function_args, tool_context)
     )
 
-    async with streaming_lock:
+    async with active_tools_lock:
 
       if invocation_context.active_streaming_tools is None:
         invocation_context.active_streaming_tools = {}
@@ -1112,26 +1158,17 @@ def __build_response_event(
     tool_context: ToolContext,
     invocation_context: InvocationContext,
 ) -> Event:
-  # Specs requires the result to be a dict.
-  if not isinstance(function_result, dict):
-    function_result = {'result': function_result}
-
   function_response_parts = None
   if isinstance(tool, ComputerUseTool):
     function_response_parts = _try_decode_computer_use_image(
         tool, function_result
     )
 
-  part_function_response = types.Part.from_function_response(
-      name=tool.name,
-      response=function_result,
-      parts=function_response_parts,
-  )
-  part_function_response.function_response.id = tool_context.function_call_id
-
-  content = types.Content(
-      role='user',
-      parts=[part_function_response],
+  content = _build_function_response_content(
+      tool,
+      function_result,
+      tool_context.function_call_id,
+      function_response_parts,
   )
 
   function_response_event = Event(
@@ -1143,6 +1180,31 @@ def __build_response_event(
   )
 
   return function_response_event
+
+
+def _build_function_response_content(
+    tool: BaseTool,
+    function_result: object,
+    function_call_id: Optional[str],
+    function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
+) -> types.Content:
+  """Builds the content carrying a tool result as a FunctionResponse."""
+  # Specs requires the result to be a dict.
+  if not isinstance(function_result, dict):
+    function_result = {'result': function_result}
+
+  part_function_response = types.Part.from_function_response(
+      name=tool.name,
+      response=function_result,
+      parts=function_response_parts,
+  )
+  part_function_response.function_response.id = function_call_id
+  if tool.response_scheduling is not None:
+    part_function_response.function_response.scheduling = (
+        tool.response_scheduling
+    )
+
+  return types.Content(role='user', parts=[part_function_response])
 
 
 def deep_merge_dicts(d1: dict, d2: dict) -> dict:
