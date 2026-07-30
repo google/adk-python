@@ -1288,12 +1288,24 @@ class SkillToolset(BaseToolset):
     # Collect all candidate tools from both individual tools and toolsets
     candidate_tools = self._provided_tools_by_name.copy()
     if self._provided_toolsets:
-      ts_results = await asyncio.gather(*(
-          ts.get_tools_with_prefix(readonly_context)
-          for ts in self._provided_toolsets
-      ))
-      for ts_tools in ts_results:
-        for t in ts_tools:
+      ts_results = await asyncio.gather(
+          *(
+              ts.get_tools_with_prefix(readonly_context)
+              for ts in self._provided_toolsets
+          ),
+          return_exceptions=True,
+      )
+      for ts, ts_result in zip(self._provided_toolsets, ts_results):
+        if isinstance(ts_result, BaseException):
+          if isinstance(ts_result, asyncio.CancelledError):
+            raise ts_result
+          logger.warning(
+              "Skipping toolset %r: failed to list tools: %s",
+              ts,
+              ts_result,
+          )
+          continue
+        for t in ts_result:
           candidate_tools[t.name] = t
 
     resolved_tools = []

@@ -298,6 +298,78 @@ async def test_resolve_additional_tools_from_state_none(mock_skill1):
 
 
 @pytest.mark.asyncio
+async def test_resolve_additional_tools_toolset_failure_does_not_abort_others(
+    mock_skill1,
+):
+  """Regression test for https://github.com/google/adk-python/issues/6507.
+
+  A provided toolset that raises while listing its tools must not abort
+  resolution of the other additional tools (individual tools and healthy
+  toolsets).
+  """
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["good_tool", "healthy_ts_tool", "bad_ts_tool"]
+  }
+
+  good_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  good_tool.name = "good_tool"
+
+  healthy_ts_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  healthy_ts_tool.name = "healthy_ts_tool"
+  healthy_toolset = mock.create_autospec(
+      skill_toolset.BaseToolset, instance=True
+  )
+  healthy_toolset.get_tools_with_prefix.return_value = [healthy_ts_tool]
+
+  failing_toolset = mock.create_autospec(
+      skill_toolset.BaseToolset, instance=True
+  )
+  failing_toolset.get_tools_with_prefix.side_effect = ConnectionError(
+      "MCP server unreachable (503)"
+  )
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      additional_tools=[good_tool, healthy_toolset, failing_toolset],
+  )
+
+  readonly_context = mock.create_autospec(ReadonlyContext, instance=True)
+  readonly_context.agent_name = "test_agent"
+  readonly_context.state.get.return_value = ["skill1"]
+  readonly_context.invocation_id = "inv1"
+
+  result = await toolset._resolve_additional_tools_from_state(readonly_context)
+
+  resolved_names = {t.name for t in result}
+  assert resolved_names == {"good_tool", "healthy_ts_tool"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_additional_tools_reraises_cancelled_error(mock_skill1):
+  """A toolset raising CancelledError must still propagate cancellation."""
+  mock_skill1.frontmatter.metadata = {"adk_additional_tools": ["ts_tool"]}
+
+  cancelling_toolset = mock.create_autospec(
+      skill_toolset.BaseToolset, instance=True
+  )
+  cancelling_toolset.get_tools_with_prefix.side_effect = (
+      asyncio.CancelledError()
+  )
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], additional_tools=[cancelling_toolset]
+  )
+
+  readonly_context = mock.create_autospec(ReadonlyContext, instance=True)
+  readonly_context.agent_name = "test_agent"
+  readonly_context.state.get.return_value = ["skill1"]
+  readonly_context.invocation_id = "inv1"
+
+  with pytest.raises(asyncio.CancelledError):
+    await toolset._resolve_additional_tools_from_state(readonly_context)
+
+
+@pytest.mark.asyncio
 async def test_list_skills_tool(
     mock_skill1, mock_skill2, tool_context_instance
 ):
