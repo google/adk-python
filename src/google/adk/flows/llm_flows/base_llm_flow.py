@@ -483,7 +483,9 @@ def _mark_live_async_tools_non_blocking(llm_request: LlmRequest) -> None:
       tool = (llm_request.tools_dict or {}).get(declaration.name)
       if not tool:
         continue
-      is_streaming = hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
+      is_streaming = hasattr(tool, 'func') and inspect.isasyncgenfunction(
+          tool.func
+      )
       if is_streaming or tool.response_scheduling is not None:
         declaration.behavior = types.Behavior.NON_BLOCKING
 
