@@ -71,7 +71,9 @@ def stale_agent_main(monkeypatch):
   _unload_adk_stale_agent()
 
 
-def test_main_raises_when_every_issue_fails(stale_agent_main, monkeypatch):
+def test_main_returns_false_when_every_issue_fails(
+    stale_agent_main, monkeypatch
+):
   main = stale_agent_main
   monkeypatch.setattr(main, "InMemoryRunner", _FailingRunner)
   monkeypatch.setattr(
@@ -82,8 +84,7 @@ def test_main_raises_when_every_issue_fails(stale_agent_main, monkeypatch):
   monkeypatch.setattr(main, "get_api_call_count", lambda: 0)
   monkeypatch.setattr(main, "reset_api_call_count", lambda: None)
 
-  with pytest.raises(RuntimeError, match="3 of 3 issue"):
-    asyncio.run(main.main())
+  assert asyncio.run(main.main()) is False
 
 
 def test_process_single_issue_reports_failure(stale_agent_main, monkeypatch):

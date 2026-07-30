@@ -103,12 +103,17 @@ async def process_single_issue(issue_number: int) -> Tuple[bool, float, int]:
   return success, duration, issue_api_calls
 
 
-async def main():
+async def main() -> bool:
   """
   Main entry point to run the stale issue bot concurrently.
 
   Fetches old issues and processes them in batches to respect API rate limits
   and concurrency constraints.
+
+  Returns:
+      bool: True if every fetched issue was processed successfully, False if
+          one or more individual issues failed. Some issues failing is a
+          normal, expected outcome and is not treated as a fatal error here.
   """
   logger.info(f"--- Starting Stale Bot for {OWNER}/{REPO} ---")
   logger.info(f"Concurrency level set to {CONCURRENCY_LIMIT}")
@@ -122,7 +127,7 @@ async def main():
     all_issues = get_old_open_issue_numbers(OWNER, REPO, days_old=filter_days)
   except Exception as e:
     logger.critical(f"Failed to fetch issue list: {e}", exc_info=True)
-    return
+    return True
 
   total_count = len(all_issues)
 
@@ -130,7 +135,7 @@ async def main():
 
   if total_count == 0:
     logger.info("No issues matched the criteria. Run finished.")
-    return
+    return True
 
   logger.info(
       f"Found {total_count} issues to process. "
@@ -140,6 +145,7 @@ async def main():
   total_processing_time = 0.0
   total_issue_api_calls = 0
   processed_count = 0
+  completed_count = 0
   failed_issue_numbers = []
 
   # Process the list in chunks of size CONCURRENCY_LIMIT
@@ -158,6 +164,7 @@ async def main():
     for issue_num, (success, duration, api_calls) in zip(chunk, results):
       total_processing_time += duration
       total_issue_api_calls += api_calls
+      completed_count += 1
       if success:
         processed_count += 1
       else:
@@ -165,7 +172,7 @@ async def main():
 
     logger.info(
         f"--- Finished chunk {current_chunk_num}. Progress:"
-        f" {processed_count}/{total_count} ---"
+        f" {completed_count}/{total_count} ---"
     )
 
     if (i + CONCURRENCY_LIMIT) < total_count:
@@ -191,11 +198,7 @@ async def main():
       f"Average processing time per issue: {avg_time_per_issue:.2f} seconds."
   )
 
-  if failed_issue_numbers:
-    raise RuntimeError(
-        f"{len(failed_issue_numbers)} of {total_count} issue(s) failed"
-        f" processing: {failed_issue_numbers}"
-    )
+  return not failed_issue_numbers
 
 
 if __name__ == "__main__":
@@ -203,7 +206,8 @@ if __name__ == "__main__":
   exit_code = 0
 
   try:
-    asyncio.run(main())
+    if not asyncio.run(main()):
+      exit_code = 1
   except KeyboardInterrupt:
     logger.warning("Bot execution interrupted manually.")
     exit_code = 1
