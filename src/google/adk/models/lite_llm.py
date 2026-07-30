@@ -53,6 +53,7 @@ from pydantic import Field
 from typing_extensions import override
 
 from ..utils._google_client_headers import merge_tracking_headers
+from .base_llm import _validate_candidate_count
 from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -2348,6 +2349,7 @@ async def _get_completion_inputs(
     The litellm inputs (message list, tool dictionary, response format,
     generation params, and tool_choice).
   """
+  _validate_candidate_count(llm_request.config)
   _ensure_litellm_imported()
 
   # Determine provider for file handling

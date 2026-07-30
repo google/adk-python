@@ -40,6 +40,7 @@ from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
 from ..utils.streaming_utils import StreamingResponseAggregator
 from ..utils.variant_utils import GoogleLLMVariant
+from .base_llm import _validate_candidate_count
 from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
 from .gemini_llm_connection import GeminiLlmConnection
@@ -194,6 +195,7 @@ class Gemini(BaseLlm):
     Yields:
       LlmResponse: The model response.
     """
+    _validate_candidate_count(llm_request.config)
     await self._preprocess_request(llm_request)
     self._maybe_append_user_content(llm_request)
 

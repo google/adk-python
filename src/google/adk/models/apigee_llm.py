@@ -36,6 +36,7 @@ import tenacity
 from typing_extensions import override
 
 from ..utils.env_utils import is_enterprise_mode_enabled
+from .base_llm import _validate_candidate_count
 from .google_llm import Gemini
 from .llm_response import LlmResponse
 
@@ -633,6 +634,7 @@ class CompletionsHTTPClient:
       self, config: types.GenerateContentConfig, payload: dict[str, Any]
   ) -> None:
     """Maps configuration parameters to the payload."""
+    _validate_candidate_count(config)
     if config.temperature is not None:
       payload['temperature'] = config.temperature
     if config.top_p is not None:

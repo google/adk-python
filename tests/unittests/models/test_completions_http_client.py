@@ -79,7 +79,7 @@ async def test_construct_payload_with_config(client, llm_request):
       frequency_penalty=0.5,
       presence_penalty=0.5,
       seed=42,
-      candidate_count=2,
+      candidate_count=1,
       response_mime_type='application/json',
   )
 
@@ -107,8 +107,28 @@ async def test_construct_payload_with_config(client, llm_request):
     assert payload['frequency_penalty'] == 0.5
     assert payload['presence_penalty'] == 0.5
     assert payload['seed'] == 42
-    assert payload['n'] == 2
+    assert payload['n'] == 1
     assert payload['response_format'] == {'type': 'json_object'}
+
+
+@pytest.mark.asyncio
+async def test_construct_payload_rejects_multiple_candidates(
+    client, llm_request
+):
+  llm_request.config = types.GenerateContentConfig(candidate_count=2)
+
+  with mock.patch.object(httpx.AsyncClient, 'post') as mock_post:
+    with pytest.raises(
+        ValueError, match='supports only one response candidate'
+    ):
+      _ = [
+          response
+          async for response in client.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+  mock_post.assert_not_called()
 
 
 @pytest.mark.asyncio

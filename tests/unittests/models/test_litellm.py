@@ -2612,6 +2612,30 @@ def test_model_response_to_generate_content_response_reasoning_content():
   assert response.content.parts[1].text == "Answer"
 
 
+def test_model_response_to_generate_content_response_uses_first_choice():
+  """Test LiteLLM conversion follows the single-candidate contract."""
+  model_response = ModelResponse(
+      model="test-model",
+      choices=[
+          {
+              "message": {"role": "assistant", "content": "First"},
+              "finish_reason": "stop",
+          },
+          {
+              "message": {"role": "assistant", "content": "Second"},
+              "finish_reason": "stop",
+          },
+      ],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert len(model_response.choices) == 2
+  assert [
+      part.text for part in response.content.parts if part.text is not None
+  ] == ["First"]
+
+
 def test_message_to_generate_content_response_reasoning_field():
   """Test that the 'reasoning' field is supported (LM Studio, vLLM)."""
   message = {
@@ -4777,6 +4801,19 @@ async def test_get_completion_inputs_generation_params():
   # Should not include max_output_tokens
   assert "max_output_tokens" not in generation_params
   assert "stop_sequences" not in generation_params
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_rejects_multiple_candidates():
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(candidate_count=2),
+  )
+
+  with pytest.raises(ValueError, match="supports only one response candidate"):
+    await _get_completion_inputs(req, model="gpt-4o-mini")
 
 
 @pytest.mark.asyncio

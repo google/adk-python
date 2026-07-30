@@ -397,6 +397,26 @@ async def test_generate_content_async(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_rejects_multiple_candidates(
+    gemini_llm, llm_request
+):
+  llm_request.config.candidate_count = 2
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    with pytest.raises(
+        ValueError, match="supports only one response candidate"
+    ):
+      _ = [
+          response
+          async for response in gemini_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+  mock_client.aio.models.generate_content.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream(gemini_llm, llm_request):
   with mock.patch.object(gemini_llm, "api_client") as mock_client:
     mock_responses = [

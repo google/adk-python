@@ -29,6 +29,21 @@ if TYPE_CHECKING:
   from .llm_response import LlmResponse
 
 
+def _validate_candidate_count(
+    config: types.GenerateContentConfig | None,
+) -> None:
+  """Validates that the request fits ADK's single-candidate response model."""
+  if (
+      config
+      and config.candidate_count is not None
+      and config.candidate_count > 1
+  ):
+    raise ValueError(
+        'ADK supports only one response candidate; candidate_count must be 1'
+        ' or unset.'
+    )
+
+
 class BaseLlm(BaseModel):
   """The BaseLLM class."""
 

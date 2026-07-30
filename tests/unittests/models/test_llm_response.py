@@ -64,6 +64,29 @@ def test_llm_response_create_without_logprobs():
   assert response.content.parts[0].text == 'Response text'
 
 
+def test_llm_response_create_uses_first_candidate():
+  """Test LlmResponse.create() follows the single-candidate contract."""
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(parts=[types.Part(text='First')]),
+              finish_reason=types.FinishReason.STOP,
+          ),
+          types.Candidate(
+              content=types.Content(parts=[types.Part(text='Second')]),
+              finish_reason=types.FinishReason.STOP,
+          ),
+      ]
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert len(generate_content_response.candidates) == 2
+  assert [
+      part.text for part in response.content.parts if part.text is not None
+  ] == ['First']
+
+
 def test_llm_response_create_error_case_with_logprobs():
   """Test LlmResponse.create() includes logprobs in error cases."""
   avg_logprobs = -2.1
