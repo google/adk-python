@@ -1421,3 +1421,124 @@ async def test_run_live_respects_explicit_initial_history_in_client_content_fals
             call_req.live_connect_config.history_config.initial_history_in_client_content
             is False
         )
+
+
+async def _preprocess(agent, *, is_live: bool) -> LlmRequest:
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  if is_live:
+    invocation_context.live_request_queue = LiveRequestQueue()
+  flow = BaseLlmFlowForTesting()
+  llm_request = LlmRequest()
+  async for _ in flow._preprocess_async(invocation_context, llm_request):
+    pass
+  return llm_request
+
+
+def _declarations(llm_request: LlmRequest) -> dict:
+  return {
+      decl.name: decl
+      for decl in llm_request.config.tools[0].function_declarations
+  }
+
+
+async def _streaming_tool(query: str):
+  """A streaming tool."""
+  yield f'streaming: {query}'
+
+
+def _scheduled_tool(query: str) -> str:
+  """A scheduled tool."""
+  return f'scheduled: {query}'
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_marks_streaming_tool_non_blocking_for_live():
+  """Live streaming async-generator tools are marked NON_BLOCKING."""
+  agent = Agent(name='test_agent', tools=[_streaming_tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_marks_scheduled_tool_non_blocking_for_live():
+  """Live response-scheduling tools are marked NON_BLOCKING."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_does_not_mark_non_blocking_for_non_live():
+  """Non-live requests never set behavior, even for streaming tools."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  scheduled = FunctionTool(func=_scheduled_tool)
+  scheduled.response_scheduling = types.FunctionResponseScheduling.SILENT
+  agent = Agent(name='test_agent', tools=[_streaming_tool, scheduled])
+
+  llm_request = await _preprocess(agent, is_live=False)
+
+  declarations = _declarations(llm_request)
+  assert declarations['_streaming_tool'].behavior is None
+  assert declarations['_scheduled_tool'].behavior is None
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_leaves_regular_tool_behavior_unset_for_live():
+  """Regular (non-streaming, non-scheduled) live tools are left untouched."""
+  agent = Agent(name='test_agent', tools=[_scheduled_tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is None
+
+
+@pytest.mark.asyncio
+async def test_postprocess_live_skips_none_function_response_event():
+  """When every live function call defers, no None event must be yielded."""
+  from google.adk.flows.llm_flows import base_llm_flow as blf
+
+  agent = Agent(name='test_agent', model='gemini-2.0-flash')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  flow = BaseLlmFlowForTesting()
+
+  fc_part = types.Part(
+      function_call=types.FunctionCall(name='lro', id='1', args={})
+  )
+  content = types.Content(role='model', parts=[fc_part])
+  model_response_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  llm_response = LlmResponse(content=content)
+
+  with mock.patch.object(
+      blf.functions,
+      'handle_function_calls_live',
+      new=AsyncMock(return_value=None),
+  ):
+    events = [
+        event
+        async for event in flow._postprocess_live(
+            invocation_context, llm_request, llm_response, model_response_event
+        )
+    ]
+
+  assert all(event is not None for event in events)

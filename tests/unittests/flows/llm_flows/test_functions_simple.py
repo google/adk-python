@@ -1398,3 +1398,222 @@ async def test_non_blocking_tool_handled_asynchronously():
   )
   await asyncio.sleep(0)
   assert task_key not in invocation_context.active_non_blocking_tool_tasks
+
+
+@pytest.mark.asyncio
+async def test_response_scheduling_unset_by_default():
+  """Without response_scheduling, the FunctionResponse part leaves it unset."""
+
+  def simple_fn(**kwargs) -> dict:
+    return {'result': 'test'}
+
+  tool = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls_async(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  function_response = result_event.content.parts[0].function_response
+  assert function_response.scheduling is None
+
+
+async def _drain_live_function_responses(
+    live_request_queue: LiveRequestQueue,
+    count: int,
+) -> list[types.Content]:
+  """Drains ``count`` contents from a live request queue, ignoring acks."""
+  contents = []
+  while len(contents) < count:
+    request = await asyncio.wait_for(live_request_queue._queue.get(), timeout=5)
+    if request.content is not None:
+      contents.append(request.content)
+  return contents
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_with_scheduling_emits_function_response():
+  """A streaming tool with response_scheduling relays yields as FunctionResponses."""
+
+  async def streaming_fn(**kwargs):
+    yield 'first'
+    yield 'second'
+
+  tool = FunctionTool(streaming_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=2
+  )
+
+  responses = [content.parts[0].function_response for content in contents]
+  assert [r.response for r in responses] == [
+      {'result': 'first'},
+      {'result': 'second'},
+  ]
+  assert all(r.id == 'fc_stream' for r in responses)
+  assert all(
+      r.scheduling is types.FunctionResponseScheduling.SILENT for r in responses
+  )
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_without_scheduling_emits_function_response():
+  """A streaming tool without response_scheduling still relays yields as
+  FunctionResponses, leaving scheduling unset."""
+
+  async def streaming_fn(**kwargs):
+    yield 'hello'
+
+  tool = FunctionTool(streaming_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=1
+  )
+
+  function_response = contents[0].parts[0].function_response
+  assert function_response.response == {'result': 'hello'}
+  assert function_response.id == 'fc_stream'
+  assert function_response.scheduling is None
+
+
+@pytest.mark.asyncio
+async def test_non_blocking_tool_exception_handling_and_cleanup():
+  """Tests that an exception in a NON_BLOCKING tool is logged and cleaned up."""
+
+  async def failing_fn() -> dict[str, str]:
+    await asyncio.sleep(0.05)
+    raise RuntimeError('Tool execution failed purposely')
+
+  tool = FunctionTool(failing_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_failing_non_blocking'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is None
+  task_key = f'{tool.name}_fc_failing_non_blocking'
+  assert (
+      invocation_context.active_non_blocking_tool_tasks
+      and task_key in invocation_context.active_non_blocking_tool_tasks
+  )
+
+  await asyncio.sleep(0.1)
+  await asyncio.sleep(0)
+  assert task_key not in invocation_context.active_non_blocking_tool_tasks
+
+
+@pytest.mark.asyncio
+async def test_parallel_non_blocking_tools():
+  """Tests that multiple NON_BLOCKING tools execute in parallel and clean up independently."""
+
+  async def slow_fn_1() -> dict[str, str]:
+    await asyncio.sleep(0.05)
+    return {'result': 'done_1'}
+
+  async def slow_fn_2() -> dict[str, str]:
+    await asyncio.sleep(0.05)
+    return {'result': 'done_2'}
+
+  tool1 = FunctionTool(slow_fn_1)
+  tool1.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  tool2 = FunctionTool(slow_fn_2)
+  tool2.response_scheduling = types.FunctionResponseScheduling.SILENT
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool1, tool2])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  fc1 = types.FunctionCall(name=tool1.name, args={}, id='fc_1')
+  fc2 = types.FunctionCall(name=tool2.name, args={}, id='fc_2')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[
+              types.Part(function_call=fc1),
+              types.Part(function_call=fc2),
+          ]
+      ),
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool1.name: tool1, tool2.name: tool2}
+  )
+  assert result is None
+  assert len(invocation_context.active_non_blocking_tool_tasks) == 2
+  key1 = f'{tool1.name}_fc_1'
+  key2 = f'{tool2.name}_fc_2'
+  assert key1 in invocation_context.active_non_blocking_tool_tasks
+  assert key2 in invocation_context.active_non_blocking_tool_tasks
+
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=2
+  )
+  responses = {
+      c.parts[0].function_response.id: c.parts[0].function_response
+      for c in contents
+  }
+  assert responses['fc_1'].response == {'result': 'done_1'}
+  assert responses['fc_2'].response == {'result': 'done_2'}
+
+  await asyncio.sleep(0)
+  assert len(invocation_context.active_non_blocking_tool_tasks) == 0
