@@ -29,6 +29,8 @@ config -- DO NOT factor the construction into helpers.
 
 from __future__ import annotations
 
+from google.genai import errors as genai_errors
+
 from .functional_test_helpers import AGENT_DESCRIPTION
 from .functional_test_helpers import AGENT_NAME
 from .functional_test_helpers import EXPERIMENTAL_OPT_IN
@@ -2360,6 +2362,236 @@ EXPECTED_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
 
 
 # ---------------------------------------------------------------------------
+# Inference-failure shapes (stable semconv, no content capture).
+# ---------------------------------------------------------------------------
+# When the model raises before returning any response, the invocation aborts
+# mid-flight: ``call_llm`` never records its request/response attributes, the
+# ``generate_content`` span carries no finish reason and only the input
+# (system + user) message logs, and the tool is never called. The span tree is
+# identical regardless of which exception is raised; the failure surfaces on
+# ``error.type`` across the duration metrics (see the metric constants below).
+#
+# ``google.genai`` collapses every 4xx into ``ClientError`` / 5xx into
+# ``ServerError``, so before b/534739207 every such failure reported
+# ``error.type=ClientError``. ADK now uses the provider's HTTP status code
+# (e.g. ``429``), falling back to the exception class name for non-API errors
+# (e.g. ``ValueError``).
+
+EXPECTED_INFERENCE_ERROR_SPANS_V1 = SpanDigest(
+    name="invocation",
+    attributes={},
+    children=[
+        SpanDigest(
+            name="invoke_agent some_root_agent",
+            attributes={
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
+                SpanDigest(
+                    name="call_llm",
+                    attributes={},
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.system": "gemini",
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ],
+)
+
+EXPECTED_INFERENCE_ERROR_SPANS_V2 = SpanDigest(
+    name="invoke_workflow some_root_agent",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": AGENT_NAME,
+        "gen_ai.conversation.id": PRESENT,
+    },
+    children=[
+        SpanDigest(
+            name="invoke_agent some_root_agent",
+            attributes={
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            children=[
+                SpanDigest(
+                    name="call_llm",
+                    attributes={},
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.system": "gemini",
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ],
+)
+
+# HTTP 429 (RESOURCE_EXHAUSTED), schema v1.
+EXPECTED_INFERENCE_ERROR_METRICS_CODE_429_V1 = {
+    "gen_ai.client.operation.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.operation.name": "generate_content",
+                "gen_ai.provider.name": "gemini",
+                "gen_ai.request.model": "mock",
+                "error.type": "429",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.agent.name": AGENT_NAME,
+                "error.type": "429",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=0),
+    }),
+}
+
+# HTTP 429 (RESOURCE_EXHAUSTED), schema v2 (adds the workflow duration metric).
+EXPECTED_INFERENCE_ERROR_METRICS_CODE_429_V2 = {
+    "gen_ai.client.operation.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.operation.name": "generate_content",
+                "gen_ai.provider.name": "gemini",
+                "gen_ai.request.model": "mock",
+                "error.type": "429",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.agent.name": AGENT_NAME,
+                "error.type": "429",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_workflow.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": AGENT_NAME,
+                "error.type": "429",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=0),
+    }),
+}
+
+# Non-API ValueError falls back to the class name, schema v2.
+EXPECTED_INFERENCE_ERROR_METRICS_VALUEERROR_V2 = {
+    "gen_ai.client.operation.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.operation.name": "generate_content",
+                "gen_ai.provider.name": "gemini",
+                "gen_ai.request.model": "mock",
+                "error.type": "ValueError",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.agent.name": AGENT_NAME,
+                "error.type": "ValueError",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_workflow.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": AGENT_NAME,
+                "error.type": "ValueError",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=0),
+    }),
+}
+
+
+# ---------------------------------------------------------------------------
 # Parametrization list.
 # ---------------------------------------------------------------------------
 
@@ -2482,6 +2714,49 @@ ALL_CASES: list[FunctionalTestCase] = [
         expected=TelemetryDigest(
             root_span=EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2,
             metric_points=EXPECTED_METRICS_V2,
+        ),
+    ),
+    # Inference failures (b/534739207): the mock raises before responding, so
+    # the scenario aborts and the failure surfaces on ``error.type``. A 429
+    # surfaces its HTTP status code ``429`` (not a blanket ``ClientError``); a
+    # plain ``ValueError`` falls back to the class name.
+    FunctionalTestCase(
+        test_id="inference-error-resource-exhausted-schema-v1",
+        semconv_opt_in=None,
+        capture_content="false",
+        schema_version=1,
+        model_exception=genai_errors.ClientError(
+            429,
+            {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}},
+        ),
+        expected=TelemetryDigest(
+            root_span=EXPECTED_INFERENCE_ERROR_SPANS_V1,
+            metric_points=EXPECTED_INFERENCE_ERROR_METRICS_CODE_429_V1,
+        ),
+    ),
+    FunctionalTestCase(
+        test_id="inference-error-resource-exhausted-schema-v2",
+        semconv_opt_in=None,
+        capture_content="false",
+        schema_version=2,
+        model_exception=genai_errors.ClientError(
+            429,
+            {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}},
+        ),
+        expected=TelemetryDigest(
+            root_span=EXPECTED_INFERENCE_ERROR_SPANS_V2,
+            metric_points=EXPECTED_INFERENCE_ERROR_METRICS_CODE_429_V2,
+        ),
+    ),
+    FunctionalTestCase(
+        test_id="inference-error-valueerror-schema-v2",
+        semconv_opt_in=None,
+        capture_content="false",
+        schema_version=2,
+        model_exception=ValueError("boom"),
+        expected=TelemetryDigest(
+            root_span=EXPECTED_INFERENCE_ERROR_SPANS_V2,
+            metric_points=EXPECTED_INFERENCE_ERROR_METRICS_VALUEERROR_V2,
         ),
     ),
 ]

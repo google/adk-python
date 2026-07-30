@@ -15,7 +15,9 @@
 """Tests for thread pool execution of tools in Live API mode."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import contextvars
+import gc
 import threading
 import time
 
@@ -42,9 +44,18 @@ def cleanup_thread_pools():
   from google.adk.flows.llm_flows import functions
 
   # Shutdown all pools
-  for pool in functions._TOOL_THREAD_POOLS.values():
-    pool.shutdown(wait=False)
+  for pools in list(functions._TOOL_THREAD_POOLS.values()):
+    for pool in pools.values():
+      pool.shutdown(wait=False)
   functions._TOOL_THREAD_POOLS.clear()
+
+
+async def _wait_until(predicate, timeout: float = 5.0) -> None:
+  """Waits for a condition set by a background thread."""
+  deadline = time.time() + timeout
+  while not predicate():
+    assert time.time() < deadline, 'timed out waiting for background threads'
+    await asyncio.sleep(0.01)
 
 
 class TestIsSyncTool:
@@ -86,30 +97,99 @@ class TestIsSyncTool:
 class TestGetToolThreadPool:
   """Tests for the _get_tool_thread_pool function."""
 
-  def test_returns_thread_pool_executor(self):
+  @pytest.mark.asyncio
+  async def test_returns_thread_pool_executor(self):
     """Test that the function returns a ThreadPoolExecutor."""
-    from concurrent.futures import ThreadPoolExecutor
-
     pool = _get_tool_thread_pool()
     assert isinstance(pool, ThreadPoolExecutor)
 
-  def test_returns_same_pool_on_multiple_calls(self):
+  @pytest.mark.asyncio
+  async def test_returns_same_pool_on_multiple_calls(self):
     """Test that the same pool is returned on multiple calls (singleton)."""
     pool1 = _get_tool_thread_pool()
     pool2 = _get_tool_thread_pool()
     assert pool1 is pool2
 
-  def test_different_max_workers_creates_different_pools(self):
+  @pytest.mark.asyncio
+  async def test_different_max_workers_creates_different_pools(self):
     """Test that different max_workers values create separate pools."""
     pool_4 = _get_tool_thread_pool(max_workers=4)
     pool_8 = _get_tool_thread_pool(max_workers=8)
     assert pool_4 is not pool_8
 
-  def test_same_max_workers_returns_same_pool(self):
+  @pytest.mark.asyncio
+  async def test_same_max_workers_returns_same_pool(self):
     """Test that same max_workers returns the cached pool."""
     pool1 = _get_tool_thread_pool(max_workers=16)
     pool2 = _get_tool_thread_pool(max_workers=16)
     assert pool1 is pool2
+
+  @pytest.mark.asyncio
+  async def test_pool_is_isolated_from_the_loop_default_executor(self):
+    """Tool work must not share the executor the loop uses for its own work."""
+    loop = asyncio.get_running_loop()
+
+    tool_thread = await loop.run_in_executor(
+        _get_tool_thread_pool(), lambda: threading.current_thread().name
+    )
+    default_thread = await asyncio.to_thread(
+        lambda: threading.current_thread().name
+    )
+
+    assert tool_thread.startswith('adk_tool_executor')
+    assert not default_thread.startswith('adk_tool_executor')
+
+  def test_separate_event_loops_get_separate_pools(self):
+    """Each event loop owns its pool rather than a process-wide one."""
+
+    async def get_pool() -> ThreadPoolExecutor:
+      return _get_tool_thread_pool(max_workers=3)
+
+    assert asyncio.run(get_pool()) is not asyncio.run(get_pool())
+
+  def test_pool_is_shut_down_when_its_event_loop_is_gone(self):
+    """Regression test: idle tool threads must not outlive their loop."""
+
+    pre_existing = {
+        thread
+        for thread in threading.enumerate()
+        if thread.name.startswith('adk_tool_executor')
+    }
+
+    def tool_threads() -> set:
+      return {
+          thread
+          for thread in threading.enumerate()
+          if thread.name.startswith('adk_tool_executor')
+      } - pre_existing
+
+    async def run_tool_and_return_pool() -> ThreadPoolExecutor:
+      def sync_func() -> dict:
+        return {'result': 'success'}
+
+      tool = FunctionTool(sync_func)
+      model = testing_utils.MockModel.create(responses=[])
+      agent = Agent(name='test_agent', model=model, tools=[tool])
+      invocation_context = await testing_utils.create_invocation_context(
+          agent=agent, user_content=''
+      )
+      tool_context = ToolContext(
+          invocation_context=invocation_context,
+          function_call_id='test_id',
+      )
+      await _call_tool_in_thread_pool(tool, {}, tool_context)
+      assert tool_threads()
+      return _get_tool_thread_pool()
+
+    pool = asyncio.run(run_tool_and_return_pool())
+    gc.collect()
+
+    with pytest.raises(RuntimeError):
+      pool.submit(lambda: None)
+    deadline = time.time() + 5
+    while tool_threads() and time.time() < deadline:
+      time.sleep(0.01)
+    assert not tool_threads()
 
 
 class TestCallToolInThreadPool:
@@ -419,11 +499,11 @@ class TestCallToolInThreadPool:
   @pytest.mark.asyncio
   async def test_custom_max_workers_used(self):
     """Test that custom max_workers parameter is passed to thread pool."""
-    pool_used = None
+    tool_thread_name = None
 
     def sync_func() -> dict:
-      nonlocal pool_used
-      # The pool itself is global, so we just verify the call works
+      nonlocal tool_thread_name
+      tool_thread_name = threading.current_thread().name
       return {'result': 'success'}
 
     tool = FunctionTool(sync_func)
@@ -443,9 +523,227 @@ class TestCallToolInThreadPool:
     )
 
     assert result == {'result': 'success'}
-    # Verify the pool was created with custom max_workers
-    pool = _get_tool_thread_pool(max_workers=12)
-    assert pool is not None
+    # The call ran on the dedicated pool for that worker count.
+    assert tool_thread_name.startswith('adk_tool_executor')
+    assert _get_tool_thread_pool(max_workers=12)._max_workers == 12
+
+  @pytest.mark.asyncio
+  async def test_max_workers_bounds_concurrent_calls(self):
+    """Only max_workers background tool calls run at once."""
+    lock = threading.Lock()
+    release = threading.Event()
+    running = 0
+    peak = 0
+
+    def sync_func() -> dict:
+      nonlocal running, peak
+      with lock:
+        running += 1
+        peak = max(peak, running)
+      release.wait(timeout=5)
+      with lock:
+        running -= 1
+      return {'result': 'success'}
+
+    tool = FunctionTool(sync_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    calls = [
+        asyncio.create_task(
+            _call_tool_in_thread_pool(tool, {}, tool_context, max_workers=2)
+        )
+        for _ in range(4)
+    ]
+    try:
+      await _wait_until(lambda: running == 2)
+      await asyncio.sleep(0.05)
+      assert peak == 2
+    finally:
+      release.set()
+
+    assert await asyncio.gather(*calls) == [{'result': 'success'}] * 4
+    assert peak == 2
+
+  @pytest.mark.asyncio
+  async def test_concurrent_invocations_share_the_loop_pool(self):
+    """Extra invocations must not each add their own worker threads."""
+    lock = threading.Lock()
+    release = threading.Event()
+    thread_names = set()
+
+    def sync_func() -> dict:
+      with lock:
+        thread_names.add(threading.current_thread().name)
+      release.wait(timeout=5)
+      return {'result': 'success'}
+
+    tool = FunctionTool(sync_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    tool_contexts = []
+    for index in range(2):
+      invocation_context = await testing_utils.create_invocation_context(
+          agent=agent, user_content=''
+      )
+      tool_contexts.append(
+          ToolContext(
+              invocation_context=invocation_context,
+              function_call_id=f'test_id_{index}',
+          )
+      )
+
+    calls = [
+        asyncio.create_task(
+            _call_tool_in_thread_pool(tool, {}, tool_context, max_workers=2)
+        )
+        for tool_context in tool_contexts
+        for _ in range(2)
+    ]
+    try:
+      await _wait_until(lambda: len(thread_names) == 2)
+      await asyncio.sleep(0.05)
+      assert len(thread_names) == 2
+    finally:
+      release.set()
+
+    assert await asyncio.gather(*calls) == [{'result': 'success'}] * 4
+    assert len(thread_names) == 2
+
+  @pytest.mark.asyncio
+  async def test_failed_call_frees_its_worker_thread(self):
+    """A raising tool must not permanently consume a worker thread."""
+
+    def sync_func_raises() -> dict:
+      raise ValueError('Test error from sync tool')
+
+    tool = FunctionTool(sync_func_raises)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    for _ in range(3):
+      with pytest.raises(ValueError, match='Test error from sync tool'):
+        await asyncio.wait_for(
+            _call_tool_in_thread_pool(tool, {}, tool_context, max_workers=1),
+            timeout=5,
+        )
+
+  @pytest.mark.asyncio
+  async def test_cancelled_call_holds_its_worker_thread_until_it_returns(self):
+    """Python cannot stop a running thread, so it keeps its worker."""
+    lock = threading.Lock()
+    first_worker_started = threading.Event()
+    finish_first_worker = threading.Event()
+    second_worker_started = threading.Event()
+    call_count = 0
+
+    def sync_func() -> dict:
+      nonlocal call_count
+      with lock:
+        call_count += 1
+        is_first = call_count == 1
+      if is_first:
+        first_worker_started.set()
+        finish_first_worker.wait(timeout=5)
+      else:
+        second_worker_started.set()
+      return {'result': 'success'}
+
+    tool = FunctionTool(sync_func)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    first_call = asyncio.create_task(
+        _call_tool_in_thread_pool(tool, {}, tool_context, max_workers=1)
+    )
+    try:
+      await _wait_until(first_worker_started.is_set)
+      first_call.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await first_call
+
+      second_call = asyncio.create_task(
+          _call_tool_in_thread_pool(tool, {}, tool_context, max_workers=1)
+      )
+      await asyncio.sleep(0.05)
+      assert not second_worker_started.is_set()
+    finally:
+      finish_first_worker.set()
+
+    assert await asyncio.wait_for(second_call, timeout=5) == {
+        'result': 'success'
+    }
+    assert second_worker_started.is_set()
+
+  @pytest.mark.asyncio
+  async def test_cancelled_call_that_never_started_does_not_run(self):
+    """A call still queued for a worker is dropped rather than run later."""
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    calls = []
+
+    def blocking_func() -> dict:
+      blocker_started.set()
+      release_blocker.wait(timeout=5)
+      return {'result': 'success'}
+
+    def queued_func() -> dict:
+      calls.append('queued')
+      return {'result': 'success'}
+
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    blocking_call = asyncio.create_task(
+        _call_tool_in_thread_pool(
+            FunctionTool(blocking_func), {}, tool_context, max_workers=1
+        )
+    )
+    try:
+      await _wait_until(blocker_started.is_set)
+      queued_call = asyncio.create_task(
+          _call_tool_in_thread_pool(
+              FunctionTool(queued_func), {}, tool_context, max_workers=1
+          )
+      )
+      await asyncio.sleep(0.05)
+      queued_call.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await queued_call
+    finally:
+      release_blocker.set()
+
+    await asyncio.wait_for(blocking_call, timeout=5)
+    await asyncio.sleep(0.1)
+    assert not calls
 
   @pytest.mark.asyncio
   async def test_contextvars_propagation_sync_tool(self):

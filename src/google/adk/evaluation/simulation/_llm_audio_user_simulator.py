@@ -37,6 +37,7 @@ from pydantic import field_validator
 from typing_extensions import Literal
 from typing_extensions import override
 
+from .. import _audio_utils
 from ...events.event import Event
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
@@ -332,11 +333,14 @@ class _LlmAudioUserSimulator(UserSimulator):
 
     # Generate audio via the audio LLM (provider-agnostic).
     audio_bytes, mime_type = await self._generate_audio(text)
+
+    # Live API requires 16 kHz PCM input.
+    live_audio_bytes = _audio_utils.to_live_input(audio_bytes, mime_type)
     parts.append(
         genai_types.Part(
             inline_data=genai_types.Blob(
-                mime_type=mime_type,
-                data=audio_bytes,
+                mime_type=_audio_utils.LIVE_INPUT_MIME_TYPE,
+                data=live_audio_bytes,
             )
         )
     )

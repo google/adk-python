@@ -26,6 +26,7 @@ from .llm_response import LlmResponse
 from .registry import LLMRegistry
 
 if TYPE_CHECKING:
+  from google.adk.integrations.oci._oci_genai_llm import OCIGenAILlm
   from google.adk.labs.openai import OpenAILlm
 
   from .anthropic_llm import AnthropicGenerateContentConfig
@@ -90,6 +91,18 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
             r'ai21/.*',
         ],
         'lite_llm',
+    ),
+    'OCIGenAILlm': (
+        [
+            r'meta\.llama-.*',
+            r'google\.gemini-.*',
+            r'google\.gemma-.*',
+            r'xai\.grok-.*',
+            r'mistralai\.mistral-.*',
+            r'mistralai\.mixtral-.*',
+            r'nvidia\..*',
+        ],
+        'google.adk.integrations.oci._oci_genai_llm',
     ),
 }
 

@@ -573,25 +573,32 @@ async def test_generate_content_async_other_client_error(
 
 @pytest.mark.asyncio
 async def test_connect(gemini_llm, llm_request):
-  # Create a mock connection
-  mock_connection = mock.MagicMock(spec=GeminiLlmConnection)
+  """Test that connect yields a GeminiLlmConnection wrapping the live session."""
+  mock_live_session = mock.AsyncMock()
 
-  # Create a mock context manager
-  class MockContextManager:
+  # Patch the live API client boundary so the real connect() body runs.
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
 
-    async def __aenter__(self):
-      return mock_connection
+    class MockLiveConnect:
 
-    async def __aexit__(self, *args):
-      pass
+      async def __aenter__(self):
+        return mock_live_session
 
-  # Mock the connect method at the class level
-  with mock.patch(
-      "google.adk.models.google_llm.Gemini.connect",
-      return_value=MockContextManager(),
-  ):
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
     async with gemini_llm.connect(llm_request) as connection:
-      assert connection is mock_connection
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      assert call_args.kwargs["model"] == llm_request.model
+      assert call_args.kwargs["config"] is llm_request.live_connect_config
+
+      assert isinstance(connection, GeminiLlmConnection)
+      assert connection._gemini_session is mock_live_session
+      assert connection._api_backend == gemini_llm._api_backend
+      assert connection._model_version == llm_request.model
 
 
 @pytest.mark.asyncio

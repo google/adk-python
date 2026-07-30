@@ -32,6 +32,8 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
 
+from ....utils import _mtls_utils
+
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
 
 
@@ -131,14 +133,7 @@ class APIHubClient(BaseAPIHubClient):
         A list of API dictionaries, or an empty list if an error occurs.
     """
     url = f"{self.root_url}/projects/{project}/locations/{location}/apis"
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "Authorization": f"Bearer {self._get_access_token()}",
-    }
-    response = requests.get(
-        url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
-    )
-    response.raise_for_status()
+    response = self._get(url)
     apis = response.json().get("apis", [])
     return apis
 
@@ -153,14 +148,7 @@ class APIHubClient(BaseAPIHubClient):
         An API and details in a dict.
     """
     url = f"{self.root_url}/{api_resource_name}"
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "Authorization": f"Bearer {self._get_access_token()}",
-    }
-    response = requests.get(
-        url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
-    )
-    response.raise_for_status()
+    response = self._get(url)
     apis = response.json()
     return apis
 
@@ -175,14 +163,7 @@ class APIHubClient(BaseAPIHubClient):
         error occurs.
     """
     url = f"{self.root_url}/{api_version_name}"
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "Authorization": f"Bearer {self._get_access_token()}",
-    }
-    response = requests.get(
-        url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
-    )
-    response.raise_for_status()
+    response = self._get(url)
     return response.json()
 
   def _fetch_spec(self, api_spec_resource_name: str) -> str:
@@ -196,14 +177,7 @@ class APIHubClient(BaseAPIHubClient):
         if an error occurs.
     """
     url = f"{self.root_url}/{api_spec_resource_name}:contents"
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "Authorization": f"Bearer {self._get_access_token()}",
-    }
-    response = requests.get(
-        url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
-    )
-    response.raise_for_status()
+    response = self._get(url)
     content_base64 = response.json().get("contents", "")
     if content_base64:
       content_decoded = base64.b64decode(content_base64).decode("utf-8")
@@ -314,6 +288,35 @@ class APIHubClient(BaseAPIHubClient):
         api_version_resource_name,
         api_spec_resource_name,
     )
+
+  def _get(self, url: str) -> requests.Response:
+    """Sends an authenticated GET request to API Hub.
+
+    When a client certificate is configured, the certificate is presented on
+    the connection and the request is routed to the mTLS endpoint so that
+    token binding is honored.
+
+    Args:
+        url: The absolute URL to request.
+
+    Returns:
+        The successful response.
+    """
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "Authorization": f"Bearer {self._get_access_token()}",
+    }
+    with requests.Session() as session:
+      if (
+          _mtls_utils.use_client_cert_effective()
+          and _mtls_utils.configure_session_for_mtls(session)
+      ):
+        url = _mtls_utils.effective_googleapis_endpoint(url)
+      response = session.get(
+          url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
+      )
+    response.raise_for_status()
+    return response
 
   def _get_access_token(self) -> str:
     """Gets the access token for the service account.

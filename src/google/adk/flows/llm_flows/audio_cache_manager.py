@@ -153,12 +153,12 @@ class AudioCacheManager:
       return None
 
     try:
-      # Combine audio chunks into a single file
-      combined_audio_data = b''
+      # Combine audio chunks into a single file. Use join rather than repeated
+      # `+=`, which is O(n^2) over the total audio size.
       mime_type = audio_cache[0].data.mime_type if audio_cache else 'audio/pcm'
-
-      for entry in audio_cache:
-        combined_audio_data += entry.data.data
+      combined_audio_data = b''.join(
+          entry.data.data or b'' for entry in audio_cache
+      )
 
       # Generate filename with timestamp from first audio chunk (when recording started)
       timestamp = int(audio_cache[0].timestamp * 1000)  # milliseconds

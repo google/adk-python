@@ -20,7 +20,7 @@ from a2a.types import Artifact
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskStatusUpdateEvent
 from google.adk.a2a.executor.config import ExecuteInterceptor
-from google.adk.a2a.executor.config import ExecutorContext
+from google.adk.a2a.executor.executor_context import ExecutorContext
 
 from ....events.event import Event
 from ...converters.part_converter import convert_genai_part_to_a2a_part
@@ -33,7 +33,7 @@ async def _after_agent(
   if isinstance(a2a_event, (TaskStatusUpdateEvent, TaskArtifactUpdateEvent)):
     artifact_service = ctx.runner.artifact_service
     if artifact_service and adk_event.actions.artifact_delta:
-      new_events = []
+      new_events: list[A2AEvent] = []
       for filename, version in adk_event.actions.artifact_delta.items():
         genai_part = await artifact_service.load_artifact(
             app_name=ctx.app_name,

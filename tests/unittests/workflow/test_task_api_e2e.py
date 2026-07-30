@@ -34,7 +34,11 @@ from typing import AsyncGenerator
 from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_context import ToolContext
 from google.adk.workflow import node
 from google.adk.workflow import START
 from google.adk.workflow._base_node import BaseNode
@@ -64,6 +68,11 @@ def _finish_part(args: dict[str, Any]) -> types.Part:
 
 def _text_part(text: str) -> types.Part:
   return types.Part.from_text(text=text)
+
+
+def _confirmed_task_step(tool_context: ToolContext) -> dict[str, bool]:
+  """Return whether the resumable task step was confirmed."""
+  return {'confirmed': tool_context.tool_confirmation.confirmed}
 
 
 def _make_task_agent(
@@ -450,7 +459,83 @@ async def test_chat_coordinator_resumes_unresolved_task_fc(
 
 
 # ---------------------------------------------------------------------------
-# 9. Strict isolation filtering: a stranger event with a foreign
+# 9. Resumable task delegation: a task sub-agent that pauses for tool
+#    confirmation resumes without executing its parent's delegation FC.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_task_sub_agent_resumes_without_parent_delegation_fc(
+    request: pytest.FixtureRequest,
+):
+  """A resumed task child does not execute its parent's delegation call."""
+  confirmation_tool = FunctionTool(
+      func=_confirmed_task_step,
+      require_confirmation=True,
+  )
+  child = _make_task_agent(
+      name='child',
+      responses=[
+          types.Part.from_function_call(
+              name=confirmation_tool.name,
+              args={},
+          ),
+          _finish_part({'result': 'confirmed'}),
+      ],
+  )
+  child.tools.append(confirmation_tool)
+
+  root = LlmAgent(
+      name='root',
+      model=testing_utils.MockModel.create(
+          responses=[
+              _delegate_part('child', 'perform a confirmed step'),
+              'Task confirmed.',
+          ]
+      ),
+      sub_agents=[child],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=root,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  first_events = await runner.run_async(testing_utils.get_user_content('start'))
+  confirmation_fc = next(
+      fc
+      for event in first_events
+      for fc in event.get_function_calls()
+      if fc.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  invocation_id = next(
+      event.invocation_id
+      for event in first_events
+      if confirmation_fc in event.get_function_calls()
+  )
+
+  resumed_events = await runner.run_async(
+      testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=confirmation_fc.id,
+                  name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                  response={'confirmed': True},
+              )
+          )
+      ),
+      invocation_id=invocation_id,
+  )
+
+  assert {'result': 'confirmed'} in _collect_finish_outputs(resumed_events)
+  assert any(
+      'Task confirmed.' in text for text in _get_text_responses(resumed_events)
+  )
+
+
+# ---------------------------------------------------------------------------
+# 10. Strict isolation filtering: a stranger event with a foreign
 #    isolation_scope must NOT appear in the task agent's LLM context.
 # ---------------------------------------------------------------------------
 

@@ -133,6 +133,20 @@ class TestEventConverter:
     result = _serialize_metadata_value(value)
     assert result == "simple_string"
 
+  def test_serialize_metadata_value_dict(self):
+    """Test serialization of plain dictionary."""
+    value = {"key": "value", "nested": [1, 2]}
+    result = _serialize_metadata_value(value)
+    # Must be valid JSON (double quotes)
+    assert result == '{"key": "value", "nested": [1, 2]}'
+
+  def test_serialize_metadata_value_list(self):
+    """Test serialization of plain list."""
+    value = ["a", "b", 1]
+    result = _serialize_metadata_value(value)
+    # Must be valid JSON (double quotes)
+    assert result == '["a", "b", 1]'
+
   def _serialized_metadata_with_bytes(self):
     value = genai_types.FunctionResponse(
         name="computer_use",

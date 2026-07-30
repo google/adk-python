@@ -66,7 +66,14 @@ async def test_telemetry_schema(
   metric_reader = InMemoryMetricReader()
   install_telemetry(monkeypatch, span_exporter, log_exporter, metric_reader)
 
-  await run_agent_scenario(build_test_runner())
+  if case.model_exception is not None:
+    # The mock raises before responding; the scenario must propagate it.
+    with pytest.raises(Exception):  # noqa: B017 -- exact type varies per case.
+      await run_agent_scenario(
+          build_test_runner(model_exception=case.model_exception)
+      )
+  else:
+    await run_agent_scenario(build_test_runner())
 
   digest = TelemetryDigest.build(
       span_exporter.get_finished_spans(),

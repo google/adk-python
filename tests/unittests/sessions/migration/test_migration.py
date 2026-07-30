@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 from datetime import timezone
 import os
@@ -368,24 +369,69 @@ def test_migrate_from_sqlalchemy_pickle_ignores_non_object_json_fields():
   assert event.content is None
 
 
-def test_migrate_from_sqlalchemy_pickle_reads_naive_timestamp_as_local(
-    monkeypatch,
-):
+@contextlib.contextmanager
+def _pinned_local_timezone(name: str):
+  """Pins the process timezone for the duration of the block.
+
+  ``time.tzset`` is POSIX-only, so on other platforms the block runs in the
+  host zone instead. Restoring ``TZ`` without a second ``tzset`` would leave
+  the C library pinned for the rest of the session, so both are undone.
+  """
+  if not hasattr(time, "tzset"):
+    yield
+    return
+  previous = os.environ.get("TZ")
+  os.environ["TZ"] = name
+  time.tzset()
+  try:
+    yield
+  finally:
+    if previous is None:
+      os.environ.pop("TZ", None)
+    else:
+      os.environ["TZ"] = previous
+    time.tzset()
+
+
+def test_migrate_from_sqlalchemy_pickle_reads_naive_timestamp_as_local():
   """Naive v0 event timestamps must migrate as local time, not UTC.
 
   The v0 schema stored the event ``timestamp`` column as a naive datetime in
   local time (``StorageEvent.from_event`` uses ``datetime.fromtimestamp`` and
   ``to_event`` reads it back with naive ``.timestamp()``). Forcing UTC on that
-  naive value shifted every migrated timestamp by the host's UTC offset. Pin a
-  fixed non-UTC zone so the round trip is exact regardless of the host.
+  naive value shifted every migrated timestamp by the host's UTC offset.
   """
-  monkeypatch.setenv("TZ", "Asia/Kolkata")
-  time.tzset()
-  try:
-    original_epoch = 1000000.0
+  original_epoch = 1000000.0
+
+  class NaiveLocalDatetime(datetime):
+    """Local naive datetime that rejects a timezone being forced onto it.
+
+    ``replace`` and ``astimezone`` return instances of this subclass, so a
+    migration that pins a timezone before reading the epoch back trips the
+    guard even on a host whose local zone is already UTC and where the
+    resulting epoch would be unchanged.
+    """
+
+    def timestamp(self) -> float:
+      assert (
+          self.tzinfo is None
+      ), f"migration forced {self.tzinfo} onto a naive v0 timestamp"
+      return super().timestamp()
+
+  # The pinned zone is what catches a UTC recomputation that arrives by some
+  # other route, e.g. calendar.timegm(), which the guard above cannot see.
+  with _pinned_local_timezone("Asia/Kolkata"):
     # Exactly what v0.StorageEvent.from_event persisted: naive local time.
-    naive_local_timestamp = datetime.fromtimestamp(original_epoch)
-    assert naive_local_timestamp.tzinfo is None
+    local = datetime.fromtimestamp(original_epoch)
+    naive_local_timestamp = NaiveLocalDatetime(
+        local.year,
+        local.month,
+        local.day,
+        local.hour,
+        local.minute,
+        local.second,
+        local.microsecond,
+    )
 
     event = mfsp._row_to_event({
         "id": "event-naive-timestamp",
@@ -396,8 +442,6 @@ def test_migrate_from_sqlalchemy_pickle_reads_naive_timestamp_as_local(
     })
 
     assert event.timestamp == original_epoch
-  finally:
-    time.tzset()
 
 
 def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(
@@ -528,7 +572,7 @@ def test_migrate_from_sqlalchemy_pickle_allows_unsafe_actions_pickle_when_opted_
 
 
 def test_migrate_from_sqlalchemy_pickle_with_async_driver_urls(tmp_path):
-  """Tests that migration works with async driver URLs (fixes issue #4176).
+  """Tests that migration works with async driver URLs.
 
   Users often provide async driver URLs (e.g., postgresql+asyncpg://) since
   that's what ADK requires at runtime. The migration tool should handle these
@@ -564,7 +608,7 @@ def test_migrate_from_sqlalchemy_pickle_with_async_driver_urls(tmp_path):
   source_session.commit()
   source_session.close()
 
-  # This should NOT raise an error about async drivers (the fix for #4176)
+  # This should NOT raise an error about async drivers.
   mfsp.migrate(source_db_url, dest_db_url)
 
   # Verify destination DB

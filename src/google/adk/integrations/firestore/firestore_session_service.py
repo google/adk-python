@@ -29,6 +29,7 @@ from typing import Iterator
 from typing import Optional
 
 from ...errors.already_exists_error import AlreadyExistsError
+from ...errors.session_not_found_error import SessionNotFoundError
 from ...events.event import Event
 from ...platform import uuid as platform_uuid
 from ...sessions import _session_util
@@ -504,7 +505,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         # 1. Reads
         session_snap = await session_ref.get(transaction=transaction)
         if not session_snap.exists:
-          raise ValueError(f"Session {session.id} not found.")
+          raise SessionNotFoundError(f"Session {session.id} not found.")
 
         session_doc = session_snap.to_dict() or {}
         if session_doc.get("status") == "DELETING":

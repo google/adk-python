@@ -34,6 +34,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
+from ..artifacts.base_artifact_service import BaseArtifactService
 from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .eval_case import get_all_tool_calls
@@ -42,6 +43,7 @@ from .eval_case import Invocation
 from .eval_config import EvalConfig
 from .eval_config import get_eval_metrics_from_config
 from .eval_config import get_evaluation_criteria_or_default
+from .eval_config import LiveModelConfig
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
@@ -115,6 +117,7 @@ class AgentEvaluator:
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
       print_detailed_results: bool = True,
+      artifact_service: Optional[BaseArtifactService] = None,
   ) -> None:
     """Evaluates an agent using the given EvalSet.
 
@@ -132,6 +135,10 @@ class AgentEvaluator:
         than root agent. If left empty or none, then root agent is evaluated.
       print_detailed_results: Whether to print detailed results for each metric
         evaluation.
+      artifact_service: The artifact service used to load artifacts during eval.
+        Pre-load artifacts here and pin each eval case to a session id (via
+        `SessionInput.session_id`) to make them reachable. Defaults to an
+        in-memory service.
     """
     if criteria:
       logger.warning(
@@ -155,6 +162,7 @@ class AgentEvaluator:
     user_simulator_provider = UserSimulatorProvider(
         user_simulator_config=eval_config.user_simulator_config
     )
+    live_model_config = eval_config.live_model_config
 
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
@@ -163,6 +171,8 @@ class AgentEvaluator:
         eval_metrics=eval_metrics,
         num_runs=num_runs,
         user_simulator_provider=user_simulator_provider,
+        live_model_config=live_model_config,
+        artifact_service=artifact_service,
     )
 
     # Step 2: Post-process the results!
@@ -202,6 +212,7 @@ class AgentEvaluator:
       agent_name: Optional[str] = None,
       initial_session_file: Optional[str] = None,
       print_detailed_results: bool = True,
+      artifact_service: Optional[BaseArtifactService] = None,
   ) -> None:
     """Evaluates an Agent given eval data.
 
@@ -220,6 +231,10 @@ class AgentEvaluator:
         needed by all the evals in the eval dataset.
       print_detailed_results: Whether to print detailed results for each metric
         evaluation.
+      artifact_service: The artifact service used to load artifacts during eval.
+        Pre-load artifacts here and pin each eval case to a session id (via
+        `SessionInput.session_id`) to make them reachable. Defaults to an
+        in-memory service.
     """
     test_files = []
     if isinstance(eval_dataset_file_path_or_dir, str) and os.path.isdir(
@@ -247,6 +262,7 @@ class AgentEvaluator:
           num_runs=num_runs,
           agent_name=agent_name,
           print_detailed_results=print_detailed_results,
+          artifact_service=artifact_service,
       )
 
   @staticmethod
@@ -554,6 +570,8 @@ class AgentEvaluator:
       eval_metrics: list[EvalMetric],
       num_runs: int,
       user_simulator_provider: UserSimulatorProvider,
+      live_model_config: Optional[LiveModelConfig] = None,
+      artifact_service: Optional[BaseArtifactService] = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -578,13 +596,22 @@ class AgentEvaluator:
             app_name=app_name, eval_set=eval_set
         ),
         user_simulator_provider=user_simulator_provider,
+        artifact_service=artifact_service,
     )
+
+    if live_model_config:
+      inference_config = InferenceConfig(
+          use_live=True,
+          live_timeout_seconds=live_model_config.timeout_seconds,
+      )
+    else:
+      inference_config = InferenceConfig(use_live=False)
 
     inference_requests = [
         InferenceRequest(
             app_name=app_name,
             eval_set_id=eval_set.eval_set_id,
-            inference_config=InferenceConfig(),
+            inference_config=inference_config,
         )
     ] * num_runs  # Repeat inference request num_runs times.
 

@@ -27,6 +27,7 @@ from google.adk.evaluation.base_eval_service import InferenceResult
 from google.adk.evaluation.base_eval_service import InferenceStatus
 from google.adk.evaluation.conversation_scenarios import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_case import SessionInput
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
 from google.adk.evaluation.eval_metrics import Interval
@@ -48,6 +49,8 @@ from google.adk.evaluation.local_eval_service import _copy_eval_case_rubrics_to_
 from google.adk.evaluation.local_eval_service import _copy_invocation_rubrics_to_actual_invocations
 from google.adk.evaluation.local_eval_service import LocalEvalService
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
+from google.adk.evaluation.simulation.user_simulator import NextUserMessage
+from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.models.registry import LLMRegistry
 from google.genai import types as genai_types
 import pytest
@@ -947,3 +950,117 @@ async def test_perform_inference_single_eval_item_non_live(
       artifact_service=eval_service._artifact_service,
       memory_service=eval_service._memory_service,
   )
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_single_eval_item_uses_session_input_id(
+    eval_service, dummy_agent, mocker
+):
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[],
+      session_input=SessionInput(
+          app_name="test_app", user_id="u", session_id="fixed"
+      ),
+  )
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent"
+  )
+  mock_generate.return_value = []
+
+  eval_service._session_id_supplier = mocker.MagicMock(
+      return_value="test_session_id"
+  )
+  mock_user_sim = mocker.MagicMock()
+  eval_service._user_simulator_provider.provide = mocker.MagicMock(
+      return_value=mock_user_sim
+  )
+
+  inference_result = await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_case,
+      root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
+  )
+
+  eval_service._session_id_supplier.assert_not_called()
+  assert inference_result.session_id == "fixed"
+  # The pinned id travels only inside `initial_session`.
+  mock_generate.assert_called_once_with(
+      root_agent=dummy_agent,
+      user_simulator=mock_user_sim,
+      initial_session=eval_case.session_input,
+      session_id=None,
+      session_service=eval_service._session_service,
+      artifact_service=eval_service._artifact_service,
+      memory_service=eval_service._memory_service,
+  )
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_pinned_session_id_across_runs(
+    eval_service, mocker
+):
+  """A pinned session_id survives repeated runs and keeps artifacts reachable.
+
+  Reusing one eval service across runs (as num_runs > 1 does) must not collide
+  on the pinned session_id, and an artifact pre-loaded under it stays loadable.
+  """
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[],
+      session_input=SessionInput(
+          app_name="test_app", user_id="u", session_id="fixed"
+      ),
+  )
+  eval_service._eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="es1", eval_cases=[eval_case]
+  )
+
+  await eval_service._artifact_service.save_artifact(
+      app_name="test_app",
+      user_id="u",
+      session_id="fixed",
+      filename="doc.txt",
+      artifact=genai_types.Part(text="hello"),
+  )
+
+  # Stop the user simulator immediately and mock the Runner so no model runs;
+  # this leaves the real session_service create/delete path under test.
+  mock_user_sim = mocker.MagicMock()
+  mock_user_sim.get_next_user_message = mocker.AsyncMock(
+      return_value=NextUserMessage(
+          status=UserSimulatorStatus.STOP_SIGNAL_DETECTED
+      )
+  )
+  eval_service._user_simulator_provider.provide = mocker.MagicMock(
+      return_value=mock_user_sim
+  )
+  mock_runner = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.Runner"
+  ).return_value
+  mock_runner.__aenter__ = mocker.AsyncMock(return_value=mock_runner)
+  mock_runner.__aexit__ = mocker.AsyncMock(return_value=None)
+
+  results = []
+  for _ in range(2):  # Mirrors the default num_runs=2.
+    async for inference_result in eval_service.perform_inference(
+        inference_request=InferenceRequest(
+            app_name="test_app",
+            eval_set_id="es1",
+            inference_config=InferenceConfig(parallelism=1),
+        )
+    ):
+      results.append(inference_result)
+
+  assert len(results) == 2
+  assert all(r.status == InferenceStatus.SUCCESS for r in results)
+  assert all(r.session_id == "fixed" for r in results)
+
+  loaded = await eval_service._artifact_service.load_artifact(
+      app_name="test_app", user_id="u", session_id="fixed", filename="doc.txt"
+  )
+  assert loaded is not None
+  assert loaded.text == "hello"

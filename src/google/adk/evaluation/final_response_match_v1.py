@@ -15,11 +15,13 @@
 from __future__ import annotations
 
 from typing import Optional
+import unicodedata
 
 from google.genai import types as genai_types
 from typing_extensions import override
 
 from ..dependencies.rouge_scorer import rouge_scorer
+from ..dependencies.rouge_scorer import tokenizers
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
@@ -96,6 +98,83 @@ def _get_eval_status(score: float, threshold: float) -> EvalStatus:
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
+def _is_cjk(char: str) -> bool:
+  """Checks if a character belongs to CJK (Chinese, Japanese, Korean) scripts."""
+  code = ord(char)
+  return (
+      0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
+      or 0x3040 <= code <= 0x309F  # Hiragana
+      or 0x30A0 <= code <= 0x30FF  # Katakana
+      or 0xAC00 <= code <= 0xD7AF  # Hangul Syllables
+  )
+
+
+def _is_non_spaced_script(char: str) -> bool:
+  """Checks if a character belongs to non-spaced scripts like Thai, Lao, Khmer, Myanmar."""
+  code = ord(char)
+  return (
+      0x0E00 <= code <= 0x0E7F  # Thai
+      or 0x0E80 <= code <= 0x0EFF  # Lao
+      or 0x1780 <= code <= 0x17FF  # Khmer
+      or 0x1000 <= code <= 0x109F  # Myanmar
+  )
+
+
+def _is_word_char(char: str) -> bool:
+  # Combining marks (e.g. Thai vowel signs, Devanagari matras) are not
+  # alphanumeric on their own but must stay attached to their base character.
+  return char.isalnum() or unicodedata.category(char).startswith("M")
+
+
+class _UnicodeAwareTokenizer:
+  """Tokenizer that keeps non-ASCII word characters and splits CJK/non-spaced characters.
+
+  The default rouge_score tokenizer discards any character outside [a-z0-9],
+  so text in non-Latin scripts (e.g. Thai, Chinese, Arabic) tokenizes to
+  nothing and always scores 0. This tokenizer keeps Unicode word characters,
+  normalizes Unicode variants (NFKC), splits non-spaced CJK characters at the
+  character level, bundles non-spaced scripts by grapheme clusters (base
+  consonant + attached combining marks), and delegates ASCII tokens to the
+  default tokenizer.
+
+  Note:
+      Languages written without spaces (e.g. Thai, Chinese, Japanese) are
+      tokenized at the character or grapheme cluster level rather than at true
+      word granularity, since dictionary-based word segmentation requires heavy
+      external NLP dependencies. As a result, ROUGE-1 unigram overlap for these
+      languages operates on character/grapheme cluster units rather than full words.
+  """
+
+  def __init__(self, use_stemmer: bool = False):
+    self._default_tokenizer = tokenizers.DefaultTokenizer(use_stemmer)
+
+  def tokenize(self, text: str) -> list[str]:
+    text = unicodedata.normalize("NFKC", text).lower()
+    processed_chars = []
+    for char in text:
+      if _is_cjk(char):
+        processed_chars.extend([" ", char, " "])
+      elif _is_non_spaced_script(char):
+        if unicodedata.category(char).startswith("M"):
+          # Combining mark (vowel/tone mark): attach directly to previous base consonant!
+          processed_chars.append(char)
+        else:
+          # Base consonant: start a new grapheme cluster boundary by prepending a space!
+          processed_chars.extend([" ", char])
+      elif _is_word_char(char):
+        processed_chars.append(char)
+      else:
+        processed_chars.append(" ")
+    words = "".join(processed_chars).split()
+    tokens = []
+    for word in words:
+      if word.isascii():
+        tokens.extend(self._default_tokenizer.tokenize(word))
+      else:
+        tokens.append(word)
+    return tokens
+
+
 def _calculate_rouge_1_scores(candidate: str, reference: str):
   """Calculates the ROUGE-1 score between a candidate and reference text.
 
@@ -114,7 +193,9 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  scorer = rouge_scorer.RougeScorer(
+      ["rouge1"], tokenizer=_UnicodeAwareTokenizer(use_stemmer=True)
+  )
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.

@@ -49,6 +49,7 @@ from ..a2a.agent.config import A2aRemoteAgentConfig
 from ..a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..a2a.agent.interceptors.new_integration_extension import _new_integration_extension_interceptor
 from ..a2a.agent.utils import execute_after_request_interceptors
+from ..a2a.agent.utils import execute_before_card_request_interceptors
 from ..a2a.agent.utils import execute_before_request_interceptors
 from ..a2a.converters.event_converter import convert_a2a_message_to_event
 from ..a2a.converters.event_converter import convert_a2a_task_to_event
@@ -68,6 +69,7 @@ from ..events.event import Event
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.contents import _present_other_agent_message
 from ..flows.llm_flows.functions import find_matching_function_call
+from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 
 __all__ = [
@@ -237,7 +239,9 @@ class RemoteA2aAgent(BaseAgent):
       )
     return self._httpx_client
 
-  async def _resolve_agent_card_from_url(self, url: str) -> AgentCard:
+  async def _resolve_agent_card_from_url(
+      self, url: str, ctx: Optional[InvocationContext] = None
+  ) -> AgentCard:
     """Resolve agent card from URL."""
     try:
       parsed_url = urlparse(url)
@@ -252,8 +256,12 @@ class RemoteA2aAgent(BaseAgent):
           httpx_client=httpx_client,
           base_url=base_url,
       )
+      http_kwargs = await execute_before_card_request_interceptors(
+          self._config.card_request_interceptors, ctx
+      )
       return await resolver.get_agent_card(
-          relative_card_path=relative_card_path
+          relative_card_path=relative_card_path,
+          http_kwargs=http_kwargs,
       )
     except Exception as e:
       raise AgentCardResolutionError(
@@ -281,12 +289,16 @@ class RemoteA2aAgent(BaseAgent):
           f"Failed to resolve AgentCard from file {file_path}: {e}"
       ) from e
 
-  async def _resolve_agent_card(self) -> AgentCard:
+  async def _resolve_agent_card(
+      self, ctx: Optional[InvocationContext] = None
+  ) -> AgentCard:
     """Resolve agent card from source."""
 
     # Determine if source is URL or file path
     if self._agent_card_source.startswith(("http://", "https://")):
-      return await self._resolve_agent_card_from_url(self._agent_card_source)
+      return await self._resolve_agent_card_from_url(
+          self._agent_card_source, ctx
+      )
     else:
       return await self._resolve_agent_card_from_file(self._agent_card_source)
 
@@ -308,17 +320,47 @@ class RemoteA2aAgent(BaseAgent):
           f"Invalid RPC URL in agent card: {card_url}, error: {e}"
       ) from e
 
-  async def _ensure_resolved(self) -> None:
-    """Ensures agent card is resolved, RPC URL is determined, and A2A client is initialized."""
-    if self._is_resolved and self._a2a_client:
-      return
+  async def _ensure_resolved(
+      self, ctx: Optional[InvocationContext] = None
+  ) -> A2AClient:
+    """Resolves the agent card and returns the A2A client for this invocation."""
+    # Per the A2A spec, the authenticated (extended) agent card is scoped to a
+    # single authenticated session: "Clients retrieving this extended card
+    # SHOULD replace their cached public Agent Card ... for the duration of
+    # their authenticated session"
+    # (https://a2a-protocol.org/latest/specification/#3111-get-extended-agent-card).
+    # So when card request interceptors are configured for a URL-based card,
+    # resolve the card (and build the client) per invocation using the current
+    # ctx, and keep them local rather than caching on shared instance state.
+    # This prevents one session's authenticated card from leaking into other
+    # sessions. A None ctx means we cannot derive per-session auth, so fall
+    # back to the shared cached path.
+    per_invocation_card = bool(
+        self._config.card_request_interceptors
+        and self._agent_card_source
+        and ctx is not None
+    )
+
+    if not per_invocation_card and self._is_resolved and self._a2a_client:
+      return self._a2a_client
 
     try:
+      if per_invocation_card:
+        # Build a per-invocation client; never cached on shared state.
+        agent_card = await self._resolve_agent_card(ctx)
+        await self._validate_agent_card(agent_card)
+        await self._ensure_httpx_client()
+        if not self._a2a_client_factory:
+          raise ValueError("A2A client factory is not available")
+        client = self._a2a_client_factory.create(agent_card)
+        logger.info("Resolved remote A2A agent per invocation: %s", self.name)
+        return client
+
+      # Shared (cached) resolution path.
       if not self._agent_card:
 
         # Resolve agent card if needed
-        if not self._agent_card:
-          self._agent_card = await self._resolve_agent_card()
+        self._agent_card = await self._resolve_agent_card(ctx)
 
         # Validate agent card
         await self._validate_agent_card(self._agent_card)
@@ -336,6 +378,7 @@ class RemoteA2aAgent(BaseAgent):
 
       self._is_resolved = True
       logger.info("Successfully resolved remote A2A agent: %s", self.name)
+      return self._a2a_client
 
     except Exception as e:
       logger.error("Failed to resolve remote A2A agent %s: %s", self.name, e)
@@ -687,7 +730,7 @@ class RemoteA2aAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     """Core implementation for async agent execution."""
     try:
-      await self._ensure_resolved()
+      a2a_client = await self._ensure_resolved(ctx)
     except Exception as e:
       yield Event(
           author=self.name,
@@ -746,55 +789,58 @@ class RemoteA2aAgent(BaseAgent):
       # status/artifact updates are aggregated into a running task (matching the
       # 0.3.x client behavior).
       normalize_stream_item = _compat.make_stream_normalizer()
-      async for raw_a2a_response in _compat.send_message(
-          self._a2a_client,
-          request=a2a_request,
-          request_metadata=parameters.request_metadata,
-          context=parameters.client_call_context,
-      ):
-        a2a_response = normalize_stream_item(raw_a2a_response)
-        logger.debug(build_a2a_response_log(a2a_response))
-
-        metadata = None
-        if isinstance(a2a_response, tuple):
-          task = a2a_response[0]
-          if task:
-            metadata = task.metadata
-        else:
-          metadata = a2a_response.metadata
-
-        if metadata and _compat.metadata_get(
-            metadata, _NEW_A2A_ADK_INTEGRATION_EXTENSION
-        ):
-          event = await self._handle_a2a_response_v2(a2a_response, ctx)
-        else:
-          event = await self._handle_a2a_response(a2a_response, ctx)
-        if not event:
-          continue
-
-        event = await execute_after_request_interceptors(
-            self._config.request_interceptors, ctx, a2a_response, event
-        )
-        if not event:
-          continue
-
-        # Add metadata about the request and response
-        event.custom_metadata = event.custom_metadata or {}
-        event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
-            _compat.a2a_to_dict(a2a_request)
-        )
-        # If the response is a ClientEvent, record the task state; otherwise,
-        # record the message object.
-        if isinstance(a2a_response, tuple):
-          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-              _compat.a2a_to_dict(a2a_response[0])
+      async with Aclosing(
+          _compat.send_message(
+              a2a_client,
+              request=a2a_request,
+              request_metadata=parameters.request_metadata,
+              context=parameters.client_call_context,
           )
-        else:
-          event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-              _compat.a2a_to_dict(a2a_response)
-          )
+      ) as agen:
+        async for raw_a2a_response in agen:
+          a2a_response = normalize_stream_item(raw_a2a_response)
+          logger.debug(build_a2a_response_log(a2a_response))
 
-        yield event
+          metadata = None
+          if isinstance(a2a_response, tuple):
+            task = a2a_response[0]
+            if task:
+              metadata = task.metadata
+          else:
+            metadata = a2a_response.metadata
+
+          if metadata and _compat.metadata_get(
+              metadata, _NEW_A2A_ADK_INTEGRATION_EXTENSION
+          ):
+            event = await self._handle_a2a_response_v2(a2a_response, ctx)
+          else:
+            event = await self._handle_a2a_response(a2a_response, ctx)
+          if not event:
+            continue
+
+          event = await execute_after_request_interceptors(
+              self._config.request_interceptors, ctx, a2a_response, event
+          )
+          if not event:
+            continue
+
+          # Add metadata about the request and response
+          event.custom_metadata = event.custom_metadata or {}
+          event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
+              _compat.a2a_to_dict(a2a_request)
+          )
+          # If the response is a ClientEvent, record the task state; otherwise,
+          # record the message object.
+          if isinstance(a2a_response, tuple):
+            event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                _compat.a2a_to_dict(a2a_response[0])
+            )
+          else:
+            event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                _compat.a2a_to_dict(a2a_response)
+            )
+
+          yield event
 
     except _compat.A2A_HTTP_ERRORS as e:
       error_message = f"A2A request failed: {e}"
@@ -835,6 +881,94 @@ class RemoteA2aAgent(BaseAgent):
     )
     # This makes the function into an async generator but the yield is still unreachable
     yield
+
+  # Task states that represent in-progress or input-awaiting work.
+  # Events stamped with one of these states carry intermediate or
+  # waiting-for-input content, never the final answer, so they must
+  # not be promoted to the workflow node's output.
+  _NON_FINAL_TASK_STATES = frozenset(
+      {"submitted", "working", "input-required", "auth-required", "unknown"}
+  )
+
+  async def _run_impl(
+      self,
+      *,
+      ctx: Any,
+      node_input: Any,
+  ) -> AsyncGenerator[Any, None]:
+    """Runs the agent as a workflow node.
+
+    Promotes textual response content to ``event.output`` so the
+    workflow scheduler propagates it downstream. Without this, a
+    ``JoinNode`` that aggregates parallel ``RemoteA2aAgent`` predecessors
+    sees ``None`` for each predecessor because ``BaseAgent._run_impl``
+    never sets ``event.output`` and ``RemoteA2aAgent`` carries its
+    response only in ``event.content``.
+
+    A node may produce at most one output (``Context.output`` raises
+    ``ValueError`` on a second assignment), so promotion is gated to
+    the first terminal A2A event of the run. Non-final task states and
+    later events are passed through untouched.
+    """
+    promoted = False
+    async for event in super()._run_impl(ctx=ctx, node_input=node_input):
+      if not promoted and self._promote_response_to_output(
+          event, ctx.node_path
+      ):
+        promoted = True
+      yield event
+
+  def _promote_response_to_output(self, event: Event, node_path: str) -> bool:
+    """Sets ``event.output`` from non-thought text parts, if eligible.
+
+    Returns True iff this call assigned ``event.output``. Skips:
+
+    * partial events and events whose ``event.output`` is already set;
+    * events that do not belong to this node. ``BaseAgent._run_impl``
+      stamps ``event.node_info.path`` with this node's path only for the
+      agent's own events, so matching on the path uniquely identifies the
+      node in the workflow hierarchy even when agent names collide across
+      branches;
+    * events whose content carries only thoughts, function calls, or
+      function responses (e.g. ``input_required`` mock function calls);
+    * events whose A2A task state is non-final (``submitted``,
+      ``working``, ``input-required``, ``auth-required``, ``unknown``).
+      Streaming converters do not always mark ``working`` text as
+      ``thought=True``, so the task-state check guards against
+      promoting an intermediate streaming chunk and then raising on the
+      true final event.
+    """
+    if event.partial or event.output is not None:
+      return False
+    if event.node_info.path != node_path:
+      return False
+    if not event.content or not event.content.parts:
+      return False
+
+    response_meta = (event.custom_metadata or {}).get(
+        A2A_METADATA_PREFIX + "response"
+    )
+    if isinstance(response_meta, dict):
+      status = response_meta.get("status")
+      if (
+          isinstance(status, dict)
+          and status.get("state") in self._NON_FINAL_TASK_STATES
+      ):
+        return False
+
+    text_chunks = [
+        part.text
+        for part in event.content.parts
+        if part.text
+        and not part.thought
+        and not part.function_call
+        and not part.function_response
+    ]
+    if not text_chunks:
+      return False
+    event.output = "".join(text_chunks)
+    event.node_info.message_as_output = True
+    return True
 
   async def cleanup(self) -> None:
     """Clean up resources, especially the HTTP client if owned by this agent."""

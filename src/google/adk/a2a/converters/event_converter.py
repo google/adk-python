@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 import logging
 from typing import Any
 from typing import Dict
@@ -95,6 +96,14 @@ def _serialize_metadata_value(value: Any) -> str:
     except Exception as e:
       logger.warning("Failed to serialize metadata value: %s", e)
       return str(value)
+
+  if isinstance(value, (dict, list)):
+    try:
+      return json.dumps(value)
+    except Exception as e:
+      logger.warning("Failed to serialize collection to JSON: %s", e)
+      return str(value)
+
   return str(value)
 
 
@@ -245,9 +254,10 @@ def convert_a2a_task_to_event(
     # Convert message if available
     if message:
       try:
-        return convert_a2a_message_to_event(
+        event: Event = convert_a2a_message_to_event(
             message, author, invocation_context, part_converter=part_converter
         )
+        return event
       except Exception as e:
         logger.error("Failed to convert A2A task message to event: %s", e)
         raise RuntimeError(f"Failed to convert task message: {e}") from e
@@ -554,7 +564,7 @@ def convert_event_to_a2a_events(
   if not invocation_context:
     raise ValueError("Invocation context cannot be None")
 
-  a2a_events = []
+  a2a_events: List[A2AEvent] = []
 
   try:
     # Handle error scenarios

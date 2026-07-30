@@ -871,7 +871,8 @@ class AnthropicLlm(BaseLlm):
 
       elif event.type == "message_delta":
         output_tokens = event.usage.output_tokens
-        stop_reason = event.delta.stop_reason
+        if event.delta and event.delta.stop_reason:
+          stop_reason = event.delta.stop_reason
 
     # Build the final aggregated response with all content.
     all_parts: list[types.Part] = []
