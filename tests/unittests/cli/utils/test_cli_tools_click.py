@@ -140,7 +140,7 @@ def test_cli_telemetry_captures_subcommand_flags(
 
   # Mock telemetry consent to True so collector gets initialized
   monkeypatch.setattr(
-      "google.adk.utils._telemetry_config.read_telemetry_consent",
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
       lambda: True,
   )
 
@@ -158,10 +158,11 @@ def test_cli_telemetry_captures_subcommand_flags(
       str(temp_queue),
   )
 
-  # Re-initialize singleton metrics collector instance
+  # Redirect sessions dir to temporary path
+  temp_sessions = tmp_path / "telemetry_sessions"
   monkeypatch.setattr(
-      "google.adk.cli._telemetry._metrics_collector.MetricsCollector._instance",
-      None,
+      "google.adk.cli._telemetry._constants.TELEMETRY_SESSIONS_DIR",
+      str(temp_sessions),
   )
 
   app_dir = tmp_path / "new_app"

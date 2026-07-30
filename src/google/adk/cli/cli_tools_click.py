@@ -303,8 +303,9 @@ class TelemetryGroup(click.Group):
           except Exception:  # pylint: disable=broad-except
             pass
 
-          collector = MetricsCollector.get_collector()
-          if collector:
+          # Check consent before instantiating MetricsCollector
+          if read_telemetry_consent() is True:
+            collector = MetricsCollector()
             with sub_ctx if sub_ctx else contextlib.nullcontext():
               collector.record_command_run(
                   command=command,

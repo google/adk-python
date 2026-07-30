@@ -24,15 +24,16 @@ import urllib.error
 import urllib.request
 import uuid
 
+try:
+  from google.adk.cli._telemetry import _constants
+except ImportError:
+  import _constants  # type: ignore[no-redef]
+
 # Exponential backoff retry intervals (in seconds) for connection retries.
 _RETRY_BACKOFF_WAIT_TIMES = (1, 2)
 # Max network connection and read timeout (in seconds) for HTTP requests.
 _TIMEOUT_IN_SEC = 5
 
-try:
-  from google.adk.cli._telemetry import _constants
-except ImportError:
-  import _constants  # type: ignore[no-redef]
 
 # Clearcut registration details for Google ADK logs.
 _LOG_SOURCE_INT = 3007

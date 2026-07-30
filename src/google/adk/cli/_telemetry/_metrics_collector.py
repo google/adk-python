@@ -31,8 +31,10 @@ import uuid
 
 import click
 from google.adk.cli._telemetry import _constants
-from google.adk.utils import _telemetry_config
 import google.adk.version
+
+# 1 hour of quiet time marks the end of a logical work session
+_SESSION_INACTIVITY_TIMEOUT_SECONDS = 3600
 
 # Constants protecting telemetry storage and preventing client/endpoint abuse.
 # Prevents haywire scripts or malicious inputs from flooding log files
@@ -45,20 +47,87 @@ _MAX_FLAGS_COUNT = 50  # Max number of options recorded.
 logger = logging.getLogger("google_adk." + __name__)
 
 
+def _prune_expired_sessions() -> None:
+  """Prunes session files modified more than 1 hour ago."""
+  if not os.path.exists(_constants.TELEMETRY_SESSIONS_DIR):
+    return
+  current_time = time.time()
+  try:
+    for filename in os.listdir(_constants.TELEMETRY_SESSIONS_DIR):
+      file_path = os.path.join(_constants.TELEMETRY_SESSIONS_DIR, filename)
+      try:
+        if filename.endswith(".json"):
+          try:
+            with open(file_path, "r", encoding="utf-8") as f:
+              info = json.load(f)
+              last_activity = info.get("last_activity", 0)
+          except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            # If the JSON file is unreadable/corrupted, prune it.
+            last_activity = 0
+          if (
+              current_time - last_activity
+          ) > _SESSION_INACTIVITY_TIMEOUT_SECONDS:
+            os.remove(file_path)
+        elif filename.endswith(".tmp"):
+          os.remove(file_path)
+      except OSError:
+        pass
+  except OSError:
+    pass
+
+
+def _load_session_state() -> tuple[str, int]:
+  """Retrieves the session state, resetting it if idle for over an hour."""
+  session_file = os.path.join(
+      _constants.TELEMETRY_SESSIONS_DIR, f"{os.getppid()}.json"
+  )
+  try:
+    with open(session_file, "r", encoding="utf-8") as f:
+      info = json.load(f)
+      if isinstance(info, dict):
+        last_activity = info.get("last_activity", 0)
+        if (time.time() - last_activity) < _SESSION_INACTIVITY_TIMEOUT_SECONDS:
+          session_id = info.get("session_id")
+          if not session_id:
+            return str(uuid.uuid4()), 0
+          return session_id, info.get("sequence_number", 0)
+  except (OSError, json.JSONDecodeError, KeyError, TypeError):
+    pass
+  return str(uuid.uuid4()), 0
+
+
+def _write_session_state(session_id: str, sequence_number: int) -> None:
+  """Saves the current session metadata back to local disk storage."""
+  _prune_expired_sessions()
+  session_file = os.path.join(
+      _constants.TELEMETRY_SESSIONS_DIR, f"{os.getppid()}.json"
+  )
+  temp_file = None
+  try:
+    info = {
+        "session_id": session_id,
+        "sequence_number": sequence_number,
+        "last_activity": time.time(),
+    }
+
+    temp_file = f"{session_file}.{os.getpid()}.tmp"
+    os.makedirs(os.path.dirname(session_file), exist_ok=True)
+    with open(temp_file, "w", encoding="utf-8") as f:
+      json.dump(info, f)
+    os.replace(temp_file, session_file)
+    temp_file = None
+  except OSError:
+    pass
+  finally:
+    if temp_file is not None:
+      try:
+        os.remove(temp_file)
+      except OSError:
+        pass
+
+
 class MetricsCollector:
-  """Singleton for collecting and reporting ADK CLI telemetry."""
-
-  _instance = None
-  _lock = threading.Lock()
-
-  @classmethod
-  def get_collector(cls) -> Optional["MetricsCollector"]:
-    if _telemetry_config.read_telemetry_consent() is not True:
-      return None
-    with cls._lock:
-      if not cls._instance:
-        cls._instance = cls()
-    return cls._instance
+  """Collector for capturing and queueing ADK CLI telemetry."""
 
   @staticmethod
   def _is_rate_limited() -> bool:
@@ -75,10 +144,11 @@ class MetricsCollector:
       return True
 
   def __init__(self) -> None:
-    # Unique UUID per CLI run to group all events in this session.
-    self._session_id = str(uuid.uuid4())
-    # Monotonically increasing counter to order events within this session.
-    self._sequence_number = 0
+    self._lock = threading.Lock()
+    # Load session metadata matching parent terminal process
+    # We generate an ephemeral session ID and sequence number to group commands
+    # executed in the same terminal session for insightful metrics analytics.
+    self._session_id, self._sequence_number = _load_session_state()
 
     self._environment = {
         "os_type": platform.system().lower(),
@@ -87,14 +157,15 @@ class MetricsCollector:
         "adk_version": google.adk.version.__version__,
     }
     logger.debug(
-        "Initialized ADK metrics collector with session %s",
+        "Initialized ADK metrics collector with session %s (seq %d)",
         self._session_id,
+        self._sequence_number,
     )
     atexit.register(self.shutdown)
 
   @staticmethod
   def _gather_flags_from_click() -> Optional[List[str]]:
-    """Gathers used flags and argument names from Click context."""
+    """Gathers used flags and positional argument names from Click context."""
     ctx = click.get_current_context(silent=True)
     if not ctx:
       return None
@@ -125,9 +196,11 @@ class MetricsCollector:
       duration_ms: int = 0,
       exception_type: str = "",
   ) -> None:
-    """Records a CLI command execution and appends to local disk queue."""
-    self._sequence_number += 1
-
+    """Records a command execution and safely appends to local disk queue."""
+    with self._lock:
+      self._sequence_number += 1
+      # Save the updated sequence number back to the master file
+      _write_session_state(self._session_id, self._sequence_number)
     # Enforce string length constraints
     command = command[:_MAX_STRING_LENGTH] if command else ""
     subcommand = subcommand[:_MAX_STRING_LENGTH] if subcommand else ""

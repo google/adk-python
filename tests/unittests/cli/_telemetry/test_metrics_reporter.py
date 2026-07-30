@@ -23,6 +23,7 @@ import unittest
 from unittest import mock
 import urllib.error
 
+# Import the module directly from the namespace package location
 from google.adk.cli._telemetry import _metrics_reporter as metrics_reporter
 
 # Create a temporary directory for tests to avoid writing to user home directory
@@ -37,7 +38,8 @@ class CliMetricsReporterTest(unittest.TestCase):
   def setUp(self):
     super().setUp()
 
-    # Patch paths per test to prevent leakage across modules
+    # Patch paths per test to prevent leakage and global pollution across
+    # modules.
     self.queue_patcher = mock.patch.object(
         metrics_reporter._constants, "QUEUE_FILE", _QUEUE_FILE
     )

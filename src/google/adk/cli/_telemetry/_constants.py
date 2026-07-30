@@ -22,3 +22,5 @@ import os
 LOCK_FILE = os.path.expanduser("~/.adk/clearcut_lock")
 # Local JSONL file where command metric logs are queued before flushing.
 QUEUE_FILE = os.path.expanduser("~/.adk/telemetry_queue.jsonl")
+# Local directory mapping terminal parent PIDs to their active sessions.
+TELEMETRY_SESSIONS_DIR = os.path.expanduser("~/.adk/telemetry_sessions")
