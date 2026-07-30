@@ -504,7 +504,7 @@ async def _execute_single_function_call_async(
     else:
       raise tool_error
 
-  async def _run_with_trace():
+  async def _run_with_trace() -> Optional[Event]:
     nonlocal function_args
 
     # Step 1: Check if plugin before_tool_callback overrides the function
@@ -733,7 +733,7 @@ async def _execute_single_function_call_live(
       )
     raise tool_error
 
-  async def _run_with_trace():
+  async def _run_with_trace() -> Optional[Event]:
     nonlocal function_args
 
     # Do not use "args" as the variable name, because it is a reserved keyword
