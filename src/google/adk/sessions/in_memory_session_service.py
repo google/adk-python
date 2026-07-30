@@ -24,6 +24,7 @@ from typing_extensions import override
 
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from ..features import FeatureName
 from ..features import is_feature_enabled
@@ -311,6 +312,21 @@ class InMemorySessionService(BaseSessionService):
       return
 
     self.sessions[app_name][user_id].pop(session_id)
+
+  @override
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: str
+  ) -> Session:
+    if (
+        app_name not in self.sessions
+        or user_id not in self.sessions[app_name]
+        or session_id not in self.sessions[app_name][user_id]
+    ):
+      raise SessionNotFoundError(f'Session {session_id} not found.')
+    session = self.sessions[app_name][user_id][session_id]
+    session.title = title
+    copied_session = _copy_session(session)
+    return self._merge_state(app_name, user_id, copied_session)
 
   @override
   async def get_user_state(

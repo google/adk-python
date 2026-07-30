@@ -1542,3 +1542,13 @@ async def test_get_session_strips_full_resource_name(
   mock_api_client_instance.agent_engines.sessions.get.assert_called_once_with(
       name='reasoningEngines/123/sessions/session-123'
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_update_session_title_not_supported():
+  session_service = mock_vertex_ai_session_service()
+  with pytest.raises(NotImplementedError, match='Vertex AI Agent Engine'):
+    await session_service.update_session_title(
+        app_name='123', user_id='user', session_id='1', title='My title'
+    )

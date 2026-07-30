@@ -1489,6 +1489,40 @@ def test_patch_session_not_found(test_app, test_session_info):
   logger.info("Patch session not found test passed")
 
 
+def test_update_session_title(test_app, create_test_session):
+  """Test patching a session title via the PATCH session endpoint."""
+  info = create_test_session
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}"
+
+  response = test_app.patch(url, json={"title": "My session title"})
+  assert response.status_code == 200
+  patched_session = response.json()
+  assert patched_session["id"] == info["session_id"]
+  assert patched_session["title"] == "My session title"
+
+  # Verify the title persisted.
+  response = test_app.get(url)
+  assert response.status_code == 200
+  assert response.json()["title"] == "My session title"
+
+
+def test_update_session_title_only_adds_no_event(test_app, create_test_session):
+  """A title-only patch sets the title without recording a state event."""
+  info = create_test_session
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}"
+
+  original = test_app.get(url).json()
+  original_event_count = len(original.get("events", []))
+
+  response = test_app.patch(url, json={"title": "Just a title"})
+  assert response.status_code == 200
+
+  retrieved = test_app.get(url).json()
+  assert retrieved["title"] == "Just a title"
+  # A title-only patch must not append a state-change event.
+  assert len(retrieved.get("events", [])) == original_event_count
+
+
 def test_agent_run(test_app, create_test_session):
   """Test running an agent with a message."""
   info = create_test_session
