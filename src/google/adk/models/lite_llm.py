@@ -2419,6 +2419,7 @@ async def _get_completion_inputs(
         "max_output_tokens",
         "top_p",
         "top_k",
+        "seed",
         "stop_sequences",
         "presence_penalty",
         "frequency_penalty",

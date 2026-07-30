@@ -4758,6 +4758,7 @@ async def test_get_completion_inputs_generation_params():
           max_output_tokens=123,
           top_p=0.88,
           top_k=7,
+          seed=42,
           stop_sequences=["foo", "bar"],
           presence_penalty=0.1,
           frequency_penalty=0.2,
@@ -4771,6 +4772,7 @@ async def test_get_completion_inputs_generation_params():
   assert generation_params["max_completion_tokens"] == 123
   assert generation_params["top_p"] == 0.88
   assert generation_params["top_k"] == 7
+  assert generation_params["seed"] == 42
   assert generation_params["stop"] == ["foo", "bar"]
   assert generation_params["presence_penalty"] == 0.1
   assert generation_params["frequency_penalty"] == 0.2
