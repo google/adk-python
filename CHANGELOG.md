@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.37.0](https://github.com/google/adk-python/compare/v1.36.2...v1.37.0) (2026-07-30)
+
+
+### Features
+
+* **live:** Support asynchronous non-blocking tools ([#6522](https://github.com/google/adk-python/issues/6522)) ([c299420](https://github.com/google/adk-python/commit/c299420531158e2b851f87d1bf927a147c8c259e))
+
 ## [1.36.2](https://github.com/google/adk-python/compare/v1.36.1...v1.36.2) (2026-07-21)
 
 
