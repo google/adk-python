@@ -32,7 +32,6 @@ import logging
 from typing import Final
 from typing import TYPE_CHECKING
 
-from google.genai import errors as genai_errors
 from google.genai import types
 from google.genai.models import Models
 from opentelemetry import _logs
@@ -123,6 +122,8 @@ def resolve_error_type(error: BaseException) -> str:
   SDK collapses every 4xx into ``ClientError`` and every 5xx into
   ``ServerError``); finally the class name.
   """
+  from google.genai import errors as genai_errors
+
   custom_error_type = getattr(error, "error_type", None)
   if custom_error_type is not None:
     return str(custom_error_type)
@@ -141,9 +142,8 @@ def trace_agent_invocation(
     agent: Agent from which attributes are gathered.
     ctx: InvocationContext from which attributes are gathered.
 
-  Inference related fields are not set, due to their planned removal from
-    invoke_agent span:
-  https://github.com/open-telemetry/semantic-conventions/issues/2632
+  Inference related fields are not set, because the OpenTelemetry semantic
+    conventions plan to remove them from the invoke_agent span.
 
   `gen_ai.agent.id` is not set because currently it's unclear what attributes
     this field should have, specifically:
@@ -205,6 +205,12 @@ def trace_tool_call(
 
   # e.g. FunctionTool
   span.set_attribute(GEN_AI_TOOL_TYPE, tool.__class__.__name__)
+
+  if (
+      invocation_context is not None
+      and (agent := invocation_context.agent) is not None
+  ):
+    span.set_attribute(GEN_AI_AGENT_NAME, agent.name)
 
   if error is not None:
     span.set_attribute(ERROR_TYPE, resolve_error_type(error))
@@ -289,7 +295,8 @@ def trace_merged_tool_calls(
   span.set_attribute(GEN_AI_TOOL_DESCRIPTION, "(merged tools)")
   span.set_attribute(GEN_AI_TOOL_CALL_ID, response_event_id)
 
-  # TODO(b/441461932): See if these are still necessary
+  # Pending cleanup: drop these placeholder attributes once no downstream
+  # consumer reads them.
   span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
   try:
@@ -530,10 +537,19 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
           exclude_none=True,
           exclude={
               "response_schema": True,
+              # `http_options` carries caller-supplied credentials: `headers`
+              # commonly holds an Authorization bearer token, and
+              # `extra_body` / `*client_args` are free-form passthroughs that
+              # can hold auth material too. None of it may reach an exported
+              # span attribute. The client fields are also unserializable.
               "http_options": {
                   "httpx_client": True,
                   "httpx_async_client": True,
                   "aiohttp_client": True,
+                  "headers": True,
+                  "extra_body": True,
+                  "client_args": True,
+                  "async_client_args": True,
               },
           },
           mode="json",

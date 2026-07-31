@@ -29,7 +29,12 @@ from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-RealtimeInput = Union[types.Blob, types.ActivityStart, types.ActivityEnd]
+RealtimeInput = Union[
+    types.Blob,
+    types.ActivityStart,
+    types.ActivityEnd,
+    types.LiveClientRealtimeInput,
+]
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -173,6 +178,12 @@ class GeminiLlmConnection(BaseLlmConnection):
     elif isinstance(input, types.ActivityEnd):
       logger.debug('Sending LLM activity end signal.')
       await self._gemini_session.send_realtime_input(activity_end=input)
+    elif isinstance(input, types.LiveClientRealtimeInput):
+      if input.audio_stream_end:
+        logger.debug('Sending LLM audio stream end signal.')
+        await self._gemini_session.send_realtime_input(audio_stream_end=True)
+      else:
+        logger.warning('Unary LiveClientRealtimeInput not fully supported yet.')
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
 
@@ -297,8 +308,9 @@ class GeminiLlmConnection(BaseLlmConnection):
     last_grounding_metadata = None
     tool_call_metadata = None
     async with Aclosing(self._gemini_session.receive()) as agen:
-      # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
-      # partial content and emit responses as needed.
+      # Pending cleanup: reuse StreamingResponseAggregator to accumulate
+      # partial content and emit responses as needed, once that aggregator
+      # handles the live-connection message shapes.
       async for message in agen:
         logger.debug('Got LLM Live message: %s', message)
         live_session_id = self._gemini_session.session_id

@@ -20,6 +20,12 @@ All dev-only endpoints (eval, debug, graph, test management) are added by DevSer
 
 Use this for local development with `adk web`.
 For production deployments, use api_server.py instead.
+
+Security: like ApiServer, every endpoint here is unauthenticated, and the
+dev-only endpoints additionally read and write agent files on disk and run
+evaluation and debugging code. This server is intended solely for local
+development on a trusted machine. Never expose it to an untrusted or public
+network, and never use it for a production or multi-user deployment.
 """
 
 from __future__ import annotations
@@ -49,6 +55,7 @@ from typing_extensions import deprecated
 import yaml
 
 from . import agent_graph
+from ..apps.app import App
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -185,6 +192,9 @@ class DevServer(ApiServer):
 
   Inherits all production endpoints from ApiServer and adds development-specific
   endpoints for evaluation, debugging, and developer UI features.
+
+  Like ApiServer, all endpoints are unauthenticated. This server is intended
+  for local development only and must not be exposed to untrusted networks.
   """
 
   _allow_special_agents: bool = True
@@ -1088,6 +1098,7 @@ class DevServer(ApiServer):
 
         agent_or_app = self.agent_loader.load_agent(app_name)
         root_agent = self._get_root_agent(agent_or_app)
+        app = agent_or_app if isinstance(agent_or_app, App) else None
 
         eval_case_results = []
 
@@ -1109,6 +1120,7 @@ class DevServer(ApiServer):
             session_service=self.session_service,
             artifact_service=self.artifact_service,
             user_simulator_provider=user_simulator_provider,
+            app=app,
         )
         if req.live_model_config:
           inference_config = InferenceConfig(

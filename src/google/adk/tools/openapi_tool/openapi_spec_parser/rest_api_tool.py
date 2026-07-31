@@ -394,7 +394,7 @@ class RestApiTool(BaseTool):
       if param_location == "path":
         path_params[original_k] = v
       elif param_location == "query":
-        if v:
+        if v is not None:
           query_params[original_k] = v
       elif param_location == "header":
         header_params[original_k] = v

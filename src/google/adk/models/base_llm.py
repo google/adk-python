@@ -17,11 +17,14 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
+import warnings
 
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from ._capabilities import gemini_output_schema_and_tools
+from ._capabilities import LlmCapabilities
 from .base_llm_connection import BaseLlmConnection
 
 if TYPE_CHECKING:
@@ -40,6 +43,84 @@ class BaseLlm(BaseModel):
 
   model: str
   """The name of the LLM, e.g. gemini-2.5-flash or gemini-2.5-pro."""
+
+  @property
+  def capabilities(self) -> LlmCapabilities:
+    """The capabilities of this model instance.
+
+    Subclasses override this to declare what they support, so that callers can
+    ask the model instead of deriving support from its name, backend variant,
+    or type. A model that does not override it falls back to name-based
+    detection, which reproduces the behavior that predates this property.
+
+    Users who need different capabilities for a specific model can subclass it
+    and override this property. Build on what the parent reports, so that
+    capabilities the override does not name keep the value the parent gave
+    them::
+
+        class MyGemini(Gemini):
+
+          @property
+          def capabilities(self) -> LlmCapabilities:
+            return LlmCapabilities(
+                **super().capabilities.model_dump()
+                | {'output_schema_and_tools': True}
+            )
+
+    Avoid ``model_copy(update=...)`` here: it skips validation, so a misspelled
+    capability name silently has no effect instead of raising.
+
+    Declare them outright when subclassing ``BaseLlm`` directly, rather than
+    building on ``super().capabilities``, which would route through the
+    deprecated name-based fallback below::
+
+        class MyModel(BaseLlm):
+
+          @property
+          def capabilities(self) -> LlmCapabilities:
+            return LlmCapabilities(output_schema_and_tools=True)
+
+    Overrides should stay a plain property rather than a cached one: a
+    capability may depend on state that changes after construction, such as an
+    environment variable or a reassigned ``model``.
+    """
+    return LlmCapabilities(
+        output_schema_and_tools=self._legacy_output_schema_and_tools(),
+    )
+
+  def _legacy_output_schema_and_tools(self) -> bool:
+    """Name-based fallback for models that do not report the capability.
+
+    Deprecated. It exists so that a model defined outside ADK keeps resolving
+    the way it did before :attr:`capabilities`, when support was inferred from
+    the model name rather than declared by the model. It is removed once such
+    models declare the capability explicitly, at which point a model that has
+    not been updated stops pairing an output schema with tools.
+
+    The warning fires only when the fallback grants the capability, i.e. only
+    for the models whose behavior would change if it were removed. ``Gemini``
+    and ``LiteLlm`` override :attr:`capabilities` outright and never reach it.
+
+    It is a ``FutureWarning`` rather than a ``DeprecationWarning`` because ADK,
+    not the model's author, is the one that reads :attr:`capabilities`. Python
+    ignores ``DeprecationWarning`` unless it is attributed to ``__main__``, and
+    no ``stacklevel`` reaches the author's code from here — they only declare
+    the subclass, they never call this. The warning has to be visible by
+    default to be worth anything.
+
+    Returns:
+      True if the model can use an output schema together with tools.
+    """
+    if not gemini_output_schema_and_tools(self.model):
+      return False
+    warnings.warn(
+        f'{type(self).__name__} relies on name-based detection of'
+        ' output_schema_and_tools. Override BaseLlm.capabilities to declare'
+        ' it explicitly; this fallback will be removed in a future release.',
+        FutureWarning,
+        stacklevel=3,
+    )
+    return True
 
   @classmethod
   def supported_models(cls) -> list[str]:

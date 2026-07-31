@@ -162,7 +162,7 @@ class NonOverriddenBuiltInPlanner(BuiltInPlanner):
 async def test_overridden_subclass_process_planning_response_called():
   """Test that subclasses overriding process_planning_response have it called.
 
-  Regression test for issue #4133.
+  Regression test: the base implementation used to be called instead.
   """
   planner = OverriddenBuiltInPlanner(thinking_config=types.ThinkingConfig())
   agent = Agent(name='test_agent', planner=planner)

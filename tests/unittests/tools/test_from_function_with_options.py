@@ -17,6 +17,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Dict
 from typing import Generator
+from unittest import mock
 
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -652,3 +653,41 @@ def test_from_function_with_options_warning_includes_original_error(caplog):
   message = warnings[0].getMessage()
   assert 'Fallback error:' in message
   assert 'Original error:' in message
+
+
+def test_optional_arg_does_not_double_serialize_for_dedup():
+  """Each union member is serialized at most once during any_of deduplication.
+
+  The dedup loop previously called `Schema.model_dump_json` twice per union
+  member (once for the membership check, once for the set add). For `T | None`
+  (a 2-member union that always reduces to a single any_of entry) that doubled
+  the cost on every parse.
+  """
+
+  def tool_with_optionals(
+      a: str | None = None,
+      b: int | None = None,
+      c: str | int = 'x',
+  ) -> str:
+    """A tool whose params exercise the optional/union dedup path."""
+    return f'{a}{b}{c}'
+
+  call_count = 0
+  real_dump = types.Schema.model_dump_json
+
+  def counting_dump(self, *args, **kwargs):
+    nonlocal call_count
+    call_count += 1
+    return real_dump(self, *args, **kwargs)
+
+  with mock.patch.object(types.Schema, 'model_dump_json', counting_dump):
+    _automatic_function_calling_util.from_function_with_options(
+        tool_with_optionals, GoogleLLMVariant.GEMINI_API
+    )
+
+  # 2 `| None` args (1 non-None member) + 1 union arg (2 non-None members)
+  # = 4 calls after the fix. Before, this was 8 (every member was serialized
+  # twice — once for the membership check, once for the set add).
+  assert (
+      call_count == 4
+  ), f'expected 4 model_dump_json calls during dedup, got {call_count}'

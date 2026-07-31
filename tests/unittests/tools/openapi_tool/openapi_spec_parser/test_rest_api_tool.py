@@ -516,6 +516,46 @@ class TestRestApiTool:
     assert request_params["json"] == {"param1": "value1", "param2": 123}
     assert request_params["params"] == {"testQueryParam": "query_value"}
 
+  def test_prepare_request_params_preserves_falsy_query_params(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    mock_operation = Operation(operationId="test_op")
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+
+    params = [
+        ApiParameter(
+            original_name="flag",
+            py_name="flag",
+            param_location="query",
+            param_schema=OpenAPISchema(type="boolean"),
+        ),
+        ApiParameter(
+            original_name="offset",
+            py_name="offset",
+            param_location="query",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+        ApiParameter(
+            original_name="cursor",
+            py_name="cursor",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+    ]
+    kwargs = {"flag": False, "offset": 0, "cursor": None}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+    # Explicit False/0 must be kept; None is omitted.
+    assert request_params["params"] == {"flag": False, "offset": 0}
+
   def test_prepare_request_params_array(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):

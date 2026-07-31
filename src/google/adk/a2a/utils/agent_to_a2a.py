@@ -206,7 +206,7 @@ def to_a2a(
   )
 
   # Build the agent card and configure A2A routes
-  async def setup_a2a(app: Starlette):
+  async def setup_a2a(app: Starlette) -> None:
     # Use provided agent card or build one asynchronously
     if provided_agent_card is not None:
       final_agent_card = provided_agent_card

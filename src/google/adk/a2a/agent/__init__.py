@@ -17,25 +17,35 @@
 from ...utils._dependency import missing_extra
 
 __all__ = [
+    "A2aCardRequestConfig",
     "A2aRemoteAgentConfig",
+    "CardRequestInterceptor",
     "ParametersConfig",
     "RequestInterceptor",
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
   if name in [
+      "A2aCardRequestConfig",
       "A2aRemoteAgentConfig",
+      "CardRequestInterceptor",
       "ParametersConfig",
       "RequestInterceptor",
   ]:
     try:
+      from .config import A2aCardRequestConfig
       from .config import A2aRemoteAgentConfig
+      from .config import CardRequestInterceptor
       from .config import ParametersConfig
       from .config import RequestInterceptor
 
-      if name == "A2aRemoteAgentConfig":
+      if name == "A2aCardRequestConfig":
+        return A2aCardRequestConfig
+      elif name == "A2aRemoteAgentConfig":
         return A2aRemoteAgentConfig
+      elif name == "CardRequestInterceptor":
+        return CardRequestInterceptor
       elif name == "ParametersConfig":
         return ParametersConfig
       elif name == "RequestInterceptor":

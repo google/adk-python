@@ -207,7 +207,7 @@ def test_data_file_helper_lib_defines_crop():
   assert crop('x' * 100, max_chars=10) == 'x' * 7 + '...'
   assert crop('abcdef', max_chars=2) == 'ab'
 
-  # Regression for #4011: explore_df raised NameError when crop was undefined.
+  # Regression: explore_df raised NameError when crop was undefined.
   namespace['explore_df'](pd.DataFrame({'a': [1, 2], 'b': ['x', 'y']}))
 
 

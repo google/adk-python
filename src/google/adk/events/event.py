@@ -24,6 +24,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_serializer
 from pydantic import model_validator
 
 from ..models.llm_response import LlmResponse
@@ -123,6 +124,7 @@ class Event(LlmResponse):
   Agent client will know from this field about which function call is long running.
   only valid for function call event
   """
+
   branch: str | None = None
   """The branch of the event.
 
@@ -153,6 +155,17 @@ class Event(LlmResponse):
   """The unique identifier of the event."""
   timestamp: float = Field(default_factory=lambda: platform_time.get_time())
   """The timestamp of the event."""
+
+  @field_serializer('long_running_tool_ids')
+  def _serialize_long_running_tool_ids(
+      self, value: set[str] | None
+  ) -> list[str] | None:
+    # A set has no defined iteration order and string hashing is randomized per
+    # process, so the default serialization emits these ids in a different
+    # order every run. Clients that diff serialized events would then see an
+    # unchanged event as changed on every fetch. Emit a sorted list so the same
+    # event always serializes identically.
+    return None if value is None else sorted(value)
 
   @model_validator(mode='before')
   @classmethod

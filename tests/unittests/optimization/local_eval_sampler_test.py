@@ -254,7 +254,7 @@ def test_init_registers_custom_metrics(mocker):
     )
     assert isinstance(evaluator, _CustomMetricEvaluator)
   finally:
-    # The registry dict is shared class-level state; remove what we added.
+    # The default registry is process-wide state; remove what we added.
     DEFAULT_METRIC_EVALUATOR_REGISTRY._registry.pop(custom_metric_name, None)
 
 

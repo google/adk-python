@@ -96,6 +96,10 @@ class DaytonaEnvironment(BaseEnvironment):
     if self._sandbox is not None:
       await self._sandbox.delete()
       self._sandbox = None
+      if self._client is not None:
+        # Close the AsyncDaytona client to release its underlying HTTP
+        # sessions and avoid leaking sockets across create/close cycles.
+        await self._client.close()
       self._client = None
       self._is_initialized = False
 

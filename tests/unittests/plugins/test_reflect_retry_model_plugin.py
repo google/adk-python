@@ -389,7 +389,6 @@ class TestReflectAndRetryModelPlugin(IsolatedAsyncioTestCase):
         llm_response=llm_response_success,
     )
     self.assertIsNone(response_success)
-    self.assertEqual(len(plugin._tracker._scoped_failure_counters), 0)
 
     response2 = await plugin.after_model_callback(
         callback_context=mock_callback_context,

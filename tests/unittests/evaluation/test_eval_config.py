@@ -18,6 +18,9 @@ from google.adk.evaluation.eval_config import _DEFAULT_EVAL_CONFIG
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import get_eval_metrics_from_config
 from google.adk.evaluation.eval_config import get_evaluation_criteria_or_default
+from google.adk.evaluation.eval_metrics import EvalMetric
+from google.adk.evaluation.eval_metrics import JudgeModelOptions
+from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
 from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.eval_rubrics import RubricContent
 from google.adk.evaluation.simulation._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
@@ -137,6 +140,65 @@ def test_get_eval_metrics_from_config_empty_criteria():
   eval_config = EvalConfig(criteria={})
   eval_metrics = get_eval_metrics_from_config(eval_config)
   assert not eval_metrics
+
+
+def test_eval_metric_dump_preserves_concrete_criterion_fields():
+  """Serializing a metric must not degrade its criterion to the base class."""
+  eval_metric = EvalMetric(
+      metric_name="final_response_match_v2",
+      criterion=LlmAsAJudgeCriterion(
+          threshold=0.8,
+          judge_model_options=JudgeModelOptions(
+              judge_model="my-judge", num_samples=3
+          ),
+      ),
+  )
+
+  dumped = eval_metric.model_dump()
+
+  assert dumped["criterion"]["judge_model_options"]["judge_model"] == "my-judge"
+  assert dumped["criterion"]["judge_model_options"]["num_samples"] == 3
+
+
+def test_eval_metric_criterion_survives_json_round_trip():
+  """A serialized metric still yields its concrete criterion when reloaded."""
+  eval_metric = EvalMetric(
+      metric_name="final_response_match_v2",
+      criterion=LlmAsAJudgeCriterion(
+          threshold=0.8,
+          judge_model_options=JudgeModelOptions(judge_model="my-judge"),
+      ),
+  )
+
+  restored = EvalMetric.model_validate_json(eval_metric.model_dump_json())
+  criterion = LlmAsAJudgeCriterion.model_validate(
+      restored.criterion.model_dump()
+  )
+
+  assert criterion.judge_model_options.judge_model == "my-judge"
+
+
+def test_eval_config_dump_preserves_concrete_criterion_fields():
+  """Criteria values keep their subclass fields, and plain thresholds survive."""
+  eval_config = EvalConfig(
+      criteria={
+          "tool_trajectory_avg_score": 1.0,
+          "final_response_match_v2": LlmAsAJudgeCriterion(
+              threshold=0.8,
+              judge_model_options=JudgeModelOptions(judge_model="my-judge"),
+          ),
+      }
+  )
+
+  dumped = eval_config.model_dump()
+
+  assert dumped["criteria"]["tool_trajectory_avg_score"] == 1.0
+  assert (
+      dumped["criteria"]["final_response_match_v2"]["judge_model_options"][
+          "judge_model"
+      ]
+      == "my-judge"
+  )
 
 
 # -----------------------------------------------------------------------------

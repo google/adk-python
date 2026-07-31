@@ -32,6 +32,10 @@ on:
         description: 'Commit SHA to cherry-pick'
         required: true
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   cherry-pick:
     if: github.repository == 'google/adk-python'
@@ -50,12 +54,23 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ steps.config.outputs.candidate_branch }}
+          token: ${{ secrets.RELEASE_PAT }}
           fetch-depth: 0
 
-      - name: Configure git
+      - name: Configure git identity
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          USER_JSON=$(gh api user 2>/dev/null || true)
+          LOGIN=$(echo "$USER_JSON" | jq -r '.login // empty' 2>/dev/null || true)
+          ID=$(echo "$USER_JSON" | jq -r '.id // empty' 2>/dev/null || true)
+          if [ -n "$LOGIN" ] && [ -n "$ID" ]; then
+            git config user.name "$LOGIN"
+            git config user.email "${ID}+${LOGIN}@users.noreply.github.com"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+          fi
 
       - name: Cherry-pick commit
         run: |
