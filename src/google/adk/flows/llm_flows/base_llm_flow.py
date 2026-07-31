@@ -749,6 +749,12 @@ class BaseLlmFlow(ABC):
               'Connection closed (%s), reconnecting with session handle.', e
           )
           continue
+        # No resumption handle + normal (1000) close = the model ended the
+        # session cleanly; end the stream instead of erroring so live nodes
+        # finish normally.
+        if isinstance(e, ConnectionClosedOK):
+          logger.info('Connection closed normally: %s.', e)
+          return
         logger.error('Connection closed: %s.', e)
         raise
       except errors.APIError as e:
@@ -763,6 +769,12 @@ class BaseLlmFlow(ABC):
                 'Connection lost (%s), reconnecting with session handle.', e
             )
             continue
+          # No resumption handle + normal (1000) close = the model ended the
+          # session cleanly; end the stream instead of erroring so live nodes
+          # finish normally.
+          if e.code == 1000:
+            logger.info('Live session closed normally: %s.', e)
+            return
 
         logger.error('APIError in live flow: %s', e)
         raise
