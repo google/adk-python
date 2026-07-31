@@ -92,6 +92,9 @@ class DynamicPickleType(TypeDecorator):
   """Represents a type that can be pickled."""
 
   impl = PickleType
+  # Behavior depends only on the dialect, which the compiled cache already
+  # keys on, so statements using this type are safe to cache.
+  cache_ok = True
 
   def load_dialect_impl(self, dialect):
     if dialect.name == "mysql":

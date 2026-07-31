@@ -175,10 +175,71 @@ def test_record_tool_execution_duration_with_error(mock_meter_setup):
   assert kwargs["attributes"]["error.type"] == "ValueError"
 
 
+def test_record_tool_execution_duration_with_detected_error_type(
+    mock_meter_setup,
+):
+  """A failure reported in the tool response still labels the metric."""
+  _metrics.record_tool_execution_duration(
+      "test_tool",
+      "test_tool_type",
+      "test_agent",
+      0.5,
+      error_type="MCP_TOOL_ERROR",
+  )
+  tool_duration_hist = mock_meter_setup["tool_duration"]
+  tool_duration_hist.record.assert_called_once()
+  _, kwargs = tool_duration_hist.record.call_args
+  assert kwargs["attributes"]["error.type"] == "MCP_TOOL_ERROR"
+
+
+def test_record_tool_execution_duration_error_takes_precedence(
+    mock_meter_setup,
+):
+  _metrics.record_tool_execution_duration(
+      "test_tool",
+      "test_tool_type",
+      "test_agent",
+      0.5,
+      error=ValueError("tool failed"),
+      error_type="MCP_TOOL_ERROR",
+  )
+  _, kwargs = mock_meter_setup["tool_duration"].record.call_args
+  assert kwargs["attributes"]["error.type"] == "ValueError"
+
+
+@pytest.mark.parametrize(
+    "model,expected_provider",
+    [
+        ("claude-sonnet-4-5", "anthropic"),
+        ("anthropic/claude-sonnet-4-5", "anthropic"),
+        ("openai/gpt-4o", "openai"),
+        ("gemini-2.0-flash", "gemini"),
+        ("test-model", "gemini"),
+    ],
+)
+def test_record_client_operation_duration_provider_follows_model(
+    mock_meter_setup, model, expected_provider
+):
+  """The provider name follows the served model, not just the deployment env."""
+  llm_request = mock.MagicMock(
+      contents=[types.Content(parts=[types.Part(text="hello")])],
+      model=model,
+  )
+  _metrics.record_client_operation_duration(
+      agent_name="test_agent",
+      elapsed_s=0.1,
+      llm_request=llm_request,
+      responses=[],
+  )
+  _, kwargs = mock_meter_setup["client_duration"].record.call_args
+  assert kwargs["attributes"]["gen_ai.provider.name"] == expected_provider
+
+
 def test_record_client_operation_duration(mock_meter_setup):
   """Tests record_client_operation_duration records correctly."""
   llm_request = mock.MagicMock(
-      contents=[types.Content(parts=[types.Part(text="hello")])]
+      contents=[types.Content(parts=[types.Part(text="hello")])],
+      model="test-model",
   )
   response = mock.MagicMock(
       content=types.Content(parts=[types.Part(text="hello response")])

@@ -2392,6 +2392,7 @@ EXPECTED_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
 EXPECTED_INFERENCE_ERROR_SPANS_V1 = SpanDigest(
     name="invocation",
     attributes={},
+    status="ERROR",
     children=[
         SpanDigest(
             name="invoke_agent some_root_agent",
@@ -2401,10 +2402,12 @@ EXPECTED_INFERENCE_ERROR_SPANS_V1 = SpanDigest(
                 "gen_ai.agent.name": AGENT_NAME,
                 "gen_ai.conversation.id": PRESENT,
             },
+            status="ERROR",
             children=[
                 SpanDigest(
                     name="call_llm",
                     attributes={},
+                    status="ERROR",
                     children=[
                         SpanDigest(
                             name="generate_content mock",
@@ -2417,6 +2420,7 @@ EXPECTED_INFERENCE_ERROR_SPANS_V1 = SpanDigest(
                                 "gcp.vertex.agent.event_id": PRESENT,
                                 "gcp.vertex.agent.invocation_id": PRESENT,
                             },
+                            status="ERROR",
                             logs=[
                                 LogDigest(
                                     event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
@@ -2444,6 +2448,7 @@ EXPECTED_INFERENCE_ERROR_SPANS_V2 = SpanDigest(
         "gen_ai.workflow.name": AGENT_NAME,
         "gen_ai.conversation.id": PRESENT,
     },
+    status="ERROR",
     children=[
         SpanDigest(
             name="invoke_agent some_root_agent",
@@ -2453,10 +2458,12 @@ EXPECTED_INFERENCE_ERROR_SPANS_V2 = SpanDigest(
                 "gen_ai.agent.name": AGENT_NAME,
                 "gen_ai.conversation.id": PRESENT,
             },
+            status="ERROR",
             children=[
                 SpanDigest(
                     name="call_llm",
                     attributes={},
+                    status="ERROR",
                     children=[
                         SpanDigest(
                             name="generate_content mock",
@@ -2469,6 +2476,7 @@ EXPECTED_INFERENCE_ERROR_SPANS_V2 = SpanDigest(
                                 "gcp.vertex.agent.event_id": PRESENT,
                                 "gcp.vertex.agent.invocation_id": PRESENT,
                             },
+                            status="ERROR",
                             logs=[
                                 LogDigest(
                                     event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
@@ -2599,6 +2607,157 @@ EXPECTED_INFERENCE_ERROR_METRICS_VALUEERROR_V2 = {
     }),
     "gen_ai.invoke_agent.tool_calls": frozenset({
         MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=0),
+    }),
+}
+
+# The tool raises on the first turn, so there is no second inference and the
+# tool span carries both ``error.type`` and an ERROR status. The spans the
+# exception unwinds through (agent, workflow) are marked ERROR too, while the
+# inference that asked for the call stays UNSET -- it succeeded.
+EXPECTED_TOOL_ERROR_SPANS_V2 = SpanDigest(
+    name="invoke_workflow some_root_agent",
+    attributes={
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.conversation.id": PRESENT,
+        "gen_ai.workflow.name": AGENT_NAME,
+    },
+    status="ERROR",
+    children=[
+        SpanDigest(
+            name="invoke_agent some_root_agent",
+            attributes={
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.description": AGENT_DESCRIPTION,
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.conversation.id": PRESENT,
+            },
+            status="ERROR",
+            children=[
+                SpanDigest(
+                    name="call_llm",
+                    attributes={
+                        "gen_ai.system": "gcp.vertex.agent",
+                        "gen_ai.request.model": "mock",
+                        "gcp.vertex.agent.invocation_id": PRESENT,
+                        "gcp.vertex.agent.session_id": PRESENT,
+                        "gcp.vertex.agent.event_id": PRESENT,
+                        "gcp.vertex.agent.llm_request": "{}",
+                        "gcp.vertex.agent.llm_response": "{}",
+                        "gen_ai.response.finish_reasons": ["stop"],
+                    },
+                    children=[
+                        SpanDigest(
+                            name="generate_content mock",
+                            attributes={
+                                "gen_ai.system": "gemini",
+                                "gen_ai.operation.name": "generate_content",
+                                "gen_ai.request.model": "mock",
+                                "gen_ai.agent.name": AGENT_NAME,
+                                "gen_ai.conversation.id": PRESENT,
+                                "gcp.vertex.agent.event_id": PRESENT,
+                                "gcp.vertex.agent.invocation_id": PRESENT,
+                                "gen_ai.response.finish_reasons": ["stop"],
+                            },
+                            logs=[
+                                LogDigest(
+                                    event_name=GEN_AI_CHOICE_EVENT,
+                                    body={
+                                        "content": "<elided>",
+                                        "index": 0,
+                                        "finish_reason": "STOP",
+                                    },
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                                LogDigest(
+                                    event_name=GEN_AI_USER_MESSAGE_EVENT,
+                                    body={"content": "<elided>"},
+                                    attributes={"gen_ai.system": "gemini"},
+                                ),
+                            ],
+                            children=[
+                                SpanDigest(
+                                    name="execute_tool some_tool",
+                                    attributes={
+                                        "gen_ai.operation.name": "execute_tool",
+                                        "gen_ai.tool.description": (
+                                            TOOL_DESCRIPTION
+                                        ),
+                                        "gen_ai.tool.name": TOOL_NAME,
+                                        "gen_ai.tool.type": "FunctionTool",
+                                        "gen_ai.agent.name": AGENT_NAME,
+                                        "error.type": "ValueError",
+                                        "gcp.vertex.agent.llm_request": "{}",
+                                        "gcp.vertex.agent.llm_response": "{}",
+                                        "gcp.vertex.agent.tool_call_args": "{}",
+                                        "gen_ai.tool.call.id": PRESENT,
+                                        "gcp.vertex.agent.tool_response": "{}",
+                                    },
+                                    status="ERROR",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ],
+)
+
+# Tool failure, schema v2. The tool duration carries the failure, and the
+# tool_calls counter still counts the call that was attempted.
+EXPECTED_TOOL_ERROR_METRICS_V2 = {
+    "gen_ai.execute_tool.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.tool.name": TOOL_NAME,
+                "gen_ai.tool.type": "FunctionTool",
+                "error.type": "ValueError",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.client.operation.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.agent.name": AGENT_NAME,
+                "gen_ai.operation.name": "generate_content",
+                "gen_ai.provider.name": "gemini",
+                "gen_ai.request.model": "mock",
+                "gen_ai.response.model": "mock",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.agent.name": AGENT_NAME,
+                "error.type": "ValueError",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_workflow.duration": frozenset({
+        MetricPoint(
+            attributes={
+                "gen_ai.operation.name": "invoke_workflow",
+                "gen_ai.workflow.name": AGENT_NAME,
+                "error.type": "ValueError",
+            },
+            value=NON_DETERMINISTIC,
+        ),
+    }),
+    "gen_ai.invoke_agent.inference_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
+    }),
+    "gen_ai.invoke_agent.tool_calls": frozenset({
+        MetricPoint(attributes={"gen_ai.agent.name": AGENT_NAME}, value=1),
     }),
 }
 
@@ -2769,6 +2928,19 @@ ALL_CASES: list[FunctionalTestCase] = [
         expected=TelemetryDigest(
             root_span=EXPECTED_INFERENCE_ERROR_SPANS_V2,
             metric_points=EXPECTED_INFERENCE_ERROR_METRICS_VALUEERROR_V2,
+        ),
+    ),
+    # Tool failure: the inference succeeds and the tool it asked for raises,
+    # so the failure has to show up on the tool span rather than the call.
+    FunctionalTestCase(
+        test_id="tool-error-valueerror-schema-v2",
+        semconv_opt_in=None,
+        capture_content="false",
+        schema_version=2,
+        tool_fails=True,
+        expected=TelemetryDigest(
+            root_span=EXPECTED_TOOL_ERROR_SPANS_V2,
+            metric_points=EXPECTED_TOOL_ERROR_METRICS_V2,
         ),
     ),
 ]

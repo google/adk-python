@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 import logging
+import re
 from typing import Final
 from typing import TYPE_CHECKING
 
@@ -54,11 +55,14 @@ from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace import Span
+from opentelemetry.trace import Status
+from opentelemetry.trace import StatusCode
 from opentelemetry.util.types import AttributeValue
 from typing_extensions import deprecated
 
 from .. import version
 from ..utils.env_utils import is_enterprise_mode_enabled
+from ..utils.model_name_utils import extract_model_name
 from ..utils.model_name_utils import is_gemini_model
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
@@ -98,6 +102,7 @@ if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
+  from ..workflow._base_node import BaseNode
 
 tracer = trace.get_tracer(
     instrumenting_module_name="gcp.vertex.agent",
@@ -212,10 +217,19 @@ def trace_tool_call(
   ):
     span.set_attribute(GEN_AI_AGENT_NAME, agent.name)
 
+  failure_type: str | None = None
   if error is not None:
-    span.set_attribute(ERROR_TYPE, resolve_error_type(error))
+    failure_type = resolve_error_type(error)
+    span.record_exception(error)
   elif error_type is not None:
-    span.set_attribute(ERROR_TYPE, error_type)
+    failure_type = error_type
+  if failure_type is not None:
+    span.set_attribute(ERROR_TYPE, failure_type)
+    # Without an explicit error status the span renders as successful, which
+    # hides tools that reported a failure as a response dict instead of
+    # raising. The description repeats the type rather than the error message
+    # so no tool content lands in an attribute the content toggle cannot gate.
+    span.set_status(Status(StatusCode.ERROR, failure_type))
 
   # Special case for client side association with a remote tool call
   if (
@@ -742,14 +756,7 @@ def _use_extra_generate_content_attributes(
 
 
 def _is_gemini_agent(agent: BaseAgent) -> bool:
-  from ..agents.llm_agent import LlmAgent
-
-  if not isinstance(agent, LlmAgent):
-    return False
-
-  model = agent.model if agent.model != "" else agent._default_model
-  model_name = model if isinstance(model, str) else model.model
-  return is_gemini_model(model_name)
+  return is_gemini_model(_agent_model_name(agent))
 
 
 def _set_common_generate_content_attributes(
@@ -770,10 +777,11 @@ def _use_native_generate_content_span_stable_semconv(
     telemetry_config: TelemetryConfig | None = None,
 ) -> Iterator[GenerateContentSpan]:
   telemetry_config = telemetry_config or TelemetryConfig()
+  system_name = _resolve_gen_ai_system_name(llm_request.model)
   with tracer.start_as_current_span(
       f"generate_content {llm_request.model or ''}"
   ) as span:
-    span.set_attribute(GEN_AI_SYSTEM, _guess_gemini_system_name())
+    span.set_attribute(GEN_AI_SYSTEM, system_name)
     _set_common_generate_content_attributes(
         span, llm_request, common_attributes
     )
@@ -783,10 +791,10 @@ def _use_native_generate_content_span_stable_semconv(
         LogRecord(
             event_name=GEN_AI_SYSTEM_MESSAGE_EVENT,
             body=system_message_body(llm_request, telemetry_config),
-            attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
+            attributes={GEN_AI_SYSTEM: system_name},
         )
     )
-    user_message_attributes = {GEN_AI_SYSTEM: _guess_gemini_system_name()}
+    user_message_attributes = {GEN_AI_SYSTEM: system_name}
     if (
         telemetry_config.should_add_content_to_logs
         and log_only_common_attributes
@@ -871,7 +879,9 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
       LogRecord(
           event_name=GEN_AI_CHOICE_EVENT,
           body=choice_body(llm_response, TelemetryConfig()),
-          attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
+          attributes={
+              GEN_AI_SYSTEM: _inference_system_name(None, llm_response)
+          },
       )
   )
 
@@ -916,7 +926,11 @@ def trace_inference_result(
             body=choice_body(
                 llm_response, telemetry_config or TelemetryConfig()
             ),
-            attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
+            attributes={
+                GEN_AI_SYSTEM: _inference_system_name(
+                    invocation_context, llm_response
+                )
+            },
         )
     )
 
@@ -927,3 +941,78 @@ def _guess_gemini_system_name() -> str:
       if is_enterprise_mode_enabled()
       else GenAiSystemValues.GEMINI.name.lower()
   )
+
+
+# Anthropic models reach ADK either as a bare `claude-*` id (the built-in
+# Anthropic backend, and the Vertex `publishers/anthropic/models/...` path once
+# normalized) or behind a LiteLLM `anthropic/...` prefix, which the generic
+# prefix rule below already covers.
+_ANTHROPIC_MODEL_PATTERN: Final = re.compile(r"^claude[-.]", re.IGNORECASE)
+
+# Leading segments of a resource-path model id, e.g. a Model Garden path like
+# `projects/<p>/locations/<l>/publishers/<pub>/models/<m>` or a tuned-model id
+# like `tunedModels/<id>`. They name a resource collection, never a provider,
+# so the provider-prefix rule must not read one as one.
+_RESOURCE_COLLECTION_SEGMENTS: Final = frozenset({
+    "endpoints",
+    "locations",
+    "models",
+    "projects",
+    "publishers",
+    "tunedmodels",
+})
+
+
+def _resolve_gen_ai_system_name(model: str | None) -> str:
+  """Returns the `gen_ai.system` / `gen_ai.provider.name` value for a model.
+
+  The name has to follow the model actually being served, otherwise every
+  provider is reported as Gemini. A LiteLLM-style `<provider>/<model>` id
+  carries the provider in its prefix, which semantic conventions allow as a
+  lowercased name outside their well-known set. The prefix is read off the bare
+  model name so that a resource path, whose leading segments describe where the
+  model lives rather than who serves it, is not mistaken for one. When no model
+  id is available, or the id names no provider, the deployment-derived
+  Gemini/Vertex name is used, since Gemini is the backend ADK talks to
+  natively.
+
+  Args:
+    model: The model id the request is being served by, if known.
+  """
+  if not model or is_gemini_model(model):
+    return _guess_gemini_system_name()
+
+  model_name = extract_model_name(model)
+  if _ANTHROPIC_MODEL_PATTERN.match(model_name):
+    return GenAiSystemValues.ANTHROPIC.name.lower()
+
+  provider, separator, _ = model_name.partition("/")
+  provider = provider.lower()
+  if separator and provider and provider not in _RESOURCE_COLLECTION_SEGMENTS:
+    return provider
+
+  return _guess_gemini_system_name()
+
+
+def _agent_model_name(agent: BaseAgent | BaseNode) -> str | None:
+  """Returns the model id configured on an agent, if it has one."""
+  from ..agents.llm_agent import LlmAgent
+
+  if not isinstance(agent, LlmAgent):
+    return None
+
+  model = agent.model if agent.model != "" else agent._default_model
+  return model if isinstance(model, str) else model.model
+
+
+def _inference_system_name(
+    invocation_context: InvocationContext | None,
+    llm_response: LlmResponse,
+) -> str:
+  """Returns the system name of the model that produced an inference result."""
+  model = llm_response.model_version
+  if not model and invocation_context is not None:
+    agent = invocation_context.agent
+    if agent is not None:
+      model = _agent_model_name(agent)
+  return _resolve_gen_ai_system_name(model)

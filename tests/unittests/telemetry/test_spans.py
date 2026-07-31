@@ -26,6 +26,7 @@ from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.telemetry import tracing
 from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
 from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
@@ -58,6 +59,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
+from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 import pytest
 
@@ -1500,6 +1502,187 @@ def test_trace_tool_call_with_genai_api_error_uses_status_code(
       mock.call('error.type', '429')
       in mock_span_fixture.set_attribute.call_args_list
   )
+
+
+def test_trace_tool_call_with_dict_error_marks_span_as_failed(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  """A tool reporting failure in its response dict must not render as green."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'param': 1},
+      function_response_event=None,
+      error_type='MCP_TOOL_ERROR',
+  )
+
+  mock_span_fixture.set_status.assert_called_once()
+  status = mock_span_fixture.set_status.call_args.args[0]
+  assert status.status_code is StatusCode.ERROR
+  assert status.description == 'MCP_TOOL_ERROR'
+  mock_span_fixture.record_exception.assert_not_called()
+
+
+def test_trace_tool_call_with_error_marks_span_as_failed_and_records_it(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  test_error = ToolExecutionError(
+      message='Internal server error',
+      error_type=ToolErrorType.INTERNAL_SERVER_ERROR,
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'param': 1},
+      function_response_event=None,
+      error=test_error,
+  )
+
+  mock_span_fixture.record_exception.assert_called_once_with(test_error)
+  mock_span_fixture.set_status.assert_called_once()
+  status = mock_span_fixture.set_status.call_args.args[0]
+  assert status.status_code is StatusCode.ERROR
+  # The type, not the message, so tool content stays out of an attribute the
+  # content toggle cannot elide.
+  assert status.description == 'INTERNAL_SERVER_ERROR'
+
+
+def test_trace_tool_call_without_error_leaves_span_status_unset(
+    monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
+):
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'param': 1},
+      function_response_event=mock_event_fixture,
+  )
+
+  mock_span_fixture.set_status.assert_not_called()
+  mock_span_fixture.record_exception.assert_not_called()
+
+
+@pytest.mark.asyncio
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+@mock.patch('google.adk.telemetry.tracing.tracer')
+@mock.patch(
+    'google.adk.telemetry.tracing._guess_gemini_system_name',
+    return_value='deployment_default',
+)
+@pytest.mark.parametrize(
+    'model,expected_system',
+    [
+        ('claude-sonnet-4-5', 'anthropic'),
+        ('claude-3-5-haiku-latest', 'anthropic'),
+        ('anthropic/claude-sonnet-4-5', 'anthropic'),
+        (
+            'projects/p/locations/l/publishers/anthropic/models/claude-sonnet-4-5',
+            'anthropic',
+        ),
+        ('openai/gpt-4o', 'openai'),
+        (
+            'projects/p/locations/l/publishers/meta/models/llama-3',
+            'deployment_default',
+        ),
+        ('tunedModels/my-tuned-model', 'deployment_default'),
+        ('gemini-2.0-flash', 'deployment_default'),
+        ('gemini/gemini-2.0-flash', 'deployment_default'),
+        ('some-model', 'deployment_default'),
+    ],
+)
+async def test_generate_content_span_system_name_follows_model(
+    mock_guess_system_name,
+    mock_tracer,
+    mock_otel_logger,
+    monkeypatch,
+    model,
+    expected_system,
+):
+  """The system name follows the served model, not just the deployment env."""
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      lambda: False,
+  )
+  agent = LlmAgent(name='test_agent', model=model)
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model=model, contents=[])
+  llm_response = LlmResponse(
+      content=types.Content(role='model', parts=[types.Part(text='Response')]),
+      finish_reason=types.FinishReason.STOP,
+  )
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+  mock_span = (
+      mock_tracer.start_as_current_span.return_value.__enter__.return_value
+  )
+
+  async with use_inference_span(
+      llm_request, invocation_context, model_response_event
+  ) as gc_span:
+    trace_inference_result(invocation_context, gc_span, llm_response)
+
+  mock_span.set_attribute.assert_any_call(GEN_AI_SYSTEM, expected_system)
+  log_records: list[LogRecord] = [
+      call.args[0] for call in mock_otel_logger.emit.call_args_list
+  ]
+  assert log_records
+  for log_record in log_records:
+    assert log_record.attributes[GEN_AI_SYSTEM] == expected_system
+
+
+# Model ids that are resource paths: the leading segment is a resource
+# collection, so reading it as a provider prefix mislabels the model.
+_RESOURCE_PATH_MODELS = [
+    'projects/p/locations/l/publishers/meta/models/llama-3',
+    'projects/p/locations/l/endpoints/123456',
+    'tunedModels/my-tuned-model',
+]
+
+
+@pytest.mark.parametrize(
+    'model,expected_system',
+    [
+        # A Model Garden path names its publisher mid-path, never up front.
+        ('projects/p/locations/l/publishers/meta/models/llama-3', 'gemini'),
+        (
+            'projects/p/locations/l/publishers/anthropic/models/claude-4-5',
+            'anthropic',
+        ),
+        # Tuned models arrive as a path too, on either backend.
+        ('projects/p/locations/l/endpoints/123456', 'gemini'),
+        ('tunedModels/my-tuned-model', 'gemini'),
+        ('gemini-2.0-flash', 'gemini'),
+        ('claude-sonnet-4-5', 'anthropic'),
+        # What the provider-prefix rule is actually for.
+        ('openai/gpt-4o', 'openai'),
+    ],
+)
+def test_resolve_gen_ai_system_name(monkeypatch, model, expected_system):
+  """Only a real provider prefix names the provider; a path segment must not."""
+  monkeypatch.setattr(tracing, '_guess_gemini_system_name', lambda: 'gemini')
+
+  assert tracing._resolve_gen_ai_system_name(model) == expected_system
+
+
+@pytest.mark.parametrize('model', _RESOURCE_PATH_MODELS)
+def test_resolve_gen_ai_system_name_never_names_a_path_segment(
+    monkeypatch, model
+):
+  """A resource path must not be read as a `<provider>/<model>` id."""
+  monkeypatch.setattr(tracing, '_guess_gemini_system_name', lambda: 'gemini')
+
+  system_name = tracing._resolve_gen_ai_system_name(model)
+
+  assert system_name == 'gemini'
+  assert system_name not in {segment.lower() for segment in model.split('/')}
 
 
 def test_safe_json_serialize_circular_dict_returns_not_serializable():

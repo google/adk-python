@@ -2829,12 +2829,15 @@ class LiteLlm(BaseLlm):
         completion_args["extra_body"] = http_opts.extra_body
 
     if stream:
-      text = ""
+      # Accumulate into lists and join once: `+=` on a closure cell or a dict
+      # item does not get CPython's in-place unicode concat, so it would copy
+      # the whole buffer on every streamed chunk.
+      text_parts: list[str] = []
       reasoning_parts: List[types.Part] = []
       # Track function calls by index
       function_calls: dict[int, dict[str, Any]] = (
           {}
-      )  # index -> {name, args, id}
+      )  # index -> {name, args_parts, id}
       tool_call_trackers: Dict[int, _BraceDepthTracker] = {}
       completion_args["stream"] = True
       completion_args["stream_options"] = {"include_usage": True}
@@ -2851,9 +2854,10 @@ class LiteLlm(BaseLlm):
         has_incomplete_tool_call_args = False
         for index, func_data in function_calls.items():
           if func_data["id"]:
+            args = "".join(func_data["args_parts"])
             if finish_reason == "length":
               try:
-                _parse_tool_call_arguments(func_data["args"])
+                _parse_tool_call_arguments(args)
               except json.JSONDecodeError:
                 has_incomplete_tool_call_args = True
                 continue
@@ -2863,7 +2867,7 @@ class LiteLlm(BaseLlm):
                     id=func_data["id"],
                     function=Function(
                         name=func_data["name"],
-                        arguments=func_data["args"],
+                        arguments=args,
                         index=index,
                     ),
                 )
@@ -2884,7 +2888,7 @@ class LiteLlm(BaseLlm):
         llm_response = _message_to_generate_content_response(
             ChatCompletionAssistantMessage(
                 role="assistant",
-                content=text,
+                content="".join(text_parts),
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
@@ -2902,7 +2906,7 @@ class LiteLlm(BaseLlm):
       def _finalize_text_response(
           *, model_version: str, finish_reason: str
       ) -> LlmResponse:
-        message_content = text if text else None
+        message_content = "".join(text_parts) or None
         llm_response = _message_to_generate_content_response(
             ChatCompletionAssistantMessage(
                 role="assistant",
@@ -2921,8 +2925,8 @@ class LiteLlm(BaseLlm):
         return llm_response
 
       def _reset_stream_buffers() -> None:
-        nonlocal text, reasoning_parts
-        text = ""
+        nonlocal reasoning_parts
+        text_parts.clear()
         reasoning_parts = []
         function_calls.clear()
         tool_call_trackers.clear()
@@ -2937,12 +2941,13 @@ class LiteLlm(BaseLlm):
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
-              function_calls[index] = {"name": "", "args": "", "id": None}
+              function_calls[index] = {"name": "", "args_parts": [], "id": None}
 
             if chunk.name:
               function_calls[index]["name"] += chunk.name
             if chunk.args:
-              function_calls[index]["args"] += chunk.args
+              args_parts = function_calls[index]["args_parts"]
+              args_parts.append(chunk.args)
 
               # Detect args completion to advance fallback_index (workaround
               # for improper chunk indexing) without O(N^2) re-parsing.
@@ -2951,7 +2956,7 @@ class LiteLlm(BaseLlm):
               )
               if tracker.feed(chunk.args):
                 try:
-                  json.loads(function_calls[index]["args"])
+                  json.loads("".join(args_parts))
                   fallback_index += 1
                 except json.JSONDecodeError:
                   pass
@@ -2960,7 +2965,8 @@ class LiteLlm(BaseLlm):
                 chunk.id or function_calls[index]["id"] or str(index)
             )
           elif isinstance(chunk, TextChunk):
-            text += chunk.text
+            if chunk.text:
+              text_parts.append(chunk.text)
             yield _message_to_generate_content_response(
                 ChatCompletionAssistantMessage(
                     role="assistant",
@@ -3003,7 +3009,7 @@ class LiteLlm(BaseLlm):
                 )
             )
             _reset_stream_buffers()
-          elif (text or reasoning_parts) and (
+          elif (text_parts or reasoning_parts) and (
               finish_reason == "length"
               or (
                   finish_reason == "stop"
@@ -3024,7 +3030,7 @@ class LiteLlm(BaseLlm):
         )
         _reset_stream_buffers()
 
-      if (text or reasoning_parts) and not aggregated_llm_response:
+      if (text_parts or reasoning_parts) and not aggregated_llm_response:
         aggregated_llm_response = _finalize_text_response(
             model_version=part.model,
             finish_reason="stop",
