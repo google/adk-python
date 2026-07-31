@@ -45,6 +45,20 @@ use GitHub pull requests for this purpose. Consult
 [GitHub Help](https://help.github.com/articles/about-pull-requests/) for more
 information on using pull requests.
 
+### How an accepted pull request lands
+
+ADK is developed in an internal repository and mirrored to GitHub with
+[Copybara](https://github.com/google/copybara). An accepted pull request is
+often landed internally and then mirrored back out, with your authorship
+preserved on the resulting commit. GitHub shows that as a *closed* pull request
+rather than a merged one, and your change appears on `main` as a separate
+commit.
+
+So a closed pull request does not on its own mean the change was rejected. When
+a pull request lands this way, we comment on it with the commit that carries
+your change and add the `merged` label. If a pull request is closed without
+either, please ask on it.
+
 ## Contribution workflow
 
 ### Finding Issues to Work On

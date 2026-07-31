@@ -72,14 +72,14 @@ graph schema DDL:
 
 1.  If a Semantic Graph is desired, define business metrics using the
     `MEASURE(AGG_FUNC(col)) AS measure_name` syntax (see
-    **[ddl-reference.md](ddl-reference.md)**).
+    **[ddl_reference.md](ddl_reference.md)**).
 2.  Add business context using the `OPTIONS(description="...", synonyms=[...])`
     clause at the property level and label level.
 
 ### Step 5: Validate Graph Topology Limitations
 
 1.  If the graph will be queried via `GRAPH_EXPAND`, consult
-    **[feature-parity.md](feature-parity.md)**.
+    **[feature_parity.md](feature_parity.md)**.
 2.  Verify that the graph structure forms a valid **Tree** (no cycles,
     convergent paths, disconnected components, or multiple roots).
 3.  If limitations are violated, proactively advise the user on workarounds

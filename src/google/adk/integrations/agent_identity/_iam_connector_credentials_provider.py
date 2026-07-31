@@ -27,6 +27,8 @@ from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.api_core.client_options import ClientOptions
+from google.api_core.exceptions import GoogleAPIError
+from google.auth.exceptions import GoogleAuthError
 
 try:
   from google.cloud.iamconnectorcredentials_v1alpha import IAMConnectorCredentialsServiceClient as Client
@@ -52,8 +54,6 @@ from .gcp_auth_provider_scheme import GcpAuthProviderScheme
 #    returned or timeout occurs.
 # 4. For 3-legged OAuth flows, the returned Operation contains consent pending
 #    status along with the authorization URI.
-
-# TODO: Catch specific exceptions instead of generic ones.
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -223,7 +223,7 @@ class _IamConnectorCredentialsProvider:
 
     try:
       operation = await self._retrieve_credentials(user_id, auth_scheme)
-    except Exception as e:
+    except (GoogleAPIError, GoogleAuthError) as e:
       raise RuntimeError(
           f"Failed to retrieve credential for user '{user_id}' on connector"
           f" '{auth_scheme.name}'."
@@ -252,7 +252,7 @@ class _IamConnectorCredentialsProvider:
           logger.debug("Auth credential obtained after polling.")
           response, _ = self._unpack_operation(operation)
           return _construct_auth_credential(response)
-      except Exception as e:
+      except (GoogleAPIError, GoogleAuthError, TimeoutError) as e:
         raise RuntimeError(
             f"Failed to retrieve credential for user '{user_id}' on connector"
             f" '{auth_scheme.name}'."

@@ -49,6 +49,8 @@ from a2a.types import TaskStatusUpdateEvent
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.json_format import ParseDict
 
+from ..utils.context_utils import Aclosing
+
 
 def _make_proto_timestamp(dt: Optional[datetime] = None) -> Any:
   """Build a google.protobuf.Timestamp from a datetime (or now). 1.x only."""
@@ -562,6 +564,33 @@ def agent_card_url(
     return getattr(card, "url", None)
 
 
+def agent_card_rpc_urls(card: AgentCard) -> list[str]:
+  """Returns every URL on a card that a client may send RPC traffic to.
+
+  ``agent_card_url`` reports the single endpoint a given protocol binding
+  resolves to, but the client factory negotiates the endpoint across the
+  card's whole interface list, so it can pick a URL that helper never returns.
+  Callers that need to constrain the destination must consider all of them.
+
+  1.x: every ``supported_interfaces[i].url``, in card order.
+  0.3.x: the top-level ``url`` followed by every
+  ``additional_interfaces[i].url``.
+  """
+  if IS_A2A_V1:
+    candidates = [iface.url for iface in card.supported_interfaces]
+  else:
+    candidates = [getattr(card, "url", None)]
+    candidates.extend(
+        iface.url
+        for iface in getattr(card, "additional_interfaces", None) or []
+    )
+  urls: list[str] = []
+  for url in candidates:
+    if url and url not in urls:
+      urls.append(url)
+  return urls
+
+
 # -----------------------------------------------------------------------------
 # Stream-item normalization
 # -----------------------------------------------------------------------------
@@ -677,13 +706,17 @@ async def send_message(
     smr.message.CopyFrom(request)
     if request_metadata:
       smr.metadata.CopyFrom(ParseDict(request_metadata, Struct()))
-    async for item in client.send_message(smr, context=context):
-      yield item
+    async with Aclosing(client.send_message(smr, context=context)) as agen:
+      async for item in agen:
+        yield item
   else:
-    async for item in client.send_message(
-        request=request, request_metadata=request_metadata, context=context
-    ):
-      yield item
+    async with Aclosing(
+        client.send_message(
+            request=request, request_metadata=request_metadata, context=context
+        )
+    ) as agen:
+      async for item in agen:
+        yield item
 
 
 # -----------------------------------------------------------------------------

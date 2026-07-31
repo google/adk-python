@@ -19,10 +19,16 @@ from unittest import mock
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.flows.llm_flows._output_schema_processor import get_structured_model_response
+from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 import pytest
@@ -245,6 +251,7 @@ async def test_output_schema_helper_functions():
   # Create a function response event with set_model_response
   function_response_event = Event(
       author='test_agent',
+      actions=EventActions(set_model_response=test_dict),
       content=types.Content(
           role='user',
           parts=[
@@ -302,6 +309,7 @@ async def test_get_structured_model_response_with_non_ascii():
   # Create a function response event
   function_response_event = Event(
       author='test_agent',
+      actions=EventActions(set_model_response=test_dict),
       content=types.Content(
           role='user',
           parts=[
@@ -344,6 +352,7 @@ async def test_get_structured_model_response_with_wrapped_result():
   # Create a function response event with wrapped result
   function_response_event = Event(
       author='test_agent',
+      actions=EventActions(set_model_response=wrapped_response['result']),
       content=types.Content(
           role='user',
           parts=[
@@ -361,6 +370,34 @@ async def test_get_structured_model_response_with_wrapped_result():
 
   # Should extract the unwrapped list, not the wrapped dict
   assert extracted_json == expected_json
+
+
+@pytest.mark.asyncio
+async def test_get_structured_model_response_skips_error_response():
+  """Test set_model_response error payloads are not treated as final output."""
+  function_response_event = Event(
+      author='test_agent',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='set_model_response',
+                      response={
+                          'error': (
+                              'Validation Error found:\nage\n'
+                              'Input should be a valid integer'
+                          )
+                      },
+                  )
+              )
+          ],
+      ),
+  )
+
+  extracted_json = get_structured_model_response(function_response_event)
+
+  assert extracted_json is None
 
 
 @pytest.mark.asyncio
@@ -469,12 +506,60 @@ async def test_flow_yields_both_events_for_set_model_response():
 
 
 @pytest.mark.asyncio
+async def test_flow_yields_error_response_for_invalid_set_model_response():
+  """Test invalid set_model_response args are sent back without finalizing."""
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-2.5-flash',
+      output_schema=PersonSchema,
+      tools=[],
+  )
+
+  invocation_context = await _create_invocation_context(agent)
+  flow = BaseLlmFlow()
+
+  set_response_tool = SetModelResponseTool(PersonSchema)
+  llm_request = LlmRequest()
+  llm_request.tools_dict['set_model_response'] = set_response_tool
+
+  function_call_event = Event(
+      author='test_agent',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name='set_model_response',
+                      args={
+                          'name': 'Test User',
+                          'age': 'not-an-int',
+                          # Missing city.
+                      },
+                  )
+              )
+          ],
+      ),
+  )
+
+  events = []
+  async for event in flow._postprocess_handle_function_calls_async(
+      invocation_context, function_call_event, llm_request
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  function_response = events[0].get_function_responses()[0]
+  assert function_response.name == 'set_model_response'
+  assert 'error' in function_response.response
+  assert 'Validation Error found' in function_response.response['error']
+  assert 'age' in function_response.response['error']
+  assert 'city' in function_response.response['error']
+  assert events[0].actions.set_model_response is None
+
+
+@pytest.mark.asyncio
 async def test_flow_yields_only_function_response_for_normal_tools():
   """Test that the flow yields only function response event for non-set_model_response tools."""
-  from google.adk.events.event import Event
-  from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
-  from google.genai import types
-
   agent = LlmAgent(
       name='test_agent',
       model='gemini-2.5-flash',

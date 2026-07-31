@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -508,7 +509,9 @@ def _get_default_description(agent: BaseNode) -> str:
   return 'A custom agent'
 
 
-def _extract_inputs_from_examples(examples: Optional[list[dict]]) -> list[str]:
+def _extract_inputs_from_examples(
+    examples: Optional[list[dict[str, Any]]],
+) -> list[str]:
   """Extracts only the input strings so they can be added to an AgentSkill."""
   if examples is None:
     return []
@@ -537,7 +540,7 @@ def _extract_inputs_from_examples(examples: Optional[list[dict]]) -> list[str]:
 
 async def _extract_examples_from_agent(
     agent: BaseNode,
-) -> Optional[List[Dict]]:
+) -> Optional[List[Dict[str, Any]]]:
   """Extract examples from example_tool if configured; otherwise, from agent instruction."""
   if not isinstance(agent, LlmAgent):
     return None
@@ -558,7 +561,7 @@ async def _extract_examples_from_agent(
   return None
 
 
-def _convert_example_tool_examples(tool: ExampleTool) -> List[Dict]:
+def _convert_example_tool_examples(tool: ExampleTool) -> List[Dict[str, Any]]:
   """Convert ExampleTool examples to the expected format."""
   examples = []
   for example in tool.examples:
@@ -578,7 +581,7 @@ def _convert_example_tool_examples(tool: ExampleTool) -> List[Dict]:
 
 def _extract_examples_from_instruction(
     instruction: str,
-) -> Optional[List[Dict]]:
+) -> Optional[List[Dict[str, Any]]]:
   """Extract examples from agent instruction text using regex patterns."""
   examples = []
 

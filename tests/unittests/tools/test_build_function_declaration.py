@@ -680,7 +680,7 @@ class TestBuildFunctionDeclarationWithJsonSchema:
         get_data, variant=GoogleLLMVariant.GEMINI_API
     )
 
-    # GEMINI_API should not have response_json_schema due to bug b/421991354
+    # GEMINI_API should not have response_json_schema: the API rejects it.
     assert decl.response_json_schema is None
 
   @pytest.mark.parametrize(

@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.sessions.session import Session
+from google.adk.tools.function_tool import _build_declaration_cached
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
@@ -533,3 +534,30 @@ async def test_run_async_with_context_type_annotation(mock_tool_context):
 
   assert result["query"] == "hello"
   assert result["context_type"] == "Context"
+
+
+def test_get_declaration_is_cached_and_returns_independent_copies():
+  """_get_declaration caches the build and hands out independent copies."""
+
+  def sample_tool(a: int, b: str) -> str:
+    """A sample tool."""
+    return b * a
+
+  _build_declaration_cached.cache_clear()
+  tool = FunctionTool(func=sample_tool)
+
+  d1 = tool._get_declaration()  # pylint: disable=protected-access
+  d2 = tool._get_declaration()  # pylint: disable=protected-access
+
+  # The expensive build runs once; the second call is served from cache.
+  info = _build_declaration_cached.cache_info()
+  assert info.misses == 1
+  assert info.hits >= 1
+
+  assert d1.name == d2.name == "sample_tool"
+
+  # Callers (e.g. toolset prefixing) mutate the returned declaration, so each
+  # call must return an independent copy rather than the shared cached object.
+  d1.name = "prefixed_sample_tool"
+  d3 = tool._get_declaration()  # pylint: disable=protected-access
+  assert d3.name == "sample_tool"

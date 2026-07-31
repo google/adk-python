@@ -27,6 +27,7 @@ import click
 from google.genai import types as genai_types
 
 from ..agents.base_agent import BaseAgent
+from ..apps.app import App
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
 from ..evaluation.base_eval_service import EvaluateRequest
@@ -75,18 +76,41 @@ def _get_agent_module(agent_module_file_path: str) -> ModuleType:
   return _import_from_path(module_name, file_path)
 
 
-async def get_root_agent(agent_module_file_path: str) -> BaseAgent:
-  """Returns root agent given the agent module."""
+async def get_app_or_root_agent(
+    agent_module_file_path: str,
+) -> tuple[Optional[App], BaseAgent]:
+  """Returns the (app, root_agent) pair for the given agent module.
+
+  If the module exposes an `App` instance via `app`, that App and its
+  `root_agent` are returned. Otherwise `app` is None and the root agent is
+  resolved the same way as `get_root_agent`. This lets eval flows participate
+  in the App's plugin / cache / resumability lifecycle when one is defined,
+  while preserving the bare-`root_agent` path for projects that don't use App.
+  """
   agent_module = _get_agent_module(agent_module_file_path)
   agent_module_with_agent = getattr(agent_module, "agent", agent_module)
+  app = getattr(agent_module_with_agent, "app", None)
+  if isinstance(app, App):
+    return app, cast(BaseAgent, app.root_agent)
   if hasattr(agent_module_with_agent, "root_agent"):
-    return cast(BaseAgent, agent_module_with_agent.root_agent)
+    return None, cast(BaseAgent, agent_module_with_agent.root_agent)
   elif hasattr(agent_module_with_agent, "get_agent_async"):
     root_agent, _ = await agent_module_with_agent.get_agent_async()
-    return cast(BaseAgent, root_agent)
+    return None, cast(BaseAgent, root_agent)
   raise ValueError(
       "Agent module should have either `root_agent` or `get_agent_async`."
   )
+
+
+async def get_root_agent(agent_module_file_path: str) -> BaseAgent:
+  """Returns root agent given the agent module.
+
+  Kept for backward compatibility. New callers should prefer
+  `get_app_or_root_agent`, which also surfaces the wrapping `App` (if any)
+  so plugins, context-cache, and resumability configs are honored.
+  """
+  _, root_agent = await get_app_or_root_agent(agent_module_file_path)
+  return root_agent
 
 
 def try_get_reset_func(agent_module_file_path: str) -> Any:

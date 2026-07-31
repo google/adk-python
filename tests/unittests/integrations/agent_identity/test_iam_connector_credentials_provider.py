@@ -32,6 +32,7 @@ from google.adk.integrations.agent_identity import GcpAuthProviderScheme
 from google.adk.integrations.agent_identity._iam_connector_credentials_provider import _IamConnectorCredentialsProvider
 from google.adk.integrations.agent_identity._iam_connector_credentials_provider import Client
 from google.adk.sessions.session import Session
+from google.api_core.exceptions import ServiceUnavailable
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsMetadata
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsResponse
 from google.longrunning.operations_pb2 import Operation
@@ -254,7 +255,7 @@ async def test_get_auth_credential_raises_error_if_upstream_call_fails(
     mock_client, auth_scheme, context, provider
 ):
   """Test get_auth_credential raises RuntimeError for failed calls."""
-  mock_client.retrieve_credentials.side_effect = Exception(
+  mock_client.retrieve_credentials.side_effect = ServiceUnavailable(
       "API Quota Exhausted"
   )
 
@@ -264,8 +265,8 @@ async def test_get_auth_credential_raises_error_if_upstream_call_fails(
   ) as exc_info:
     await provider.get_auth_credential(auth_scheme, context)
 
-  # Assert that the original Exception is the chained cause!
-  assert str(exc_info.value.__cause__) == "API Quota Exhausted"
+  # Assert that the original exception is the chained cause!
+  assert "API Quota Exhausted" in str(exc_info.value.__cause__)
 
 
 @patch.object(_iam_connector_credentials_provider.time, "time")

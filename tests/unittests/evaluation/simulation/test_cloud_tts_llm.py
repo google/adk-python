@@ -225,3 +225,25 @@ class TestGenerateContentAsync:
 
     with pytest.raises(ValueError, match="Unsupported audio_encoding"):
       _ = [r async for r in llm.generate_content_async(_text_request("hi"))]
+
+  @pytest.mark.asyncio
+  async def test_missing_texttospeech_raises_helpful_error(self, mocker):
+    """A missing Cloud TTS package raises a helpful, actionable ImportError.
+
+    `cloud_tts` is only one of the interchangeable (optional) audio backends,
+    so the package is not part of the `eval` extra. Selecting it without the
+    package installed should point the user at the fix.
+    """
+    # Setting the module entries to None makes the import machinery raise
+    # ImportError, simulating the package not being installed.
+    mocker.patch.dict(
+        "sys.modules",
+        {
+            "google.cloud.texttospeech_v1": None,
+            "google.cloud.texttospeech_v1.types": None,
+        },
+    )
+    llm = _CloudTTSLlm(model="cloud_tts")
+
+    with pytest.raises(ImportError, match="google-adk"):
+      _ = [r async for r in llm.generate_content_async(_text_request("hi"))]

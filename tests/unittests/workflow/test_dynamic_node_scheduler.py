@@ -29,7 +29,6 @@ from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeState
 from google.adk.workflow._node_state import NodeState
-from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import _LoopState
 from pydantic import BaseModel
 from pydantic import ValidationError
@@ -568,20 +567,21 @@ async def test_calling_waiting_node_without_rerun_raises_value_error():
 
 
 def test_get_dynamic_tasks_excludes_done_tasks():
-  """get_dynamic_tasks should not return completed tasks (regression for #6082)."""
+  """get_dynamic_tasks should not return completed tasks."""
   import asyncio
 
   loop = asyncio.new_event_loop()
+  running_task = None
   try:
 
     async def _done():
       return None
 
-    done_task = loop.run_until_complete(
-        asyncio.ensure_future(_done(), loop=loop)
-    )
-    running_coro = asyncio.sleep(9999)
-    running_task = loop.create_task(running_coro)
+    # run_until_complete returns the coroutine's result, so the run entry has
+    # to hold the task itself for the done-task filter to be exercised at all.
+    done_task = loop.create_task(_done())
+    loop.run_until_complete(done_task)
+    running_task = loop.create_task(asyncio.sleep(9999))
 
     state = DynamicNodeState()
     state.runs['path/done@r-1'] = DynamicNodeRun(
@@ -600,8 +600,14 @@ def test_get_dynamic_tasks_excludes_done_tasks():
     tasks = state.get_dynamic_tasks()
 
     assert tasks == [running_task]
-    running_task.cancel()
   finally:
+    # Cancelling without draining leaves the task pending at close() and the
+    # sleep coroutine unawaited, which surfaces as a warning in later tests.
+    if running_task is not None:
+      running_task.cancel()
+      loop.run_until_complete(
+          asyncio.gather(running_task, return_exceptions=True)
+      )
     loop.close()
 
 

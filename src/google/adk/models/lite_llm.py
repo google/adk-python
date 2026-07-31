@@ -53,6 +53,7 @@ from pydantic import Field
 from typing_extensions import override
 
 from ..utils._google_client_headers import merge_tracking_headers
+from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -2336,6 +2337,7 @@ async def _get_completion_inputs(
     Optional[List[Dict[str, Any]]],
     Optional[Dict[str, Any]],
     Optional[Dict[str, Any]],
+    str | None,
 ]:
   """Converts an LlmRequest to litellm inputs and extracts generation params.
 
@@ -2344,8 +2346,8 @@ async def _get_completion_inputs(
     model: The model string to use for determining provider-specific behavior.
 
   Returns:
-    The litellm inputs (message list, tool dictionary, response format and
-    generation params).
+    The litellm inputs (message list, tool dictionary, response format,
+    generation params, and tool_choice).
   """
   _ensure_litellm_imported()
 
@@ -2429,7 +2431,26 @@ async def _get_completion_inputs(
     if not generation_params:
       generation_params = None
 
-  return messages, tools, response_format, generation_params
+  # 5. Extract tool_choice from tool_config
+  tool_choice: Optional[str] = None
+  if (
+      llm_request.config
+      and llm_request.config.tool_config
+      and llm_request.config.tool_config.function_calling_config
+  ):
+    mode = llm_request.config.tool_config.function_calling_config.mode
+    if mode == types.FunctionCallingConfigMode.ANY:
+      tool_choice = "required"
+    elif mode == types.FunctionCallingConfigMode.NONE:
+      tool_choice = "none"
+    # AUTO → None (provider default)
+
+  # Coerce tool_choice to None when there are no tools to choose from.
+  # LiteLLM rejects tool_choice="required" (or "none") when tools is falsy.
+  if not tools:
+    tool_choice = None
+
+  return messages, tools, response_format, generation_params, tool_choice
 
 
 def _build_function_declaration_log(
@@ -2718,6 +2739,14 @@ class LiteLlm(BaseLlm):
     if drop_params is not None:
       self._additional_args["drop_params"] = drop_params
 
+  @property
+  @override
+  def capabilities(self) -> LlmCapabilities:
+    # LiteLLM reconciles tools + response_format per provider: providers with
+    # native support get both passed through, and the rest are converted to a
+    # json tool call with tool_choice enforcement.
+    return LlmCapabilities(output_schema_and_tools=True)
+
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
@@ -2738,7 +2767,7 @@ class LiteLlm(BaseLlm):
       logger.debug(_build_request_log(llm_request))
 
     effective_model = llm_request.model or self.model
-    messages, tools, response_format, generation_params = (
+    messages, tools, response_format, generation_params, tool_choice = (
         await _get_completion_inputs(llm_request, effective_model)
     )
     normalized_messages = _normalize_ollama_chat_messages(
@@ -2750,6 +2779,8 @@ class LiteLlm(BaseLlm):
     if "functions" in self._additional_args:
       # LiteLLM does not support both tools and functions together.
       tools = None
+      # No tools -> a "required"/"none" tool_choice would be rejected.
+      tool_choice = None
 
     completion_args: dict[str, Any] = {
         "model": effective_model,
@@ -2769,6 +2800,9 @@ class LiteLlm(BaseLlm):
 
     if generation_params:
       completion_args.update(generation_params)
+
+    if tool_choice is not None:
+      completion_args["tool_choice"] = tool_choice
 
     if llm_request.config.http_options:
       http_opts = llm_request.config.http_options

@@ -49,6 +49,7 @@ from typing_extensions import override
 
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -614,7 +615,13 @@ class DatabaseSessionService(BaseSessionService):
           after_dt = datetime.fromtimestamp(config.after_timestamp)
           stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
-        stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
+        # Break timestamp ties on id, matching the ordering the stale-session
+        # check uses. Without it the database is free to return tied events in
+        # a different order on every read, so a replayed conversation shuffles
+        # and `num_recent_events` truncates at an arbitrary point in the tie.
+        stmt = stmt.order_by(
+            schema.StorageEvent.timestamp.desc(), schema.StorageEvent.id.desc()
+        )
 
         if config and config.num_recent_events is not None:
           stmt = stmt.limit(config.num_recent_events)
@@ -779,7 +786,7 @@ class DatabaseSessionService(BaseSessionService):
         storage_session_result = await sql_session.execute(storage_session_stmt)
         storage_session = storage_session_result.scalars().one_or_none()
         if storage_session is None:
-          raise ValueError(f"Session {session.id} not found.")
+          raise SessionNotFoundError(f"Session {session.id} not found.")
         storage_update_time = storage_session.get_update_timestamp(
             is_sqlite=is_sqlite, is_postgresql=is_postgresql
         )

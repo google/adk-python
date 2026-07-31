@@ -127,7 +127,8 @@ def test_rebuild_single_test(test_client):
     assert response.json() == {"status": "success"}
     mock_to_thread.assert_called_once()
     args, kwargs = mock_to_thread.call_args
-    assert args[1].endswith("tests/my_test.json")
+    test_dir, test_name = os.path.split(args[1])
+    assert (os.path.basename(test_dir), test_name) == ("tests", "my_test.json")
 
 
 def test_run_tests(test_client):

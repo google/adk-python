@@ -20,7 +20,6 @@ import logging
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
@@ -63,8 +62,8 @@ class E2BEnvironment(BaseEnvironment):
       *,
       image: str = _DEFAULT_IMAGE,
       timeout: int = _DEFAULT_TIMEOUT,
-      api_key: Optional[str] = None,
-      env_vars: Optional[dict[str, str]] = None,
+      api_key: str | None = None,
+      env_vars: dict[str, str] | None = None,
   ):
     """Create an E2B environment.
 
@@ -81,7 +80,7 @@ class E2BEnvironment(BaseEnvironment):
     self._timeout = timeout
     self._api_key = api_key
     self._env_vars = env_vars
-    self._sandbox: Optional[AsyncSandbox] = None
+    self._sandbox: AsyncSandbox | None = None
 
   @property
   @override
@@ -109,7 +108,7 @@ class E2BEnvironment(BaseEnvironment):
       self,
       command: str,
       *,
-      timeout: Optional[float] = None,
+      timeout: float | None = None,
   ) -> ExecutionResult:
     from e2b import CommandExitException
     from e2b import TimeoutException

@@ -445,7 +445,7 @@ class TestConvertGenaiPartToA2aPart:
   def test_convert_empty_text_part(self):
     """Test that Part(text='') is preserved, not dropped.
 
-    Regression test for #5341: empty-string text parts are valid and
+    Regression test: empty-string text parts are valid and
     must not fall through to the unsupported-part warning.
     """
     # Arrange

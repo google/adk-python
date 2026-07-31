@@ -29,6 +29,8 @@ from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.api_core.client_options import ClientOptions
+from google.api_core.exceptions import GoogleAPIError
+from google.auth.exceptions import GoogleAuthError
 
 try:
   from google.cloud.agentidentitycredentials_v1 import AuthProviderCredentialsServiceClient as Client
@@ -41,8 +43,6 @@ except ImportError as e:
   ) from e
 
 from .gcp_auth_provider_scheme import GcpAuthProviderScheme
-
-# TODO: Catch specific exceptions instead of generic ones.
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -201,7 +201,7 @@ class _AgentIdentityCredentialsProvider:
 
     try:
       response = await self._retrieve_credentials(user_id, auth_scheme)
-    except Exception as e:
+    except (GoogleAPIError, GoogleAuthError) as e:
       raise RuntimeError(
           f"Failed to retrieve credential for user '{user_id}' on"
           f" provider '{auth_scheme.name}'."
@@ -227,7 +227,7 @@ class _AgentIdentityCredentialsProvider:
         if "success" in response:
           logger.debug("Auth credential obtained after polling.")
           return _construct_auth_credential(response)
-      except Exception as e:
+      except (GoogleAPIError, GoogleAuthError, TimeoutError) as e:
         raise RuntimeError(
             f"Failed to retrieve credential for user '{user_id}' on"
             f" provider '{auth_scheme.name}'."
