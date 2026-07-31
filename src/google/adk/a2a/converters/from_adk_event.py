@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Sequence
 import logging
 from typing import Any
 from typing import Dict
@@ -139,7 +140,8 @@ def create_error_status_event(
       status=_compat.make_task_status(_compat.TS_FAILED, message=fa_err_msg),
       final=True,
   )
-  return _add_event_metadata(event, [error_event])[0]
+  _add_event_metadata(event, [error_event])
+  return error_event
 
 
 @a2a_experimental
@@ -170,7 +172,7 @@ def convert_event_to_a2a_events(
   if agents_artifacts is None:
     raise ValueError("Agents artifacts cannot be None")
 
-  a2a_events = []
+  a2a_events: list[A2AUpdateEvent] = []
   try:
     a2a_parts = _convert_adk_parts_to_a2a_parts(
         event, part_converter=part_converter
@@ -221,7 +223,7 @@ def convert_event_to_a2a_events(
           )
       )
 
-    a2a_events = _add_event_metadata(event, a2a_events)
+    _add_event_metadata(event, a2a_events)
     return a2a_events
 
   except Exception as e:
@@ -269,9 +271,7 @@ def _serialize_value(value: Any) -> Optional[Any]:
 
 
 # TODO: Clarify if this metadata needs to be translated back into the ADK event
-def _add_event_metadata(
-    event: Event, a2a_events: List[A2AEvent]
-) -> List[A2AEvent]:
+def _add_event_metadata(event: Event, a2a_events: Sequence[A2AEvent]) -> None:
   """Gets the context metadata for the event and applies it to A2A events."""
   if not event:
     raise ValueError("Event cannot be None")
@@ -305,5 +305,3 @@ def _add_event_metadata(
       _compat.set_struct_metadata(status_message, metadata)
     elif isinstance(a2a_event, TaskArtifactUpdateEvent):
       _compat.set_struct_metadata(a2a_event.artifact, metadata)
-
-  return a2a_events

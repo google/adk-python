@@ -36,6 +36,7 @@ from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.errors.input_validation_error import InputValidationError
+from google.cloud.exceptions import NotFound
 from google.genai import types
 import pytest
 
@@ -97,10 +98,12 @@ class MockBlob:
         bytes: The content of the blob as bytes.
 
     Raises:
-        Exception: If the blob doesn't exist (hasn't been uploaded to).
+        NotFound: If the blob doesn't exist (hasn't been uploaded to), matching
+          the real client, which surfaces the 404 rather than returning empty
+          content.
     """
     if self.content is None:
-      return b""
+      raise NotFound(f"No such object: {self.name}")
     return self.content
 
   def delete(self) -> None:
@@ -156,14 +159,15 @@ class MockClient:
     return self.buckets[bucket_name]
 
   def list_blobs(self, bucket: MockBucket, prefix: Optional[str] = None):
-    """Mocks listing blobs in a bucket, optionally with a prefix."""
-    if prefix:
-      return [
-          blob
-          for name, blob in bucket.blobs.items()
-          if name.startswith(prefix) and blob.content is not None
-      ]
-    return [blob for blob in bucket.blobs.values() if blob.content is not None]
+    """Mocks listing blobs in a bucket, optionally with a prefix.
+
+    Results are ordered lexicographically by name, like the real client.
+    """
+    return [
+        blob
+        for name, blob in sorted(bucket.blobs.items())
+        if blob.content is not None and (not prefix or name.startswith(prefix))
+    ]
 
 
 def mock_gcs_artifact_service():
@@ -1827,6 +1831,55 @@ async def test_gcs_load_artifact_file_data_fallback_compatibility() -> None:
   assert loaded.file_data is not None
   assert loaded.file_data.file_uri == "gs://my-bucket/old_report.pdf"
   assert loaded.file_data.mime_type == "application/pdf"
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_list_versions_is_sorted_numerically() -> None:
+  """GcsArtifactService orders versions numerically, not lexicographically."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  for i in range(12):
+    await service.save_artifact(
+        **scope,
+        filename="notes.txt",
+        artifact=types.Part.from_text(text=f"v{i}"),
+    )
+
+  assert await service.list_versions(**scope, filename="notes.txt") == list(
+      range(12)
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_list_versions_skips_blobs_without_a_version_suffix() -> None:
+  """GcsArtifactService ignores stored objects that are not versions."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v0")
+  )
+  stray = service.bucket.blob("app/user1/sess1/notes.txt/checkpoint")
+  stray.upload_from_string(b"", content_type="text/plain")
+
+  assert await service.list_versions(**scope, filename="notes.txt") == [0]
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_load_artifact_returns_none_for_missing_version() -> None:
+  """GcsArtifactService returns None instead of surfacing a storage 404."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v0")
+  )
+
+  assert (
+      await service.load_artifact(**scope, filename="notes.txt", version=7)
+      is None
+  )
 
 
 @pytest.mark.asyncio

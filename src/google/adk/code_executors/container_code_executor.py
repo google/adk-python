@@ -33,6 +33,74 @@ from .code_execution_utils import CodeExecutionResult
 logger = logging.getLogger('google_adk.' + __name__)
 DEFAULT_IMAGE_TAG = 'adk-code-executor:latest'
 
+# Reported by the supervisor below when it kills a run that hit the bound.
+# Follows the convention of coreutils `timeout`; unlike 128 + SIGALRM it is not
+# something the executed code produces by letting an alarm of its own fire.
+_TIMEOUT_EXIT_CODE = 124
+
+# Runs the code under a supervisor that enforces a hard wall-clock bound inside
+# the container. The code runs in a forked child in its own process group; the
+# supervisor waits for it and, when the bound expires, SIGKILLs the whole group
+# and exits with `_TIMEOUT_EXIT_CODE`. The group is also swept once the code
+# finishes normally, so nothing it started is left running in the shared
+# container (a leftover process would also hold the exec's output open).
+#
+# Two properties matter for code that may be hostile: the deadline lives in a
+# process the code never runs in, so it cannot be disarmed from inside (an
+# alarm armed in the executing process could be cancelled with one call), and
+# SIGKILL to the group reaches what the code spawned, not just its top frame.
+# The code is passed as an argument rather than inlined so that tracebacks keep
+# the original line numbers, and argv is restored to what `python3 -c` would
+# have given so that code parsing arguments still works.
+#
+# Not covered: code that deliberately leaves the group (`os.setsid()`) or
+# double-forks away survives the bound until the container is torn down.
+_TIMEOUT_WRAPPER = """\
+import os, signal, sys
+
+_timeout = int(sys.argv[1])
+_source = sys.argv[2]
+del sys.argv[1:]
+
+_pid = os.fork()
+if _pid == 0:
+  try:
+    os.setpgid(0, 0)
+  except OSError:
+    pass
+  exec(compile(_source, '<adk_code>', 'exec'), {'__name__': '__main__'})
+else:
+
+  def _sweep_group():
+    try:
+      os.killpg(_pid, signal.SIGKILL)
+    except OSError:
+      pass
+
+  def _expire(_signum, _frame):
+    _sweep_group()
+    try:
+      os.kill(_pid, signal.SIGKILL)
+    except OSError:
+      pass
+    os._exit(%d)
+
+  try:
+    os.setpgid(_pid, _pid)
+  except OSError:
+    pass
+  signal.signal(signal.SIGALRM, _expire)
+  signal.alarm(_timeout)
+  _status = os.waitpid(_pid, 0)[1]
+  signal.alarm(0)
+  _sweep_group()
+  os._exit(
+      128 + os.WTERMSIG(_status)
+      if os.WIFSIGNALED(_status)
+      else os.WEXITSTATUS(_status)
+  )
+""" % _TIMEOUT_EXIT_CODE
+
 
 class ContainerCodeExecutor(BaseCodeExecutor):
   """A code executor that uses a custom container to execute code.
@@ -85,6 +153,23 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   (which can yield the host's service-account credentials), internal services,
   or arbitrary exfiltration destinations. Set to True only if the executed
   code must make network requests and you trust it.
+  """
+
+  # Overrides the BaseCodeExecutor attribute: unlike the base default of None,
+  # the timeout here is always finite and must be positive (0 would mean no
+  # bound at all).
+  timeout_seconds: int = Field(default=300, gt=0)
+  """The wall-clock timeout in seconds for a single code execution.
+
+  Every execution shares one long-lived container, so an unbounded run (e.g. a
+  loop emitted by the model) would keep burning that container's CPU for every
+  later caller. Defaults to 300, matching ``GkeCodeExecutor``. A computation
+  that legitimately runs longer than the timeout is killed, so raise it rather
+  than removing it; ``None`` is rejected, unlike on the base class.
+
+  When the timeout expires the executed code is killed along with the process
+  group it runs in, so what it spawned goes with it. Code that deliberately
+  detaches from that group keeps running until the container is torn down.
   """
 
   # Overrides the BaseCodeExecutor attribute: this executor cannot be stateful.
@@ -151,7 +236,13 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     output = ''
     error = ''
     exec_result = self._container.exec_run(
-        ['python3', '-c', code_execution_input.code],
+        [
+            'python3',
+            '-c',
+            _TIMEOUT_WRAPPER,
+            str(self.timeout_seconds),
+            code_execution_input.code,
+        ],
         demux=True,
     )
     logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
@@ -164,6 +255,15 @@ class ContainerCodeExecutor(BaseCodeExecutor):
         and exec_result.output[1]
     ):
       error = exec_result.output[1].decode('utf-8')
+
+    if exec_result.exit_code == _TIMEOUT_EXIT_CODE:
+      # Appended rather than assigned: whatever the code managed to write to
+      # stderr before the alarm fired is still the useful diagnostic, but on
+      # its own it would hide the fact that the run was cut short.
+      timed_out = (
+          f'Code execution timed out after {self.timeout_seconds} seconds.'
+      )
+      error = f'{error}\n{timed_out}' if error else timed_out
 
     # Collect the final result.
     return CodeExecutionResult(

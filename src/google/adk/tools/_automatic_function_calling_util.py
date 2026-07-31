@@ -222,7 +222,8 @@ def build_function_declaration(
         )
     )
     # Add response schema only for VERTEX_AI
-    # TODO(b/421991354): Remove this check once the bug is fixed.
+    # Pending cleanup: remove this check once the Gemini API accepts
+    # response_json_schema.
     if variant != GoogleLLMVariant.VERTEX_AI:
       declaration.response_json_schema = None
     return declaration

@@ -25,15 +25,26 @@ from .config import DataAgentToolConfig
 _GDA_CLIENT_ID = "GOOGLE_ADK"
 
 
+def _extract_location_from_resource_name(resource_name: str) -> str | None:
+  """Extracts the location segment from a resource name if present."""
+  parts = resource_name.split("/")
+  for i, part in enumerate(parts[:-1]):
+    if part == "locations" and i + 1 < len(parts):
+      return parts[i + 1]
+  return None
+
+
 def list_accessible_data_agents(
     project_id: str,
     credentials: Credentials,
+    settings: DataAgentToolConfig | None = None,
 ) -> dict[str, Any]:
   """Lists accessible data agents in a project.
 
   Args:
       project_id: The project to list agents in.
       credentials: The credentials to use for the request.
+      settings: Optional tool settings containing location or custom endpoint.
 
   Returns:
       A dictionary containing the status and a list of data agents with their
@@ -94,13 +105,31 @@ def list_accessible_data_agents(
       }
   """
   try:
-    session, endpoint = _gda_stream_util.get_gda_session(credentials)
+    location = (
+        settings.location
+        if settings and isinstance(settings.location, str)
+        else None
+    )
+    api_endpoint = (
+        settings.api_endpoint
+        if settings and isinstance(settings.api_endpoint, str)
+        else None
+    )
+
+    kwargs: dict[str, str] = {}
+    if location:
+      kwargs["location"] = location
+    if api_endpoint:
+      kwargs["api_endpoint"] = api_endpoint
+
+    session, endpoint = _gda_stream_util.get_gda_session(credentials, **kwargs)
     base_url = f"{endpoint}/v1"
     headers = {
         "Content-Type": "application/json",
         "X-Goog-API-Client": _GDA_CLIENT_ID,
     }
-    list_url = f"{base_url}/projects/{project_id}/locations/global/dataAgents:listAccessible"
+    target_location = location or "global"
+    list_url = f"{base_url}/projects/{project_id}/locations/{target_location}/dataAgents:listAccessible"
     with session:
       resp = session.get(
           list_url,
@@ -122,9 +151,32 @@ def _get_data_agent_info(
     data_agent_name: str,
     credentials: Credentials,
     session: requests.Session | None = None,
+    settings: DataAgentToolConfig | None = None,
 ) -> dict[str, Any]:
   try:
-    endpoint = _gda_stream_util.get_gda_endpoint()
+    real_session: requests.Session | None = session
+    real_settings: DataAgentToolConfig | None = settings
+
+    location = (
+        real_settings.location
+        if real_settings and isinstance(real_settings.location, str)
+        else None
+    )
+    api_endpoint = (
+        real_settings.api_endpoint
+        if real_settings and isinstance(real_settings.api_endpoint, str)
+        else None
+    )
+    if not location and not api_endpoint and data_agent_name:
+      location = _extract_location_from_resource_name(data_agent_name)
+
+    kwargs: dict[str, str] = {}
+    if location:
+      kwargs["location"] = location
+    if api_endpoint:
+      kwargs["api_endpoint"] = api_endpoint
+
+    endpoint = _gda_stream_util.get_gda_endpoint(**kwargs)
     base_url = f"{endpoint}/v1"
     headers = {
         "Content-Type": "application/json",
@@ -132,13 +184,13 @@ def _get_data_agent_info(
     }
     get_url = f"{base_url}/{data_agent_name}"
 
-    if session:
-      resp = session.get(
+    if real_session:
+      resp = real_session.get(
           get_url,
           headers=headers,
       )
     else:
-      local_session, _ = _gda_stream_util.get_gda_session(credentials)
+      local_session, _ = _gda_stream_util.get_gda_session(credentials, **kwargs)
       with local_session:
         resp = local_session.get(
             get_url,
@@ -160,6 +212,7 @@ def _get_data_agent_info(
 def get_data_agent_info(
     data_agent_name: str,
     credentials: Credentials,
+    settings: DataAgentToolConfig | None = None,
 ) -> dict[str, Any]:
   """Gets a data agent by name.
 
@@ -167,6 +220,7 @@ def get_data_agent_info(
       data_agent_name: The name of the agent to get, in format
         projects/{project}/locations/{location}/dataAgents/{agent}.
       credentials: The credentials to use for the request.
+      settings: Optional tool settings containing location or custom endpoint.
 
   Returns:
       A dictionary containing the status and details of a data agent,
@@ -205,7 +259,7 @@ def get_data_agent_info(
           }
       }
   """
-  return _get_data_agent_info(data_agent_name, credentials)
+  return _get_data_agent_info(data_agent_name, credentials, settings=settings)
 
 
 def ask_data_agent(
@@ -223,6 +277,7 @@ def ask_data_agent(
         format projects/{project}/locations/{location}/dataAgents/{agent}.
       query: The question to ask the agent.
       credentials: The credentials to use for the request.
+      settings: Tool configuration including max rows and optional endpoint.
       tool_context: The context for the tool.
 
   Returns:
@@ -259,7 +314,9 @@ def ask_data_agent(
           },
           {
             "data": {
-              "generatedSql": "SELECT\n AVG(SAFE_CAST(street_trees.dbh AS FLOAT64)) AS average_height\nFROM\n bigquery-public-data.san_francisco.street_trees AS street_trees;"
+              "generatedSql": "SELECT\n AVG(SAFE_CAST(street_trees.dbh AS
+              FLOAT64)) AS average_height\nFROM\n
+              bigquery-public-data.san_francisco.street_trees AS street_trees;"
             }
           },
           {
@@ -278,7 +335,9 @@ def ask_data_agent(
           {
             "text": {
               "parts": [
-                "### Summary\nBased on the street tree data for San Francisco, the average height (recorded in the dbh column) is approximately 10.07."
+                "### Summary\nBased on the street tree data for San Francisco,
+                the average height (recorded in the dbh column) is approximately
+                10.07."
               ],
               "textType": "FINAL_RESPONSE"
             }
@@ -287,7 +346,27 @@ def ask_data_agent(
       }
   """
   try:
-    session, endpoint = _gda_stream_util.get_gda_session(credentials)
+    location = (
+        settings.location
+        if settings and isinstance(settings.location, str)
+        else None
+    )
+    api_endpoint = (
+        settings.api_endpoint
+        if settings and isinstance(settings.api_endpoint, str)
+        else None
+    )
+
+    if not location and not api_endpoint and data_agent_name:
+      location = _extract_location_from_resource_name(data_agent_name)
+
+    kwargs: dict[str, str] = {}
+    if location:
+      kwargs["location"] = location
+    if api_endpoint:
+      kwargs["api_endpoint"] = api_endpoint
+
+    session, endpoint = _gda_stream_util.get_gda_session(credentials, **kwargs)
     with session:
       base_url = f"{endpoint}/v1"
       headers = {
@@ -298,6 +377,7 @@ def ask_data_agent(
       agent_info = _get_data_agent_info(
           data_agent_name, credentials, session=session
       )
+
       if agent_info.get("status") == "ERROR":
         return agent_info
       parent = data_agent_name.rsplit("/", 2)[0]

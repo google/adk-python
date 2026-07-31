@@ -31,7 +31,7 @@ function_call_no_schema = Part.from_function_call(
 grounding_metadata = types.GroundingMetadata(web_search_queries=['test query'])
 
 
-# TODO(b/448114567): Remove test_grounding_metadata_ tests once the workaround
+# Pending cleanup: remove test_grounding_metadata_ tests once the workaround
 # is no longer needed.
 
 

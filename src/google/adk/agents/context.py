@@ -230,6 +230,7 @@ class Context(ReadonlyContext):
     self._error_node_path: str = ''
 
   @property
+  @override
   def custom_metadata(self) -> dict[str, Any]:
     """Returns the custom metadata dictionary."""
     # pylint: disable=protected-access

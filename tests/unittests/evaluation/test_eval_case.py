@@ -62,6 +62,23 @@ def test_invocation_event_content_defaults_to_none():
   assert InvocationEvent.model_validate(event.model_dump()).content is None
 
 
+def test_session_input_accepts_session_id():
+  """Tests that SessionInput accepts a fixed session_id and round-trips it."""
+  session_input = SessionInput(app_name='a', user_id='u', session_id='s1')
+
+  assert session_input.session_id == 's1'
+
+  round_tripped = SessionInput.model_validate_json(
+      session_input.model_dump_json()
+  )
+  assert round_tripped.session_id == 's1'
+
+
+def test_session_input_session_id_defaults_to_none():
+  """Tests that session_id is optional and defaults to None."""
+  assert SessionInput(app_name='a', user_id='u').session_id is None
+
+
 def test_get_all_tool_calls_with_none_input():
   """Tests that an empty list is returned when intermediate_data is None."""
   assert get_all_tool_calls(None) == []

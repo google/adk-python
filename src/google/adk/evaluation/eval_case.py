@@ -124,6 +124,16 @@ class SessionInput(EvalBaseModel):
   user_id: str
   """The user id."""
 
+  session_id: Optional[str] = None
+  """A fixed session id to use for this eval case, if set.
+
+  Artifacts are keyed by (app_name, user_id, session_id), so a fixed session id
+  lets an eval case reach artifacts that were pre-loaded for that session. When
+  unset, a random session id is generated per case. An existing session under
+  this id is reused as-is, so `state` only applies when the session has to be
+  created.
+  """
+
   state: SessionState = Field(default_factory=dict)
   """The state of the session."""
 

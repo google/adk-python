@@ -340,12 +340,10 @@ def _parse_schema_from_parameter(
           ),
           func_name,
       )
-      if (
-          schema_in_any_of.model_dump_json(exclude_none=True)
-          not in unique_types
-      ):
+      schema_key = schema_in_any_of.model_dump_json(exclude_none=True)
+      if schema_key not in unique_types:
         schema.any_of.append(schema_in_any_of)
-        unique_types.add(schema_in_any_of.model_dump_json(exclude_none=True))
+        unique_types.add(schema_key)
     if len(schema.any_of) == 1:  # param: list | None -> Array
       collapsed = schema.any_of[0]
       if schema.nullable:
@@ -470,12 +468,10 @@ def _parse_schema_from_parameter(
             ):
               # Optional type with list, for example Optional[list[str]]
               schema.items = schema_in_any_of.items
-        if (
-            schema_in_any_of.model_dump_json(exclude_none=True)
-            not in unique_types
-        ):
+        schema_key = schema_in_any_of.model_dump_json(exclude_none=True)
+        if schema_key not in unique_types:
           schema.any_of.append(schema_in_any_of)
-          unique_types.add(schema_in_any_of.model_dump_json(exclude_none=True))
+          unique_types.add(schema_key)
       if len(schema.any_of) == 1:  # param: Union[List, None] -> Array
         collapsed = schema.any_of[0]
         if schema.nullable:

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 from collections import OrderedDict
@@ -148,50 +149,69 @@ class VertexAiRagMemoryService(BaseMemoryService):
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, suffix=".txt"
-    ) as temp_file:
+    rag_resources = self._vertex_rag_store.rag_resources or ()
+    corpus_names = tuple(
+        resource.rag_corpus for resource in rag_resources if resource.rag_corpus
+    )
+    if not corpus_names or len(corpus_names) != len(rag_resources):
+      raise ValueError("rag_corpus must be set on every RAG resource.")
 
-      output_lines = []
-      for event in session.events:
-        if not event.content or not event.content.parts:
-          continue
-        text_parts = [
-            part.text.replace("\n", " ")
-            for part in event.content.parts
-            if part.text
-        ]
-        if text_parts:
-          output_lines.append(
-              json.dumps({
-                  "author": event.author,
-                  "timestamp": event.timestamp,
-                  "text": ".".join(text_parts),
-              })
-          )
-      output_string = "\n".join(output_lines)
-      temp_file.write(output_string)
-      temp_file_path = temp_file.name
-
-    if not self._vertex_rag_store.rag_resources:
-      raise ValueError("Rag resources must be set.")
+    output_lines = []
+    for event in session.events:
+      if not event.content or not event.content.parts:
+        continue
+      text_parts = [
+          part.text.replace("\n", " ")
+          for part in event.content.parts
+          if part.text
+      ]
+      if text_parts:
+        output_lines.append(
+            json.dumps({
+                "author": event.author,
+                "timestamp": event.timestamp,
+                "text": ".".join(text_parts),
+            })
+        )
+    output_string = "\n".join(output_lines)
 
     import agentplatform
 
-    client = agentplatform.Client(
-        project=self._project, location=self._location
-    )
+    temp_file_path: str | None = None
+    try:
+      with tempfile.NamedTemporaryFile(
+          mode="w",
+          delete=False,
+          encoding="utf-8",
+          suffix=".txt",
+      ) as temp_file:
+        temp_file_path = temp_file.name
+        temp_file.write(output_string)
 
-    for rag_resource in self._vertex_rag_store.rag_resources:
-      client.rag.upload_file(
-          corpus_name=rag_resource.rag_corpus,
-          path=temp_file_path,
-          display_name=_build_source_display_name(
-              session.app_name, session.user_id, session.id
-          ),
-      )
-
-    os.remove(temp_file_path)
+      client = agentplatform.Client(
+          project=self._project, location=self._location
+      ).aio
+      rag = client.rag
+      try:
+        # Fails fast: the RAG API cannot roll back corpora already written.
+        for corpus_name in corpus_names:
+          await rag.upload_file(
+              corpus_name=corpus_name,
+              path=temp_file_path,
+              display_name=_build_source_display_name(
+                  session.app_name, session.user_id, session.id
+              ),
+          )
+      finally:
+        # Shielded so a cancellation racing the close cannot leak the
+        # underlying HTTP session.
+        await asyncio.shield(client.aclose())
+    finally:
+      if temp_file_path:
+        try:
+          os.remove(temp_file_path)
+        except FileNotFoundError:
+          pass
 
   @override
   async def search_memory(
@@ -205,15 +225,19 @@ class VertexAiRagMemoryService(BaseMemoryService):
 
     client = agentplatform.Client(
         project=self._project, location=self._location
-    )
-
-    response = client.rag.retrieve_contexts(
-        vertex_rag_store=self._vertex_rag_store,
-        query=agentplatform_types.RagQuery(
-            text=query,
-            similarity_top_k=self._similarity_top_k,
-        ),
-    )
+    ).aio
+    try:
+      response = await client.rag.retrieve_contexts(
+          vertex_rag_store=self._vertex_rag_store,
+          query=agentplatform_types.RagQuery(
+              text=query,
+              similarity_top_k=self._similarity_top_k,
+          ),
+      )
+    finally:
+      # Shielded so a cancellation racing the close cannot leak the
+      # underlying HTTP session.
+      await asyncio.shield(client.aclose())
     memory_results = []
     session_events_map: OrderedDict[str, list[list[Event]]] = OrderedDict()
     for context in response.contexts.contexts:

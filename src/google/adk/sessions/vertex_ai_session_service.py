@@ -290,9 +290,14 @@ class VertexAiSessionService(BaseSessionService):
           session.events.append(_from_api_event(event))
 
     if config:
-      # Filter events based on num_recent_events.
-      if config.num_recent_events:
-        session.events = session.events[-config.num_recent_events :]
+      # Filter events based on num_recent_events. Note `0` must return an empty
+      # list (and `events[-0:]` would wrongly return everything).
+      if config.num_recent_events is not None:
+        session.events = (
+            session.events[-config.num_recent_events :]
+            if config.num_recent_events
+            else []
+        )
 
     return session
 

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import logging
 from typing import Any
@@ -29,15 +30,42 @@ from google.genai import types
 import pydantic
 from typing_extensions import override
 
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..utils._schema_utils import get_list_inner_type
 from ..utils._schema_utils import is_list_of_basemodel
 from ..utils.context_utils import Aclosing
 from ..utils.context_utils import find_context_parameter
+from ..utils.variant_utils import GoogleLLMVariant
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+@functools.lru_cache(maxsize=1024)
+def _build_declaration_cached(
+    func: Callable[..., Any],
+    ignore_params: tuple[str, ...],
+    variant: GoogleLLMVariant,
+    json_schema_enabled: bool,
+) -> types.FunctionDeclaration:
+  """Builds (and caches) a tool's FunctionDeclaration.
+
+  The build runs pydantic ``create_model`` + JSON-schema generation, which is
+  expensive and otherwise re-run for every tool on every LLM call even though
+  the result depends only on these (static) inputs. ``json_schema_enabled`` is
+  part of the key so toggling the feature flag rebuilds.
+  """
+  del json_schema_enabled  # Only participates in the cache key.
+  return types.FunctionDeclaration.model_validate(
+      build_function_declaration(
+          func=func,
+          ignore_params=list(ignore_params),
+          variant=variant,
+      )
+  )
 
 
 class FunctionTool(BaseTool):
@@ -92,17 +120,16 @@ class FunctionTool(BaseTool):
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
-    function_decl = types.FunctionDeclaration.model_validate(
-        build_function_declaration(
-            func=self.func,
-            # The model doesn't understand the function context.
-            # input_stream is for streaming tool
-            ignore_params=self._ignore_params,
-            variant=self._api_variant,
-        )
+    # `ignore_params` drops the function context and input_stream (for streaming
+    # tools), which the model doesn't understand. Return a copy: the cached
+    # declaration is shared and callers (e.g. toolset prefixing) mutate it.
+    declaration = _build_declaration_cached(
+        self.func,
+        tuple(self._ignore_params),
+        self._api_variant,
+        is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL),
     )
-
-    return function_decl
+    return declaration.model_copy(deep=True)
 
   def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
     """Preprocess and convert function arguments before invocation.

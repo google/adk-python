@@ -19,6 +19,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import functions
+from google.adk.flows.llm_flows.request_confirmation import _resolve_confirmation_targets
 from google.adk.flows.llm_flows.request_confirmation import request_processor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.function_tool import FunctionTool
@@ -692,3 +693,248 @@ async def test_request_confirmation_processor_rejections(
   with pytest.raises(ValueError, match=expected_exception_match):
     async for _ in request_processor.run_async(invocation_context, llm_request):
       pass
+
+
+def _build_consumed_dynamic_confirmation_events(
+    agent_name: str,
+) -> list[Event]:
+  """Builds a session where a dynamic confirmation was already acted on.
+
+  Reproduces the state the processor sees on the *second* LLM step of a turn:
+  a tool was gated at runtime by a policy plugin, the user approved, the
+  processor re-executed the tool, and the model then made one more tool call —
+  which sends the flow through preprocessing again while the approval is still
+  the last user event.
+
+  Args:
+    agent_name: Author to use for the agent-authored events.
+
+  Returns:
+    The session events, in order.
+  """
+  original_function_call = types.FunctionCall(
+      name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
+  )
+  tool_confirmation_request = ToolConfirmation(
+      confirmed=False, hint="dynamic hint"
+  )
+  return [
+      # 1. The model calls the tool.
+      Event(
+          author=agent_name,
+          content=types.Content(
+              parts=[types.Part(function_call=original_function_call)]
+          ),
+      ),
+      # 2. The tool is gated at runtime and requests confirmation.
+      Event(
+          author=agent_name,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=MOCK_TOOL_NAME,
+                          id=MOCK_FUNCTION_CALL_ID,
+                          response={"status": "waiting_for_confirm"},
+                      )
+                  )
+              ]
+          ),
+          actions=EventActions(
+              requested_tool_confirmations={
+                  MOCK_FUNCTION_CALL_ID: tool_confirmation_request
+              }
+          ),
+      ),
+      # 3. ADK asks the client to confirm.
+      Event(
+          author=agent_name,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          args={
+                              "originalFunctionCall": (
+                                  original_function_call.model_dump(
+                                      exclude_none=True, by_alias=True
+                                  )
+                              ),
+                              "toolConfirmation": (
+                                  tool_confirmation_request.model_dump(
+                                      by_alias=True, exclude_none=True
+                                  )
+                              ),
+                          },
+                      )
+                  )
+              ]
+          ),
+      ),
+      # 4. The user approves.
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": (
+                                  ToolConfirmation(
+                                      confirmed=True
+                                  ).model_dump_json()
+                              )
+                          },
+                      )
+                  )
+              ]
+          ),
+      ),
+      # 5. The processor re-executed the tool. Note this response carries no
+      # `requested_tool_confirmations`.
+      Event(
+          author=agent_name,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=MOCK_TOOL_NAME,
+                          id=MOCK_FUNCTION_CALL_ID,
+                          response={"result": "Mock tool result with test"},
+                      )
+                  )
+              ]
+          ),
+      ),
+      # 6. The model makes one more tool call, forcing another LLM step.
+      Event(
+          author=agent_name,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name="another_tool", id="another_function_call_id"
+                      )
+                  )
+              ]
+          ),
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_consumed_dynamic_confirmation_is_noop():
+  """A dynamic confirmation already acted on must not be processed again."""
+  agent = LlmAgent(
+      name="test_agent",
+      tools=[FunctionTool(mock_tool, require_confirmation=False)],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events.extend(
+      _build_consumed_dynamic_confirmation_events(agent.name)
+  )
+
+  events = []
+  async for event in request_processor.run_async(
+      invocation_context, LlmRequest()
+  ):
+    events.append(event)
+
+  assert not events
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_consumed_confirmation_ignores_deregistered_tool():
+  """A consumed confirmation must not fail when the toolset has moved on.
+
+  Toolsets are resolved per step, so a tool present when the user approved can
+  be gone by the next step (e.g. a disconnected MCP toolset). That must not
+  abort the invocation.
+  """
+  agent = LlmAgent(name="test_agent", tools=[])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events.extend(
+      _build_consumed_dynamic_confirmation_events(agent.name)
+  )
+
+  events = []
+  async for event in request_processor.run_async(
+      invocation_context, LlmRequest()
+  ):
+    events.append(event)
+
+  assert not events
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_consumed_confirmation_skips_revalidation():
+  """A consumed confirmation must not re-invoke `check_require_confirmation`.
+
+  It is a user-overridable hook that may be expensive or have side effects, so
+  it must not run once per LLM step for the rest of the turn.
+  """
+  check_require_confirmation_calls = []
+
+  class _CountingFunctionTool(FunctionTool):
+
+    async def check_require_confirmation(self, args, tool_context) -> bool:
+      check_require_confirmation_calls.append(args)
+      return False
+
+  agent = LlmAgent(
+      name="test_agent",
+      tools=[_CountingFunctionTool(mock_tool, require_confirmation=False)],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events.extend(
+      _build_consumed_dynamic_confirmation_events(agent.name)
+  )
+
+  async for _ in request_processor.run_async(invocation_context, LlmRequest()):
+    pass
+
+  assert not check_require_confirmation_calls
+
+
+@pytest.mark.asyncio
+async def test_resolve_confirmation_targets_after_reexecution():
+  """The re-execution response must not shadow the original confirmation request.
+
+  `_resolve_confirmation_targets` is also called directly by out-of-tree
+  callers that have no dedup of their own, so it has to stay correct once the
+  confirmed tool has produced a second response under the same call ID.
+  """
+  tool = FunctionTool(mock_tool, require_confirmation=False)
+  agent = LlmAgent(name="test_agent", tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events.extend(
+      _build_consumed_dynamic_confirmation_events(agent.name)
+  )
+
+  tool_confirmation_dict, original_fcs_dict = (
+      await _resolve_confirmation_targets(
+          invocation_context,
+          invocation_context.session.events,
+          {MOCK_CONFIRMATION_FUNCTION_CALL_ID},
+          {
+              MOCK_CONFIRMATION_FUNCTION_CALL_ID: ToolConfirmation(
+                  confirmed=True
+              )
+          },
+          {MOCK_TOOL_NAME: tool},
+      )
+  )
+
+  assert set(tool_confirmation_dict) == {MOCK_FUNCTION_CALL_ID}
+  assert set(original_fcs_dict) == {MOCK_FUNCTION_CALL_ID}

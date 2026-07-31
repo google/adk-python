@@ -15,6 +15,7 @@
 import asyncio
 from contextlib import aclosing
 import importlib
+import logging
 from pathlib import Path
 import sys
 import textwrap
@@ -22,6 +23,7 @@ from typing import AsyncGenerator
 from typing import Optional
 from unittest.mock import AsyncMock
 
+from google.adk import runners
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
@@ -1537,6 +1539,76 @@ class TestRunnerCacheConfig:
     assert str(runner.context_cache_config) == expected_str
 
 
+class TestRunnerUncachedTransferWarning:
+  """Tests for the warning about agent transfer without a context cache."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    runners._UNCACHED_TRANSFER_APPS.clear()
+
+  def teardown_method(self):
+    runners._UNCACHED_TRANSFER_APPS.clear()
+
+  def _multi_agent(self) -> LlmAgent:
+    return LlmAgent(
+        name="root_agent",
+        model="gemini-1.5-pro",
+        sub_agents=[MockLlmAgent("sub_agent")],
+    )
+
+  def _warnings(self, caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "context_cache_config" in record.getMessage()
+    ]
+
+  def test_warns_for_multi_agent_app_without_cache_config(self, caplog):
+    """Transfer is possible and no cache is configured, so warn."""
+    app = App(name="multi_agent_app", root_agent=self._multi_agent())
+
+    with caplog.at_level(logging.WARNING):
+      Runner(app=app, session_service=self.session_service)
+
+    messages = self._warnings(caplog)
+    assert len(messages) == 1
+    assert "multi_agent_app" in messages[0]
+
+  def test_no_warning_when_cache_config_present(self, caplog):
+    """An app that configures a context cache is not warned."""
+    app = App(
+        name="cached_app",
+        root_agent=self._multi_agent(),
+        context_cache_config=ContextCacheConfig(),
+    )
+
+    with caplog.at_level(logging.WARNING):
+      Runner(app=app, session_service=self.session_service)
+
+    assert not self._warnings(caplog)
+
+  def test_no_warning_without_transfer_targets(self, caplog):
+    """A single-agent app cannot transfer, so nothing is lost."""
+    app = App(name="single_agent_app", root_agent=MockLlmAgent("root_agent"))
+
+    with caplog.at_level(logging.WARNING):
+      Runner(app=app, session_service=self.session_service)
+
+    assert not self._warnings(caplog)
+
+  def test_warns_only_once_per_app(self, caplog):
+    """Rebuilding the runner for the same app does not warn again."""
+    app = App(name="multi_agent_app", root_agent=self._multi_agent())
+
+    with caplog.at_level(logging.WARNING):
+      for _ in range(3):
+        Runner(app=app, session_service=self.session_service)
+
+    assert len(self._warnings(caplog)) == 1
+
+
 class TestRunnerResolveApp:
   """Tests for Runner._resolve_app and node support."""
 
@@ -1837,9 +1909,9 @@ class TestRunnerInferAgentOrigin:
   def test_infer_agent_origin_no_false_positive_for_direct_llm_agent(self):
     """Test that using LlmAgent directly doesn't trigger mismatch warning.
 
-    Regression test for GitHub issue #3143: Users who instantiate LlmAgent
-    directly and run from a directory that is a parent of the ADK installation
-    were getting false positive 'App name mismatch' warnings.
+    Regression test: users who instantiate LlmAgent directly and run from a
+    directory that is a parent of the ADK installation were getting false
+    positive 'App name mismatch' warnings.
 
     This also verifies that _infer_agent_origin returns None for ADK internal
     modules (google.adk.*).

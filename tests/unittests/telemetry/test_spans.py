@@ -1848,6 +1848,40 @@ def test_build_llm_request_for_trace_excludes_live_http_clients():
   assert result['config']['temperature'] == 0.1
 
 
+def test_build_llm_request_for_trace_excludes_http_option_credentials():
+  """Credential-bearing http_options fields must never reach a span attribute.
+
+  `RunConfig.http_options` is a documented place for callers to put custom
+  headers (including `Authorization`), and it is copied onto
+  `llm_request.config.http_options`. Serializing it verbatim would export the
+  caller's credentials to the tracing backend on every model call.
+  """
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      config=types.GenerateContentConfig(
+          temperature=0.1,
+          http_options=types.HttpOptions(
+              base_url='https://example.test',
+              headers={'Authorization': 'Bearer sentinel-secret-token'},
+              extra_body={'api_key': 'sentinel-secret-token'},
+              client_args={'auth': 'sentinel-secret-token'},
+              async_client_args={'auth': 'sentinel-secret-token'},
+          ),
+      ),
+  )
+
+  result = _build_llm_request_for_trace(llm_request)
+
+  assert 'sentinel-secret-token' not in json.dumps(result)
+  http_options = result['config'].get('http_options', {})
+  for field in ('headers', 'extra_body', 'client_args', 'async_client_args'):
+    assert field not in http_options
+  # Non-sensitive http_options fields are still traced.
+  assert http_options['base_url'] == 'https://example.test'
+
+
 # ---------------------------------------------------------------------------
 # safe_json_serialize tests
 # ---------------------------------------------------------------------------

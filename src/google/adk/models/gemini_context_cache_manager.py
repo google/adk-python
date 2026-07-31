@@ -295,7 +295,7 @@ class GeminiContextCacheManager:
     if llm_request.config and llm_request.config.system_instruction:
       try:
         fingerprint_data["system_instruction"] = llm_request.config.model_dump(
-            mode="json", include={"system_instruction"}
+            mode="json", include={"system_instruction"}, exclude_none=True
         )["system_instruction"]
       except Exception:  # pylint: disable=broad-except
         # Preserve support for SDK-accepted objects without a JSON serializer
@@ -306,16 +306,24 @@ class GeminiContextCacheManager:
         )
 
     if llm_request.config and llm_request.config.tools:
-      # Simplified: just dump types.Tool instances to JSON
+      # Canonicalize tools so a reordered tool list (or reordered function
+      # declarations within a tool) produces the same fingerprint.
       tools_data = []
       for tool in llm_request.config.tools:
         if isinstance(tool, types.Tool):
-          tools_data.append(tool.model_dump(mode="json"))
+          tool_data = tool.model_dump(mode="json", exclude_none=True)
+          function_declarations = tool_data.get("function_declarations")
+          if function_declarations:
+            function_declarations.sort(key=lambda fd: fd.get("name") or "")
+          tools_data.append(tool_data)
+      tools_data.sort(key=lambda t: json.dumps(t, sort_keys=True))
       fingerprint_data["tools"] = tools_data
 
     if llm_request.config and llm_request.config.tool_config:
       fingerprint_data["tool_config"] = (
-          llm_request.config.tool_config.model_dump(mode="json")
+          llm_request.config.tool_config.model_dump(
+              mode="json", exclude_none=True
+          )
       )
 
     # Include first N contents in fingerprint
@@ -323,17 +331,19 @@ class GeminiContextCacheManager:
       contents_data = []
       for i in range(min(cache_contents_count, len(llm_request.contents))):
         content = llm_request.contents[i]
-        contents_data.append(content.model_dump(mode="json"))
+        contents_data.append(content.model_dump(mode="json", exclude_none=True))
       fingerprint_data["cached_contents"] = contents_data
 
     # Canonical JSON makes semantically identical mappings produce the same
     # cache identity regardless of their insertion order. SDK model dumps in
-    # JSON mode also encode binary parts deterministically.
+    # JSON mode also encode binary parts deterministically; default=str is a
+    # fallback for any value json cannot serialize natively.
     fingerprint_str = json.dumps(
         fingerprint_data,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        default=str,
     )
     return hashlib.sha256(fingerprint_str.encode()).hexdigest()[:16]
 

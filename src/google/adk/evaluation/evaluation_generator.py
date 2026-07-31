@@ -36,6 +36,7 @@ from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..events.event import Event
@@ -43,6 +44,7 @@ from ..flows.llm_flows.functions import handle_function_calls_live
 from ..memory.base_memory_service import BaseMemoryService
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..models.llm_request import LlmRequest
+from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
@@ -92,6 +94,76 @@ def _send_audio_to_live(
           types.Blob(data=chunk, mime_type=blob.mime_type)
       )
   live_request_queue.send_activity_end()
+
+
+async def _get_or_create_eval_session(
+    session_service: BaseSessionService,
+    initial_session: Optional[SessionInput],
+    fallback_session_id: Optional[str],
+) -> Session:
+  """Returns the session an eval case runs in."""
+  app_name = (
+      initial_session.app_name if initial_session else "EvaluationGenerator"
+  )
+  user_id = initial_session.user_id if initial_session else "test_user_id"
+  pinned_session_id = initial_session.session_id if initial_session else None
+
+  if pinned_session_id:
+    # A pinned id may name a session the caller prepared, so reuse it instead
+    # of replacing it; `initial_session.state` then applies only on create.
+    session = await session_service.get_session(
+        app_name=app_name, user_id=user_id, session_id=pinned_session_id
+    )
+    if session:
+      return session
+
+  return await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      state=initial_session.state if initial_session else {},
+      session_id=pinned_session_id or fallback_session_id or str(uuid.uuid4()),
+  )
+
+
+# Keyword-argument names accepted by `Runner`, used when building the eval
+# Runner kwargs so the strings are not duplicated at each call site.
+_APP_NAME_KEY = "app_name"
+_AGENT_KEY = "agent"
+_PLUGINS_KEY = "plugins"
+_APP_KEY = "app"
+
+
+def _build_eval_runner_kwargs(
+    root_agent: Agent,
+    app_name: str,
+    app: Optional[App],
+    internal_eval_plugins: list[BasePlugin],
+) -> dict[str, Any]:
+  """Returns the Runner kwargs used to evaluate `root_agent`.
+
+  When `app` is provided, the Runner is built from a copy of the App with the
+  internal eval plugins merged into `app.plugins`, so the App's
+  `context_cache_config`, `resumability_config`, and any other
+  application-wide configuration participate in the eval run. The copy leaves
+  the caller's App instance untouched, and `root_agent` is overridden so the
+  Runner targets the agent the caller asked to evaluate, which may be a
+  sub-agent. When `app` is None, the Runner is built from the bare
+  `root_agent` with only the internal eval plugins.
+  """
+  if app is None:
+    return {
+        _APP_NAME_KEY: app_name,
+        _AGENT_KEY: root_agent,
+        _PLUGINS_KEY: internal_eval_plugins,
+    }
+
+  runner_app = app.model_copy(
+      update={
+          "plugins": list(app.plugins) + internal_eval_plugins,
+          "root_agent": root_agent,
+      }
+  )
+  return {_APP_KEY: runner_app, _APP_NAME_KEY: app_name}
 
 
 class EvalCaseResponses(BaseModel):
@@ -377,20 +449,31 @@ class EvaluationGenerator:
     """Process a query using the agent and evaluation dataset."""
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
-    root_agent = agent_module.agent.root_agent
+    # Prefer the wrapping `App` when the module exposes one, so that
+    # `app.plugins`, context-cache, and resumability configs participate
+    # in eval runs the same way they do for `adk web` / `adk run`.
+    app_obj = getattr(agent_module.agent, "app", None)
+    root_agent: Any
+    if isinstance(app_obj, App):
+      root_agent = app_obj.root_agent
+    else:
+      app_obj = None
+      root_agent = agent_module.agent.root_agent
 
     reset_func = getattr(agent_module.agent, "reset_data", None)
 
     agent_to_evaluate = root_agent
     if agent_name:
-      agent_to_evaluate = root_agent.find_agent(agent_name)
-      assert agent_to_evaluate, f"Sub-Agent `{agent_name}` not found."
+      found_agent = root_agent.find_agent(agent_name)
+      assert found_agent, f"Sub-Agent `{agent_name}` not found."
+      agent_to_evaluate = found_agent
 
     return await EvaluationGenerator._generate_inferences_from_root_agent(
         agent_to_evaluate,
         user_simulator=user_simulator,
         reset_func=reset_func,
         initial_session=initial_session,
+        app=app_obj,
     )
 
   @staticmethod
@@ -476,26 +559,26 @@ class EvaluationGenerator:
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
       live_timeout_seconds: int = DEFAULT_LIVE_TIMEOUT_SECONDS,
+      app: Optional[App] = None,
   ) -> list[Invocation]:
-    """Scrapes the root agent in coordination with the user simulator in live mode."""
+    """Scrapes the root agent in coordination with the user simulator in live mode.
+
+    Mirrors `_generate_inferences_from_root_agent`: when `app` is provided the
+    Runner carries the App's plugins and configuration, otherwise the bare
+    `root_agent` is used.
+    """
     if not session_service:
       session_service = InMemorySessionService()
 
     if not memory_service:
       memory_service = InMemoryMemoryService()
 
-    app_name = (
-        initial_session.app_name if initial_session else "EvaluationGenerator"
+    session = await _get_or_create_eval_session(
+        session_service, initial_session, session_id
     )
-    user_id = initial_session.user_id if initial_session else "test_user_id"
-    session_id = session_id if session_id else str(uuid.uuid4())
-
-    session = await session_service.create_session(
-        app_name=app_name,
-        user_id=user_id,
-        state=initial_session.state if initial_session else {},
-        session_id=session_id,
-    )
+    app_name = session.app_name
+    user_id = session.user_id
+    session_id = session.id
 
     if not artifact_service:
       artifact_service = InMemoryArtifactService()
@@ -513,13 +596,21 @@ class EvaluationGenerator:
     request_intercepter_plugin = _RequestIntercepterPlugin(
         name="request_intercepter_plugin"
     )
-    async with Runner(
+    runner_kwargs = _build_eval_runner_kwargs(
+        root_agent=root_agent,
         app_name=app_name,
-        agent=root_agent,
+        app=app,
+        internal_eval_plugins=[
+            request_intercepter_plugin,
+            ensure_retry_options_plugin,
+        ],
+    )
+
+    async with Runner(
+        **runner_kwargs,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
       events: list[Event] = []
 
@@ -584,8 +675,17 @@ class EvaluationGenerator:
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
+      app: Optional[App] = None,
   ) -> list[Invocation]:
-    """Scrapes the root agent in coordination with the user simulator."""
+    """Scrapes the root agent in coordination with the user simulator.
+
+    If `app` is provided, the eval Runner is built from a copy of the App
+    with internal eval plugins merged into `app.plugins`, preserving the
+    App's `context_cache_config`, `resumability_config`, and any other
+    application-wide configuration. Otherwise the Runner is built from
+    the bare `root_agent` with only the internal eval plugins, matching
+    the legacy behavior.
+    """
 
     if not session_service:
       session_service = InMemorySessionService()
@@ -593,18 +693,12 @@ class EvaluationGenerator:
     if not memory_service:
       memory_service = InMemoryMemoryService()
 
-    app_name = (
-        initial_session.app_name if initial_session else "EvaluationGenerator"
+    session = await _get_or_create_eval_session(
+        session_service, initial_session, session_id
     )
-    user_id = initial_session.user_id if initial_session else "test_user_id"
-    session_id = session_id if session_id else str(uuid.uuid4())
-
-    _ = await session_service.create_session(
-        app_name=app_name,
-        user_id=user_id,
-        state=initial_session.state if initial_session else {},
-        session_id=session_id,
-    )
+    app_name = session.app_name
+    user_id = session.user_id
+    session_id = session.id
 
     if not artifact_service:
       artifact_service = InMemoryArtifactService()
@@ -622,13 +716,21 @@ class EvaluationGenerator:
     ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
         name="ensure_retry_options"
     )
-    async with Runner(
+    runner_kwargs = _build_eval_runner_kwargs(
+        root_agent=root_agent,
         app_name=app_name,
-        agent=root_agent,
+        app=app,
+        internal_eval_plugins=[
+            request_intercepter_plugin,
+            ensure_retry_options_plugin,
+        ],
+    )
+
+    async with Runner(
+        **runner_kwargs,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
       events: list[Event] = []
       while True:

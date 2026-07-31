@@ -445,15 +445,25 @@ class GcsArtifactService(BaseArtifactService):
 
     Returns:
         A list of version numbers (integers) available for the specified
-        artifact.
+        artifact, in ascending order.
         Returns an empty list if no versions are found.
     """
     prefix = self._get_blob_prefix(app_name, user_id, filename, session_id)
     blobs = self.storage_client.list_blobs(self.bucket, prefix=f"{prefix}/")
     versions = []
     for blob in blobs:
-      *_, version = blob.name.split("/")
-      versions.append(int(version))
+      try:
+        version = int(blob.name.split("/")[-1])
+      except ValueError:
+        logger.warning(
+            "Skipping blob %s because it does not end with a version number.",
+            blob.name,
+        )
+        continue
+
+      versions.append(version)
+
+    versions.sort()
     return versions
 
   def _get_artifact_version_sync(

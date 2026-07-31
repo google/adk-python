@@ -362,7 +362,7 @@ def test_allow_transfer_by_default():
   assert not agent.disallow_transfer_to_peers
 
 
-# TODO(b/448114567): Remove TestCanonicalTools once the workaround
+# Pending cleanup: remove TestCanonicalTools once the workaround
 # is no longer needed.
 class TestCanonicalTools:
   """Unit tests for canonical_tools in LlmAgent."""

@@ -17,12 +17,34 @@ from typing import Optional
 
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events import Event as A2AEvent
+from a2a.server.events.event_queue import EventQueue
 from a2a.types import TaskStatusUpdateEvent
 
+from .. import _compat
 from ...events.event import Event
 from ..converters.utils import _get_adk_metadata_key as _get_adk_metadata_key
 from .config import ExecuteInterceptor
 from .executor_context import ExecutorContext
+
+
+async def _enqueue_canceled_task_event(
+    context: RequestContext,
+    event_queue: EventQueue,
+) -> None:
+  """Publishes the terminal event required by the A2A cancellation contract."""
+  if not context.task_id:
+    raise ValueError('A2A cancellation must have a task ID')
+
+  # ``final`` is load-bearing on a2a-sdk 0.3.x, which keeps consuming the queue
+  # until it sees a status update with it set; 1.x has no such field.
+  await event_queue.enqueue_event(
+      _compat.make_task_status_update_event(
+          task_id=context.task_id,
+          context_id=context.context_id,
+          status=_compat.make_task_status(_compat.TS_CANCELED),
+          final=True,
+      )
+  )
 
 
 async def execute_before_agent_interceptors(

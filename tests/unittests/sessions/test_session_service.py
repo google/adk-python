@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
 import enum
+import os
 import sqlite3
 import time
 from unittest import mock
@@ -2014,7 +2015,7 @@ def test_database_session_service_visible_in_module_namespace():
   """DatabaseSessionService must be in dir() so Sphinx autodoc renders it.
 
   It is imported lazily via module __getattr__, so without an explicit
-  __dir__ it drops out of the generated API reference (issue #4331).
+  __dir__ it drops out of the generated API reference.
   """
   import google.adk.sessions as sessions_module
 
@@ -2131,7 +2132,7 @@ async def test_database_session_service_requires_one_argument():
 async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
     tmp_path,
 ):
-  """Regression test for #6352 (SQLite REAL-affinity timestamp reads)."""
+  """Regression test for SQLite REAL-affinity timestamp reads."""
   # SQLite REAL-affinity columns can end up storing raw Unix epoch floats
   # instead of the text format SQLAlchemy's DateTime type normally writes
   # (for example, if the row was written by a different code path than the
@@ -2181,3 +2182,105 @@ async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
   assert retrieved_session.events[0].timestamp == pytest.approx(
       raw_epoch_float, abs=1.0
   )
+
+
+@pytest.fixture
+def local_timezone_with_dst():
+  """Runs the test in a local timezone that repeats an hour every autumn.
+
+  ``time.tzset`` is POSIX-only, so on other platforms the test runs in the
+  host zone instead. Restoring ``TZ`` without a second ``tzset`` would leave
+  the C library pinned for the rest of the session, so both are undone.
+  """
+  if not hasattr(time, 'tzset'):
+    yield
+    return
+  original_tz = os.environ.get('TZ')
+  os.environ['TZ'] = 'America/New_York'
+  time.tzset()
+  try:
+    yield
+  finally:
+    if original_tz is None:
+      del os.environ['TZ']
+    else:
+      os.environ['TZ'] = original_tz
+    time.tzset()
+
+
+@pytest.mark.asyncio
+async def test_get_session_keeps_exact_epoch_across_a_repeated_local_hour(
+    session_service, local_timezone_with_dst
+):
+  """Events written during a repeated local hour read back at the same instant.
+
+  2024-11-03 06:00 and 06:30 UTC are 01:00 and 01:30 in US Eastern for the
+  second time that morning; the same local wall-clock times already happened
+  an hour earlier. A round trip that reconstructs the epoch from local wall
+  clock alone cannot tell the two passes apart, so those events come back an
+  hour early and sort into the wrong place in the conversation.
+  """
+  app_name = 'my_app'
+  user_id = 'user'
+  # Both instants fall in the repeated hour, so their local times are
+  # ambiguous.
+  repeated_hour_epochs = [1730613600.0, 1730615400.0]
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  for epoch in repeated_hour_epochs:
+    await session_service.append_event(
+        session, Event(author='user', timestamp=epoch)
+    )
+
+  retrieved_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+
+  assert [
+      event.timestamp for event in retrieved_session.events
+  ] == repeated_hour_epochs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.DATABASE, SessionServiceType.SQLITE]
+)
+@pytest.mark.parametrize('append_ids_in_reverse', [False, True])
+async def test_get_session_orders_tied_timestamps_by_id(
+    service_type, append_ids_in_reverse, tmp_path
+):
+  """Events sharing a timestamp come back in a stable, id-ordered sequence.
+
+  Without a tiebreaker the database is free to return tied events in any
+  order, so a replayed conversation shuffles between fetches and
+  `num_recent_events` truncates at an arbitrary point inside the tie. Ordering
+  on id as well also keeps the last returned event consistent with the event
+  the stale-session check treats as the latest one.
+  """
+  app_name = 'my_app'
+  user_id = 'user'
+  event_ids = ['event_a', 'event_m', 'event_z']
+  shared_timestamp = 100.0
+
+  service = get_session_service(service_type, tmp_path)
+  try:
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+    append_order = (
+        list(reversed(event_ids)) if append_ids_in_reverse else event_ids
+    )
+    for event_id in append_order:
+      await service.append_event(
+          session,
+          Event(author='user', id=event_id, timestamp=shared_timestamp),
+      )
+
+    retrieved_session = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+  finally:
+    if isinstance(service, DatabaseSessionService):
+      await service.close()
+
+  assert [event.id for event in retrieved_session.events] == event_ids

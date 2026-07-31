@@ -1008,7 +1008,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     __maybe_save_output_to_state skips them and the text on those events
     is dropped from output_key. Accumulate every non-partial text-bearing
     event from this agent across the model turn so the segments survive
-    in session state. See issue #5590.
+    in session state.
 
     No-op when accumulation doesn't apply (different author, no
     output_key, output_schema set, partial event, no content, no text).
