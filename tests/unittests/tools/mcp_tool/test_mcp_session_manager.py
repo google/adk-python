@@ -34,6 +34,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 import httpx
+import httpx2
 from mcp import StdioServerParameters
 import pytest
 
@@ -244,7 +245,8 @@ class TestMCPSessionManager:
     kwargs = mock_streamable_http_client.call_args.kwargs
     assert kwargs["url"] == "https://example.com/mcp"
     assert kwargs["terminate_on_close"] is True
-    assert isinstance(kwargs["http_client"], httpx.AsyncClient)
+    # mcp 2.0's default create_mcp_http_client builds a vendored httpx2 client.
+    assert isinstance(kwargs["http_client"], httpx2.AsyncClient)
 
   @patch(
       "google.adk.tools.mcp_tool.mcp_session_manager.HTTPXClientInstrumentor",

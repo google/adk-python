@@ -15,17 +15,55 @@
 from __future__ import annotations
 
 import base64
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import AsyncGenerator
 
+import anyio
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.adk.tools.mcp_tool._agent_to_mcp import _run_agent
 from google.adk.tools.mcp_tool._agent_to_mcp import to_mcp_server
 from google.genai import types
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp import ClientSession
+from mcp.server.mcpserver import MCPServer
+from mcp.shared.memory import create_client_server_memory_streams
 import pytest
+
+
+@asynccontextmanager
+async def _connected_client_session(server: MCPServer):
+  """Connects an in-memory ClientSession to an MCPServer for testing.
+
+  This replaces the ``create_connected_server_and_client_session`` helper that
+  was removed in mcp 2.0. It runs the server's low-level transport on one end
+  of an in-memory stream pair and yields a connected, initialized
+  ClientSession on the other.
+
+  Args:
+    server: The MCPServer to connect to.
+
+  Yields:
+    An initialized ClientSession connected to the server.
+  """
+  async with create_client_server_memory_streams() as (
+      client_streams,
+      server_streams,
+  ):
+    client_read, client_write = client_streams
+    server_read, server_write = server_streams
+    lowlevel_server = server._lowlevel_server  # pylint: disable=protected-access
+    async with anyio.create_task_group() as task_group:
+      task_group.start_soon(
+          lowlevel_server.run,
+          server_read,
+          server_write,
+          lowlevel_server.create_initialization_options(),
+      )
+      async with ClientSession(client_read, client_write) as session:
+        await session.initialize()
+        yield session
 
 
 class _EchoAgent(BaseAgent):
@@ -111,7 +149,7 @@ async def test_to_mcp_server_registers_agent_as_single_tool():
   assert len(tools) == 1
   assert tools[0].name == "my_agent"
   assert tools[0].description == "does useful things"
-  assert "request" in tools[0].inputSchema["properties"]
+  assert "request" in tools[0].input_schema["properties"]
 
 
 @pytest.mark.asyncio
@@ -129,10 +167,10 @@ async def test_call_tool_runs_agent_end_to_end():
   agent = _EchoAgent(name="assistant")
   server = to_mcp_server(agent)
 
-  async with create_connected_server_and_client_session(server) as client:
+  async with _connected_client_session(server) as client:
     result = await client.call_tool("assistant", {"request": "hi"})
 
-  assert not result.isError
+  assert not result.is_error
   assert "hello from the agent" in result.content[0].text
 
 
@@ -174,7 +212,7 @@ async def test_run_agent_maps_image_output_to_image_content():
 
   assert len(result) == 1
   assert result[0].type == "image"
-  assert result[0].mimeType == "image/png"
+  assert result[0].mime_type == "image/png"
   assert base64.b64decode(result[0].data) == png
 
 
@@ -209,7 +247,7 @@ async def test_call_tool_reuses_session_across_calls_on_one_connection():
   runner = _FakeRunner([_text_event("ok")])
   server = to_mcp_server(agent, runner=runner)
 
-  async with create_connected_server_and_client_session(server) as client:
+  async with _connected_client_session(server) as client:
     await client.call_tool("assistant", {"request": "first"})
     await client.call_tool("assistant", {"request": "second"})
 

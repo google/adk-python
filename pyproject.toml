@@ -83,7 +83,7 @@ optional-dependencies.all = [
   "google-cloud-spanner>=3.56,<4",
   "google-cloud-speech>=2.30,<3",
   "google-cloud-storage>=2.18,<4",
-  "mcp>=1.24,<2",
+  "mcp>=2.0.0,<3",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
@@ -195,7 +195,7 @@ optional-dependencies.gcp = [
 ]
 optional-dependencies.mcp = [
   "anyio>=4.9,<5",
-  "mcp>=1.24,<2",
+  "mcp>=2.0.0,<3",
 ]
 optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
@@ -243,7 +243,7 @@ optional-dependencies.test = [
   "litellm>=1.84",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
-  "mcp>=1.24,<2",
+  "mcp>=2.0.0,<3",
   "openai>=2.20,<3",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",

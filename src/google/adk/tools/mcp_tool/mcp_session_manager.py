@@ -64,7 +64,6 @@ from mcp.client.session import SamplingFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
-from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -215,8 +214,21 @@ class SseConnectionParams(BaseModel):
 
 
 @runtime_checkable
-class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
-  pass
+class CheckableMcpHttpClientFactory(Protocol):
+  """Factory protocol for creating custom HTTPX async clients.
+
+  In mcp 2.0 the upstream ``McpHttpClientFactory`` protocol lives in the
+  private ``mcp.shared._httpx_utils`` module, so we declare the equivalent
+  shape locally rather than depend on a private import.
+  """
+
+  def __call__(
+      self,
+      headers: dict[str, str] | None = None,
+      timeout: httpx.Timeout | None = None,
+      auth: httpx.Auth | None = None,
+  ) -> httpx.AsyncClient:
+    ...
 
 
 class _DebugHttpxClientFactory:

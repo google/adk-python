@@ -28,8 +28,8 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
-from mcp.shared.exceptions import McpError
-from mcp.shared.session import ProgressFnT
+from mcp.shared.dispatcher import ProgressFnT
+from mcp.shared.exceptions import MCPError
 from mcp.types import Tool as McpBaseTool
 from opentelemetry import propagate
 from typing_extensions import override
@@ -201,8 +201,8 @@ class McpTool(BaseAuthenticatedTool):
     Returns:
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
-    input_schema = self._mcp_tool.inputSchema
-    output_schema = self._mcp_tool.outputSchema
+    input_schema = self._mcp_tool.input_schema
+    output_schema = self._mcp_tool.output_schema
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
       function_decl = FunctionDeclaration(
           name=self.name,
@@ -375,8 +375,8 @@ class McpTool(BaseAuthenticatedTool):
       # any AGW policy) returns a 403 mid-tool-call.
       try:
         return await super().run_async(args=args, tool_context=tool_context)
-      except McpError as e:
-        logger.warning("MCP tool execution failed with McpError: %s", e)
+      except MCPError as e:
+        logger.warning("MCP tool execution failed with MCPError: %s", e)
         return {"error": f"MCP tool execution failed: {e}"}
       except Exception as e:  # pylint: disable=broad-exception-caught
         logger.warning(
@@ -489,7 +489,7 @@ class McpTool(BaseAuthenticatedTool):
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
-    if isinstance(response, dict) and response.get("isError"):
+    if isinstance(response, dict) and response.get("is_error"):
       return "MCP_TOOL_ERROR"
     return None
 

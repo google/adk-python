@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
-from datetime import timedelta
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -420,7 +419,7 @@ class TestSessionContext:
       # Verify ClientSession was called with read_timeout_seconds for stdio
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(seconds=5.0)
+      assert call_args.kwargs['read_timeout_seconds'] == 5.0
 
       await session_context.close()
 
@@ -469,9 +468,7 @@ class TestSessionContext:
       # Verify ClientSession was called with sse_read_timeout
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(
-          seconds=300.0
-      )
+      assert call_args.kwargs['read_timeout_seconds'] == 300.0
 
       await session_context.close()
 

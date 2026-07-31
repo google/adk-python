@@ -49,13 +49,13 @@ class MockMCPTool:
       self,
       name="test_tool",
       description="Test tool description",
-      outputSchema=None,
+      output_schema=None,
       meta=None,
   ):
     self.name = name
     self.description = description
     self.meta = meta
-    self.inputSchema = {
+    self.input_schema = {
         "type": "object",
         "properties": {
             "param1": {"type": "string", "description": "First parameter"},
@@ -63,7 +63,7 @@ class MockMCPTool:
         },
         "required": ["param1"],
     }
-    self.outputSchema = outputSchema
+    self.output_schema = output_schema
 
 
 class TestMCPToolLegacy:
@@ -152,7 +152,7 @@ class TestMCPToolWithJsonSchema:
     }
 
     tool = MCPTool(
-        mcp_tool=MockMCPTool(outputSchema=output_schema),
+        mcp_tool=MockMCPTool(output_schema=output_schema),
         mcp_session_manager=self.mock_session_manager,
     )
 
@@ -170,7 +170,7 @@ class TestMCPToolWithJsonSchema:
   ):
     """Test function declaration with an empty output schema and json schema for func decl enabled."""
     tool = MCPTool(
-        mcp_tool=MockMCPTool(outputSchema={}),
+        mcp_tool=MockMCPTool(output_schema={}),
         mcp_session_manager=self.mock_session_manager,
     )
 
@@ -1384,10 +1384,9 @@ class TestMCPTool:
   async def test_run_async_captures_http_debug_info_on_graceful_error(
       self, mock_is_enabled
   ):
-    """Test that run_async captures HTTP debug info when tool call fails gracefully with McpError."""
+    """Test that run_async captures HTTP debug info when tool call fails gracefully with MCPError."""
     from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
+    from mcp.shared.exceptions import MCPError
 
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
@@ -1400,7 +1399,7 @@ class TestMCPTool:
         debug_list.append(
             {"url": "https://example.com/api", "status_code": 403}
         )
-      raise McpError(ErrorData(code=-32000, message="Forbidden"))
+      raise MCPError(code=-32000, message="Forbidden")
 
     self.mock_session.call_tool = mock_call_tool
 
@@ -1447,17 +1446,19 @@ class TestMCPToolGracefulErrorHandling:
 
   @pytest.mark.asyncio
   async def test_run_async_returns_dict_on_mcp_error_when_flag_on(self):
-    """When the flag is on, McpError surfaces as `{"error": "..."}`."""
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
+    """When the flag is on, MCPError surfaces as `{"error": "..."}`."""
+    from mcp.shared.exceptions import MCPError
 
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
         mcp_session_manager=self.mock_session_manager,
     )
 
-    error_data = ErrorData(code=-32000, message="Client error '403 Forbidden'")
-    tool._run_async_impl = AsyncMock(side_effect=McpError(error_data))
+    tool._run_async_impl = AsyncMock(
+        side_effect=MCPError(
+            code=-32000, message="Client error '403 Forbidden'"
+        )
+    )
 
     tool_context = Mock(spec=ToolContext)
     args = {"param1": "test_value"}
@@ -1507,16 +1508,18 @@ class TestMCPToolGracefulErrorHandling:
     This protects downstream consumers that haven't migrated yet from a
     silent behavior change.
     """
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
+    from mcp.shared.exceptions import MCPError
 
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
         mcp_session_manager=self.mock_session_manager,
     )
 
-    error_data = ErrorData(code=-32000, message="Client error '403 Forbidden'")
-    tool._run_async_impl = AsyncMock(side_effect=McpError(error_data))
+    tool._run_async_impl = AsyncMock(
+        side_effect=MCPError(
+            code=-32000, message="Client error '403 Forbidden'"
+        )
+    )
 
     tool_context = Mock(spec=ToolContext)
     args = {"param1": "test_value"}
@@ -1524,7 +1527,7 @@ class TestMCPToolGracefulErrorHandling:
     with temporary_feature_override(
         FeatureName._MCP_GRACEFUL_ERROR_HANDLING, False
     ):
-      with pytest.raises(McpError):
+      with pytest.raises(MCPError):
         await tool.run_async(args=args, tool_context=tool_context)
 
   @pytest.mark.asyncio

@@ -34,7 +34,7 @@ from mcp import SamplingCapability
 from mcp import StdioServerParameters
 from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
-from mcp.shared.session import ProgressFnT
+from mcp.shared.dispatcher import ProgressFnT
 from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
 from pydantic import model_validator

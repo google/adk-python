@@ -58,7 +58,7 @@ class MockMCPTool:
   def __init__(self, name, description="Test tool description"):
     self.name = name
     self.description = description
-    self.inputSchema = {
+    self.input_schema = {
         "type": "object",
         "properties": {"param": {"type": "string"}},
     }
@@ -737,11 +737,11 @@ class TestMcpToolset:
     # Mock read_resource
     if encoding == "base64":
       contents = [
-          BlobResourceContents(uri=uri, mimeType=mime_type, blob=content)
+          BlobResourceContents(uri=uri, mime_type=mime_type, blob=content)
       ]
     else:
       contents = [
-          TextResourceContents(uri=uri, mimeType=mime_type, text=content)
+          TextResourceContents(uri=uri, mime_type=mime_type, text=content)
       ]
 
     read_resource_result = ReadResourceResult(contents=contents)

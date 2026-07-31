@@ -23,8 +23,8 @@ import weakref
 
 from google.genai import types
 from mcp import types as mcp_types
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import MCPServer
 
 from ...agents.base_agent import BaseAgent
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -68,16 +68,35 @@ def _part_to_content(part: types.Part) -> Optional[mcp_types.ContentBlock]:
     data = base64.b64encode(blob.data).decode("ascii")
     mime = blob.mime_type or "application/octet-stream"
     if mime.startswith("image/"):
-      return mcp_types.ImageContent(type="image", data=data, mimeType=mime)
+      return mcp_types.ImageContent(type="image", data=data, mime_type=mime)
     if mime.startswith("audio/"):
-      return mcp_types.AudioContent(type="audio", data=data, mimeType=mime)
+      return mcp_types.AudioContent(type="audio", data=data, mime_type=mime)
     return mcp_types.EmbeddedResource(
         type="resource",
         resource=mcp_types.BlobResourceContents(
-            uri=_INLINE_RESOURCE_URI, blob=data, mimeType=mime
+            uri=_INLINE_RESOURCE_URI, blob=data, mime_type=mime
         ),
     )
   return None
+
+
+def _connection_key(ctx: Context) -> object:
+  """Returns a stable per-connection key for an MCP tool call context.
+
+  In mcp 2.0, ``ctx.session`` is a new ``ServerSession`` object on every
+  request even over a single connection, so it can no longer key the
+  per-connection ADK session map. The underlying ``Connection`` object is
+  shared by every request on one connection, so we use it when available and
+  fall back to ``ctx.session`` otherwise.
+
+  Args:
+    ctx: The MCP tool call context.
+
+  Returns:
+    A hashable object that is stable across all requests on one connection.
+  """
+  connection = getattr(ctx.session, "_connection", None)
+  return connection if connection is not None else ctx.session
 
 
 async def _run_agent(
@@ -106,14 +125,14 @@ async def _run_agent(
   """
   session_id: Optional[str] = None
   if ctx is not None and sessions is not None:
-    session_id = sessions.get(ctx.session)
+    session_id = sessions.get(_connection_key(ctx))
   if session_id is None:
     session = await runner.session_service.create_session(
         app_name=runner.app_name, user_id=_MCP_USER_ID
     )
     session_id = session.id
     if ctx is not None and sessions is not None:
-      sessions[ctx.session] = session_id
+      sessions[_connection_key(ctx)] = session_id
   new_message = types.Content(role="user", parts=[types.Part(text=request)])
   final_content: list[mcp_types.ContentBlock] = []
   async for event in runner.run_async(
@@ -142,7 +161,7 @@ def to_mcp_server(
     name: Optional[str] = None,
     instructions: Optional[str] = None,
     runner: Optional[Runner] = None,
-) -> FastMCP:
+) -> MCPServer:
   """Exposes an ADK agent as an MCP server.
 
   The returned server registers a single MCP tool that runs the agent: an MCP
@@ -166,7 +185,7 @@ def to_mcp_server(
       services.
 
   Returns:
-    A ``FastMCP`` server exposing the agent as a single tool.
+    A ``MCPServer`` server exposing the agent as a single tool.
 
   Example::
 
@@ -175,7 +194,7 @@ def to_mcp_server(
       server.run(transport="stdio")
   """
   tool_name = name or agent.name or "adk_agent"
-  server = FastMCP(name=tool_name, instructions=instructions)
+  server = MCPServer(name=tool_name, instructions=instructions)
   agent_runner = runner if runner is not None else _build_runner(agent)
   # Maps each MCP connection to its ADK session; WeakKeyDictionary drops the
   # entry when the connection is garbage-collected. pylint wrongly flags the
