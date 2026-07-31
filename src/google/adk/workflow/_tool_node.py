@@ -35,6 +35,68 @@ from ._base_node import BaseNode
 from ._retry_config import RetryConfig
 
 
+def _coerce_tool_args(node_input: Any) -> dict[str, Any]:
+  """Coerces a node input into a dict of tool arguments.
+
+  ``types.Content`` is reduced to its text, a JSON string is parsed, and an
+  empty or whitespace-only string (like ``None``) means no arguments.
+
+  Raises:
+    TypeError: If the input cannot be interpreted as a dict of arguments.
+  """
+  args = node_input
+  if isinstance(args, types.Content):
+    args = extract_text_from_content(args)
+
+  if isinstance(args, str):
+    args = args.strip()
+    if not args:
+      args = None
+    else:
+      try:
+        args = json.loads(args)
+      except json.JSONDecodeError:
+        pass
+
+  if args is None:
+    return {}
+  if not isinstance(args, dict):
+    raise TypeError(
+        'The input to ToolNode must be a dictionary of tool arguments or'
+        f' None, but got {type(args)}.'
+    )
+  return args
+
+
+async def _run_tool(
+    tool: BaseTool,
+    *,
+    ctx: Context,
+    node_input: Any,
+) -> AsyncGenerator[Event, None]:
+  """Runs a tool with the node input as its arguments and yields its output."""
+  tool_context = ToolContext(
+      invocation_context=ctx.get_invocation_context(),
+      function_call_id=str(uuid.uuid4()),
+  )
+
+  args = _coerce_tool_args(node_input)
+
+  response = await tool.run_async(args=args, tool_context=tool_context)
+  state_delta = (
+      dict(tool_context.actions.state_delta)
+      if tool_context.actions.state_delta
+      else None
+  )
+  if response is not None:
+    yield Event(
+        output=response,
+        state=state_delta,
+    )
+  elif state_delta:
+    yield Event(state=state_delta)
+
+
 class _ToolNode(BaseNode):
   """A node that wraps an ADK Tool."""
 
@@ -64,43 +126,5 @@ class _ToolNode(BaseNode):
       ctx: Context,
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
-    tool_context = ToolContext(
-        invocation_context=ctx.get_invocation_context(),
-        function_call_id=str(uuid.uuid4()),
-    )
-
-    args = node_input
-    if isinstance(args, types.Content):
-      args = extract_text_from_content(args)
-
-    if isinstance(args, str):
-      args = args.strip()
-      if not args:
-        args = None
-      else:
-        try:
-          args = json.loads(args)
-        except json.JSONDecodeError:
-          pass
-
-    if args is None:
-      args = {}
-    elif not isinstance(args, dict):
-      raise TypeError(
-          'The input to ToolNode must be a dictionary of tool arguments or'
-          f' None, but got {type(args)}.'
-      )
-
-    response = await self.tool.run_async(args=args, tool_context=tool_context)
-    state_delta = (
-        dict(tool_context.actions.state_delta)
-        if tool_context.actions.state_delta
-        else None
-    )
-    if response is not None:
-      yield Event(
-          output=response,
-          state=state_delta,
-      )
-    elif state_delta:
-      yield Event(state=state_delta)
+    async for event in _run_tool(self.tool, ctx=ctx, node_input=node_input):
+      yield event

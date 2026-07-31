@@ -65,6 +65,7 @@ from .utils._debug_output import print_event
 if TYPE_CHECKING:
   from .apps.app import App
   from .apps.app import ResumabilityConfig
+  from .workflow._base_node import BaseNode
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -2229,8 +2230,12 @@ class Runner:
           state_delta=state_delta,
       )
 
-  def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
+  def _collect_toolset(self, agent: BaseAgent | BaseNode) -> set[BaseToolset]:
+    from .workflow._toolset_node import ToolsetNode
+
     toolsets = set()
+    if isinstance(agent, ToolsetNode):
+      toolsets.add(agent.toolset)
     if hasattr(agent, 'tools'):
       for tool_union in agent.tools:
         if isinstance(tool_union, BaseToolset):
@@ -2238,6 +2243,12 @@ class Runner:
     if hasattr(agent, 'sub_agents'):
       for sub_agent in agent.sub_agents:
         toolsets.update(self._collect_toolset(sub_agent))
+    # A Workflow holds its nodes in a graph rather than in sub_agents, so its
+    # toolsets are only reachable this way.
+    graph = getattr(agent, 'graph', None)
+    if graph is not None:
+      for graph_node in graph.nodes:
+        toolsets.update(self._collect_toolset(graph_node))
     return toolsets
 
   async def _cleanup_toolsets(self, toolsets_to_close: set[BaseToolset]):

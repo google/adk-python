@@ -29,6 +29,7 @@ if TYPE_CHECKING:
   from ._node import Node
   from ._node import node
   from ._retry_config import RetryConfig
+  from ._toolset_node import ToolsetNode
   from ._workflow import Workflow
 
 _LAZY_MEMBERS: dict[str, str] = {
@@ -41,6 +42,7 @@ _LAZY_MEMBERS: dict[str, str] = {
     'NodeTimeoutError': '._errors',
     'RetryConfig': '._retry_config',
     'START': '._base_node',
+    'ToolsetNode': '._toolset_node',
     'Workflow': '._workflow',
     'node': '._node',
 }
@@ -54,6 +56,7 @@ __all__ = [
     'NodeTimeoutError',
     'RetryConfig',
     'START',
+    'ToolsetNode',
     'Workflow',
     'node',
 ]

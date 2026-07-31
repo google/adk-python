@@ -41,6 +41,9 @@ from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.workflow import START
+from google.adk.workflow import ToolsetNode
+from google.adk.workflow import Workflow
 from google.genai import types
 import pytest
 
@@ -1270,6 +1273,47 @@ class TestRunnerWithPlugins:
     assert close_task.cancelled() is True
     assert toolset.close_cancelled is False
     assert toolset.close_finished.is_set()
+
+  @pytest.mark.asyncio
+  async def test_runner_close_closes_toolset_held_by_a_workflow_node(self):
+    """A toolset reachable only through a ToolsetNode is still closed."""
+
+    class RecordingToolset(BaseToolset):
+
+      def __init__(self):
+        super().__init__()
+        self.closed = False
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.closed = True
+
+    toolset = RecordingToolset()
+
+    def start_node():
+      return {}
+
+    # The toolset is referenced by the node, not by any agent's `tools`.
+    workflow = Workflow(
+        name="wf",
+        edges=[
+            (START, start_node),
+            (start_node, ToolsetNode(toolset=toolset, tool_name="search")),
+        ],
+    )
+    runner = Runner(
+        app_name="test_app",
+        agent=workflow,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    await runner.close()
+
+    assert toolset.closed is True
 
   @pytest.mark.asyncio
   async def test_runner_passes_plugin_close_timeout(self):

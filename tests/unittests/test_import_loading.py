@@ -77,6 +77,7 @@ _LAZY_PACKAGES = (
                 'google.adk.workflow._function_node',
                 'google.adk.workflow._join_node',
                 'google.adk.workflow._node',
+                'google.adk.workflow._toolset_node',
                 'google.adk.workflow._workflow',
             ),
         ),
@@ -116,6 +117,21 @@ from google.adk import Agent
 Agent(name='agent', model='gemini-2.5-flash')
 """,
       ('mcp', 'sse_starlette', 'uvicorn'),
+  )
+
+
+def test_toolset_node_defers_optional_mcp_stack():
+  """ToolsetNode serves McpToolset without depending on the mcp extra."""
+  if importlib.util.find_spec('mcp') is None:
+    pytest.skip('MCP import-boundary check requires the declared test extra.')
+
+  assert_modules_unloaded(
+      """
+from google.adk.workflow import ToolsetNode
+
+assert ToolsetNode.__name__ == 'ToolsetNode'
+""",
+      ('mcp',),
   )
 
 

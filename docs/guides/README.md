@@ -25,6 +25,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Workflow Graphs](workflow/graph/index.md) - Understanding nodes, edges, and graph structures in workflows.
 * [Function Nodes](workflow/function_node/index.md) - Wrapping Python functions and generators as workflow nodes.
 * [JoinNode](workflow/join_node/index.md) - Synchronizing parallel execution paths in workflows.
+* [ToolsetNode](workflow/toolset_node/index.md) - Running a tool from a toolset, such as an MCP server, as a workflow node.
 * [RetryConfig](workflow/retry_config/index.md) - Configuring retry policies for resilient workflow nodes.
 * [ParallelWorker](workflow/parallel_worker/index.md) - Processing lists of items concurrently in workflows.
 * [Dynamic Nodes](workflow/dynamic_nodes/index.md) - Scheduling and executing nodes dynamically at runtime.
