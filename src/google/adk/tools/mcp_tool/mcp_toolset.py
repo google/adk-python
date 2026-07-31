@@ -50,6 +50,7 @@ from ..base_toolset import ToolPredicate
 from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
+from .mcp_session_manager import _http_debug_var
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -333,6 +334,12 @@ class McpToolset(BaseToolset):
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> T:
     """Creates a session and executes a coroutine with it."""
+    current_debug: list[dict[str, Any]] = []
+    debug_token = (
+        _http_debug_var.set(current_debug)
+        if logger.isEnabledFor(logging.DEBUG)
+        else None
+    )
     headers: Dict[str, str] = {}
 
     # Add headers from header_provider if available
@@ -348,23 +355,34 @@ class McpToolset(BaseToolset):
     if auth_headers:
       headers.update(auth_headers)
 
-    session = await self._mcp_session_manager.create_session(
-        headers=headers if headers else None
-    )
-    timeout_in_seconds = (
-        self._connection_params.timeout
-        if hasattr(self._connection_params, "timeout")
-        else None
-    )
     try:
-      return await asyncio.wait_for(
-          coroutine_func(session), timeout=timeout_in_seconds
+      session = await self._mcp_session_manager.create_session(
+          headers=headers if headers else None
       )
-    except Exception as e:
-      logger.exception(
-          f"Exception during MCP session execution: {error_message}: {e}"
+      timeout_in_seconds = (
+          self._connection_params.timeout
+          if hasattr(self._connection_params, "timeout")
+          else None
       )
-      raise ConnectionError(f"{error_message}: {e}") from e
+      try:
+        return await asyncio.wait_for(
+            coroutine_func(session), timeout=timeout_in_seconds
+        )
+      except Exception as e:
+        logger.exception(
+            f"Exception during MCP session execution: {error_message}: {e}"
+        )
+        raise ConnectionError(f"{error_message}: {e}") from e
+    finally:
+      if debug_token is not None:
+        _http_debug_var.reset(debug_token)
+        if current_debug and readonly_context is not None:
+          # pylint: disable=protected-access
+          inv_ctx = getattr(readonly_context, "_invocation_context", None)
+          if inv_ctx is not None:
+            inv_ctx._custom_metadata.setdefault("http_debug_info", []).extend(
+                current_debug
+            )
 
   @retry_on_errors
   async def get_tools(

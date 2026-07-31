@@ -632,7 +632,7 @@ def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
 async def test_mcp_stdio_agent_no_runtime_error(mocker):
   """Test that LocalEvalService can handle MCP stdio agents without RuntimeError.
 
-  This is a regression test for GitHub issue #2196:
+  This is a regression test for the reported failure:
   "RuntimeError: Attempted to exit cancel scope in a different task than it was
   entered in"
 

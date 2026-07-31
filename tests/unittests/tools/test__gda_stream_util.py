@@ -256,6 +256,50 @@ class GdaStreamUtilTest(unittest.TestCase):
     )
     mock_session.configure_mtls_channel.assert_not_called()
 
+  @mock.patch.object(
+      _gda_stream_util._mtls_utils, "get_api_endpoint", autospec=True
+  )
+  def test_get_gda_endpoint_locations(self, mock_get_api_endpoint):
+    mock_get_api_endpoint.side_effect = (
+        lambda location, default_template, mtls_template: default_template.format(
+            location=location
+        )
+        if location
+        else default_template
+    )
+    self.assertEqual(
+        _gda_stream_util.get_gda_endpoint(location="eu"),
+        "https://geminidataanalytics.eu.rep.googleapis.com",
+    )
+    self.assertEqual(
+        _gda_stream_util.get_gda_endpoint(location="us"),
+        "https://geminidataanalytics.us.rep.googleapis.com",
+    )
+    self.assertEqual(
+        _gda_stream_util.get_gda_endpoint(location="us-central1"),
+        "https://geminidataanalytics-us-central1.googleapis.com",
+    )
+    self.assertEqual(
+        _gda_stream_util.get_gda_endpoint(location="global"),
+        "https://geminidataanalytics.googleapis.com",
+    )
+
+  @mock.patch.object(
+      _gda_stream_util._mtls_utils,
+      "effective_googleapis_endpoint",
+      autospec=True,
+  )
+  def test_get_gda_endpoint_custom_override(self, mock_effective_endpoint):
+    mock_effective_endpoint.side_effect = lambda ep: ep
+    self.assertEqual(
+        _gda_stream_util.get_gda_endpoint(api_endpoint="custom.googleapis.com"),
+        "https://custom.googleapis.com",
+    )
+    self.assertEqual(
+        _gda_stream_util.get_gda_endpoint(api_endpoint="https://foo.bar.com"),
+        "https://foo.bar.com",
+    )
+
 
 if __name__ == "__main__":
   unittest.main()

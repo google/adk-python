@@ -21,6 +21,7 @@ import os
 import ssl
 import tempfile
 from typing import Any
+from urllib.parse import quote
 
 from google.adk.skills import _utils
 from google.adk.skills import models
@@ -164,12 +165,27 @@ class GCPSkillRegistry(SkillRegistry):
 
     Returns:
       A Skill object.
+
+    Raises:
+      ValueError: If the name is not a valid skill name.
     """
+    # The name reaches here straight from a model-issued tool call, so it must
+    # be a single path segment before it is interpolated into the request URL.
+    # Accept the same character set skill names are already held to; the
+    # snake-or-kebab pattern is the superset of the two accepted spellings.
+    # pylint: disable-next=protected-access
+    if not models._SNAKE_OR_KEBAB_NAME_PATTERN.match(name):
+      raise ValueError(
+          f"Invalid skill name {name!r}: name must be lowercase kebab-case"
+          " (a-z, 0-9, hyphens) or snake_case (a-z, 0-9, underscores), with"
+          " no leading, trailing, or consecutive delimiters."
+      )
+
     async with self._create_httpx_client() as client:
       # 1. Fetch the logical Skill metadata
       skill_url = (
           f"{self.base_url}/projects/{self.project_id}/"
-          f"locations/{self.location}/skills/{name}"
+          f"locations/{self.location}/skills/{quote(name, safe='')}"
       )
       response = await self._make_request(client, skill_url)
       skill_data = response.json()

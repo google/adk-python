@@ -142,9 +142,8 @@ def trace_agent_invocation(
     agent: Agent from which attributes are gathered.
     ctx: InvocationContext from which attributes are gathered.
 
-  Inference related fields are not set, due to their planned removal from
-    invoke_agent span:
-  https://github.com/open-telemetry/semantic-conventions/issues/2632
+  Inference related fields are not set, because the OpenTelemetry semantic
+    conventions plan to remove them from the invoke_agent span.
 
   `gen_ai.agent.id` is not set because currently it's unclear what attributes
     this field should have, specifically:
@@ -206,6 +205,12 @@ def trace_tool_call(
 
   # e.g. FunctionTool
   span.set_attribute(GEN_AI_TOOL_TYPE, tool.__class__.__name__)
+
+  if (
+      invocation_context is not None
+      and (agent := invocation_context.agent) is not None
+  ):
+    span.set_attribute(GEN_AI_AGENT_NAME, agent.name)
 
   if error is not None:
     span.set_attribute(ERROR_TYPE, resolve_error_type(error))
@@ -290,7 +295,8 @@ def trace_merged_tool_calls(
   span.set_attribute(GEN_AI_TOOL_DESCRIPTION, "(merged tools)")
   span.set_attribute(GEN_AI_TOOL_CALL_ID, response_event_id)
 
-  # TODO(b/441461932): See if these are still necessary
+  # Pending cleanup: drop these placeholder attributes once no downstream
+  # consumer reads them.
   span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
   try:

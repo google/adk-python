@@ -31,7 +31,7 @@ LIVE_INPUT_RATE_HZ = 16000
 LIVE_OUTPUT_RATE_HZ = 24000
 LIVE_INPUT_MIME_TYPE = "audio/pcm;rate=16000"
 
-_RATE_RE = re.compile(r"rate=(\d+)")
+_RATE_RE = re.compile(r"(?:^|;)\s*rate\s*=\s*(\d+)\s*(?=;|$)", re.IGNORECASE)
 
 
 def parse_sample_rate(mime_type: str | None, default: int) -> int:
@@ -49,6 +49,8 @@ def resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
   interpolate, avoiding a heavy DSP dependency for speech relayed to a
   transcribing model.
   """
+  if src_rate <= 0 or dst_rate <= 0:
+    raise ValueError("Sample rates must be positive")
   if not pcm or src_rate == dst_rate:
     return pcm
 

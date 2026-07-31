@@ -94,13 +94,13 @@ def create_final_model_response_event(
 
 
 def get_structured_model_response(function_response_event: Event) -> str | None:
-  """Check if function response contains set_model_response and extract JSON.
+  """Check if function response contains a validated set_model_response result.
 
   Args:
     function_response_event: The function response event to check.
 
   Returns:
-    JSON response string if set_model_response was called, None otherwise.
+    JSON response string if set_model_response succeeded, None otherwise.
   """
   if (
       not function_response_event
@@ -110,11 +110,9 @@ def get_structured_model_response(function_response_event: Event) -> str | None:
 
   for func_response in function_response_event.get_function_responses():
     if func_response.name == 'set_model_response':
-      # Extract the actual result from the wrapped response.
-      # Tool results are wrapped as {'result': ...} when not already a dict.
-      response = func_response.response
-      if isinstance(response, dict) and 'result' in response:
-        response = response['result']
+      response = function_response_event.actions.set_model_response
+      if response is None:
+        return None
       return json.dumps(response, ensure_ascii=False)
 
   return None

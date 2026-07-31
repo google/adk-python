@@ -20,10 +20,13 @@ import sys
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
+from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -32,6 +35,7 @@ from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
+from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
@@ -848,3 +852,99 @@ class TestMcpToolset:
     unpickled = pickle.loads(pickled)
     assert unpickled._connection_params == self.mock_stdio_params
     assert unpickled._errlog == sys.stderr
+
+
+class TestMcpToolsetHttpDebug:
+  """Tests that McpToolset._execute_with_session captures HTTP debug info based on context mutability."""
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_toolset.logger.isEnabledFor",
+      return_value=True,
+  )
+  async def test_execute_with_session_captures_http_debug_when_context_is_mutable(
+      self, mock_is_enabled
+  ):
+    mock_session_manager = MagicMock(spec=MCPSessionManager)
+    mock_session = AsyncMock()
+    mock_session_manager.create_session.return_value = mock_session
+
+    toolset = McpToolset(
+        connection_params=StdioConnectionParams(
+            server_params=StdioServerParameters(command="mock"), timeout=5
+        )
+    )
+    toolset._mcp_session_manager = mock_session_manager
+
+    # Mock Context (mutable)
+    mock_invocation_context = Mock(spec=InvocationContext)
+    mock_invocation_context._custom_metadata = {}
+    mock_ctx_session = Mock()
+    mock_ctx_session.state = {}
+    mock_invocation_context.session = mock_ctx_session
+    context = Context(mock_invocation_context)
+
+    async def dummy_coro(session):
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        debug_list.append(
+            {"url": "https://example.com/api", "status_code": 200}
+        )
+      return "done"
+
+    res = await toolset._execute_with_session(
+        dummy_coro, "error", readonly_context=context
+    )
+    assert res == "done"
+
+    assert "http_debug_info" in context.custom_metadata
+    debug_info = context.custom_metadata["http_debug_info"]
+    assert len(debug_info) == 1
+    assert debug_info[0]["url"] == "https://example.com/api"
+    assert debug_info[0]["status_code"] == 200
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_toolset.logger.isEnabledFor",
+      return_value=True,
+  )
+  async def test_execute_with_session_captures_http_debug_when_context_is_readonly(
+      self, mock_is_enabled
+  ):
+    mock_session_manager = MagicMock(spec=MCPSessionManager)
+    mock_session = AsyncMock()
+    mock_session_manager.create_session.return_value = mock_session
+
+    toolset = McpToolset(
+        connection_params=StdioConnectionParams(
+            server_params=StdioServerParameters(command="mock"), timeout=5
+        )
+    )
+    toolset._mcp_session_manager = mock_session_manager
+
+    # Mock ReadonlyContext (read-only)
+    mock_invocation_context = Mock(spec=InvocationContext)
+    mock_invocation_context._custom_metadata = {}
+    mock_ctx_session = Mock()
+    mock_ctx_session.state = {}
+    mock_invocation_context.session = mock_ctx_session
+    context = ReadonlyContext(mock_invocation_context)
+
+    async def dummy_coro(session):
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        debug_list.append(
+            {"url": "https://example.com/api", "status_code": 200}
+        )
+      return "done"
+
+    res = await toolset._execute_with_session(
+        dummy_coro, "error", readonly_context=context
+    )
+    assert res == "done"
+
+    assert "http_debug_info" in context.custom_metadata
+    debug_info = context.custom_metadata["http_debug_info"]
+    assert len(debug_info) == 1
+    assert debug_info[0]["url"] == "https://example.com/api"
+    assert debug_info[0]["status_code"] == 200

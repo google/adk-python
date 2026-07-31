@@ -1338,7 +1338,7 @@ class TestLiveSessionCallbacks:
 
 
 def test_convert_events_preserves_tool_calls_when_skip_summarization():
-  """Regression test for #5410.
+  """Regression test for tool calls dropped from invocation_events.
 
   When an event has skip_summarization=True, is_final_response() returns True
   even if the event contains function calls.  Previously such an event was

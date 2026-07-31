@@ -140,8 +140,9 @@ async def test_streaming_adk_to_streaming_a2a():
   assert received_requests[0]["session_id"] is not None
 
   assert texts == ["Hello", " world", "Hello world"]
-  assert len(actions) == 1
-  assert actions[0].artifact_delta == {"file1": 1}
+  # Event actions describe the sending agent's own session and do not cross
+  # the peer boundary.
+  assert not actions
 
 
 @pytest.mark.asyncio

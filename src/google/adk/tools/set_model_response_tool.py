@@ -22,6 +22,7 @@ from typing import Optional
 
 from google.genai import types
 from pydantic import TypeAdapter
+from pydantic import ValidationError
 from typing_extensions import override
 
 from ..utils._schema_utils import get_list_inner_type
@@ -150,27 +151,39 @@ class SetModelResponseTool(BaseTool):
       tool_context: Tool execution context.
 
     Returns:
-      The validated response. Type depends on the output_schema:
+      The validated response, or validation feedback for the model to retry.
+      Type depends on the output_schema:
         - dict for BaseModel
         - list of dicts for list[BaseModel]
         - raw value for other schema types (list[str], dict, etc.)
+        - dict with an error message when Pydantic validation fails
     """
-    if self._is_basemodel:
-      # For regular BaseModel, validate directly
-      validated_response = self.output_schema.model_validate(args)
-      result = validated_response.model_dump(exclude_none=True)
-    elif self._is_list_of_basemodel:
-      # For list[BaseModel], extract and validate the 'items' field
-      items = args.get('items', [])
-      type_adapter = TypeAdapter(self.output_schema)
-      validated_response = type_adapter.validate_python(items)
-      result = [
-          item.model_dump(exclude_none=True) for item in validated_response
-      ]
-    else:
-      # For other schema types (list[str], dict, etc.),
-      # return the value directly without pydantic validation
-      result = args.get('response')
+    try:
+      if self._is_basemodel:
+        # For regular BaseModel, validate directly
+        validated_response = self.output_schema.model_validate(args)
+        result = validated_response.model_dump(exclude_none=True)
+      elif self._is_list_of_basemodel:
+        # For list[BaseModel], extract and validate the 'items' field
+        items = args.get('items', [])
+        type_adapter = TypeAdapter(self.output_schema)
+        validated_response = type_adapter.validate_python(items)
+        result = [
+            item.model_dump(exclude_none=True) for item in validated_response
+        ]
+      else:
+        # For other schema types (list[str], dict, etc.),
+        # return the value directly without pydantic validation
+        result = args.get('response')
+    except ValidationError as e:
+      return {
+          'error': (
+              f'Validation Error found:\n{e}\n'
+              'Recall the set_model_response function correctly, fix the'
+              ' errors, and call it again with all required fields using the'
+              ' correct types.'
+          )
+      }
 
     tool_context.actions.set_model_response = result
     return result

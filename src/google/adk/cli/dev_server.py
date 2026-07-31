@@ -20,6 +20,12 @@ All dev-only endpoints (eval, debug, graph, test management) are added by DevSer
 
 Use this for local development with `adk web`.
 For production deployments, use api_server.py instead.
+
+Security: like ApiServer, every endpoint here is unauthenticated, and the
+dev-only endpoints additionally read and write agent files on disk and run
+evaluation and debugging code. This server is intended solely for local
+development on a trusted machine. Never expose it to an untrusted or public
+network, and never use it for a production or multi-user deployment.
 """
 
 from __future__ import annotations
@@ -185,6 +191,9 @@ class DevServer(ApiServer):
 
   Inherits all production endpoints from ApiServer and adds development-specific
   endpoints for evaluation, debugging, and developer UI features.
+
+  Like ApiServer, all endpoints are unauthenticated. This server is intended
+  for local development only and must not be exposed to untrusted networks.
   """
 
   _allow_special_agents: bool = True

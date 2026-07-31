@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 from pathlib import Path
@@ -84,7 +85,42 @@ __all__ = [
 A2A_METADATA_PREFIX = "a2a:"
 DEFAULT_TIMEOUT = 600.0
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _is_loopback_host(hostname: Optional[str]) -> bool:
+  """Returns whether a hostname names the local machine.
+
+  Covers ``localhost`` and the reserved ``*.localhost`` names as well as any
+  literal loopback address, so the local-development pattern the A2A helpers
+  emit -- a plain-http card served from ``localhost`` -- keeps working.
+  """
+  if not hostname:
+    return False
+  host = hostname.strip("[]").lower()
+  if host == "localhost" or host.endswith(".localhost"):
+    return True
+  try:
+    return ipaddress.ip_address(host).is_loopback
+  except ValueError:
+    return False
+
+
+def _url_origin(url: str) -> tuple[str, str, Optional[int]]:
+  """Returns the ``(scheme, host, port)`` origin triple for a URL.
+
+  Raises:
+    ValueError: If the URL carries a malformed port.
+  """
+  parsed = urlparse(url)
+  scheme = parsed.scheme.lower()
+  return (
+      scheme,
+      (parsed.hostname or "").lower(),
+      (parsed.port or _DEFAULT_PORTS.get(scheme)),
+  )
 
 
 @a2a_experimental
@@ -319,6 +355,54 @@ class RemoteA2aAgent(BaseAgent):
       raise AgentCardResolutionError(
           f"Invalid RPC URL in agent card: {card_url}, error: {e}"
       ) from e
+
+    self._validate_card_rpc_targets(agent_card)
+
+  def _validate_card_rpc_targets(self, agent_card: AgentCard) -> None:
+    """Constrains where a card fetched over the network may aim RPC traffic.
+
+    Every URL the card offers is checked, not only the one this ADK version
+    would select, because the client factory negotiates the endpoint across
+    the card's whole interface list. Each must be https and share the origin
+    the card was fetched from; plain http stays allowed on a loopback host,
+    the local-development shape the A2A helpers emit.
+
+    A card passed in directly or read from a local file did not come off the
+    network here, so its target is left to the caller.
+    """
+    source = self._agent_card_source
+    if not source or not source.startswith(("http://", "https://")):
+      return
+
+    try:
+      source_origin = _url_origin(source)
+    except ValueError as e:
+      raise AgentCardResolutionError(
+          f"Invalid agent card source URL: {source}, error: {e}"
+      ) from e
+
+    for card_url in _compat.agent_card_rpc_urls(agent_card):
+      parsed_card = urlparse(card_url)
+      if parsed_card.scheme.lower() != "https" and not _is_loopback_host(
+          parsed_card.hostname
+      ):
+        raise AgentCardResolutionError(
+            "Agent card RPC URL must use https, or http on a loopback host:"
+            f" {card_url}"
+        )
+
+      try:
+        card_origin = _url_origin(card_url)
+      except ValueError as e:
+        raise AgentCardResolutionError(
+            f"Invalid RPC URL in agent card: {card_url}, error: {e}"
+        ) from e
+
+      if card_origin != source_origin:
+        raise AgentCardResolutionError(
+            "Agent card RPC URL must have the same origin as the location the"
+            f" card was fetched from ({source}): {card_url}"
+        )
 
   async def _ensure_resolved(
       self, ctx: Optional[InvocationContext] = None

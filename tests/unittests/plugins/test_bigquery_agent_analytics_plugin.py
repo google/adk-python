@@ -659,7 +659,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       dummy_arrow_schema,
       mock_asyncio_to_thread,
   ):
-    """Regression test for cross-region writes (issue #262).
+    """Regression test for cross-region writes.
 
     The Storage Write API streaming AppendRows RPC does not
     auto-populate the request-routing header, so writes to a dataset
@@ -2111,7 +2111,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       callback_context,
       dummy_arrow_schema,
   ):
-    """Regression for #6063: None agent falls back to source event author."""
+    """Regression: None agent falls back to source event author."""
     # Workflow-driven invocations leave ``InvocationContext.agent`` as None.
     # Reading ``callback_context.agent_name`` then raised ``AttributeError``,
     # which ``@_safe_callback`` swallowed, silently dropping the BigQuery row.
@@ -2143,7 +2143,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       callback_context,
       dummy_arrow_schema,
   ):
-    """Regression for #6063: callback-only row with no agent writes null."""
+    """Regression: callback-only row with no agent writes null."""
     callback_context._invocation_context.agent = None
 
     await bq_plugin_inst._log_event(
@@ -2573,7 +2573,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     """Verify no quota_project_id is set when credentials don't provide one.
 
     This is critical for Workload Identity Federation flows where setting
-    quota_project_id on the client breaks auth token refresh (issue #4370).
+    quota_project_id on the client breaks auth token refresh.
     """
     mock_creds = mock.create_autospec(
         google.auth.credentials.Credentials, instance=True, spec_set=True
@@ -2822,7 +2822,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       self,
       callback_context,
   ):
-    """Regression guard for the duplicate-Cloud-Trace bug (issue #94).
+    """Regression guard for the duplicate-Cloud-Trace bug.
 
     The plugin must NOT call ``tracer.start_span(...)`` from
     ``push_span`` / ``pop_span``.  Any owned OTel span goes through
@@ -2858,7 +2858,7 @@ class TestBigQueryAgentAnalyticsPlugin:
   async def test_push_pop_does_not_export_spans_through_real_provider(
       self, callback_context
   ):
-    """End-to-end regression guard against #94 with a real OTel
+    """End-to-end guard against duplicate Cloud Trace spans with a real OTel
 
     provider + in-memory exporter.
 
@@ -2901,7 +2901,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert exporter.get_finished_spans() == (), (
           "Plugin must not export OTel spans; any owned span would"
           " surface as a duplicate in Cloud Trace alongside the"
-          " framework's real spans (issue #94)."
+          " framework's real spans."
       )
 
     provider.shutdown()
@@ -5861,7 +5861,7 @@ class TestHITLTracing:
 
 
 # ==============================================================================
-# TEST CLASS: Span Hierarchy Isolation (Issue #4561)
+# TEST CLASS: Span Hierarchy Isolation
 # ==============================================================================
 
 
@@ -6724,7 +6724,7 @@ class TestAnalyticsViews:
 
 
 # ==============================================================================
-# Trace-ID Continuity Tests (Issue #4645)
+# Trace-ID Continuity Tests
 # ==============================================================================
 class TestTraceIdContinuity:
   """Tests for trace_id continuity across all events in an invocation.
@@ -6740,9 +6740,9 @@ class TestTraceIdContinuity:
   async def test_trace_id_continuity_no_ambient_span(self, callback_context):
     """All events share one trace_id when no ambient OTel span exists.
 
-    Simulates the #4645 scenario: OTel IS configured (real TracerProvider)
-    but the Runner's ambient span is NOT present (e.g. Agent Engine,
-    custom runners).
+    Simulates the broken-continuity scenario: OTel IS configured (real
+    TracerProvider) but the Runner's ambient span is NOT present (e.g. Agent
+    Engine, custom runners).
     """
     from opentelemetry.sdk.trace import TracerProvider as SdkProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -7267,7 +7267,7 @@ class TestStackLeakSafety:
   def test_clear_stack_does_not_export_spans(self, callback_context):
     """``clear_stack()`` clears the internal records but does NOT
 
-    export any OTel spans (issue #94 regression guard).
+    export any OTel spans (duplicate-Cloud-Trace regression guard).
 
     Pre-fix, ``clear_stack()`` called ``record.span.end()`` for every
     owned record, which delivered the now-finished span to whatever
@@ -7304,11 +7304,11 @@ class TestStackLeakSafety:
       result = bigquery_agent_analytics_plugin._span_records_ctx.get()
       assert result == []
 
-      # Still no exported spans — the regression guard for #94.
+      # Still no exported spans — the duplicate-Cloud-Trace guard.
       assert exporter.get_finished_spans() == (), (
           "clear_stack() must not export OTel spans; any owned span"
           " would surface as a duplicate in Cloud Trace alongside the"
-          " framework's real spans (issue #94)."
+          " framework's real spans."
       )
 
     provider.shutdown()
@@ -8226,7 +8226,7 @@ class TestA2AInteractionLogging:
 
 
 # ================================================================
-# TEST CLASS: Dataset location handling (Issue #5476)
+# TEST CLASS: Dataset location handling
 # ================================================================
 class TestDatasetLocationHandling:
   """Tests that BQ client is created without a default location.
@@ -8324,7 +8324,7 @@ class TestDatasetLocationHandling:
 
 
 # ================================================================
-# TEST CLASS: Fork detection after pickle (Issue #86 / PR #5528)
+# TEST CLASS: Fork detection after pickle
 # ================================================================
 class TestForkDetectionAfterPickle:
   """Tests that unpickled plugins do not false-positive fork detection."""
@@ -8394,7 +8394,7 @@ class TestForkDetectionAfterPickle:
 
 
 # ================================================================
-# TEST CLASS: GCS offload unit mismatch fix (Issue #5561)
+# TEST CLASS: GCS offload unit mismatch fix
 # ================================================================
 class TestOffloadUnitSeparation:
   """Tests that byte-based inline limit and character-based truncation
@@ -8608,7 +8608,7 @@ class TestOffloadUnitSeparation:
 
 
 # ================================================================
-# TEST CLASS: AGENT_RESPONSE logging (Issue #87)
+# TEST CLASS: AGENT_RESPONSE logging
 # ================================================================
 class TestAgentResponseLogging:
   """Tests that final agent response events are captured correctly."""

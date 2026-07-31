@@ -827,6 +827,10 @@ class BaseLlmFlow(ABC):
         await llm_connection.send_realtime(types.ActivityStart())
       elif live_request.activity_end:
         await llm_connection.send_realtime(types.ActivityEnd())
+      elif live_request.audio_stream_end:
+        await llm_connection.send_realtime(
+            types.LiveClientRealtimeInput(audio_stream_end=True)
+        )
       elif live_request.blob:
         # Cache input audio chunks before flushing
         self.audio_cache_manager.cache_audio(

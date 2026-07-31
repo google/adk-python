@@ -303,7 +303,7 @@ def test_cli_run_interactive_with_state(
   (agent_dir / "agent.py").touch()
 
   mock_run_cli = mock.AsyncMock()
-  monkeypatch.setattr("google.adk.cli.cli_tools_click.run_cli", mock_run_cli)
+  monkeypatch.setattr("google.adk.cli.cli.run_cli", mock_run_cli)
 
   runner = CliRunner()
 
@@ -1195,7 +1195,9 @@ def test_cli_eval_missing_deps_raises(
   )
   assert result.exit_code != 0
   assert isinstance(result.exception, SystemExit)
-  assert cli_tools_click.MISSING_EVAL_DEPENDENCIES_MESSAGE in result.output
+  from google.adk.evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+
+  assert MISSING_EVAL_DEPENDENCIES_MESSAGE in result.output
 
 
 # cli web & api_server (uvicorn patched)
@@ -1212,12 +1214,8 @@ def _patch_uvicorn(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     def run(self) -> None:
       rec()
 
-  monkeypatch.setattr(
-      cli_tools_click.uvicorn, "Config", lambda *a, **k: object()
-  )
-  monkeypatch.setattr(
-      cli_tools_click.uvicorn, "Server", lambda *_a, **_k: _DummyServer()
-  )
+  monkeypatch.setattr("uvicorn.Config", lambda *a, **k: object())
+  monkeypatch.setattr("uvicorn.Server", lambda *_a, **_k: _DummyServer())
   return rec
 
 

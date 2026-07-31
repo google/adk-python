@@ -270,8 +270,6 @@ class TestGeminiContextCacheManager:
   async def test_create_cache_gates_on_prefix_not_full_prompt(self):
     """Cache creation is gated on the cacheable prefix, not the full prompt.
 
-    Regression test for https://github.com/google/adk-python/issues/5847.
-
     On a long conversation the previous-prompt token count
     (``cacheable_contents_token_count``) can be well above Gemini's 4096-token
     minimum while the cached prefix ``contents[:cache_contents_count]`` is far

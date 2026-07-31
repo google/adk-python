@@ -20,6 +20,7 @@ import importlib
 from typing import Any
 from typing import TYPE_CHECKING
 
+from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -47,6 +48,7 @@ __all__ = [
     'Gemma3Ollama',
     'LLMRegistry',
     'LiteLlm',
+    'LlmCapabilities',
 ]
 
 _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
@@ -64,11 +66,11 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
     ),
     # Gemma 3 only (function-calling workarounds). Gemma 4+ resolves to Gemini.
     'Gemma': ([r'gemma-.*'], 'gemma_llm'),
-    'ApigeeLlm': ([r'.*-apigee$'], 'apigee_llm'),
+    'ApigeeLlm': ([r'apigee\/.*'], 'apigee_llm'),
     'Claude': ([r'claude-3-.*', r'claude-.*-4.*'], 'anthropic_llm'),
     'Gemma3Ollama': ([r'ollama/gemma3.*'], 'gemma_llm'),
     'OpenAILlm': (
-        [r'gpt-.*', r'o1-.*', r'o3-.*'],
+        [r'gpt-.*', r'o\d+-.*'],
         'google.adk.labs.openai',
     ),
     'LiteLlm': (

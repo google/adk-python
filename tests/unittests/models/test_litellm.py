@@ -5019,8 +5019,8 @@ async def test_finish_reason_propagation(
 def test_model_response_to_generate_content_response_no_message_with_finish_reason():
   """Test response with no message but finish_reason returns empty LlmResponse.
 
-  This test covers issue #3618: when a turn ends with tool calls and no final
-  message, we should return an empty LlmResponse instead of raising ValueError.
+  When a turn ends with tool calls and no final message, we should return an
+  empty LlmResponse instead of raising ValueError.
   """
   response = ModelResponse(
       model="test_model",

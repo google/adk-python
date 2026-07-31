@@ -53,6 +53,7 @@ from pydantic import Field
 from typing_extensions import override
 
 from ..utils._google_client_headers import merge_tracking_headers
+from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -2737,6 +2738,14 @@ class LiteLlm(BaseLlm):
     self._additional_args.pop("stream", None)
     if drop_params is not None:
       self._additional_args["drop_params"] = drop_params
+
+  @property
+  @override
+  def capabilities(self) -> LlmCapabilities:
+    # LiteLLM reconciles tools + response_format per provider: providers with
+    # native support get both passed through, and the rest are converted to a
+    # json tool call with tool_choice enforcement.
+    return LlmCapabilities(output_schema_and_tools=True)
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False

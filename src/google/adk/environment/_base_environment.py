@@ -20,7 +20,6 @@ from abc import ABC
 from abc import abstractmethod
 import dataclasses
 from pathlib import Path
-from typing import Optional
 
 from ..utils.feature_decorator import experimental
 
@@ -94,7 +93,7 @@ class BaseEnvironment(ABC):
       self,
       command: str,
       *,
-      timeout: Optional[float] = None,
+      timeout: float | None = None,
   ) -> ExecutionResult:
     """Execute a shell command in the working directory.
 

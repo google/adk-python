@@ -270,6 +270,69 @@ async def test_get_skill_raises_on_invalid_skill_name():
       await registry.get_skill(name="my-skill")
 
 
+@pytest.mark.parametrize(
+    "unsafe_name",
+    [
+        "../../../projects/victim/locations/us-central1/skills/secret",
+        "my-skill/../other-skill",
+        "..%2f..%2fsecret",
+        "my-skill?alt=media",
+        "my-skill#fragment",
+        "my-skill/revisions/rev-123",
+        "My-Skill",
+        "",
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_skill_rejects_unsafe_name_before_any_request(unsafe_name):
+  """Verifies that a name that is not a single safe path segment is rejected."""
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  with mock.patch("httpx.AsyncClient.get") as mock_get_called:
+    with pytest.raises(ValueError, match="Invalid skill name"):
+      await registry.get_skill(name=unsafe_name)
+
+  mock_get_called.assert_not_called()
+
+
+@pytest.mark.parametrize("valid_name", ["my-skill", "my_skill", "skill2"])
+@pytest.mark.asyncio
+async def test_get_skill_builds_expected_url_for_valid_name(valid_name):
+  """Verifies that a valid name is still interpolated verbatim into the URL."""
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  mock_response1 = mock.MagicMock()
+  mock_response1.status_code = 200
+  mock_response1.json.return_value = {
+      "name": (
+          f"projects/test-project/locations/us-central1/skills/{valid_name}"
+      ),
+      "defaultRevision": (
+          f"projects/test-project/locations/us-central1/skills/{valid_name}"
+          "/revisions/rev-123"
+      ),
+  }
+
+  mock_response2 = mock.MagicMock()
+  mock_response2.status_code = 200
+  mock_response2.content = _create_fake_zip_bytes()
+
+  async def mock_get(url, *unused_args, **kwargs):
+    if kwargs.get("params") and kwargs.get("params").get("alt") == "media":
+      return mock_response2
+    return mock_response1
+
+  with mock.patch(
+      "httpx.AsyncClient.get", side_effect=mock_get
+  ) as mock_get_called:
+    await registry.get_skill(name=valid_name)
+
+  assert mock_get_called.call_args_list[0].args[0] == (
+      "https://agentregistry.googleapis.com/v1alpha/projects/test-project/"
+      f"locations/us-central1/skills/{valid_name}"
+  )
+
+
 def test_constructor_configures_base_url():
   """Verifies that constructor configures base URL from environment."""
   # Case 1: Environment variable fallback

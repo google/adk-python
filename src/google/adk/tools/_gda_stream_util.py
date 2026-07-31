@@ -16,43 +16,77 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from google.auth.credentials import Credentials
 from google.auth.transport import requests as auth_requests
 import requests
-
-from google import auth
 
 from ..utils import _mtls_utils
 
 _GDA_DEFAULT_TEMPLATE = "https://geminidataanalytics.googleapis.com"
 _GDA_MTLS_TEMPLATE = "https://geminidataanalytics.mtls.googleapis.com"
+_GDA_REP_TEMPLATE = "https://geminidataanalytics.{location}.rep.googleapis.com"
+_GDA_REP_MTLS_TEMPLATE = (
+    "https://geminidataanalytics.{location}.rep.mtls.googleapis.com"
+)
+_GDA_REGIONAL_TEMPLATE = "https://geminidataanalytics-{location}.googleapis.com"
+_GDA_REGIONAL_MTLS_TEMPLATE = (
+    "https://geminidataanalytics-{location}.mtls.googleapis.com"
+)
 
 
-def get_gda_endpoint() -> str:
-  """Returns the GDA API endpoint based on mTLS configuration."""
+def get_gda_endpoint(
+    location: str | None = None,
+    api_endpoint: str | None = None,
+) -> str:
+  """Returns the GDA API endpoint based on location and mTLS configuration."""
+  if api_endpoint:
+    endpoint = (
+        api_endpoint if "://" in api_endpoint else f"https://{api_endpoint}"
+    )
+    return _mtls_utils.effective_googleapis_endpoint(endpoint)
+
+  loc = (location or "").lower().strip()
+  if not loc or loc == "global":
+    return _mtls_utils.get_api_endpoint(
+        location="",
+        default_template=_GDA_DEFAULT_TEMPLATE,
+        mtls_template=_GDA_MTLS_TEMPLATE,
+    )
+  if loc in ("eu", "us"):
+    return _mtls_utils.get_api_endpoint(
+        location=loc,
+        default_template=_GDA_REP_TEMPLATE,
+        mtls_template=_GDA_REP_MTLS_TEMPLATE,
+    )
   return _mtls_utils.get_api_endpoint(
-      location="",
-      default_template=_GDA_DEFAULT_TEMPLATE,
-      mtls_template=_GDA_MTLS_TEMPLATE,
+      location=loc,
+      default_template=_GDA_REGIONAL_TEMPLATE,
+      mtls_template=_GDA_REGIONAL_MTLS_TEMPLATE,
   )
 
 
 def get_gda_session(
-    credentials: auth.credentials.Credentials,
+    credentials: Credentials,
+    location: str | None = None,
+    api_endpoint: str | None = None,
 ) -> tuple[requests.Session, str]:
   """Creates an AuthorizedSession and returns it with the correct endpoint.
 
   Args:
       credentials: The credentials to use for the request.
+      location: Optional location of the Data Agent.
+      api_endpoint: Optional custom endpoint override.
 
   Returns:
       A tuple containing the authorized requests Session and the GDA endpoint.
   """
   session = auth_requests.AuthorizedSession(credentials=credentials)
+  endpoint = get_gda_endpoint(location=location, api_endpoint=api_endpoint)
 
   if _mtls_utils.use_client_cert_effective():
     session.configure_mtls_channel()
 
-  return session, get_gda_endpoint()
+  return session, endpoint
 
 
 def get_stream(

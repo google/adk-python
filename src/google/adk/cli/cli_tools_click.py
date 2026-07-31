@@ -35,28 +35,53 @@ from typing import TYPE_CHECKING
 
 import click
 from click.core import ParameterSource
-from fastapi import FastAPI
-import uvicorn
 
 from .. import version
-from ..agents.run_config import StreamingMode
-from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+from ..agents._streaming_mode import StreamingMode
 from ..features import FeatureName
 from ..features import override_feature_enabled
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
 from ._telemetry._metrics_collector import MetricsCollector
-from .cli import run_cli
 from .utils import envs
 from .utils import logs
 
 if TYPE_CHECKING:
+  from fastapi import FastAPI
+
   from ..agents.llm_agent import LlmAgent
+
 
 LOG_LEVELS = click.Choice(
     ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     case_sensitive=False,
 )
+
+_STREAMING_MODE_CHOICES = tuple(str(mode.value) for mode in StreamingMode)
+
+
+def _missing_eval_dependencies_message() -> str:
+  # Imported lazily so loading the CLI does not pull in the evaluation stack.
+  from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+
+  return MISSING_EVAL_DEPENDENCIES_MESSAGE
+
+
+def _parse_streaming_mode(
+    _ctx: click.Context,
+    param: click.Parameter,
+    value: str | None,
+) -> StreamingMode | None:
+  """Converts a validated CLI value to its streaming mode."""
+  if value is None:
+    return None
+
+  mode = next(
+      (m for m in StreamingMode if str(m.value).lower() == value.lower()), None
+  )
+  if mode is None:
+    raise click.BadParameter(f"unknown streaming mode {value!r}", param=param)
+  return mode
 
 
 def _logging_options():
@@ -426,13 +451,8 @@ def conformance():
 )
 @click.argument(
     "streaming-mode",
-    type=click.Choice(
-        [str(m.value) for m in StreamingMode], case_sensitive=False
-    ),
-    callback=lambda ctx, param, value: next(
-        (m for m in StreamingMode if str(m.value).lower() == value.lower()),
-        value,
-    ),
+    type=click.Choice(_STREAMING_MODE_CHOICES, case_sensitive=False),
+    callback=_parse_streaming_mode,
 )
 @click.pass_context
 def cli_conformance_record(
@@ -516,15 +536,8 @@ def cli_conformance_record(
 )
 @click.option(
     "--streaming-mode",
-    type=click.Choice(
-        [str(m.value) for m in StreamingMode], case_sensitive=False
-    ),
-    callback=lambda ctx, param, value: next(
-        (m for m in StreamingMode if str(m.value).lower() == value.lower()),
-        value,
-    )
-    if value is not None
-    else None,
+    type=click.Choice(_STREAMING_MODE_CHOICES, case_sensitive=False),
+    callback=_parse_streaming_mode,
     required=False,
     default=None,
 )
@@ -940,6 +953,8 @@ def cli_run(
     sys.exit(exit_code)
   else:
     # Legacy interactive mode
+    from .cli import run_cli
+
     asyncio.run(
         run_cli(
             agent_parent_dir=agent_parent_folder,
@@ -1182,7 +1197,7 @@ def cli_eval(
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   eval_config = get_evaluation_criteria_or_default(config_file_path)
   print(f"Using evaluation criteria: {eval_config}")
@@ -1305,7 +1320,7 @@ def cli_eval(
         )
     )
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   click.echo(
       "*********************************************************************"
@@ -1413,7 +1428,7 @@ def cli_optimize(
     from .cli_eval import get_root_agent
 
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   with open(sampler_config_file_path, "r", encoding="utf-8") as f:
     content = f.read()
@@ -1551,7 +1566,7 @@ def cli_add_eval_case(
     from .cli_eval import get_eval_sets_manager
 
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
@@ -1649,7 +1664,7 @@ def cli_generate_eval_cases(
     from .utils.state import create_empty_state
 
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
@@ -1961,6 +1976,10 @@ def cli_web(
   agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
   pointing directly to a single agent folder.
 
+  This server is intended for local development. Its endpoints are
+  unauthenticated, so run it on a trusted network only and do not expose it to
+  untrusted or public networks.
+
   Example:
 
     adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
@@ -1989,6 +2008,8 @@ def cli_web(
 """,
         fg="green",
     )
+
+  import uvicorn
 
   from .fast_api import get_fast_api_app
 
@@ -2102,6 +2123,10 @@ def cli_api_server(
   agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
   pointing directly to a single agent folder.
 
+  This server's endpoints are unauthenticated. Run it on a trusted network
+  only, and put it behind your own authentication and authorization layer
+  before exposing it to untrusted or public networks or serving multiple users.
+
   Example:
 
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
@@ -2114,6 +2139,8 @@ def cli_api_server(
     )
 
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
+
+  import uvicorn
 
   from .fast_api import get_fast_api_app
 

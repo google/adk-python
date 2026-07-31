@@ -22,10 +22,12 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 from anthropic import NOT_GIVEN
+from anthropic import RateLimitError
 from anthropic import types as anthropic_types
 from google.adk import version as adk_version
 from google.adk.models import anthropic_llm
 from google.adk.models import AnthropicGenerateContentConfig
+from google.adk.models.anthropic_llm import _AnthropicRateLimitError
 from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.anthropic_llm import content_to_message_param
@@ -39,6 +41,7 @@ from google.genai import types
 from google.genai import version as genai_version
 from google.genai.types import Content
 from google.genai.types import Part
+import httpx
 import pytest
 
 
@@ -2802,3 +2805,55 @@ async def test_streaming_sets_finish_reason():
 
   final = responses[-1]
   assert final.finish_reason == types.FinishReason.MAX_TOKENS
+
+
+def _make_rate_limit_error() -> RateLimitError:
+  request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+  response = httpx.Response(429, request=request)
+  return RateLimitError(
+      "rate limited",
+      response=response,
+      body={"type": "error", "error": {"type": "rate_limit_error"}},
+  )
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_wraps_anthropic_rate_limit_error():
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(side_effect=_make_rate_limit_error())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    with pytest.raises(_AnthropicRateLimitError) as excinfo:
+      _ = [r async for r in llm.generate_content_async(llm_request)]
+
+  assert "docs.anthropic.com/en/api/errors#http-errors" in str(excinfo.value)
+  assert "rate limited" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_streaming_wraps_anthropic_rate_limit_error():
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(side_effect=_make_rate_limit_error())
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    with pytest.raises(_AnthropicRateLimitError) as excinfo:
+      _ = [
+          r async for r in llm.generate_content_async(llm_request, stream=True)
+      ]
+
+  assert "docs.anthropic.com/en/api/errors#http-errors" in str(excinfo.value)
+  assert "rate limited" in str(excinfo.value)

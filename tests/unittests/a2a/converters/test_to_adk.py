@@ -105,11 +105,7 @@ class TestToAdk:
         message_id="msg-1",
         role=_compat.ROLE_USER,
         parts=[a2a_part],
-        metadata={
-            _get_adk_metadata_key("actions"): {
-                "stateDelta": {"saved_key": "saved-value"}
-            }
-        },
+        metadata={_get_adk_metadata_key("actions"): {"escalate": True}},
     )
 
     mock_genai_part = genai_types.Part.from_text(text="hello")
@@ -122,7 +118,7 @@ class TestToAdk:
         part_converter=mock_part_converter,
     )
 
-    assert event.actions.state_delta == {"saved_key": "saved-value"}
+    assert event.actions.escalate is True
     assert event.content is not None
     assert event.content.parts[0] == mock_genai_part
 
@@ -132,11 +128,7 @@ class TestToAdk:
         message_id="msg-1",
         role=_compat.ROLE_USER,
         parts=[],
-        metadata={
-            _get_adk_metadata_key("actions"): {
-                "stateDelta": {"saved_key": "saved-value"}
-            }
-        },
+        metadata={_get_adk_metadata_key("actions"): {"escalate": True}},
     )
 
     event = convert_a2a_message_to_event(
@@ -147,7 +139,7 @@ class TestToAdk:
     )
 
     assert event is not None
-    assert event.actions.state_delta == {"saved_key": "saved-value"}
+    assert event.actions.escalate is True
     assert event.content is None
 
   def test_convert_a2a_task_to_event_success(self):
@@ -199,11 +191,7 @@ class TestToAdk:
                 artifact_id="art-1",
                 artifact_type="message",
                 parts=[],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "stateDelta": {"saved_key": "saved-value"}
-                    }
-                },
+                metadata={_get_adk_metadata_key("actions"): {"escalate": True}},
             )
         ],
     )
@@ -216,7 +204,7 @@ class TestToAdk:
     )
 
     assert event is not None
-    assert event.actions.state_delta == {"saved_key": "saved-value"}
+    assert event.actions.escalate is True
     assert event.content is None
 
   def test_convert_a2a_task_to_event_merges_actions_across_artifacts(self):
@@ -234,7 +222,7 @@ class TestToAdk:
                 parts=[],
                 metadata={
                     _get_adk_metadata_key("actions"): {
-                        "stateDelta": {"first_key": "first-value"}
+                        "skipSummarization": True
                     }
                 },
             ),
@@ -242,7 +230,7 @@ class TestToAdk:
                 artifact_id="art-2",
                 artifact_type="message",
                 parts=[],
-                metadata={},
+                metadata={_get_adk_metadata_key("actions"): {"escalate": True}},
             ),
         ],
     )
@@ -255,55 +243,8 @@ class TestToAdk:
     )
 
     assert event is not None
-    assert event.actions.state_delta == {"first_key": "first-value"}
-    assert event.content is None
-
-  def test_convert_a2a_task_to_event_overwrites_nested_state_delta_values(self):
-    """Test task conversion preserves top-level state overwrite semantics."""
-    task = Task(
-        id="task-1",
-        status=_compat.make_task_status(
-            _compat.TS_SUBMITTED, timestamp="2024-01-01T00:00:00Z"
-        ),
-        context_id="context-1",
-        artifacts=[
-            _compat.make_artifact(
-                artifact_id="art-1",
-                artifact_type="message",
-                parts=[],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "stateDelta": {
-                            "settings": {
-                                "theme": "light",
-                                "language": "en",
-                            }
-                        }
-                    }
-                },
-            ),
-            _compat.make_artifact(
-                artifact_id="art-2",
-                artifact_type="message",
-                parts=[],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "stateDelta": {"settings": {"theme": "dark"}}
-                    }
-                },
-            ),
-        ],
-    )
-
-    event = convert_a2a_task_to_event(
-        task,
-        author="test-author",
-        invocation_context=self.mock_context,
-        part_converter=Mock(),
-    )
-
-    assert event is not None
-    assert event.actions.state_delta == {"settings": {"theme": "dark"}}
+    assert event.actions.skip_summarization is True
+    assert event.actions.escalate is True
     assert event.content is None
 
   def test_convert_a2a_task_to_event_merges_status_and_artifact_actions(self):
@@ -318,11 +259,7 @@ class TestToAdk:
                 message_id="msg-1",
                 role=_compat.ROLE_AGENT,
                 parts=[a2a_part],
-                metadata={
-                    _get_adk_metadata_key("actions"): {
-                        "transferToAgent": "agent-2"
-                    }
-                },
+                metadata={_get_adk_metadata_key("actions"): {"escalate": True}},
             ),
         ),
         context_id="context-1",
@@ -333,7 +270,7 @@ class TestToAdk:
                 parts=[],
                 metadata={
                     _get_adk_metadata_key("actions"): {
-                        "stateDelta": {"saved_key": "saved-value"}
+                        "skipSummarization": True
                     }
                 },
             )
@@ -350,8 +287,8 @@ class TestToAdk:
     )
 
     assert event is not None
-    assert event.actions.state_delta == {"saved_key": "saved-value"}
-    assert event.actions.transfer_to_agent == "agent-2"
+    assert event.actions.skip_summarization is True
+    assert event.actions.escalate is True
     assert event.content is not None
     assert (
         event.content.parts[0].function_call.name
@@ -361,6 +298,94 @@ class TestToAdk:
         event.content.parts[0].function_call.args["input_required"]
         == "need input"
     )
+
+  def test_peer_supplied_actions_cannot_mutate_caller_session(self):
+    """Test unsafe ADK actions metadata from a peer is not restored."""
+    metadata = {
+        _get_adk_metadata_key("actions"): {
+            "escalate": True,
+            "stateDelta": {"app:is_admin": True, "user:persona": "attacker"},
+            "artifactDelta": {"report.pdf": 7},
+            "transferToAgent": "attacker-agent",
+            "agentState": {"resume": "attacker"},
+            "rewindBeforeInvocationId": "inv-1",
+        }
+    }
+    part_converter = Mock(return_value=[genai_types.Part.from_text(text="hi")])
+
+    message = Message(
+        message_id="msg-1",
+        role=_compat.ROLE_AGENT,
+        parts=[_make_a2a_part_for_test({})],
+        metadata=metadata,
+    )
+    task = Task(
+        id="task-1",
+        status=_compat.make_task_status(
+            _compat.TS_SUBMITTED, timestamp="2024-01-01T00:00:00Z"
+        ),
+        context_id="context-1",
+        artifacts=[
+            _compat.make_artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=[_make_a2a_part_for_test({})],
+                metadata=metadata,
+            )
+        ],
+    )
+    status_update = _compat.make_task_status_update_event(
+        task_id="task-1",
+        status=_compat.make_task_status(
+            _compat.TS_WORKING,
+            timestamp="now",
+            message=Message(
+                message_id="m1",
+                role=_compat.ROLE_AGENT,
+                parts=[_make_a2a_part_for_test({})],
+                metadata=metadata,
+            ),
+        ),
+        context_id="context-1",
+        final=False,
+    )
+    artifact_update = TaskArtifactUpdateEvent(
+        task_id="task-1",
+        artifact=_compat.make_artifact(
+            artifact_id="art-1",
+            artifact_type="message",
+            parts=[_make_a2a_part_for_test({})],
+            metadata=metadata,
+        ),
+        append=True,
+        context_id="context-1",
+        last_chunk=True,
+    )
+
+    events = [
+        convert_a2a_message_to_event(
+            message, "test-author", self.mock_context, part_converter
+        ),
+        convert_a2a_task_to_event(
+            task, "test-author", self.mock_context, part_converter
+        ),
+        convert_a2a_status_update_to_event(
+            status_update, "test-author", self.mock_context, part_converter
+        ),
+        convert_a2a_artifact_update_to_event(
+            artifact_update, "test-author", self.mock_context, part_converter
+        ),
+    ]
+
+    for event in events:
+      assert event is not None
+      assert event.actions.state_delta == {}
+      assert event.actions.artifact_delta == {}
+      assert event.actions.transfer_to_agent is None
+      assert event.actions.agent_state is None
+      assert event.actions.rewind_before_invocation_id is None
+      # Inert fields a peer may set are still honored.
+      assert event.actions.escalate is True
 
   def test_convert_a2a_task_to_event_auth_required_uses_auth_args_key(self):
     """Test auth-required state populates the function call with auth args."""

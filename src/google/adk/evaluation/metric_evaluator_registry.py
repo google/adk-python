@@ -59,7 +59,15 @@ logger = logging.getLogger("google_adk." + __name__)
 class MetricEvaluatorRegistry:
   """A registry for metric Evaluators."""
 
-  _registry: dict[str, tuple[type[Evaluator], MetricInfo]] = {}
+  def __init__(self) -> None:
+    # Each registry instance owns its mappings, so a custom metric registered
+    # for one app is not resolvable from another app's registry. The standard
+    # metrics are seeded into every instance, as they are the same everywhere.
+    self._registry: dict[str, tuple[type[Evaluator], MetricInfo]] = {}
+    # Module path of the custom function backing a metric, keyed by metric
+    # name. Only ever written from an eval config.
+    self._custom_function_paths: dict[str, str] = {}
+    _register_standard_metrics(self)
 
   def get_evaluator(self, eval_metric: EvalMetric) -> Evaluator:
     """Returns an Evaluator for the given metric.
@@ -75,13 +83,33 @@ class MetricEvaluatorRegistry:
     if eval_metric.metric_name not in self._registry:
       raise NotFoundError(f"{eval_metric.metric_name} not found in registry.")
 
-    evaluator_type = self._registry[eval_metric.metric_name][0]
+    evaluator_type, _ = self._registry[eval_metric.metric_name]
     if issubclass(evaluator_type, _CustomMetricEvaluator):
+      custom_function_path = self._custom_function_path(eval_metric)
+      if custom_function_path is None:
+        raise NotFoundError(
+            f"No custom function registered for {eval_metric.metric_name}."
+        )
       return evaluator_type(
           eval_metric=eval_metric,
-          custom_function_path=eval_metric.custom_function_path,
+          custom_function_path=custom_function_path,
       )
     return evaluator_type(eval_metric=eval_metric)
+
+  def _custom_function_path(self, eval_metric: EvalMetric) -> Optional[str]:
+    """Returns the module path to import for a custom metric, if known.
+
+    Both sources are eval config entries: one recorded when the metric was
+    registered from a config, the other carried on a metric built from a
+    config. The `custom_function_path` field on the incoming metric is not
+    consulted, as it can be set by whoever built the request.
+
+    Args:
+      eval_metric: The metric whose custom function is being resolved.
+    """
+    if path := self._custom_function_paths.get(eval_metric.metric_name):
+      return path
+    return eval_metric._config_custom_function_path  # pylint: disable=protected-access
 
   def register_evaluator(
       self,
@@ -91,6 +119,25 @@ class MetricEvaluatorRegistry:
     """Registers an evaluator given the metric info.
 
     If a mapping already exist, then it is updated.
+    """
+    self._register(metric_info, evaluator, custom_function_path=None)
+
+  def _register(
+      self,
+      metric_info: MetricInfo,
+      evaluator: type[Evaluator],
+      custom_function_path: Optional[str],
+  ) -> None:
+    """Registers an evaluator, along with the function path it may need.
+
+    A path already recorded for the metric is kept when this registration does
+    not carry one, so re-registering an evaluator does not drop it.
+
+    Args:
+      metric_info: Info for the metric the evaluator is registered against.
+      evaluator: The evaluator class to register.
+      custom_function_path: Module path of the function backing a custom
+        metric, taken from an eval config, or None.
     """
     metric_name = metric_info.metric_name
     if metric_name in self._registry:
@@ -102,6 +149,8 @@ class MetricEvaluatorRegistry:
       )
 
     self._registry[str(metric_name)] = (evaluator, metric_info)
+    if custom_function_path is not None:
+      self._custom_function_paths[str(metric_name)] = custom_function_path
 
   def get_registered_metrics(
       self,
@@ -113,10 +162,10 @@ class MetricEvaluatorRegistry:
     ]
 
 
-def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
-  """Returns an instance of MetricEvaluatorRegistry with standard metrics already registered in it."""
-  metric_evaluator_registry = MetricEvaluatorRegistry()
-
+def _register_standard_metrics(
+    metric_evaluator_registry: MetricEvaluatorRegistry,
+) -> None:
+  """Registers the metrics that ship with ADK into the given registry."""
   metric_evaluator_registry.register_evaluator(
       metric_info=TrajectoryEvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=TrajectoryEvaluator,
@@ -175,7 +224,10 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
       evaluator=RubricBasedMultiTurnTrajectoryEvaluator,
   )
 
-  return metric_evaluator_registry
+
+def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
+  """Returns an instance of MetricEvaluatorRegistry with standard metrics already registered in it."""
+  return MetricEvaluatorRegistry()
 
 
 DEFAULT_METRIC_EVALUATOR_REGISTRY = _get_default_metric_evaluator_registry()
@@ -223,7 +275,7 @@ def register_custom_metrics_from_config(
       metric_info = _get_default_metric_info(
           metric_name=metric_name, description=config.description
       )
-    metric_evaluator_registry.register_evaluator(
-        metric_info, _CustomMetricEvaluator
+    metric_evaluator_registry._register(  # pylint: disable=protected-access
+        metric_info, _CustomMetricEvaluator, config.code_config.name
     )
   return metric_evaluator_registry
