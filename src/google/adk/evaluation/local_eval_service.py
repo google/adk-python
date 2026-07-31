@@ -25,6 +25,7 @@ import uuid
 from typing_extensions import override
 
 from ..agents.base_agent import BaseAgent
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..errors.not_found_error import NotFoundError
@@ -123,8 +124,19 @@ class LocalEvalService(BaseEvalService):
       session_id_supplier: Callable[[], str] = _get_session_id,
       user_simulator_provider: UserSimulatorProvider = UserSimulatorProvider(),
       memory_service: Optional[BaseMemoryService] = None,
+      *,
+      app: Optional[App] = None,
   ):
+    """Initializes a LocalEvalService.
+
+    Args:
+      app: Optional `App` that wraps `root_agent`. When provided, eval runs are
+        executed through a Runner built from the App, so `app.plugins`,
+        `app.context_cache_config`, and `app.resumability_config` are honored
+        during inference. When None, the legacy bare-agent path is used.
+    """
     self._root_agent = root_agent
+    self._app = app
     self._eval_sets_manager = eval_sets_manager
     metric_evaluator_registry = (
         metric_evaluator_registry or DEFAULT_METRIC_EVALUATOR_REGISTRY
@@ -533,6 +545,7 @@ class LocalEvalService(BaseEvalService):
               artifact_service=self._artifact_service,
               memory_service=self._memory_service,
               live_timeout_seconds=live_timeout_seconds,
+              app=self._app,
           )
         else:
           inferences = (
@@ -546,6 +559,7 @@ class LocalEvalService(BaseEvalService):
                   session_service=self._session_service,
                   artifact_service=self._artifact_service,
                   memory_service=self._memory_service,
+                  app=self._app,
               )
           )
 

@@ -18,6 +18,7 @@ import asyncio
 from typing import Optional
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import EvaluateRequest
@@ -911,6 +912,7 @@ async def test_perform_inference_single_eval_item_live(
       artifact_service=eval_service._artifact_service,
       memory_service=eval_service._memory_service,
       live_timeout_seconds=600,
+      app=None,
   )
 
 
@@ -941,6 +943,10 @@ async def test_perform_inference_single_eval_item_non_live(
       live_timeout_seconds=300,
   )
 
+  # The non-live branch forwards `app=self._app` to the underlying
+  # `_generate_inferences_from_root_agent` (see fix in
+  # `local_eval_service.py`). The `eval_service` fixture builds the service
+  # without an `app`, so we expect `app=None`.
   mock_generate.assert_called_once_with(
       root_agent=dummy_agent,
       user_simulator=mock_user_sim,
@@ -949,6 +955,7 @@ async def test_perform_inference_single_eval_item_non_live(
       session_service=eval_service._session_service,
       artifact_service=eval_service._artifact_service,
       memory_service=eval_service._memory_service,
+      app=None,
   )
 
 
@@ -996,6 +1003,7 @@ async def test_perform_inference_single_eval_item_uses_session_input_id(
       session_service=eval_service._session_service,
       artifact_service=eval_service._artifact_service,
       memory_service=eval_service._memory_service,
+      app=None,
   )
 
 
@@ -1064,3 +1072,111 @@ async def test_perform_inference_pinned_session_id_across_runs(
   )
   assert loaded is not None
   assert loaded.text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_forwards_app_to_evaluation_generator(
+    dummy_agent, mock_eval_sets_manager, mocker
+):
+  """LocalEvalService passes its `app` through to _generate_inferences_from_root_agent."""
+  app = App(name="test_app", root_agent=dummy_agent)
+
+  eval_case = EvalCase(eval_id="case-1", conversation=[])
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent",
+      new=mocker.AsyncMock(return_value=[]),
+  )
+
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      app=app,
+  )
+
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["case-1"],
+      inference_config=InferenceConfig(),
+  )
+  async for _ in service.perform_inference(inference_request=request):
+    pass
+
+  mock_generate.assert_awaited_once()
+  assert mock_generate.await_args.kwargs["app"] is app
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_passes_none_when_no_app(
+    dummy_agent, mock_eval_sets_manager, mocker
+):
+  """When LocalEvalService has no `app`, it forwards None (legacy behavior)."""
+  eval_case = EvalCase(eval_id="case-1", conversation=[])
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent",
+      new=mocker.AsyncMock(return_value=[]),
+  )
+
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+  )
+
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["case-1"],
+      inference_config=InferenceConfig(),
+  )
+  async for _ in service.perform_inference(inference_request=request):
+    pass
+
+  mock_generate.assert_awaited_once()
+  assert mock_generate.await_args.kwargs["app"] is None
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_live_forwards_app(
+    dummy_agent, mock_eval_sets_manager, mocker
+):
+  """The live branch forwards `app` the same way the non-live branch does."""
+  app = App(name="test_app", root_agent=dummy_agent)
+
+  eval_case = EvalCase(eval_id="case-1", conversation=[])
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+
+  mock_generate_live = mocker.patch(
+      "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent_live",
+      new=mocker.AsyncMock(return_value=[]),
+  )
+
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      app=app,
+  )
+
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["case-1"],
+      inference_config=InferenceConfig(use_live=True),
+  )
+  async for _ in service.perform_inference(inference_request=request):
+    pass
+
+  mock_generate_live.assert_awaited_once()
+  assert mock_generate_live.await_args.kwargs["app"] is app
