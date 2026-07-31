@@ -615,7 +615,13 @@ class DatabaseSessionService(BaseSessionService):
           after_dt = datetime.fromtimestamp(config.after_timestamp)
           stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
-        stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
+        # Break timestamp ties on id, matching the ordering the stale-session
+        # check uses. Without it the database is free to return tied events in
+        # a different order on every read, so a replayed conversation shuffles
+        # and `num_recent_events` truncates at an arbitrary point in the tie.
+        stmt = stmt.order_by(
+            schema.StorageEvent.timestamp.desc(), schema.StorageEvent.id.desc()
+        )
 
         if config and config.num_recent_events is not None:
           stmt = stmt.limit(config.num_recent_events)

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 from typing import Union
 
@@ -25,8 +26,31 @@ from .. import _compat
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from .._compat import A2AClientEvent
+from .config import CardRequestInterceptor
 from .config import ParametersConfig
 from .config import RequestInterceptor
+
+
+async def execute_before_card_request_interceptors(
+    card_request_interceptors: Optional[list[CardRequestInterceptor]],
+    ctx: Optional[InvocationContext],
+) -> Optional[dict[str, Any]]:
+  """Builds httpx kwargs for the card request from the interceptors.
+
+  Merges headers from each interceptor in list order (later wins on
+  conflicts). Returns ``{"headers": {...}}`` or ``None`` if no headers.
+  """
+  headers: dict[str, str] = {}
+  if card_request_interceptors and ctx is not None:
+    for interceptor in card_request_interceptors:
+      if not interceptor.before_request:
+        continue
+      request_config = await interceptor.before_request(ctx)
+      if request_config and request_config.headers:
+        headers.update(request_config.headers)
+  if not headers:
+    return None
+  return {"headers": headers}
 
 
 async def execute_before_request_interceptors(
@@ -64,7 +88,8 @@ async def execute_after_request_interceptors(
   if request_interceptors:
     for interceptor in reversed(request_interceptors):
       if interceptor.after_request:
-        event = await interceptor.after_request(ctx, a2a_response, event)
-        if not event:
+        result = await interceptor.after_request(ctx, a2a_response, event)
+        if not result:
           return None
+        event = result
   return event

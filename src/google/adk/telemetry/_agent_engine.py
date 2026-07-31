@@ -14,14 +14,40 @@
 
 from __future__ import annotations
 
-from typing import Mapping
-from typing import Optional
+import asyncio
+import contextlib
+import functools
+import logging
+import os
+from types import ModuleType
+from typing import cast
+from typing import TYPE_CHECKING
 
-import fastapi
 from opentelemetry import baggage
 from opentelemetry import context
+from opentelemetry import metrics
 from opentelemetry.sdk import trace
+from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.trace.propagation import tracecontext
+from starlette.middleware.base import BaseHTTPMiddleware
+
+if TYPE_CHECKING:
+  from collections.abc import AsyncGenerator
+  from collections.abc import AsyncIterator
+  from typing import Mapping
+  from typing import Optional
+
+  import fastapi
+  from starlette.middleware.base import DispatchFunction
+  from starlette.middleware.base import RequestResponseEndpoint
+  from starlette.requests import Request
+  from starlette.responses import Response
+  from starlette.responses import StreamingResponse
+
+  from ._agent_engine_metric_exporter import _RequestDrivenMetricReader
+  from ._agent_engine_metric_exporter import MetricsState
+
+logger = logging.getLogger("google_adk." + __name__)
 
 _GOOGLE_AE_TRACEPARENT_HEADER = "Google-Agent-Engine-Traceparent"
 _TRACEPARENT_BAGGAGE_KEY = "traceparent"
@@ -110,3 +136,153 @@ class TopSpanProcessor(trace.SpanProcessor):
     except ValueError:
       return False
     return span.parent.span_id == parent_span_id
+
+
+def _metrics_flushing_dispatch(
+    reader: _RequestDrivenMetricReader,
+) -> DispatchFunction:
+  """Returns the dispatch that drives `reader` from the request lifecycle.
+
+  Collection has to happen while a request is in flight: see the module
+  docstring of ``_agent_engine_metric_exporter`` for why. Traces and logs are
+  not flushed here -- on Agent Engine the ``AdkApp`` in
+  ``vertexai.agent_engines`` already force-flushes them per request.
+  """
+
+  async def dispatch(
+      request: Request, call_next: RequestResponseEndpoint
+  ) -> Response:
+    # Never let a metrics failure break the request it rides on.
+    try:
+      if reader.note_request_start():
+        _ = reader.submit_collect()  # point 2 -- fire-and-forget, no await.
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.exception("Metrics request-start hook failed")
+    # BaseHTTPMiddleware always hands back a streaming response, so it exposes
+    # body_iterator (the base Response type does not).
+    try:
+      response = cast("StreamingResponse", await call_next(request))
+    except BaseException:
+      # call_next failed: the draining body iterator below is never installed,
+      # so balance note_request_start here or _in_flight leaks for good.
+      await _drain_metrics(reader)
+      raise
+    # BaseHTTPMiddleware's body_iterator is an async generator (supports
+    # aclose); the public type is only an AsyncIterable, so narrow it here.
+    original_iterator = cast(
+        "AsyncGenerator[bytes, None]", response.body_iterator
+    )
+
+    async def iterate_then_flush() -> AsyncIterator[bytes]:
+      try:
+        async with contextlib.aclosing(original_iterator) as body:
+          async for chunk in body:
+            yield chunk
+      finally:
+        # Drain metrics after the body streams (while the request still has
+        # CPU) and before the connection closes, so the export completes
+        # without adding latency to the response.
+        await _drain_metrics(reader)
+
+    response.body_iterator = iterate_then_flush()
+    return response
+
+  return dispatch
+
+
+async def _drain_metrics(reader: _RequestDrivenMetricReader) -> None:
+  """Drain collect on request end: awaited so the export completes before close."""
+  try:
+    if reader.note_request_end():
+      future = reader.submit_collect()
+      if future is not None:
+        await asyncio.wrap_future(future)
+  except Exception:  # pylint: disable=broad-exception-caught
+    logger.exception("Failed to flush metrics on request end")
+
+
+def telemetry_user_agent_headers() -> dict[str, str] | None:
+  """Returns the Vertex Agent Engine User-Agent header, if telemetry is on."""
+  if not os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"):
+    return None
+  from google.cloud.aiplatform import version as aip_version
+
+  otlp_http_version: ModuleType | None
+  try:
+    from opentelemetry.exporter.otlp.proto.http import version as otlp_http_version
+  except (ImportError, AttributeError):
+    otlp_http_version = None
+
+  user_agent = f"Vertex-Agent-Engine/{aip_version.__version__}"
+  if otlp_http_version:
+    user_agent += f" OTel-OTLP-Exporter-Python/{otlp_http_version.__version__}"
+  return {"User-Agent": user_agent}
+
+
+@functools.cache
+def _get_agent_engine_metrics_setup() -> MetricsState | None:
+  """Builds the request-driven metric state on Agent Engine, memoized.
+
+  Returns the reader plus the span processor that drives it (to wire into the
+  OTel providers and later drain from the request path), or None when:
+
+    1. a ``MeterProvider`` is already installed by something else -- our reader
+       would not land on the active provider, so we defer to that setup; or
+    2. we are not running on Agent Engine
+       (``GOOGLE_CLOUD_AGENT_ENGINE_ID`` unset); or
+    3. the GCP metric exporter is unavailable / setup fails.
+
+  Cached so the "already installed" check is evaluated once -- before ADK sets
+  its own ``MeterProvider`` in ``maybe_set_otel_providers`` -- and the same
+  handles are returned to ``get_gcp_exporters`` (which wires them onto the
+  providers) and to the middleware install below.
+  """
+  if not os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
+    return None
+  if isinstance(metrics.get_meter_provider(), MeterProvider):
+    logger.warning(
+        "A MeterProvider is already installed; skipping request-driven metric"
+        " export. On Agent Engine's request-billed runtime metrics may be"
+        " dropped between requests."
+    )
+    return None
+  try:
+    from ._agent_engine_metric_exporter import build_request_driven_metrics
+    from .google_cloud import _get_gcp_otlp_metric_exporter
+
+    exporter = _get_gcp_otlp_metric_exporter()
+    if exporter is None:
+      return None
+    return build_request_driven_metrics(exporter)
+  except Exception:  # pylint: disable=broad-exception-caught
+    logger.warning(
+        "Failed to set up request-driven metric export on Agent Engine.",
+        exc_info=True,
+    )
+    return None
+
+
+def maybe_install_request_metrics_middleware(
+    app: fastapi.FastAPI, *, otel_to_cloud: bool
+) -> None:
+  """Installs the request-path metric flushing middleware, if applicable.
+
+  On Agent Engine's request-billed runtime CPU is throttled the instant a
+  request ends, starving background metric export. The GCP exporter setup
+  builds a request-driven metric reader there (wired onto the MeterProvider);
+  drive it from the request path here. No-op off Agent Engine.
+
+  Args:
+    app: The app to install the middleware on.
+    otel_to_cloud: Whether to setup telemetry export to GCP.
+  """
+  if not otel_to_cloud:
+    return
+
+  metrics_state = _get_agent_engine_metrics_setup()
+  if metrics_state is None:
+    return
+  app.add_middleware(
+      BaseHTTPMiddleware,
+      dispatch=_metrics_flushing_dispatch(metrics_state.reader),
+  )

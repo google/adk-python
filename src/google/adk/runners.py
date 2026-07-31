@@ -47,6 +47,7 @@ from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event import EventActions
 from .flows.llm_flows import contents
+from .flows.llm_flows.agent_transfer import _get_transfer_targets
 from .flows.llm_flows.functions import find_event_by_function_call_id
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
@@ -70,6 +71,9 @@ logger = logging.getLogger('google_adk.' + __name__)
 # Silence unused warning.
 # tracer is imported for backwards compatibility, to avoid breaking change in the API.
 _ = tracer
+
+# App names already told that agent transfer runs without a context cache.
+_UNCACHED_TRANSFER_APPS: set[str] = set()
 
 
 async def _notify_run_error(
@@ -158,6 +162,22 @@ def _apply_run_config_custom_metadata(
       **run_config.custom_metadata,
       **(event.custom_metadata or {}),
   }
+
+
+def _can_transfer_between_agents(root: Any) -> bool:
+  """Reports whether any agent in the tree can transfer to another agent."""
+  pending = [root]
+  while pending:
+    agent = pending.pop()
+    sub_agents = getattr(agent, 'sub_agents', None)
+    if not isinstance(sub_agents, list):
+      continue
+    if hasattr(agent, 'disallow_transfer_to_parent') and _get_transfer_targets(
+        agent
+    ):
+      return True
+    pending.extend(sub_agents)
+  return False
 
 
 class Runner:
@@ -268,6 +288,7 @@ class Runner:
       self._agent_origin_dir = None
     self._app_name_alignment_hint: Optional[str] = None
     self._enforce_app_name_alignment()
+    self._warn_uncached_agent_transfer()
 
   @staticmethod
   def _resolve_app(
@@ -427,6 +448,24 @@ class Runner:
     )
     self._app_name_alignment_hint = f'{mismatch_details} {resolution}'
     logger.warning('App name mismatch detected. %s', mismatch_details)
+
+  def _warn_uncached_agent_transfer(self) -> None:
+    """Warns once per app when agent transfer runs with no context cache."""
+    if self.context_cache_config is not None:
+      return
+    if self.app_name in _UNCACHED_TRANSFER_APPS:
+      return
+    if self.agent is None or not _can_transfer_between_agents(self.agent):
+      return
+    _UNCACHED_TRANSFER_APPS.add(self.app_name)
+    logger.warning(
+        'App "%s" can transfer between agents but has no'
+        ' context_cache_config. Every transfer swaps the system instruction'
+        ' and the tool set, so the request prefix changes and the whole'
+        ' prompt is re-sent uncached after each transfer. Set'
+        ' context_cache_config on the app to give each agent its own cache.',
+        self.app_name,
+    )
 
   def _resolve_invocation_id(
       self,

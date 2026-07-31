@@ -96,7 +96,7 @@ RUN pip install "google-adk[a2a]=={adk_version}"
 
 # Set permission
 COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
-
+{extra_packages_copy}
 # Copy agent - End
 
 # Install Agent Deps - Start
@@ -761,6 +761,7 @@ def to_cloud_run(
         trigger_sources_option=trigger_sources_option,
         gemini_enterprise_option='',
         express_mode_option='',
+        extra_packages_copy='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -873,6 +874,7 @@ def to_agent_engine(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     adk_version: Optional[str] = None,
+    extra_packages: Optional[list[str]] = None,
 ) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
@@ -937,6 +939,8 @@ def to_agent_engine(
     adk_version (str): Optional. The ADK version to use in Agent Platform
       deployment. If not specified, the version in the dev environment will be
       used.
+    extra_packages (list[str]): Optional. Additional local file or directory
+      paths to stage alongside the agent and make importable in the image.
   """
   app_name = os.path.basename(agent_folder)
   display_name = display_name or app_name
@@ -967,6 +971,7 @@ def to_agent_engine(
     click.echo(f'Using default ADK version: {adk_version}')
 
   original_cwd = os.getcwd()
+  agent_folder_abs = os.path.abspath(agent_folder)
   did_change_cwd = False
   if parent_folder != original_cwd:
     click.echo(
@@ -1032,6 +1037,31 @@ def to_agent_engine(
             f' {description}'
         )
       agent_config['description'] = description
+
+    config_extra_packages = agent_config.pop('extra_packages', None) or []
+    # CLI entries resolve against the invocation dir; config-file entries
+    # against the agent folder that declared them.
+    requested_extra_packages = [
+        (pkg, original_cwd) for pkg in extra_packages or []
+    ] + [(pkg, agent_folder_abs) for pkg in config_extra_packages]
+    staged_extra_packages = []
+    for pkg, base_dir in requested_extra_packages:
+      pkg_src = pkg if os.path.isabs(pkg) else os.path.join(base_dir, pkg)
+      pkg_src = os.path.abspath(pkg_src)
+      if not os.path.exists(pkg_src):
+        raise click.ClickException(f'extra_packages path not found: {pkg}')
+      base = os.path.basename(os.path.normpath(pkg_src))
+      dst = os.path.join(temp_folder_path, base)
+      # The Dockerfile is written after this loop, so it is not on disk yet.
+      if os.path.exists(dst) or base == 'Dockerfile':
+        raise click.ClickException(
+            f'extra_packages entry has a conflicting name: {base}'
+        )
+      if os.path.isdir(pkg_src):
+        shutil.copytree(pkg_src, dst, dirs_exist_ok=True)
+      else:
+        shutil.copy2(pkg_src, dst)
+      staged_extra_packages.append(base)
 
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     if requirements_file:
@@ -1184,6 +1214,16 @@ def to_agent_engine(
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
       )
+      extra_packages_copy = ''
+      if staged_extra_packages:
+        copy_lines = [
+            f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
+            if os.path.isdir(os.path.join(temp_folder_path, base))
+            else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
+            for base in staged_extra_packages
+        ]
+        copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+        extra_packages_copy = '\n'.join(copy_lines)
       agent_engine_uri = f'agentengine://{resource_name}'
       dockerfile_content = _DOCKERFILE_TEMPLATE.format(
           gcp_project_id=project,
@@ -1210,6 +1250,7 @@ def to_agent_engine(
           express_mode_option=(
               ' --express_mode' if api_key and not project else ''
           ),
+          extra_packages_copy=extra_packages_copy,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
         f.write(dockerfile_content)
@@ -1222,7 +1263,11 @@ def to_agent_engine(
           stacklevel=2,
       )
     click.echo('Deploying to Agent Platform...')
-    agent_config['source_packages'] = [f'agents/{app_name}', 'Dockerfile']
+    agent_config['source_packages'] = [
+        f'agents/{app_name}',
+        'Dockerfile',
+        *staged_extra_packages,
+    ]
     agent_config['image_spec'] = {}  # Use the Dockerfile
     agent_config['class_methods'] = _AGENT_ENGINE_CLASS_METHODS
     agent_config['agent_framework'] = 'google-adk'
@@ -1380,6 +1425,7 @@ def to_gke(
         ),
         gemini_enterprise_option='',
         express_mode_option='',
+        extra_packages_copy='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)

@@ -45,6 +45,8 @@ from google.adk.events.event_actions import EventActions
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.api_core.exceptions import GoogleAPICallError
+from google.api_core.exceptions import InvalidArgument
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -3653,6 +3655,154 @@ def test_run_eval_request_unknown_simulator_type_rejected_on_validation():
 
   with pytest.raises(ValidationError):
     TypeAdapter(_UserSimulatorConfig).validate_python(req.user_simulator_config)
+
+
+#################################################
+# Agent Identity Finalize Tests
+#################################################
+
+
+def test_finalize_agent_identity_credentials_success(test_app):
+  """Test successful credential finalization and Base64 padding decoding."""
+  import base64
+
+  from google.cloud import iamconnectorcredentials_v1alpha
+
+  raw_bytes = b"test-validation-state-bytes"
+  # Unpadded url-safe base64 string
+  b64_str = base64.urlsafe_b64encode(raw_bytes).decode("utf-8").rstrip("=")
+
+  with (
+      patch.object(
+          iamconnectorcredentials_v1alpha,
+          "IAMConnectorCredentialsServiceClient",
+          autospec=True,
+      ) as mock_client_cls,
+      patch.object(
+          iamconnectorcredentials_v1alpha,
+          "FinalizeCredentialsRequest",
+          autospec=True,
+      ) as mock_req_cls,
+  ):
+    mock_client = mock_client_cls.return_value
+    mock_client.finalize_credentials.return_value = None
+
+    response = test_app.post(
+        "/agent-identity/finalize",
+        json={
+            "connector_name": "projects/p/locations/l/connectors/c",
+            "user_id": "user-123",
+            "user_id_validation_state": b64_str,
+            "consent_nonce": "nonce-456",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    mock_req_cls.assert_called_once_with(
+        connector="projects/p/locations/l/connectors/c",
+        user_id="user-123",
+        user_id_validation_state=raw_bytes,
+        consent_nonce="nonce-456",
+    )
+    mock_client.finalize_credentials.assert_called_once()
+
+
+def test_finalize_agent_identity_credentials_invalid_base64(test_app):
+  """Test error handling when user_id_validation_state is invalid Base64."""
+  from google.cloud import iamconnectorcredentials_v1alpha
+
+  with patch.object(
+      iamconnectorcredentials_v1alpha,
+      "IAMConnectorCredentialsServiceClient",
+      autospec=True,
+  ):
+    response = test_app.post(
+        "/agent-identity/finalize",
+        json={
+            "connector_name": "projects/p/locations/l/connectors/c",
+            "user_id": "user-123",
+            "user_id_validation_state": "!!!invalid_base64!!!",
+            "consent_nonce": "nonce-456",
+        },
+    )
+    assert response.status_code == 400
+    assert (
+        "Invalid base64 user_id_validation_state" in response.json()["detail"]
+    )
+
+
+def test_finalize_agent_identity_credentials_missing_dependency(test_app):
+  """Test error handling when google-cloud-iamconnectorcredentials is not installed."""
+  with patch.dict(
+      "sys.modules", {"google.cloud.iamconnectorcredentials_v1alpha": None}
+  ):
+    response = test_app.post(
+        "/agent-identity/finalize",
+        json={
+            "connector_name": "projects/p/locations/l/connectors/c",
+            "user_id": "user-123",
+            "user_id_validation_state": "dGVzdA",
+            "consent_nonce": "nonce-456",
+        },
+    )
+    assert response.status_code == 500
+    assert "Agent Identity support requires" in response.json()["detail"]
+
+
+def test_finalize_agent_identity_credentials_invalid_argument_error(test_app):
+  """Test backend InvalidArgument API error handling (400 response)."""
+  from google.cloud import iamconnectorcredentials_v1alpha
+
+  with patch.object(
+      iamconnectorcredentials_v1alpha,
+      "IAMConnectorCredentialsServiceClient",
+      autospec=True,
+  ) as mock_client_cls:
+    mock_client = mock_client_cls.return_value
+    mock_client.finalize_credentials.side_effect = InvalidArgument(
+        "Invalid consent nonce"
+    )
+
+    response = test_app.post(
+        "/agent-identity/finalize",
+        json={
+            "connector_name": "projects/p/locations/l/connectors/c",
+            "user_id": "user-123",
+            "user_id_validation_state": "dGVzdA",
+            "consent_nonce": "invalid-nonce",
+        },
+    )
+    assert response.status_code == 400
+    assert "Invalid credentials request" in response.json()["detail"]
+
+
+def test_finalize_agent_identity_credentials_api_call_error(test_app):
+  """Test backend GoogleAPICallError error handling with status code propagation."""
+  from google.cloud import iamconnectorcredentials_v1alpha
+
+  err = GoogleAPICallError("Permission denied")
+  err.code = 403
+
+  with patch.object(
+      iamconnectorcredentials_v1alpha,
+      "IAMConnectorCredentialsServiceClient",
+      autospec=True,
+  ) as mock_client_cls:
+    mock_client = mock_client_cls.return_value
+    mock_client.finalize_credentials.side_effect = err
+
+    response = test_app.post(
+        "/agent-identity/finalize",
+        json={
+            "connector_name": "projects/p/locations/l/connectors/c",
+            "user_id": "user-123",
+            "user_id_validation_state": "dGVzdA",
+            "consent_nonce": "nonce-456",
+        },
+    )
+    assert response.status_code == 403
+    assert "Failed to finalize credentials" in response.json()["detail"]
 
 
 if __name__ == "__main__":

@@ -172,7 +172,7 @@ async def test_preprocess_handles_mixed_tools_and_toolsets():
   assert mock_toolset.process_llm_request_called
 
 
-# TODO(b/448114567): Remove the following test_preprocess_with_google_search
+# Pending cleanup: remove the following test_preprocess_with_google_search
 # tests once the workaround is no longer needed.
 @pytest.mark.asyncio
 async def test_preprocess_with_google_search_only():
@@ -490,7 +490,7 @@ class _AsyncProcessLlmRequestTool:
       self._on_process(self.name)
 
 
-# TODO(b/448114567): Remove the following
+# Pending cleanup: remove the following
 # test_handle_after_model_callback_grounding tests once the workaround
 # is no longer needed.
 def dummy_tool():
@@ -1681,7 +1681,7 @@ def _make_agent_tree():
 
 @pytest.mark.asyncio
 async def test_empty_stop_after_tool_call_surfaces_error_event():
-  """Regression test for empty Gemini turn after a successful tool call (#5631).
+  """Regression test for an empty Gemini turn after a successful tool call.
 
   Turn 1 returns a function_call which executes successfully, then turn 2
   returns Content(role='model', parts=[]) with finish_reason=STOP and no error.

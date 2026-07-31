@@ -81,6 +81,18 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     mock_use_cert_patcher.start()
     self.addCleanup(mock_use_cert_patcher.stop)
 
+  def test_deprecation_warning(self):
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value=MOCK_MCP_SERVERS_LIST)
+    self.mock_session.get.return_value = mock_response
+
+    with self.assertWarns(DeprecationWarning) as cm:
+      ApiRegistry(
+          api_registry_project_id=self.project_id, location=self.location
+      )
+    self.assertIn("ApiRegistry is deprecated", str(cm.warning))
+
   def test_init_success(self):
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()

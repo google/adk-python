@@ -117,13 +117,17 @@ jobs:
                 continue;
               }
 
-              // Only close if PR is still open
-              if (pr.data.state !== 'open') {
-                console.log(`PR #${prNumber} is already ${pr.data.state}, skipping`);
+              const author = pr.data.user.login;
+              const isOpen = pr.data.state === 'open';
+
+              if (pr.data.labels.some(label => label.name === 'merged')) {
+                console.log(`PR #${prNumber} is already marked merged, skipping`);
                 continue;
               }
 
-              const author = pr.data.user.login;
+              const closingLine = isOpen
+                ? 'Closing this PR as the changes are now in the main branch.'
+                : 'This PR was already closed; the changes are now in the main branch.';
 
               try {
                 // Add comment with commit reference
@@ -131,7 +135,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: prNumber,
-                  body: `Thank you @${author} for your contribution! 🎉\n\nYour changes have been successfully imported and merged via Copybara in commit ${commitSha}.\n\nClosing this PR as the changes are now in the main branch.`
+                  body: `Thank you @${author} for your contribution! 🎉\n\nYour changes have been successfully imported and merged via Copybara in commit ${commitSha}.\n\n${closingLine}`
                 });
 
                 // Add 'merged' label to the PR
@@ -142,17 +146,20 @@ jobs:
                   labels: ['merged']
                 });
 
-                // Close the PR
-                await github.rest.pulls.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: prNumber,
-                  state: 'closed'
-                });
+                // A PR closed before its import still gets the comment and the
+                // label; only the close itself depends on the current state.
+                if (isOpen) {
+                  await github.rest.pulls.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: prNumber,
+                    state: 'closed'
+                  });
+                }
 
-                console.log(`Successfully closed PR #${prNumber}`);
+                console.log(`Marked PR #${prNumber} as merged (was ${pr.data.state})`);
               } catch (error) {
-                console.log(`Error closing PR #${prNumber}:`, error.message);
+                console.log(`Error marking PR #${prNumber} as merged:`, error.message);
               }
             }
 

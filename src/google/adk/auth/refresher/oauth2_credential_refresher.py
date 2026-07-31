@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -24,11 +25,13 @@ from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.oauth2_credential_util import create_oauth2_session
 from google.adk.auth.oauth2_credential_util import update_credential_with_tokens
 from google.adk.utils.feature_decorator import experimental
+import requests
 from typing_extensions import override
 
 from .base_credential_refresher import BaseCredentialRefresher
 
 try:
+  from authlib.common.errors import AuthlibBaseError
   from authlib.oauth2.rfc6749 import OAuth2Token
 
   AUTHLIB_AVAILABLE = True
@@ -110,16 +113,18 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
           return auth_credential
 
         try:
-          tokens = client.refresh_token(
+          # authlib's client is synchronous; run it off the event loop.
+          tokens = await asyncio.to_thread(
+              client.refresh_token,
               url=token_endpoint,
               refresh_token=auth_credential.oauth2.refresh_token,
           )
           update_credential_with_tokens(auth_credential, tokens)
           logger.debug("Successfully refreshed OAuth2 tokens")
-        except Exception as e:
-          # TODO reconsider whether we should raise error when refresh failed.
+        except (AuthlibBaseError, requests.RequestException) as e:
+          # Non-fatal: keep the stale token so its eventual 401
+          # re-triggers auth.
           logger.error("Failed to refresh OAuth2 tokens: %s", e)
-          # Return original credential on failure
           return auth_credential
 
     return auth_credential

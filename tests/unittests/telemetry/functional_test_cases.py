@@ -120,6 +120,7 @@ EXPECTED_STABLE_NO_CAPTURE_V1 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -286,6 +287,7 @@ EXPECTED_STABLE_CAPTURE_V1 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -484,6 +486,7 @@ EXPECTED_EXPERIMENTAL_NO_CONTENT_V1 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -708,6 +711,7 @@ EXPECTED_EXPERIMENTAL_SPAN_ONLY_V1 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -871,6 +875,7 @@ EXPECTED_EXPERIMENTAL_EVENT_ONLY_V1 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -1042,6 +1047,7 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V1 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -1343,6 +1349,7 @@ EXPECTED_STABLE_NO_CAPTURE_V2 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -1509,6 +1516,7 @@ EXPECTED_STABLE_CAPTURE_V2 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -1703,6 +1711,7 @@ EXPECTED_EXPERIMENTAL_NO_CONTENT_V2 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -1856,6 +1865,7 @@ EXPECTED_EXPERIMENTAL_SPAN_ONLY_V2 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -2015,6 +2025,7 @@ EXPECTED_EXPERIMENTAL_EVENT_ONLY_V2 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -2184,6 +2195,7 @@ EXPECTED_EXPERIMENTAL_SPAN_AND_EVENT_V2 = SpanDigest(
                                 SpanDigest(
                                     name="execute_tool some_tool",
                                     attributes={
+                                        "gen_ai.agent.name": AGENT_NAME,
                                         "gen_ai.operation.name": "execute_tool",
                                         "gen_ai.tool.description": (
                                             TOOL_DESCRIPTION
@@ -2372,7 +2384,7 @@ EXPECTED_METRICS_V2: dict[str, frozenset[MetricPoint]] = {
 # ``error.type`` across the duration metrics (see the metric constants below).
 #
 # ``google.genai`` collapses every 4xx into ``ClientError`` / 5xx into
-# ``ServerError``, so before b/534739207 every such failure reported
+# ``ServerError``, so historically every such failure reported
 # ``error.type=ClientError``. ADK now uses the provider's HTTP status code
 # (e.g. ``429``), falling back to the exception class name for non-API errors
 # (e.g. ``ValueError``).
@@ -2716,7 +2728,7 @@ ALL_CASES: list[FunctionalTestCase] = [
             metric_points=EXPECTED_METRICS_V2,
         ),
     ),
-    # Inference failures (b/534739207): the mock raises before responding, so
+    # Inference failures: the mock raises before responding, so
     # the scenario aborts and the failure surfaces on ``error.type``. A 429
     # surfaces its HTTP status code ``429`` (not a blanket ``ClientError``); a
     # plain ``ValueError`` falls back to the class name.

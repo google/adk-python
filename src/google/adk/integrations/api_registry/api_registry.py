@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from typing import Any
 from typing import Callable
+import warnings
 
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.base_toolset import ToolPredicate
@@ -50,7 +51,11 @@ def _get_api_registry_url(client_cert_source: Any | None = None) -> str:
 
 
 class ApiRegistry:
-  """Registry that provides McpToolsets for MCP servers registered in API Registry."""
+  """[DEPRECATED] Registry for MCP servers registered in API Registry.
+
+  Deprecated: Use AgentRegistry from `google.adk.integrations.agent_registry`
+  instead.
+  """
 
   def __init__(
       self,
@@ -68,6 +73,12 @@ class ApiRegistry:
       header_provider: Optional function to provide additional headers for MCP
         server calls.
     """
+    warnings.warn(
+        "ApiRegistry is deprecated. Use AgentRegistry from"
+        " google.adk.integrations.agent_registry instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     self.api_registry_project_id = api_registry_project_id
     self.location = location
     self._credentials, _ = google.auth.default()

@@ -40,6 +40,8 @@ from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
 from ..utils.streaming_utils import StreamingResponseAggregator
 from ..utils.variant_utils import GoogleLLMVariant
+from ._capabilities import gemini_output_schema_and_tools
+from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
 from .gemini_llm_connection import GeminiLlmConnection
@@ -332,6 +334,16 @@ class Gemini(BaseLlm):
         stream=stream,
     ):
       yield llm_response
+
+  @property
+  @override
+  def capabilities(self) -> LlmCapabilities:
+    # Declared here rather than inherited from BaseLlm: the base implementation
+    # is a deprecated fallback that warns and will be removed, whereas this is
+    # Gemini's permanent self-report.
+    return LlmCapabilities(
+        output_schema_and_tools=gemini_output_schema_and_tools(self.model),
+    )
 
   @cached_property
   def api_client(self) -> Client:

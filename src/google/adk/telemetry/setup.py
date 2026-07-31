@@ -102,6 +102,8 @@ def maybe_set_otel_providers(
         MeterProvider(
             metric_readers=metric_readers,
             resource=otel_resource,
+            # Not collecting on exit to avoid points being collected too close together.
+            shutdown_on_exit=False,
         )
     )
 

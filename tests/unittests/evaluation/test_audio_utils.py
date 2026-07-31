@@ -24,6 +24,7 @@ import array
 import logging
 
 from google.adk.evaluation import _audio_utils as audio_utils
+import pytest
 
 
 def _pcm(samples: list[int]) -> bytes:
@@ -58,6 +59,18 @@ def test_parse_sample_rate_none_returns_default():
   assert audio_utils.parse_sample_rate(None, 16000) == 16000
 
 
+def test_parse_sample_rate_ignores_rate_substrings():
+  """A parameter containing rate as a substring is not a sample rate."""
+  assert (
+      audio_utils.parse_sample_rate("audio/pcm;bitrate=128000", 24000) == 24000
+  )
+
+
+def test_parse_sample_rate_is_case_insensitive():
+  """The rate parameter name is parsed case-insensitively."""
+  assert audio_utils.parse_sample_rate("audio/pcm;RATE=16000", 24000) == 16000
+
+
 # ---------------------------------------------------------------------------
 # resample_pcm16
 # ---------------------------------------------------------------------------
@@ -73,6 +86,18 @@ def test_resample_matching_rates_returns_input_unchanged():
 def test_resample_empty_input_returns_empty():
   """Resampling empty audio yields empty audio."""
   assert audio_utils.resample_pcm16(b"", 24000, 16000) == b""
+
+
+def test_resample_zero_source_rate_raises():
+  """A zero source sample rate is rejected before resampling."""
+  with pytest.raises(ValueError, match="Sample rates must be positive"):
+    audio_utils.resample_pcm16(_pcm([1, 2]), 0, 16000)
+
+
+def test_resample_zero_target_rate_raises():
+  """A zero target sample rate is rejected before resampling."""
+  with pytest.raises(ValueError, match="Sample rates must be positive"):
+    audio_utils.resample_pcm16(_pcm([1, 2]), 24000, 0)
 
 
 def test_resample_single_sample_returns_input_unchanged():

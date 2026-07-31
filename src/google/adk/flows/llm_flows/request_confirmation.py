@@ -44,6 +44,31 @@ def _parse_tool_confirmation(response: dict[str, Any]) -> ToolConfirmation:
   return ToolConfirmation.from_response_dict(response)
 
 
+def _get_original_function_call_args(
+    function_call: types.FunctionCall,
+) -> dict[str, Any] | None:
+  """Returns the raw ``originalFunctionCall`` payload of a confirmation call.
+
+  Both the dedup pre-pass and ``_resolve_confirmation_targets`` read the
+  original function call out of an ``adk_request_confirmation`` call's args.
+  They must agree on what counts as a well-formed payload, otherwise a
+  confirmation could be skipped by one and processed by the other.
+
+  Args:
+    function_call: An ``adk_request_confirmation`` function call.
+
+  Returns:
+    The ``originalFunctionCall`` dict, or ``None`` if it is absent or malformed.
+  """
+  args = function_call.args
+  if not args:
+    return None
+  original_function_call = args.get("originalFunctionCall")
+  if not isinstance(original_function_call, dict):
+    return None
+  return original_function_call
+
+
 async def _resolve_confirmation_targets(
     invocation_context: InvocationContext,
     events: list[Event],
@@ -83,9 +108,19 @@ async def _resolve_confirmation_targets(
       for fc in ev.get_function_calls()
       if fc.id and fc.name != REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
   }
-  history_fr_events = {
-      fr.id: ev for ev in events for fr in ev.get_function_responses() if fr.id
-  }
+  # IDs of function calls for which a tool dynamically requested confirmation.
+  # This accumulates over ALL events rather than keeping one event per ID: once
+  # the confirmed tool is re-executed it emits a second function response with
+  # the same ID and no `requested_tool_confirmations`, which would otherwise
+  # shadow the original request.
+  dynamically_requested_fc_ids: set[str] = set()
+  for ev in events:
+    requested_tool_confirmations = ev.actions.requested_tool_confirmations or {}
+    if not requested_tool_confirmations:
+      continue
+    for fr in ev.get_function_responses():
+      if fr.id and fr.id in requested_tool_confirmations:
+        dynamically_requested_fc_ids.add(fr.id)
 
   for event in events:
     event_function_calls = event.get_function_calls()
@@ -96,12 +131,12 @@ async def _resolve_confirmation_targets(
       if not function_call.id or function_call.id not in confirmation_fc_ids:
         continue
 
-      args = function_call.args
-      if not args or "originalFunctionCall" not in args:
-        continue
-      original_function_call = types.FunctionCall(
-          **args["originalFunctionCall"]
+      original_function_call_args = _get_original_function_call_args(
+          function_call
       )
+      if original_function_call_args is None:
+        continue
+      original_function_call = types.FunctionCall(**original_function_call_args)
       if not original_function_call.id:
         raise ValueError("Original function call ID is missing.")
       tool_name = original_function_call.name
@@ -140,20 +175,9 @@ async def _resolve_confirmation_targets(
           original_function_call.args or {}, temp_tool_context
       )
 
-      requested_in_history = False
-      if not requires_confirmation:
-        # Search the history for the response event of the original tool call
-        original_response_event = history_fr_events.get(
-            original_function_call.id
-        )
-        if (
-            original_response_event
-            and original_response_event.actions.requested_tool_confirmations
-        ):
-          requested_in_history = (
-              original_function_call.id
-              in original_response_event.actions.requested_tool_confirmations
-          )
+      requested_in_history = (
+          original_function_call.id in dynamically_requested_fc_ids
+      )
 
       if not requires_confirmation and not requested_in_history:
         raise ValueError(
@@ -183,6 +207,44 @@ async def _resolve_confirmation_targets(
       original_fcs_dict[original_function_call.id] = original_function_call
 
   return tool_confirmation_dict, original_fcs_dict
+
+
+def _map_confirmation_to_original_fc_ids(
+    events: list[Event],
+    confirmation_fc_ids: set[str],
+) -> dict[str, str]:
+  """Maps each confirmation function call ID to its original function call ID.
+
+  This is a cheap, validation-free pre-pass so that already-consumed
+  confirmations can be dropped *before* the expensive and strict
+  ``_resolve_confirmation_targets``.
+
+  Args:
+    events: Session events to scan.
+    confirmation_fc_ids: IDs of ``adk_request_confirmation`` function calls.
+
+  Returns:
+    Mapping of confirmation FC ID -> original FC ID. Confirmations whose
+    original function call cannot be determined are omitted.
+  """
+  mapping: dict[str, str] = {}
+  for event in events:
+    for function_call in event.get_function_calls():
+      if not function_call.id or function_call.id not in confirmation_fc_ids:
+        continue
+      original_function_call_args = _get_original_function_call_args(
+          function_call
+      )
+      # Mirror the `is None` check in `_resolve_confirmation_targets`: an empty
+      # payload must reach the strict validation there and be rejected, not be
+      # quietly dropped here (dropping it would skip the dedup and produce a
+      # confusing downstream error instead).
+      if original_function_call_args is None:
+        continue
+      original_fc_id = original_function_call_args.get("id")
+      if original_fc_id:
+        mapping[function_call.id] = original_fc_id
+  return mapping
 
 
 class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -224,7 +286,39 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     if not confirmations_by_fc_id:
       return
 
-    # Resolve all canonical tools and build tools_dict
+    # Step 2: Drop confirmations that have already been consumed.
+    #
+    # This must happen BEFORE resolving targets. The processor re-runs on every
+    # LLM step of the invocation, and the approval stays the last user event for
+    # the rest of the turn, so a confirmation the previous step already acted on
+    # is seen again here. Re-validating consumed state is not just wasted work:
+    # the session and the toolset have moved on since the approval, so the
+    # strict checks in `_resolve_confirmation_targets` can now legitimately fail
+    # and abort the invocation.
+    confirmation_to_original_fc_id = _map_confirmation_to_original_fc_ids(
+        events, set(confirmations_by_fc_id.keys())
+    )
+    responded_fc_ids: set[str] = set()
+    for event in reversed(events):
+      if event.author == "user":
+        break
+      for function_response in event.get_function_responses():
+        if function_response.id:
+          responded_fc_ids.add(function_response.id)
+
+    confirmations_by_fc_id = {
+        confirmation_fc_id: confirmation
+        for confirmation_fc_id, confirmation in confirmations_by_fc_id.items()
+        if confirmation_to_original_fc_id.get(confirmation_fc_id)
+        not in responded_fc_ids
+    }
+
+    if not confirmations_by_fc_id:
+      return
+
+    # Resolve all canonical tools and build tools_dict. Deliberately after the
+    # dedup above so a consumed confirmation does not force a toolset
+    # resolution, which can be a remote call for e.g. MCP toolsets.
     tools_dict = {}
     if agent is not None and hasattr(agent, "canonical_tools"):
       tools_dict = {
@@ -234,7 +328,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
           )
       }
 
-    # Step 2: Resolve confirmation targets using extracted helper.
+    # Step 3: Resolve confirmation targets using extracted helper.
     confirmation_fc_ids = set(confirmations_by_fc_id.keys())
     tools_to_resume_with_confirmation, tools_to_resume_with_args = (
         await _resolve_confirmation_targets(
@@ -245,24 +339,6 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
             tools_dict,
         )
     )
-
-    if not tools_to_resume_with_confirmation:
-      return
-
-    # Step 3: Remove tools that have already been confirmed (dedup).
-    for event in reversed(events):
-      if event.author == "user":
-        break
-      fr_list = event.get_function_responses()
-      if not fr_list:
-        continue
-
-      for function_response in fr_list:
-        if function_response.id in tools_to_resume_with_confirmation:
-          tools_to_resume_with_confirmation.pop(function_response.id)
-          tools_to_resume_with_args.pop(function_response.id)
-      if not tools_to_resume_with_confirmation:
-        break
 
     if not tools_to_resume_with_confirmation:
       return

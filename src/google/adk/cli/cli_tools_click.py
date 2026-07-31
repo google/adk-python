@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 import functools
@@ -26,31 +27,61 @@ from pathlib import Path
 import sys
 import tempfile
 import textwrap
+import time
+from typing import Any
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
 import click
 from click.core import ParameterSource
-from fastapi import FastAPI
-import uvicorn
 
 from .. import version
-from ..agents.run_config import StreamingMode
-from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+from ..agents._streaming_mode import StreamingMode
 from ..features import FeatureName
 from ..features import override_feature_enabled
-from .cli import run_cli
+from ..utils._telemetry_config import read_telemetry_consent
+from ..utils._telemetry_config import write_telemetry_consent
+from ._telemetry._metrics_collector import MetricsCollector
 from .utils import envs
 from .utils import logs
 
 if TYPE_CHECKING:
+  from fastapi import FastAPI
+
   from ..agents.llm_agent import LlmAgent
+
 
 LOG_LEVELS = click.Choice(
     ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     case_sensitive=False,
 )
+
+_STREAMING_MODE_CHOICES = tuple(str(mode.value) for mode in StreamingMode)
+
+
+def _missing_eval_dependencies_message() -> str:
+  # Imported lazily so loading the CLI does not pull in the evaluation stack.
+  from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+
+  return MISSING_EVAL_DEPENDENCIES_MESSAGE
+
+
+def _parse_streaming_mode(
+    _ctx: click.Context,
+    param: click.Parameter,
+    value: str | None,
+) -> StreamingMode | None:
+  """Converts a validated CLI value to its streaming mode."""
+  if value is None:
+    return None
+
+  mode = next(
+      (m for m in StreamingMode if str(m.value).lower() == value.lower()), None
+  )
+  if mode is None:
+    raise click.BadParameter(f"unknown streaming mode {value!r}", param=param)
+  return mode
 
 
 def _logging_options():
@@ -241,11 +272,161 @@ def _warn_if_with_ui(with_ui: bool) -> None:
     click.secho(f"WARNING: {_ADK_WEB_WARNING}", fg="yellow", err=True)
 
 
-@click.group(context_settings={"max_content_width": 240})
+class TelemetryGroup(click.Group):
+  """Custom Click Group to wrap execution for telemetry tracking."""
+
+  def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+    ctx.telemetry_args = list(args)  # type: ignore[attr-defined]
+    return super().parse_args(ctx, args)
+
+  def invoke(self, ctx: click.Context) -> Any:
+    start_time = time.monotonic()
+    exit_code = 0
+    exception_type = ""
+    try:
+      return super().invoke(ctx)
+    except SystemExit as e:
+      exit_code = (
+          e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+      )
+      raise
+    except BaseException as e:
+      exit_code = 1
+      exception_type = type(e).__name__
+      raise
+    finally:
+      # Exclude help requests and telemetry command group itself
+      full_args: list[str] = getattr(ctx, "telemetry_args", [])
+      if (
+          ctx.invoked_subcommand is not None
+          and ctx.invoked_subcommand != "telemetry"
+          and not any(arg in full_args for arg in ("--help", "-h"))
+      ):
+        try:
+          resolved = []
+          current_group: click.Group | click.Command = self
+          for arg in full_args:
+            if (
+                isinstance(current_group, click.Group)
+                and arg in current_group.commands
+            ):
+              resolved.append(arg)
+              cmd_obj = current_group.commands[arg]
+              if isinstance(cmd_obj, click.Group):
+                current_group = cmd_obj
+              else:
+                break
+
+          command = resolved[0] if len(resolved) > 0 else ""
+          subcommand = resolved[1] if len(resolved) > 1 else ""
+
+          sub_args = full_args[len(resolved) :]
+          sub_ctx = None
+          try:
+            # Reconstruct the subcommand context to query parameters.
+            sub_ctx = cmd_obj.make_context(command, sub_args, parent=ctx)
+          except Exception:  # pylint: disable=broad-except
+            pass
+
+          # Check consent before instantiating MetricsCollector
+          if read_telemetry_consent() is True:
+            collector = MetricsCollector()
+            with sub_ctx if sub_ctx else contextlib.nullcontext():
+              collector.record_command_run(
+                  command=command,
+                  subcommand=subcommand,
+                  exit_code=exit_code,
+                  duration_ms=int((time.monotonic() - start_time) * 1000),
+                  exception_type=exception_type,
+              )
+        except Exception:  # pylint: disable=broad-except
+          # Failsafe: telemetry errors must never crash the CLI
+          pass
+
+
+@click.group(cls=TelemetryGroup, context_settings={"max_content_width": 240})  # type: ignore[assignment]
 @click.version_option(version.__version__)
-def main():
+@click.pass_context
+def main(ctx: Optional[click.Context] = None) -> None:
   """Agent Development Kit CLI tools."""
+  if (
+      ctx is not None
+      and ctx.invoked_subcommand is not None
+      and ctx.invoked_subcommand != "telemetry"
+      and not any(arg in sys.argv for arg in ("--help", "-h"))
+      and sys.stdin.isatty()
+  ):
+    if read_telemetry_consent() is None:
+      click.echo(
+          "Help improve the ADK (CLI and Web UI) by allowing Google to collect"
+          " pseudonymized usage data?"
+      )
+      click.echo()
+      click.echo(
+          "What is collected: Names of subcommands and flags (no user-provided"
+          " values or arguments), execution metrics (duration, exit state),"
+          " environment specs (OS, Python version), and aggregated Web UI"
+          " feature interactions. No personally identifiable information (PII)"
+          " is collected."
+      )
+      click.echo()
+      click.echo(
+          "This is OFF by default. You can opt out at any time using the"
+          " 'adk telemetry disable' command or Web UI user settings."
+      )
+      click.echo()
+      try:
+        response = input("Enable telemetry? [Y/n]: ").strip().lower()
+        if response in ("", "y", "yes"):
+          write_telemetry_consent(True)
+        else:
+          write_telemetry_consent(False)
+      except (EOFError, KeyboardInterrupt):
+        click.echo()
+      except Exception as e:
+        click.secho(
+            f"Error: Failed to save telemetry settings: {e}",
+            fg="red",
+            err=True,
+        )
+
+
+@main.group("telemetry")
+def telemetry() -> None:
+  """Manage telemetry settings."""
   pass
+
+
+@telemetry.command("enable")
+def telemetry_enable() -> None:
+  """Enable telemetry collection."""
+  try:
+    write_telemetry_consent(True)
+    click.echo("Telemetry collection has been enabled.")
+  except Exception as e:
+    raise click.ClickException(f"Failed to enable telemetry: {e}")
+
+
+@telemetry.command("disable")
+def telemetry_disable() -> None:
+  """Disable telemetry collection."""
+  try:
+    write_telemetry_consent(False)
+    click.echo("Telemetry collection has been disabled.")
+  except Exception as e:
+    raise click.ClickException(f"Failed to disable telemetry: {e}")
+
+
+@telemetry.command("status")
+def telemetry_status() -> None:
+  """Show telemetry collection status."""
+  consent = read_telemetry_consent()
+  if consent is True:
+    click.echo("Telemetry collection is enabled.")
+  elif consent is False:
+    click.echo("Telemetry collection is disabled.")
+  else:
+    click.echo("Telemetry collection is not configured (defaults to OFF).")
 
 
 @main.group()
@@ -270,13 +451,8 @@ def conformance():
 )
 @click.argument(
     "streaming-mode",
-    type=click.Choice(
-        [str(m.value) for m in StreamingMode], case_sensitive=False
-    ),
-    callback=lambda ctx, param, value: next(
-        (m for m in StreamingMode if str(m.value).lower() == value.lower()),
-        value,
-    ),
+    type=click.Choice(_STREAMING_MODE_CHOICES, case_sensitive=False),
+    callback=_parse_streaming_mode,
 )
 @click.pass_context
 def cli_conformance_record(
@@ -360,15 +536,8 @@ def cli_conformance_record(
 )
 @click.option(
     "--streaming-mode",
-    type=click.Choice(
-        [str(m.value) for m in StreamingMode], case_sensitive=False
-    ),
-    callback=lambda ctx, param, value: next(
-        (m for m in StreamingMode if str(m.value).lower() == value.lower()),
-        value,
-    )
-    if value is not None
-    else None,
+    type=click.Choice(_STREAMING_MODE_CHOICES, case_sensitive=False),
+    callback=_parse_streaming_mode,
     required=False,
     default=None,
 )
@@ -784,6 +953,8 @@ def cli_run(
     sys.exit(exit_code)
   else:
     # Legacy interactive mode
+    from .cli import run_cli
+
     asyncio.run(
         run_cli(
             agent_parent_dir=agent_parent_folder,
@@ -1022,11 +1193,11 @@ def cli_eval(
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
-    from .cli_eval import get_root_agent
+    from .cli_eval import get_app_or_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   eval_config = get_evaluation_criteria_or_default(config_file_path)
   print(f"Using evaluation criteria: {eval_config}")
@@ -1042,7 +1213,7 @@ def cli_eval(
   else:
     inference_config = InferenceConfig(use_live=False)
 
-  root_agent = asyncio.run(get_root_agent(agent_module_file_path))
+  app, root_agent = asyncio.run(get_app_or_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   eval_sets_manager = None
@@ -1134,6 +1305,7 @@ def cli_eval(
         eval_set_results_manager=eval_set_results_manager,
         user_simulator_provider=user_simulator_provider,
         metric_evaluator_registry=metric_evaluator_registry,
+        app=app,
     )
 
     inference_results = asyncio.run(
@@ -1149,7 +1321,7 @@ def cli_eval(
         )
     )
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   click.echo(
       "*********************************************************************"
@@ -1257,7 +1429,7 @@ def cli_optimize(
     from .cli_eval import get_root_agent
 
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   with open(sampler_config_file_path, "r", encoding="utf-8") as f:
     content = f.read()
@@ -1395,7 +1567,7 @@ def cli_add_eval_case(
     from .cli_eval import get_eval_sets_manager
 
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
@@ -1493,7 +1665,7 @@ def cli_generate_eval_cases(
     from .utils.state import create_empty_state
 
   except ModuleNotFoundError as mnf:
-    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+    raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
@@ -1805,6 +1977,10 @@ def cli_web(
   agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
   pointing directly to a single agent folder.
 
+  This server is intended for local development. Its endpoints are
+  unauthenticated, so run it on a trusted network only and do not expose it to
+  untrusted or public networks.
+
   Example:
 
     adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
@@ -1833,6 +2009,8 @@ def cli_web(
 """,
         fg="green",
     )
+
+  import uvicorn
 
   from .fast_api import get_fast_api_app
 
@@ -1946,6 +2124,10 @@ def cli_api_server(
   agent containing `agent.py`, `__init__.py`, or `root_agent.yaml`) or a path
   pointing directly to a single agent folder.
 
+  This server's endpoints are unauthenticated. Run it on a trusted network
+  only, and put it behind your own authentication and authorization layer
+  before exposing it to untrusted or public networks or serving multiple users.
+
   Example:
 
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
@@ -1958,6 +2140,8 @@ def cli_api_server(
     )
 
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
+
+  import uvicorn
 
   from .fast_api import get_fast_api_app
 
@@ -2441,6 +2625,20 @@ def cli_migrate_session(
         " the version in the dev environment)"
     ),
 )
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Each entry is placed at `/app/<basename>` and `/app`"
+        " is added to PYTHONPATH, so a top-level name that matches an installed"
+        " dependency will shadow it at runtime; pick distinct names."
+        " Repeatable."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2474,6 +2672,7 @@ def cli_deploy_agent_engine(
     memory_service_uri: str | None = None,
     session_service_uri: str | None = None,
     use_local_storage: bool = False,
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to Agent Engine.
 
@@ -2520,6 +2719,7 @@ def cli_deploy_agent_engine(
         memory_service_uri=memory_service_uri,
         session_service_uri=session_service_uri,
         adk_version=adk_version,
+        extra_packages=list(extra_packages),
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

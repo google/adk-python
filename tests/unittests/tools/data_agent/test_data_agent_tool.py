@@ -15,6 +15,7 @@
 from unittest import mock
 
 from google.adk.tools.data_agent import data_agent_tool
+from google.adk.tools.data_agent.config import DataAgentToolConfig
 from google.adk.tools.tool_context import ToolContext
 
 
@@ -168,7 +169,7 @@ def test_ask_data_agent_success(
   mock_get_agent_info.assert_called_once_with(
       "projects/p/locations/l/dataAgents/a", mock_creds, session=mock_session
   )
-  mock_get_session.assert_called_once_with(mock_creds)
+  mock_get_session.assert_called_once_with(mock_creds, location="l")
   mock_get_stream.assert_called_once_with(
       mock_session,
       "https://geminidataanalytics.googleapis.com/v1/projects/p/locations/l:chat",
@@ -220,5 +221,83 @@ def test_ask_data_agent_exception(
   )
   assert result["status"] == "ERROR"
   assert "Chat failed!" in result["error_details"]
-  mock_get_session.assert_called_once_with(mock_creds)
+  mock_get_session.assert_called_once_with(mock_creds, location="l")
   mock_get_stream.assert_called_once()
+
+
+def test_extract_location_from_resource_name():
+  """Tests location extraction helper function."""
+  extract = data_agent_tool._extract_location_from_resource_name
+  assert extract("projects/p/locations/eu/dataAgents/agent_1") == "eu"
+  assert extract("projects/p/locations/us/dataAgents/agent_2") == "us"
+  assert extract("projects/p/locations/global/dataAgents/agent_3") == "global"
+  assert extract("invalid_name") is None
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_endpoint", autospec=True
+)
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_get_data_agent_info_auto_extract_location(
+    mock_get_session, mock_get_endpoint
+):
+  """Tests automatic location extraction from resource name when settings location is None."""
+
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_response = mock.Mock()
+  mock_response.json.return_value = {"name": "agent_eu"}
+  mock_session.get.return_value = mock_response
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.eu.rep.googleapis.com",
+  )
+  mock_get_endpoint.return_value = (
+      "https://geminidataanalytics.eu.rep.googleapis.com"
+  )
+
+  settings = DataAgentToolConfig(location=None)
+  result = data_agent_tool._get_data_agent_info(
+      "projects/my-proj/locations/eu/dataAgents/my-agent",
+      mock_creds,
+      settings=settings,
+  )
+
+  mock_get_endpoint.assert_called_once_with(location="eu")
+  mock_get_session.assert_called_once_with(mock_creds, location="eu")
+  assert result["status"] == "SUCCESS"
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_regional(mock_get_session):
+  """Tests list_accessible_data_agents with regional settings."""
+  from google.adk.tools.data_agent.config import DataAgentToolConfig
+
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_response = mock.Mock()
+  mock_response.json.return_value = {"dataAgents": ["agent_eu"]}
+  mock_response.raise_for_status.return_value = None
+  mock_session.get.return_value = mock_response
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.eu.rep.googleapis.com",
+  )
+  settings = DataAgentToolConfig(location="eu")
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds, settings=settings
+  )
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == ["agent_eu"]
+  mock_get_session.assert_called_once_with(mock_creds, location="eu")
+  mock_session.get.assert_called_once_with(
+      "https://geminidataanalytics.eu.rep.googleapis.com/v1/projects/test-project/locations/eu/dataAgents:listAccessible",
+      headers={
+          "Content-Type": "application/json",
+          "X-Goog-API-Client": "GOOGLE_ADK",
+      },
+  )

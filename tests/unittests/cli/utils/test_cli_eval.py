@@ -19,6 +19,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest import mock
 
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.apps.app import App
 from google.adk.cli.cli_eval import get_root_agent
 import pytest
 
@@ -175,3 +177,87 @@ def test_parse_evals_splits_case_selector_from_right():
   assert parse_and_get_evals_to_run([r"C:\evals\set.json:case1,case2"]) == {
       r"C:\evals\set.json": ["case1", "case2"]
   }
+
+
+def _patch_agent_module(monkeypatch, agent_namespace):
+  """Patches `_get_agent_module` to return a stub whose `.agent` matches."""
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._get_agent_module",
+      lambda _path: SimpleNamespace(agent=agent_namespace),
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_app_or_root_agent_with_app(monkeypatch):
+  """When the module exposes an App, both app and its root_agent are returned."""
+  root_agent = BaseAgent(name="root_agent")
+  app = App(name="my_app", root_agent=root_agent)
+  _patch_agent_module(
+      monkeypatch, SimpleNamespace(root_agent=root_agent, app=app)
+  )
+
+  from google.adk.cli.cli_eval import get_app_or_root_agent
+
+  resolved_app, resolved_root = await get_app_or_root_agent("some/path")
+  assert resolved_app is app
+  assert resolved_root is root_agent
+
+
+@pytest.mark.asyncio
+async def test_get_app_or_root_agent_without_app(monkeypatch):
+  """When only `root_agent` is exposed, app is None."""
+  root_agent = BaseAgent(name="root_agent")
+  _patch_agent_module(monkeypatch, SimpleNamespace(root_agent=root_agent))
+
+  from google.adk.cli.cli_eval import get_app_or_root_agent
+
+  resolved_app, resolved_root = await get_app_or_root_agent("some/path")
+  assert resolved_app is None
+  assert resolved_root is root_agent
+
+
+@pytest.mark.asyncio
+async def test_get_app_or_root_agent_supports_get_agent_async(monkeypatch):
+  """Modules exposing only `get_agent_async` still resolve, with app None."""
+  root_agent = BaseAgent(name="root_agent")
+  get_agent_async = mock.AsyncMock(return_value=(root_agent, object()))
+  _patch_agent_module(
+      monkeypatch, SimpleNamespace(get_agent_async=get_agent_async)
+  )
+
+  from google.adk.cli.cli_eval import get_app_or_root_agent
+
+  resolved_app, resolved_root = await get_app_or_root_agent("some/path")
+  assert resolved_app is None
+  assert resolved_root is root_agent
+  get_agent_async.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_app_or_root_agent_app_attribute_not_an_app_instance(
+    monkeypatch,
+):
+  """If `app` exists but is not an App, it is ignored and we fall back."""
+  root_agent = BaseAgent(name="root_agent")
+  _patch_agent_module(
+      monkeypatch,
+      SimpleNamespace(root_agent=root_agent, app="not-an-app"),
+  )
+
+  from google.adk.cli.cli_eval import get_app_or_root_agent
+
+  resolved_app, resolved_root = await get_app_or_root_agent("some/path")
+  assert resolved_app is None
+  assert resolved_root is root_agent
+
+
+@pytest.mark.asyncio
+async def test_get_root_agent_back_compat(monkeypatch):
+  """Existing `get_root_agent` callers keep getting the bare agent back."""
+  root_agent = BaseAgent(name="root_agent")
+  app = App(name="my_app", root_agent=root_agent)
+  _patch_agent_module(
+      monkeypatch, SimpleNamespace(root_agent=root_agent, app=app)
+  )
+
+  assert await get_root_agent("some/path") is root_agent

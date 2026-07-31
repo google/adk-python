@@ -17,6 +17,8 @@ import asyncio
 import collections
 import json
 import logging
+from pathlib import Path
+from pathlib import PurePosixPath
 import sys
 from unittest import mock
 
@@ -24,6 +26,7 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
+from google.adk.environment import BaseEnvironment
 from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
 from google.adk.tools import skill_toolset
@@ -213,6 +216,60 @@ def test_clone_with_updated_skills(mock_skill1, mock_skill2):
   assert new_toolset._code_executor is executor
   assert new_toolset._script_timeout == 42
   assert "my_tool" in new_toolset._provided_tools_by_name
+
+
+def test_init_accepts_environment(mock_skill1):
+  """SkillToolset stores the provided environment."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+
+  assert toolset._env is mock_env
+
+
+def test_init_accepts_skills_folder(mock_skill1):
+  """SkillToolset stores and returns the provided skills_folder."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], environment=mock_env, skills_folder=Path("/custom/skills")
+  )
+  assert toolset.skills_folder == Path("/custom/skills")
+
+
+def test_init_raises_when_skills_folder_provided_without_environment(
+    mock_skill1,
+):
+  """SkillToolset raises ValueError when skills_folder is provided without environment."""
+  with pytest.raises(
+      ValueError, match="Cannot specify skills_folder without an environment"
+  ):
+    skill_toolset.SkillToolset(
+        [mock_skill1], skills_folder=Path("/custom/skills")
+    )
+
+
+def test_skills_folder_defaults_to_environment(mock_skill1):
+  """SkillToolset defaults skills_folder to environment working_dir / 'skills'."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(
+      return_value=Path("/workspace")
+  )
+
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  assert toolset.skills_folder == Path("/workspace/skills")
+
+
+def test_init_raises_when_both_executor_and_environment_provided(mock_skill1):
+  """SkillToolset raises ValueError when both code_executor and environment are provided."""
+  mock_executor = _make_mock_executor()
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+
+  with pytest.raises(
+      ValueError, match="Cannot have both code_executor and environment"
+  ):
+    skill_toolset.SkillToolset(
+        [mock_skill1], code_executor=mock_executor, environment=mock_env
+    )
 
 
 @pytest.mark.asyncio
@@ -1383,6 +1440,220 @@ async def test_execute_script_extensionless_unsupported(mock_skill1):
       tool_context=ctx,
   )
   assert result["error_code"] == "UNSUPPORTED_SCRIPT_TYPE"
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_declaration_with_environment(mock_skill1):
+  """RunSkillScriptTool declaration exposes 'command' parameter when environment is configured."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  props = declaration.parameters_json_schema["properties"]
+  assert "command" in props
+  assert "args" not in props
+  assert "short_options" not in props
+  assert "positional_args" not in props
+  assert "command" in declaration.parameters_json_schema["required"]
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_execute_with_environment_missing_command(
+    mock_skill1,
+):
+  """RunSkillScriptTool raises error when 'command' parameter is missing."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["error_code"] == "INVALID_ARGUMENTS"
+  assert "Argument 'command' is required" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_execute_with_environment(mock_skill1):
+  """RunSkillScriptTool executes script via environment and JIT-materializes resources."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  # Simulate script not initially in environment (read_file raises FileNotFoundError)
+  mock_env.read_file.side_effect = FileNotFoundError()
+  mock_env.execute.return_value = mock.MagicMock(
+      stdout="env out", stderr="", exit_code=0, timed_out=False
+  )
+
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "file_path": "run.py",
+          "command": "python3 skills/skill1/scripts/run.py --flag 1",
+      },
+      tool_context=ctx,
+  )
+
+  assert result == {
+      "stdout": "env out",
+      "stderr": "",
+      "exit_code": 0,
+      "timed_out": False,
+  }
+  mock_env.read_file.assert_called_once_with(
+      PurePosixPath("skills/skill1/scripts/run.py")
+  )
+  assert mock_env.execute.call_count == 1
+  assert (
+      mock_env.execute.call_args.kwargs["command"]
+      == "python3 skills/skill1/scripts/run.py --flag 1"
+  )
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_environment_execute_exception(mock_skill1):
+  """RunSkillScriptTool handles env.execute exception gracefully."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  # Script exists, but execute script raises exception
+  mock_env.read_file.return_value = b"ok"
+  mock_env.execute.side_effect = RuntimeError("Sandbox connection lost")
+
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "file_path": "run.py",
+          "command": "python3 skills/skill1/scripts/run.py",
+      },
+      tool_context=ctx,
+  )
+
+  assert result["error_code"] == "EXECUTION_ERROR"
+  assert "Failed to execute script" in result["error"]
+  assert "RuntimeError: Sandbox connection lost" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_environment_materialize_ls_exception(
+    mock_skill1,
+):
+  """RunSkillScriptTool handles exception during JIT check gracefully."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  # JIT check raises exception
+  mock_env.read_file.side_effect = RuntimeError(
+      "Failed to check file existence"
+  )
+
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "file_path": "run.py",
+          "command": "python3 skills/skill1/scripts/run.py",
+      },
+      tool_context=ctx,
+  )
+
+  assert result["error_code"] == "EXECUTION_ERROR"
+  assert "Failed to execute script" in result["error"]
+  assert "RuntimeError: Failed to check file existence" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_environment_materialize_write_exception(
+    mock_skill1,
+):
+  """RunSkillScriptTool handles exception during JIT write gracefully."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  # JIT check says not found (read_file raises FileNotFoundError)
+  mock_env.read_file.side_effect = FileNotFoundError()
+  # write_file raises exception
+  mock_env.write_file.side_effect = RuntimeError("Disk full")
+
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "file_path": "run.py",
+          "command": "python3 skills/skill1/scripts/run.py",
+      },
+      tool_context=ctx,
+  )
+
+  assert result["error_code"] == "EXECUTION_ERROR"
+  assert "Failed to execute script" in result["error"]
+  assert "RuntimeError: Disk full" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_run_skill_script_materialize_writes_concurrently():
+  """Verify that JIT materialization writes all skill resources concurrently."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  # JIT check says not found (read_file raises FileNotFoundError)
+  mock_env.read_file.side_effect = FileNotFoundError()
+  mock_env.execute.return_value = mock.MagicMock(
+      stdout="ok", stderr="", exit_code=0, timed_out=False
+  )
+
+  active_writes = 0
+  max_active_writes = 0
+
+  async def slow_write(path, content):
+    nonlocal active_writes, max_active_writes
+    active_writes += 1
+    max_active_writes = max(max_active_writes, active_writes)
+    await asyncio.sleep(0.01)
+    active_writes -= 1
+
+  mock_env.write_file.side_effect = slow_write
+
+  multi_res_skill = models.Skill(
+      frontmatter=models.Frontmatter(name="multi-res", description="desc"),
+      instructions="desc",
+      resources=models.Resources(
+          references={"ref1.md": "c1", "ref2.md": "c2"},
+          assets={"asset1.json": "c3"},
+          scripts={"run.py": models.Script(src="print('hi')")},
+      ),
+  )
+
+  toolset = skill_toolset.SkillToolset([multi_res_skill], environment=mock_env)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  await tool.run_async(
+      args={
+          "skill_name": "multi-res",
+          "file_path": "run.py",
+          "command": "python3 run.py",
+      },
+      tool_context=ctx,
+  )
+
+  assert mock_env.write_file.call_count == 4
+  assert max_active_writes == 4
 
 
 # ── Integration tests using real UnsafeLocalCodeExecutor ──

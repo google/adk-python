@@ -64,5 +64,3 @@ class ScopedFailureTracker:
       if scope_key in self._scoped_failure_counters:
         counter = self._scoped_failure_counters[scope_key]
         counter.pop(item_name, None)
-        if not counter:
-          self._scoped_failure_counters.pop(scope_key, None)

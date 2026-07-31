@@ -516,6 +516,7 @@ class CompletionsHTTPClient:
   ) -> AsyncGenerator[LlmResponse, None]:
     """Generates content using the OpenAI-compatible HTTP API."""
     payload = self._construct_payload(llm_request, stream)
+    timeout = self._get_request_timeout_seconds(llm_request)
     headers = self._headers.copy()
     headers['Content-Type'] = 'application/json'
 
@@ -527,26 +528,50 @@ class CompletionsHTTPClient:
       url = f"{url.rstrip('/')}/chat/completions"
 
     if stream:
-      async for stream_res in self._handle_streaming(url, payload, headers):
+      async for stream_res in self._handle_streaming(
+          url, payload, headers, timeout=timeout
+      ):
         yield stream_res
     else:
-      response = await self._httpx_post_with_retry(url, payload, headers)
+      response = await self._httpx_post_with_retry(
+          url, payload, headers, timeout=timeout
+      )
       data = response.json()
       yield self._parse_response(data)
 
+  @staticmethod
+  def _get_request_timeout_seconds(llm_request: LlmRequest) -> float | None:
+    """Returns the request timeout converted from milliseconds to seconds."""
+    if not llm_request.config or not llm_request.config.http_options:
+      return None
+    timeout_ms = llm_request.config.http_options.timeout
+    return timeout_ms / 1000 if timeout_ms is not None else None
+
   async def _httpx_post_with_retry(
-      self, url: str, payload: dict[str, Any], headers: dict[str, str]
+      self,
+      url: str,
+      payload: dict[str, Any],
+      headers: dict[str, str],
+      *,
+      timeout: float | None,
   ) -> httpx.Response:
     """Sends a POST request and handles retries."""
     retry_kwargs = self._get_retry_kwargs()
     async for attempt in tenacity.AsyncRetrying(**retry_kwargs):
       with attempt:
-        response = await self._client.post(url, json=payload, headers=headers)
+        response = await self._client.post(
+            url, json=payload, headers=headers, timeout=timeout
+        )
         response.raise_for_status()
         return response
 
   async def _handle_streaming(
-      self, url: str, payload: dict[str, Any], headers: dict[str, str]
+      self,
+      url: str,
+      payload: dict[str, Any],
+      headers: dict[str, str],
+      *,
+      timeout: float | None,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming response from OpenAI-compatible API."""
     accumulator = ChatCompletionsResponseHandler()
@@ -555,6 +580,7 @@ class CompletionsHTTPClient:
         url,
         json=payload,
         headers=headers,
+        timeout=timeout,
     ) as resp:
       resp.raise_for_status()
       async for line in resp.aiter_lines():

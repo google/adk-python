@@ -124,6 +124,8 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     self.throw_exception_if_retry_exceeded = throw_exception_if_retry_exceeded
     self.scope = tracking_scope
     self._tracker = ScopedFailureTracker()
+    self._scoped_failure_counters = self._tracker._scoped_failure_counters
+    self._lock = self._tracker._lock
 
   async def after_tool_callback(
       self,
