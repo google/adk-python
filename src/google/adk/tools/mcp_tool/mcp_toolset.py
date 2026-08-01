@@ -61,6 +61,22 @@ from .mcp_tool import ProgressCallbackFactory
 
 logger = logging.getLogger("google_adk." + __name__)
 
+# Whether an agent config may declare a stdio MCP server. Stdio connection
+# params carry a `command` and `args` that are launched as a local process, and
+# agent configs are untrusted input (CVE-2026-4810), so they are rejected in
+# `from_config()` unless the embedding application explicitly opts in.
+_ALLOW_CONFIG_STDIO_SERVERS = False
+
+
+def _set_allow_config_stdio_servers(value: bool) -> None:
+  """Sets whether `McpToolset.from_config()` may build stdio MCP servers.
+
+  Args:
+    value: True to allow agent configs to launch local MCP servers.
+  """
+  global _ALLOW_CONFIG_STDIO_SERVERS
+  _ALLOW_CONFIG_STDIO_SERVERS = value
+
 
 T = TypeVar("T")
 
@@ -514,6 +530,17 @@ class McpToolset(BaseToolset):
   ) -> McpToolset:
     """Creates an McpToolset from a configuration object."""
     mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
+
+    if (
+        mcp_toolset_config.stdio_server_params
+        or mcp_toolset_config.stdio_connection_params
+    ) and not _ALLOW_CONFIG_STDIO_SERVERS:
+      raise ValueError(
+          "Stdio MCP servers are not allowed in agent configs: they launch a"
+          " local process from a config-supplied 'command'. Build the"
+          " McpToolset in code, or call _set_allow_config_stdio_servers(True)"
+          " if this application only loads trusted configs."
+      )
 
     if mcp_toolset_config.stdio_server_params:
       connection_params = mcp_toolset_config.stdio_server_params
