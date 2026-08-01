@@ -1,0 +1,20 @@
+name: "POC: Build Backend Secret Access"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  poc:
+    runs-on: ubuntu-latest
+    env:
+      UV_PUBLISH_TOKEN: "pypi-AgEIcHlwaS5vcmcCJDgzYjFAKE-TOKEN-FOR-DEMO-ONLY"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Run uv build (custom backend executes)
+        run: uv build
