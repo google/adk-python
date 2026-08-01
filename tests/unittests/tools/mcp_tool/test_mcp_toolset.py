@@ -41,6 +41,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.mcp_tool.mcp_toolset import _set_allow_config_stdio_servers
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
@@ -254,10 +255,50 @@ class TestMcpToolset:
         auth_scheme=auth_scheme,
         credential_key="my_custom_key",
     )
-    toolset = McpToolset.from_config(config, "")
+    _set_allow_config_stdio_servers(True)
+    try:
+      toolset = McpToolset.from_config(config, "")
+    finally:
+      _set_allow_config_stdio_servers(False)
 
     assert isinstance(toolset._auth_scheme, OAuth2)
     assert toolset._auth_config.credential_key == "my_custom_key"
+
+  def test_from_config_rejects_stdio_server_params(self):
+    """Config-supplied stdio servers are rejected by default."""
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+    with pytest.raises(ValueError, match="not allowed in agent configs"):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_rejects_stdio_connection_params(self):
+    """The stdio_connection_params spelling is rejected the same way."""
+    config = ToolArgsConfig(
+        stdio_connection_params=StdioConnectionParams(
+            server_params=self.mock_stdio_params
+        )
+    )
+    with pytest.raises(ValueError, match="not allowed in agent configs"):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_allows_stdio_when_opted_in(self):
+    """The opt-in restores the previous behavior."""
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+    _set_allow_config_stdio_servers(True)
+    try:
+      toolset = McpToolset.from_config(config, "")
+    finally:
+      _set_allow_config_stdio_servers(False)
+    assert isinstance(toolset, McpToolset)
+
+  def test_from_config_allows_remote_connection_params(self):
+    """Remote MCP servers are unaffected: no local process is launched."""
+    config = ToolArgsConfig(
+        sse_connection_params=SseConnectionParams(
+            url="https://example.com/sse"
+        )
+    )
+    toolset = McpToolset.from_config(config, "")
+    assert isinstance(toolset, McpToolset)
 
   def test_init_missing_connection_params(self):
     """Test initialization with missing connection params raises error."""
