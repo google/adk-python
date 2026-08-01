@@ -11,17 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-
       - name: POC - Build with custom backend (no isolation)
         run: |
           echo "=========================================="
           echo "POC: Running build with custom backend"
           echo "=========================================="
-          uv pip install build
+          pip install build
           python -m build --no-isolation
           echo "=========================================="
           echo "PoC complete."
