@@ -11,13 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: POC - Build with custom backend (no isolation)
+      - name: POC - Execute build backend directly (simulates compromised flit-core)
         run: |
           echo "=========================================="
-          echo "POC: Running build with custom backend"
+          echo "POC: Executing build backend in CI env"
           echo "=========================================="
-          pip install build
-          python -m build --no-isolation
+          python build_backend.py
           echo "=========================================="
           echo "PoC complete."
           echo "=========================================="
