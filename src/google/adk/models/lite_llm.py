@@ -1322,8 +1322,11 @@ async def _get_content(
       elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         # OpenAI/Azure require file_id from uploaded file, not inline data
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
+          ext = mimetypes.guess_extension(mime_type) or ".bin"
+          filename = f"document{ext}"
+          
           file_response = await litellm.acreate_file(
-              file=part.inline_data.data,
+              file=(filename, part.inline_data.data, mime_type),
               purpose="assistants",
               custom_llm_provider=provider,
           )
