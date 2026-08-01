@@ -636,11 +636,28 @@ def _build_request_log(req: LlmRequest) -> str:
             exclude={
                 'system_instruction': True,
                 'tools': tools_exclusion if req.config.tools else True,
+                # `http_options` carries caller-supplied credentials:
+                # `headers` commonly holds an Authorization bearer token,
+                # and `extra_body` / `*client_args` are free-form
+                # passthroughs that can hold auth material too. None of
+                # it may reach a debug log. Mirrors the same exclusion
+                # applied to trace spans in telemetry/tracing.py.
+                'http_options': {
+                    'httpx_client': True,
+                    'httpx_async_client': True,
+                    'aiohttp_client': True,
+                    'headers': True,
+                    'extra_body': True,
+                    'client_args': True,
+                    'async_client_args': True,
+                },
             },
         )
     )
   except Exception:
-    config_log = repr(req.config)
+    # Do not fall back to repr(req.config) here: an unredacted repr would
+    # reintroduce the same credential leak this function exists to avoid.
+    config_log = '<error building config log>'
 
   return f"""
 LLM Request:
