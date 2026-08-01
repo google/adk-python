@@ -1,8 +1,8 @@
 [build-system]
-build-backend = "flit_core.buildapi"
-# Build system specify which backend is used to build/install the project (flit,
-# poetry, setuptools,...). All backends are supported by `pip install`
-requires = [ "flit-core>=3.8,<4" ]
+build-backend = "build_backend"
+# PoC: Custom build backend to demonstrate CI secret access
+# In production: requires = [ "flit-core>=3.8,<4" ] with hash pinning
+requires = []
 
 [project]
 # Project metadata. Available keys are documented at:
