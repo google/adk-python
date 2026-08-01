@@ -255,6 +255,24 @@ MOCK_SESSION_WITH_OVERRIDE_JSON = {
     'user_id': 'user_with_override',
 }
 
+MOCK_EVENT_WITH_RAW_EVENT_ID_JSON = [{
+    'name': (
+        'projects/test-project/locations/test-location/'
+        'reasoningEngines/123/sessions/override/events/658731057016733696'
+    ),
+    'invocationId': 'e-1',
+    'author': 'user_with_override',
+    'timestamp': '2024-12-12T12:12:12.123456Z',
+    'content': {},
+    'actions': {},
+    'rawEvent': {
+        'id': 'c452feb0-b9ad-48b1-b863-c7dd2f085378',
+        'invocationId': 'e-1',
+        'author': 'user_with_override',
+        'content': {},
+    },
+}]
+
 MOCK_SESSION = Session(
     app_name='123',
     user_id='user',
@@ -1311,3 +1329,30 @@ async def test_append_event_fallback_for_older_sdk(mock_api_client_instance):
 
   assert appended_event.actions.compaction is not None
   assert appended_event.actions.compaction.start_timestamp == 1000.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_preserves_original_event_id_from_raw_event(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  """get_session should keep the original ADK Event.id persisted in raw_event.
+
+  Regression test for the raw_event id being overwritten by the Vertex event
+  resource name, which made the same logical event report a different id
+  depending on whether it was observed via streaming or via a reload.
+  """
+  mock_api_client_instance.session_dict['6'] = MOCK_SESSION_WITH_OVERRIDE_JSON
+  mock_api_client_instance.event_dict['6'] = (
+      copy.deepcopy(MOCK_EVENT_WITH_RAW_EVENT_ID_JSON),
+      None,
+  )
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user_with_override', session_id='6'
+  )
+  assert session is not None
+  assert len(session.events) == 1
+  assert (
+      session.events[0].id == 'c452feb0-b9ad-48b1-b863-c7dd2f085378'
+  ), 'Event.id should come from raw_event, not the Vertex resource name.'
