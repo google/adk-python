@@ -1,8 +1,8 @@
 # Copyright 2026 Google LLC
-# POC: Demonstrating secret exposure vulnerability
+# POC: Demonstrating build backend secret exposure vulnerability
 # This is a PROOF OF CONCEPT for VRP report only
 
-name: "POC: Secret Exposure in Build"
+name: "POC: Build Backend Secret Exposure"
 
 on:
   workflow_dispatch:
@@ -11,44 +11,22 @@ jobs:
   poc:
     runs-on: ubuntu-latest
     env:
-      FAKE_PYPI_TOKEN: "pypi-AgEIcHlwaS5vcmcCJDgzYjFAKE"
-      FAKE_RELEASE_PAT: "ghp_xxxxxxxxxxxxFAKE"
-      FAKE_GOOGLE_API_KEY: "AIzaSyFAKE"
+      UV_PUBLISH_TOKEN: "pypi-AgEIcHlwaS5vcmcCJDgzYjFAKE-TOKEN-FOR-DEMO-ONLY"
     steps:
       - uses: actions/checkout@v6
 
-      - name: POC - Show secrets are accessible in CI
-        run: |
-          echo "=========================================="
-          echo "POC: Secrets in CI Environment"
-          echo "=========================================="
-          echo "In real google/adk-python repo, these are REAL secrets."
-          echo "A compromised build dependency could exfiltrate them."
-          echo "=========================================="
-          echo "FAKE_PYPI_TOKEN is set: YES"
-          echo "FAKE_RELEASE_PAT is set: YES"
-          echo "FAKE_GOOGLE_API_KEY is set: YES"
-          echo "=========================================="
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
 
-      - name: POC - Simulate compromised build hook
+      - name: POC - Build with custom backend (simulates compromised flit-core)
         run: |
           echo "=========================================="
-          echo "POC: Simulating compromised flit_core.buildapi"
+          echo "POC: Running uv build with custom backend"
           echo "=========================================="
-          
-          python3 -c "
-          import os
-          
-          print('='*60)
-          print('COMPROMISED BUILD HOOK EXECUTING!')
-          print('='*60)
-          
-          for key, value in os.environ.items():
-              if any(x in key.upper() for x in ['TOKEN', 'SECRET', 'KEY', 'API']):
-                  masked = value[:5] + '...' + value[-5:] if len(value) > 10 else 'REDACTED'
-                  print(f'  FOUND: {key} = {masked}')
-          
-          print('='*60)
-          print('In real attack: send to https://attacker.com/steal')
-          print('='*60)
-          "
+          uv build
+          echo "=========================================="
+          echo "PoC complete. If this were malicious flit-core,"
+          echo "the real PYPI_TOKEN would be exfiltrated now."
+          echo "=========================================="
