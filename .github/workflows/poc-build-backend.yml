@@ -16,5 +16,5 @@ jobs:
         with:
           version: "latest"
 
-      - name: Run uv build (custom backend executes)
+      - name: Run uv build with custom backend
         run: uv build
