@@ -136,6 +136,7 @@ optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
   "a2a-sdk>=0.3,<0.4",
   "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
+  "beautifulsoup4>=4.12,<5",                                         # For load_web_page tool
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
   "google-cloud-firestore>=2.11,<3",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
@@ -145,6 +146,7 @@ optional-dependencies.test = [
   "langgraph>=0.2.60,<0.4.8",                                        # For LangGraphAgent
   "litellm>=1.83.7,<=1.83.14",                                       # For LiteLLM tests. Lower bound: 5 CVE patches (2026-04). Upper bound pinned to current latest; bump deliberately. See #5488.
   "llama-index-readers-file>=0.4",                                   # For retrieval tests
+  "lxml>=5.3",                                                       # For load_web_page tool
   "openai>=1.100.2",                                                 # For LiteLLM
   "opentelemetry-instrumentation-google-genai>=0.3b0,<1",
   "pypika>=0.50",                                                    # For crewai->chromadb dependency

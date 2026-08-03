@@ -110,6 +110,8 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
+  if rouge_scorer is None:
+    raise ImportError("rouge-score package is required for ROUGE evaluation.")
   scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
 
   # The score method returns a dictionary where keys are the ROUGE types

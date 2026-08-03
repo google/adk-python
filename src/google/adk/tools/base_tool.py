@@ -80,8 +80,8 @@ class BaseTool(ABC):
   def __init__(
       self,
       *,
-      name,
-      description,
+      name: str,
+      description: str,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
       response_scheduling: Optional[types.FunctionResponseScheduling] = None,

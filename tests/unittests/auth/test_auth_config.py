@@ -156,11 +156,16 @@ def test_credential_key_is_stable_across_python_hash_seed():
     env["PYTHONPATH"] = os.pathsep.join(
         [pythonpath, env.get("PYTHONPATH", "")]
     ).strip(os.pathsep)
-    return subprocess.check_output(
-        [sys.executable, "-c", code],
-        env=env,
-        text=True,
-    ).strip()
+    try:
+      return subprocess.check_output(
+          [sys.executable, "-c", code],
+          env=env,
+          text=True,
+          stderr=subprocess.STDOUT,
+      ).strip()
+    except subprocess.CalledProcessError as e:
+      sys.stderr.write(f"\n--- SUBPROCESS FAILED ---\nOUTPUT:\n{e.output}\n-------------------------\n")
+      raise
 
   assert _run_with_seed("0") == _run_with_seed("1")
 

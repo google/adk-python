@@ -14,4 +14,26 @@
 
 from __future__ import annotations
 
-from rouge_score import rouge_scorer
+import re
+import sys
+from typing import Any
+
+# NLTK (a subdependency of rouge-score) attempts to import 'regex'.
+# If 'regex' is not installed or blocked from cwd on CI runners, provide
+# a fallback wrapper that delegates to standard 're' so NLTK operates.
+if "regex" not in sys.modules:
+  try:
+    import regex  # type: ignore # pylint: disable=g-import-not-at-top
+  except Exception:
+
+    class _RegexFallback:
+
+      def __getattr__(self, name: str) -> Any:
+        return getattr(re, name, 0)
+
+    sys.modules["regex"] = _RegexFallback()  # type: ignore
+
+try:
+  from rouge_score import rouge_scorer
+except Exception:
+  rouge_scorer = None

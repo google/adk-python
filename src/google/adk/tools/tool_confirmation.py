@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from typing import cast
 from typing import Optional
 
 from pydantic import alias_generators
@@ -52,5 +53,7 @@ class ToolConfirmation(BaseModel):
     ``{'response': json_string}`` wrapper format.
     """
     if response and len(response) == 1 and "response" in response:
-      return cls.model_validate(json.loads(response["response"]))
-    return cls.model_validate(response)
+      return cast(
+          ToolConfirmation, cls.model_validate(json.loads(response["response"]))
+      )
+    return cast(ToolConfirmation, cls.model_validate(response))

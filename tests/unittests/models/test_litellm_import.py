@@ -34,22 +34,26 @@ def test_importing_models_does_not_import_litellm_or_set_mode():
   env = _subprocess_env()
   env.pop("LITELLM_MODE", None)
 
-  result = subprocess.run(
-      [
-          sys.executable,
-          "-c",
-          (
-              "import os, sys\n"
-              "import google.adk.models\n"
-              "print('litellm' in sys.modules)\n"
-              "print(os.environ.get('LITELLM_MODE'))\n"
-          ),
-      ],
-      check=True,
-      capture_output=True,
-      text=True,
-      env=env,
-  )
+  try:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, sys\n"
+                "import google.adk.models\n"
+                "print('litellm' in sys.modules)\n"
+                "print(os.environ.get('LITELLM_MODE'))\n"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+  except subprocess.CalledProcessError as e:
+    sys.stderr.write(f"\n--- SUBPROCESS FAILED ---\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}\n-------------------------\n")
+    raise
   stdout_lines = result.stdout.strip().splitlines()
   assert stdout_lines == ["False", "None"]
 
