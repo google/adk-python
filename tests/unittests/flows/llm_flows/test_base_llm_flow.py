@@ -1242,9 +1242,20 @@ async def test_receive_from_model_author_attribution():
   assert events[2].author == 'user'
 
 
+@pytest.mark.parametrize(
+    ('function_response_names', 'should_transfer'),
+    [
+        (('set_state', 'transfer_to_agent'), True),
+        (('transfer_to_agent', 'set_state'), True),
+        (('transfer_to_agent',), True),
+        (('set_state', 'other_tool'), False),
+    ],
+)
 @pytest.mark.asyncio
-async def test_run_live_clears_resumption_handle_on_transfer():
-  """Test that run_live clears session resumption handles when transferring to another agent."""
+async def test_run_live_transfers_regardless_of_function_response_order(
+    function_response_names: tuple[str, ...], should_transfer: bool
+):
+  """Live transfer finds its response regardless of parallel result order."""
 
   agent = Agent(name='test_agent')
   invocation_context = await testing_utils.create_invocation_context(
@@ -1262,32 +1273,25 @@ async def test_run_live_clears_resumption_handle_on_transfer():
 
   flow = BaseLlmFlowForTesting()
 
-  # Mock _receive_from_model to yield an event that triggers transfer
-  part = types.Part(
-      function_response=types.FunctionResponse(name='transfer_to_agent')
-  )
-  content = types.Content(parts=[part])
+  parts = [
+      types.Part(
+          function_response=types.FunctionResponse(name=function_response_name)
+      )
+      for function_response_name in function_response_names
+  ]
+  content = types.Content(parts=parts)
   transfer_event = Event(
       id=Event.new_id(),
       invocation_id=invocation_context.invocation_id,
       author=agent.name,
   )
   transfer_event.content = content
-  transfer_event.actions = mock.Mock()
-  transfer_event.actions.transfer_to_agent = 'sub_agent'
-
-  class StopTest(Exception):
-    pass
-
-  receive_call_count = 0
+  transfer_event.actions.transfer_to_agent = (
+      'sub_agent' if should_transfer else None
+  )
 
   async def mock_receive_from_model(*args, **kwargs):
-    nonlocal receive_call_count
-    receive_call_count += 1
-    if receive_call_count == 1:
-      yield transfer_event
-    else:
-      raise StopTest()
+    yield transfer_event
 
   flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
 
@@ -1315,11 +1319,11 @@ async def test_run_live_clears_resumption_handle_on_transfer():
     mock_connection = mock.AsyncMock()
     mock_connect.return_value.__aenter__.return_value = mock_connection
 
-    try:
-      async for _ in flow.run_live(invocation_context):
-        pass
-    except StopTest:
+    async for _ in flow.run_live(invocation_context):
       pass
+
+  assert mock_sub_agent.run_live.call_count == int(should_transfer)
+  assert mock_connection.close.await_count == int(should_transfer)
 
   # Verify that parent's resumption handles were not cleared
   assert invocation_context.live_session_resumption_handle == 'test_handle'
