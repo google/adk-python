@@ -678,12 +678,9 @@ class BaseLlmFlow(ABC):
                 # the same function response. By handling agent transfer here,
                 # we ensure that only child agent processes its own function
                 # responses after the transfer.
-                if (
-                    event.content
-                    and event.content.parts
-                    and event.content.parts[0].function_response
-                    and event.content.parts[0].function_response.name
-                    == 'transfer_to_agent'
+                if any(
+                    function_response.name == 'transfer_to_agent'
+                    for function_response in event.get_function_responses()
                 ):
                   await asyncio.sleep(DEFAULT_TRANSFER_AGENT_DELAY)
                   # cancel the tasks that belongs to the closed connection.
