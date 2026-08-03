@@ -66,6 +66,21 @@ https://google.github.io/adk-docs/agents/models/google-gemini/#error-code-429-re
 """
 
 
+def _remove_old_thought_signatures(contents: list[types.Content]) -> None:
+  """Keeps only the latest thought signature in Gemini request contents."""
+  latest_signature_seen = False
+  for content in reversed(contents):
+    if not content.parts:
+      continue
+    for part in reversed(content.parts):
+      if part.thought_signature is None:
+        continue
+      if latest_signature_seen:
+        part.thought_signature = None
+      else:
+        latest_signature_seen = True
+
+
 class _ResourceExhaustedError(ClientError):
   """Represents a resources exhausted error received from the Model."""
 
@@ -198,6 +213,7 @@ class Gemini(BaseLlm):
     """
     await self._preprocess_request(llm_request)
     self._maybe_append_user_content(llm_request)
+    _remove_old_thought_signatures(llm_request.contents)
 
     # Handle context caching if configured
     cache_metadata = None

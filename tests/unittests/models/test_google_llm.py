@@ -397,6 +397,53 @@ async def test_generate_content_async(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_keeps_only_latest_thought_signature(
+    gemini_llm, generate_content_response
+):
+  """Gemini requests keep only the newest thought signature."""
+
+  def _function_call_part(name, signature):
+    return Part(
+        function_call=types.FunctionCall(name=name, args={}),
+        thought_signature=signature,
+    )
+
+  old_part = _function_call_part("first_tool", b"old")
+  newer_part = _function_call_part("second_tool", b"newer")
+  latest_part = _function_call_part("third_tool", b"latest")
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash",
+      contents=[
+          Content(role="model", parts=[old_part]),
+          Content(role="user", parts=[Part.from_text(text="tool result")]),
+          Content(role="model", parts=[newer_part, latest_part]),
+      ],
+  )
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    responses = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert len(responses) == 1
+  request_contents = mock_client.aio.models.generate_content.call_args.kwargs[
+      "contents"
+  ]
+  assert request_contents[0].parts[0].thought_signature is None
+  assert request_contents[2].parts[0].thought_signature is None
+  assert request_contents[2].parts[1].thought_signature == b"latest"
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream(gemini_llm, llm_request):
   with mock.patch.object(gemini_llm, "api_client") as mock_client:
     mock_responses = [
