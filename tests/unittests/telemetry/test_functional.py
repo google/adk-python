@@ -72,6 +72,10 @@ async def test_telemetry_schema(
       await run_agent_scenario(
           build_test_runner(model_exception=case.model_exception)
       )
+  elif case.tool_fails:
+    # The tool raises while the model is fine; the scenario must propagate it.
+    with pytest.raises(ValueError, match="This tool always fails"):
+      await run_agent_scenario(build_test_runner(failing=True))
   else:
     await run_agent_scenario(build_test_runner())
 

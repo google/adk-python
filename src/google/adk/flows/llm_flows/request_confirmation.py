@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 from typing import AsyncGenerator
+from typing import cast
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -33,7 +34,7 @@ from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
-  pass
+  from ...agents.llm_agent import LlmAgent
 
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -323,7 +324,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     if agent is not None and hasattr(agent, "canonical_tools"):
       tools_dict = {
           tool.name: tool
-          for tool in await agent.canonical_tools(
+          for tool in await cast("LlmAgent", agent).canonical_tools(
               ReadonlyContext(invocation_context)
           )
       }

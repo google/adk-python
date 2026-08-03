@@ -33,6 +33,7 @@ from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
   from .._base_node import BaseNode
+  from .._graph import RouteValue
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -45,7 +46,7 @@ class _ChildScanState:
 
   run_id: str | None = None
   output: Any = None
-  route: str | None = None
+  route: RouteValue | list[RouteValue] | None = None
   branch: str | None = None
   isolation_scope: str | None = None
   transfer_to_agent: str | None = None
@@ -97,13 +98,14 @@ def _extract_schema_from_event(event: Event, interrupt_id: str) -> Any | None:
         fc
         and fc.name == REQUEST_INPUT_FUNCTION_CALL_NAME
         and fc.id == interrupt_id
+        and fc.args is not None
     ):
       return fc.args.get('response_schema')
 
   return None
 
 
-def _process_rehydrated_output(node: BaseNode, output: Any) -> Any:
+def _process_rehydrated_output(node: BaseNode, output: object) -> object:
   """Process rehydrated output from event.content using the node's output schema.
 
   Protects type consistency between fresh runs and rehydrated runs by
@@ -125,7 +127,7 @@ def _process_rehydrated_output(node: BaseNode, output: Any) -> Any:
     if node.output_schema is str:
       return text
     try:
-      validated = TypeAdapter(node.output_schema).validate_json(text)
+      validated: Any = TypeAdapter[Any](node.output_schema).validate_json(text)
       return node._to_serializable(validated)
     except ValidationError as e:
       # Fallback to unvalidated JSON parsing on validation failure
@@ -146,7 +148,7 @@ def _process_rehydrated_output(node: BaseNode, output: Any) -> Any:
     return text
 
 
-def _validate_resume_response(response_data: Any, schema: Any) -> Any:
+def _validate_resume_response(response_data: object, schema: object) -> object:
   """Validates and coerces resume response data against a schema.
 
   Args:
@@ -164,7 +166,7 @@ def _validate_resume_response(response_data: Any, schema: Any) -> Any:
   if isinstance(schema, dict):
     type_str = schema.get('type')
 
-    type_mapping = {
+    type_mapping: dict[str, type[Any]] = {
         'integer': int,
         'number': float,
         'string': str,
@@ -180,7 +182,7 @@ def _validate_resume_response(response_data: Any, schema: Any) -> Any:
       properties = schema['properties']
       required = schema.get('required', [])
 
-      fields = {}
+      fields: dict[str, Any] = {}
       for prop_name, prop_schema in properties.items():
         prop_type_str = prop_schema.get('type')
         prop_type = (
@@ -193,10 +195,12 @@ def _validate_resume_response(response_data: Any, schema: Any) -> Any:
           fields[prop_name] = (
               prop_type | None,
               None,
-          )  # type: ignore[assignment]
+          )
 
       try:
-        DynamicModel = create_model('DynamicModel', **fields)  # pylint: disable=invalid-name
+        DynamicModel = create_model(  # pylint: disable=invalid-name
+            'DynamicModel', **fields
+        )
         # Validate and return as dict
         model_instance = TypeAdapter(DynamicModel).validate_python(
             response_data

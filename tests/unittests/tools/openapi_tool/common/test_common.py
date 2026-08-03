@@ -392,6 +392,25 @@ class TestPydocHelper:
         == expected_doc
     )
 
+  def test_generate_return_doc_non_numeric_status_keys(self):
+    # 'default' (and range codes like '2XX') are valid OpenAPI response keys
+    # and must not crash return-doc generation.
+    responses = {
+        '200': {
+            'description': 'Successful response',
+            'content': {'application/json': {'schema': {'type': 'string'}}},
+        },
+        'default': {
+            'description': 'Unexpected error',
+            'content': {'application/json': {'schema': {'type': 'object'}}},
+        },
+    }
+    expected_doc = 'Returns (str): Successful response'
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == expected_doc
+    )
+
   def test_generate_return_doc_contentful_response(self):
     responses = {
         '200': {'description': 'No content response'},
@@ -402,6 +421,54 @@ class TestPydocHelper:
         '400': {'description': 'Bad request'},
     }
     expected_doc = 'Returns (str): 201 response'
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == expected_doc
+    )
+
+  def test_generate_return_doc_prefers_json_over_other_content_types(self):
+    responses = {
+        '200': {
+            'description': 'Successful response',
+            'content': {
+                'application/xml': {'schema': {'type': 'integer'}},
+                'application/json': {'schema': {'type': 'string'}},
+            },
+        }
+    }
+    expected_doc = 'Returns (str): Successful response'
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == expected_doc
+    )
+
+  def test_generate_return_doc_falls_back_to_first_content_type(self):
+    responses = {
+        '200': {
+            'description': 'Successful response',
+            'content': {
+                'application/xml': {'schema': {'type': 'integer'}},
+                'text/plain': {'schema': {'type': 'string'}},
+            },
+        }
+    }
+    expected_doc = 'Returns (int): Successful response'
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == expected_doc
+    )
+
+  def test_generate_return_doc_content_type_without_schema(self):
+    responses = {
+        '200': {
+            'description': 'Successful response',
+            'content': {
+                'application/json': {},
+                'application/xml': {'schema': {'type': 'integer'}},
+            },
+        }
+    }
+    expected_doc = 'Returns (Any): Successful response'
     assert (
         PydocHelper.generate_return_doc(dict_to_responses(responses))
         == expected_doc

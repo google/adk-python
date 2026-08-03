@@ -79,6 +79,21 @@ class TestAudioCacheManager:
     assert isinstance(entry.timestamp, float)
 
   @pytest.mark.asyncio
+  async def test_cache_audio_rejects_missing_byte_data(self):
+    invocation_context = await testing_utils.create_invocation_context(
+        testing_utils.create_test_agent()
+    )
+
+    with pytest.raises(ValueError, match='must contain byte data'):
+      self.manager.cache_audio(
+          invocation_context,
+          types.Blob(data=None, mime_type='audio/pcm'),
+          'input',
+      )
+
+    assert invocation_context.input_realtime_cache is None
+
+  @pytest.mark.asyncio
   async def test_cache_output_audio(self):
     """Test caching output audio data."""
     invocation_context = await testing_utils.create_invocation_context(

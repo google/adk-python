@@ -17,12 +17,13 @@ from __future__ import annotations
 import atexit
 import logging
 import os
-from typing import Optional
+from typing import Any
 
 import docker
 from docker.client import DockerClient
 from docker.models.containers import Container
 from pydantic import Field
+from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
@@ -126,18 +127,18 @@ class ContainerCodeExecutor(BaseCodeExecutor):
       requests and you trust it.
   """
 
-  base_url: Optional[str] = None
+  base_url: str | None = None
   """
   Optional. The base url of the user hosted Docker client.
   """
 
-  image: str = None
+  image: str = DEFAULT_IMAGE_TAG
   """
   The tag of the predefined image or custom image to run on the container.
   Either docker_path or image must be set.
   """
 
-  docker_path: str = None
+  docker_path: str | None = None
   """
   The path to the directory containing the Dockerfile.
   If set, build the image from the dockerfile path instead of using the
@@ -179,16 +180,16 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   # optimize_data_file.
   optimize_data_file: bool = Field(default=False, frozen=True, exclude=True)
 
-  _client: DockerClient = None
-  _container: Container = None
+  _client: DockerClient = PrivateAttr()
+  _container: Container = PrivateAttr()
 
   def __init__(
       self,
-      base_url: Optional[str] = None,
-      image: Optional[str] = None,
-      docker_path: Optional[str] = None,
-      **data,
-  ):
+      base_url: str | None = None,
+      image: str | None = None,
+      docker_path: str | None = None,
+      **data: Any,
+  ) -> None:
     """Initializes the ContainerCodeExecutor.
 
     Args:
@@ -272,7 +273,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
         output_files=[],
     )
 
-  def _build_docker_image(self):
+  def _build_docker_image(self) -> None:
     """Builds the Docker image."""
     if not self.docker_path:
       raise ValueError('Docker path is not set.')
@@ -287,17 +288,14 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     )
     logger.info('Docker image: %s built.', self.image)
 
-  def _verify_python_installation(self):
+  def _verify_python_installation(self) -> None:
     """Verifies the container has python3 installed."""
     exec_result = self._container.exec_run(['which', 'python3'])
     if exec_result.exit_code != 0:
       raise ValueError('python3 is not installed in the container.')
 
-  def __init_container(self):
+  def __init_container(self) -> None:
     """Initializes the container."""
-    if not self._client:
-      raise RuntimeError('Docker client is not initialized.')
-
     if self.docker_path:
       self._build_docker_image()
 
@@ -319,11 +317,8 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     # Verify the container is able to run python3.
     self._verify_python_installation()
 
-  def __cleanup_container(self):
+  def __cleanup_container(self) -> None:
     """Closes the container on exit."""
-    if not self._container:
-      return
-
     logger.info('[Cleanup] Stopping the container...')
     self._container.stop()
     self._container.remove()

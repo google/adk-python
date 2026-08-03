@@ -51,7 +51,7 @@ class InMemoryMemoryService(BaseMemoryService):
   development only.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._lock = threading.Lock()
 
     self._session_events: dict[str, dict[str, list[Event]]] = {}

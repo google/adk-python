@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from ...events.event import Event
 from ...models.cache_metadata import CacheMetadata
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import require_agent_name
 
 if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
@@ -53,7 +54,7 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
     Yields:
         Event: No events are yielded by this processor
     """
-    agent = invocation_context.agent
+    agent_name = require_agent_name(invocation_context)
 
     # Return early if no cache config
     if not invocation_context.context_cache_config:
@@ -65,7 +66,7 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
     # Find latest cache metadata and previous token count from session events
     latest_cache_metadata, previous_token_count = (
         self._find_cache_info_from_events(
-            invocation_context, agent.name, invocation_context.invocation_id
+            invocation_context, agent_name, invocation_context.invocation_id
         )
     )
 
@@ -73,7 +74,7 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
       llm_request.cache_metadata = latest_cache_metadata
       logger.debug(
           'Found cache metadata for agent %s: %s',
-          agent.name,
+          agent_name,
           latest_cache_metadata,
       )
 
@@ -81,11 +82,11 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
       llm_request.cacheable_contents_token_count = previous_token_count
       logger.debug(
           'Found previous prompt token count for agent %s: %d',
-          agent.name,
+          agent_name,
           previous_token_count,
       )
 
-    logger.debug('Context caching enabled for agent %s', agent.name)
+    logger.debug('Context caching enabled for agent %s', agent_name)
 
     # This processor yields no events
     return
@@ -132,11 +133,14 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
             and event.invocation_id != current_invocation_id
             and event.cache_metadata.cache_name is not None
         ):
+          invocations_used = event.cache_metadata.invocations_used
+          if invocations_used is None:
+            raise RuntimeError(
+                'Active cache metadata must include invocations_used.'
+            )
           # Different invocation with active cache - increment invocations_used
           cache_metadata = event.cache_metadata.model_copy(
-              update={
-                  'invocations_used': event.cache_metadata.invocations_used + 1
-              }
+              update={'invocations_used': invocations_used + 1}
           )
         else:
           # Same invocation or no active cache - return copy as-is

@@ -17,9 +17,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from collections.abc import Mapping
 from contextlib import aclosing
 from typing import Any
-from typing import Optional
+from typing import cast
+from typing import TYPE_CHECKING
 
 from google.genai import types
 
@@ -30,8 +32,13 @@ from ..events.event import Event
 from ..utils._schema_utils import validate_schema
 from ..utils.content_utils import to_user_content
 
+if TYPE_CHECKING:
+  from ..agents.llm_agent import LlmAgent
+  from ..agents.llm_agent import ToolUnion
+  from ..sessions.session import Session
 
-def _extract_finish_task_fc(event: Event) -> Optional[types.FunctionCall]:
+
+def _extract_finish_task_fc(event: Event) -> types.FunctionCall | None:
   """Returns the finish_task FC in this event, or None."""
   for fc in event.get_function_calls():
     if fc.name == _FINISH_TASK_FC_NAME:
@@ -53,7 +60,7 @@ def _is_finish_task_success_fr(event: Event) -> bool:
 
 
 def _extract_task_delegation_fcs(
-    event: Event, tools_dict: dict
+    event: Event, tools_dict: Mapping[str, ToolUnion]
 ) -> list[types.FunctionCall]:
   """Return task-delegation FCs from this event.
 
@@ -65,13 +72,15 @@ def _extract_task_delegation_fcs(
       fc
       for fc in event.get_function_calls()
       if fc.id
-      and fc.name in tools_dict
-      and isinstance(tools_dict[fc.name], _TaskAgentTool)
+      and fc.name is not None
+      and isinstance(tools_dict.get(fc.name), _TaskAgentTool)
   ]
 
 
 def _find_unresolved_task_delegations(
-    session, owner: str, tools_dict: dict
+    session: Session,
+    owner: str,
+    tools_dict: Mapping[str, ToolUnion],
 ) -> list[types.FunctionCall]:
   """Walk session events; find task FCs from ``owner`` without matching FRs.
 
@@ -96,11 +105,12 @@ def _find_unresolved_task_delegations(
       continue
     for part in event.content.parts:
       fc = part.function_call
+      tool_name = fc.name if fc is not None else None
       if (
           fc
           and fc.id
-          and fc.name in tools_dict
-          and isinstance(tools_dict[fc.name], _TaskAgentTool)
+          and tool_name is not None
+          and isinstance(tools_dict.get(tool_name), _TaskAgentTool)
       ):
         fc_by_id[fc.id] = fc
       fr = part.function_response
@@ -109,30 +119,36 @@ def _find_unresolved_task_delegations(
   return [fc for fc_id, fc in fc_by_id.items() if fc_id not in fr_ids]
 
 
-def _find_finish_task_tool(agent: Any) -> Any:
+def _agent_tools(agent: LlmAgent) -> list[ToolUnion]:
+  """Returns ``agent.tools``, tolerating agents that do not define it."""
+  tools: list[ToolUnion] = getattr(agent, 'tools', None) or []
+  return tools
+
+
+def _find_finish_task_tool(agent: LlmAgent) -> ToolUnion | None:
   """Return the FinishTaskTool instance attached to a task-mode agent."""
-  for tool in getattr(agent, 'tools', []) or []:
+  for tool in _agent_tools(agent):
     if getattr(tool, 'name', None) == _FINISH_TASK_FC_NAME:
       return tool
   return None
 
 
-def _safe_canonical_tools_dict(agent: Any) -> dict:
+def _safe_canonical_tools_dict(agent: LlmAgent) -> dict[str, ToolUnion]:
   """Build a name→tool map from ``agent.tools``.
 
   Used by the chat wrapper to identify task-delegation FCs by tool
   name without resolving the agent's full canonical-tools pipeline.
   """
-  out: dict = {}
-  for tool in getattr(agent, 'tools', []) or []:
+  out: dict[str, ToolUnion] = {}
+  for tool in _agent_tools(agent):
     name = getattr(tool, 'name', None)
-    if name:
+    if isinstance(name, str) and name:
       out[name] = tool
   return out
 
 
 async def _dispatch_task_fc(
-    parent_agent: Any, fc: types.FunctionCall, ctx: Context
+    parent_agent: LlmAgent, fc: types.FunctionCall, ctx: Context
 ) -> Any:
   """Dispatch a task-delegation FC via ``ctx.run_node`` and return the output.
 
@@ -142,13 +158,15 @@ async def _dispatch_task_fc(
   task's own function calls.  ``isolation_scope`` remains keyed by the
   FC id to keep task history scoped independently of branch ancestry.
   """
+  if fc.name is None or fc.id is None:
+    raise ValueError('Task delegation calls require both a name and an ID.')
   target_agent = parent_agent.root_agent.find_agent(fc.name)
   if target_agent is None:
     raise ValueError(f'Task target agent {fc.name!r} not found.')
   from .utils._workflow_graph_utils import build_node
 
   wrapped_target = build_node(target_agent)
-  wrapped_target.parent_agent = target_agent.parent_agent
+  cast(Any, wrapped_target).parent_agent = target_agent.parent_agent
   return await ctx.run_node(
       wrapped_target,
       node_input=fc.args,
@@ -184,7 +202,7 @@ def _synthesize_task_fr_event(fc: types.FunctionCall, output: Any) -> Event:
   )
 
 
-def prepare_llm_agent_context(agent: Any, ctx: Context) -> Context:
+def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   """Prepares the context for running LlmAgent as a node."""
   if agent.mode != 'single_turn':
     return ctx
@@ -204,7 +222,9 @@ def prepare_llm_agent_context(agent: Any, ctx: Context) -> Context:
   return agent_ctx
 
 
-def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
+def prepare_llm_agent_input(
+    agent: LlmAgent, ctx: Context, node_input: object
+) -> None:
   """Prepares the input for running LlmAgent as a node.
 
   For ``single_turn`` mode, append a user-role event with the input
@@ -237,7 +257,9 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   ctx.session.events.append(user_event)
 
 
-def process_llm_agent_output(agent: Any, ctx: Context, event: Event) -> None:
+def process_llm_agent_output(
+    agent: LlmAgent, ctx: Context, event: Event
+) -> None:
   """Processes the output of LlmAgent run as a node."""
   if (
       event.get_function_calls()
@@ -269,7 +291,7 @@ def process_llm_agent_output(agent: Any, ctx: Context, event: Event) -> None:
 
 
 async def run_llm_agent_as_node(
-    agent: Any,
+    agent: LlmAgent,
     *,
     ctx: Context,
     node_input: Any,
@@ -293,7 +315,7 @@ async def run_llm_agent_as_node(
   prepare_llm_agent_input(agent, agent_ctx, node_input)
 
   ic = agent_ctx.get_invocation_context()
-  update = {'agent': agent}
+  update: dict[str, object] = {'agent': agent}
   # thread the agent's isolation_scope into the
   # InvocationContext so the content processor can filter session
   # events to this agent's scope only.  Only mode=task and
@@ -410,7 +432,7 @@ async def run_llm_agent_as_node(
   # top level of args. We extract via the FinishTaskTool's
   # `_wrapper_key` when accessible, falling back to the full args.
   finish_tool = _find_finish_task_tool(agent)
-  pending_fc_args: Optional[dict] = None
+  pending_fc_args: dict[str, Any] | None = None
   run_method = agent.run_live(ic) if is_live else agent.run_async(ic)
   async with aclosing(run_method) as run_iter:
     async for event in run_iter:
@@ -429,8 +451,9 @@ async def run_llm_agent_as_node(
           event.output = pending_fc_args[wrapper_key]
         else:
           event.output = pending_fc_args
-        if getattr(agent, 'output_key', None) and event.output is not None:
-          ctx.actions.state_delta[agent.output_key] = event.output
+        output_key = getattr(agent, 'output_key', None)
+        if output_key and event.output is not None:
+          ctx.actions.state_delta[output_key] = event.output
         yield event
         return
 

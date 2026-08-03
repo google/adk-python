@@ -25,7 +25,7 @@ from .._graph import Edge
 
 
 def _detect_unconditional_cycles(
-    edges: list[Edge], node_names: Set[str]
+    edges: list[Edge], node_names: set[str]
 ) -> None:
   """Detects unconditional cycles in the graph."""
   unconditional_adj: dict[str, list[str]] = {name: [] for name in node_names}

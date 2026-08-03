@@ -18,7 +18,7 @@ from google.genai import types
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
-from ..models import LlmRequest
+from ..models.llm_request import LlmRequest
 from ..utils.model_name_utils import is_gemini_eap_or_2_or_above
 from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_code_executor import BaseCodeExecutor
@@ -39,7 +39,10 @@ class BuiltInCodeExecutor(BaseCodeExecutor):
       invocation_context: InvocationContext,
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
-    pass
+    raise NotImplementedError(
+        "BuiltInCodeExecutor delegates execution to the model and cannot be"
+        " invoked directly."
+    )
 
   def process_llm_request(self, llm_request: LlmRequest) -> None:
     """Pre-process the LLM request for Gemini 2.0+ models to use the code execution tool."""

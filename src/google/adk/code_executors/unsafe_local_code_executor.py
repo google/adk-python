@@ -41,7 +41,9 @@ _TERMINATE_GRACE_SECONDS = 5
 
 
 def _execute_in_process(
-    code: str, globals_: dict[str, Any], result_queue: multiprocessing.Queue
+    code: str,
+    globals_: dict[str, Any],
+    result_queue: multiprocessing.Queue[tuple[str, str | None]],
 ) -> None:
   """Executes code in a separate process and puts result in queue."""
   # Detach into a new session/process group before running anything, so that a
@@ -125,7 +127,7 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
   # optimize_data_file.
   optimize_data_file: bool = Field(default=False, frozen=True, exclude=True)
 
-  def __init__(self, **data):
+  def __init__(self, **data: Any) -> None:
     """Initializes the UnsafeLocalCodeExecutor."""
     if 'stateful' in data and data['stateful']:
       raise ValueError('Cannot set `stateful=True` in UnsafeLocalCodeExecutor.')
@@ -143,11 +145,11 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
   ) -> CodeExecutionResult:
     logger.debug('Executing code:\n```\n%s\n```', code_execution_input.code)
     # Execute the code.
-    globals_ = {}
+    globals_: dict[str, Any] = {}
     _prepare_globals(code_execution_input.code, globals_)
 
     ctx = multiprocessing.get_context('spawn')
-    result_queue = ctx.Queue()
+    result_queue: multiprocessing.Queue[tuple[str, str | None]] = ctx.Queue()
     process = ctx.Process(
         target=_execute_in_process,
         args=(code_execution_input.code, globals_, result_queue),

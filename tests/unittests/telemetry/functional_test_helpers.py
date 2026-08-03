@@ -162,10 +162,15 @@ class SpanDigest:
   In addition to the span's own name + attributes + child spans, each
   digest also carries the ``LogDigest`` records that were emitted while
   the span was the active span (matched by ``log_record.span_id``).
+
+  ``status`` is the span's ``StatusCode`` name, so a tree that expects a
+  span to be marked failed says so explicitly. It defaults to ``UNSET``,
+  which is what a span that nothing marked carries.
   """
 
   name: str
   attributes: dict[str, AttributeValue]
+  status: str = "UNSET"
   children: list[SpanDigest] = field(default_factory=list)
   logs: list[LogDigest] = field(default_factory=list)
 
@@ -187,7 +192,11 @@ class SpanDigest:
         determinized_attributes[attr_key] = _normalize(json.loads(attr_val))
       else:
         determinized_attributes[attr_key] = _normalize(attr_val)
-    return cls(name=span.name, attributes=determinized_attributes)
+    return cls(
+        name=span.name,
+        attributes=determinized_attributes,
+        status=span.status.status_code.name,
+    )
 
   @classmethod
   def build(
@@ -647,6 +656,9 @@ class FunctionalTestCase:
   # When set, the mock model raises this instead of responding, and the
   # scenario is expected to propagate it (inference-failure telemetry path).
   model_exception: Exception | None = None
+  # When true, the tool raises instead of returning, and the scenario is
+  # expected to propagate it (tool-failure telemetry path).
+  tool_fails: bool = False
 
   def apply_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
     """Applies the per-case env vars for semconv + content capture.

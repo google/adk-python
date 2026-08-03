@@ -202,6 +202,111 @@ def test_cli_telemetry_captures_subcommand_flags(
     assert "<app_name>" in source["command_run"]["flags"]
 
 
+def test_cli_telemetry_skips_when_already_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should skip recording if telemetry_recorded is set in context metadata."""
+
+  # Mock telemetry consent to True
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  # Redirect metrics queue to temporary path
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  # Create a dummy command that manually sets the telemetry_recorded flag
+  @click.command("dummy_web")
+  @click.pass_context
+  def dummy_web_cmd(ctx):
+    # Simulate what adk web does in its lifespan
+    start_time = ctx.meta.get("telemetry_start_time", 0)
+
+    from google.adk.cli._telemetry._metrics_collector import MetricsCollector
+
+    collector = MetricsCollector()
+    collector.record_command_run(
+        command="dummy_web",
+        exit_code=0,
+        duration_ms=100,
+        exception_type="",
+    )
+    ctx.meta["telemetry_recorded"] = True
+
+  # Attach it to a new group that uses TelemetryGroup
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_cmd)
+
+  runner = CliRunner()
+  result = runner.invoke(test_group, ["dummy_web"])
+  assert result.exit_code == 0
+
+  # Ensure only ONE record is in the metrics queue
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web"
+    assert source["command_run"]["duration_ms"] == 100
+    assert source["command_run"]["exit_code"] == 0
+
+
+def test_cli_telemetry_records_early_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should record an exception if telemetry_recorded is not set."""
+
+  # Mock telemetry consent to True
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  # Redirect metrics queue to temporary path
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  # Create a dummy command that throws before setting the telemetry_recorded flag
+  @click.command("dummy_web_crash")
+  @click.pass_context
+  def dummy_web_crash_cmd(ctx):
+    raise KeyboardInterrupt()
+
+  # Attach it to a new group that uses TelemetryGroup
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_crash_cmd)
+
+  runner = CliRunner()
+  result = runner.invoke(test_group, ["dummy_web_crash"])
+
+  # Ensure the interrupt was logged by the wrapper
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web_crash"
+    assert source["command_run"]["exit_code"] == 1
+    assert source["command_run"]["exception_type"] == "KeyboardInterrupt"
+
+
 # cli run
 @pytest.mark.parametrize(
     "cli_args,expected_session_uri,expected_artifact_uri,expected_memory_uri",

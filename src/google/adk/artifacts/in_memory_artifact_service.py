@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from typing import Any
+from typing import cast
 from typing import Optional
 from typing import Union
 
@@ -129,14 +130,14 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       artifact_version.mime_type = artifact.inline_data.mime_type
     elif artifact.text is not None:
       artifact_version.mime_type = "text/plain"
-    elif artifact.file_data is not None:
+    elif (file_data := artifact.file_data) is not None:
       if artifact_util.is_artifact_ref(artifact):
         parsed_uri = artifact_util.parse_artifact_uri(
-            artifact.file_data.file_uri
+            cast(str, file_data.file_uri)
         )
         if not parsed_uri:
           raise InputValidationError(
-              f"Invalid artifact reference URI: {artifact.file_data.file_uri}"
+              f"Invalid artifact reference URI: {file_data.file_uri}"
           )
         artifact_util.validate_artifact_reference_scope(
             app_name=app_name,
@@ -147,7 +148,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
         # If it's a valid artifact URI, we store the artifact part as-is.
         # And we don't know the mime type until we load it.
       else:
-        artifact_version.mime_type = artifact.file_data.mime_type
+        artifact_version.mime_type = file_data.mime_type
     else:
       raise InputValidationError("Not supported artifact type.")
 
@@ -184,13 +185,14 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     # Resolve artifact reference if needed.
     artifact_data = artifact_entry.data
     if artifact_util.is_artifact_ref(artifact_data):
+      file_data = artifact_data.file_data
+      assert file_data is not None
       parsed_uri = artifact_util.parse_artifact_uri(
-          artifact_data.file_data.file_uri
+          cast(str, file_data.file_uri)
       )
       if not parsed_uri:
         raise InputValidationError(
-            "Invalid artifact reference URI:"
-            f" {artifact_data.file_data.file_uri}"
+            f"Invalid artifact reference URI: {file_data.file_uri}"
         )
       artifact_util.validate_artifact_reference_scope(
           app_name=app_name,

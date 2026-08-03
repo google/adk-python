@@ -374,11 +374,6 @@ def _extract_tool_declarations(
     # The parameter schema lives on the tool's FunctionDeclaration, which some
     # tools (e.g. built-in tools) do not provide. Resolve defensively so a
     # single failing tool does not discard the whole tools list.
-    #
-    # Note: FunctionTool._get_declaration() rebuilds the declaration from the
-    # function signature on each call (no caching), so this repeats work the
-    # framework already did when assembling the request. Acceptable for typical
-    # toolsets; revisit with a cache if it shows up on the hot path.
     declaration = None
     try:
       get_declaration = getattr(tool, "_get_declaration", None)
