@@ -57,6 +57,7 @@ from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _safe_json_serialize
 from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
+from google.adk.models.lite_llm import _strip_thought_signature_from_tool_call_id
 from google.adk.models.lite_llm import _THOUGHT_SIGNATURE_SEPARATOR
 from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
@@ -2934,6 +2935,98 @@ def test_message_to_generate_content_response_no_thought_signature():
   response = _message_to_generate_content_response(message)
   fc_part = response.content.parts[0]
   assert fc_part.function_call.name == "plain_tool"
+  assert fc_part.thought_signature is None
+
+
+def test_message_to_generate_content_response_strips_thought_signature_from_id():
+  """function_call.id is cleaned when the signature is embedded in the ID.
+
+  Regression test: when the thought_signature is only available embedded in
+  the tool call ID (the __thought__ fallback), the original code assigned the
+  entire unsplit ID to function_call.id, corrupting session history and
+  breaking every subsequent turn once the malformed ID is replayed as a
+  tool_call_id.
+  """
+  sig_b64 = base64.b64encode(b"embedded_sig").decode("utf-8")
+  embedded_id = f"call_789{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}"
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=embedded_id,
+              function=Function(
+                  name="test_function",
+                  arguments='{"test_arg": "test_value"}',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  # The ID is stripped back to the clean, original tool call ID ...
+  assert fc_part.function_call.id == "call_789"
+  assert _THOUGHT_SIGNATURE_SEPARATOR not in fc_part.function_call.id
+  # ... and the signature is still preserved separately.
+  assert fc_part.thought_signature == b"embedded_sig"
+
+
+def test_strip_thought_signature_from_tool_call_id_removes_suffix():
+  """The embedded __thought__ suffix is removed from the ID."""
+  sig_b64 = base64.b64encode(b"embedded_sig").decode("utf-8")
+  tool_call_id = f"call_789{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}"
+  assert _strip_thought_signature_from_tool_call_id(tool_call_id) == "call_789"
+
+
+def test_strip_thought_signature_from_tool_call_id_leaves_plain_id():
+  """A plain ID with no separator is returned unchanged."""
+  assert _strip_thought_signature_from_tool_call_id("call_plain") == "call_plain"
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_strip_thought_signature_from_tool_call_id_handles_empty(value):
+  """None and empty IDs are returned unchanged."""
+  assert _strip_thought_signature_from_tool_call_id(value) == value
+
+
+def test_strip_thought_signature_from_tool_call_id_retains_undecodable_suffix():
+  """An ID whose __thought__ suffix is not a valid signature is untouched.
+
+  The separator can legitimately appear inside an opaque tool call ID. When the
+  text after it does not decode as a signature, no signature was extracted, so
+  the ID must be preserved exactly rather than truncated.
+  """
+  tool_call_id = f"call_keep{_THOUGHT_SIGNATURE_SEPARATOR}not-base64"
+  assert (
+      _strip_thought_signature_from_tool_call_id(tool_call_id) == tool_call_id
+  )
+
+
+def test_message_to_generate_content_response_retains_id_when_suffix_undecodable():
+  """function_call.id is preserved when the embedded suffix is not a signature.
+
+  Regression test for the review feedback: when the __thought__ suffix does not
+  decode, no signature is extracted (thought_signature stays None) and the
+  opaque ID must not be mutated before it is persisted.
+  """
+  undecodable_id = f"call_keep{_THOUGHT_SIGNATURE_SEPARATOR}not-base64"
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=undecodable_id,
+              function=Function(name="test_function", arguments="{}"),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.id == undecodable_id
   assert fc_part.thought_signature is None
 
 

@@ -988,6 +988,46 @@ def _extract_thought_signature_from_tool_call(
     if len(parts) == 2:
       return _decode_thought_signature(parts[1])
 
+
+def _strip_thought_signature_from_tool_call_id(
+    tool_call_id: Optional[str],
+) -> Optional[str]:
+  """Strips an embedded thought_signature suffix from a tool call ID.
+
+  Some Gemini thinking model paths embed the thought_signature in the tool
+  call ID via the ``__thought__`` separator (see
+  ``_extract_thought_signature_from_tool_call``). The signature is surfaced
+  separately on ``part.thought_signature``, so the ID assigned to
+  ``function_call.id`` must be the clean, original ID without the suffix.
+  Otherwise the corrupted ID is persisted to session history and later
+  replayed to the model as a ``tool_call_id``, which downstream
+  OpenAI-compatible endpoints reject.
+
+  The suffix is only stripped when it actually decodes as a thought_signature,
+  mirroring ``_extract_thought_signature_from_tool_call``. If the text after the
+  separator does not decode, the separator is treated as part of the opaque
+  tool call ID and the ID is returned unchanged, so an ID is never mutated
+  unless a signature was genuinely extracted from it. This matches the Gemini
+  requirement to echo back the exact function-call ID.
+
+  Args:
+    tool_call_id: The raw tool call ID, which may contain an embedded
+      thought_signature.
+
+  Returns:
+    The tool call ID with the ``__thought__`` suffix removed when that suffix
+    is a decodable signature; otherwise the value unchanged.
+  """
+  if not tool_call_id or _THOUGHT_SIGNATURE_SEPARATOR not in tool_call_id:
+    return tool_call_id
+  base_id, _, encoded_signature = tool_call_id.partition(
+      _THOUGHT_SIGNATURE_SEPARATOR
+  )
+  if _decode_thought_signature(encoded_signature) is None:
+    # The suffix is not a valid signature, so it belongs to the opaque ID.
+    return tool_call_id
+  return base_id
+
   return None
 
 
@@ -2183,7 +2223,12 @@ def _message_to_generate_content_response(
             name=tool_call.function.name,
             args=_parse_tool_call_arguments(tool_call.function.arguments),
         )
-        part.function_call.id = tool_call.id
+        # Strip any embedded thought_signature suffix so the persisted
+        # function_call.id stays the clean, original tool call ID. The
+        # signature is preserved separately on part.thought_signature.
+        part.function_call.id = _strip_thought_signature_from_tool_call_id(
+            tool_call.id
+        )
         if thought_signature:
           part.thought_signature = thought_signature
         parts.append(part)
