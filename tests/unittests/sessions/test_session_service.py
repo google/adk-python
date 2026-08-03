@@ -21,6 +21,7 @@ import os
 import sqlite3
 import time
 from unittest import mock
+import warnings
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
@@ -32,12 +33,16 @@ from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.schemas.shared import DynamicJSON
+from google.adk.sessions.schemas.v0 import DynamicPickleType
+from google.adk.sessions.schemas.v1 import StorageSession
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
 from sqlalchemy import delete
+from sqlalchemy import select
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -108,6 +113,28 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
     )
 
   assert captured_kwargs.get('pool_pre_ping') is True
+
+
+@pytest.mark.parametrize('decorator', [DynamicJSON, DynamicPickleType])
+def test_session_type_decorators_opt_into_statement_cache(decorator):
+  """Session TypeDecorators must declare cache_ok to stay cacheable.
+
+  SQLAlchemy discards the cache key of any statement whose traversal reaches a
+  TypeDecorator that has not set cache_ok, and warns while doing so. Both types
+  qualify: neither defines __init__, so the key is the bare class, and every
+  method branches only on the dialect, which the compiled cache already keys on.
+  """
+  assert decorator.__dict__.get('cache_ok') is True
+  assert decorator()._static_cache_key == (decorator,)
+
+
+def test_dynamic_json_column_statement_is_cacheable():
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter('always')
+    cache_key = select(StorageSession.state)._generate_cache_key()
+
+  assert cache_key is not None
+  assert not [w for w in caught if 'cache_ok' in str(w.message)]
 
 
 @pytest.mark.parametrize(

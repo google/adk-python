@@ -110,6 +110,33 @@ def test_get_declaration():
   assert declaration.description is not None
 
 
+def test_get_declaration_marks_only_schema_required_fields_required():
+  """Fields carrying a default must not be advertised as required."""
+  tool = SetModelResponseTool(ComplexSchema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  schema = declaration.model_dump(exclude_none=True)['parameters_json_schema']
+  assert schema['required'] == ComplexSchema.model_json_schema()['required']
+  assert sorted(schema['required']) == ['id', 'title']
+
+
+def test_get_declaration_preserves_field_defaults():
+  """Defaults declared on the output schema reach the generated declaration."""
+  tool = SetModelResponseTool(ComplexSchema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  properties = declaration.model_dump(exclude_none=True)[
+      'parameters_json_schema'
+  ]['properties']
+  assert properties['tags']['default'] == []
+  assert properties['metadata']['default'] == {}
+  assert properties['is_active']['default'] is True
+
+
 @pytest.mark.asyncio
 async def test_run_async_valid_data():
   """Test tool execution with valid data."""

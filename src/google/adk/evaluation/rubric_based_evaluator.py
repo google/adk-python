@@ -18,6 +18,7 @@ import abc
 import logging
 import re
 from typing import Optional
+import unicodedata
 
 from typing_extensions import override
 
@@ -300,11 +301,28 @@ class MeanInvocationResultsSummarizer(InvocationResultsSummarizer):
     )
 
 
+_SMART_CHARS = str.maketrans({
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2013": "-",
+    "\u2014": "-",
+})
+_DECORATION_CHARS = " *_`#>-\u2022\"'"
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
 def _normalize_text(text: object) -> str:
-  """Returns a normalized version of the passed in text."""
+  """Returns a normalized version of the passed in text.
+
+  Judge models routinely wrap the rubric text they echo back in markdown and
+  typographic decoration, which would otherwise defeat the exact-match lookup.
+  """
   if not isinstance(text, str):
     return ""
-  return text.lower().strip()
+  text = unicodedata.normalize("NFKC", text).translate(_SMART_CHARS)
+  return _WHITESPACE_PATTERN.sub(" ", text).strip(_DECORATION_CHARS).lower()
 
 
 @experimental

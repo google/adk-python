@@ -33,6 +33,9 @@ class DynamicJSON(TypeDecorator):
   """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON serialization for other databases."""
 
   impl = Text  # Default implementation is TEXT
+  # Behavior depends only on the dialect, which the compiled cache already
+  # keys on, so statements using this type are safe to cache.
+  cache_ok = True
 
   def load_dialect_impl(self, dialect: Dialect):
     if dialect.name == "postgresql":
