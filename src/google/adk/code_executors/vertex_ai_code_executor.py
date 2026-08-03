@@ -20,6 +20,7 @@ import os
 from typing import Any
 from typing import Optional
 
+from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
@@ -113,14 +114,10 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
       projects/123/locations/us-central1/extensions/456
   """
 
-  resource_name: str = None
-  """
-  If set, load the existing resource name of the code interpreter extension
-  instead of creating a new one.
-  Format: projects/123/locations/us-central1/extensions/456
-  """
+  resource_name: Optional[str] = None
 
-  _code_interpreter_extension: Extension
+  # Mark as PrivateAttr so Pydantic and copy.deepcopy ignore it during validation/cloning
+  _code_interpreter_extension: Optional['Extension'] = PrivateAttr(default=None)
 
   def __init__(
       self,
@@ -137,9 +134,17 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
     """
     super().__init__(**data)
     self.resource_name = resource_name
-    self._code_interpreter_extension = _get_code_interpreter_extension(
-        self.resource_name
-    )
+    # Note: We do not initialize _code_interpreter_extension here to avoid recursion errors
+    # during deployment deepcopy. It is initialized lazily in the property below.
+
+  @property
+  def extension_client(self) -> 'Extension':
+    """Lazy loads the Vertex AI Extension client."""
+    if self._code_interpreter_extension is None:
+      self._code_interpreter_extension = _get_code_interpreter_extension(
+          self.resource_name
+      )
+    return self._code_interpreter_extension
 
   @override
   def execute_code(
@@ -220,7 +225,9 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
       ]
     if session_id:
       operation_params['session_id'] = session_id
-    response = self._code_interpreter_extension.execute(
+
+    # Use the lazy-loaded client property
+    response = self.extension_client.execute(
         operation_id='execute',
         operation_params=operation_params,
     )
