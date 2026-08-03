@@ -787,6 +787,7 @@ def to_cloud_run(
     # Build the command with extra gcloud args
     gcloud_cmd = [
         _GCLOUD_CMD,
+        'beta',
         'run',
         'deploy',
         service_name,
