@@ -738,6 +738,95 @@ async def test_run_live_auto_create_session():
   assert session is not None
 
 
+def test_run_close_cancels_agent_parked_without_timers():
+  """close() must wake the background loop, not just flag the task.
+
+  The agent parks on a future and schedules no timer, so nothing wakes the
+  event loop on its own. Cancelling the task from this thread without
+  `call_soon_threadsafe` sets the flag but never wakes the selector, and
+  close() blocks forever. A polling agent hides that, because its own sleeps
+  keep waking the loop.
+  """
+  import asyncio
+  import threading
+
+  session_service = InMemorySessionService()
+
+  parked = threading.Event()
+  handle = {}
+  was_cancelled = {"value": False}
+
+  class ParkingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      try:
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="First response")]
+            ),
+        )
+        loop = asyncio.get_running_loop()
+        handle["loop"] = loop
+        handle["future"] = loop.create_future()
+        parked.set()
+        await handle["future"]
+      except (asyncio.CancelledError, GeneratorExit):
+        was_cancelled["value"] = True
+        raise
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=ParkingAgent(name="parking_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  # Given a sync run stream whose agent is parked with no pending timer
+  stream = runner.run(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+  )
+  event = next(stream)
+  assert event.content.parts[0].text == "First response"
+  assert parked.wait(timeout=5.0) is True
+
+  # When the client closes the stream, from a helper thread so that a
+  # teardown that never returns fails this test instead of hanging it
+  closed = threading.Event()
+
+  def _close_stream() -> None:
+    stream.close()
+    closed.set()
+
+  closer = threading.Thread(target=_close_stream, daemon=True)
+  closer.start()
+
+  try:
+    # Then close() returns instead of blocking on an unwoken event loop
+    assert closed.wait(timeout=10.0) is True
+    assert was_cancelled["value"] is True
+  finally:
+    # Release the agent either way, so the non-daemon runner thread always
+    # exits and cannot wedge the rest of the suite.
+    loop = handle.get("loop")
+    future = handle.get("future")
+    if loop is not None and future is not None:
+      try:
+        loop.call_soon_threadsafe(
+            lambda: future.cancel() if not future.done() else None
+        )
+      except RuntimeError:
+        # Teardown already finished and closed the loop; nothing to release.
+        pass
+    closer.join(timeout=5.0)
+
+
 def test_run_passes_state_delta():
   """run should forward state_delta down to run_async."""
   import asyncio
@@ -2362,6 +2451,88 @@ async def test_run_async_teardown_on_aclose():
 
   # Then the running agent was immediately aborted and cancelled
   assert was_cancelled["value"] is True
+
+
+def test_run_teardown_on_close():
+  """Closing the sync run() generator should cancel the running agent task."""
+  import asyncio
+  import threading
+  import time
+
+  session_service = InMemorySessionService()
+
+  release_second = threading.Event()
+  was_cancelled = {"value": False}
+  completed = {"value": False}
+
+  class CancellingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      try:
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="First response")]
+            ),
+        )
+        # Bounded wait so a broken teardown fails instead of hanging.
+        deadline = time.monotonic() + 5.0
+        while not release_second.is_set() and time.monotonic() < deadline:
+          await asyncio.sleep(0.01)
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="Second response")]
+            ),
+        )
+        completed["value"] = True
+      except (asyncio.CancelledError, GeneratorExit):
+        was_cancelled["value"] = True
+        raise
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=CancellingAgent(name="cancel_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  # Given a sync run stream
+  stream = runner.run(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+  )
+
+  # When the client reads the first event and then calls close()
+  event = next(stream)
+  assert event.content.parts[0].text == "First response"
+
+  stream.close()
+  release_second.set()
+
+  # Then the running agent was cancelled before it could do further work
+  assert was_cancelled["value"] is True
+  assert completed["value"] is False
+
+  # And no later event was appended to the session.
+  session = asyncio.run(
+      session_service.get_session(
+          app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+      )
+  )
+  texts = [
+      part.text
+      for session_event in session.events
+      if session_event.content
+      for part in session_event.content.parts
+  ]
+  assert texts == ["hello", "First response"]
 
 
 @pytest.mark.asyncio

@@ -1136,8 +1136,17 @@ class Runner:
     """
     run_config = run_config or RunConfig()
     event_queue: queue.Queue[Event | BaseException | None] = queue.Queue()
+    # Handle to the background invocation, so that closing this generator early
+    # can cancel it instead of leaking a running task. See
+    # `_cleanup_root_task()` for the equivalent guarantee on `run_async()`.
+    invocation_handle: queue.Queue[
+        tuple[asyncio.AbstractEventLoop, asyncio.Task[Any] | None]
+    ] = queue.Queue(maxsize=1)
 
     async def _invoke_run_async() -> None:
+      invocation_handle.put(
+          (asyncio.get_running_loop(), asyncio.current_task())
+      )
       async with aclosing(
           self.run_async(
               user_id=user_id,
@@ -1167,17 +1176,33 @@ class Runner:
 
     # consumes and re-yield the events from background thread.
     agent_error: BaseException | None = None
-    while True:
-      item = event_queue.get()
-      if item is None:
-        break
-      elif isinstance(item, BaseException):
-        agent_error = item
-        break
-      else:
-        yield item
-
-    thread.join()
+    exhausted = False
+    try:
+      while True:
+        item = event_queue.get()
+        if item is None:
+          exhausted = True
+          break
+        elif isinstance(item, BaseException):
+          agent_error = item
+          exhausted = True
+          break
+        else:
+          yield item
+    finally:
+      if not exhausted:
+        # The caller stopped iterating early, so cancel the invocation before
+        # it can run further tools or append more events to the session. The
+        # cancellation unwinds through `aclosing(...)` above, reusing
+        # `run_async()`'s own `_cleanup_root_task()` teardown.
+        loop, task = invocation_handle.get()
+        if task is not None:
+          try:
+            loop.call_soon_threadsafe(task.cancel)
+          except RuntimeError:
+            # The background loop already finished; nothing to cancel.
+            pass
+      thread.join()
     if isinstance(agent_error, Exception):
       raise agent_error
     if agent_error is not None:
