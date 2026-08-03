@@ -25,8 +25,8 @@ from typing_extensions import override
 from ..models.llm_response import LlmResponse
 from ..utils.feature_decorator import experimental
 from .common import EvalBaseModel
-from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
+from .eval_metrics import RubricsBasedCriterion
 from .eval_rubrics import Rubric
 from .eval_rubrics import RubricScore
 from .evaluator import EvaluationResult
@@ -326,13 +326,13 @@ def _normalize_text(text: object) -> str:
 
 
 @experimental
-class RubricBasedEvaluator(LlmAsJudge):
+class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
   """A base class for rubric based evaluators."""
 
   def __init__(
       self,
       eval_metric: EvalMetric,
-      criterion_type: type[BaseCriterion],
+      criterion_type: type[RubricsBasedCriterion],
       auto_rater_response_parser: AutoRaterResponseParser = (
           DefaultAutoRaterResponseParser()
       ),
