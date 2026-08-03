@@ -91,6 +91,13 @@ async def main() -> None:
   run_config = RunConfig(
       streaming_mode=StreamingMode.BIDI,
       response_modalities=[types.Modality.AUDIO],
+      # Treat the complete file as one turn. This prevents pauses inside a
+      # prerecorded clip from triggering server-side voice activity detection.
+      realtime_input_config=types.RealtimeInputConfig(
+          automatic_activity_detection=types.AutomaticActivityDetection(
+              disabled=True
+          )
+      ),
   )
 
   async with Runner(app=app, session_service=session_service) as runner:
