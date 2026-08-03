@@ -68,8 +68,24 @@ def record_invocation(
     Nothing; the span (if any) is active for the duration of the block.
   """
   if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    with tracing.tracer.start_as_current_span("invocation"):
+    # This context manager wraps runners._run_node_async, an async generator.
+    # When a caller stops iterating early, that generator is finalized
+    # (GeneratorExit / CancelledError) in a different execution context than the
+    # one where the span was attached. start_as_current_span's automatic
+    # detach() would then raise "Token was created in a different Context" --
+    # OpenTelemetry swallows it but logs it at ERROR on every early-terminated
+    # run. Manage the span/context explicitly and detach only on normal
+    # completion; always end the span so trace data stays complete.
+    span = tracing.tracer.start_span("invocation")
+    token = context_api.attach(trace.set_span_in_context(span))
+    completed = False
+    try:
       yield
+      completed = True
+    finally:
+      if completed:
+        context_api.detach(token)
+      span.end()
     return
 
   from . import node_tracing
