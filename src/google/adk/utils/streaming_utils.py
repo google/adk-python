@@ -40,6 +40,9 @@ class StreamingResponseAggregator:
     self._citation_metadata: Optional[types.CitationMetadata] = None
     self._response = None
 
+    # For legacy streaming: track function call parts
+    self._function_call_parts: list[types.Part] = []
+
     # For progressive SSE streaming mode: accumulate parts in order
     self._parts_sequence: list[types.Part] = []
     self._current_text_buffer: list[str] = []
@@ -342,6 +345,16 @@ class StreamingResponseAggregator:
       )
       self._thought_text = []
       self._text = []
+    
+    # Track function call parts for legacy aggregation
+    if (
+        llm_response.content
+        and llm_response.content.parts
+    ):
+      for part in llm_response.content.parts:
+        if part.function_call:
+          self._function_call_parts.append(part)
+
     yield llm_response
 
   def close(self) -> Optional[LlmResponse]:
@@ -377,8 +390,19 @@ class StreamingResponseAggregator:
       self._flush_text_buffer_to_sequence()
       self._flush_function_call_to_sequence()
 
-      final_parts = self._parts_sequence
-      content = types.ModelContent(parts=final_parts) if final_parts else None
+      # Deduplicate function call parts to prevent the agent loop from
+      # re-executing the same tool call. Streaming chunks can produce
+      # duplicate FunctionCall parts with the same id.
+      seen_fc_ids: set[str] = set()
+      deduped_parts: list[types.Part] = []
+      for part in self._parts_sequence:
+        if part.function_call and part.function_call.id:
+          if part.function_call.id in seen_fc_ids:
+            continue
+          seen_fc_ids.add(part.function_call.id)
+        deduped_parts.append(part)
+
+      content = types.ModelContent(parts=deduped_parts) if deduped_parts else None
 
       return LlmResponse(
           content=content,
@@ -398,6 +422,8 @@ class StreamingResponseAggregator:
       parts.append(types.Part(text=''.join(self._thought_text), thought=True))
     if self._text:
       parts.append(types.Part.from_text(text=''.join(self._text)))
+    # Include function call parts that were received during streaming
+    parts.extend(self._function_call_parts)
     content = types.ModelContent(parts=parts) if parts else None
 
     return LlmResponse(

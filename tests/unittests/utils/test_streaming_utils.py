@@ -288,7 +288,12 @@ class TestStreamingResponseAggregator:
         assert len(closed_response.content.parts) == 1
         assert closed_response.content.parts[0].function_call.name == "my_tool"
       else:
-        assert closed_response.content is None
+        # After the fix, legacy mode also preserves function call parts
+        assert closed_response.content is not None
+        assert any(
+            p.function_call and p.function_call.name == "my_tool"
+            for p in closed_response.content.parts
+        )
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize(
@@ -488,6 +493,92 @@ class TestStreamingResponseAggregator:
       ]
       assert merged_events, "expected a merged non-partial text event"
       assert merged_events[0].model_version == "gemini-test-2.0"
+
+  @pytest.mark.asyncio
+  async def test_progressive_close_deduplicates_function_calls(self):
+    with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, True):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      part1 = types.Part(function_call=types.FunctionCall(name="test_func", args={"a": 1}, id="fc_123"))
+      part2 = types.Part(function_call=types.FunctionCall(name="test_func", args={"a": 1}, id="fc_123"))
+      part3 = types.Part(function_call=types.FunctionCall(name="test_func2", args={"b": 2}, id="fc_456"))
+
+      resp1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[part1])
+              )
+          ]
+      )
+      resp2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[part2])
+              )
+          ]
+      )
+      resp3 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[part3])
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(resp1):
+        pass
+      async for _ in aggregator.process_response(resp2):
+        pass
+      async for _ in aggregator.process_response(resp3):
+        pass
+
+      final_response = aggregator.close()
+
+      assert final_response is not None
+      assert final_response.content is not None
+      assert len(final_response.content.parts) == 2
+      assert final_response.content.parts[0].function_call.id == "fc_123"
+      assert final_response.content.parts[1].function_call.id == "fc_456"
+
+  @pytest.mark.asyncio
+  async def test_legacy_close_preserves_function_calls(self):
+    with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, False):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      part1 = types.Part(text="Hello")
+      part2 = types.Part(function_call=types.FunctionCall(name="test_func", args={"a": 1}))
+
+      resp1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[part1])
+              )
+          ]
+      )
+      resp2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[part2])
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(resp1):
+        pass
+      async for _ in aggregator.process_response(resp2):
+        pass
+
+      final_response = aggregator.close()
+
+      # In legacy mode, text is flushed mid-stream (via intermediate yield)
+      # when a non-text chunk arrives. So close() only contains the FC part
+      # that was tracked separately via _function_call_parts.
+      assert final_response is not None
+      assert final_response.content is not None
+      assert any(
+          p.function_call and p.function_call.name == "test_func"
+          for p in final_response.content.parts
+      )
 
 
 class TestFunctionCallIdGeneration:
