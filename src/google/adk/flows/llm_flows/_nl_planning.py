@@ -72,8 +72,6 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
   ) -> AsyncGenerator[Event, None]:
-    from ...planners.built_in_planner import BuiltInPlanner
-
     if (
         not llm_response
         or not llm_response.content
@@ -82,11 +80,7 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
       return
 
     planner = _get_planner(invocation_context)
-    if (
-        not planner
-        or type(planner).process_planning_response
-        is BuiltInPlanner.process_planning_response
-    ):
+    if not planner:
       return
 
     # Postprocess the LLM response.

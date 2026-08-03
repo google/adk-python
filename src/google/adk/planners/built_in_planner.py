@@ -83,4 +83,21 @@ class BuiltInPlanner(BasePlanner):
       callback_context: CallbackContext,
       response_parts: List[types.Part],
   ) -> Optional[List[types.Part]]:
-    return
+    """Processes the planning response by returning the model's native content blocks.
+
+    The BuiltInPlanner relies on the model's native thinking feature, where
+    reasoning parts are already marked with thought=True by the model.
+    This method returns the response parts as-is, preserving the standardized
+    content blocks produced by the model.
+
+    Args:
+      callback_context: The callback context of the invocation.
+      response_parts: The LLM response parts.
+
+    Returns:
+      The response parts with the model's native content blocks preserved,
+      or None if there are no parts to process.
+    """
+    if not response_parts:
+      return None
+    return list(response_parts)
