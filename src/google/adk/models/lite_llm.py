@@ -332,14 +332,50 @@ def _strip_proxy_prefix(model: str) -> str:
   Returns:
     The model string without the ``litellm_proxy/`` prefix if nested.
   """
-  if not model:
-    return model
-  prefix = _PROXY_PROVIDER + "/"
-  if model.lower().startswith(prefix):
-    remaining = model[len(prefix) :]
+  if _is_proxied_model(model):
+    remaining = model[len(_PROXY_PROVIDER) + 1 :]
     if "/" in remaining:
       return remaining
   return model
+
+
+_UPLOAD_ENDPOINT_KEYS = ("api_base", "api_key", "api_version")
+
+
+def _get_upload_params(
+    model: str, completion_args: Dict[str, Any]
+) -> Dict[str, Any]:
+  """Endpoint overrides to forward to `litellm.acreate_file`.
+
+  File uploads resolve their endpoint independently of the completion call, so
+  without these they fall back to the underlying provider's environment
+  variables. For a proxied model that would send the upload straight to the
+  provider while the completion goes to the proxy, which fails whenever the
+  caller only holds proxy credentials.
+
+  Only proxied models forward anything. A direct `azure/...` model keeps the
+  existing environment-variable behavior, since its `api_base` already points
+  at the provider.
+
+  Args:
+    model: The LiteLLM model string.
+    completion_args: The arguments the caller passes to the completion call.
+
+  Returns:
+    The subset of endpoint overrides to forward, empty when not proxied.
+  """
+  if not _is_proxied_model(model):
+    return {}
+  return {
+      key: completion_args[key]
+      for key in _UPLOAD_ENDPOINT_KEYS
+      if completion_args.get(key)
+  }
+
+
+def _is_proxied_model(model: str) -> bool:
+  """Returns True if the model is served through a LiteLLM Proxy."""
+  return bool(model) and model.lower().startswith(_PROXY_PROVIDER + "/")
 
 
 def _get_provider_from_model(model: str) -> str:
@@ -1182,6 +1218,7 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
+    upload_params: Optional[Dict[str, Any]] = None,
 ) -> Union[Message, list[Message]]:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -1251,7 +1288,13 @@ async def _content_to_message_param(
   if role == "user":
     user_parts = [part for part in content_parts_or_empty if not part.thought]
     message_content = (
-        await _get_content(user_parts, provider=provider, model=model) or None
+        await _get_content(
+            user_parts,
+            provider=provider,
+            model=model,
+            upload_params=upload_params,
+        )
+        or None
     )
     return ChatCompletionUserMessage(
         role="user",
@@ -1297,7 +1340,12 @@ async def _content_to_message_param(
         content_parts.append(part)
 
     final_content = (
-        await _get_content(content_parts, provider=provider, model=model)
+        await _get_content(
+            content_parts,
+            provider=provider,
+            model=model,
+            upload_params=upload_params,
+        )
         if content_parts
         else None
     )
@@ -1447,6 +1495,7 @@ async def _get_content(
     *,
     provider: str = "",
     model: str = "",
+    upload_params: Optional[Dict[str, Any]] = None,
 ) -> _MessageContent:
   """Converts a list of parts to litellm content.
 
@@ -1458,6 +1507,10 @@ async def _get_content(
     provider: The LLM provider name (e.g., "openai", "azure").
     model: The LiteLLM model string (e.g., "openai/gpt-4o",
       "vertex_ai/gemini-2.5-flash").
+    upload_params: Endpoint overrides (``api_base``, ``api_key``,
+      ``api_version``) forwarded to the file upload. Needed when the model is
+      served through a LiteLLM Proxy, since the upload would otherwise fall
+      back to provider environment variables and bypass the proxy.
 
   Returns:
     The litellm content.
@@ -1521,15 +1574,14 @@ async def _get_content(
       elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         # OpenAI/Azure require file_id from uploaded file, not inline data
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
-          upload_provider = (
-              "openai"
-              if model.lower().startswith(_PROXY_PROVIDER + "/")
-              else provider
-          )
+          # Keep the provider that actually serves the request so the payload
+          # keeps its provider-specific shape, and point the upload at the
+          # proxy via `upload_params` instead of swapping the provider out.
           file_response = await litellm.acreate_file(
               file=part.inline_data.data,
               purpose="assistants",
-              custom_llm_provider=upload_provider,
+              custom_llm_provider=provider,
+              **(upload_params or {}),
           )
           content_objects.append(
               _FileContentObject(
@@ -2544,6 +2596,7 @@ def _to_litellm_response_format(
 async def _get_completion_inputs(
     llm_request: LlmRequest,
     model: str,
+    upload_params: Optional[Dict[str, Any]] = None,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict[str, Any]]],
@@ -2570,7 +2623,10 @@ async def _get_completion_inputs(
   messages: List[Message] = []
   for content in llm_request.contents or []:
     message_param_or_list = await _content_to_message_param(
-        content, provider=provider, model=model
+        content,
+        provider=provider,
+        model=model,
+        upload_params=upload_params,
     )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
@@ -2991,7 +3047,13 @@ class LiteLlm(BaseLlm):
 
     effective_model = llm_request.model or self.model
     messages, tools, response_format, generation_params, tool_choice = (
-        await _get_completion_inputs(llm_request, effective_model)
+        await _get_completion_inputs(
+            llm_request,
+            effective_model,
+            upload_params=_get_upload_params(
+                effective_model, self._additional_args
+            ),
+        )
     )
     normalized_messages = _normalize_ollama_chat_messages(
         messages,
