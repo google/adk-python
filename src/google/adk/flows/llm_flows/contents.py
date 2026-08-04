@@ -196,11 +196,9 @@ def _drop_orphaned_function_responses(
 
   An orphan can reach this point when the producer of the call is gone, for
   example a session edited by hand or a history stitched together from more
-  than one source. Left in place, the same orphan behaves differently
-  depending on where it sits: mid-history it is quietly discarded, while as
-  the trailing event it aborts the whole request. Pruning it here makes the
-  outcome the same wherever it appears, and keeps unpaired results from being
-  forwarded to providers that reject them.
+  than one source. Left in place, unpaired results can be forwarded to
+  providers that reject them, or (as a trailing event) abort contents
+  assembly. Pruning it here makes the outcome the same wherever it appears.
 
   Responses without an id are left alone: ids are stripped on the way out for
   some model families, so a missing id does not imply a missing call.
@@ -259,6 +257,12 @@ def _rearrange_events_for_latest_function_response(
   between the initial function_call and the latest function_response will be
   removed.
 
+  If the latest event carries function responses with no matching function
+  call in history (an orphaned FR), those responses are dropped and history
+  is rearranged from the remaining events. Raising here would permanently
+  poison the session: contents assembly runs before any user callback and
+  every later turn would replay the same fatal error.
+
   Args:
     events: A list of events.
 
@@ -313,16 +317,16 @@ def _rearrange_events_for_latest_function_response(
           break
 
   if function_call_event_idx == -1:
-    logger.debug(
-        'No function call event found for function responses ids: %s in'
-        ' event list: %s',
+    # Orphaned trailing FR: drop it and continue so contents assembly (and
+    # the session) remain usable. Producer bugs / branch filters can leave
+    # an FR without its FC; failing hard here has no recovery path.
+    logger.warning(
+        'Dropping orphaned function response(s) with ids %s because no'
+        ' matching function call was found in history. Continuing without'
+        ' them so the session remains usable.',
         function_responses_ids,
-        events,
     )
-    raise ValueError(
-        'No function call event found for function responses ids:'
-        f' {function_responses_ids}'
-    )
+    return _rearrange_events_for_latest_function_response(events[:-1])
 
   # collect all function response between last function response event
   # and function call event
