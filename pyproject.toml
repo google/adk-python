@@ -148,6 +148,7 @@ optional-dependencies.eval = [
   "google-cloud-aiplatform[evaluation]>=1.148",
   "google-cloud-texttospeech>=2.37",
   "jinja2>=3.1.4,<4",                           # For eval template rendering
+  "nltk!=3.10.1",                               # Transitive via rouge-score; 3.10.1 ships an import hook that breaks in-project venvs.
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
@@ -244,6 +245,7 @@ optional-dependencies.test = [
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
   "mcp>=1.24,<2",
+  "nltk!=3.10.1",                                                    # Transitive via rouge-score; 3.10.1 ships an import hook that breaks in-project venvs.
   "openai>=2.20,<3",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",

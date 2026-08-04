@@ -27,6 +27,9 @@ regressions documented in the bare-install audit cannot silently re-emerge:
   objects while deserializing checkpoint data.
 * ``google-genai`` MUST exclude 2.11 and include 2.12.1, whose types module
   defers the optional MCP server stack instead of importing it at Agent startup.
+* The extras that pull ``rouge-score`` MUST exclude ``nltk`` 3.10.1, whose
+  import hook breaks any in-project virtualenv and leaks ``PYTHONSAFEPATH``
+  into the host process.
 """
 
 from __future__ import annotations
@@ -51,6 +54,15 @@ _UNSAFE_CHECKPOINT_RELEASES = {
     'langgraph': (('0.2.60', '0.4.7', '1.0.9'), '1.0.10'),
     'langgraph-checkpoint': (('2.1.0', '3.0.0', '4.0.0', '4.1.0'), '4.1.1'),
 }
+
+# nltk 3.10.1 added nltk/inisec.py, whose import hook (a) refuses imports whose
+# origin resolves under the CWD -- which includes site-packages for every
+# in-project virtualenv -- and (b) sets PYTHONSAFEPATH=1 in the *host* process
+# environment, so subprocesses inherit it. Extras that pull rouge-score (which
+# depends on nltk) must resolve around it. See nltk/nltk#3730 and nltk/nltk#3732.
+_NLTK_BROKEN_IMPORT_HOOK_RELEASE = '3.10.1'
+_NLTK_LAST_GOOD_RELEASE = '3.10.0'
+_NLTK_EXTRAS = ('eval', 'test')
 
 
 def _find_pyproject() -> Path:
@@ -161,6 +173,38 @@ def test_langgraph_extras_exclude_unsafe_checkpoint_releases(
   assert specifier.contains(first_safe), (
       f'The {extra!r} extra excludes {distribution} {first_safe}, the first '
       'release without the unsafe behavior.'
+  )
+
+
+@pytest.mark.parametrize('extra', _NLTK_EXTRAS)
+def test_rouge_score_extras_exclude_broken_nltk_import_hook(
+    pyproject: dict, extra: str
+) -> None:
+  """Every extra that pulls rouge-score resolves around nltk 3.10.1.
+
+  rouge-score depends on nltk without an upper bound, so the exclusion has to
+  be declared by each extra that pulls it.
+  """
+  specifier = _requirement_specifier(
+      pyproject['project']['optional-dependencies'][extra], 'nltk'
+  )
+
+  assert specifier is not None, (
+      f'The {extra!r} extra pulls rouge-score, which depends on nltk without '
+      'an upper bound, so it must declare nltk itself to keep 3.10.1 out.'
+  )
+  assert not specifier.contains(_NLTK_BROKEN_IMPORT_HOOK_RELEASE), (
+      f'The {extra!r} extra admits nltk '
+      f'{_NLTK_BROKEN_IMPORT_HOOK_RELEASE}, whose nltk/inisec.py import hook '
+      'blocks imports resolved from under the CWD (which includes '
+      'site-packages in any in-project virtualenv) and sets PYTHONSAFEPATH=1 '
+      'in the host process environment, changing import behavior for every '
+      'subprocess the host later spawns.'
+  )
+  assert specifier.contains(_NLTK_LAST_GOOD_RELEASE), (
+      f'The {extra!r} extra must still admit nltk '
+      f'{_NLTK_LAST_GOOD_RELEASE}; excluding it too would leave the resolver '
+      'with no working nltk for rouge-score.'
   )
 
 
