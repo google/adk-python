@@ -77,6 +77,60 @@ def _extract_task_delegation_fcs(
   ]
 
 
+def _event_has_eager_tool_calls(
+    event: Event, tools_dict: Mapping[str, ToolUnion]
+) -> bool:
+  """True if this event has FCs that produce FR events in the current step.
+
+  Task-delegation tools (``_TaskAgentTool``) and other deferred / long-running
+  tools do not emit an FR from ``handle_function_calls_async``; the chat
+  wrapper synthesizes task FRs itself. Regular tools do emit FRs in the same
+  LLM step, after the model FC event. The wrapper must drain those FR events
+  before closing the generator, or they are lost and the session history
+  becomes unbalanced for Gemini.
+  """
+  from ..tools.agent_tool import _TaskAgentTool
+
+  for fc in event.get_function_calls():
+    if not fc.name:
+      continue
+    tool = tools_dict.get(fc.name)
+    if tool is None or isinstance(tool, _TaskAgentTool):
+      continue
+    if getattr(tool, 'is_long_running', False):
+      continue
+    if getattr(tool, '_defers_response', False):
+      continue
+    return True
+  return False
+
+
+async def _drain_pending_tool_response_events(
+    run_iter: AsyncGenerator[Event, None],
+) -> AsyncGenerator[Event, None]:
+  """Yield remaining non-model events from the current LLM step.
+
+  After a mixed model turn (regular tools + task delegation), the LLM flow
+  still has pending function-response events. Closing the generator before
+  reading them drops regular-tool FRs.
+
+  Stops after the first event that carries function responses, or before the
+  next model-role event (which would start another LLM round without
+  synthesized task FRs).
+  """
+  async for pending_event in run_iter:
+    if (
+        pending_event.content is not None
+        and pending_event.content.role == 'model'
+    ):
+      # Next LLM round already started; abandon it by stopping iteration.
+      # Closing the outer generator cancels further work.
+      return
+    yield pending_event
+    if pending_event.get_function_responses():
+      return
+
+
 def _find_unresolved_task_delegations(
     session: Session,
     owner: str,
@@ -392,10 +446,19 @@ async def run_llm_agent_as_node(
         async for event in run_iter:
           yield event
           task_fcs = _extract_task_delegation_fcs(event, tools_dict)
-          for fc in task_fcs:
-            output = await _dispatch_task_fc(agent, fc, ctx)
-            yield _synthesize_task_fr_event(fc, output)
           if task_fcs:
+            # Mixed turns (regular tool FC + task FC) still have pending
+            # regular-tool FR events in this generator. Drain them before
+            # breaking, otherwise aclosing drops them and the session is
+            # left with unbalanced FC/FR history that Gemini rejects.
+            if _event_has_eager_tool_calls(event, tools_dict):
+              async for pending_event in _drain_pending_tool_response_events(
+                  run_iter
+              ):
+                yield pending_event
+            for fc in task_fcs:
+              output = await _dispatch_task_fc(agent, fc, ctx)
+              yield _synthesize_task_fr_event(fc, output)
             had_task_fc = True
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:

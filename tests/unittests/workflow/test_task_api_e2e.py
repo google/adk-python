@@ -191,6 +191,165 @@ async def test_chat_root_with_two_task_sub_agents_sequential(
 
 
 # ---------------------------------------------------------------------------
+# 2b. Mixed turn: regular tool FC + task FC in the same model response
+# ---------------------------------------------------------------------------
+
+
+def _function_call_part(
+    name: str, args: dict[str, Any], *, call_id: str
+) -> types.Part:
+  """Build a function-call Part with a stable id for FC/FR matching."""
+  return types.Part(
+      function_call=types.FunctionCall(name=name, args=args, id=call_id)
+  )
+
+
+def _fr_names(events: list[Event]) -> list[str]:
+  names: list[str] = []
+  for event in events:
+    for fr in event.get_function_responses():
+      if fr.name:
+        names.append(fr.name)
+  return names
+
+
+def _fc_names(events: list[Event], *, author: str) -> list[str]:
+  names: list[str] = []
+  for event in events:
+    if event.author != author:
+      continue
+    for fc in event.get_function_calls():
+      if fc.name:
+        names.append(fc.name)
+  return names
+
+
+@pytest.mark.asyncio
+async def test_chat_root_mixed_regular_tool_and_task_keeps_regular_fr(
+    request: pytest.FixtureRequest,
+):
+  """Regular-tool FR is persisted when emitted with a task FC in one turn.
+
+  Regression for github.com/google/adk-python/issues/6581: the chat wrapper
+  used to break out of ``run_async`` after dispatching task FCs, dropping the
+  pending regular-tool FR and poisoning the session for Gemini.
+  """
+  tool_calls: list[list[str]] = []
+
+  def set_todo_list(items: list[str]) -> dict[str, Any]:
+    """Record a todo list in session-visible tool output."""
+    tool_calls.append(list(items))
+    return {'status': 'ok', 'items_written': items}
+
+  child = _make_task_agent(
+      name='specialist',
+      responses=[_finish_part({'result': 'specialist done'})],
+  )
+  root = LlmAgent(
+      name='coordinator',
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  _function_call_part(
+                      'set_todo_list',
+                      {'items': ['write report']},
+                      call_id='fc-todo-001',
+                  ),
+                  _function_call_part(
+                      'specialist',
+                      {'request': 'analyse'},
+                      call_id='fc-task-001',
+                  ),
+              ],
+              'Todos saved and analysis complete.',
+          ]
+      ),
+      tools=[FunctionTool(set_todo_list)],
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  assert tool_calls == [['write report']]
+  assert 'set_todo_list' in _fr_names(events)
+  assert 'specialist' in _fr_names(events)
+  assert _collect_finish_outputs(events) == [{'result': 'specialist done'}]
+  assert any(
+      'Todos saved and analysis complete.' in t
+      for t in _get_text_responses(events)
+  )
+
+  # Persisted session must keep FC/FR pairs balanced for the mixed turn.
+  session_events = runner.session.events
+  assert 'set_todo_list' in _fr_names(session_events)
+  assert 'specialist' in _fr_names(session_events)
+  coordinator_fcs = _fc_names(session_events, author='coordinator')
+  assert coordinator_fcs.count('set_todo_list') == 1
+  assert coordinator_fcs.count('specialist') == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_root_mixed_turn_with_two_regular_tools_and_task(
+    request: pytest.FixtureRequest,
+):
+  """All regular-tool FRs survive when two tools share a turn with a task FC."""
+  seen: list[str] = []
+
+  def note_a(value: str) -> dict[str, str]:
+    """Record note A."""
+    seen.append(f'a:{value}')
+    return {'note': value}
+
+  def note_b(value: str) -> dict[str, str]:
+    """Record note B."""
+    seen.append(f'b:{value}')
+    return {'note': value}
+
+  child = _make_task_agent(
+      name='worker',
+      responses=[_finish_part({'result': 'worked'})],
+  )
+  root = LlmAgent(
+      name='coordinator',
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  _function_call_part(
+                      'note_a', {'value': 'one'}, call_id='fc-a'
+                  ),
+                  _function_call_part(
+                      'note_b', {'value': 'two'}, call_id='fc-b'
+                  ),
+                  _function_call_part(
+                      'worker', {'request': 'run'}, call_id='fc-w'
+                  ),
+              ],
+              'Combined turn complete.',
+          ]
+      ),
+      tools=[FunctionTool(note_a), FunctionTool(note_b)],
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  assert sorted(seen) == ['a:one', 'b:two']
+  fr_names = _fr_names(events)
+  assert 'note_a' in fr_names
+  assert 'note_b' in fr_names
+  assert 'worker' in fr_names
+  assert any(
+      'Combined turn complete.' in t for t in _get_text_responses(events)
+  )
+
+
+# ---------------------------------------------------------------------------
 # 3. LlmAgent root → task sub-agent → nested task sub-agent
 # ---------------------------------------------------------------------------
 
