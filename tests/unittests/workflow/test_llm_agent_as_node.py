@@ -1217,19 +1217,19 @@ async def test_three_layer_llm_agent_transfer_round_trip(
   # Prepare the transfer function call parts
   fc_transfer_to_child = types.Part.from_function_call(
       name='transfer_to_agent',
-      args={'agent_name': 'child_agent'},
+      args={'agent_name': 'child_agent', 'transfer_reason': 'test reason'},
   )
   fc_transfer_to_grandchild = types.Part.from_function_call(
       name='transfer_to_agent',
-      args={'agent_name': 'grandchild_agent'},
+      args={'agent_name': 'grandchild_agent', 'transfer_reason': 'test reason'},
   )
   fc_transfer_to_child_parent = types.Part.from_function_call(
       name='transfer_to_agent',
-      args={'agent_name': 'child_agent'},
+      args={'agent_name': 'child_agent', 'transfer_reason': 'test reason'},
   )
   fc_transfer_to_root = types.Part.from_function_call(
       name='transfer_to_agent',
-      args={'agent_name': 'root_agent'},
+      args={'agent_name': 'root_agent', 'transfer_reason': 'test reason'},
   )
 
   # Mock models for 3 layers

@@ -52,8 +52,14 @@ class TestTransferToAgentToolLegacy:
     assert agent_name_schema.type == types.Type.STRING
     assert agent_name_schema.enum == agent_names
 
-    # Verify that agent_name is marked as required
-    assert decl.parameters.required == ['agent_name']
+    # Verify that transfer_reason is a string parameter without enum constraint
+    assert 'transfer_reason' in decl.parameters.properties
+    transfer_reason_schema = decl.parameters.properties['transfer_reason']
+    assert transfer_reason_schema.type == types.Type.STRING
+    assert transfer_reason_schema.enum is None
+
+    # Verify that agent_name and transfer_reason are marked as required
+    assert decl.parameters.required == ['agent_name', 'transfer_reason']
 
   def test_transfer_to_agent_tool_single_agent(self):
     """Test TransferToAgentTool with a single agent."""
@@ -105,9 +111,10 @@ class TestTransferToAgentToolLegacy:
     decl = tool._get_declaration()
 
     assert decl is not None
-    # Should only have agent_name parameter (tool_context is ignored)
-    assert len(decl.parameters.properties) == 1
+    # Should only have agent_name and transfer_reason (tool_context is ignored)
+    assert len(decl.parameters.properties) == 2
     assert 'agent_name' in decl.parameters.properties
+    assert 'transfer_reason' in decl.parameters.properties
     assert 'tool_context' not in decl.parameters.properties
 
 
@@ -200,7 +207,19 @@ class TestTransferToAgentToolWithJsonSchema:
     agent_name_schema = decl.parameters_json_schema['properties']['agent_name']
     assert agent_name_schema['type'] == 'string'
     assert agent_name_schema['enum'] == agent_names
-    assert decl.parameters_json_schema['required'] == ['agent_name']
+
+    # Verify that transfer_reason is a string parameter without enum constraint
+    assert 'transfer_reason' in decl.parameters_json_schema['properties']
+    transfer_reason_schema = decl.parameters_json_schema['properties'][
+        'transfer_reason'
+    ]
+    assert transfer_reason_schema['type'] == 'string'
+    assert 'enum' not in transfer_reason_schema
+
+    assert decl.parameters_json_schema['required'] == [
+        'agent_name',
+        'transfer_reason',
+    ]
 
   def test_transfer_to_agent_tool_single_agent(self):
     """Test TransferToAgentTool with a single agent."""
@@ -251,6 +270,7 @@ class TestTransferToAgentToolWithJsonSchema:
     decl = tool._get_declaration()
 
     assert decl is not None
-    assert len(decl.parameters_json_schema['properties']) == 1
+    assert len(decl.parameters_json_schema['properties']) == 2
     assert 'agent_name' in decl.parameters_json_schema['properties']
+    assert 'transfer_reason' in decl.parameters_json_schema['properties']
     assert 'tool_context' not in decl.parameters_json_schema['properties']

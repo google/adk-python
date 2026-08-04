@@ -28,7 +28,8 @@ from .. import testing_utils
 
 def transfer_call_part(agent_name: str) -> Part:
   return Part.from_function_call(
-      name="transfer_to_agent", args={"agent_name": agent_name}
+      name="transfer_to_agent",
+      args={"agent_name": agent_name, "transfer_reason": "test reason"},
   )
 
 

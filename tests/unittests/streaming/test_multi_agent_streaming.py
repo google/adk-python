@@ -35,7 +35,8 @@ def test_live_streaming_multi_agent_single_tool():
   # Mock response for the root_agent to delegate the task to the roll_agent.
   # FIX: Use from_function_call to represent delegation to a sub-agent.
   delegation_to_roll_agent = types.Part.from_function_call(
-      name='transfer_to_agent', args={'agent_name': 'roll_agent'}
+      name='transfer_to_agent',
+      args={'agent_name': 'roll_agent', 'transfer_reason': 'test reason'},
   )
 
   root_response1 = LlmResponse(
@@ -132,7 +133,10 @@ def test_live_streaming_multi_agent_single_tool():
           # FIX: Check for the function call that represents delegation.
           if part.function_call.name == 'transfer_to_agent':
             delegation_found = True
-            assert part.function_call.args == {'agent_name': 'roll_agent'}
+            assert part.function_call.args == {
+                'agent_name': 'roll_agent',
+                'transfer_reason': 'test reason',
+            }
 
           # Check for the function call made by the roll_agent.
           if part.function_call.name == 'roll_die':
