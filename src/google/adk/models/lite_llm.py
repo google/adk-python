@@ -2960,7 +2960,8 @@ class LiteLlm(BaseLlm):
         completion_args["extra_headers"] = extra_headers
 
       if http_opts.timeout is not None:
-        completion_args["timeout"] = http_opts.timeout
+        # HttpOptions.timeout is milliseconds; LiteLLM's timeout is seconds.
+        completion_args["timeout"] = http_opts.timeout / 1000
 
       if (
           http_opts.retry_options is not None
