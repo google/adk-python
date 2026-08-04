@@ -242,6 +242,10 @@ _SUPPORTED_FILE_CONTENT_MIME_TYPES = frozenset({
 # Providers that require file_id instead of inline file_data
 _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 
+# Routing-only prefix: requests go through a LiteLLM Proxy deployment, but the
+# payload must still be shaped for the provider named in the next segment.
+_PROXY_PROVIDER = "litellm_proxy"
+
 _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
@@ -309,6 +313,34 @@ def _map_finish_reason(
   return _FINISH_REASON_MAPPING.get(finish_reason_str, types.FinishReason.OTHER)
 
 
+def _strip_proxy_prefix(model: str) -> str:
+  """Removes a leading ``litellm_proxy/`` routing prefix from a model string.
+
+  ``litellm_proxy`` selects the transport (a LiteLLM Proxy deployment), not the
+  model family, so the segment after it identifies the provider that actually
+  serves the request (e.g. ``litellm_proxy/azure/my-deployment`` is served by
+  Azure). Provider-specific request shaping must follow that underlying
+  provider, otherwise proxied requests get generic payloads the backend
+  rejects.
+
+  A bare ``litellm_proxy/<deployment>`` has no nested provider, so the
+  remainder is returned as-is and provider detection falls back to the
+  model-name heuristics.
+
+  Args:
+    model: The model string (e.g., "litellm_proxy/azure/gpt-4").
+
+  Returns:
+    The model string without the ``litellm_proxy/`` prefix.
+  """
+  if not model:
+    return model
+  prefix = _PROXY_PROVIDER + "/"
+  if model.lower().startswith(prefix):
+    return model[len(prefix) :]
+  return model
+
+
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
 
@@ -320,6 +352,9 @@ def _get_provider_from_model(model: str) -> str:
   """
   if not model:
     return ""
+  # `litellm_proxy` is a transport prefix; the provider that actually serves
+  # the request is the next segment.
+  model = _strip_proxy_prefix(model)
   # LiteLLM uses "provider/model" format
   if "/" in model:
     provider, _ = model.split("/", 1)
@@ -2685,7 +2720,7 @@ def _is_anthropic_model(model_string: str) -> bool:
   Returns:
     True if it's an Anthropic Claude model, False otherwise.
   """
-  lower = model_string.lower()
+  lower = _strip_proxy_prefix(model_string.lower())
   if lower.startswith("anthropic/"):
     return True
   if lower.startswith("bedrock/"):
@@ -2706,7 +2741,7 @@ def _is_litellm_vertex_model(model_string: str) -> bool:
   Returns:
     True if it's a Vertex AI model accessed via LiteLLM, False otherwise
   """
-  return model_string.startswith("vertex_ai/")
+  return _strip_proxy_prefix(model_string).startswith("vertex_ai/")
 
 
 def _is_litellm_gemini_model(model_string: str) -> bool:
@@ -2719,7 +2754,9 @@ def _is_litellm_gemini_model(model_string: str) -> bool:
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise
   """
-  return model_string.startswith(("gemini/gemini-", "vertex_ai/gemini-"))
+  return _strip_proxy_prefix(model_string).startswith(
+      ("gemini/gemini-", "vertex_ai/gemini-")
+  )
 
 
 def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
@@ -2731,6 +2768,9 @@ def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
   Returns:
     Pure Gemini model name like "gemini-2.5-pro"
   """
+  # Remove the proxy routing prefix first so the provider prefix below is the
+  # one that actually names the model family.
+  litellm_model = _strip_proxy_prefix(litellm_model)
   # Remove LiteLLM provider prefix
   if "/" in litellm_model:
     return litellm_model.split("/", 1)[1]

@@ -33,6 +33,7 @@ from google.adk.models.lite_llm import _BraceDepthTracker
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
+from google.adk.models.lite_llm import _extract_gemini_model_from_litellm
 from google.adk.models.lite_llm import _extract_json_from_deepseek_args
 from google.adk.models.lite_llm import _extract_reasoning_value
 from google.adk.models.lite_llm import _extract_thought_signature_from_tool_call
@@ -45,6 +46,8 @@ from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _is_anthropic_model
 from google.adk.models.lite_llm import _is_anthropic_provider
 from google.adk.models.lite_llm import _is_anthropic_route
+from google.adk.models.lite_llm import _is_litellm_gemini_model
+from google.adk.models.lite_llm import _is_litellm_vertex_model
 from google.adk.models.lite_llm import _looks_like_openai_file_id
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
@@ -5172,6 +5175,17 @@ async def test_finish_reason_unknown_maps_to_other(
         ("groq/llama3-70b", "groq"),
         ("anthropic/claude-3", "anthropic"),
         ("vertex_ai/gemini-pro", "vertex_ai"),
+        # litellm_proxy is a routing prefix: the provider that actually serves
+        # the request is the segment after it.
+        ("litellm_proxy/azure/my-deployment", "azure"),
+        ("litellm_proxy/openai/gpt-4o", "openai"),
+        ("litellm_proxy/anthropic/claude-3", "anthropic"),
+        ("litellm_proxy/vertex_ai/gemini-pro", "vertex_ai"),
+        ("LiteLLM_Proxy/azure/gpt-4", "azure"),
+        # A bare proxy deployment name has no nested provider, so detection
+        # falls back to the model-name heuristics.
+        ("litellm_proxy/azure-gpt-4", "azure"),
+        ("litellm_proxy/my-deployment", ""),
         # Fallback heuristics
         ("gpt-4o", "openai"),
         ("o1-preview", "openai"),
@@ -5185,6 +5199,55 @@ async def test_finish_reason_unknown_maps_to_other(
 def test_get_provider_from_model(model_string, expected_provider):
   """Test provider extraction from model strings."""
   assert _get_provider_from_model(model_string) == expected_provider
+
+
+@pytest.mark.parametrize(
+    "model_string, is_anthropic, is_gemini, is_vertex, gemini_name",
+    [
+        # Proxied models keep the behavior of the provider that serves them.
+        (
+            "litellm_proxy/anthropic/claude-4-sonnet",
+            True,
+            False,
+            False,
+            "claude-4-sonnet",
+        ),
+        (
+            "litellm_proxy/vertex_ai/gemini-2.5-flash",
+            False,
+            True,
+            True,
+            "gemini-2.5-flash",
+        ),
+        (
+            "litellm_proxy/bedrock/anthropic.claude-3-5-sonnet",
+            True,
+            False,
+            False,
+            "anthropic.claude-3-5-sonnet",
+        ),
+        (
+            "litellm_proxy/azure/my-deployment",
+            False,
+            False,
+            False,
+            "my-deployment",
+        ),
+        # Direct (non-proxied) strings are unaffected.
+        ("anthropic/claude-4-sonnet", True, False, False, "claude-4-sonnet"),
+        ("vertex_ai/gemini-2.5-flash", False, True, True, "gemini-2.5-flash"),
+        ("gemini/gemini-2.5-pro", False, True, False, "gemini-2.5-pro"),
+        ("azure/gpt-4", False, False, False, "gpt-4"),
+    ],
+)
+def test_model_family_detection_through_litellm_proxy(
+    model_string, is_anthropic, is_gemini, is_vertex, gemini_name
+):
+  """Model-family detection must see through the litellm_proxy prefix."""
+  assert _is_anthropic_model(model_string) is is_anthropic
+  assert _is_litellm_gemini_model(model_string) is is_gemini
+  assert _is_litellm_vertex_model(model_string) is is_vertex
+  assert _extract_gemini_model_from_litellm(model_string) == gemini_name
 
 
 @pytest.mark.parametrize(
@@ -5223,6 +5286,38 @@ async def test_get_content_pdf_openai_uses_file_id(mocker):
       file=b"test_pdf_data",
       purpose="assistants",
       custom_llm_provider="openai",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_proxied_azure_uses_file_id(mocker):
+  """PDFs sent to a proxied Azure model must upload and send a file_id.
+
+  Regression test: a nested ``litellm_proxy/azure/...`` identifier used to be
+  classified as the ``litellm_proxy`` provider, which skipped the Azure upload
+  path and emitted a bare ``file_data`` block that Azure rejects.
+  """
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "litellm_proxy/azure/my-deployment"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(
+      parts, provider=_get_provider_from_model(model), model=model
+  )
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  assert "file_data" not in content[0]["file"]
+
+  mock_acreate_file.assert_called_once_with(
+      file=b"test_pdf_data",
+      purpose="assistants",
+      custom_llm_provider="azure",
   )
 
 
