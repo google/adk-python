@@ -113,7 +113,11 @@ async def main() -> None:
             )
         ) as events:
           async for event in events:
-            if event.output_transcription and event.output_transcription.text:
+            if (
+                event.output_transcription
+                and event.output_transcription.finished
+                and event.output_transcription.text
+            ):
               print(event.output_transcription.text, end="", flush=True)
 
             for part in (event.content.parts or []) if event.content else []:
