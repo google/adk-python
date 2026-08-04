@@ -222,12 +222,12 @@ def _create_function_response_content(name: str, call_id: str) -> types.Content:
 async def test_filter_preserves_function_call_response_pairs():
   """Tests that function_call and function_response pairs are kept together.
 
-  This tests the fix for issue #4027 where filtering could create orphaned
+  This tests the fix for the case where filtering could create orphaned
   function_response messages without their corresponding function_call.
   """
   plugin = ContextFilterPlugin(num_invocations_to_keep=2)
 
-  # Simulate conversation from issue #4027:
+  # Simulate the reported conversation:
   # user -> model -> user -> model(function_call) -> user(function_response)
   # -> model -> user -> model(function_call) -> user(function_response)
   contents = [

@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING
 
 from ...events.event import Event
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import as_llm_agent
+from ._invocation_utils import require_agent_name
 
 if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
@@ -100,10 +102,11 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
     """
     from ...models.google_llm import Gemini
 
-    agent = invocation_context.agent
-    # Only process if using Gemini with interactions API
+    agent = as_llm_agent(invocation_context)
     if not hasattr(agent, 'canonical_model'):
       return
+
+    # Only process if using Gemini with interactions API
     model = agent.canonical_model
     if not isinstance(model, Gemini):
       return
@@ -129,7 +132,7 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
     """Find the previous interaction ID from session events."""
     interaction_id, _ = _find_previous_interaction_state(
         invocation_context.session.events,
-        agent_name=invocation_context.agent.name,
+        agent_name=require_agent_name(invocation_context),
         current_branch=invocation_context.branch,
     )
     return interaction_id

@@ -148,7 +148,7 @@ class LlmRequest(BaseModel):
 
       # Process all parts, creating references for non-text parts
       non_text_count = 0
-      for part in instructions.parts:
+      for part in instructions.parts or []:
         if part.text:
           # Text part - add to system instruction
           text_parts.append(part.text)

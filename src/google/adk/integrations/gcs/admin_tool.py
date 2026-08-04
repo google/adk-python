@@ -76,6 +76,31 @@ def list_buckets(
     }
 
 
+def get_bucket(*, bucket_name: str, credentials: Credentials) -> dict[str, Any]:
+  """Get metadata information about a GCS bucket.
+
+  Args:
+      bucket_name (str): The name of the GCS bucket.
+      credentials (Credentials): The credentials to use for the request.
+
+  Returns:
+      dict: Dictionary representing the properties of the bucket.
+  """
+  try:
+    gcs_client = client.get_gcs_client(credentials=credentials)
+    bucket = gcs_client.get_bucket(bucket_name)
+    results = getattr(bucket, "_properties", {}).copy()
+    return {
+        "status": "SUCCESS",
+        "results": results,
+    }
+  except Exception as ex:
+    return {
+        "status": "ERROR",
+        "error_details": str(ex),
+    }
+
+
 def create_bucket(
     *,
     project_id: str,

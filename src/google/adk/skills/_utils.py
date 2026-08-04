@@ -179,6 +179,42 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
   )
 
 
+def _load_skills_from_dir(
+    skills_dir: Union[str, pathlib.Path],
+) -> list[models.Skill]:
+  """Load all skills from subdirectories within a directory.
+
+  Args:
+    skills_dir: Path to the directory containing skill folders.
+
+  Returns:
+    List of Skill objects loaded from valid skill directories.
+
+  Raises:
+    FileNotFoundError: If skills_dir does not exist.
+    ValueError: If skills_dir is not a directory, or if any skill fails
+      validation.
+  """
+  skills_dir = pathlib.Path(skills_dir).resolve()
+  if not skills_dir.exists():
+    raise FileNotFoundError(f"Skills directory '{skills_dir}' does not exist.")
+  if not skills_dir.is_dir():
+    raise ValueError(f"'{skills_dir}' is not a directory.")
+
+  skills: list[models.Skill] = []
+  for subdir in sorted(skills_dir.iterdir()):
+    if not subdir.is_dir():
+      continue
+    if (
+        not (subdir / "SKILL.md").exists()
+        and not (subdir / "skill.md").exists()
+    ):
+      continue
+    skills.append(_load_skill_from_dir(subdir))
+
+  return skills
+
+
 def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
   """Load a complete skill directly from in-memory zip file bytes.
 

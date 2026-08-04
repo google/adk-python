@@ -136,6 +136,14 @@ async def test_get_auth_credential_raises_error_if_user_id_is_missing(
     await provider.get_auth_credential(auth_scheme, context=context)
 
 
+async def test_get_auth_credential_rejects_unsupported_response(
+    provider, auth_scheme, context, mock_response
+):
+  """Test that an empty upstream state fails explicitly."""
+  with pytest.raises(RuntimeError, match="returned an unsupported state"):
+    await provider.get_auth_credential(auth_scheme, context=context)
+
+
 async def test_get_auth_credential_returns_credential_if_available_immediately(
     mock_client,
     auth_scheme,

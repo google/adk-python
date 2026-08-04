@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from google.adk import models
+from google.adk.labs.openai._openai_llm import OpenAILlm
 from google.adk.models.anthropic_llm import Claude
+from google.adk.models.apigee_llm import ApigeeLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.lite_llm import LiteLlm
 import pytest
@@ -67,6 +69,46 @@ def test_match_claude_family(model_name):
 def test_match_litellm_family(model_name):
   """Test that LiteLLM models are resolved correctly."""
   assert models.LLMRegistry.resolve(model_name) is LiteLlm
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'xai/grok-4',
+        'gemini/gemini-3.5-flash',
+        'openrouter/anthropic/claude-opus-4',
+        'cerebras/llama-3.3-70b',
+    ],
+)
+def test_match_litellm_provider_not_spelled_out_in_registry(model_name):
+  """Test that any provider LiteLLM knows about resolves to LiteLlm."""
+  assert models.LLMRegistry.resolve(model_name) is LiteLlm
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'apigee/gemini-2.5-flash',
+        'apigee/v1/gemini-2.5-flash',
+        'apigee/vertex_ai/v1beta/gemini-2.5-flash',
+    ],
+)
+def test_match_apigee_family(model_name):
+  """Test that Apigee models are resolved correctly."""
+  assert models.LLMRegistry.resolve(model_name) is ApigeeLlm
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'o1-preview',
+        'o3-mini',
+        'o4-mini',
+    ],
+)
+def test_match_openai_reasoning_family(model_name):
+  """Test that the OpenAI o-series resolves regardless of generation."""
+  assert models.LLMRegistry.resolve(model_name) is OpenAILlm
 
 
 def test_non_exist_model():

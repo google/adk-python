@@ -39,6 +39,7 @@ class GCSAdminToolset(BaseToolset):
   """GCS Admin Toolset contains tools for interacting with GCS admin tasks.
 
   The tool names are:
+    - get_bucket
     - create_bucket
     - update_bucket
     - delete_bucket
@@ -72,15 +73,17 @@ class GCSAdminToolset(BaseToolset):
         Capabilities.READ_ONLY in self._tool_settings.capabilities
         or Capabilities.READ_WRITE in self._tool_settings.capabilities
     ):
+      read_funcs: list[Callable[..., Any]] = [
+          admin_tool.get_bucket,
+          admin_tool.list_buckets,
+      ]
       all_tools.extend([
           GoogleTool(
               func=func,
               credentials_config=self._credentials_config,
               tool_settings=self._tool_settings,
           )
-          for func in [
-              admin_tool.list_buckets,
-          ]
+          for func in read_funcs
       ])
 
     if (

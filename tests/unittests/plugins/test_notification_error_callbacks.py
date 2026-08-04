@@ -14,7 +14,7 @@
 
 """Tests for on_agent_error_callback and on_run_error_callback.
 
-Validates RFC #5044: agent-level and runner-level error callbacks.
+Validates the agent-level and runner-level error callback contract.
 """
 
 import asyncio

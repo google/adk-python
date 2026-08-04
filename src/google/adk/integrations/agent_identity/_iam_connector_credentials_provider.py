@@ -99,6 +99,17 @@ def _construct_auth_credential(
   )
 
 
+def _require_credentials_response(
+    response: RetrieveCredentialsResponse | None,
+) -> RetrieveCredentialsResponse:
+  """Require a credential response from a completed operation."""
+  if response is None:
+    raise RuntimeError(
+        "IAM Connector Credentials operation completed without a response."
+    )
+  return response
+
+
 class _IamConnectorCredentialsProvider:
   """Implementation for auth provider using IAM Connector credentials service."""
 
@@ -143,11 +154,11 @@ class _IamConnectorCredentialsProvider:
     """Deserializes the response and metadata from the operation."""
     response = None
     metadata = None
-    if operation.response:
+    if operation.HasField("response"):
       response = RetrieveCredentialsResponse.deserialize(
           operation.response.value
       )
-    if operation.metadata:
+    if operation.HasField("metadata"):
       metadata = RetrieveCredentialsMetadata.deserialize(
           operation.metadata.value
       )
@@ -236,7 +247,7 @@ class _IamConnectorCredentialsProvider:
 
     if operation.done:
       logger.debug("Auth credential obtained immediately.")
-      return _construct_auth_credential(response)
+      return _construct_auth_credential(_require_credentials_response(response))
 
     if metadata is not None and "consent_pending" in metadata:
       # Get 2-legged OAuth token. Allow enough time for token exchange.
@@ -251,7 +262,9 @@ class _IamConnectorCredentialsProvider:
         if operation.done:
           logger.debug("Auth credential obtained after polling.")
           response, _ = self._unpack_operation(operation)
-          return _construct_auth_credential(response)
+          return _construct_auth_credential(
+              _require_credentials_response(response)
+          )
       except (GoogleAPIError, GoogleAuthError, TimeoutError) as e:
         raise RuntimeError(
             f"Failed to retrieve credential for user '{user_id}' on connector"
@@ -270,3 +283,7 @@ class _IamConnectorCredentialsProvider:
               nonce=metadata.uri_consent_required.consent_nonce,
           ),
       )
+
+    raise RuntimeError(
+        "IAM Connector Credentials service returned an unsupported state."
+    )

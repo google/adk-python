@@ -26,6 +26,7 @@ from a2a.client.client import ClientConfig
 from a2a.client.client_factory import ClientFactory
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
+from a2a.types import AgentInterface
 from a2a.types import AgentSkill
 from a2a.types import Artifact
 from a2a.types import Message as A2AMessage
@@ -161,6 +162,37 @@ def create_test_agent_card(
               description="A test skill",
               tags=["test"],
           )
+      ],
+  )
+
+
+def _make_multi_interface_card(interfaces) -> AgentCard:
+  """Build a card offering several RPC endpoints, version-agnostically.
+
+  ``interfaces`` is a list of ``(url, transport)`` pairs; the first pair is the
+  card's primary endpoint. On 1.x every pair becomes a ``supported_interfaces``
+  entry; on 0.3.x the first pair is the top-level ``url``/``preferredTransport``
+  and the rest land in ``additional_interfaces``.
+  """
+  if _compat.IS_A2A_V1:
+    return _compat.parse_agent_card({
+        "name": "test-agent",
+        "description": "Test agent",
+        "version": "1.0",
+        "supported_interfaces": [
+            {"url": url, "protocol_binding": transport}
+            for url, transport in interfaces
+        ],
+        "default_input_modes": ["text/plain"],
+        "default_output_modes": ["text/plain"],
+    })
+  (primary_url, primary_transport), *extra = interfaces
+  return _make_agent_card(
+      url=primary_url,
+      preferred_transport=primary_transport,
+      additional_interfaces=[
+          AgentInterface(url=url, transport=transport)
+          for url, transport in extra
       ],
   )
 
@@ -783,6 +815,141 @@ class TestRemoteA2aAgentResolution:
 
     with pytest.raises(AgentCardResolutionError, match="Invalid RPC URL"):
       await agent._validate_agent_card(invalid_card)
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_accepts_same_origin_https_rpc_url(self):
+    """A fetched card pointing back at its own origin is accepted."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    # Should not raise any exception.
+    await agent._validate_agent_card(
+        create_test_agent_card(url="https://example.com/rpc")
+    )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_rejects_cross_origin_rpc_url(self):
+    """A fetched card cannot redirect RPC traffic to an unrelated host."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="same origin"):
+      await agent._validate_agent_card(
+          create_test_agent_card(url="https://attacker.example.net/rpc")
+      )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_rejects_plain_http_rpc_url(self):
+    """A fetched card cannot downgrade RPC traffic to cleartext."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="must use https"):
+      await agent._validate_agent_card(
+          create_test_agent_card(url="http://example.com/rpc")
+      )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "rpc_url",
+      [
+          "http://127.0.0.1:8080/rpc",
+          "http://[::1]:8080/rpc",
+          "http://169.254.169.254/rpc",
+          "http://metadata.internal/rpc",
+      ],
+  )
+  async def test_validate_agent_card_rejects_internal_rpc_url(self, rpc_url):
+    """A fetched card cannot aim RPC traffic at host-local or internal hosts."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    with pytest.raises(AgentCardResolutionError):
+      await agent._validate_agent_card(create_test_agent_card(url=rpc_url))
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_allows_local_development_http(self):
+    """Plain http stays allowed for a same-origin loopback card."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://localhost:8000/.well-known/agent.json",
+    )
+
+    # Should not raise any exception.
+    await agent._validate_agent_card(
+        create_test_agent_card(url="http://localhost:8000/a2a")
+    )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_file_source_is_not_origin_checked(self):
+    """A card read from a local file is configuration, not remote data."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card="/path/to/agent.json")
+
+    # Should not raise any exception.
+    await agent._validate_agent_card(
+        create_test_agent_card(url="http://internal-host:8080/rpc")
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "interfaces",
+      [
+          # A second interface on the transport the client already prefers
+          # displaces the benign endpoint during transport negotiation.
+          [
+              ("https://example.com/rpc", "JSONRPC"),
+              ("http://169.254.169.254/", "JSONRPC"),
+          ],
+          # The primary endpoint advertises a transport the client cannot
+          # speak, so negotiation falls through to the second interface.
+          [
+              ("https://example.com/rpc", "GRPC"),
+              ("http://127.0.0.1:9000/", "HTTP+JSON"),
+          ],
+      ],
+      ids=["displaces_primary", "primary_transport_unsupported"],
+  )
+  async def test_validate_agent_card_rejects_off_origin_extra_interface(
+      self, interfaces
+  ):
+    """Every endpoint the card offers is constrained, not just the first."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    with pytest.raises(AgentCardResolutionError):
+      await agent._validate_agent_card(_make_multi_interface_card(interfaces))
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_accepts_same_origin_extra_interface(self):
+    """A card may still offer several endpoints on its own origin."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    # Should not raise any exception.
+    await agent._validate_agent_card(
+        _make_multi_interface_card([
+            ("https://example.com/rpc", "JSONRPC"),
+            ("https://example.com/rest", "HTTP+JSON"),
+        ])
+    )
+
+  def test_agent_card_rpc_urls_lists_every_endpoint(self):
+    """Validation enumerates every endpoint on the card, in card order."""
+    card = _make_multi_interface_card([
+        ("https://example.com/rpc", "JSONRPC"),
+        ("https://example.com/rest", "HTTP+JSON"),
+    ])
+
+    assert _compat.agent_card_rpc_urls(card) == [
+        "https://example.com/rpc",
+        "https://example.com/rest",
+    ]
 
   @pytest.mark.asyncio
   async def test_ensure_resolved_with_direct_agent_card(self):
@@ -1448,7 +1615,7 @@ class TestRemoteA2aAgentMessageHandling:
   ):
     """Test streaming A2A response handling when content/parts are missing.
 
-    This verifies the fix for issue #3769 where the code could raise when it
+    This verifies the fix for the case where the code could raise when it
     tried to read parts[0] without checking for empty/missing content.
     """
     mock_a2a_task = create_autospec(A2ATask, instance=True)
@@ -1731,7 +1898,7 @@ class TestRemoteA2aAgentMessageHandling:
 
 
 class TestRemoteA2aAgentStreamingArtifactChunks:
-  """Regression tests for chunked artifact streams (#6343)."""
+  """Regression tests for chunked artifact streams."""
 
   def setup_method(self):
     """Setup test fixtures."""

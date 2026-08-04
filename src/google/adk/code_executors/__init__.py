@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
   if name == 'VertexAiCodeExecutor':
     try:
       from .vertex_ai_code_executor import VertexAiCodeExecutor

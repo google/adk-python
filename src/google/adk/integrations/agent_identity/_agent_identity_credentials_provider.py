@@ -246,3 +246,7 @@ class _AgentIdentityCredentialsProvider:
               nonce=response.uri_consent_required.consent_nonce,
           ),
       )
+
+    raise RuntimeError(
+        "Agent Identity Credentials service returned an unsupported state."
+    )

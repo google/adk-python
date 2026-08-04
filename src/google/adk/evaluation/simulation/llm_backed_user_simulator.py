@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 from typing import ClassVar
 
 from google.genai import types as genai_types
@@ -139,9 +140,13 @@ class LlmBackedUserSimulator(UserSimulator):
     self._conversation_scenario = conversation_scenario
     self._invocation_count = 0
     llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(self._config.model)
-    self._llm = llm_class(model=self._config.model)
+    llm_class = llm_registry.resolve(self._llm_config.model)
+    self._llm = llm_class(model=self._llm_config.model)
     self._user_persona = self._conversation_scenario.user_persona
+
+  @property
+  def _llm_config(self) -> LlmBackedUserSimulatorConfig:
+    return cast(LlmBackedUserSimulatorConfig, self._config)
 
   @classmethod
   def _summarize_conversation(
@@ -194,13 +199,13 @@ class LlmBackedUserSimulator(UserSimulator):
         conversation_plan=self._conversation_scenario.conversation_plan,
         conversation_history=rewritten_dialogue,
         stop_signal=_STOP_SIGNAL,
-        custom_instructions=self._config.custom_instructions,
+        custom_instructions=self._llm_config.custom_instructions,
         user_persona=self._user_persona,
     )
 
     llm_request = LlmRequest(
-        model=self._config.model,
-        config=self._config.model_configuration,
+        model=self._llm_config.model,
+        config=self._llm_config.model_configuration,
         contents=[
             genai_types.Content(
                 parts=[
@@ -228,12 +233,8 @@ class LlmBackedUserSimulator(UserSimulator):
           response = ""
           break
 
-        generated_content: genai_types.Content = llm_response.content
-        if (
-            not generated_content
-            or not hasattr(generated_content, "parts")
-            or not generated_content.parts
-        ):
+        generated_content = llm_response.content
+        if generated_content is None or not generated_content.parts:
           continue
 
         for part in generated_content.parts:
@@ -273,7 +274,7 @@ class LlmBackedUserSimulator(UserSimulator):
       NO_MESSAGE_GENERATED status.
     """
     # check invocation limit
-    invocation_limit = self._config.max_allowed_invocations
+    invocation_limit = self._llm_config.max_allowed_invocations
     if invocation_limit >= 0 and self._invocation_count >= invocation_limit:
       logger.warning(
           "LlmBackedUserSimulator invocation limit (%d) reached!",
@@ -283,7 +284,7 @@ class LlmBackedUserSimulator(UserSimulator):
 
     # rewrite events for the user simulator
     rewritten_dialogue = self._summarize_conversation(
-        events, self._config.include_function_calls
+        events, self._llm_config.include_function_calls
     )
 
     # query the LLM for the next user message

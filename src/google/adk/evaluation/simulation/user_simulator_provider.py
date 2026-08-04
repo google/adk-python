@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+from typing import cast
 from typing import Optional
+from typing import Protocol
 
 from ...utils.feature_decorator import experimental
+from ..conversation_scenarios import ConversationScenario
 from ..eval_case import EvalCase
 from ._llm_audio_user_simulator import _LlmAudioUserSimulator
 from ._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
@@ -44,6 +47,17 @@ register_user_simulator(LlmAudioUserSimulatorConfig, _LlmAudioUserSimulator)
 _LEGACY_DEFAULT_CONFIG_TYPE: type[BaseUserSimulatorConfig] = (
     LlmBackedUserSimulatorConfig
 )
+
+
+class _ScenarioUserSimulatorFactory(Protocol):
+
+  def __call__(
+      self,
+      *,
+      config: BaseUserSimulatorConfig,
+      conversation_scenario: ConversationScenario,
+  ) -> UserSimulator:
+    """Creates a scenario-driven simulator from registered configuration."""
 
 
 @experimental
@@ -138,7 +152,8 @@ class UserSimulatorProvider:
             text_simulator=text_simulator,
         )
 
-      return simulator_cls(
+      simulator_factory = cast(_ScenarioUserSimulatorFactory, simulator_cls)
+      return simulator_factory(
           config=self._user_simulator_config,
           conversation_scenario=eval_case.conversation_scenario,
       )

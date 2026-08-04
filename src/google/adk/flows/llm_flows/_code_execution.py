@@ -25,6 +25,7 @@ import logging
 import os
 import re
 from typing import AsyncGenerator
+from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -46,6 +47,7 @@ from ...models.llm_response import LlmResponse
 from ...utils.context_utils import Aclosing
 from ._base_llm_processor import BaseLlmRequestProcessor
 from ._base_llm_processor import BaseLlmResponseProcessor
+from ._invocation_utils import as_llm_agent
 
 if TYPE_CHECKING:
   from ...models.llm_request import LlmRequest
@@ -132,9 +134,12 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    if not hasattr(invocation_context.agent, 'code_executor'):
+    agent = as_llm_agent(invocation_context)
+    if not hasattr(agent, 'code_executor'):
       return
-    if not invocation_context.agent.code_executor:
+
+    code_executor = agent.code_executor
+    if not code_executor:
       return
 
     async with Aclosing(
@@ -144,15 +149,15 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
         yield event
 
     # Convert the code execution parts to text parts.
-    if not isinstance(invocation_context.agent.code_executor, BaseCodeExecutor):
+    if not isinstance(code_executor, BaseCodeExecutor):
       return
     for content in llm_request.contents:
       CodeExecutionUtils.convert_code_execution_parts(
           content,
-          invocation_context.agent.code_executor.code_block_delimiters[0]
-          if invocation_context.agent.code_executor.code_block_delimiters
+          code_executor.code_block_delimiters[0]
+          if code_executor.code_block_delimiters
           else ('', ''),
-          invocation_context.agent.code_executor.execution_result_delimiters,
+          code_executor.execution_result_delimiters,
       )
 
 
@@ -185,10 +190,10 @@ async def _run_pre_processor(
     llm_request: LlmRequest,
 ) -> AsyncGenerator[Event, None]:
   """Pre-process the user message by adding the user message to the Colab notebook."""
-  if not hasattr(invocation_context.agent, 'code_executor'):
+  agent = as_llm_agent(invocation_context)
+  if not hasattr(agent, 'code_executor'):
     return
 
-  agent = invocation_context.agent
   code_executor = agent.code_executor
 
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
@@ -272,15 +277,18 @@ async def _run_pre_processor(
         invocation_context, code_executor_context, code_execution_result
     )
     yield execution_result_event
-    llm_request.contents.append(copy.deepcopy(execution_result_event.content))
+    execution_result_content = execution_result_event.content
+    if execution_result_content is None:
+      raise RuntimeError('Code-execution result event must contain content.')
+    llm_request.contents.append(copy.deepcopy(execution_result_content))
 
 
 async def _run_post_processor(
     invocation_context: InvocationContext,
-    llm_response,
+    llm_response: LlmResponse,
 ) -> AsyncGenerator[Event, None]:
   """Post-process the model response by extracting and executing the first code block."""
-  agent = invocation_context.agent
+  agent = as_llm_agent(invocation_context)
   code_executor = agent.code_executor
 
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
@@ -293,20 +301,25 @@ async def _run_post_processor(
 
     # If an image is generated, save it to the artifact service and add it to
     # the event actions.
-    for part in llm_response.content.parts:
-      if part.inline_data and part.inline_data.mime_type.startswith('image/'):
+    for part in llm_response.content.parts or []:
+      inline_data = part.inline_data
+      if inline_data and (inline_data.mime_type or '').startswith('image/'):
         if invocation_context.artifact_service is None:
           raise ValueError('Artifact service is not initialized.')
 
-        if part.inline_data.display_name:
-          file_name = part.inline_data.display_name
+        if inline_data.display_name:
+          file_name = inline_data.display_name
         else:
           now = datetime.datetime.fromtimestamp(
               platform_time.get_time()
           ).astimezone()
           timestamp = now.strftime('%Y%m%d_%H%M%S')
-          file_extension = part.inline_data.mime_type.split('/')[-1]
+          file_extension = (inline_data.mime_type or 'image').split('/')[-1]
           file_name = f'{timestamp}.{file_extension}'
+
+        data = inline_data.data
+        if not isinstance(data, bytes):
+          raise TypeError('Generated image artifact data must be bytes.')
 
         version = await invocation_context.artifact_service.save_artifact(
             app_name=invocation_context.app_name,
@@ -314,8 +327,8 @@ async def _run_post_processor(
             session_id=invocation_context.session.id,
             filename=file_name,
             artifact=types.Part.from_bytes(
-                data=part.inline_data.data,
-                mime_type=part.inline_data.mime_type,
+                data=data,
+                mime_type=inline_data.mime_type or 'application/octet-stream',
             ),
         )
         event_actions.artifact_delta[file_name] = version
@@ -396,31 +409,33 @@ def _extract_and_replace_inline_files(
   for i in range(len(llm_request.contents)):
     content = llm_request.contents[i]
     # Only process the user message.
-    if content.role != 'user' and not content.parts:
+    if content.role != 'user' or not content.parts:
       continue
 
-    for j in range(len(content.parts)):
-      part = content.parts[j]
+    parts = content.parts
+    for j, part in enumerate(parts):
       # Skip if the inline data is not supported.
+      inline_data = part.inline_data
       if (
-          not part.inline_data
-          or part.inline_data.mime_type not in _DATA_FILE_UTIL_MAP
+          inline_data is None
+          or inline_data.mime_type not in _DATA_FILE_UTIL_MAP
       ):
         continue
 
+      data = inline_data.data
+      if not isinstance(data, bytes):
+        logger.warning('Skipping inline data file without byte content.')
+        continue
+
       # Replace the inline data file with a file name placeholder.
-      mime_type = part.inline_data.mime_type
+      mime_type = inline_data.mime_type
       file_name = f'data_{i+1}_{j+1}' + _DATA_FILE_UTIL_MAP[mime_type].extension
-      llm_request.contents[i].parts[j] = types.Part(
-          text='\nAvailable file: `%s`\n' % file_name
-      )
+      parts[j] = types.Part(text='\nAvailable file: `%s`\n' % file_name)
 
       # Add the inline data as input file to the code executor context.
       file = File(
           name=file_name,
-          content=CodeExecutionUtils.get_encoded_file_content(
-              part.inline_data.data
-          ).decode(),
+          content=CodeExecutionUtils.get_encoded_file_content(data).decode(),
           mime_type=mime_type,
       )
       if file_name not in saved_file_names:
@@ -435,7 +450,10 @@ def _get_or_set_execution_id(
     code_executor_context: CodeExecutorContext,
 ) -> Optional[str]:
   """Returns the ID for stateful code execution or None if not stateful."""
-  if not invocation_context.agent.code_executor.stateful:
+  code_executor = cast(
+      BaseCodeExecutor, as_llm_agent(invocation_context).code_executor
+  )
+  if not code_executor.stateful:
     return None
 
   execution_id = code_executor_context.get_execution_id()
@@ -490,7 +508,7 @@ async def _post_process_code_execution_result(
 
   return Event(
       invocation_id=invocation_context.invocation_id,
-      author=invocation_context.agent.name,
+      author=as_llm_agent(invocation_context).name,
       branch=invocation_context.branch,
       content=result_content,
       actions=event_actions,
@@ -525,12 +543,14 @@ def _get_data_file_preprocessing_code(file: File) -> Optional[str]:
     var_name = re.sub(r'[^a-zA-Z0-9_]', '_', var_name)
 
     # If the filename starts with a digit, prepend an underscore
+    if not var_name:
+      return '_data'
     if var_name[0].isdigit():
       var_name = '_' + var_name
     return var_name
 
   if file.mime_type not in _DATA_FILE_UTIL_MAP:
-    return
+    return None
 
   var_name = _get_normalized_file_name(file.name)
   loader_code = _DATA_FILE_UTIL_MAP[file.mime_type].loader_code_template.format(

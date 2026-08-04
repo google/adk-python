@@ -34,7 +34,6 @@ class MultimodalToolResultsPlugin(BasePlugin):
 
   Should be removed in favor of directly supporting FunctionResponsePart when these
   are supported outside of computer use tool.
-  For context see: https://github.com/google/adk-python/issues/3064#issuecomment-3463067459
   """
 
   def __init__(self, name: str = "multimodal_tool_results_plugin"):

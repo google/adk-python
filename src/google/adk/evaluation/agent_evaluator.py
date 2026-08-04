@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from collections.abc import Mapping
 import importlib
 import json
@@ -26,6 +27,7 @@ from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Protocol
 from typing import Union
 import uuid
 
@@ -34,6 +36,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -44,6 +47,7 @@ from .eval_config import EvalConfig
 from .eval_config import get_eval_metrics_from_config
 from .eval_config import get_evaluation_criteria_or_default
 from .eval_config import LiveModelConfig
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
@@ -68,6 +72,13 @@ TOOL_TRAJECTORY_SCORE_KEY = PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value
 RESPONSE_EVALUATION_SCORE_KEY = PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
 RESPONSE_MATCH_SCORE_KEY = PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
 SAFETY_V1_KEY = PrebuiltMetrics.SAFETY_V1.value
+
+
+class _AsyncAgentFactory(Protocol):
+
+  def __call__(self) -> Awaitable[tuple[BaseAgent, object]]:
+    """Loads a root agent and optional cleanup metadata."""
+
 
 ALLOWED_CRITERIA = [
     TOOL_TRAJECTORY_SCORE_KEY,
@@ -154,7 +165,7 @@ class AgentEvaluator:
     if eval_config is None:
       raise ValueError("`eval_config` is required.")
 
-    agent_for_eval = await AgentEvaluator._get_agent_for_eval(
+    agent_for_eval, app = await AgentEvaluator._get_agent_for_eval(
         module_name=agent_module, agent_name=agent_name
     )
     eval_metrics = get_eval_metrics_from_config(eval_config)
@@ -173,6 +184,7 @@ class AgentEvaluator:
         user_simulator_provider=user_simulator_provider,
         live_model_config=live_model_config,
         artifact_service=artifact_service,
+        app=app,
     )
 
     # Step 2: Post-process the results!
@@ -190,7 +202,7 @@ class AgentEvaluator:
       failures_per_eval_case = AgentEvaluator._process_metrics_and_get_failures(
           eval_metric_results=eval_metric_results,
           print_detailed_results=print_detailed_results,
-          agent_module=agent_name,
+          agent_module=agent_module,
       )
 
       failures.extend(failures_per_eval_case)
@@ -512,7 +524,16 @@ class AgentEvaluator:
   @staticmethod
   async def _get_agent_for_eval(
       module_name: str, agent_name: Optional[str] = None
-  ) -> BaseAgent:
+  ) -> tuple[BaseAgent, Optional[App]]:
+    """Returns the (agent_for_eval, app) pair for the given module.
+
+    If the module exposes an `App` instance via `agent.app`, that App is
+    returned alongside the agent to evaluate, so `app.plugins`, context-cache,
+    and resumability configs participate in the eval run. Otherwise `app` is
+    None and only the bare agent is returned. When `agent_name` is provided,
+    the returned agent is the corresponding sub-agent, but the App (if any) is
+    still surfaced so its application-wide configuration is honored.
+    """
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
 
@@ -525,25 +546,38 @@ class AgentEvaluator:
           " name should endwith `.agent`."
       )
 
-    agent_module_with_agent = (
-        agent_module.agent if hasattr(agent_module, "agent") else agent_module
+    agent_module_with_agent: object = getattr(
+        agent_module, "agent", agent_module
     )
-    if hasattr(agent_module_with_agent, "root_agent"):
-      root_agent = agent_module_with_agent.root_agent
-    elif hasattr(agent_module_with_agent, "get_agent_async"):
-      root_agent, _ = await agent_module_with_agent.get_agent_async()
-    else:
-      raise ValueError(
-          f"Module {module_name} does not have a root_agent or"
-          " get_agent_async method."
+    root_candidate: object = getattr(
+        agent_module_with_agent, "root_agent", None
+    )
+    if root_candidate is None:
+      factory_candidate: object = getattr(
+          agent_module_with_agent, "get_agent_async", None
       )
+      if not callable(factory_candidate):
+        raise ValueError(
+            f"Module {module_name} does not have a root_agent or"
+            " get_agent_async method."
+        )
+      factory = cast(_AsyncAgentFactory, factory_candidate)
+      root_candidate, _ = await factory()
+
+    root_agent = cast(BaseAgent, root_candidate)
+
+    app = getattr(agent_module_with_agent, "app", None)
+    if not isinstance(app, App):
+      app = None
 
     agent_for_eval = root_agent
     if agent_name:
-      agent_for_eval = root_agent.find_agent(agent_name)
-      assert agent_for_eval, f"Sub-Agent `{agent_name}` not found."
+      selected_agent = root_agent.find_agent(agent_name)
+      if selected_agent is None:
+        raise ValueError(f"Sub-Agent {agent_name!r} not found.")
+      agent_for_eval = selected_agent
 
-    return agent_for_eval
+    return agent_for_eval, app
 
   @staticmethod
   def _get_eval_sets_manager(
@@ -572,6 +606,7 @@ class AgentEvaluator:
       user_simulator_provider: UserSimulatorProvider,
       live_model_config: Optional[LiveModelConfig] = None,
       artifact_service: Optional[BaseArtifactService] = None,
+      app: Optional[App] = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -597,6 +632,7 @@ class AgentEvaluator:
         ),
         user_simulator_provider=user_simulator_provider,
         artifact_service=artifact_service,
+        app=app,
     )
 
     if live_model_config:
@@ -701,9 +737,11 @@ class AgentEvaluator:
         metric_name,
         eval_metric_results_with_invocations,
     ) in eval_metric_results.items():
-      threshold = eval_metric_results_with_invocations[
-          0
-      ].eval_metric_result.threshold
+      if not eval_metric_results_with_invocations:
+        continue
+      threshold = _get_metric_threshold(
+          eval_metric_results_with_invocations[0].eval_metric_result
+      )
       scores = [
           m.eval_metric_result.score
           for m in eval_metric_results_with_invocations

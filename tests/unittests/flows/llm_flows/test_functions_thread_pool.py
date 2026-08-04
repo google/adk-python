@@ -795,7 +795,7 @@ class TestCallToolInThreadPool:
 
   @pytest.mark.asyncio
   async def test_sync_tool_returning_none_runs_exactly_once(self):
-    """Regression test for issue #5284.
+    """Regression test for double invocation of a None-returning sync tool.
 
     A sync FunctionTool whose underlying function returns None must not
     be re-invoked through the run_async fallback path.

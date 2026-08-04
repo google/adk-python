@@ -671,6 +671,15 @@ class ApiServer:
   instance returned by get_fast_api_app as this class exposes the agent runners
   and most other bits of state retained during the lifetime of the server.
 
+  Security:
+      The served endpoints are unauthenticated. Any client that can reach the
+      server can read and write sessions, memory, and artifacts and run agents
+      for any user or app. Run it only on a trusted network (for example bound
+      to localhost for local development) and do not expose it directly to
+      untrusted or public networks. Put it behind your own authentication and
+      authorization layer before serving multiple users or exposing it beyond
+      the local machine.
+
   Attributes:
       agent_loader: An instance of BaseAgentLoader for loading agents.
       session_service: An instance of BaseSessionService for managing sessions.

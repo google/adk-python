@@ -22,7 +22,6 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Optional
 
 from typing_extensions import override
 
@@ -44,8 +43,8 @@ class LocalEnvironment(BaseEnvironment):
   def __init__(
       self,
       *,
-      working_dir: Optional[Path] = None,
-      env_vars: Optional[dict[str, str]] = None,
+      working_dir: Path | None = None,
+      env_vars: dict[str, str] | None = None,
   ):
     """Create a local environment.
 
@@ -91,7 +90,7 @@ class LocalEnvironment(BaseEnvironment):
       self,
       command: str,
       *,
-      timeout: Optional[float] = None,
+      timeout: float | None = None,
   ) -> ExecutionResult:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
@@ -161,9 +160,9 @@ class LocalEnvironment(BaseEnvironment):
   @staticmethod
   def _sync_write(path: Path, content: str | bytes) -> None:
     os.makedirs(path.parent, exist_ok=True)
-    mode = 'w' if isinstance(content, str) else 'wb'
-    kwargs = (
-        {'encoding': 'utf-8', 'newline': ''} if isinstance(content, str) else {}
-    )
-    with open(path, mode, **kwargs) as f:
-      f.write(content)
+    if isinstance(content, str):
+      with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(content)
+    else:
+      with open(path, 'wb') as f:
+        f.write(content)

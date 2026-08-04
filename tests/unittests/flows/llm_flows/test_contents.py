@@ -1324,7 +1324,7 @@ async def test_adk_function_call_ids_preserved_for_interactions_model():
 @pytest.mark.asyncio
 async def test_adk_function_call_ids_preserved_for_anthropic_model():
   """Anthropic ids must round-trip through replay so Claude can match
-  tool_use blocks with their tool_result blocks (issue #5074).
+  tool_use blocks with their tool_result blocks.
   """
   from google.adk.models.anthropic_llm import AnthropicLlm
 
@@ -1875,8 +1875,8 @@ def test_recover_compacted_function_calls_uses_latest_sibling_response():
 def test_get_contents_recovers_compacted_long_running_call_on_resume():
   """A long-running call compacted before resume is restored during assembly.
 
-  Reproduces issue #5602: the call and its intermediate placeholder response are
-  summarized away, then the real result arrives on resume. Without recovery,
+  The call and its intermediate placeholder response are summarized away, then
+  the real result arrives on resume. Without recovery,
   assembly raises because the resumed response has no matching call.
   """
   compaction = EventCompaction(

@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
+from pydantic import PrivateAttr
 from pydantic import SerializeAsAny
 from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
@@ -300,6 +301,22 @@ class EvalMetric(EvalBaseModel):
       description="""Path to custom function, if this is a custom metric.""",
   )
 
+  # The path declared for this metric in the eval config it was built from.
+  # Private, so that a metric parsed from an inbound payload cannot carry one:
+  # the public field above is settable by whoever built that payload.
+  _config_custom_function_path: Optional[str] = PrivateAttr(default=None)
+
+
+def _get_metric_threshold(eval_metric: EvalMetric) -> float:
+  """Returns the configured threshold or rejects an incomplete metric."""
+  if eval_metric.criterion is not None:
+    return eval_metric.criterion.threshold
+  if eval_metric.threshold is not None:
+    return eval_metric.threshold
+  raise ValueError(
+      f"Evaluation metric {eval_metric.metric_name!r} requires a threshold."
+  )
+
 
 class EvalMetricResultDetails(EvalBaseModel):
   rubric_scores: Optional[list[RubricScore]] = Field(
@@ -389,7 +406,7 @@ class MetricInfo(EvalBaseModel):
 
   metric_name: str = Field(description="The name of the metric.")
 
-  description: str = Field(
+  description: Optional[str] = Field(
       default=None, description="A 2 to 3 line description of the metric."
   )
 

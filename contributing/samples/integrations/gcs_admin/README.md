@@ -9,6 +9,10 @@ distributed via the `google.adk.integrations.gcs` module. These tools include:
 
 List GCS bucket names in a Google Cloud project.
 
+1. `gcs_get_bucket`
+
+Get metadata information about a GCS bucket.
+
 1. `gcs_create_bucket`
 
 Create a new GCS bucket.
@@ -98,6 +102,7 @@ credentials.
 ## Sample prompts
 
 - List all buckets in the my-project project.
+- Show me metadata for the my-bucket bucket.
 - Create a new bucket named my-bucket in my-project.
 - Enable versioning and uniform bucket-level access on my-bucket.
 - Delete the GCS bucket my-bucket.

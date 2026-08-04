@@ -518,9 +518,10 @@ class HallucinationsV1Evaluator(Evaluator):
           self._judge_model.generate_content_async(segmenter_llm_request)
       ) as agen:
         segmenter_response = await agen.__anext__()
-        sentences = _parse_sentences(
-            get_text_from_content(segmenter_response.content)
-        )
+        segmenter_text = get_text_from_content(segmenter_response.content)
+        if segmenter_text is None:
+          return None, "Segmenter returned no text."
+        sentences = _parse_sentences(segmenter_text)
     except Exception as e:
       return None, f"Error during sentence segmentation: {e}"
 
@@ -552,9 +553,10 @@ class HallucinationsV1Evaluator(Evaluator):
           self._judge_model.generate_content_async(validator_llm_request)
       ) as agen:
         validator_response = await agen.__anext__()
-        validation_results = _parse_validation_results(
-            get_text_from_content(validator_response.content)
-        )
+        validator_text = get_text_from_content(validator_response.content)
+        if validator_text is None:
+          return None, "Sentence validator returned no text."
+        validation_results = _parse_validation_results(validator_text)
     except Exception as e:
       return None, f"Error during sentence validation: {e}"
 
@@ -680,19 +682,23 @@ class HallucinationsV1Evaluator(Evaluator):
       per_invocation_results: list[PerInvocationResult],
   ) -> EvaluationResult:
     """Aggregates the per invocation results to get the overall score."""
-    valid_results = [r for r in per_invocation_results if r.score is not None]
-    if not valid_results:
+    valid_scores = [
+        result.score
+        for result in per_invocation_results
+        if result.score is not None
+    ]
+    if not valid_scores:
       return EvaluationResult(
           overall_score=None,
           overall_eval_status=EvalStatus.NOT_EVALUATED,
           per_invocation_results=per_invocation_results,
       )
 
-    overall_fs_score = statistics.mean([r.score for r in valid_results])
+    overall_fs_score = statistics.mean(valid_scores)
     return EvaluationResult(
         overall_score=overall_fs_score,
         overall_eval_status=get_eval_status(
-            overall_fs_score, self._eval_metric.threshold
+            overall_fs_score, self._criterion.threshold
         ),
         per_invocation_results=per_invocation_results,
     )
@@ -709,15 +715,15 @@ class HallucinationsV1Evaluator(Evaluator):
 
     # expected_invocations are not required by the metric and if they are not
     # supplied, we provide a list of None to rest of the code.
-    expected_invocations = (
+    expected_by_invocation: list[Optional[Invocation]] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
-        else expected_invocations
+        else list(expected_invocations)
     )
 
     per_invocation_results = []
     for actual, expected in zip(
-        actual_invocations, expected_invocations, strict=True
+        actual_invocations, expected_by_invocation, strict=True
     ):
       step_evaluations = self._get_steps_to_evaluate(actual)
 
@@ -751,7 +757,7 @@ class HallucinationsV1Evaluator(Evaluator):
               expected_invocation=expected,
               score=invocation_score,
               eval_status=get_eval_status(
-                  invocation_score, self._eval_metric.threshold
+                  invocation_score, self._criterion.threshold
               ),
               rubric_scores=[],
           )

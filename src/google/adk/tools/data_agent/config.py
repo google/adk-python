@@ -33,3 +33,16 @@ class DataAgentToolConfig(BaseModel):
 
   By default, the query result will be limited to 50 rows.
   """
+
+  location: str | None = None
+  """The Google Cloud location of the Data Agent (e.g., 'eu', 'us', 'global').
+
+  If not specified, the location will be parsed automatically from the
+  Data Agent resource name when possible, or default to 'global'.
+  """
+
+  api_endpoint: str | None = None
+  """Optional custom API endpoint for Gemini Data Analytics requests.
+
+  If provided, this overrides the default or location-derived API endpoint.
+  """
