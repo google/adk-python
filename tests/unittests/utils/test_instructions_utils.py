@@ -292,3 +292,87 @@ def test_llm_agent_reexports_same_instruction_provider():
   # Existing importers rely on `from ...llm_agent import InstructionProvider`;
   # it must remain the exact same object after moving the alias here.
   assert LlmAgentInstructionProvider is InstructionProvider
+
+
+# ---------------------------------------------------------------------------
+# Jinja2-based templating (use_jinja2=True)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_basic_variable():
+  invocation_context = await _create_test_readonly_context(
+      state={"user_name": "Alice"}
+  )
+  result = await instructions_utils.inject_session_state(
+      "Hello {{ user_name }}!",
+      invocation_context,
+      use_jinja2=True,
+  )
+  assert result == "Hello Alice!"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_conditional():
+  invocation_context = await _create_test_readonly_context(
+      state={"is_admin": True}
+  )
+  result = await instructions_utils.inject_session_state(
+      "{% if is_admin %}Admin mode{% else %}User mode{% endif %}",
+      invocation_context,
+      use_jinja2=True,
+  )
+  assert result == "Admin mode"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_for_loop():
+  invocation_context = await _create_test_readonly_context(
+      state={"items": ["a", "b", "c"]}
+  )
+  result = await instructions_utils.inject_session_state(
+      "{% for item in items %}{{ item }}{% endfor %}",
+      invocation_context,
+      use_jinja2=True,
+  )
+  assert result == "abc"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_artifact():
+  mock_artifact_service = MockArtifactService({"doc.txt": "file content"})
+  invocation_context = await _create_test_readonly_context(
+      artifact_service=mock_artifact_service
+  )
+  result = await instructions_utils.inject_session_state(
+      "Content: {{ artifact('doc.txt') }}",
+      invocation_context,
+      use_jinja2=True,
+  )
+  assert result == "Content: file content"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_missing_artifact_raises():
+  mock_artifact_service = MockArtifactService({})
+  invocation_context = await _create_test_readonly_context(
+      artifact_service=mock_artifact_service
+  )
+  with pytest.raises(KeyError, match="Artifact missing.txt not found."):
+    await instructions_utils.inject_session_state(
+        "{{ artifact('missing.txt') }}",
+        invocation_context,
+        use_jinja2=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_default_still_uses_regex():
+  """Passing no use_jinja2 flag must still use the regex path."""
+  invocation_context = await _create_test_readonly_context(
+      state={"key": "value"}
+  )
+  result = await instructions_utils.inject_session_state(
+      "The key is {key}.", invocation_context
+  )
+  assert result == "The key is value."
