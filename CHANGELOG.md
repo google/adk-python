@@ -23,6 +23,12 @@
 ## [2.6.0](https://github.com/google/adk-python/compare/v2.5.0...v2.6.0) (2026-07-29)
 
 
+### BREAKING CHANGES
+
+* **artifacts:** namespace file artifacts by app ([f72f0db](https://github.com/google/adk-python/commit/f72f0db58c5c1f4e8b8d4f04b8c592c9e49cbe9e))
+* require patched async LangGraph runtime and update graph field type ([551372b](https://github.com/google/adk-python/commit/551372bcd88b21f38c2b68b4a9b9738484a9d0fd))
+
+
 ### Features
 
 * **a2a:** support per-invocation auth headers when fetching agent cards ([3dd1156](https://github.com/google/adk-python/commit/3dd1156c33fe9e4857c467fbd16f209fb0ac5b4b))
@@ -69,9 +75,7 @@
 * **a2a:** honor task cancellation instead of raising NotImplementedError ([fb55d4a](https://github.com/google/adk-python/commit/fb55d4a669e35fd9da69bbb951945d1a19792f9f))
 * **agents:** await cancelled tasks in pre-3.11 ParallelAgent merge ([bc55099](https://github.com/google/adk-python/commit/bc550991b97e586c4bcca86facf3ad9dba049940)), closes [#5297](https://github.com/google/adk-python/issues/5297)
 * **agents:** skip output_key processing on intermediate conversational text in task-mode LlmAgent ([54344ed](https://github.com/google/adk-python/commit/54344edfb95febc31ba2b80f5578205208f1efa1))
-* allow http_options.extra_body in generate_content_config ([4c6f22e](https://github.com/google/adk-python/commit/4c6f22e8e6daa8d55cadf3999f010bcb4303f8bf))
 * allow invocation-level rubrics ([67ab27f](https://github.com/google/adk-python/commit/67ab27f2547db48f7248b1689aab4c18502aee17))
-* **artifacts:** namespace file artifacts by app ([f72f0db](https://github.com/google/adk-python/commit/f72f0db58c5c1f4e8b8d4f04b8c592c9e49cbe9e))
 * assemble only the current turn ([c328cec](https://github.com/google/adk-python/commit/c328cec9462ac6a5459f19e6fb548c5b2e40cd39))
 * bound integration HTTP waits ([bf4143a](https://github.com/google/adk-python/commit/bf4143ac2269d3a23c4abc680c3a39f727db21bd))
 * bypass Protobuf Gencode/Runtime version check in antigravity integration ([91038f2](https://github.com/google/adk-python/commit/91038f2ba4b48b8916f58ab56a695b516222044c))
@@ -111,7 +115,7 @@
 * **plugins:** correct lazy import path for ReflectAndRetryModelPlugin ([c59fd0e](https://github.com/google/adk-python/commit/c59fd0ed4f603305f3401ca0b9068b8274748925))
 * **plugins:** harden BigQuery agent analytics against fail-open privacy, GCS concurrency, and startup-loss gaps ([2919bf5](https://github.com/google/adk-python/commit/2919bf5b8d426f9a74bd5bd4e4a8a7927b3170bd))
 * **plugins:** restore failure counter properties on retry tool plugin ([66a7233](https://github.com/google/adk-python/commit/66a72337b3c8b366636cfbf09655569edc4122c0))
-* populate finish_reason on Anthropic LLM responses ([802a079](https://github.com/google/adk-python/commit/802a0793f0b1233d4b02c8037db3ebe927ab8b66))
+* guard finish_reason on Anthropic LLM responses against null values ([802a079](https://github.com/google/adk-python/commit/802a0793f0b1233d4b02c8037db3ebe927ab8b66))
 * populate function name in FunctionResponse parts ([540cfdf](https://github.com/google/adk-python/commit/540cfdf737fd878f87b57b00894fbfc58b97feaa))
 * present client certificate and use mTLS endpoint for API Hub calls ([2cf5433](https://github.com/google/adk-python/commit/2cf543322b397c865701b432ed6fd9867db187b0))
 * preserve ADK behavior on Windows ([6e9895c](https://github.com/google/adk-python/commit/6e9895c55cdc5b3b39a336c6c999bc1731273cdc))
@@ -125,13 +129,11 @@
 * register custom metrics from eval config in LocalEvalSampler ([79a879f](https://github.com/google/adk-python/commit/79a879f5833a223d3d3f0e78abc2fc6c5da8c1fa)), closes [#6177](https://github.com/google/adk-python/issues/6177)
 * reject base_url and extra_body in generate_content_config ([472e463](https://github.com/google/adk-python/commit/472e4635fb4014f7ed2c77db7c2b97f17bbd45bf))
 * reject incomplete evaluation inputs ([8ca9128](https://github.com/google/adk-python/commit/8ca9128a6397389c171625fb6ac0475c516ccfae))
-* require patched async LangGraph runtime ([551372b](https://github.com/google/adk-python/commit/551372bcd88b21f38c2b68b4a9b9738484a9d0fd))
 * resolve tool confirmation resumption failure in production ([c427020](https://github.com/google/adk-python/commit/c4270203c657d4abb14188b90ed692465f1f36c9))
 * respect A2A Message.role in inbound event conversion ([968845f](https://github.com/google/adk-python/commit/968845fd5c9a8c60535f0d32cf14ea4db9c56c5e)), closes [#5186](https://github.com/google/adk-python/issues/5186)
 * return empty list from _get_required_fields when no properties ([1890557](https://github.com/google/adk-python/commit/1890557584f58ec5094344a501e5041ef041694d)), closes [#5920](https://github.com/google/adk-python/issues/5920)
 * scope replay sequence to the current invocation ([455853b](https://github.com/google/adk-python/commit/455853b5bca2dad68923a9100f9ba945845ad6d0)), closes [#6497](https://github.com/google/adk-python/issues/6497)
 * scope the tool thread pool to its event loop ([a1792a7](https://github.com/google/adk-python/commit/a1792a712ae6b90dee4fecdee79cf0ddff1b5609))
-* send the bare input_schema payload from AgentTool again ([ba17367](https://github.com/google/adk-python/commit/ba1736783baee0c5340856cf0640d4f85f4a6026))
 * serialize eval criteria as their concrete subclass ([623da49](https://github.com/google/adk-python/commit/623da4930a43cbaa5386a096c5a54266bae02522))
 * serialize raw bytes as base64 in A2A converters ([e6604e1](https://github.com/google/adk-python/commit/e6604e1d2109261bb548975b0897b76dd3fcc8b2))
 * **sessions:** apply after_timestamp and num_recent_events together in VertexAiSessionService ([021f6f6](https://github.com/google/adk-python/commit/021f6f6c1e6b55f71e2144ec5857820cd010b6e4))
@@ -147,7 +149,7 @@
 * treat GitHub content as untrusted in the adk_team sample agents ([f4979b5](https://github.com/google/adk-python/commit/f4979b5c78be9d709a29a7aa4175b31864fba7e6))
 * wait for in-flight BigQuery writes ([6e43800](https://github.com/google/adk-python/commit/6e43800fcb9263c9debdb570dab837bce6f51f31))
 * **workflow:** fix task agent resumption in nested workflows ([fd006db](https://github.com/google/adk-python/commit/fd006db9153fe6c51f281f36e35b40d243e5fca0))
-* wrap input_schema payload in ReAct prompt and propagate tool_choice to LiteLLM ([550189c](https://github.com/google/adk-python/commit/550189ce4f3cc1e69a108b1f38ba6c31f2f40e65))
+* propagate tool_choice to LiteLLM ([550189c](https://github.com/google/adk-python/commit/550189ce4f3cc1e69a108b1f38ba6c31f2f40e65))
 
 
 ### Performance Improvements
