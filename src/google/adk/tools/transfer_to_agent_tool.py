@@ -27,7 +27,9 @@ from .tool_context import ToolContext
 #   For most use cases, you should use TransferToAgentTool instead of this
 #   function directly. TransferToAgentTool provides additional enum constraints
 #   that prevent LLMs from hallucinating invalid agent names.
-def transfer_to_agent(agent_name: str, tool_context: ToolContext) -> None:
+def transfer_to_agent(
+    agent_name: str, transfer_reason: str, tool_context: ToolContext
+) -> None:
   """Transfer the query to another agent.
 
   Use this tool to hand off control to another agent that is more suitable to
@@ -35,6 +37,7 @@ def transfer_to_agent(agent_name: str, tool_context: ToolContext) -> None:
 
   Args:
     agent_name: the agent name to transfer to.
+    transfer_reason: the reason for transferring to the target agent.
   """
   tool_context.actions.transfer_to_agent = agent_name
 
