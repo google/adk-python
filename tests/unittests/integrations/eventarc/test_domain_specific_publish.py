@@ -18,6 +18,7 @@
 import inspect
 from unittest import mock
 
+from google.adk.agents.context import Context
 from google.adk.integrations.eventarc import _config as config
 from google.adk.integrations.eventarc import _domain_specific_publish as domain_specific_publish
 from google.adk.integrations.eventarc import _eventarc_toolset as eventarc_toolset
@@ -178,6 +179,60 @@ async def test_runtime_execution_with_payload(mock_publish, toolset):
   assert kwargs["type"] == "action.login"
   assert kwargs["source"] == "my-source"
   assert kwargs["subject"] == "user123"
+  assert "time" not in kwargs
+  assert kwargs["data"] == {"user_id": "user123", "action": "login"}
+
+
+@pytest.mark.asyncio
+@mock.patch.object(domain_specific_publish, "publish_message", autospec=True)
+async def test_runtime_execution_with_context_and_payload_lambdas(
+    mock_publish, toolset
+):
+  def get_custom_id(c: Context) -> str:
+    return f"id-{c.session_id}"
+
+  tool = domain_specific_publish.build_domain_specific_tool(
+      toolset=toolset,
+      name="test_tool",
+      description="desc",
+      bus="my-bus",
+      ce_attributes_binding=domain_specific_publish.CloudEventAttributesBinding(
+          type=lambda p: f"action.{p.action}",
+          source=lambda ctx: f"//agent/{ctx.session_id}",
+          subject=lambda payload, ctx: f"{payload.user_id}-{ctx.session_id}",
+          id=get_custom_id,
+          specversion=lambda: "1.0",
+          custom_attributes={
+              "ordertest": lambda ctx, payload: (
+                  f"{ctx.session_id}:{payload.action}"
+              ),
+          },
+          time=domain_specific_publish.OMIT,
+      ),
+      payload_schema=DummyPayload,
+  )
+
+  payload = DummyPayload(user_id="user123", action="login")
+  mock_ctx = mock.Mock(spec=Context)
+  mock_ctx.session_id = "session456"
+
+  await tool.func(
+      event_data=payload,
+      credentials=None,
+      settings=config.EventarcToolConfig(),
+      tool_context=mock_ctx,
+  )
+
+  mock_publish.assert_called_once()
+  kwargs = mock_publish.call_args.kwargs
+
+  assert kwargs["bus"] == "my-bus"
+  assert kwargs["type"] == "action.login"
+  assert kwargs["source"] == "//agent/session456"
+  assert kwargs["subject"] == "user123-session456"
+  assert kwargs["id"] == "id-session456"
+  assert kwargs["specversion"] == "1.0"
+  assert kwargs["custom_attributes"] == {"ordertest": "session456:login"}
   assert "time" not in kwargs
   assert kwargs["data"] == {"user_id": "user123", "action": "login"}
 

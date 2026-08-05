@@ -24,6 +24,7 @@ from typing import Callable
 
 from google.adk.agents.context import Context
 from google.adk.tools.google_tool import GoogleTool
+from google.adk.utils.context_utils import find_context_parameter
 import google.auth.credentials
 import pydantic
 
@@ -43,6 +44,18 @@ class OmitSentinel:
 
 
 OMIT = OmitSentinel()
+
+_CONTEXT_PARAM_NAMES: frozenset[str] = frozenset(
+    {"ctx", "context", "tool_context"}
+)
+
+
+def _is_context_param(func: Any, param_name: str) -> bool:
+  return (
+      param_name in _CONTEXT_PARAM_NAMES
+      or find_context_parameter(func) == param_name
+  )
+
 
 
 @dataclass
@@ -72,7 +85,14 @@ SpecVersionBinding = (
 
 @dataclass
 class CloudEventAttributesBinding:
-  """Configuration for binding CloudEvent attributes to static values, lambdas, or AgentProvided fields."""
+  """Configuration for binding CloudEvent attributes to static values, lambdas, or AgentProvided fields.
+
+  Lambda/callable bindings can accept:
+  - 1 parameter for the event payload (`lambda p: ...`)
+  - 1 parameter for the runtime context (`lambda ctx: ...` or type-annotated with `Context`)
+  - 2 parameters for both (`lambda p, ctx: ...`)
+  - 0 parameters (`lambda: ...`)
+  """
 
   type: AttributeBinding
   source: AttributeBinding
@@ -92,7 +112,11 @@ def build_domain_specific_tool(
     ce_attributes_binding: CloudEventAttributesBinding,
     payload_schema: type[pydantic.BaseModel] | None = None,
 ) -> GoogleTool:
-  """Dynamically builds a GoogleTool wrapping publish_message with specific bindings."""
+  """Dynamically builds a GoogleTool wrapping publish_message with specific bindings.
+
+  Callable bindings in `ce_attributes_binding` can inspect the event payload, the
+  runtime `Context` (`tool_context`), or both.
+  """
 
   # 1. Validation
   mandatory_fields = ["type", "source"]
@@ -300,7 +324,25 @@ def build_domain_specific_tool(
 
       # Evaluate lambdas
       if callable(val):
-        val = val(payload)
+        tool_context = kwargs.get("tool_context")
+        try:
+          sig = inspect.signature(val)
+          params = list(sig.parameters.values())
+          if len(params) == 2:
+            first_param = params[0]
+            if _is_context_param(val, first_param.name):
+              val = val(tool_context, payload)
+            else:
+              val = val(payload, tool_context)
+          elif len(params) == 1:
+            if _is_context_param(val, params[0].name):
+              val = val(tool_context)
+            else:
+              val = val(payload)
+          else:
+            val = val()
+        except (ValueError, TypeError):
+          val = val(payload)
 
       if val is OMIT:
         if is_mandatory:

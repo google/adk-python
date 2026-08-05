@@ -89,11 +89,14 @@ complete_outreach_dynamic_tool = toolset.create_publish_tool(
 
 ### Example C: Lambda Execution & Mixed Custom Attributes
 
-The developer uses Python callables to generate IDs dynamically at runtime.
+The developer uses Python callables to generate attributes dynamically at runtime. Callables can inspect the event payload, the agent's runtime `Context` (`tool_context`), or both.
 
 ```python
 def get_custom_trace_id(payload: OutreachContext) -> str:
     return f"trace-{payload.customer_id}-{uuid.uuid4().hex[:8]}"
+
+def get_source_from_session(ctx: Context) -> str:
+    return f"//my-agent/outreach/{ctx.session_id}"
 
 complete_outreach_lambda_tool = toolset.create_publish_tool(
     name="complete_outreach_lambda",
@@ -102,8 +105,8 @@ complete_outreach_lambda_tool = toolset.create_publish_tool(
     bus=f"projects/{PROJECT_ID}/locations/us-central1/messageBuses/{BUS_NAME}",
     ce_attributes_binding=CloudEventAttributesBinding(
         type="vendor_outreach.completed",
-        source="//my-agent/outreach",
-        id=get_custom_trace_id, # Executed at runtime
+        source=get_source_from_session, # Evaluated against runtime Context
+        id=get_custom_trace_id, # Evaluated against event payload
         custom_attributes={
             "environment": "production", # Statically bound
             "priority": AgentProvided("The priority of the outreach: 'high' or 'low'")
