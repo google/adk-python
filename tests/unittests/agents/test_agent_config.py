@@ -604,6 +604,49 @@ def test_newly_blocked_network_modules_are_rejected(blocked_ref: str):
   assert "Blocked module reference" in str(exc_info.value.__cause__)
 
 
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        # Code-execution gadgets that a top-level-name denylist previously
+        # missed. ``cProfile.run`` mirrors the already-blocked ``profile.run``;
+        # the others reach code execution directly or via os/subprocess.
+        # Blocking the whole standard library closes this bypass class.
+        "cProfile.run",
+        "timeit.timeit",
+        "pydoc.render_doc",
+        "logging.config.fileConfig",
+        "bdb.Bdb",
+        "trace.Trace",
+        "venv.create",
+    ],
+)
+def test_stdlib_gadget_modules_are_rejected(blocked_ref: str):
+  """Non-denylisted stdlib modules that can execute code must also be blocked.
+
+  Regression test for the denylist bypass: a top-level-name denylist inherently
+  misses equivalent gadgets (e.g. ``cProfile.run`` vs. the blocked
+  ``profile.run``). All standard-library modules are now rejected.
+  """
+  with pytest.raises(
+      ValueError, match="Invalid fully qualified name"
+  ) as exc_info:
+    config_agent_utils.resolve_fully_qualified_name(blocked_ref)
+  assert "Blocked module reference" in str(exc_info.value.__cause__)
+
+
+def test_non_stdlib_references_are_not_blocked():
+  """Legitimate references (user/ADK packages) must not be blocked.
+
+  The standard-library rule must only reject stdlib top-level modules, never
+  user-defined packages or ``google.adk.*`` references. ``_validate_module_
+  reference`` only inspects the name (no import), so it must not raise here.
+  """
+  config_agent_utils._validate_module_reference("my_company_pkg.my_tool")
+  config_agent_utils._validate_module_reference(
+      "google.adk.tools.google_search"
+  )
+
+
 def test_denylist_can_be_disabled():
   """Verify _set_enforce_denylist(False) disables module blocking."""
   config_agent_utils._set_enforce_denylist(False)

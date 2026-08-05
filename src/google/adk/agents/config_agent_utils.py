@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import os
+import sys
 from typing import Any
 from typing import List
 
@@ -204,7 +205,16 @@ def _validate_module_reference(fully_qualified_name: str) -> None:
     return
   # Extract the top-level package from the fully-qualified name.
   top_module = fully_qualified_name.split(".")[0]
-  if top_module in _BLOCKED_MODULES:
+  # Agent-config tool/callback/model/schema references point to user-defined or
+  # ADK packages, never to the Python standard library. A hand-maintained
+  # denylist of dangerous stdlib modules is inherently incomplete -- equivalent
+  # code-execution gadgets slip through (for example ``cProfile.run`` vs. the
+  # already-blocked ``profile.run``, as well as ``timeit.timeit``, ``pydoc``,
+  # ``logging.config``, ``bdb`` and ``trace``). Blocking the entire standard
+  # library by name closes that class of bypass, while legitimate references
+  # (user packages, ``google.adk.*``) are unaffected because they are not part
+  # of ``sys.stdlib_module_names``.
+  if top_module in _BLOCKED_MODULES or top_module in sys.stdlib_module_names:
     raise ValueError(
         f"Blocked module reference: {fully_qualified_name!r}. "
         f"Importing from the '{top_module}' module is not allowed in "
