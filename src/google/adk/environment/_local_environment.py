@@ -139,11 +139,30 @@ class LocalEnvironment(BaseEnvironment):
     return await asyncio.to_thread(self._sync_write, resolved, content)
 
   def _resolve_path(self, path: str | Path) -> str:
-    """Resolve a relative path against the working directory."""
-    path = str(path)
-    if os.path.isabs(path):
-      return path
-    return os.path.join(self._working_dir, path)
+    """Resolve a file path inside the working directory.
+
+    Relative paths are resolved against ``working_dir``.  Absolute paths
+    are accepted only when they stay inside ``working_dir``.
+
+    Args:
+      path: Absolute or working-dir-relative path.
+
+    Returns:
+      The resolved absolute path.
+
+    Raises:
+      RuntimeError: If ``working_dir`` is not set.
+      ValueError: If the resolved path escapes ``working_dir``.
+    """
+    candidate = Path(path)
+    working_dir = self.working_dir.resolve()
+    if not candidate.is_absolute():
+      candidate = working_dir / candidate
+
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(working_dir):
+      raise ValueError(f'Path escapes working directory: {path}')
+    return str(resolved)
 
   @staticmethod
   def _sync_read(path: str) -> bytes:
