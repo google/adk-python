@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from collections.abc import Sequence
 from typing import Any
+from typing import cast
 from typing import TYPE_CHECKING
 
 from opentelemetry import context as context_api
@@ -564,7 +565,10 @@ class Context(ReadonlyContext):
           )
           curr_run_id = str(curr_parent_ctx._child_run_counters[curr_node.name])
 
-        child_ctx = await curr_parent_ctx._workflow_scheduler(
+        scheduler = cast(
+            'ScheduleDynamicNode', curr_parent_ctx._workflow_scheduler
+        )
+        child_ctx = await scheduler(
             curr_parent_ctx,
             curr_node,
             curr_input,
@@ -630,6 +634,10 @@ class Context(ReadonlyContext):
       # Handle Agent Transfer: If a transfer was requested, we resolve the target agent
       # and its parent context, update loop pointers, and continue to the next iteration.
       if isinstance(transfer_to_agent, str):
+        from ..agents.base_agent import BaseAgent
+
+        if not isinstance(curr_node, BaseAgent):
+          raise ValueError('Only agents can request an agent transfer.')
         target_name = transfer_to_agent
         root_agent = getattr(curr_node, 'root_agent', None)
         if not root_agent:

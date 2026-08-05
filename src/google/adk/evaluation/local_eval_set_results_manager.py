@@ -56,10 +56,13 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     app_eval_history_dir = self._get_eval_history_dir(app_name)
     if not os.path.exists(app_eval_history_dir):
       os.makedirs(app_eval_history_dir)
+    eval_set_result_name = eval_set_result.eval_set_result_name
+    if eval_set_result_name is None:
+      raise RuntimeError("A newly created eval set result must have a name.")
     # Convert to json and write to file.
     eval_set_result_file_path = os.path.join(
         app_eval_history_dir,
-        eval_set_result.eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
+        eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
     )
     logger.info("Writing eval result to file: %s", eval_set_result_file_path)
     with open(eval_set_result_file_path, "w", encoding="utf-8") as f:

@@ -298,6 +298,17 @@ def test_append_instructions_empty_string_list():
   assert len(request.contents) == 0
 
 
+def test_append_instructions_content_without_parts_is_noop():
+  """An SDK Content with omitted parts is an empty instruction."""
+  request = LlmRequest()
+
+  user_contents = request.append_instructions(types.Content(role='user'))
+
+  assert user_contents == []
+  assert request.config.system_instruction is None
+  assert request.contents == []
+
+
 def test_append_instructions_invalid_input():
   """Test append_instructions with invalid input types."""
   request = LlmRequest()

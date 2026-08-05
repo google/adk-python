@@ -549,12 +549,27 @@ class TestRestApiTool:
             param_location="query",
             param_schema=OpenAPISchema(type="string"),
         ),
+        ApiParameter(
+            original_name="empty_param",
+            py_name="empty_param",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
     ]
-    kwargs = {"flag": False, "offset": 0, "cursor": None}
+    kwargs = {
+        "flag": False,
+        "offset": 0,
+        "cursor": None,
+        "empty_param": "",
+    }
 
     request_params = tool._prepare_request_params(params, kwargs)
-    # Explicit False/0 must be kept; None is omitted.
-    assert request_params["params"] == {"flag": False, "offset": 0}
+    # Explicit False/0/"" must be kept; None is omitted.
+    assert request_params["params"] == {
+        "flag": False,
+        "offset": 0,
+        "empty_param": "",
+    }
 
   def test_prepare_request_params_array(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential

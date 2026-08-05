@@ -275,3 +275,18 @@ def test_update_code_execution_result_append(
   assert results[1]["code"] == "new_code"
   assert results[1]["result_stdout"] == "new_out"
   assert results[1]["result_stderr"] == "new_err"
+
+
+def test_nested_state_mutations_are_recorded_as_delta():
+  """Updates through CodeExecutorContext remain visible to State commit logic."""
+  delta = {}
+  state = State({}, delta)
+  ctx = CodeExecutorContext(state)
+
+  ctx.add_input_files([File(name="input.txt", content="YQ==")])
+  ctx.increment_error_count("invocation")
+  ctx.update_code_execution_result("invocation", "code", "stdout", "")
+
+  assert "_code_executor_input_files" in delta
+  assert "_code_executor_error_counts" in delta
+  assert "_code_execution_results" in delta

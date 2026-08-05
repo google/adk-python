@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+
 _SingleAgentCallback: TypeAlias = Callable[
     [CallbackContext],
     Union[Awaitable[Optional[types.Content]], Optional[types.Content]],
@@ -492,11 +493,10 @@ class BaseAgent(BaseNode, abc.ABC):
         and self.canonical_before_agent_callbacks
     ):
       for callback in self.canonical_before_agent_callbacks:
-        before_agent_callback_content = callback(
-            callback_context=callback_context
+        result = callback(callback_context=callback_context)
+        before_agent_callback_content = (
+            await result if inspect.isawaitable(result) else result
         )
-        if inspect.isawaitable(before_agent_callback_content):
-          before_agent_callback_content = await before_agent_callback_content
         if before_agent_callback_content:
           break
 
@@ -552,11 +552,10 @@ class BaseAgent(BaseNode, abc.ABC):
         and self.canonical_after_agent_callbacks
     ):
       for callback in self.canonical_after_agent_callbacks:
-        after_agent_callback_content = callback(
-            callback_context=callback_context
+        result = callback(callback_context=callback_context)
+        after_agent_callback_content = (
+            await result if inspect.isawaitable(result) else result
         )
-        if inspect.isawaitable(after_agent_callback_content):
-          after_agent_callback_content = await after_agent_callback_content
         if after_agent_callback_content:
           break
 

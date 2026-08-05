@@ -22,6 +22,7 @@ from google.genai import types
 
 from ...agents.invocation_context import RealtimeCacheEntry
 from ...events.event import Event
+from ._invocation_utils import require_agent_name
 
 if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
@@ -29,10 +30,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+def _require_audio_data(blob: types.Blob) -> bytes:
+  data = blob.data
+  if not isinstance(data, bytes):
+    raise ValueError('Audio blobs must contain byte data.')
+  return data
+
+
 class AudioCacheManager:
   """Manages audio caching and flushing for live streaming flows."""
 
-  def __init__(self, config: AudioCacheConfig | None = None):
+  def __init__(self, config: AudioCacheConfig | None = None) -> None:
     """Initialize the audio cache manager.
 
     Args:
@@ -56,6 +64,7 @@ class AudioCacheManager:
     Raises:
       ValueError: If cache_type is not 'input' or 'output'.
     """
+    audio_data = _require_audio_data(audio_blob)
     if cache_type == 'input':
       if not invocation_context.input_realtime_cache:
         invocation_context.input_realtime_cache = []
@@ -77,7 +86,7 @@ class AudioCacheManager:
     logger.debug(
         'Cached %s audio chunk: %d bytes, cache size: %d',
         cache_type,
-        len(audio_blob.data),
+        len(audio_data),
         len(cache),
     )
 
@@ -105,7 +114,7 @@ class AudioCacheManager:
     Returns:
       A list of Event objects created from the flushed caches.
     """
-    flushed_events = []
+    flushed_events: list[Event] = []
     if flush_user_audio and invocation_context.input_realtime_cache:
       audio_event = await self._flush_cache_to_services(
           invocation_context,
@@ -155,7 +164,7 @@ class AudioCacheManager:
     try:
       # Combine audio chunks into a single file. Use join rather than repeated
       # `+=`, which is O(n^2) over the total audio size.
-      mime_type = audio_cache[0].data.mime_type if audio_cache else 'audio/pcm'
+      mime_type = audio_cache[0].data.mime_type or 'audio/pcm'
       combined_audio_data = b''.join(
           entry.data.data or b'' for entry in audio_cache
       )
@@ -183,7 +192,7 @@ class AudioCacheManager:
       # Create event with file data reference to add to session
       # For model events, author should be the agent name, not the role
       author = (
-          invocation_context.agent.name
+          require_agent_name(invocation_context)
           if audio_cache[0].role == 'model'
           else audio_cache[0].role
       )
@@ -232,11 +241,11 @@ class AudioCacheManager:
     output_count = len(invocation_context.output_realtime_cache or [])
 
     input_bytes = sum(
-        len(entry.data.data)
+        len(_require_audio_data(entry.data))
         for entry in invocation_context.input_realtime_cache or []
     )
     output_bytes = sum(
-        len(entry.data.data)
+        len(_require_audio_data(entry.data))
         for entry in invocation_context.output_realtime_cache or []
     )
 
@@ -258,7 +267,7 @@ class AudioCacheConfig:
       max_cache_size_bytes: int = 10 * 1024 * 1024,  # 10MB
       max_cache_duration_seconds: float = 300.0,  # 5 minutes
       auto_flush_threshold: int = 100,  # Number of chunks
-  ):
+  ) -> None:
     """Initialize audio cache configuration.
 
     Args:

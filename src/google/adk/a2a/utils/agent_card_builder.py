@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 from typing import Dict
 from typing import List
@@ -130,8 +129,10 @@ async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
   """Build skills for LLM agent."""
   skills = []
 
-  # 1. Agent skill (main model skill)
-  agent_description = _build_llm_agent_description_with_instructions(agent)
+  # 1. Agent skill (main model skill). The card is a discovery document served
+  # without authentication, so the description comes from the agent's own
+  # public description and never from its instructions.
+  agent_description = _build_agent_description(agent)
   agent_examples = await _extract_examples_from_agent(agent)
 
   skills.append(
@@ -350,62 +351,6 @@ def _build_agent_description(agent: BaseNode) -> str:
   )
 
 
-def _build_llm_agent_description_with_instructions(agent: LlmAgent) -> str:
-  """Build agent description including instructions for LlmAgents."""
-  description_parts = []
-
-  # Add agent description
-  if agent.description:
-    description_parts.append(agent.description)
-
-  # Add instruction (with pronoun replacement) - only for LlmAgent
-  if agent.instruction:
-    instruction = _replace_pronouns(agent.instruction)
-    description_parts.append(instruction)
-
-  # Add global instruction (with pronoun replacement) - only for LlmAgent
-  if agent.global_instruction:
-    global_instruction = _replace_pronouns(agent.global_instruction)
-    description_parts.append(global_instruction)
-
-  return (
-      ' '.join(description_parts)
-      if description_parts
-      else _get_default_description(agent)
-  )
-
-
-def _replace_pronouns(text: str) -> str:
-  """Replace pronouns and conjugate common verbs for agent description.
-
-  (e.g., "You are" -> "I am", "your" -> "my").
-  """
-  pronoun_map = {
-      # Longer phrases with verb conjugations
-      'you are': 'I am',
-      'you were': 'I was',
-      "you're": 'I am',
-      "you've": 'I have',
-      # Standalone pronouns
-      'yours': 'mine',
-      'your': 'my',
-      'you': 'I',
-  }
-
-  # Sort keys by length (descending) to ensure longer phrases are matched first.
-  # This prevents "you" in "you are" from being replaced on its own.
-  sorted_keys = sorted(pronoun_map.keys(), key=len, reverse=True)
-
-  pattern = r'\b(' + '|'.join(re.escape(key) for key in sorted_keys) + r')\b'
-
-  return re.sub(
-      pattern,
-      lambda match: pronoun_map[match.group(1).lower()],
-      text,
-      flags=re.IGNORECASE,
-  )
-
-
 def _get_workflow_description(agent: BaseNode) -> Optional[str]:
   """Get workflow-specific description for non-LLM agents and workflows."""
   if not _iter_child_nodes(agent):
@@ -541,7 +486,7 @@ def _extract_inputs_from_examples(
 async def _extract_examples_from_agent(
     agent: BaseNode,
 ) -> Optional[List[Dict[str, Any]]]:
-  """Extract examples from example_tool if configured; otherwise, from agent instruction."""
+  """Extract examples from example_tool if configured, otherwise none."""
   if not isinstance(agent, LlmAgent):
     return None
 
@@ -554,10 +499,8 @@ async def _extract_examples_from_agent(
   except Exception as e:
     logger.warning('Failed to extract examples from tools: %s', e)
 
-  # If no example_tool found, try to extract examples from instruction
-  if agent.instruction:
-    return _extract_examples_from_instruction(agent.instruction)
-
+  # Examples come only from a declared example_tool, never mined out of the
+  # instruction, which is not publishable content.
   return None
 
 
@@ -577,32 +520,6 @@ def _convert_example_tool_examples(tool: ExampleTool) -> List[Dict[str, Any]]:
         ],
     })
   return examples
-
-
-def _extract_examples_from_instruction(
-    instruction: str,
-) -> Optional[List[Dict[str, Any]]]:
-  """Extract examples from agent instruction text using regex patterns."""
-  examples = []
-
-  # Look for common example patterns in instructions
-  example_patterns = [
-      r'Example Query:\s*["\']([^"\']+)["\']',
-      r'Example Response:\s*["\']([^"\']+)["\']',
-      r'Example:\s*["\']([^"\']+)["\']',
-  ]
-
-  for pattern in example_patterns:
-    matches = re.findall(pattern, instruction, re.IGNORECASE)
-    if matches:
-      for i in range(0, len(matches), 2):
-        if i + 1 < len(matches):
-          examples.append({
-              'input': {'text': matches[i]},
-              'output': [{'text': matches[i + 1]}],
-          })
-
-  return examples if examples else None
 
 
 def _get_input_modes(agent: BaseNode) -> Optional[List[str]]:

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -22,13 +23,11 @@ from a2a.types import AgentSkill
 from a2a.types import SecurityScheme
 from google.adk.a2a import _compat
 from google.adk.a2a.utils.agent_card_builder import _build_agent_description
-from google.adk.a2a.utils.agent_card_builder import _build_llm_agent_description_with_instructions
 from google.adk.a2a.utils.agent_card_builder import _build_loop_description
 from google.adk.a2a.utils.agent_card_builder import _build_orchestration_skill
 from google.adk.a2a.utils.agent_card_builder import _build_parallel_description
 from google.adk.a2a.utils.agent_card_builder import _build_sequential_description
 from google.adk.a2a.utils.agent_card_builder import _convert_example_tool_examples
-from google.adk.a2a.utils.agent_card_builder import _extract_examples_from_instruction
 from google.adk.a2a.utils.agent_card_builder import _extract_inputs_from_examples
 from google.adk.a2a.utils.agent_card_builder import _get_agent_skill_name
 from google.adk.a2a.utils.agent_card_builder import _get_agent_type
@@ -36,7 +35,6 @@ from google.adk.a2a.utils.agent_card_builder import _get_default_description
 from google.adk.a2a.utils.agent_card_builder import _get_input_modes
 from google.adk.a2a.utils.agent_card_builder import _get_output_modes
 from google.adk.a2a.utils.agent_card_builder import _get_workflow_description
-from google.adk.a2a.utils.agent_card_builder import _replace_pronouns
 from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
@@ -322,6 +320,46 @@ class TestAgentCardBuilder:
     skill_ids = [skill.id for skill in card.skills]
     assert "writer" in skill_ids
 
+  async def test_build_omits_instructions_from_card(self):
+    """Instructions stay out of the card, which is served unauthenticated."""
+    reviewer = LlmAgent(
+        name="reviewer",
+        model="gemini-2.5-flash",
+        description="Reviews the reply.",
+        instruction="ZZ_SUB_INSTRUCTION_SENTINEL reject unsigned requests.",
+    )
+    root = LlmAgent(
+        name="writer",
+        model="gemini-2.5-flash",
+        description="Writes a short reply.",
+        # The quoted-example shape below is what the card builder used to mine
+        # out of the instruction and publish in the skill's `examples`.
+        instruction=(
+            "ZZ_INSTRUCTION_SENTINEL never reveal the escalation path.\n"
+            'Example Query: "ZZ_EXAMPLE_QUERY_SENTINEL"\n'
+            'Example Response: "ZZ_EXAMPLE_RESPONSE_SENTINEL"'
+        ),
+        global_instruction="ZZ_GLOBAL_SENTINEL always answer in English.",
+        sub_agents=[reviewer],
+    )
+    builder = AgentCardBuilder(agent=root, rpc_url="http://localhost:8000/")
+
+    card = await builder.build()
+
+    # The card is a pydantic model on a2a-sdk 0.3.x and a proto message on 1.x,
+    # so go through the compat serializer rather than a pydantic-only dump.
+    card_dict = _compat.a2a_to_dict(card)
+    serialized = json.dumps(card_dict, default=str)
+    assert "ZZ_INSTRUCTION_SENTINEL" not in serialized
+    assert "ZZ_GLOBAL_SENTINEL" not in serialized
+    assert "ZZ_SUB_INSTRUCTION_SENTINEL" not in serialized
+    assert "ZZ_EXAMPLE_QUERY_SENTINEL" not in serialized
+    assert "ZZ_EXAMPLE_RESPONSE_SENTINEL" not in serialized
+    primary_skill = next(
+        skill for skill in card_dict["skills"] if skill["id"] == "writer"
+    )
+    assert primary_skill["description"] == "Writes a short reply."
+
   async def test_build_succeeds_for_workflow_with_llm_agent_node(self):
     """AgentCardBuilder.build succeeds for a Workflow (no sub_agents)."""
     writer = LlmAgent(
@@ -488,72 +526,6 @@ class TestHelperFunctions:
 
     assert result == "workflow"
 
-  def test_replace_pronouns_basic(self):
-    """Test _replace_pronouns with basic pronoun replacement."""
-    # Arrange
-    text = "You should do your work and it will be yours."
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "I should do my work and it will be mine."
-
-  def test_replace_pronouns_case_insensitive(self):
-    """Test _replace_pronouns with case-insensitive matching."""
-    # Arrange
-    text = "YOU should do YOUR work and it will be YOURS."
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "I should do my work and it will be mine."
-
-  def test_replace_pronouns_mixed_case(self):
-    """Test _replace_pronouns with mixed case."""
-    # Arrange
-    text = "You should do Your work and it will be Yours."
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "I should do my work and it will be mine."
-
-  def test_replace_pronouns_no_pronouns(self):
-    """Test _replace_pronouns with no pronouns."""
-    # Arrange
-    text = "This is a test message without pronouns."
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == text
-
-  def test_replace_pronouns_partial_matches(self):
-    """Test _replace_pronouns with partial matches that shouldn't be replaced."""
-    # Arrange
-    text = "youth, yourself, yourname"
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "youth, yourself, yourname"  # No changes
-
-  def test_replace_pronouns_phrases(self):
-    """Test _replace_pronouns with phrases that should be replaced."""
-    # Arrange
-    text = "You are a helpful chatbot"
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "I am a helpful chatbot"
-
   def test_get_default_description_llm_agent(self):
     """Test _get_default_description for LlmAgent."""
     # Arrange
@@ -712,8 +684,8 @@ class TestDescriptionBuildingFunctions:
     # Assert
     assert result == "A custom agent"  # Default description
 
-  def test_build_llm_agent_description_with_instructions(self):
-    """Test _build_llm_agent_description_with_instructions with all components."""
+  def test_build_llm_agent_description_excludes_instructions(self):
+    """Test _build_agent_description ignores an LlmAgent's instructions."""
     # Arrange
     mock_agent = Mock(spec=LlmAgent)
     mock_agent.description = "Test agent"
@@ -721,27 +693,13 @@ class TestDescriptionBuildingFunctions:
     mock_agent.global_instruction = "Your role is to assist."
 
     # Act
-    result = _build_llm_agent_description_with_instructions(mock_agent)
-
-    # Assert
-    assert result == "Test agent I should help users. my role is to assist."
-
-  def test_build_llm_agent_description_without_instructions(self):
-    """Test _build_llm_agent_description_with_instructions without instructions."""
-    # Arrange
-    mock_agent = Mock(spec=LlmAgent)
-    mock_agent.description = "Test agent"
-    mock_agent.instruction = None
-    mock_agent.global_instruction = None
-
-    # Act
-    result = _build_llm_agent_description_with_instructions(mock_agent)
+    result = _build_agent_description(mock_agent)
 
     # Assert
     assert result == "Test agent"
 
   def test_build_llm_agent_description_without_description(self):
-    """Test _build_llm_agent_description_with_instructions without description."""
+    """Test _build_agent_description for an LlmAgent without a description."""
     # Arrange
     mock_agent = Mock(spec=LlmAgent)
     mock_agent.description = None
@@ -749,21 +707,7 @@ class TestDescriptionBuildingFunctions:
     mock_agent.global_instruction = None
 
     # Act
-    result = _build_llm_agent_description_with_instructions(mock_agent)
-
-    # Assert
-    assert result == "I should help users."
-
-  def test_build_llm_agent_description_empty_all(self):
-    """Test _build_llm_agent_description_with_instructions with all empty."""
-    # Arrange
-    mock_agent = Mock(spec=LlmAgent)
-    mock_agent.description = None
-    mock_agent.instruction = None
-    mock_agent.global_instruction = None
-
-    # Act
-    result = _build_llm_agent_description_with_instructions(mock_agent)
+    result = _build_agent_description(mock_agent)
 
     # Assert
     assert result == "An LLM-based agent"  # Default description
@@ -1216,106 +1160,6 @@ class TestExampleExtractionFunctions:
 
     # Assert
     assert result == []
-
-  def test_extract_examples_from_instruction_with_examples(self):
-    """Test _extract_examples_from_instruction with valid examples."""
-    # Arrange
-    instruction = (
-        'Example Query: "What is the weather?" Example Response: "The weather'
-        ' is sunny."'
-    )
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function processes each pattern separately, so it won't find pairs
-    # from different patterns. This test should return None.
-    assert result is None
-
-  def test_extract_examples_from_instruction_with_multiple_examples(self):
-    """Test _extract_examples_from_instruction with multiple examples."""
-    # Arrange
-    instruction = """
-    Example Query: "What is the weather?" Example Response: "The weather is sunny."
-    Example Query: "What time is it?" Example Response: "It is 3 PM."
-    """
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function finds matches but pairs them incorrectly due to how patterns are processed
-    assert result is not None
-    assert isinstance(result, list)
-    assert len(result) == 2
-    # The function pairs consecutive matches from the same pattern
-    assert result[0]["input"] == {"text": "What is the weather?"}
-    assert result[0]["output"] == [{"text": "What time is it?"}]
-    assert result[1]["input"] == {"text": "The weather is sunny."}
-    assert result[1]["output"] == [{"text": "It is 3 PM."}]
-
-  def test_extract_examples_from_instruction_with_different_patterns(self):
-    """Test _extract_examples_from_instruction with different example patterns."""
-    # Arrange
-    instruction = (
-        'Example: "What is the weather?" Example Response: "The weather is'
-        ' sunny."'
-    )
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function processes each pattern separately, so it won't find pairs
-    # from different patterns. This test should return None.
-    assert result is None
-
-  def test_extract_examples_from_instruction_case_insensitive(self):
-    """Test _extract_examples_from_instruction with case-insensitive matching."""
-    # Arrange
-    instruction = (
-        'example query: "What is the weather?" example response: "The weather'
-        ' is sunny."'
-    )
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function processes each pattern separately, so it won't find pairs
-    # from different patterns. This test should return None.
-    assert result is None
-
-  def test_extract_examples_from_instruction_no_examples(self):
-    """Test _extract_examples_from_instruction with no examples."""
-    # Arrange
-    instruction = "This is a regular instruction without any examples."
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    assert result is None
-
-  def test_extract_examples_from_instruction_odd_number_of_matches(self):
-    """Test _extract_examples_from_instruction with odd number of matches."""
-    # Arrange
-    instruction = (
-        'Example Query: "What is the weather?" Example Response: "The weather'
-        ' is sunny." Example Query: "What time is it?"'
-    )
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function finds matches but only pairs complete pairs
-    assert result is not None
-    assert isinstance(result, list)
-    assert len(result) == 1  # Only complete pairs should be included
-    assert result[0]["input"] == {"text": "What is the weather?"}
-    assert result[0]["output"] == [{"text": "What time is it?"}]
 
   def test_extract_inputs_from_examples_from_plain_text_input(self):
     """Test _extract_inputs_from_examples on plain text as input."""

@@ -17,11 +17,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
-from ...features import experimental
-from ...features import FeatureName
 
-
-@experimental(FeatureName.DATA_AGENT_TOOL_CONFIG)
 class DataAgentToolConfig(BaseModel):
   """Configuration for Data Agent tools."""
 

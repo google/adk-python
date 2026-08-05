@@ -45,11 +45,10 @@ async def test_gcs_toolset_tools_default():
   tools = await toolset.get_tools()
   assert tools is not None
 
-  assert len(tools) == 4
+  assert len(tools) == 3
   assert all([isinstance(tool, GoogleTool) for tool in tools])
 
   expected_tool_names = set([
-      "get_bucket",
       "get_object_data",
       "get_object_metadata",
       "list_objects",
@@ -69,10 +68,11 @@ async def test_gcs_admin_toolset_tools_default():
   tools = await toolset.get_tools()
   assert tools is not None
 
-  assert len(tools) == 1
+  assert len(tools) == 2
   assert all([isinstance(tool, GoogleTool) for tool in tools])
 
   expected_tool_names = set([
+      "get_bucket",
       "list_buckets",
   ])
   actual_tool_names = set([tool.name for tool in tools])
@@ -82,8 +82,8 @@ async def test_gcs_admin_toolset_tools_default():
 @pytest.mark.parametrize(
     "selected_tools, expected_count",
     [
-        pytest.param(None, 4, id="None"),
-        pytest.param(["get_bucket"], 1, id="bucket-get"),
+        pytest.param(None, 3, id="None"),
+        pytest.param(["get_object_data"], 1, id="object-data-get"),
         pytest.param(
             ["list_objects", "get_object_metadata"], 2, id="object-metadata"
         ),

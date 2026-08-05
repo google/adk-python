@@ -65,7 +65,7 @@ class InMemorySessionService(BaseSessionService):
   testing and development only.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     # A map from app name to a map from user ID to a map from session ID to
     # session.
     self.sessions: dict[str, dict[str, dict[str, Session]]] = {}
@@ -118,7 +118,7 @@ class InMemorySessionService(BaseSessionService):
         app_name=app_name, user_id=user_id, session_id=session_id
     ):
       raise AlreadyExistsError(f'Session with id {session_id} already exists.')
-    state_deltas = _session_util.extract_state_delta(state)
+    state_deltas = _session_util.extract_state_delta(state or {})
     app_state_delta = state_deltas['app']
     user_state_delta = state_deltas['user']
     session_state = state_deltas['session']
@@ -198,7 +198,7 @@ class InMemorySessionService(BaseSessionService):
     if session_id not in self.sessions[app_name][user_id]:
       return None
 
-    session = self.sessions[app_name][user_id].get(session_id)
+    session = self.sessions[app_name][user_id][session_id]
     copied_session = _copy_session(session)
 
     if config:
@@ -347,7 +347,7 @@ class InMemorySessionService(BaseSessionService):
     session.last_update_time = event.timestamp
 
     # Update the storage session
-    storage_session = self.sessions[app_name][user_id].get(session_id)
+    storage_session = self.sessions[app_name][user_id][session_id]
     if storage_session is not session:
       storage_session.events.append(event)
       storage_session.last_update_time = event.timestamp

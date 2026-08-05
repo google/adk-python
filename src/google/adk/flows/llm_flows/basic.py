@@ -27,6 +27,8 @@ from ...models.llm_request import LlmRequest
 from ...utils import model_name_utils
 from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import as_llm_agent
+from ._invocation_utils import require_run_config
 
 
 def _merge_run_config_http_options(
@@ -66,7 +68,8 @@ def _build_basic_request(
     invocation_context: The invocation context containing agent and run config.
     llm_request: The LlmRequest to populate.
   """
-  agent = invocation_context.agent
+  agent = as_llm_agent(invocation_context)
+  run_config = require_run_config(invocation_context)
   model = agent.canonical_model
   llm_request.model = model if isinstance(model, str) else model.model
 
@@ -101,30 +104,25 @@ def _build_basic_request(
       llm_request.set_output_schema(agent.output_schema)
 
   llm_request.live_connect_config.response_modalities = (
-      [
-          types.Modality(m)
-          for m in invocation_context.run_config.response_modalities
-      ]
-      if invocation_context.run_config.response_modalities is not None
+      [types.Modality(m) for m in run_config.response_modalities]
+      if run_config.response_modalities is not None
       else None
   )
-  llm_request.live_connect_config.speech_config = (
-      invocation_context.run_config.speech_config
-  )
+  llm_request.live_connect_config.speech_config = run_config.speech_config
   llm_request.live_connect_config.output_audio_transcription = (
-      invocation_context.run_config.output_audio_transcription
+      run_config.output_audio_transcription
   )
   llm_request.live_connect_config.input_audio_transcription = (
-      invocation_context.run_config.input_audio_transcription
+      run_config.input_audio_transcription
   )
   llm_request.live_connect_config.realtime_input_config = (
-      invocation_context.run_config.realtime_input_config
+      run_config.realtime_input_config
   )
   llm_request.live_connect_config.explicit_vad_signal = (
-      invocation_context.run_config.explicit_vad_signal
+      run_config.explicit_vad_signal
   )
   llm_request.live_connect_config.translation_config = (
-      invocation_context.run_config.translation_config
+      run_config.translation_config
   )
   active_model_name = (
       getattr(getattr(agent, 'canonical_live_model', None), 'model', None)
@@ -132,25 +130,19 @@ def _build_basic_request(
   )
   is_gemini_3_x = model_name_utils._is_gemini_3_x_live(active_model_name)
   llm_request.live_connect_config.enable_affective_dialog = (
-      None
-      if is_gemini_3_x
-      else invocation_context.run_config.enable_affective_dialog
+      None if is_gemini_3_x else run_config.enable_affective_dialog
   )
   llm_request.live_connect_config.proactivity = (
-      None if is_gemini_3_x else invocation_context.run_config.proactivity
+      None if is_gemini_3_x else run_config.proactivity
   )
   llm_request.live_connect_config.session_resumption = (
-      invocation_context.run_config.session_resumption
+      run_config.session_resumption
   )
-  llm_request.live_connect_config.history_config = (
-      invocation_context.run_config.history_config
-  )
+  llm_request.live_connect_config.history_config = run_config.history_config
   llm_request.live_connect_config.context_window_compression = (
-      invocation_context.run_config.context_window_compression
+      run_config.context_window_compression
   )
-  llm_request.live_connect_config.avatar_config = (
-      invocation_context.run_config.avatar_config
-  )
+  llm_request.live_connect_config.avatar_config = run_config.avatar_config
 
 
 class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):

@@ -37,6 +37,7 @@ from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import desc
+from sqlalchemy import Dialect
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
 from sqlalchemy import Index
@@ -51,6 +52,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.types import PickleType
 from sqlalchemy.types import String
 from sqlalchemy.types import TypeDecorator
+from sqlalchemy.types import TypeEngine
 
 from .. import _session_util
 from ...events.event import Event
@@ -88,7 +90,7 @@ def _truncate_str(value: Optional[str], max_length: int) -> Optional[str]:
   return value
 
 
-class DynamicPickleType(TypeDecorator):
+class DynamicPickleType(TypeDecorator[object]):  # type: ignore[misc]
   """Represents a type that can be pickled."""
 
   impl = PickleType
@@ -96,27 +98,34 @@ class DynamicPickleType(TypeDecorator):
   # keys on, so statements using this type are safe to cache.
   cache_ok = True
 
-  def load_dialect_impl(self, dialect):
+  def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
     if dialect.name == "mysql":
-      return dialect.type_descriptor(mysql.LONGBLOB)
+      return dialect.type_descriptor(mysql.LONGBLOB())
     if dialect.name == "spanner+spanner":
       from google.cloud.sqlalchemy_spanner.sqlalchemy_spanner import SpannerPickleType
 
-      return dialect.type_descriptor(SpannerPickleType)
-    return self.impl
+      return dialect.type_descriptor(SpannerPickleType())
+    return self.impl_instance
 
-  def process_bind_param(self, value, dialect):
+  def process_bind_param(
+      self, value: object | None, dialect: Dialect
+  ) -> object | None:
     """Ensures the pickled value is a bytes object before passing it to the database dialect."""
     if value is not None:
       if dialect.name in ("spanner+spanner", "mysql"):
         return pickle.dumps(value)
     return value
 
-  def process_result_value(self, value, dialect):
+  def process_result_value(
+      self, value: object | None, dialect: Dialect
+  ) -> object | None:
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
       if dialect.name in ("spanner+spanner", "mysql"):
-        return pickle.loads(value)
+        if not isinstance(value, (bytes, bytearray)):
+          raise TypeError("Expected pickled bytes from the database.")
+        decoded: object = pickle.loads(value)
+        return decoded
     return value
 
 
@@ -144,7 +153,7 @@ class StorageSession(Base):
   )
 
   state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
+      MutableDict.as_mutable(DynamicJSON), default=dict
   )
 
   create_time: Mapped[datetime] = mapped_column(
@@ -159,7 +168,7 @@ class StorageSession(Base):
       back_populates="storage_session",
   )
 
-  def __repr__(self):
+  def __repr__(self) -> str:
     return f"<StorageSession(id={self.id}, update_time={self.update_time})>"
 
   @property
@@ -249,43 +258,45 @@ class StorageEvent(Base):
 
   invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
   author: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
-  actions: Mapped[MutableDict[str, Any]] = mapped_column(DynamicPickleType)
-  long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
+  actions: Mapped[EventActions] = mapped_column(DynamicPickleType)
+  long_running_tool_ids_json: Mapped[str | None] = mapped_column(
       Text, nullable=True
   )
-  branch: Mapped[str] = mapped_column(
+  branch: Mapped[str | None] = mapped_column(
       String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
   )
-  timestamp: Mapped[PreciseTimestamp] = mapped_column(
+  timestamp: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
 
   # === Fields from llm_response.py ===
-  content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
-  grounding_metadata: Mapped[dict[str, Any]] = mapped_column(
+  content: Mapped[dict[str, Any] | None] = mapped_column(
       DynamicJSON, nullable=True
   )
-  custom_metadata: Mapped[dict[str, Any]] = mapped_column(
+  grounding_metadata: Mapped[dict[str, Any] | None] = mapped_column(
       DynamicJSON, nullable=True
   )
-  usage_metadata: Mapped[dict[str, Any]] = mapped_column(
+  custom_metadata: Mapped[dict[str, Any] | None] = mapped_column(
       DynamicJSON, nullable=True
   )
-  citation_metadata: Mapped[dict[str, Any]] = mapped_column(
+  usage_metadata: Mapped[dict[str, Any] | None] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  citation_metadata: Mapped[dict[str, Any] | None] = mapped_column(
       DynamicJSON, nullable=True
   )
 
-  partial: Mapped[bool] = mapped_column(Boolean, nullable=True)
-  turn_complete: Mapped[bool] = mapped_column(Boolean, nullable=True)
-  error_code: Mapped[str] = mapped_column(
+  partial: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+  turn_complete: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+  error_code: Mapped[str | None] = mapped_column(
       String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
   )
-  error_message: Mapped[str] = mapped_column(Text, nullable=True)
-  interrupted: Mapped[bool] = mapped_column(Boolean, nullable=True)
-  input_transcription: Mapped[dict[str, Any]] = mapped_column(
+  error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+  interrupted: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+  input_transcription: Mapped[dict[str, Any] | None] = mapped_column(
       DynamicJSON, nullable=True
   )
-  output_transcription: Mapped[dict[str, Any]] = mapped_column(
+  output_transcription: Mapped[dict[str, Any] | None] = mapped_column(
       DynamicJSON, nullable=True
   )
 
@@ -318,7 +329,7 @@ class StorageEvent(Base):
     )
 
   @long_running_tool_ids.setter
-  def long_running_tool_ids(self, value: set[str]):
+  def long_running_tool_ids(self, value: set[str] | None) -> None:
     if value is None:
       self.long_running_tool_ids_json = None
     else:
@@ -422,7 +433,7 @@ class StorageAppState(Base):
       String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
+      MutableDict.as_mutable(DynamicJSON), default=dict
   )
   update_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now(), onupdate=func.now()
@@ -441,7 +452,7 @@ class StorageUserState(Base):
       String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
+      MutableDict.as_mutable(DynamicJSON), default=dict
   )
   update_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now(), onupdate=func.now()

@@ -13,6 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 import copy
 import json
@@ -130,6 +132,22 @@ def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
   return normalized_path, normalized_path, False
 
 
+def _decode_state(value: object) -> dict[str, Any]:
+  """Decode a persisted state object and require string JSON keys."""
+  if not isinstance(value, (str, bytes, bytearray)):
+    raise TypeError("Persisted session state must be serialized JSON.")
+  decoded: object = json.loads(value)
+  if not isinstance(decoded, dict):
+    raise ValueError("Persisted session state must be a JSON object.")
+
+  state: dict[str, Any] = {}
+  for key, item in decoded.items():
+    if not isinstance(key, str):
+      raise ValueError("Persisted session state keys must be strings.")
+    state[key] = item
+  return state
+
+
 class SqliteSessionService(BaseSessionService):
   """A session service that uses an SQLite database for storage via aiosqlite.
 
@@ -182,7 +200,7 @@ class SqliteSessionService(BaseSessionService):
           )
 
       # Extract state deltas
-      state_deltas = _session_util.extract_state_delta(state)
+      state_deltas = _session_util.extract_state_delta(state or {})
       app_state_delta = state_deltas["app"]
       user_state_delta = state_deltas["user"]
       session_state = state_deltas["session"]
@@ -247,7 +265,7 @@ class SqliteSessionService(BaseSessionService):
         session_row = await cursor.fetchone()
         if session_row is None:
           return None
-        session_state = json.loads(session_row["state"])
+        session_state = _decode_state(session_row["state"])
         last_update_time = session_row["update_time"]
 
       # Build events query
@@ -271,7 +289,7 @@ class SqliteSessionService(BaseSessionService):
         params.append(config.num_recent_events)
 
       if config and config.num_recent_events == 0:
-        event_rows = []
+        event_rows: Iterable[sqlite3.Row] = []
       else:
         event_rows = await db.execute_fetchall(" ".join(query_parts), params)
       storage_events_data = [row["event_data"] for row in event_rows]
@@ -322,7 +340,7 @@ class SqliteSessionService(BaseSessionService):
       app_state = await self._get_app_state(db, app_name)
 
       # Fetch user states
-      user_states_map = {}
+      user_states_map: dict[str, dict[str, Any]] = {}
       if user_id:
         user_state = await self._get_user_state(db, app_name, user_id)
         if user_state:
@@ -333,7 +351,7 @@ class SqliteSessionService(BaseSessionService):
             (app_name,),
         ) as cursor:
           async for row in cursor:
-            user_states_map[row["user_id"]] = json.loads(row["state"])
+            user_states_map[row["user_id"]] = _decode_state(row["state"])
 
       # Build session list
       for row in session_rows:
@@ -471,7 +489,7 @@ class SqliteSessionService(BaseSessionService):
     return event
 
   @asynccontextmanager
-  async def _get_db_connection(self):
+  async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:
     """Connects to the db and performs initial setup."""
     async with aiosqlite.connect(
         self._db_connect_path, uri=self._db_connect_uri
@@ -484,12 +502,15 @@ class SqliteSessionService(BaseSessionService):
       yield db
 
   async def _get_state(
-      self, db: aiosqlite.Connection, query: str, params: tuple
+      self,
+      db: aiosqlite.Connection,
+      query: str,
+      params: tuple[object, ...],
   ) -> dict[str, Any]:
     """Fetches and deserializes a JSON state column from a single row."""
     async with db.execute(query, params) as cursor:
       row = await cursor.fetchone()
-      return json.loads(row["state"]) if row else {}
+      return _decode_state(row["state"]) if row else {}
 
   async def _get_app_state(
       self, db: aiosqlite.Connection, app_name: str
@@ -521,7 +542,11 @@ class SqliteSessionService(BaseSessionService):
     )
 
   async def _upsert_app_state(
-      self, db: aiosqlite.Connection, app_name: str, delta: dict, now: float
+      self,
+      db: aiosqlite.Connection,
+      app_name: str,
+      delta: dict[str, Any],
+      now: float,
   ) -> None:
     """Atomically inserts or updates app state using json_patch."""
     await db.execute(
@@ -537,7 +562,7 @@ class SqliteSessionService(BaseSessionService):
       db: aiosqlite.Connection,
       app_name: str,
       user_id: str,
-      delta: dict,
+      delta: dict[str, Any],
       now: float,
   ) -> None:
     """Atomically inserts or updates user state using json_patch."""
@@ -555,7 +580,7 @@ class SqliteSessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      delta: dict,
+      delta: dict[str, Any],
       now: float,
   ) -> None:
     """Atomically updates session state using json_patch."""
@@ -602,7 +627,11 @@ class SqliteSessionService(BaseSessionService):
       ) from e
 
 
-def _merge_state(app_state, user_state, session_state):
+def _merge_state(
+    app_state: dict[str, Any],
+    user_state: dict[str, Any],
+    session_state: dict[str, Any],
+) -> dict[str, Any]:
   """Merges app, user, and session states into a single dictionary."""
   merged_state = copy.deepcopy(session_state)
   for key, value in app_state.items():

@@ -19,10 +19,11 @@ import copy
 from datetime import datetime
 from datetime import timezone
 import logging
+from types import TracebackType
 from typing import Any
 from typing import AsyncIterator
-from typing import Optional
 from typing import overload
+from typing import Protocol
 from typing import TypeAlias
 from typing import TypeVar
 
@@ -95,13 +96,78 @@ _NAIVE_DATETIME_DIALECTS = (
 # Tuple key order for in-process per-session lock maps:
 # (app_name, user_id, session_id).
 _SessionLockKey: TypeAlias = tuple[str, str, str]
-_StorageStateT = TypeVar(
-    "_StorageStateT",
-    StorageAppStateV0,
-    StorageAppStateV1,
-    StorageUserStateV0,
-    StorageUserStateV1,
+_StorageState: TypeAlias = (
+    StorageAppStateV0
+    | StorageAppStateV1
+    | StorageUserStateV0
+    | StorageUserStateV1
 )
+_StorageStateT = TypeVar("_StorageStateT", bound=_StorageState)
+_StorageSession: TypeAlias = StorageSessionV0 | StorageSessionV1
+_StorageEvent: TypeAlias = StorageEventV0 | StorageEventV1
+_StorageAppState: TypeAlias = StorageAppStateV0 | StorageAppStateV1
+_StorageUserState: TypeAlias = StorageUserStateV0 | StorageUserStateV1
+
+
+class _DbapiCursor(Protocol):
+
+  def execute(self, statement: str) -> object:
+    ...
+
+  def close(self) -> None:
+    ...
+
+
+class _DbapiConnection(Protocol):
+
+  def cursor(self) -> _DbapiCursor:
+    ...
+
+
+def _require_storage_session(value: object) -> _StorageSession:
+  """Narrows a row returned through a runtime-selected ORM model."""
+  if not isinstance(value, (StorageSessionV0, StorageSessionV1)):
+    raise TypeError(f"Expected a storage session row, got {type(value)!r}.")
+  return value
+
+
+def _require_storage_event(value: object) -> _StorageEvent:
+  """Narrows an event returned through a runtime-selected ORM model."""
+  if not isinstance(value, (StorageEventV0, StorageEventV1)):
+    raise TypeError(f"Expected a storage event row, got {type(value)!r}.")
+  return value
+
+
+def _optional_storage_app_state(
+    value: object | None,
+) -> _StorageAppState | None:
+  """Narrows an optional app-state row selected through the schema bundle."""
+  if value is None:
+    return None
+  return _require_storage_app_state(value)
+
+
+def _require_storage_app_state(value: object) -> _StorageAppState:
+  """Narrows an app-state row selected through the schema bundle."""
+  if not isinstance(value, (StorageAppStateV0, StorageAppStateV1)):
+    raise TypeError(f"Expected an app-state row, got {type(value)!r}.")
+  return value
+
+
+def _optional_storage_user_state(
+    value: object | None,
+) -> _StorageUserState | None:
+  """Narrows an optional user-state row selected through the schema bundle."""
+  if value is None:
+    return None
+  return _require_storage_user_state(value)
+
+
+def _require_storage_user_state(value: object) -> _StorageUserState:
+  """Narrows a user-state row selected through the schema bundle."""
+  if not isinstance(value, (StorageUserStateV0, StorageUserStateV1)):
+    raise TypeError(f"Expected a user-state row, got {type(value)!r}.")
+  return value
 
 
 async def _select_required_state(
@@ -117,7 +183,7 @@ async def _select_required_state(
   if use_row_level_locking:
     stmt = stmt.with_for_update()
   result = await sql_session.execute(stmt)
-  state_row = result.scalars().one_or_none()
+  state_row: _StorageStateT | None = result.scalars().one_or_none()
   if state_row is None:
     raise ValueError(missing_message)
   return state_row
@@ -135,7 +201,7 @@ async def _get_or_create_state(
   Uses a SAVEPOINT so that an IntegrityError from a racing INSERT does not
   invalidate the outer transaction.
   """
-  row = await sql_session.get(state_model, primary_key)
+  row: _StorageStateT | None = await sql_session.get(state_model, primary_key)
   if row is not None:
     return row
   try:
@@ -152,7 +218,9 @@ async def _get_or_create_state(
     return row
 
 
-def _set_sqlite_pragma(dbapi_connection, connection_record):
+def _set_sqlite_pragma(
+    dbapi_connection: _DbapiConnection, connection_record: object
+) -> None:
   cursor = dbapi_connection.cursor()
   cursor.execute("PRAGMA foreign_keys=ON")
   cursor.close()
@@ -191,7 +259,11 @@ def _merge_state(
 class _SchemaClasses:
   """A helper class to hold schema classes based on version."""
 
-  def __init__(self, version: str):
+  def __init__(self, version: str | None):
+    self.StorageSession: type[_StorageSession]
+    self.StorageAppState: type[StorageAppStateV0 | StorageAppStateV1]
+    self.StorageUserState: type[StorageUserStateV0 | StorageUserStateV1]
+    self.StorageEvent: type[_StorageEvent]
     if version == _schema_check_utils.LATEST_SCHEMA_VERSION:
       self.StorageSession = StorageSessionV1
       self.StorageAppState = StorageAppStateV1
@@ -234,8 +306,8 @@ class DatabaseSessionService(BaseSessionService):
 
   def __init__(
       self,
-      db_url: Optional[str] = None,
-      db_engine: Optional[AsyncEngine] = None,
+      db_url: str | None = None,
+      db_engine: AsyncEngine | None = None,
       **kwargs: Any,
   ) -> None:
     """Initializes the database session service.
@@ -265,6 +337,8 @@ class DatabaseSessionService(BaseSessionService):
 
     if db_engine is None:
       self._owns_db_engine = True
+      if db_url is None:
+        raise ValueError("A database URL is required when no engine is given.")
       try:
         engine_kwargs = dict(kwargs)
         url = make_url(db_url)
@@ -317,7 +391,7 @@ class DatabaseSessionService(BaseSessionService):
     self._table_creation_lock = asyncio.Lock()
 
     # The current database schema version in use, "None" if not yet checked
-    self._db_schema_version: Optional[str] = None
+    self._db_schema_version: str | None = None
 
     # Per-session locks used to serialize append_event calls in this process.
     self._session_locks: dict[_SessionLockKey, asyncio.Lock] = {}
@@ -502,8 +576,8 @@ class DatabaseSessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: str,
-      state: Optional[dict[str, Any]] = None,
-      session_id: Optional[str] = None,
+      state: dict[str, Any] | None = None,
+      session_id: str | None = None,
   ) -> Session:
     # 1. Populate states.
     # 2. Build storage session object
@@ -537,16 +611,16 @@ class DatabaseSessionService(BaseSessionService):
       )
 
       # Extract state deltas
-      state_deltas = _session_util.extract_state_delta(state)
+      state_deltas = _session_util.extract_state_delta(state or {})
       app_state_delta = state_deltas["app"]
       user_state_delta = state_deltas["user"]
       session_state = state_deltas["session"]
 
       # Apply state delta
       if app_state_delta:
-        storage_app_state.state = storage_app_state.state | app_state_delta
+        storage_app_state.state.update(app_state_delta)
       if user_state_delta:
-        storage_user_state.state = storage_user_state.state | user_state_delta
+        storage_user_state.state.update(user_state_delta)
 
       # Store the session
       now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
@@ -584,8 +658,8 @@ class DatabaseSessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      config: Optional[GetSessionConfig] = None,
-  ) -> Optional[Session]:
+      config: GetSessionConfig | None = None,
+  ) -> Session | None:
     await self.prepare_tables()
     # 1. Get the storage session entry from session table
     # 2. Get all the events based on session id and filtering config
@@ -594,15 +668,16 @@ class DatabaseSessionService(BaseSessionService):
     async with self._rollback_on_exception_session(
         read_only=True
     ) as sql_session:
-      storage_session = await sql_session.get(
+      storage_session_row = await sql_session.get(
           schema.StorageSession, (app_name, user_id, session_id)
       )
-      if storage_session is None:
+      if storage_session_row is None:
         return None
+      storage_session = _require_storage_session(storage_session_row)
 
       if config and config.num_recent_events == 0:
         # Existence/metadata-only read; skip the events query entirely.
-        storage_events = []
+        storage_events: list[_StorageEvent] = []
       else:
         stmt = (
             select(schema.StorageEvent)
@@ -627,14 +702,16 @@ class DatabaseSessionService(BaseSessionService):
           stmt = stmt.limit(config.num_recent_events)
 
         result = await sql_session.execute(stmt)
-        storage_events = result.scalars().all()
+        storage_events = [
+            _require_storage_event(row) for row in result.scalars().all()
+        ]
 
       # Fetch states from storage
-      storage_app_state = await sql_session.get(
-          schema.StorageAppState, (app_name)
+      storage_app_state = _optional_storage_app_state(
+          await sql_session.get(schema.StorageAppState, app_name)
       )
-      storage_user_state = await sql_session.get(
-          schema.StorageUserState, (app_name, user_id)
+      storage_user_state = _optional_storage_user_state(
+          await sql_session.get(schema.StorageUserState, (app_name, user_id))
       )
 
       app_state = storage_app_state.state if storage_app_state else {}
@@ -658,7 +735,7 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self, *, app_name: str, user_id: str | None = None
   ) -> ListSessionsResponse:
     await self.prepare_tables()
     schema = self._get_schema_classes()
@@ -672,19 +749,21 @@ class DatabaseSessionService(BaseSessionService):
         stmt = stmt.filter(schema.StorageSession.user_id == user_id)
 
       result = await sql_session.execute(stmt)
-      results = result.scalars().all()
+      results = [
+          _require_storage_session(row) for row in result.scalars().all()
+      ]
 
       # Fetch app state from storage
-      storage_app_state = await sql_session.get(
-          schema.StorageAppState, (app_name)
+      storage_app_state = _optional_storage_app_state(
+          await sql_session.get(schema.StorageAppState, app_name)
       )
       app_state = storage_app_state.state if storage_app_state else {}
 
       # Fetch user state(s) from storage
-      user_states_map = {}
+      user_states_map: dict[str, dict[str, Any]] = {}
       if user_id is not None:
-        storage_user_state = await sql_session.get(
-            schema.StorageUserState, (app_name, user_id)
+        storage_user_state = _optional_storage_user_state(
+            await sql_session.get(schema.StorageUserState, (app_name, user_id))
         )
         if storage_user_state:
           user_states_map[user_id] = storage_user_state.state
@@ -693,8 +772,10 @@ class DatabaseSessionService(BaseSessionService):
             schema.StorageUserState.app_name == app_name
         )
         user_state_result = await sql_session.execute(user_state_stmt)
-        all_user_states_for_app = user_state_result.scalars().all()
-        for storage_user_state in all_user_states_for_app:
+        for storage_user_state_row in user_state_result.scalars().all():
+          storage_user_state = _require_storage_user_state(
+              storage_user_state_row
+          )
           user_states_map[storage_user_state.user_id] = storage_user_state.state
 
       sessions = []
@@ -737,8 +818,8 @@ class DatabaseSessionService(BaseSessionService):
     async with self._rollback_on_exception_session(
         read_only=True
     ) as sql_session:
-      storage_user_state = await sql_session.get(
-          schema.StorageUserState, (app_name, user_id)
+      storage_user_state = _optional_storage_user_state(
+          await sql_session.get(schema.StorageUserState, (app_name, user_id))
       )
       if storage_user_state is None:
         return {}
@@ -784,9 +865,10 @@ class DatabaseSessionService(BaseSessionService):
         if use_row_level_locking:
           storage_session_stmt = storage_session_stmt.with_for_update()
         storage_session_result = await sql_session.execute(storage_session_stmt)
-        storage_session = storage_session_result.scalars().one_or_none()
-        if storage_session is None:
+        storage_session_row = storage_session_result.scalars().one_or_none()
+        if storage_session_row is None:
           raise SessionNotFoundError(f"Session {session.id} not found.")
+        storage_session = _require_storage_session(storage_session_row)
         storage_update_time = storage_session.get_update_timestamp(
             is_sqlite=is_sqlite, is_postgresql=is_postgresql
         )
@@ -843,17 +925,11 @@ class DatabaseSessionService(BaseSessionService):
 
         # Merge pre-extracted state deltas into storage.
         if has_app_delta:
-          storage_app_state.state = (
-              storage_app_state.state | state_deltas["app"]
-          )
+          storage_app_state.state.update(state_deltas["app"])
         if has_user_delta:
-          storage_user_state.state = (
-              storage_user_state.state | state_deltas["user"]
-          )
+          storage_user_state.state.update(state_deltas["user"])
         if state_deltas["session"]:
-          storage_session.state = (
-              storage_session.state | state_deltas["session"]
-          )
+          storage_session.state.update(state_deltas["session"])
 
         is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
         if is_sqlite or is_postgresql:
@@ -890,6 +966,11 @@ class DatabaseSessionService(BaseSessionService):
     """Enters the async context manager and returns this service."""
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     """Exits the async context manager and closes the service."""
     await self.close()

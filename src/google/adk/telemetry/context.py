@@ -33,6 +33,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import StrictBool
 
 ADK_TELEMETRY_IGNORE_RUN_CONFIG = 'ADK_TELEMETRY_IGNORE_RUN_CONFIG'
 OTEL_SEMCONV_STABILITY_OPT_IN = 'OTEL_SEMCONV_STABILITY_OPT_IN'
@@ -41,6 +42,7 @@ OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
 )
 # Legacy ADK span-content knob; unlike the OTel env var above, it defaults on.
 ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS = 'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'
+ADK_EXPERIMENTAL_TELEMETRY = 'ADK_EXPERIMENTAL_TELEMETRY'
 
 # Token in OTEL_SEMCONV_STABILITY_OPT_IN that selects experimental GenAI semconv.
 _GENAI_EXPERIMENTAL_OPT_IN = 'gen_ai_latest_experimental'
@@ -83,7 +85,8 @@ class TelemetryConfig(BaseModel):
 
   Attached to an invocation via ``RunConfig.telemetry``. Any field left as
   ``None`` falls back to its corresponding env var (an ``OTEL_*`` var, plus the
-  default-on ``ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS`` for legacy spans).
+  default-on ``ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS`` for legacy spans, and
+  default-off ``ADK_EXPERIMENTAL_TELEMETRY`` for experimental telemetry).
   ``frozen=True`` lets the same config be shared safely across concurrent
   invocations; the resolution properties read env lazily, so later
   ``os.environ`` changes are still picked up.
@@ -105,6 +108,8 @@ class TelemetryConfig(BaseModel):
       ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT``. Pass a
       :class:`ContentCapturingMode` member; the env-var path accepts the
       matching uppercase string.
+    adk_experimental_telemetry_opt_in: Override for
+      ``ADK_EXPERIMENTAL_TELEMETRY``.
   """
 
   model_config = ConfigDict(frozen=True, extra='forbid')
@@ -113,6 +118,7 @@ class TelemetryConfig(BaseModel):
       Literal['stable', 'experimental']
   ] = None
   capture_message_content: Optional[ContentCapturingMode] = None
+  adk_experimental_telemetry_opt_in: Optional[StrictBool] = None
 
   @property
   def _ignore_per_request(self) -> bool:
@@ -211,3 +217,24 @@ class TelemetryConfig(BaseModel):
         os.getenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'true').strip().lower()
     )
     return env_value not in _FALSY_ENV_VALUES
+
+  @property
+  def should_emit_experimental_telemetry(self) -> bool:
+    """Whether to emit experimental telemetry.
+
+    Experimental telemetry includes all spans, logs, metrics, and attributes
+    whose meaning or format is subject to change, or is not yet available via
+    standard OTel knobs. As of writing this, it is only used for in-progress
+    skill related telemetry changes.
+
+    Precedence: admin lock > ``adk_experimental_telemetry_opt_in`` >
+    ``ADK_EXPERIMENTAL_TELEMETRY`` env var > ``False``.
+    """
+    if (
+        not self._ignore_per_request
+        and self.adk_experimental_telemetry_opt_in is not None
+    ):
+      return self.adk_experimental_telemetry_opt_in
+
+    env_value = os.getenv(ADK_EXPERIMENTAL_TELEMETRY, 'false').strip().lower()
+    return env_value in _TRUTHY_ENV_VALUES

@@ -17,12 +17,12 @@ from __future__ import annotations
 import collections.abc
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
+from collections.abc import Mapping
 import functools
 import inspect
 import logging
 import typing
 from typing import Any
-from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
 
@@ -163,7 +163,7 @@ class FunctionNode(BaseNode):
   _func: Callable[..., Any] = PrivateAttr()
   _sig: inspect.Signature = PrivateAttr()
   _type_hints: dict[str, Any] = PrivateAttr()
-  _type_adapters: dict[str, TypeAdapter] = PrivateAttr()
+  _type_adapters: dict[str, TypeAdapter[Any]] = PrivateAttr()
   _context_param_name: str | None = PrivateAttr(default=None)
 
   def __init__(
@@ -391,7 +391,9 @@ class FunctionNode(BaseNode):
         )
     return kwargs
 
-  def _to_event(self, ctx: Context, data: Any) -> Event | None:
+  def _to_event(
+      self, ctx: Context, data: object
+  ) -> Event | RequestInput | None:
     """Converts a function return value to an Event.
 
     Pass-through types (returned as-is): Event, RequestInput.
@@ -467,9 +469,9 @@ class FunctionNode(BaseNode):
 
   @override
   def model_copy(
-      self, *, update: dict[str, Any] | None = None, deep: bool = False
+      self, *, update: Mapping[str, Any] | None = None, deep: bool = False
   ) -> FunctionNode:
-    copied = cast(FunctionNode, super().model_copy(update=update, deep=deep))
+    copied = super().model_copy(update=update, deep=deep)
     if not update or 'name' not in update:
       return copied
 

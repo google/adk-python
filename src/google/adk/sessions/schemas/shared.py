@@ -24,12 +24,13 @@ from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.types import DateTime
 from sqlalchemy.types import TypeDecorator
+from sqlalchemy.types import TypeEngine
 
 DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256
 
 
-class DynamicJSON(TypeDecorator):
+class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
   """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON serialization for other databases."""
 
   impl = Text  # Default implementation is TEXT
@@ -37,53 +38,63 @@ class DynamicJSON(TypeDecorator):
   # keys on, so statements using this type are safe to cache.
   cache_ok = True
 
-  def load_dialect_impl(self, dialect: Dialect):
+  def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
     if dialect.name == "postgresql":
-      return dialect.type_descriptor(postgresql.JSONB)
+      return dialect.type_descriptor(postgresql.JSONB())
     if dialect.name == "mysql":
       # Use LONGTEXT for MySQL to address the data too long issue
-      return dialect.type_descriptor(mysql.LONGTEXT)
-    return dialect.type_descriptor(Text)  # Default to Text for other dialects
+      return dialect.type_descriptor(mysql.LONGTEXT())
+    return dialect.type_descriptor(Text())  # Default to Text for other dialects
 
-  def process_bind_param(self, value, dialect: Dialect):
+  def process_bind_param(
+      self, value: dict[str, Any] | None, dialect: Dialect
+  ) -> dict[str, Any] | str | None:
     if value is not None:
       if dialect.name == "postgresql":
         return value  # JSONB handles dict directly
       return json.dumps(value)  # Serialize to JSON string for TEXT
     return value
 
-  def process_result_value(self, value, dialect: Dialect):
-    if value is not None:
-      if dialect.name == "postgresql":
-        return value  # JSONB returns dict directly
-      else:
-        return json.loads(value)  # Deserialize from JSON string for TEXT
-    return value
+  def process_result_value(
+      self, value: object | None, dialect: Dialect
+  ) -> dict[str, Any] | None:
+    if value is None:
+      return None
+    decoded: object = value
+    if dialect.name != "postgresql":
+      if not isinstance(value, (str, bytes, bytearray)):
+        raise TypeError("Expected serialized JSON text from the database.")
+      decoded = json.loads(value)
+    if not isinstance(decoded, dict):
+      raise TypeError("Expected a JSON object from the database.")
+    return decoded
 
 
-class PreciseTimestamp(TypeDecorator):
+class PreciseTimestamp(TypeDecorator[datetime.datetime]):  # type: ignore[misc]
   """Represents a timestamp precise to the microsecond."""
 
   impl = DateTime
   cache_ok = True
 
-  def load_dialect_impl(self, dialect):
+  def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
     if dialect.name == "mysql":
       return dialect.type_descriptor(mysql.DATETIME(fsp=6))
-    return self.impl
+    return self.impl_instance
 
   def result_processor(
       self, dialect: Dialect, coltype: object
-  ) -> Callable[[Any], Any]:  # Any: database values can be of any type
-    impl_processor = self.impl.result_processor(dialect, coltype)
+  ) -> Callable[[object], datetime.datetime | None]:
+    impl_processor = self.impl_instance.result_processor(dialect, coltype)
 
-    def process(value: Any) -> Any:  # Any: database values can be of any type
+    def process(value: object) -> datetime.datetime | None:
       if value is None:
         return None
       if isinstance(value, (int, float)):
         return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
       if impl_processor:
         value = impl_processor(value)
+      if not isinstance(value, datetime.datetime):
+        raise TypeError("Expected a datetime value from the database.")
       return value
 
     return process

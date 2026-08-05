@@ -6135,7 +6135,33 @@ async def test_generate_content_async_passes_http_options_timeout(
   mock_acompletion.assert_called_once()
   _, kwargs = mock_acompletion.call_args
   assert "timeout" in kwargs
-  assert kwargs["timeout"] == 30000
+  # 30000ms in, 30s out.
+  assert kwargs["timeout"] == 30
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_converts_http_options_timeout_to_seconds(
+    mock_acompletion, lite_llm_instance
+):
+  """http_options.timeout is milliseconds; litellm's timeout is seconds."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(timeout=1500)
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["timeout"] == 1.5
 
 
 @pytest.mark.asyncio

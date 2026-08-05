@@ -113,8 +113,8 @@ class GkeCodeExecutor(BaseCodeExecutor):
       self,
       kubeconfig_path: str | None = None,
       kubeconfig_context: str | None = None,
-      **data,
-  ):
+      **data: object,
+  ) -> None:
     """Initializes the executor and the Kubernetes API clients.
 
     This constructor supports multiple authentication methods:
@@ -385,9 +385,14 @@ class GkeCodeExecutor(BaseCodeExecutor):
         )
 
       pod_name = pods.items[0].metadata.name
-      return self._core_v1.read_namespaced_pod_log(
+      logs: object = self._core_v1.read_namespaced_pod_log(
           name=pod_name, namespace=self.namespace
       )
+      if isinstance(logs, bytes):
+        return logs.decode("utf-8")
+      if not isinstance(logs, str):
+        raise TypeError("Kubernetes pod logs must be text or bytes.")
+      return logs
     except ApiException as e:
       raise RuntimeError(
           f"API error retrieving logs for job '{job_name}': {e.reason}"
