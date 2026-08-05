@@ -21,7 +21,11 @@ from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.apps.app import App
+from google.adk.cli.cli_eval import aggregate_eval_case_results
 from google.adk.cli.cli_eval import get_root_agent
+from google.adk.evaluation.eval_metrics import EvalMetricResult
+from google.adk.evaluation.eval_metrics import EvalStatus
+from google.adk.evaluation.eval_result import EvalCaseResult
 import pytest
 
 
@@ -261,3 +265,50 @@ async def test_get_root_agent_back_compat(monkeypatch):
   )
 
   assert await get_root_agent("some/path") is root_agent
+
+
+def test_aggregate_eval_case_results_across_runs():
+  eval_results = [
+      EvalCaseResult(
+          eval_set_id="set1",
+          eval_id="case1",
+          final_eval_status=EvalStatus.PASSED,
+          overall_eval_metric_results=[
+              EvalMetricResult(
+                  metric_name="response_match_score",
+                  threshold=0.8,
+                  score=1.0,
+                  eval_status=EvalStatus.PASSED,
+              )
+          ],
+          eval_metric_result_per_invocation=[],
+          session_id="s1",
+      ),
+      EvalCaseResult(
+          eval_set_id="set1",
+          eval_id="case1",
+          final_eval_status=EvalStatus.FAILED,
+          overall_eval_metric_results=[
+              EvalMetricResult(
+                  metric_name="response_match_score",
+                  threshold=0.8,
+                  score=0.6,
+                  eval_status=EvalStatus.FAILED,
+              )
+          ],
+          eval_metric_result_per_invocation=[],
+          session_id="s2",
+      ),
+  ]
+
+  aggregate_results = aggregate_eval_case_results(eval_results)
+
+  assert len(aggregate_results) == 1
+  assert aggregate_results[0].eval_set_id == "set1"
+  assert aggregate_results[0].eval_id == "case1"
+  assert aggregate_results[0].overall_eval_metric_results[0].score == 0.8
+  assert (
+      aggregate_results[0].overall_eval_metric_results[0].eval_status
+      == EvalStatus.PASSED
+  )
+  assert aggregate_results[0].final_eval_status == EvalStatus.PASSED

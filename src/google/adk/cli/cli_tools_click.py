@@ -1111,6 +1111,13 @@ def eval_options():
 @click.argument("eval_set_file_path_or_id", nargs=-1)
 @click.option("--config_file_path", help="Optional. The path to config file.")
 @click.option(
+    "--num_runs",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Optional. Number of times each eval set should be run.",
+)
+@click.option(
     "--print_detailed_results",
     is_flag=True,
     show_default=True,
@@ -1125,6 +1132,7 @@ def cli_eval(
     print_detailed_results: bool,
     eval_storage_uri: str | None = None,
     log_level: str = "INFO",
+    num_runs: int = 1,
 ):
   """Evaluates an agent given the eval sets.
 
@@ -1178,6 +1186,8 @@ def cli_eval(
 
   CONFIG_FILE_PATH: The path to config file.
 
+  NUM_RUNS: Number of times each eval set should be run.
+
   PRINT_DETAILED_RESULTS: Prints detailed results on the console.
   """
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
@@ -1200,6 +1210,7 @@ def cli_eval(
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import aggregate_eval_case_results
     from .cli_eval import get_app_or_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
@@ -1315,9 +1326,14 @@ def cli_eval(
         app=app,
     )
 
+    repeated_inference_requests = [
+        inference_request.model_copy(deep=True)
+        for inference_request in inference_requests
+    ] * num_runs
     inference_results = asyncio.run(
         _collect_inferences(
-            inference_requests=inference_requests, eval_service=eval_service
+            inference_requests=repeated_inference_requests,
+            eval_service=eval_service,
         )
     )
     eval_results = asyncio.run(
@@ -1327,6 +1343,7 @@ def cli_eval(
             eval_metrics=eval_metrics,
         )
     )
+    aggregate_eval_results = aggregate_eval_case_results(eval_results)
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
@@ -1335,7 +1352,7 @@ def cli_eval(
   )
   eval_run_summary = {}
 
-  for eval_result in eval_results:
+  for eval_result in aggregate_eval_results:
     if eval_result.eval_set_id not in eval_run_summary:
       eval_run_summary[eval_result.eval_set_id] = [0, 0]
 
