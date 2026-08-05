@@ -38,10 +38,16 @@ from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
 from google.adk.cli.utils import gcp_utils
 from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_metrics import EvalMetricResult
+from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
+from google.adk.evaluation.eval_metrics import EvalStatus
+from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from google.adk.events.event import Event
+from google.genai import types as genai_types
 from pydantic import BaseModel
 import pytest
 
@@ -1540,6 +1546,23 @@ def test_cli_eval_missing_deps_raises(
   assert MISSING_EVAL_DEPENDENCIES_MESSAGE in result.output
 
 
+def test_cli_eval_rejects_num_runs_less_than_one(tmp_path: Path) -> None:
+  agent_dir = tmp_path / "agent_num_runs_validation"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  eval_file = tmp_path / "dummy.evalset.json"
+  eval_file.touch()
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_dir), str(eval_file), "--num_runs", "0"],
+  )
+
+  assert result.exit_code != 0
+  assert "Invalid value for '--num_runs'" in result.output
+
+
 # cli web & api_server (uvicorn patched)
 @pytest.fixture()
 def _patch_uvicorn(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
@@ -1786,6 +1809,179 @@ def test_cli_eval_with_eval_set_id(
       app_name=app_name
   )
   assert len(eval_set_results) == 1
+
+
+@pytest.mark.unmute_click
+def test_cli_eval_with_num_runs_aggregates_per_eval_case(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+  app_name = "test_app_num_runs"
+  eval_set_id = "test_eval_set_num_runs"
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=str(tmp_path))
+  eval_sets_manager.create_eval_set(app_name=app_name, eval_set_id=eval_set_id)
+  eval_sets_manager.add_eval_case(
+      app_name=app_name,
+      eval_set_id=eval_set_id,
+      eval_case=EvalCase(eval_id="case1", conversation=[]),
+  )
+
+  observed_num_runs = {"value": None}
+
+  async def _fake_collect_inferences(inference_requests, eval_service):
+    del eval_service
+    # `num_runs` is now carried on the InferenceConfig; the eval service (not
+    # the CLI) is responsible for repeating the runs.
+    observed_num_runs["value"] = [
+        request.inference_config.num_runs for request in inference_requests
+    ]
+    return []
+
+  def _run_result(score: float, session_id: str) -> EvalCaseResult:
+    metric_result = EvalMetricResult(
+        metric_name="response_match_score",
+        threshold=0.8,
+        score=score,
+        eval_status=(EvalStatus.PASSED if score >= 0.8 else EvalStatus.FAILED),
+    )
+    return EvalCaseResult(
+        eval_set_id=eval_set_id,
+        eval_id="case1",
+        final_eval_status=metric_result.eval_status,
+        overall_eval_metric_results=[metric_result],
+        eval_metric_result_per_invocation=[
+            EvalMetricResultPerInvocation(
+                actual_invocation=Invocation(
+                    user_content=genai_types.Content(
+                        parts=[genai_types.Part(text="hi")]
+                    )
+                ),
+                eval_metric_results=[metric_result],
+            )
+        ],
+        session_id=session_id,
+    )
+
+  async def _fake_collect_eval_results(
+      inference_results, eval_service, eval_metrics
+  ):
+    del inference_results, eval_service, eval_metrics
+    # Two per-run results for the same case: mean over invocations is
+    # (1.0 + 0.6) / 2 = 0.8, which meets the 0.8 threshold.
+    return [_run_result(1.0, "session_1"), _run_result(0.6, "session_2")]
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._collect_inferences", _fake_collect_inferences
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._collect_eval_results",
+      _fake_collect_eval_results,
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["eval", str(agent_path), eval_set_id, "--num_runs", "2"],
+  )
+
+  assert result.exit_code == 0
+  # num_runs threaded into the InferenceConfig for the single request.
+  assert observed_num_runs["value"] == [2]
+  # The two per-run results collapse into a single aggregated case that passes.
+  assert "Tests passed: 1" in result.output
+  assert "Tests failed: 0" in result.output
+
+
+def test_cli_eval_with_num_runs_prints_details_per_run(
+    mock_get_root_agent,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+  app_name = "test_app_num_runs_details"
+  eval_set_id = "test_eval_set_num_runs_details"
+  agent_path = tmp_path / app_name
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=str(tmp_path))
+  eval_sets_manager.create_eval_set(app_name=app_name, eval_set_id=eval_set_id)
+  eval_sets_manager.add_eval_case(
+      app_name=app_name,
+      eval_set_id=eval_set_id,
+      eval_case=EvalCase(eval_id="case1", conversation=[]),
+  )
+
+  async def _fake_collect_inferences(inference_requests, eval_service):
+    del inference_requests, eval_service
+    return []
+
+  async def _fake_collect_eval_results(
+      inference_results, eval_service, eval_metrics
+  ):
+    del inference_results, eval_service, eval_metrics
+    return [
+        EvalCaseResult(
+            eval_set_id=eval_set_id,
+            eval_id="case1",
+            final_eval_status=EvalStatus.PASSED,
+            overall_eval_metric_results=[
+                EvalMetricResult(
+                    metric_name="response_match_score",
+                    threshold=0.8,
+                    score=1.0,
+                    eval_status=EvalStatus.PASSED,
+                )
+            ],
+            eval_metric_result_per_invocation=[],
+            session_id="session_1",
+        ),
+        EvalCaseResult(
+            eval_set_id=eval_set_id,
+            eval_id="case1",
+            final_eval_status=EvalStatus.FAILED,
+            overall_eval_metric_results=[
+                EvalMetricResult(
+                    metric_name="response_match_score",
+                    threshold=0.8,
+                    score=0.6,
+                    eval_status=EvalStatus.FAILED,
+                )
+            ],
+            eval_metric_result_per_invocation=[],
+            session_id="session_2",
+        ),
+    ]
+
+  pretty_print_calls = _Recorder()
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._collect_inferences", _fake_collect_inferences
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval._collect_eval_results",
+      _fake_collect_eval_results,
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_eval.pretty_print_eval_result", pretty_print_calls
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval",
+          str(agent_path),
+          eval_set_id,
+          "--num_runs",
+          "2",
+          "--print_detailed_results",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert len(pretty_print_calls.calls) == 2
 
 
 def test_cli_create_eval_set(tmp_path: Path):

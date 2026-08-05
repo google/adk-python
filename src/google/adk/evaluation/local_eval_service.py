@@ -198,7 +198,15 @@ class LocalEvalService(BaseEvalService):
             live_timeout_seconds=inference_request.inference_config.live_timeout_seconds,
         )
 
-    inference_results = [run_inference(eval_case) for eval_case in eval_cases]
+    # Each eval case is inferenced `num_runs` times. Running the repeats here
+    # (rather than in the caller) lets the parallelism semaphore above cover the
+    # repeated runs as well.
+    num_runs = inference_request.inference_config.num_runs
+    inference_results = [
+        run_inference(eval_case)
+        for eval_case in eval_cases
+        for _ in range(num_runs)
+    ]
     for inference_result in asyncio.as_completed(inference_results):
       yield await inference_result
 
