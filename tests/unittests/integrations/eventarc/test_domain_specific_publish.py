@@ -179,7 +179,7 @@ async def test_runtime_execution_with_payload(mock_publish, toolset):
   assert kwargs["type"] == "action.login"
   assert kwargs["source"] == "my-source"
   assert kwargs["subject"] == "user123"
-  assert "time" not in kwargs
+  assert kwargs["time"] == ""
   assert kwargs["data"] == {"user_id": "user123", "action": "login"}
 
 
@@ -233,7 +233,7 @@ async def test_runtime_execution_with_context_and_payload_lambdas(
   assert kwargs["id"] == "id-session456"
   assert kwargs["specversion"] == "1.0"
   assert kwargs["custom_attributes"] == {"ordertest": "session456:login"}
-  assert "time" not in kwargs
+  assert kwargs["time"] == ""
   assert kwargs["data"] == {"user_id": "user123", "action": "login"}
 
 
@@ -469,5 +469,59 @@ def test_custom_attribute_missing_raises_typeerror(toolset):
             type="type",
             source="source",
             custom_attributes={"mykey": domain_specific_publish.MISSING},
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@mock.patch.object(domain_specific_publish, "publish_message", autospec=True)
+async def test_time_and_datacontenttype_omit_pass_empty_string(
+    mock_publish, toolset
+):
+  tool = domain_specific_publish.build_domain_specific_tool(
+      toolset=toolset,
+      name="test_tool",
+      description="desc",
+      bus="my-bus",
+      ce_attributes_binding=domain_specific_publish.CloudEventAttributesBinding(
+          type="my-type",
+          source="my-source",
+          time=domain_specific_publish.OMIT,
+          datacontenttype=domain_specific_publish.OMIT,
+      ),
+      payload_schema=DummyPayload,
+  )
+
+  await tool.func(
+      event_data=DummyPayload(user_id="u1", action="a1"),
+      credentials=None,
+      settings=config.EventarcToolConfig(),
+      tool_context=mock.Mock(),
+  )
+
+  mock_publish.assert_called_once()
+  kwargs = mock_publish.call_args.kwargs
+  assert kwargs["time"] == ""
+  assert kwargs["datacontenttype"] == ""
+
+
+@pytest.mark.parametrize("field", ["id", "specversion"])
+def test_id_and_specversion_omit_raise_typeerror(toolset, field):
+  binding_kwargs = {
+      "type": "my-type",
+      "source": "my-source",
+      field: domain_specific_publish.OMIT,
+  }
+  with pytest.raises(
+      TypeError,
+      match=f"CloudEvent field '{field}' is mandatory and cannot be OMIT.",
+  ):
+    domain_specific_publish.build_domain_specific_tool(
+        toolset=toolset,
+        name="test_tool",
+        description="desc",
+        bus="my-bus",
+        ce_attributes_binding=domain_specific_publish.CloudEventAttributesBinding(
+            **binding_kwargs
         ),
     )

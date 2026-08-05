@@ -151,6 +151,7 @@ ping_system_tool = toolset.create_publish_tool(
     ce_attributes_binding=CloudEventAttributesBinding(
         type="system.ping",
         source="//my-agent/ping",
+        time=OMIT,  # Omits time attribute from event
         custom_attributes={
             "retry": AgentProvided(
                 "Whether to retry on failure", default="false"

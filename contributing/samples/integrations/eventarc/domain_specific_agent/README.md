@@ -46,6 +46,12 @@ gcloud eventarc message-buses create my-bus \
 
 *(Make sure to update the `BUS_NAME` variable in `agent.py` to match your actual bus URI).*
 
+3. Install the GCP extra dependency (required for Eventarc publishing):
+
+```bash
+pip install "google-adk[gcp]"
+```
+
 `create_publish_tool` is highly flexible. It uses `pydantic.create_model` to construct the LLM's function signature, encapsulating the `payload_schema` inside an `event_data` parameter and appending any parameter marked with `AgentProvided`.
 
 ### Example A: Fully Statically Bound (Safest)
@@ -117,9 +123,9 @@ complete_outreach_lambda_tool = toolset.create_publish_tool(
 
 **What the Agent Sees:** `complete_outreach_lambda(event_data: OutreachContext, priority: str)`
 
-### Example D: Empty Payloads & Dynamic Defaults
+### Example D: Empty Payloads, Omit Headers & Dynamic Defaults
 
-The developer wants to emit a simple signal (no business payload). If the agent omits the priority, it is dynamically calculated.
+The developer wants to emit a simple signal (no business payload) without a timestamp header (`time=OMIT`). If the agent omits the priority, it is dynamically calculated.
 
 ```python
 def default_priority(_: None) -> str:
@@ -133,6 +139,7 @@ ping_system_tool = toolset.create_publish_tool(
     ce_attributes_binding=CloudEventAttributesBinding(
         type="system.ping",
         source="//my-agent/ping",
+        time=OMIT, # Omits time attribute from event
         custom_attributes={
             "retry": AgentProvided("Whether to retry on failure", default="false"),
             "priority": AgentProvided("The priority of the ping", default=default_priority)

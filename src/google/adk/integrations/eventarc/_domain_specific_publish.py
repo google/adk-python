@@ -57,7 +57,6 @@ def _is_context_param(func: Any, param_name: str) -> bool:
   )
 
 
-
 @dataclass
 class AgentProvided:
   """Indicates that a CloudEvent attribute should be provided by the LLM."""
@@ -92,6 +91,10 @@ class CloudEventAttributesBinding:
   - 1 parameter for the runtime context (`lambda ctx: ...` or type-annotated with `Context`)
   - 2 parameters for both (`lambda p, ctx: ...`)
   - 0 parameters (`lambda: ...`)
+
+  Setting optional attributes (`time`, `datacontenttype`, `subject`,
+  `custom_attributes`) to `OMIT` omits them from the published CloudEvent.
+  Required attributes (`type`, `source`, `id`, `specversion`) cannot be `OMIT`.
   """
 
   type: AttributeBinding
@@ -141,6 +144,13 @@ def build_domain_specific_tool(
     raise TypeError("The 'bus' parameter is mandatory and must be provided.")
   if bus is None:
     raise TypeError("The 'bus' parameter is mandatory and cannot be None.")
+
+  for field in ("id", "specversion"):
+    val = getattr(ce_attributes_binding, field)
+    if val is OMIT:
+      raise TypeError(
+          f"CloudEvent field '{field}' is mandatory and cannot be OMIT."
+      )
 
   reserved_attributes = {
       "type",
@@ -367,7 +377,14 @@ def build_domain_specific_tool(
       val = resolve_attr(
           field, getattr(ce_attributes_binding, field), is_mandatory
       )
-      if val is not OMIT and val is not None:
+      if val is OMIT:
+        if field in ("time", "datacontenttype"):
+          publish_kwargs[field] = ""
+        elif field in ("id", "specversion"):
+          raise ValueError(
+              f"CloudEvent attribute '{field}' is mandatory and cannot be OMIT."
+          )
+      elif val is not None:
         publish_kwargs[field] = val
 
     # Resolve custom attributes
