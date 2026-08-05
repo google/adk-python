@@ -125,6 +125,63 @@ def test_validate_exclusive_blocks_multiple() -> None:
     cli_tools_click.validate_exclusive(ctx, param2, "resume.json")
 
 
+def test_resolve_eval_config_file_path_prefers_explicit_path(
+    tmp_path: Path,
+) -> None:
+  eval_set_file = tmp_path / "sample.test.json"
+  eval_set_file.touch()
+  explicit_config = tmp_path / "explicit_config.json"
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=str(explicit_config),
+      eval_set_file_or_id_to_evals={str(eval_set_file): []},
+  )
+
+  assert resolved_path == str(explicit_config)
+
+
+def test_resolve_eval_config_file_path_uses_test_config_next_to_eval_file(
+    tmp_path: Path,
+) -> None:
+  eval_set_file = tmp_path / "sample.test.json"
+  eval_set_file.touch()
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={str(eval_set_file): []},
+  )
+
+  assert resolved_path == str(tmp_path / "test_config.json")
+
+
+def test_resolve_eval_config_file_path_returns_none_for_eval_set_id() -> None:
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={"eval_set_id": []},
+  )
+
+  assert resolved_path is None
+
+
+def test_resolve_eval_config_file_path_returns_none_for_multiple_eval_files(
+    tmp_path: Path,
+) -> None:
+  eval_set_file_1 = tmp_path / "sample_1.test.json"
+  eval_set_file_2 = tmp_path / "sample_2.test.json"
+  eval_set_file_1.touch()
+  eval_set_file_2.touch()
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={
+          str(eval_set_file_1): [],
+          str(eval_set_file_2): [],
+      },
+  )
+
+  assert resolved_path is None
+
+
 # cli create
 def test_cli_create_cmd_invokes_run_cmd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
