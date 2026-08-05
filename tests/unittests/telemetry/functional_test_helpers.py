@@ -58,6 +58,7 @@ from google.adk.workflow._base_node import START
 from google.adk.workflow._workflow import Workflow
 from google.genai.types import Content
 from google.genai.types import FinishReason
+from google.genai.types import GenerateContentResponseUsageMetadata
 from google.genai.types import Part
 from mcp import ClientSession as McpClientSession
 from mcp import StdioServerParameters
@@ -524,10 +525,50 @@ NODE_USER_ID = "some_user"
 NODE_APP_NAME = "some_app"
 
 
-def _make_llm_response(part: Part) -> LlmResponse:
+# Token usage reported by the two LLM turns. Every count is distinct, both
+# across the two turns and across the buckets within a turn, so that a golden
+# pins down which turn and which bucket a number came from: swapping any two of
+# them changes the recording. No tool-use tokens: an ordinary FunctionTool's
+# result is billed as prompt tokens, and the scenario's tool is one, so that
+# bucket is a genuine zero.
+#
+# `gen_ai.usage.output_tokens` bills candidates + thoughts together, so the
+# goldens record an output of 25 for the first turn and 50 for the second, and
+# 250 input / 75 output summed over the invocation.
+FIRST_TURN_PROMPT_TOKEN_COUNT = 100
+FIRST_TURN_CACHED_TOKEN_COUNT = 40
+FIRST_TURN_CANDIDATES_TOKEN_COUNT = 20
+FIRST_TURN_THOUGHTS_TOKEN_COUNT = 5
+FIRST_TURN_TOTAL_TOKEN_COUNT = 125
+SECOND_TURN_PROMPT_TOKEN_COUNT = 150
+SECOND_TURN_CACHED_TOKEN_COUNT = 60
+SECOND_TURN_CANDIDATES_TOKEN_COUNT = 35
+SECOND_TURN_THOUGHTS_TOKEN_COUNT = 15
+SECOND_TURN_TOTAL_TOKEN_COUNT = 200
+
+FIRST_TURN_USAGE = GenerateContentResponseUsageMetadata(
+    prompt_token_count=FIRST_TURN_PROMPT_TOKEN_COUNT,
+    cached_content_token_count=FIRST_TURN_CACHED_TOKEN_COUNT,
+    candidates_token_count=FIRST_TURN_CANDIDATES_TOKEN_COUNT,
+    thoughts_token_count=FIRST_TURN_THOUGHTS_TOKEN_COUNT,
+    total_token_count=FIRST_TURN_TOTAL_TOKEN_COUNT,
+)
+SECOND_TURN_USAGE = GenerateContentResponseUsageMetadata(
+    prompt_token_count=SECOND_TURN_PROMPT_TOKEN_COUNT,
+    cached_content_token_count=SECOND_TURN_CACHED_TOKEN_COUNT,
+    candidates_token_count=SECOND_TURN_CANDIDATES_TOKEN_COUNT,
+    thoughts_token_count=SECOND_TURN_THOUGHTS_TOKEN_COUNT,
+    total_token_count=SECOND_TURN_TOTAL_TOKEN_COUNT,
+)
+
+
+def _make_llm_response(
+    part: Part, usage: GenerateContentResponseUsageMetadata
+) -> LlmResponse:
   return LlmResponse(
       content=Content(role="model", parts=[part]),
       finish_reason=FinishReason.STOP,
+      usage_metadata=usage,
   )
 
 
@@ -547,9 +588,12 @@ def build_test_agent(
           if model_exception is not None
           else [
               _make_llm_response(
-                  Part.from_function_call(name=TOOL_NAME, args=TOOL_ARGS)
+                  Part.from_function_call(name=TOOL_NAME, args=TOOL_ARGS),
+                  FIRST_TURN_USAGE,
               ),
-              _make_llm_response(Part.from_text(text=FINAL_TEXT)),
+              _make_llm_response(
+                  Part.from_text(text=FINAL_TEXT), SECOND_TURN_USAGE
+              ),
           ]
       ),
       error=model_exception,
