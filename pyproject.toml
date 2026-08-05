@@ -275,6 +275,9 @@ optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
 optional-dependencies.tools = [
   "google-api-python-client>=2.157,<3",
 ]
+optional-dependencies.uvloop = [
+  "uvloop>=0.21; platform_system != 'Windows'", # libuv event loop; no Windows wheels.
+]
 urls.changelog = "https://github.com/google/adk-python/blob/main/CHANGELOG.md"
 urls.documentation = "https://google.github.io/adk-docs/"
 urls.homepage = "https://google.github.io/adk-docs/"
