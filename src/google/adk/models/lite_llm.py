@@ -1716,7 +1716,13 @@ def _message_to_generate_content_response(
             name=tool_call.function.name,
             args=json.loads(tool_call.function.arguments or "{}"),
         )
-        part.function_call.id = tool_call.id
+        # The signature is carried on the part, so strip it back out of the id.
+        # Leaving it there leaks base64 into anything keyed by function_call_id —
+        # artifact filenames, logs, UI — and `_content_to_message_param` re-attaches
+        # it to the outgoing tool call from `thought_signature` anyway.
+        part.function_call.id = tool_call.id.split(
+            _THOUGHT_SIGNATURE_SEPARATOR, 1
+        )[0]
         if thought_signature:
           part.thought_signature = thought_signature
         parts.append(part)
