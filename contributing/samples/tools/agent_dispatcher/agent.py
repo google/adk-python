@@ -49,10 +49,11 @@ root_agent = Agent(
 You coordinate research by dispatching specialist agents.
 
 When the user asks for research:
-1. Call dispatch_agent with a clear name, instruction, and user_message.
-   Optionally pass tool_names=["lookup_fact"] so the specialist can use it.
-2. If you need more detail, call message_agent with the returned dispatch_id.
-3. You may call get_agent_result to recall the latest result.
+1. Call dispatch_agent (background by default) with name, instruction, user_message.
+   Optionally pass tool_names=["lookup_fact"]. Use wait=true only if you must block.
+2. You may dispatch multiple specialists in parallel, then call await_agent per id.
+3. For follow-ups, call message_agent with the same dispatch_id.
+4. Use get_agent_result to poll status without waiting.
 
 Keep the user updated with a concise final answer.
 """,
