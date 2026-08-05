@@ -196,14 +196,25 @@ def _content_to_oci_message(content: types.Content) -> Any:
 
   role = _to_oci_role(content.role)
 
-  # Tool results map to ToolMessage (one per result)
+  # Tool results map to ToolMessage (one per result). Multiple parallel tool
+  # results are returned as a list of ToolMessages so none are dropped;
+  # mirror _content_to_message_param in lite_llm.py.
   if tool_results:
-    call_id, result_text = tool_results[0]
-    return oci_models.ToolMessage(
-        role=oci_models.ToolMessage.ROLE_TOOL,
-        tool_call_id=call_id,
-        content=[oci_models.TextContent(type="TEXT", text=result_text)],
-    )
+    if len(tool_results) == 1:
+      call_id, result_text = tool_results[0]
+      return oci_models.ToolMessage(
+          role=oci_models.ToolMessage.ROLE_TOOL,
+          tool_call_id=call_id,
+          content=[oci_models.TextContent(type="TEXT", text=result_text)],
+      )
+    return [
+        oci_models.ToolMessage(
+            role=oci_models.ToolMessage.ROLE_TOOL,
+            tool_call_id=call_id,
+            content=[oci_models.TextContent(type="TEXT", text=result_text)],
+        )
+        for call_id, result_text in tool_results
+    ]
 
   if role == "ASSISTANT":
     oci_content: list[Any] = []
@@ -451,7 +462,13 @@ class OCIGenAILlm(BaseLlm):
     """Build OCI ChatDetails from an LlmRequest."""
     import oci.generative_ai_inference.models as oci_models
 
-    messages = [_content_to_oci_message(c) for c in llm_request.contents or []]
+    messages: list[Any] = []
+    for c in llm_request.contents or []:
+      msg = _content_to_oci_message(c)
+      if isinstance(msg, list):
+        messages.extend(msg)
+      else:
+        messages.append(msg)
 
     # Prepend SystemMessage when a system instruction is present
     if llm_request.config and llm_request.config.system_instruction:
