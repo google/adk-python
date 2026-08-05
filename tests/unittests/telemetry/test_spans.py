@@ -542,7 +542,7 @@ def test_trace_tool_call_with_scalar_response(
           types.Part(
               function_response=types.FunctionResponse(
                   id=test_tool_call_id,
-                  name='test_function_1',
+                  name=mock_tool_fixture.name,
                   response={'result': scalar_function_response},
               )
           ),
@@ -602,7 +602,7 @@ def test_trace_tool_call_with_dict_response(
           types.Part(
               function_response=types.FunctionResponse(
                   id=test_tool_call_id,
-                  name='test_function_1',
+                  name=mock_tool_fixture.name,
                   response=dict_function_response,
               )
           ),

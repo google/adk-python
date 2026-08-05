@@ -260,8 +260,11 @@ def trace_tool_call(
       and function_response_event.content is not None
       and function_response_event.content.parts
   ):
-    response_parts = function_response_event.content.parts
-    function_response = response_parts[0].function_response
+    function_response = None
+    for part in function_response_event.content.parts:
+      if part.function_response and part.function_response.name == tool.name:
+        function_response = part.function_response
+        break
     if function_response is not None:
       if function_response.id is not None:
         tool_call_id = function_response.id
