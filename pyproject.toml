@@ -60,6 +60,11 @@ dependencies = [
 optional-dependencies.a2a = [
   "a2a-sdk>=0.3.4,<2",
 ]
+optional-dependencies.agent-hooks = [
+  # Framework-neutral agent lifecycle governance contract with a compiled
+  # native core; used by google.adk.plugins.AgentHooksPlugin.
+  "agent-hooks-sdk>=0.1.0a4",
+]
 optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
