@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.6.2](https://github.com/google/adk-python/compare/v2.6.1...v2.6.2) (2026-08-03)
+
+### Bug Fixes
+
+* **cli:** update gcloud command to use beta flag ([9630559](https://github.com/google/adk-python/commit/9630559830da28a187ba75ef1c26c64780dd7987))
+
 ## [2.6.1](https://github.com/google/adk-python/compare/v2.6.0...v2.6.1) (2026-07-30)
 
 

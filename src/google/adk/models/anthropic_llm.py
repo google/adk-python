@@ -26,10 +26,13 @@ import os
 import re
 from typing import Any
 from typing import AsyncGenerator
+from typing import cast
+from typing import get_args
 from typing import Iterable
 from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
+from typing import TypeAlias
 from typing import Union
 import warnings
 
@@ -56,6 +59,24 @@ if TYPE_CHECKING:
 __all__ = ["AnthropicLlm", "Claude", "AnthropicGenerateContentConfig"]
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_ImageMediaType: TypeAlias = Literal[
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+]
+_ANTHROPIC_IMAGE_MEDIA_TYPES = frozenset[str](get_args(_ImageMediaType))
+
+_MessageBlockParam: TypeAlias = Union[
+    anthropic_types.TextBlockParam,
+    anthropic_types.ThinkingBlockParam,
+    anthropic_types.RedactedThinkingBlockParam,
+    anthropic_types.ImageBlockParam,
+    anthropic_types.DocumentBlockParam,
+    anthropic_types.ToolUseBlockParam,
+    anthropic_types.ToolResultBlockParam,
+]
 
 
 _RATE_LIMIT_POSSIBLE_FIX_MESSAGE = (
@@ -277,19 +298,28 @@ def to_google_genai_finish_reason(
 
 
 def _is_image_part(part: types.Part) -> bool:
-  return (
-      part.inline_data
-      and part.inline_data.mime_type
-      and part.inline_data.mime_type.startswith("image")
+  inline_data = part.inline_data
+  return bool(
+      inline_data is not None
+      and inline_data.mime_type is not None
+      and inline_data.mime_type.startswith("image/")
   )
 
 
 def _is_pdf_part(part: types.Part) -> bool:
-  return (
-      part.inline_data
-      and part.inline_data.mime_type
-      and part.inline_data.mime_type.split(";")[0].strip() == "application/pdf"
+  inline_data = part.inline_data
+  return bool(
+      inline_data is not None
+      and inline_data.mime_type is not None
+      and inline_data.mime_type.split(";", 1)[0].strip() == "application/pdf"
   )
+
+
+def _normalize_image_media_type(mime_type: str) -> _ImageMediaType:
+  normalized = mime_type.split(";", 1)[0].strip().lower()
+  if normalized not in _ANTHROPIC_IMAGE_MEDIA_TYPES:
+    raise ValueError(f"Unsupported Anthropic image MIME type: {mime_type}")
+  return cast(_ImageMediaType, normalized)
 
 
 class _ToolUseIdSanitizer:
@@ -316,14 +346,7 @@ class _ToolUseIdSanitizer:
 def _part_to_message_block(
     part: types.Part,
     sanitizer: _ToolUseIdSanitizer,
-) -> Union[
-    anthropic_types.TextBlockParam,
-    anthropic_types.ThinkingBlockParam,
-    anthropic_types.ImageBlockParam,
-    anthropic_types.DocumentBlockParam,
-    anthropic_types.ToolUseBlockParam,
-    anthropic_types.ToolResultBlockParam,
-]:
+) -> _MessageBlockParam:
   if part.thought and part.text:
     signature = ""
     if part.thought_signature:
@@ -343,17 +366,20 @@ def _part_to_message_block(
   if part.text:
     return anthropic_types.TextBlockParam(text=part.text, type="text")
   elif part.function_call:
-    assert part.function_call.name
+    function_call = part.function_call
+    assert function_call.name
+    tool_input: dict[str, object] = dict(function_call.args or {})
 
     return anthropic_types.ToolUseBlockParam(
-        id=sanitizer.sanitize(part.function_call.id),
-        name=part.function_call.name,
-        input=part.function_call.args,
+        id=sanitizer.sanitize(function_call.id),
+        name=function_call.name,
+        input=tool_input,
         type="tool_use",
     )
   elif part.function_response:
+    function_response = part.function_response
     content = ""
-    response_data = part.function_response.response
+    response_data = function_response.response or {}
 
     if (
         "content" in response_data
@@ -393,36 +419,52 @@ def _part_to_message_block(
       content = json.dumps(response_data)
 
     return anthropic_types.ToolResultBlockParam(
-        tool_use_id=sanitizer.sanitize(part.function_response.id),
+        tool_use_id=sanitizer.sanitize(function_response.id),
         type="tool_result",
         content=content,
         is_error=False,
     )
   elif _is_image_part(part):
-    data = base64.b64encode(part.inline_data.data).decode()
+    inline_data = part.inline_data
+    if (
+        inline_data is None
+        or inline_data.data is None
+        or inline_data.mime_type is None
+    ):
+      raise ValueError("Anthropic image parts require MIME type and data")
+    data = base64.b64encode(inline_data.data).decode()
+    image_source = anthropic_types.Base64ImageSourceParam(
+        type="base64",
+        media_type=_normalize_image_media_type(inline_data.mime_type),
+        data=data,
+    )
     return anthropic_types.ImageBlockParam(
         type="image",
-        source=dict(
-            type="base64", media_type=part.inline_data.mime_type, data=data
-        ),
+        source=image_source,
     )
   elif _is_pdf_part(part):
-    data = base64.b64encode(part.inline_data.data).decode()
+    inline_data = part.inline_data
+    if inline_data is None or inline_data.data is None:
+      raise ValueError("Anthropic PDF parts require data")
+    data = base64.b64encode(inline_data.data).decode()
+    pdf_source = anthropic_types.Base64PDFSourceParam(
+        type="base64",
+        media_type="application/pdf",
+        data=data,
+    )
     return anthropic_types.DocumentBlockParam(
         type="document",
-        source=dict(
-            type="base64", media_type=part.inline_data.mime_type, data=data
-        ),
+        source=pdf_source,
     )
   elif part.executable_code:
     return anthropic_types.TextBlockParam(
         type="text",
-        text="Code:```python\n" + part.executable_code.code + "\n```",
+        text="Code:```python\n" + (part.executable_code.code or "") + "\n```",
     )
   elif part.code_execution_result:
     return anthropic_types.TextBlockParam(
         text="Execution Result:```code_output\n"
-        + part.code_execution_result.output
+        + (part.code_execution_result.output or "")
         + "\n```",
         type="text",
     )
@@ -458,13 +500,7 @@ def _content_to_message_param(
 
 def part_to_message_block(
     part: types.Part,
-) -> Union[
-    anthropic_types.TextBlockParam,
-    anthropic_types.ImageBlockParam,
-    anthropic_types.DocumentBlockParam,
-    anthropic_types.ToolUseBlockParam,
-    anthropic_types.ToolResultBlockParam,
-]:
+) -> _MessageBlockParam:
   return _part_to_message_block(part, _ToolUseIdSanitizer())
 
 
@@ -497,7 +533,10 @@ def content_block_to_part(
     part = types.Part.from_function_call(
         name=content_block.name, args=content_block.input
     )
-    part.function_call.id = content_block.id
+    function_call = part.function_call
+    if function_call is None:
+      raise ValueError("Function-call part factory returned no function call")
+    function_call.id = content_block.id
     return part
   raise NotImplementedError(
       f"Unsupported content block type: {type(content_block)}"
@@ -508,6 +547,47 @@ def _extract_cached_token_count(usage: Any) -> int | None:
   """Returns Anthropic cache-read tokens, the analog of cached_content tokens."""
   cached = getattr(usage, "cache_read_input_tokens", None)
   return cached if isinstance(cached, int) else None
+
+
+def _extract_prompt_token_count(usage: anthropic_types.Usage) -> int:
+  """Returns every input token billed for the turn.
+
+  Anthropic reports tokens served from the prompt cache and tokens written to
+  it in their own fields, disjoint from ``input_tokens``. The GenAI shape
+  instead expects a single prompt count with the cached portion folded in --
+  ``cached_content_token_count`` is a breakdown of it, not an addition to it.
+  """
+  total = 0
+  for field in (
+      "input_tokens",
+      "cache_read_input_tokens",
+      "cache_creation_input_tokens",
+  ):
+    value = getattr(usage, field, None)
+    if isinstance(value, int):
+      total += value
+  return total
+
+
+def _extract_thinking_token_count(
+    usage: anthropic_types.Usage | anthropic_types.MessageDeltaUsage,
+) -> int | None:
+  """Returns Anthropic thinking tokens, the analog of thoughts tokens.
+
+  Anthropic counts extended-thinking tokens inside ``output_tokens``, whereas
+  the GenAI shape keeps the candidate and thought counts disjoint and sums them
+  downstream. Callers therefore subtract this from ``output_tokens`` to get the
+  candidate count; the value is clamped so that subtraction stays non-negative
+  even if the two counters ever disagree.
+  """
+  details = getattr(usage, "output_tokens_details", None)
+  thinking = getattr(details, "thinking_tokens", None)
+  if not isinstance(thinking, int):
+    return None
+  output_tokens = getattr(usage, "output_tokens", None)
+  if not isinstance(output_tokens, int):
+    return thinking
+  return min(thinking, output_tokens)
 
 
 def message_to_generate_content_response(
@@ -521,24 +601,28 @@ def message_to_generate_content_response(
 
   parts = [content_block_to_part(cb) for cb in message.content]
 
+  prompt_tokens = _extract_prompt_token_count(message.usage)
+  thinking_tokens = _extract_thinking_token_count(message.usage)
+
   return LlmResponse(
       content=types.Content(
           role="model",
           parts=parts,
       ),
       usage_metadata=types.GenerateContentResponseUsageMetadata(
-          prompt_token_count=message.usage.input_tokens,
-          candidates_token_count=message.usage.output_tokens,
-          total_token_count=(
-              message.usage.input_tokens + message.usage.output_tokens
+          prompt_token_count=prompt_tokens,
+          candidates_token_count=(
+              message.usage.output_tokens - (thinking_tokens or 0)
           ),
+          total_token_count=prompt_tokens + message.usage.output_tokens,
           cached_content_token_count=_extract_cached_token_count(message.usage),
+          thoughts_token_count=thinking_tokens,
       ),
       finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
 
 
-def _update_type_string(value: Any) -> None:
+def _update_type_string(value: object) -> None:
   """Lowercases nested JSON schema type strings for Anthropic compatibility."""
   if isinstance(value, list):
     for item in value:
@@ -678,14 +762,14 @@ class AnthropicLlm(BaseLlm):
           NotGiven,
       ],
   ) -> dict[str, Any]:
-    system = NOT_GIVEN
+    system: str | NotGiven = NOT_GIVEN
     if llm_request.config:
       system_str = extract_system_instruction(llm_request.config)
       if system_str:
         system = system_str
 
     model_to_use = self._resolve_model_name(llm_request.model)
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "model": model_to_use,
         "system": system,
         "messages": messages,
@@ -750,15 +834,18 @@ class AnthropicLlm(BaseLlm):
         _content_to_message_param(content, sanitizer)
         for content in llm_request.contents or []
     ]
-    tools = NOT_GIVEN
-    if (
-        llm_request.config
-        and llm_request.config.tools
-        and llm_request.config.tools[0].function_declarations
-    ):
+    tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven = NOT_GIVEN
+    function_declarations: list[types.FunctionDeclaration] = []
+    if llm_request.config and llm_request.config.tools:
+      for configured_tool in llm_request.config.tools:
+        if isinstance(configured_tool, types.Tool):
+          function_declarations.extend(
+              configured_tool.function_declarations or []
+          )
+    if function_declarations:
       tools = [
           function_declaration_to_tool_param(tool)
-          for tool in llm_request.config.tools[0].function_declarations
+          for tool in function_declarations
       ]
     tool_choice = (
         anthropic_types.ToolChoiceAutoParam(type="auto")
@@ -824,13 +911,15 @@ class AnthropicLlm(BaseLlm):
     redacted_thinking_blocks: dict[int, str] = {}
     input_tokens = 0
     output_tokens = 0
+    thinking_tokens: int | None = None
     cached_input_tokens: int | None = None
     stop_reason: Optional[anthropic_types.StopReason] = None
 
     async for event in raw_stream:
       if event.type == "message_start":
-        input_tokens = event.message.usage.input_tokens
+        input_tokens = _extract_prompt_token_count(event.message.usage)
         output_tokens = event.message.usage.output_tokens
+        thinking_tokens = _extract_thinking_token_count(event.message.usage)
         cached_input_tokens = _extract_cached_token_count(event.message.usage)
 
       elif event.type == "content_block_start":
@@ -896,7 +985,10 @@ class AnthropicLlm(BaseLlm):
             tool_use_blocks[event.index].args_json += delta.partial_json
 
       elif event.type == "message_delta":
+        # ``message_delta`` carries the authoritative cumulative counts, so the
+        # thinking detail is refreshed alongside the total it is nested in.
         output_tokens = event.usage.output_tokens
+        thinking_tokens = _extract_thinking_token_count(event.usage)
         if event.delta and event.delta.stop_reason:
           stop_reason = event.delta.stop_reason
 
@@ -912,10 +1004,10 @@ class AnthropicLlm(BaseLlm):
     )
     for idx in all_indices:
       if idx in thinking_blocks:
-        acc = thinking_blocks[idx]
-        part = types.Part(text=acc.thinking, thought=True)
-        if acc.signature:
-          part.thought_signature = acc.signature.encode("utf-8")
+        thinking_acc = thinking_blocks[idx]
+        part = types.Part(text=thinking_acc.thinking, thought=True)
+        if thinking_acc.signature:
+          part.thought_signature = thinking_acc.signature.encode("utf-8")
         all_parts.append(part)
       if idx in redacted_thinking_blocks:
         all_parts.append(
@@ -927,26 +1019,32 @@ class AnthropicLlm(BaseLlm):
       if idx in text_blocks:
         all_parts.append(types.Part.from_text(text=text_blocks[idx]))
       if idx in tool_use_blocks:
-        acc = tool_use_blocks[idx]
-        args = json.loads(acc.args_json) if acc.args_json else {}
-        part = types.Part.from_function_call(name=acc.name, args=args)
-        part.function_call.id = acc.id
+        tool_acc = tool_use_blocks[idx]
+        args = json.loads(tool_acc.args_json) if tool_acc.args_json else {}
+        part = types.Part.from_function_call(name=tool_acc.name, args=args)
+        function_call = part.function_call
+        if function_call is None:
+          raise ValueError(
+              "Function-call part factory returned no function call"
+          )
+        function_call.id = tool_acc.id
         all_parts.append(part)
 
     yield LlmResponse(
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=types.GenerateContentResponseUsageMetadata(
             prompt_token_count=input_tokens,
-            candidates_token_count=output_tokens,
+            candidates_token_count=output_tokens - (thinking_tokens or 0),
             total_token_count=input_tokens + output_tokens,
             cached_content_token_count=cached_input_tokens,
+            thoughts_token_count=thinking_tokens,
         ),
         finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
     )
 
   @cached_property
-  def _anthropic_client(self) -> AsyncAnthropic:
+  def _anthropic_client(self) -> AsyncAnthropic | AsyncAnthropicVertex:
     return AsyncAnthropic()
 
 

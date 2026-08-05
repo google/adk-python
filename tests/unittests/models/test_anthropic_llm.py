@@ -653,6 +653,48 @@ async def test_anthropic_llm_generate_content_async(
       assert responses[0].content.parts[0].text == "Hello, how can I help you?"
 
 
+@pytest.mark.asyncio
+async def test_generate_content_async_collects_declarations_from_all_tools(
+    generate_content_response,
+):
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Run both")])],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="first_tool")
+                  ]
+              ),
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="second_tool")
+                  ]
+              ),
+          ]
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=generate_content_response
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert [tool["name"] for tool in kwargs["tools"]] == [
+      "first_tool",
+      "second_tool",
+  ]
+
+
 def test_claude_vertex_client_uses_tracking_headers():
   """Tests that Claude vertex client is called with tracking headers."""
   with mock.patch.object(
@@ -814,8 +856,23 @@ def test_part_to_message_block_with_pdf_mime_type_parameters():
   assert isinstance(result, dict)
   assert result["type"] == "document"
   assert result["source"]["type"] == "base64"
-  assert result["source"]["media_type"] == "application/pdf; name=doc.pdf"
+  assert result["source"]["media_type"] == "application/pdf"
   assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
+@pytest.mark.parametrize("mime_type", ["image/png", "application/pdf"])
+def test_part_to_message_block_rejects_media_without_data(mime_type):
+  part = Part(inline_data=types.Blob(mime_type=mime_type))
+
+  with pytest.raises(ValueError, match="require.*data"):
+    part_to_message_block(part)
+
+
+def test_part_to_message_block_rejects_unsupported_image_mime_type():
+  part = Part(inline_data=types.Blob(mime_type="image/bmp", data=b"bitmap"))
+
+  with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
+    part_to_message_block(part)
 
 
 content_to_message_param_test_cases = [
@@ -1698,6 +1755,100 @@ def test_message_to_generate_content_response_no_cache_read_tokens():
   assert response.usage_metadata.cached_content_token_count is None
 
 
+def _message_with_usage(
+    usage: anthropic_types.Usage,
+) -> anthropic_types.Message:
+  """Builds a minimal text-only Message carrying the given usage."""
+  return anthropic_types.Message(
+      id="msg_usage",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=usage,
+  )
+
+
+@pytest.mark.parametrize(
+    "output_tokens, thinking_tokens, expected_candidates, expected_thoughts",
+    [
+        (100, 60, 40, 60),
+        (20, 0, 20, 0),
+        (20, None, 20, None),
+        # Defensive: the two counters should never disagree, but a thinking
+        # count above the inclusive total must not make candidates negative.
+        (20, 50, 0, 20),
+    ],
+)
+def test_message_to_generate_content_response_splits_thinking_tokens(
+    output_tokens, thinking_tokens, expected_candidates, expected_thoughts
+):
+  """Thinking tokens move out of the candidate count into the thoughts count."""
+  details = (
+      None
+      if thinking_tokens is None
+      else anthropic_types.OutputTokensDetails(thinking_tokens=thinking_tokens)
+  )
+  message = _message_with_usage(
+      anthropic_types.Usage(
+          input_tokens=10,
+          output_tokens=output_tokens,
+          output_tokens_details=details,
+      )
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert response.usage_metadata.candidates_token_count == expected_candidates
+  assert response.usage_metadata.thoughts_token_count == expected_thoughts
+
+
+def test_message_to_generate_content_response_thinking_tokens_not_double_counted():
+  """Candidate and thought counts stay disjoint, so the summed total holds."""
+  from google.adk.telemetry._token_usage import TokenUsage
+
+  message = _message_with_usage(
+      anthropic_types.Usage(
+          input_tokens=10,
+          output_tokens=100,
+          output_tokens_details=anthropic_types.OutputTokensDetails(
+              thinking_tokens=60
+          ),
+      )
+  )
+
+  usage_metadata = message_to_generate_content_response(message).usage_metadata
+
+  # Anthropic bills 10 in and 100 out, 60 of which are thinking; neither the
+  # total nor the downstream output aggregation may count those 60 twice.
+  assert usage_metadata.thoughts_token_count == 60
+  assert usage_metadata.total_token_count == 110
+  assert TokenUsage(usage_metadata).output_token_count == 100
+  assert TokenUsage(usage_metadata).input_token_count == 10
+
+
+def test_message_to_generate_content_response_prompt_count_includes_cache_tokens():
+  """Cache-read and cache-creation tokens are part of the prompt count."""
+  message = _message_with_usage(
+      anthropic_types.Usage(
+          input_tokens=10,
+          output_tokens=20,
+          cache_read_input_tokens=75,
+          cache_creation_input_tokens=15,
+      )
+  )
+
+  usage_metadata = message_to_generate_content_response(message).usage_metadata
+
+  assert usage_metadata.prompt_token_count == 100
+  assert usage_metadata.cached_content_token_count == 75
+  assert usage_metadata.total_token_count == 120
+
+
 @pytest.mark.parametrize(
     "stop_reason, expected_finish_reason",
     [
@@ -1962,6 +2113,88 @@ async def test_streaming_thinking_yields_partial_and_final():
 
   assert final.usage_metadata.prompt_token_count == 15
   assert final.usage_metadata.candidates_token_count == 10
+
+
+@pytest.mark.asyncio
+async def test_streaming_reports_thinking_tokens_disjoint_from_candidates():
+  """The final streamed usage splits thinking tokens out of the candidates."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              usage=anthropic_types.Usage(
+                  input_tokens=15,
+                  output_tokens=0,
+                  cache_read_input_tokens=5,
+                  cache_creation_input_tokens=0,
+              )
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ThinkingBlock(
+              thinking="", signature="", type="thinking"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.ThinkingDelta(
+              thinking="ponder.", type="thinking_delta"
+          ),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="content_block_start",
+          index=1,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=1,
+          delta=anthropic_types.TextDelta(text="42.", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=1),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=anthropic_types.MessageDeltaUsage(
+              output_tokens=100,
+              output_tokens_details=anthropic_types.OutputTokensDetails(
+                  thinking_tokens=60
+              ),
+          ),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="What?")])],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(thinking_budget=5000),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(request, stream=True)
+    ]
+
+  usage_metadata = responses[-1].usage_metadata
+  assert usage_metadata.prompt_token_count == 20
+  assert usage_metadata.cached_content_token_count == 5
+  assert usage_metadata.thoughts_token_count == 60
+  assert usage_metadata.candidates_token_count == 40
+  assert usage_metadata.total_token_count == 120
 
 
 @pytest.mark.asyncio

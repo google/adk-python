@@ -175,6 +175,7 @@ def test_to_cloud_run_happy_path(
 
   expected_gcloud_command = [
       cli_deploy._GCLOUD_CMD,
+      "beta",
       "run",
       "deploy",
       "svc",

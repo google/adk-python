@@ -5,10 +5,6 @@
 This sample agent demonstrates the Google Cloud Storage (GCS) first-party tools in ADK,
 distributed via the `google.adk.integrations.gcs` module. These tools include:
 
-1. `gcs_get_bucket`
-
-Get metadata information about a GCS bucket.
-
 1. `gcs_list_objects`
 
 List object names in a GCS bucket.
@@ -93,7 +89,6 @@ credentials.
 
 ## Sample prompts
 
-- Show me metadata for the my-bucket bucket.
 - List all objects in the my-bucket bucket.
 - Get metadata for the my-object.txt object in my-bucket.
 - Download the GCS object my-object.txt in my-bucket to a local file ~/Downloads/downloaded.txt.

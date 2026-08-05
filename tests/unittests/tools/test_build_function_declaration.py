@@ -529,6 +529,39 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.parameters.properties['agent_name'].enum == agent_names
     assert 'tool_context' not in function_decl.parameters.properties
 
+  def test_callable_object_is_declared_under_its_class_name(self):
+    """A callable object has no __name__ and falls back to its class name."""
+
+    class Calc:
+      """Adds two numbers."""
+
+      def __call__(self, a: int, b: int) -> int:
+        return a + b
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=Calc()
+    )
+
+    assert function_decl.name == 'Calc'
+    assert function_decl.parameters.properties['a'].type == 'INTEGER'
+
+  def test_callable_object_reaches_the_response_schema_branch(self):
+    """Only non-GEMINI_API variants build a response schema, which also names
+    the callable."""
+
+    class Calc:
+      """Adds two numbers."""
+
+      def __call__(self, a: int, b: int):
+        return a + b
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=Calc(), variant=GoogleLLMVariant.VERTEX_AI
+    )
+
+    assert function_decl.name == 'Calc'
+    assert function_decl.response is not None
+
 
 class TestBuildFunctionDeclarationWithJsonSchema:
   """Tests for build_function_declaration when JSON_SCHEMA_FOR_FUNC_DECL is enabled."""

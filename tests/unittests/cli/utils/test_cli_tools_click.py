@@ -1830,9 +1830,12 @@ def test_telemetry_cli_commands(monkeypatch: pytest.MonkeyPatch) -> None:
 
   runner = CliRunner()
 
-  # Test running without subcommand shows help
+  # Test running without subcommand shows help. A group invoked without a
+  # subcommand exits 0 on click 8.1.x but 2 (usage error) on click >= 8.2, and
+  # pyproject.toml allows both, so assert on the help output rather than the
+  # exit code.
   result = runner.invoke(cli_tools_click.main, ["telemetry"])
-  assert result.exit_code == 0
+  assert result.exit_code in (0, 2)
   assert "Usage:" in result.output
 
   # Test status subcommand

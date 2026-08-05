@@ -31,6 +31,7 @@ from google.genai import types
 import pydantic
 from typing_extensions import override
 
+from . import _function_tool_declarations
 from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..utils._schema_utils import get_list_inner_type
@@ -91,15 +92,10 @@ class FunctionTool(BaseTool):
         the callable returns True, the tool will require confirmation from the
         user.
     """
-    name = ''
     doc = ''
-    # Handle different types of callables
-    if hasattr(func, '__name__'):
-      # Regular functions, unbound methods, etc.
-      name = func.__name__
-    elif hasattr(func, '__class__'):
-      # Callable objects, bound methods, etc.
-      name = func.__class__.__name__
+    # Shared with the declaration builder so the name advertised to the model
+    # and the name the tool is registered under cannot drift apart.
+    name = _function_tool_declarations.get_callable_name(func)
 
     # Get documentation (prioritize direct __doc__ if available)
     if hasattr(func, '__doc__') and func.__doc__:
