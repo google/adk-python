@@ -227,6 +227,60 @@ def test_content_to_oci_message_function_response():
   assert msg.content[0].text
 
 
+def test_content_to_oci_message_multiple_function_responses():
+  import oci.generative_ai_inference.models as oci_models
+
+  part1 = Part.from_function_response(
+      name="get_weather", response={"result": "Sunny, 22°C"}
+  )
+  part1.function_response.id = "call_A"
+  
+  part2 = Part.from_function_response(
+      name="get_price", response={"result": "$150"}
+  )
+  part2.function_response.id = "call_B"
+
+  content = Content(role="user", parts=[part1, part2])
+  msgs = _content_to_oci_message(content)
+  
+  assert isinstance(msgs, list)
+  assert len(msgs) == 2
+  
+  assert isinstance(msgs[0], oci_models.ToolMessage)
+  assert msgs[0].tool_call_id == "call_A"
+  
+  assert isinstance(msgs[1], oci_models.ToolMessage)
+  assert msgs[1].tool_call_id == "call_B"
+
+
+def test_build_chat_details_flattens_multiple_tool_messages(oci_llm):
+  import oci.generative_ai_inference.models as oci_models
+
+  part1 = Part.from_function_response(
+      name="get_weather", response={"result": "Sunny, 22°C"}
+  )
+  part1.function_response.id = "call_A"
+  
+  part2 = Part.from_function_response(
+      name="get_price", response={"result": "$150"}
+  )
+  part2.function_response.id = "call_B"
+
+  request = LlmRequest(
+      model="google.gemini-2.5-flash",
+      contents=[Content(role="user", parts=[part1, part2])]
+  )
+  
+  chat_details = oci_llm._build_chat_details(request)
+  messages = chat_details.chat_request.messages
+  
+  assert len(messages) == 2
+  assert isinstance(messages[0], oci_models.ToolMessage)
+  assert messages[0].tool_call_id == "call_A"
+  assert isinstance(messages[1], oci_models.ToolMessage)
+  assert messages[1].tool_call_id == "call_B"
+
+
 # ---------------------------------------------------------------------------
 # _oci_response_to_llm_response
 # ---------------------------------------------------------------------------

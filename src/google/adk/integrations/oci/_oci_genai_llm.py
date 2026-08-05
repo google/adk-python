@@ -198,12 +198,15 @@ def _content_to_oci_message(content: types.Content) -> Any:
 
   # Tool results map to ToolMessage (one per result)
   if tool_results:
-    call_id, result_text = tool_results[0]
-    return oci_models.ToolMessage(
-        role=oci_models.ToolMessage.ROLE_TOOL,
-        tool_call_id=call_id,
-        content=[oci_models.TextContent(type="TEXT", text=result_text)],
-    )
+    tool_messages = [
+        oci_models.ToolMessage(
+            role=oci_models.ToolMessage.ROLE_TOOL,
+            tool_call_id=call_id,
+            content=[oci_models.TextContent(type="TEXT", text=result_text)],
+        )
+        for call_id, result_text in tool_results
+    ]
+    return tool_messages if len(tool_messages) > 1 else tool_messages[0]
 
   if role == "ASSISTANT":
     oci_content: list[Any] = []
@@ -451,7 +454,13 @@ class OCIGenAILlm(BaseLlm):
     """Build OCI ChatDetails from an LlmRequest."""
     import oci.generative_ai_inference.models as oci_models
 
-    messages = [_content_to_oci_message(c) for c in llm_request.contents or []]
+    messages = []
+    for c in llm_request.contents or []:
+      message_or_list = _content_to_oci_message(c)
+      if isinstance(message_or_list, list):
+        messages.extend(message_or_list)
+      else:
+        messages.append(message_or_list)
 
     # Prepend SystemMessage when a system instruction is present
     if llm_request.config and llm_request.config.system_instruction:
