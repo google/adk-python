@@ -653,6 +653,48 @@ async def test_anthropic_llm_generate_content_async(
       assert responses[0].content.parts[0].text == "Hello, how can I help you?"
 
 
+@pytest.mark.asyncio
+async def test_generate_content_async_collects_declarations_from_all_tools(
+    generate_content_response,
+):
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Run both")])],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="first_tool")
+                  ]
+              ),
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="second_tool")
+                  ]
+              ),
+          ]
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=generate_content_response
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert [tool["name"] for tool in kwargs["tools"]] == [
+      "first_tool",
+      "second_tool",
+  ]
+
+
 def test_claude_vertex_client_uses_tracking_headers():
   """Tests that Claude vertex client is called with tracking headers."""
   with mock.patch.object(
@@ -814,8 +856,23 @@ def test_part_to_message_block_with_pdf_mime_type_parameters():
   assert isinstance(result, dict)
   assert result["type"] == "document"
   assert result["source"]["type"] == "base64"
-  assert result["source"]["media_type"] == "application/pdf; name=doc.pdf"
+  assert result["source"]["media_type"] == "application/pdf"
   assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
+@pytest.mark.parametrize("mime_type", ["image/png", "application/pdf"])
+def test_part_to_message_block_rejects_media_without_data(mime_type):
+  part = Part(inline_data=types.Blob(mime_type=mime_type))
+
+  with pytest.raises(ValueError, match="require.*data"):
+    part_to_message_block(part)
+
+
+def test_part_to_message_block_rejects_unsupported_image_mime_type():
+  part = Part(inline_data=types.Blob(mime_type="image/bmp", data=b"bitmap"))
+
+  with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
+    part_to_message_block(part)
 
 
 content_to_message_param_test_cases = [

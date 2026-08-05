@@ -20,17 +20,20 @@ import inspect
 import logging
 from pathlib import Path
 import queue
-import sys
+from types import TracebackType
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
+from typing import cast
 from typing import Generator
 from typing import List
+from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
+from typing_extensions import Self
 
 from .agents.base_agent import BaseAgent
 from .agents.context_cache_config import ContextCacheConfig
@@ -45,7 +48,7 @@ from .auth.credential_service.base_credential_service import BaseCredentialServi
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
-from .events.event import EventActions
+from .events.event_actions import EventActions
 from .flows.llm_flows import contents
 from .flows.llm_flows.agent_transfer import _get_transfer_targets
 from .flows.llm_flows.functions import find_event_by_function_call_id
@@ -65,8 +68,11 @@ from .utils._debug_output import print_event
 if TYPE_CHECKING:
   from .apps.app import App
   from .apps.app import ResumabilityConfig
+  from .workflow._base_node import BaseNode
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_EventQueueItem = tuple[object, asyncio.Event | None]
 
 # Silence unused warning.
 # tracer is imported for backwards compatibility, to avoid breaking change in the API.
@@ -98,7 +104,7 @@ async def _notify_run_error(
     )
 
 
-def _find_active_task_scope(session) -> Optional[tuple[str, str]]:
+def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
   """Walk session backwards; find the active paused task agent's scope.
 
   Two flavors of task scope:
@@ -142,9 +148,9 @@ def _find_active_task_scope(session) -> Optional[tuple[str, str]]:
 
 
 def _get_function_responses_from_content(
-    content: types.Content,
+    content: types.Content | None,
 ) -> list[types.FunctionResponse]:
-  if not content:
+  if not content or not content.parts:
     return []
   return [
       part.function_response for part in content.parts if part.function_response
@@ -201,7 +207,9 @@ class Runner:
 
   app_name: str
   """The app name of the runner."""
-  agent: Optional[BaseAgent | 'BaseNode'] = None
+  app: App
+  """The normalized application configuration."""
+  agent: BaseNode
   """The root agent or node to run."""
   artifact_service: Optional[BaseArtifactService] = None
   """The artifact service for the runner."""
@@ -224,7 +232,7 @@ class Runner:
       app: Optional[App] = None,
       app_name: Optional[str] = None,
       agent: Optional[BaseAgent] = None,
-      node: Any = None,
+      node: BaseNode | None = None,
       plugins: Optional[List[BasePlugin]] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       session_service: BaseSessionService,
@@ -232,7 +240,7 @@ class Runner:
       credential_service: Optional[BaseCredentialService] = None,
       plugin_close_timeout: float = 5.0,
       auto_create_session: bool = False,
-  ):
+  ) -> None:
     """Initializes the Runner.
 
     Exactly one of `app`, `agent`, or `node` must be provided. When `agent`
@@ -267,6 +275,8 @@ class Runner:
     # Extract from App — single code path.
     self.app = app
     self.app_name = app_name or app.name
+    if app.root_agent is None:
+      raise ValueError('App root_agent must be provided.')
     self.agent = app.root_agent
     self.context_cache_config = app.context_cache_config
     self.resumability_config = app.resumability_config
@@ -282,7 +292,7 @@ class Runner:
       (
           self._agent_origin_app_name,
           self._agent_origin_dir,
-      ) = self._infer_agent_origin(self.agent)
+      ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
     else:
       self._agent_origin_app_name = None
       self._agent_origin_dir = None
@@ -290,12 +300,20 @@ class Runner:
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
 
+  def _require_root_agent(self) -> BaseAgent:
+    """Returns the root as an agent for agent-only execution paths."""
+    if not isinstance(self.agent, BaseAgent):
+      raise TypeError(
+          f'Runner root {self.agent.name!r} is a node, not an agent.'
+      )
+    return self.agent
+
   @staticmethod
   def _resolve_app(
       app: Optional[App],
       app_name: Optional[str],
       agent: Optional[BaseAgent],
-      node: Any,
+      node: BaseNode | None,
       plugins: Optional[List[BasePlugin]],
   ) -> App:
     """Validates inputs and normalizes to an App instance.
@@ -345,11 +363,14 @@ class Runner:
           name=app_name, root_agent=agent, plugins=plugins or []
       )
     if node is not None:
+      node_name: str = getattr(node, 'name', 'default')
       return App.model_construct(
-          name=app_name or getattr(node, 'name', 'default'),
+          name=app_name or node_name,
           root_agent=node,
           plugins=plugins or [],
       )
+    if app is None:
+      raise RuntimeError('Runner app resolution produced no app.')
     return app
 
   @staticmethod
@@ -360,13 +381,15 @@ class Runner:
       plugins: Optional[List[BasePlugin]],
   ) -> tuple[
       str,
-      BaseAgent,
+      BaseNode,
       Optional[ContextCacheConfig],
       Optional[ResumabilityConfig],
       Optional[List[BasePlugin]],
   ]:
     """Deprecated: use _resolve_app instead."""
     resolved = Runner._resolve_app(app, app_name, agent, None, plugins)
+    if resolved.root_agent is None:
+      raise ValueError('App root_agent must be provided.')
     return (
         app_name or resolved.name,
         resolved.root_agent,
@@ -478,8 +501,13 @@ class Runner:
     if not function_responses:
       return invocation_id
 
+    function_response_id = function_responses[0].id
+    if not function_response_id:
+      raise ValueError(
+          'Function response id is required to resume an invocation.'
+      )
     fc_event = find_event_by_function_call_id(
-        session.events, function_responses[0].id
+        session.events, function_response_id
     )
     if not fc_event:
       raise ValueError(
@@ -517,7 +545,7 @@ class Runner:
       state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
       yield_user_message: bool = False,
-      node: Optional['BaseNode'] = None,
+      node: BaseNode | None = None,
       session: Optional[Session] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a BaseNode through NodeRunner.
@@ -611,7 +639,7 @@ class Runner:
       from .workflow._workflow import _LoopState
 
       root_ctx = Context(ic)
-      root_agent = node or self.agent
+      root_node = node or self.agent
       is_agent = isinstance(self.agent, BaseAgent)
       has_sub_agents = is_agent and bool(
           getattr(self.agent, 'sub_agents', None)
@@ -628,7 +656,7 @@ class Runner:
 
       done_sentinel = object()
 
-      async def _drive_root_node():
+      async def _drive_root_node() -> None:
         try:
           if use_scheduler:
             # Rehydration warning: DynamicNodeScheduler relies on session.events scanning.
@@ -638,7 +666,7 @@ class Runner:
 
           try:
             await root_ctx._run_node_internal(
-                root_agent,
+                root_node,
                 node_input=node_input,
                 resume_inputs=resume_inputs,
             )
@@ -733,7 +761,7 @@ class Runner:
 
     done_sentinel = object()
 
-    async def _drive_root_node():
+    async def _drive_root_node() -> None:
       try:
         if is_workflow:
           scheduler = DynamicNodeScheduler(state=_LoopState())
@@ -889,11 +917,17 @@ class Runner:
       self, ic: InvocationContext, done_sentinel: object
   ) -> AsyncGenerator[Event, None]:
     """Consume events from ic._event_queue until done_sentinel."""
+    event_queue: asyncio.Queue[_EventQueueItem] | None = ic._event_queue
+    assert event_queue is not None
     while True:
-      event_or_done, processed_signal = await ic._event_queue.get()
+      event_or_done, processed_signal = await event_queue.get()
       if event_or_done is done_sentinel:
         break
-      event: Event = event_or_done
+      if not isinstance(event_or_done, Event):
+        raise TypeError(
+            f'Unexpected node event queue item: {type(event_or_done).__name__}'
+        )
+      event = event_or_done
       # When an LlmAgent node uses ``message_as_output`` (no
       # ``output_schema``), the wrapper sets both ``event.content``
       # (the model's text) AND ``event.output`` (the same text) to
@@ -927,7 +961,7 @@ class Runner:
         processed_signal.set()
 
   async def _cleanup_root_task(
-      self, task: asyncio.Task, node_name: str
+      self, task: asyncio.Task[None], node_name: str
   ) -> None:
     """Cancel the root task if still running, then await it.
 
@@ -1022,9 +1056,9 @@ class Runner:
       The events generated by the agent.
     """
     run_config = run_config or RunConfig()
-    event_queue = queue.Queue()
+    event_queue: queue.Queue[Event | None] = queue.Queue()
 
-    async def _invoke_run_async():
+    async def _invoke_run_async() -> None:
       try:
         async with aclosing(
             self.run_async(
@@ -1040,7 +1074,7 @@ class Runner:
       finally:
         event_queue.put(None)
 
-    def _asyncio_thread_main():
+    def _asyncio_thread_main() -> None:
       try:
         asyncio.run(_invoke_run_async())
       finally:
@@ -1122,6 +1156,7 @@ class Runner:
             isinstance(sa, LlmAgent) and getattr(sa, 'mode', None) == 'task'
             for sa in self.agent.sub_agents or []
         )
+        agent_to_run: BaseAgent
         if has_task_subagent:
           agent_to_run = self.agent
         else:
@@ -1171,12 +1206,14 @@ class Runner:
           yield event
       return
 
+    root_agent = self._require_root_agent()
+
     async def _run_with_trace(
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
       with _instrumentation.record_invocation(
-          entrypoint_node=self.agent, conversation_id=session_id
+          entrypoint_node=root_agent, conversation_id=session_id
       ):
         session = await self._get_or_create_session(
             user_id=user_id,
@@ -1184,7 +1221,7 @@ class Runner:
             get_session_config=run_config.get_session_config,
         )
 
-        if not invocation_id and not new_message:
+        if not invocation_id and new_message is None:
           raise ValueError(
               'Running an agent requires either a new_message or an '
               'invocation_id to resume a previous invocation. '
@@ -1194,13 +1231,15 @@ class Runner:
         is_resumable = (
             self.resumability_config and self.resumability_config.is_resumable
         )
-        if not is_resumable and not new_message:
+        if not is_resumable and new_message is None:
           raise ValueError(
               'Running an agent requires a new_message or a resumable app. '
               f'Session: {session_id}, User: {user_id}'
           )
 
         if not is_resumable:
+          if new_message is None:
+            raise ValueError('A new message is required for a new invocation.')
           invocation_context = await self._setup_context_for_new_invocation(
               session=session,
               new_message=new_message,
@@ -1213,6 +1252,10 @@ class Runner:
               session, new_message, invocation_id
           )
           if not invocation_id:
+            if new_message is None:
+              raise ValueError(
+                  'A new message is required when no invocation can be resumed.'
+              )
             invocation_context = await self._setup_context_for_new_invocation(
                 session=session,
                 new_message=new_message,
@@ -1229,15 +1272,23 @@ class Runner:
                     state_delta=state_delta,
                 )
             )
-            if invocation_context.end_of_agents.get(
-                invocation_context.agent.name
-            ):
+            active_agent = invocation_context.agent
+            if not isinstance(active_agent, BaseAgent):
+              raise RuntimeError(
+                  'Resumed agent execution has no active BaseAgent.'
+              )
+            if invocation_context.end_of_agents.get(active_agent.name):
               # Directly return if the current agent in invocation context is
               # already final.
               return
 
-        async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
-          async with aclosing(ctx.agent.run_async(ctx)) as agen:
+        async def execute(
+            ctx: InvocationContext,
+        ) -> AsyncGenerator[Event, None]:
+          active_agent = ctx.agent
+          if not isinstance(active_agent, BaseAgent):
+            raise RuntimeError('Agent execution has no active BaseAgent.')
+          async with aclosing(active_agent.run_async(ctx)) as agen:
             async for event in agen:
               yield event
 
@@ -1388,6 +1439,7 @@ class Runner:
         continue
 
       rewind_artifact_delta[filename] = vn + 1
+      artifact: types.Part
       if vt is None:
         # Artifact did not exist at rewind point. Mark it as inaccessible.
         artifact = types.Part(
@@ -1398,14 +1450,14 @@ class Runner:
       else:
         # Artifact version changed after rewind point. Restore to version at
         # rewind point by loading the actual data via the artifact service.
-        artifact = await self.artifact_service.load_artifact(
+        loaded_artifact = await self.artifact_service.load_artifact(
             app_name=self.app_name,
             user_id=session.user_id,
             session_id=session.id,
             filename=filename,
             version=vt,
         )
-        if artifact is None:
+        if loaded_artifact is None:
           logger.warning(
               'Artifact %s version %d not found during rewind for'
               ' session %s. Replacing with empty data.',
@@ -1418,6 +1470,8 @@ class Runner:
                   mime_type='application/octet-stream', data=b''
               )
           )
+        else:
+          artifact = loaded_artifact
       await self.artifact_service.save_artifact(
           app_name=self.app_name,
           user_id=session.user_id,
@@ -1579,7 +1633,7 @@ class Runner:
       invocation_context: InvocationContext,
       save_input_blobs_as_artifacts: bool = False,
       state_delta: Optional[dict[str, Any]] = None,
-  ):
+  ) -> None:
     """Appends a new message to the session.
 
     Args:
@@ -1723,7 +1777,11 @@ class Runner:
           DeprecationWarning,
           stacklevel=2,
       )
-    if not session:
+    if session is None:
+      if user_id is None or session_id is None:
+        raise ValueError(
+            'user_id and session_id are required when session is not provided.'
+        )
       session = await self._get_or_create_session(
           user_id=user_id,
           session_id=session_id,
@@ -1746,19 +1804,22 @@ class Runner:
         async for event in agen:
           yield event
       return
+    root_agent = self._require_root_agent()
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
         run_config=run_config,
     )
 
-    root_agent = self.agent
     invocation_context.agent = self._find_agent_to_run(
         invocation_context.session, root_agent
     )
 
-    async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
-      async with aclosing(ctx.agent.run_live(ctx)) as agen:
+    async def execute(ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+      active_agent = ctx.agent
+      if not isinstance(active_agent, BaseAgent):
+        raise RuntimeError('Live agent execution has no active BaseAgent.')
+      async with aclosing(active_agent.run_live(ctx)) as agen:
         async for event in agen:
           yield event
 
@@ -1864,7 +1925,7 @@ class Runner:
     Returns:
         True if the agent can transfer, False otherwise.
     """
-    agent = agent_to_run
+    agent: BaseAgent | None = agent_to_run
     while agent:
       if not hasattr(agent, 'disallow_transfer_to_parent'):
         # Only agents with transfer capability can transfer.
@@ -2021,8 +2082,9 @@ class Runner:
         state_delta=state_delta,
     )
     # Step 3: Set agent to run for the invocation.
+    root_agent = self._require_root_agent()
     invocation_context.agent = self._find_agent_to_run(
-        invocation_context.session, self.agent
+        invocation_context.session, root_agent
     )
     return invocation_context
 
@@ -2031,7 +2093,7 @@ class Runner:
       *,
       session: Session,
       new_message: Optional[types.Content],
-      invocation_id: Optional[str],
+      invocation_id: str,
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
   ) -> InvocationContext:
@@ -2085,9 +2147,10 @@ class Runner:
     # If the root agent is not found in end_of_agents, it means the invocation
     # started from a sub-agent and paused on a sub-agent.
     # We should find the appropriate agent to run to continue the invocation.
-    if self.agent.name not in invocation_context.end_of_agents:
+    root_agent = self._require_root_agent()
+    if root_agent.name not in invocation_context.end_of_agents:
       invocation_context.agent = self._find_agent_to_run(
-          invocation_context.session, self.agent
+          invocation_context.session, root_agent
       )
     return invocation_context
 
@@ -2106,7 +2169,7 @@ class Runner:
         return event.content
     return None
 
-  def _create_invocation_context(self, **kwargs) -> InvocationContext:
+  def _create_invocation_context(self, **kwargs: object) -> InvocationContext:
     """Creates an InvocationContext instance."""
     return InvocationContext(**kwargs)
 
@@ -2135,14 +2198,17 @@ class Runner:
     invocation_id = invocation_id or new_invocation_context_id()
 
     if run_config.support_cfc and hasattr(self.agent, 'canonical_model'):
-      model_name = self.agent.canonical_model.model
+      from .agents.llm_agent import LlmAgent
+
+      cfc_agent = cast(LlmAgent, self.agent)
+      model_name = cfc_agent.canonical_model.model
       if not model_name.startswith('gemini-2'):
         raise ValueError(
             f'CFC is not supported for model: {model_name} in agent:'
-            f' {self.agent.name}'
+            f' {cfc_agent.name}'
         )
-      if not isinstance(self.agent.code_executor, BuiltInCodeExecutor):
-        self.agent.code_executor = BuiltInCodeExecutor()
+      if not isinstance(cfc_agent.code_executor, BuiltInCodeExecutor):
+        cfc_agent.code_executor = BuiltInCodeExecutor()
 
     return self._create_invocation_context(
         artifact_service=self.artifact_service,
@@ -2176,7 +2242,10 @@ class Runner:
     # For live multi-agents system, we need model's text transcription as
     # context for the transferred agent.
     if hasattr(self.agent, 'sub_agents') and self.agent.sub_agents:
-      if types.Modality.AUDIO in run_config.response_modalities:
+      if (
+          run_config.response_modalities
+          and types.Modality.AUDIO in run_config.response_modalities
+      ):
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()
@@ -2230,7 +2299,7 @@ class Runner:
       )
 
   def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
-    toolsets = set()
+    toolsets: set[BaseToolset] = set()
     if hasattr(agent, 'tools'):
       for tool_union in agent.tools:
         if isinstance(tool_union, BaseToolset):
@@ -2240,7 +2309,9 @@ class Runner:
         toolsets.update(self._collect_toolset(sub_agent))
     return toolsets
 
-  async def _cleanup_toolsets(self, toolsets_to_close: set[BaseToolset]):
+  async def _cleanup_toolsets(
+      self, toolsets_to_close: set[BaseToolset]
+  ) -> None:
     """Clean up toolsets with proper task context management."""
     if not toolsets_to_close:
       return
@@ -2299,11 +2370,11 @@ class Runner:
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
-  async def close(self):
+  async def close(self) -> None:
     """Closes the runner."""
     logger.info('Closing runner...')
     # Close Toolsets
-    if self.agent is not None:
+    if isinstance(self.agent, BaseAgent):
       await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
     # Close Plugins
@@ -2316,16 +2387,16 @@ class Runner:
 
     logger.info('Runner closed.')
 
-  if sys.version_info < (3, 11):
-    Self = 'Runner'  # pylint: disable=invalid-name
-  else:
-    from typing import Self  # pylint: disable=g-import-not-at-top
-
   async def __aenter__(self) -> Self:
     """Async context manager entry."""
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb):
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> Literal[False]:
     """Async context manager exit."""
     await self.close()
     return False  # Don't suppress exceptions from the async with block
@@ -2348,12 +2419,12 @@ class InMemoryRunner(Runner):
       self,
       agent: Optional[BaseAgent] = None,
       *,
-      node: Any = None,
+      node: BaseNode | None = None,
       app_name: Optional[str] = None,
       plugins: Optional[list[BasePlugin]] = None,
       app: Optional[App] = None,
       plugin_close_timeout: float = 5.0,
-  ):
+  ) -> None:
     """Initializes the InMemoryRunner.
 
     Args:

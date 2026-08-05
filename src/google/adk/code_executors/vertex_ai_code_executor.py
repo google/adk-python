@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
 import mimetypes
 import os
-from typing import Any
-from typing import Optional
+from typing import TYPE_CHECKING
+from typing import TypedDict
 
+from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
@@ -30,8 +32,23 @@ from .code_execution_utils import File
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+if TYPE_CHECKING:
+  from vertexai.preview.extensions import Extension
+
 _SUPPORTED_IMAGE_TYPES = ['png', 'jpg', 'jpeg']
 _SUPPORTED_DATA_FILE_TYPES = ['csv']
+
+
+class _OutputFile(TypedDict):
+  name: str
+  contents: str | bytes
+
+
+class _ExecutionResponse(TypedDict, total=False):
+  execution_result: str
+  execution_error: str
+  output_files: list[_OutputFile]
+
 
 _IMPORTED_LIBRARIES = '''
 import io
@@ -85,7 +102,9 @@ Total columns: {df.shape[1]}
 '''
 
 
-def _get_code_interpreter_extension(resource_name: str = None):
+def _get_code_interpreter_extension(
+    resource_name: str | None = None,
+) -> Extension:
   """Returns: Load or create the code interpreter extension."""
   from vertexai.preview.extensions import Extension
 
@@ -104,6 +123,39 @@ def _get_code_interpreter_extension(resource_name: str = None):
   return new_code_interpreter
 
 
+def _normalize_execution_response(response: object) -> _ExecutionResponse:
+  """Validate the dynamic response returned by the Vertex extension SDK."""
+  if not isinstance(response, Mapping):
+    raise TypeError('Code interpreter response must be an object.')
+
+  normalized: _ExecutionResponse = {}
+  for field in ('execution_result', 'execution_error'):
+    value = response.get(field)
+    if value is not None:
+      if not isinstance(value, str):
+        raise TypeError(f'Code interpreter {field} must be a string.')
+      normalized[field] = value
+
+  raw_output_files = response.get('output_files', [])
+  if not isinstance(raw_output_files, list):
+    raise TypeError('Code interpreter output_files must be a list.')
+  output_files: list[_OutputFile] = []
+  for raw_file in raw_output_files:
+    if not isinstance(raw_file, Mapping):
+      raise TypeError('Each code interpreter output file must be an object.')
+    name = raw_file.get('name')
+    contents = raw_file.get('contents')
+    if not isinstance(name, str):
+      raise TypeError('Code interpreter output file name must be a string.')
+    if not isinstance(contents, (str, bytes)):
+      raise TypeError(
+          'Code interpreter output file contents must be text or bytes.'
+      )
+    output_files.append({'name': name, 'contents': contents})
+  normalized['output_files'] = output_files
+  return normalized
+
+
 class VertexAiCodeExecutor(BaseCodeExecutor):
   """A code executor that uses Vertex Code Interpreter Extension to execute code.
 
@@ -113,20 +165,20 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
       projects/123/locations/us-central1/extensions/456
   """
 
-  resource_name: str = None
+  resource_name: str | None = None
   """
   If set, load the existing resource name of the code interpreter extension
   instead of creating a new one.
   Format: projects/123/locations/us-central1/extensions/456
   """
 
-  _code_interpreter_extension: Extension
+  _code_interpreter_extension: Extension = PrivateAttr()
 
   def __init__(
       self,
-      resource_name: str = None,
-      **data,
-  ):
+      resource_name: str | None = None,
+      **data: object,
+  ) -> None:
     """Initializes the VertexAiCodeExecutor.
 
     Args:
@@ -184,7 +236,7 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
             File(
                 name=output_file['name'],
                 content=output_file['contents'],
-                mime_type=mime_type,
+                mime_type=mime_type or 'application/octet-stream',
             )
         )
 
@@ -200,9 +252,9 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
   def _execute_code_interpreter(
       self,
       code: str,
-      input_files: Optional[list[File]] = None,
-      session_id: Optional[str] = None,
-  ) -> dict[str, Any]:
+      input_files: list[File] | None = None,
+      session_id: str | None = None,
+  ) -> _ExecutionResponse:
     """Executes the code interpreter extension.
 
     Args:
@@ -213,18 +265,18 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
     Returns:
       The response from the code interpreter extension.
     """
-    operation_params = {'code': code}
+    operation_params: dict[str, object] = {'code': code}
     if input_files:
       operation_params['files'] = [
           {'name': f.name, 'contents': f.content} for f in input_files
       ]
     if session_id:
       operation_params['session_id'] = session_id
-    response = self._code_interpreter_extension.execute(
+    response: object = self._code_interpreter_extension.execute(
         operation_id='execute',
         operation_params=operation_params,
     )
-    return response
+    return _normalize_execution_response(response)
 
   def _get_code_with_imports(self, code: str) -> str:
     """Builds the code string with built-in imports.

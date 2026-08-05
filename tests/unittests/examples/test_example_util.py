@@ -29,6 +29,23 @@ BASIC_OUTPUT = [
 BASIC_EXAMPLE = example.Example(input=BASIC_INPUT, output=BASIC_OUTPUT)
 
 
+def test_convert_examples_handles_content_without_parts():
+  """SDK Content instances may omit parts without breaking prompt rendering."""
+  sample = example.Example(
+      input=types.Content(role="user"),
+      output=[types.Content(role="model")],
+  )
+
+  assert example_util.convert_examples_to_text([sample], None) == (
+      f"{example_util._EXAMPLES_INTRO}"
+      f"{example_util._EXAMPLE_START.format(1)}"
+      f"{example_util._USER_PREFIX}"
+      f"{example_util._MODEL_PREFIX}"
+      f"{example_util._EXAMPLE_END}"
+      f"{example_util._EXAMPLES_END}"
+  )
+
+
 class MockExampleProvider(base_example_provider.BaseExampleProvider):
   """Mocks an ExampleProvider object.
 

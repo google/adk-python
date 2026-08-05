@@ -17,7 +17,6 @@ from __future__ import annotations
 import copy
 import logging
 from typing import AsyncGenerator
-from typing import Optional
 
 from google.genai import types
 from typing_extensions import override
@@ -26,8 +25,10 @@ from ...agents.invocation_context import InvocationContext
 from ...events._branch_path import _BranchPath
 from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
+from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import as_llm_agent
 from .functions import AF_FUNCTION_CALL_ID_PREFIX
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -44,7 +45,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   ) -> AsyncGenerator[Event, None]:
     from ...models.google_llm import Gemini
 
-    agent = invocation_context.agent
+    agent = as_llm_agent(invocation_context)
     preserve_function_call_ids = False
     if hasattr(agent, 'canonical_model'):
       canonical_model = agent.canonical_model
@@ -57,7 +58,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
         # Anthropic and LiteLLM-backed providers (e.g. OpenAI) pair tool
         # calls with their results by id, so `adk-*` fallback ids must
         # survive replay.
-        id_pairing_model_types: list[type] = []
+        id_pairing_model_types: list[type[BaseLlm]] = []
         try:
           from ...models.anthropic_llm import AnthropicLlm
 
@@ -119,14 +120,11 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           include_thoughts_from_other_agents=False,
       )
 
-    if (
-        invocation_context.run_config
-        and invocation_context.run_config.model_input_context
-    ):
+    if run_config is not None and run_config.model_input_context:
       _add_model_input_context_to_user_content(
           invocation_context,
           llm_request,
-          copy.deepcopy(invocation_context.run_config.model_input_context),
+          copy.deepcopy(run_config.model_input_context),
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -146,7 +144,7 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
-  function_call_id_to_response_events_index: dict[str, int] = {}
+  function_call_id_to_response_events_index: dict[str | None, int] = {}
   for i, event in enumerate(events):
     function_responses = event.get_function_responses()
     if function_responses:
@@ -359,8 +357,8 @@ def _build_task_input_user_content(
     all_events: list[Event],
     isolation_scope: str,
     is_single_turn: bool = False,
-    user_content: Optional[types.Content] = None,
-) -> Optional[types.Content]:
+    user_content: types.Content | None = None,
+) -> types.Content | None:
   """Find the originating task-delegation FC and convert its args to user content.
 
   A task agent runs under ``isolation_scope=<fc_id>``, where ``fc_id``
@@ -410,9 +408,9 @@ def _build_task_input_user_content(
 
 
 def _should_include_event_in_context(
-    current_branch: Optional[str],
+    current_branch: str | None,
     event: Event,
-    isolation_scope: Optional[str] = None,
+    isolation_scope: str | None = None,
     *,
     include_thoughts: bool = False,
 ) -> bool:
@@ -619,8 +617,11 @@ def _recover_compacted_function_calls(
   reinjected_ids: set[str] = set()
   for event in events:
     for function_response in event.get_function_responses():
-      call_event = call_event_by_id.get(function_response.id)
-      if call_event is None or function_response.id in reinjected_ids:
+      function_response_id = function_response.id
+      if not function_response_id:
+        continue
+      call_event = call_event_by_id.get(function_response_id)
+      if call_event is None or function_response_id in reinjected_ids:
         continue
       result.append(call_event)
       sibling_ids = [
@@ -687,14 +688,14 @@ def _copy_content_for_request(
 
 
 def _get_contents(
-    current_branch: Optional[str],
+    current_branch: str | None,
     events: list[Event],
     agent_name: str = '',
     *,
     preserve_function_call_ids: bool = False,
-    isolation_scope: Optional[str] = None,
+    isolation_scope: str | None = None,
     is_single_turn: bool = False,
-    user_content: Optional[types.Content] = None,
+    user_content: types.Content | None = None,
     include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
@@ -757,12 +758,14 @@ def _get_contents(
     events_to_process = raw_filtered_events
 
   # Build mapping of function call IDs to their authors
-  fc_author_by_id = {}
+  fc_author_by_id: dict[str, str] = {}
   for e in events_to_process:
     if e.content and e.content.parts:
       for part in e.content.parts:
         if part.function_call:
-          fc_author_by_id[part.function_call.id] = e.author
+          function_call_id = part.function_call.id
+          if function_call_id:
+            fc_author_by_id[function_call_id] = e.author
 
   filtered_events = []
   # aggregate transcription events
@@ -772,11 +775,12 @@ def _get_contents(
       # Convert transcription into normal event
       if event.input_transcription and event.input_transcription.text:
         accumulated_input_transcription += event.input_transcription.text
-        if (
-            i != len(events_to_process) - 1
-            and events_to_process[i + 1].input_transcription
-            and events_to_process[i + 1].input_transcription.text
-        ):
+        next_input_transcription = (
+            events_to_process[i + 1].input_transcription
+            if i != len(events_to_process) - 1
+            else None
+        )
+        if next_input_transcription and next_input_transcription.text:
           continue
         event = event.model_copy(deep=True)
         event.input_transcription = None
@@ -787,11 +791,12 @@ def _get_contents(
         accumulated_input_transcription = ''
       elif event.output_transcription and event.output_transcription.text:
         accumulated_output_transcription += event.output_transcription.text
-        if (
-            i != len(events_to_process) - 1
-            and events_to_process[i + 1].output_transcription
-            and events_to_process[i + 1].output_transcription.text
-        ):
+        next_output_transcription = (
+            events_to_process[i + 1].output_transcription
+            if i != len(events_to_process) - 1
+            else None
+        )
+        if next_output_transcription and next_output_transcription.text:
           continue
         event = event.model_copy(deep=True)
         event.output_transcription = None
@@ -808,7 +813,7 @@ def _get_contents(
       for part in event.content.parts or []:
         if part.function_response:
           resp_id = part.function_response.id
-          call_author = fc_author_by_id.get(resp_id)
+          call_author = fc_author_by_id.get(resp_id) if resp_id else None
           if (
               call_author
               and call_author != agent_name
@@ -865,14 +870,14 @@ def _get_contents(
 
 
 def _get_current_turn_contents(
-    current_branch: Optional[str],
+    current_branch: str | None,
     events: list[Event],
     agent_name: str = '',
     *,
     preserve_function_call_ids: bool = False,
     is_single_turn: bool = False,
-    isolation_scope: Optional[str] = None,
-    user_content: Optional[types.Content] = None,
+    isolation_scope: str | None = None,
+    user_content: types.Content | None = None,
     include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
@@ -984,7 +989,7 @@ def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
 
 def _present_other_agent_message(
     event: Event, *, include_thoughts: bool = False
-) -> Optional[Event]:
+) -> Event | None:
   """Presents another agent's message as user context for the current agent.
 
   Reformats the event with role='user' and adds '[agent_name] said:' prefix
@@ -1087,24 +1092,29 @@ def _merge_function_response_events(
     raise ValueError('At least one function_response event is required.')
 
   merged_event = function_response_events[0].model_copy(deep=True)
-  parts_in_merged_event: list[types.Part] = merged_event.content.parts  # type: ignore
-
-  if not parts_in_merged_event:
+  merged_content = merged_event.content
+  if merged_content is None or not merged_content.parts:
     raise ValueError('There should be at least one function_response part.')
+  parts_in_merged_event = merged_content.parts
 
-  part_indices_in_merged_event: dict[str, int] = {}
+  # Function-response IDs are optional for legacy and long-running tools.  A
+  # missing ID is therefore a valid correlation key, matching the historical
+  # runtime behavior (with the same documented limitation for parallel calls
+  # that cannot otherwise be distinguished).
+  part_indices_in_merged_event: dict[str | None, int] = {}
   for idx, part in enumerate(parts_in_merged_event):
     if part.function_response:
-      function_call_id: str = part.function_response.id  # type: ignore
+      function_call_id = part.function_response.id
       part_indices_in_merged_event[function_call_id] = idx
 
   for event in function_response_events[1:]:
-    if not event.content.parts:
+    event_content = event.content
+    if event_content is None or not event_content.parts:
       raise ValueError('There should be at least one function_response part.')
 
-    for part in event.content.parts:
+    for part in event_content.parts:
       if part.function_response:
-        function_call_id: str = part.function_response.id  # type: ignore
+        function_call_id = part.function_response.id
         if function_call_id in part_indices_in_merged_event:
           parts_in_merged_event[
               part_indices_in_merged_event[function_call_id]
@@ -1122,7 +1132,7 @@ def _merge_function_response_events(
 
 
 def _is_event_belongs_to_branch(
-    invocation_branch: Optional[str], event: Event
+    invocation_branch: str | None, event: Event
 ) -> bool:
   """Check if an event belongs to the current branch.
 

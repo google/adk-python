@@ -129,10 +129,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOL_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DYNAMIC_INSTRUCTION_ROUTING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False

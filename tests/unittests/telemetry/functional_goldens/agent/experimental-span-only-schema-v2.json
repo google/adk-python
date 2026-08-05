@@ -1,0 +1,345 @@
+{
+  "root_span": {
+    "name": "invoke_workflow some_root_agent",
+    "attributes": {
+      "gen_ai.operation.name": "invoke_workflow",
+      "gen_ai.conversation.id": "PRESENT",
+      "gen_ai.workflow.name": "some_root_agent"
+    },
+    "status": "UNSET",
+    "children": [
+      {
+        "name": "invoke_agent some_root_agent",
+        "attributes": {
+          "gen_ai.operation.name": "invoke_agent",
+          "gen_ai.agent.description": "A sample root agent.",
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.conversation.id": "PRESENT"
+        },
+        "status": "UNSET",
+        "children": [
+          {
+            "name": "call_llm",
+            "attributes": {
+              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.request.model": "mock",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gcp.vertex.agent.session_id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gen_ai.response.finish_reasons": [
+                "stop"
+              ]
+            },
+            "status": "UNSET",
+            "children": [
+              {
+                "name": "generate_content mock",
+                "attributes": {
+                  "gen_ai.operation.name": "generate_content",
+                  "gen_ai.request.model": "mock",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.response.finish_reasons": [
+                    "stop"
+                  ],
+                  "gen_ai.input.messages": [
+                    {
+                      "role": "user",
+                      "parts": [
+                        {
+                          "content": "hello",
+                          "type": "text"
+                        }
+                      ]
+                    }
+                  ],
+                  "gen_ai.system_instructions": [
+                    {
+                      "content": "you are helpful\n\nYou are an agent. Your internal name is \"some_root_agent\". The description about you is \"A sample root agent.\".",
+                      "type": "text"
+                    }
+                  ],
+                  "gen_ai.tool.definitions": [
+                    {
+                      "name": "some_tool",
+                      "description": "A sample tool.",
+                      "parameters": {
+                        "properties": {
+                          "arg1": {
+                            "title": "Arg1",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "arg1"
+                        ],
+                        "title": "some_toolParams",
+                        "type": "object"
+                      },
+                      "type": "function"
+                    }
+                  ],
+                  "gen_ai.output.messages": [
+                    {
+                      "role": "assistant",
+                      "parts": [
+                        {
+                          "id": "some_tool_0",
+                          "name": "some_tool",
+                          "arguments": {
+                            "arg1": "val1"
+                          },
+                          "type": "tool_call"
+                        }
+                      ],
+                      "finish_reason": "stop"
+                    }
+                  ]
+                },
+                "status": "UNSET",
+                "children": [
+                  {
+                    "name": "execute_tool some_tool",
+                    "attributes": {
+                      "gen_ai.operation.name": "execute_tool",
+                      "gen_ai.tool.description": "A sample tool.",
+                      "gen_ai.tool.name": "some_tool",
+                      "gen_ai.tool.type": "FunctionTool",
+                      "gen_ai.agent.name": "some_root_agent",
+                      "gcp.vertex.agent.llm_request": "{}",
+                      "gcp.vertex.agent.llm_response": "{}",
+                      "gcp.vertex.agent.tool_call_args": "{}",
+                      "gen_ai.tool.call.id": "PRESENT",
+                      "gcp.vertex.agent.event_id": "PRESENT",
+                      "gcp.vertex.agent.tool_response": "{}"
+                    },
+                    "status": "UNSET",
+                    "children": [],
+                    "logs": []
+                  }
+                ],
+                "logs": [
+                  {
+                    "event_name": "gen_ai.client.inference.operation.details",
+                    "body": null,
+                    "attributes": {
+                      "gen_ai.agent.name": "some_root_agent",
+                      "gen_ai.conversation.id": "PRESENT",
+                      "gcp.vertex.agent.event_id": "PRESENT",
+                      "gcp.vertex.agent.invocation_id": "PRESENT",
+                      "gen_ai.response.finish_reasons": [
+                        "stop"
+                      ],
+                      "gen_ai.tool.definitions": [
+                        {
+                          "name": "some_tool",
+                          "description": "A sample tool.",
+                          "type": "function"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "logs": []
+          },
+          {
+            "name": "call_llm",
+            "attributes": {
+              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.request.model": "mock",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gcp.vertex.agent.session_id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gen_ai.response.finish_reasons": [
+                "stop"
+              ]
+            },
+            "status": "UNSET",
+            "children": [
+              {
+                "name": "generate_content mock",
+                "attributes": {
+                  "gen_ai.operation.name": "generate_content",
+                  "gen_ai.request.model": "mock",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.response.finish_reasons": [
+                    "stop"
+                  ],
+                  "gen_ai.input.messages": [
+                    {
+                      "role": "user",
+                      "parts": [
+                        {
+                          "content": "hello",
+                          "type": "text"
+                        }
+                      ]
+                    },
+                    {
+                      "role": "assistant",
+                      "parts": [
+                        {
+                          "id": "some_tool_0",
+                          "name": "some_tool",
+                          "arguments": {
+                            "arg1": "val1"
+                          },
+                          "type": "tool_call"
+                        }
+                      ]
+                    },
+                    {
+                      "role": "user",
+                      "parts": [
+                        {
+                          "id": "some_tool_0",
+                          "response": {
+                            "result": "processed val1"
+                          },
+                          "type": "tool_call_response"
+                        }
+                      ]
+                    }
+                  ],
+                  "gen_ai.system_instructions": [
+                    {
+                      "content": "you are helpful\n\nYou are an agent. Your internal name is \"some_root_agent\". The description about you is \"A sample root agent.\".",
+                      "type": "text"
+                    }
+                  ],
+                  "gen_ai.tool.definitions": [
+                    {
+                      "name": "some_tool",
+                      "description": "A sample tool.",
+                      "parameters": {
+                        "properties": {
+                          "arg1": {
+                            "title": "Arg1",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "arg1"
+                        ],
+                        "title": "some_toolParams",
+                        "type": "object"
+                      },
+                      "type": "function"
+                    }
+                  ],
+                  "gen_ai.output.messages": [
+                    {
+                      "role": "assistant",
+                      "parts": [
+                        {
+                          "content": "text response",
+                          "type": "text"
+                        }
+                      ],
+                      "finish_reason": "stop"
+                    }
+                  ]
+                },
+                "status": "UNSET",
+                "children": [],
+                "logs": [
+                  {
+                    "event_name": "gen_ai.client.inference.operation.details",
+                    "body": null,
+                    "attributes": {
+                      "gen_ai.agent.name": "some_root_agent",
+                      "gen_ai.conversation.id": "PRESENT",
+                      "gcp.vertex.agent.event_id": "PRESENT",
+                      "gcp.vertex.agent.invocation_id": "PRESENT",
+                      "gen_ai.response.finish_reasons": [
+                        "stop"
+                      ],
+                      "gen_ai.tool.definitions": [
+                        {
+                          "name": "some_tool",
+                          "description": "A sample tool.",
+                          "type": "function"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "logs": []
+          }
+        ],
+        "logs": []
+      }
+    ],
+    "logs": []
+  },
+  "metric_points": {
+    "gen_ai.client.operation.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "mock",
+          "gen_ai.response.model": "mock"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.execute_tool.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.tool.name": "some_tool",
+          "gen_ai.tool.type": "FunctionTool"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.invoke_agent.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.invoke_agent.inference_calls": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 2
+      }
+    ],
+    "gen_ai.invoke_agent.tool_calls": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 1
+      }
+    ],
+    "gen_ai.invoke_workflow.duration": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "invoke_workflow",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": "PRESENT"
+      }
+    ]
+  }
+}

@@ -111,6 +111,12 @@ def _resolve_scoped_artifact_path(
     InputValidationError: If `filename` resolves outside of `scope_root`.
   """
   stripped = _strip_user_namespace(filename).strip()
+  windows_path = PureWindowsPath(stripped)
+  if windows_path.drive or windows_path.root:
+    raise InputValidationError(
+        f"Absolute artifact filename {filename!r} is not permitted; "
+        "provide a path relative to the storage scope."
+    )
   pure_path = _to_posix_path(stripped)
 
   scope_root_resolved = scope_root.resolve(strict=False)
@@ -408,7 +414,10 @@ class FileArtifactService(BaseArtifactService):
 
     display_name: Optional[str] = None
     if artifact.inline_data:
-      content_path.write_bytes(artifact.inline_data.data)
+      data = artifact.inline_data.data
+      if data is None:
+        raise InputValidationError("Artifact inline_data must contain data.")
+      content_path.write_bytes(data)
       mime_type = (
           artifact.inline_data.mime_type
           if artifact.inline_data.mime_type

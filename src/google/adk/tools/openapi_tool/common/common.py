@@ -247,28 +247,30 @@ class PydocHelper:
     description = (response_details.description or '').strip()
     content = response_details.content or {}
 
-    # Generate return type hint and properties for the first response type.
-    # TODO: Handle multiple content types.
-    for _, schema_details in content.items():
-      schema = schema_details.schema_ or {}
+    # Prefer application/json when multiple content types are present;
+    # otherwise use the first available content type.
+    schema_details = content.get('application/json')
+    if schema_details is None:
+      schema_details = next(iter(content.values()), None)
+    if schema_details is None:
+      return return_doc
 
-      # Use a dummy Parameter object for return type hinting.
-      dummy_param = ApiParameter(
-          original_name='', param_location='', param_schema=schema
-      )
-      return_doc = f'Returns ({dummy_param.type_hint}): {description}'
+    schema = schema_details.schema_ or Schema()
 
-      response_type = schema.type or 'Any'
-      if response_type != 'object':
-        break
+    # Use a dummy Parameter object for return type hinting.
+    dummy_param = ApiParameter(
+        original_name='', param_location='', param_schema=schema
+    )
+    return_doc = f'Returns ({dummy_param.type_hint}): {description}'
+
+    response_type = schema.type or 'Any'
+    if response_type == 'object':
       properties = schema.properties
-      if not properties:
-        break
-      return_doc += ' Object properties:\n'
-      for prop_name, prop_details in properties.items():
-        prop_desc = prop_details.description or ''
-        prop_type = TypeHintHelper.get_type_hint(prop_details)
-        return_doc += f'        {prop_name} ({prop_type}): {prop_desc}\n'
-      break
+      if properties:
+        return_doc += ' Object properties:\n'
+        for prop_name, prop_details in properties.items():
+          prop_desc = prop_details.description or ''
+          prop_type = TypeHintHelper.get_type_hint(prop_details)
+          return_doc += f'        {prop_name} ({prop_type}): {prop_desc}\n'
 
     return return_doc

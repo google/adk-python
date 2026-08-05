@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from typing import Optional
 
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
@@ -46,6 +45,8 @@ from .context_cache_config import ContextCacheConfig
 from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
 from .transcription_entry import TranscriptionEntry
+
+_EventQueueItem = tuple[object, asyncio.Event | None]
 
 
 class LlmCallsLimitExceededError(Exception):
@@ -83,7 +84,7 @@ class _InvocationCostManager(BaseModel):
   """A counter that keeps track of number of llm calls made."""
 
   def increment_and_enforce_llm_calls_limit(
-      self, run_config: Optional[RunConfig]
+      self, run_config: RunConfig | None
   ) -> None:
     """Increments _number_of_llm_calls and enforces the limit."""
     # We first increment the counter and then check the conditions.
@@ -147,15 +148,15 @@ class InvocationContext(BaseModel):
   )
   """The pydantic model config."""
 
-  artifact_service: Optional[BaseArtifactService] = None
+  artifact_service: BaseArtifactService | None = None
   session_service: BaseSessionService
-  memory_service: Optional[BaseMemoryService] = None
-  credential_service: Optional[BaseCredentialService] = None
-  context_cache_config: Optional[ContextCacheConfig] = None
+  memory_service: BaseMemoryService | None = None
+  credential_service: BaseCredentialService | None = None
+  context_cache_config: ContextCacheConfig | None = None
 
   invocation_id: str
   """The id of this invocation context. Readonly."""
-  branch: Optional[str] = None
+  branch: str | None = None
   """The branch of the invocation context.
 
   The format is like agent_1.agent_2.agent_3, where agent_1 is the parent of
@@ -164,7 +165,7 @@ class InvocationContext(BaseModel):
   Branch is used when multiple sub-agents shouldn't see their peer agents'
   conversation history.
   """
-  isolation_scope: Optional[str] = None
+  isolation_scope: str | None = None
   """Scope tag for filtering session events visible to this agent.
 
   When set, the LLM content-builder restricts session events to those
@@ -176,17 +177,17 @@ class InvocationContext(BaseModel):
   ⚠️ DO NOT USE THIS FIELD DIRECTLY.  It is an internal mechanism
   that may change without notice.
   """
-  agent: Optional[BaseAgent | BaseNode] = None
+  agent: BaseAgent | BaseNode | None = None
   """The current agent of this invocation context.
 
   None when Runner drives a BaseNode (not a BaseAgent).
   """
-  user_content: Optional[types.Content] = None
+  user_content: types.Content | None = None
   """The user content that started this invocation. Readonly."""
   session: Session
   """The current session of this invocation context. Readonly."""
 
-  node_path: Optional[str] = None
+  node_path: str | None = None
   """The path of the current agent in the workflow call stack.
 
   Used by workflow agents to track their position in nested agent hierarchies.
@@ -205,34 +206,34 @@ class InvocationContext(BaseModel):
 
   Set to True in callbacks or tools to terminate this invocation."""
 
-  live_request_queue: Optional[LiveRequestQueue] = None
+  live_request_queue: LiveRequestQueue | None = None
   """The queue to receive live requests."""
 
-  active_streaming_tools: Optional[dict[str, ActiveStreamingTool]] = None
+  active_streaming_tools: dict[str, ActiveStreamingTool] | None = None
   """The running streaming tools of this invocation."""
 
-  active_non_blocking_tool_tasks: Optional[dict[str, asyncio.Task[Any]]] = None
+  active_non_blocking_tool_tasks: dict[str, asyncio.Task[Any]] | None = None
   """The running non-blocking tool tasks of this invocation (Live only)."""
 
-  transcription_cache: Optional[list[TranscriptionEntry]] = None
+  transcription_cache: list[TranscriptionEntry] | None = None
   """Caches necessary data, audio or contents, that are needed by transcription."""
 
-  live_session_resumption_handle: Optional[str] = None
+  live_session_resumption_handle: str | None = None
   """The handle for live session resumption."""
 
-  input_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  input_realtime_cache: list[RealtimeCacheEntry] | None = None
   """Caches input audio chunks before flushing to session and artifact services."""
 
-  output_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  output_realtime_cache: list[RealtimeCacheEntry] | None = None
   """Caches output audio chunks before flushing to session and artifact services."""
 
-  run_config: Optional[RunConfig] = None
+  run_config: RunConfig | None = None
   """Configurations for live agents under this invocation."""
 
-  resumability_config: Optional[ResumabilityConfig] = None
+  resumability_config: ResumabilityConfig | None = None
   """The resumability config that applies to all agents under this invocation."""
 
-  events_compaction_config: Optional[EventsCompactionConfig] = None
+  events_compaction_config: EventsCompactionConfig | None = None
   """The compaction config for this invocation."""
 
   token_compaction_checked: bool = False
@@ -241,7 +242,7 @@ class InvocationContext(BaseModel):
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
-  _state_schema: Optional[type[BaseModel]] = None
+  _state_schema: type[BaseModel] | None = None
   """The Pydantic model declaring the expected state keys and types.
 
   Propagated from the owning agent down the hierarchy.  When set,
@@ -249,10 +250,12 @@ class InvocationContext(BaseModel):
   validated against this schema at runtime.
   """
 
-  canonical_tools_cache: Optional[list[BaseTool]] = None
+  canonical_tools_cache: list[BaseTool] | None = None
   """The cache of canonical tools for this invocation."""
 
-  _event_queue: Optional[asyncio.Queue] = PrivateAttr(default=None)
+  _event_queue: asyncio.Queue[_EventQueueItem] | None = PrivateAttr(
+      default=None
+  )
   """Shared event queue for all nodes in this invocation.
 
   All nodes enqueue events here via ``_enqueue_event()``. The Runner
@@ -315,7 +318,7 @@ class InvocationContext(BaseModel):
       self,
       agent_name: str,
       *,
-      agent_state: Optional[BaseAgentState] = None,
+      agent_state: BaseAgentState | None = None,
       end_of_agent: bool = False,
   ) -> None:
     """Sets the state of an agent in this invocation.
@@ -352,6 +355,8 @@ class InvocationContext(BaseModel):
     Args:
       agent_name: The name of the agent whose sub-agent states need to be reset.
     """
+    if not isinstance(self.agent, BaseAgent):
+      return
     agent = self.agent.find_agent(agent_name)
     if not agent:
       return
@@ -541,7 +546,7 @@ class InvocationContext(BaseModel):
   # TODO: Move this method from invocation_context to a dedicated module.
   def _find_matching_function_call(
       self, function_response_event: Event
-  ) -> Optional[Event]:
+  ) -> Event | None:
     """Finds the function call event in the current invocation that matches the function response id."""
     from ..flows.llm_flows.functions import find_event_by_function_call_id
 
@@ -555,9 +560,10 @@ class InvocationContext(BaseModel):
     else:
       search_space = events
 
-    return find_event_by_function_call_id(
-        search_space, function_responses[0].id
-    )
+    function_response_id = function_responses[0].id
+    if not function_response_id:
+      return None
+    return find_event_by_function_call_id(search_space, function_response_id)
 
   def stamp_event_branch_context(self, event: Event) -> None:
     """Stamps the event with the branch and isolation scope of its matching function call."""

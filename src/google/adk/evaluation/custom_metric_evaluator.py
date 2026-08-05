@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 import importlib
 import inspect
 from typing import Callable
@@ -31,13 +32,36 @@ from .evaluator import Evaluator
 
 def _get_metric_function(
     custom_function_path: str,
-) -> Callable[..., EvaluationResult]:
+) -> Callable[
+    [
+        EvalMetric,
+        list[Invocation],
+        Optional[list[Invocation]],
+        Optional[ConversationScenario],
+    ],
+    EvaluationResult | Awaitable[EvaluationResult],
+]:
   """Returns the custom metric function from the given path."""
   try:
     module_name, function_name = custom_function_path.rsplit(".", 1)
     module = importlib.import_module(module_name)
     metric_function = getattr(module, function_name)
-    return cast(Callable[..., EvaluationResult], metric_function)
+    if not callable(metric_function):
+      raise TypeError(
+          f"Custom metric {custom_function_path} does not refer to a callable."
+      )
+    return cast(
+        Callable[
+            [
+                EvalMetric,
+                list[Invocation],
+                Optional[list[Invocation]],
+                Optional[ConversationScenario],
+            ],
+            EvaluationResult | Awaitable[EvaluationResult],
+        ],
+        metric_function,
+    )
   except (ImportError, AttributeError, ValueError) as e:
     raise ImportError(
         f"Could not import custom metric function from {custom_function_path}"
@@ -55,23 +79,17 @@ class _CustomMetricEvaluator(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
+      expected_invocations: Optional[list[Invocation]] = None,
       conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     eval_metric = self._eval_metric.model_copy(deep=True)
     eval_metric.threshold = None
-    if inspect.iscoroutinefunction(self._metric_function):
-      eval_result = await self._metric_function(
-          eval_metric,
-          actual_invocations,
-          expected_invocations,
-          conversation_scenario,
-      )
-    else:
-      eval_result = self._metric_function(
-          eval_metric,
-          actual_invocations,
-          expected_invocations,
-          conversation_scenario,
-      )
+    eval_result = self._metric_function(
+        eval_metric,
+        actual_invocations,
+        expected_invocations,
+        conversation_scenario,
+    )
+    if inspect.isawaitable(eval_result):
+      return await eval_result
     return eval_result

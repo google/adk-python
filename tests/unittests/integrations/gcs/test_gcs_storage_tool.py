@@ -13,78 +13,11 @@
 # limitations under the License.
 
 from unittest import mock
+import warnings
 
 from google.adk.integrations.gcs import client
 from google.adk.integrations.gcs import storage_tool
 from google.auth.credentials import Credentials
-
-
-def test_get_bucket():
-  """Test get_bucket function."""
-  with mock.patch.object(
-      client, "get_gcs_client", autospec=True
-  ) as mock_get_client:
-    mock_client = mock.MagicMock()
-    mock_get_client.return_value = mock_client
-    mock_bucket = mock.MagicMock()
-    mock_client.get_bucket.return_value = mock_bucket
-    setattr(
-        mock_bucket,
-        "_properties",
-        {
-            "bucket_id": "test-bucket-id",
-            "bucket_name": "test-bucket",
-            "location": "US",
-            "storage_class": "STANDARD",
-            "time_created": "2024-01-01",
-            "updated": "2024-01-02",
-            "labels": {"env": "test"},
-        },
-    )
-
-    creds = mock.create_autospec(Credentials, instance=True)
-    result = storage_tool.get_bucket(
-        bucket_name="test-bucket", credentials=creds
-    )
-    expected_result = getattr(mock_bucket, "_properties", {}).copy()
-    assert result == {"status": "SUCCESS", "results": expected_result}
-
-
-def test_get_bucket_with_properties():
-  """Test get_bucket function when bucket has raw _properties populated."""
-  with mock.patch.object(
-      client, "get_gcs_client", autospec=True
-  ) as mock_get_client:
-    mock_client = mock.MagicMock()
-    mock_get_client.return_value = mock_client
-    mock_bucket = mock.MagicMock()
-    mock_client.get_bucket.return_value = mock_bucket
-    setattr(
-        mock_bucket,
-        "_properties",
-        {
-            "kind": "storage#bucket",
-            "id": "test-bucket-id",
-            "name": "test-bucket",
-            "location": "US",
-            "storageClass": "STANDARD",
-            "timeCreated": "2024-01-01",
-            "updated": "2024-01-02",
-            "labels": {"env": "test"},
-            "locationType": "region",
-            "etag": "etag-val",
-            "metageneration": 2,
-            "versioning": {"enabled": True},
-            "iamConfiguration": {"uniformBucketLevelAccess": {"enabled": True}},
-        },
-    )
-
-    creds = mock.create_autospec(Credentials, instance=True)
-    result = storage_tool.get_bucket(
-        bucket_name="test-bucket", credentials=creds
-    )
-    expected_result = getattr(mock_bucket, "_properties", {}).copy()
-    assert result == {"status": "SUCCESS", "results": expected_result}
 
 
 def test_list_objects():
@@ -371,3 +304,27 @@ def test_delete_objects():
     )
     assert result["status"] == "SUCCESS"
     mock_bucket.delete_blobs.assert_called_once_with(blobs=["test-object"])
+
+
+def test_get_bucket_deprecated():
+  """Test get_bucket function in storage_tool is deprecated but works."""
+  with mock.patch(
+      "google.adk.integrations.gcs.admin_tool.get_bucket", autospec=True
+  ) as mock_admin_get_bucket:
+    mock_admin_get_bucket.return_value = {"status": "SUCCESS", "results": {}}
+    creds = mock.create_autospec(Credentials, instance=True)
+
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      result = storage_tool.get_bucket(
+          bucket_name="test-bucket", credentials=creds
+      )
+
+      assert len(w) == 1
+      assert issubclass(w[0].category, DeprecationWarning)
+      assert "deprecated" in str(w[0].message)
+
+    mock_admin_get_bucket.assert_called_once_with(
+        bucket_name="test-bucket", credentials=creds
+    )
+    assert result == {"status": "SUCCESS", "results": {}}
