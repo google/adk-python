@@ -255,6 +255,84 @@ async def test_perform_inference_success(
 
 
 @pytest.mark.asyncio
+async def test_perform_inference_repeats_each_case_num_runs_times(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+    mocker,
+):
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None),
+          EvalCase(eval_id="case2", conversation=[], session_input=None),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+
+  mock_inference_result = mocker.MagicMock()
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
+      return_value=mock_inference_result
+  )
+
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=2, num_runs=3),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  # 2 eval cases, each inferenced 3 times.
+  assert len(results) == 6
+  assert eval_service._perform_inference_single_eval_item.call_count == 6
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_num_runs_runs_pinned_case_in_fresh_sessions(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+):
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(
+              eval_id="case1",
+              conversation=[],
+              session_input=SessionInput(
+                  app_name="test_app",
+                  user_id="test_user",
+                  session_id="pinned_session",
+                  state={"counter": 0},
+              ),
+          ),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=1, num_runs=3),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  # Each repeat runs in its own session instead of reusing the pinned one.
+  session_ids = {result.session_id for result in results}
+  assert len(results) == 3
+  assert len(session_ids) == 3
+  assert "pinned_session" not in session_ids
+  # The eval set itself is left untouched.
+  assert eval_set.eval_cases[0].session_input.session_id == "pinned_session"
+
+
+@pytest.mark.asyncio
 async def test_perform_inference_with_case_ids(
     eval_service,
     dummy_agent,

@@ -1296,6 +1296,13 @@ def _resolve_eval_config_file_path(
 @click.argument("eval_set_file_path_or_id", nargs=-1)
 @click.option("--config_file_path", help="Optional. The path to config file.")
 @click.option(
+    "--num_runs",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Optional. Number of times each eval set should be run.",
+)
+@click.option(
     "--print_detailed_results",
     is_flag=True,
     show_default=True,
@@ -1310,6 +1317,7 @@ def cli_eval(
     print_detailed_results: bool,
     eval_storage_uri: str | None = None,
     log_level: str = "INFO",
+    num_runs: int = 1,
 ):
   """Evaluates an agent given the eval sets.
 
@@ -1363,6 +1371,8 @@ def cli_eval(
 
   CONFIG_FILE_PATH: The path to config file.
 
+  NUM_RUNS: Number of times each eval set should be run.
+
   PRINT_DETAILED_RESULTS: Prints detailed results on the console.
   """
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
@@ -1371,6 +1381,8 @@ def cli_eval(
   try:
     import importlib  # noqa: F401
 
+    from ..evaluation._eval_case_result_aggregator import aggregate_eval_case_results
+    from ..evaluation.base_eval_service import AggregationStrategy
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
     from ..evaluation.eval_config import get_eval_metrics_from_config
@@ -1426,9 +1438,10 @@ def cli_eval(
     inference_config = InferenceConfig(
         use_live=True,
         live_timeout_seconds=eval_config.live_model_config.timeout_seconds,
+        num_runs=num_runs,
     )
   else:
-    inference_config = InferenceConfig(use_live=False)
+    inference_config = InferenceConfig(use_live=False, num_runs=num_runs)
 
   # Check if the first entry is a file that exists, if it does then we assume
   # rest of the entries are also files. We enforce this assumption in the if
@@ -1503,9 +1516,12 @@ def cli_eval(
         app=app,
     )
 
+    # `num_runs` is carried on the InferenceConfig, so the eval service repeats
+    # each eval case through its own parallelism pool.
     inference_results = asyncio.run(
         _collect_inferences(
-            inference_requests=inference_requests, eval_service=eval_service
+            inference_requests=inference_requests,
+            eval_service=eval_service,
         )
     )
     eval_results = asyncio.run(
@@ -1515,6 +1531,10 @@ def cli_eval(
             eval_metrics=eval_metrics,
         )
     )
+    aggregate_eval_results = aggregate_eval_case_results(
+        eval_results,
+        aggregation_strategy=AggregationStrategy.MEAN_OVER_INVOCATIONS,
+    )
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
@@ -1523,7 +1543,7 @@ def cli_eval(
   )
   eval_run_summary = {}
 
-  for eval_result in eval_results:
+  for eval_result in aggregate_eval_results:
     if eval_result.eval_set_id not in eval_run_summary:
       eval_run_summary[eval_result.eval_set_id] = [0, 0]
 
