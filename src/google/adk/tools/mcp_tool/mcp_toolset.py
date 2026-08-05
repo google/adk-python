@@ -56,7 +56,6 @@ from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
-from .mcp_tool import _RESERVED_TOOL_NAMES
 from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
 
@@ -409,14 +408,6 @@ class McpToolset(BaseToolset):
     # Apply filtering based on context and tool_filter
     tools = []
     for tool in tools_response.tools:
-      if tool.name in _RESERVED_TOOL_NAMES:
-        logger.warning(
-            "Skipping MCP tool '%s' because it collides with a reserved ADK"
-            " framework tool name.",
-            tool.name,
-        )
-        continue
-
       mcp_tool = MCPTool(
           mcp_tool=tool,
           mcp_session_manager=self._mcp_session_manager,

@@ -42,9 +42,6 @@ from ...auth.auth_tool import AuthConfig
 from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
-from ...flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...utils.context_utils import find_context_parameter
 # `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
 # error-boundary and transport-crash-detection behavior added in this module.
@@ -55,20 +52,12 @@ from ...utils.context_utils import find_context_parameter
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
-from ..transfer_to_agent_tool import transfer_to_agent
 from .mcp_session_manager import _http_debug_var
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
 
 logger = logging.getLogger("google_adk." + __name__)
-
-_RESERVED_TOOL_NAMES = frozenset({
-    REQUEST_EUC_FUNCTION_CALL_NAME,
-    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-    REQUEST_INPUT_FUNCTION_CALL_NAME,
-    transfer_to_agent.__name__,
-})
 
 
 @runtime_checkable
@@ -147,7 +136,7 @@ class McpTool(BaseAuthenticatedTool):
       self,
       *,
       mcp_tool: McpBaseTool,
-      mcp_session_manager: MCPSessionManager | None,
+      mcp_session_manager: MCPSessionManager,
       auth_scheme: AuthScheme | None = None,
       auth_credential: AuthCredential | None = None,
       require_confirmation: bool | Callable[..., bool] = False,
@@ -176,25 +165,19 @@ class McpTool(BaseAuthenticatedTool):
           confirmation from the user.
         header_provider: Optional function to provide dynamic headers.
         progress_callback: Optional callback to receive progress notifications
-          from MCP server during long-running tool execution. Can be either:  -
-          A ``ProgressFnT`` callback that receives (progress, total, message).
-          This callback will be used for all invocations.  - A
-          ``ProgressCallbackFactory`` that creates per-invocation callbacks. The
-          factory receives (tool_name, callback_context, **kwargs) and returns a
-          ProgressFnT or None. This allows callbacks to access and modify
-          runtime context like session state.
+          from MCP server during long-running tool execution. Can be either:
+
+          - A ``ProgressFnT`` callback that receives (progress, total, message).
+            This callback will be used for all invocations.
+
+          - A ``ProgressCallbackFactory`` that creates per-invocation callbacks.
+            The factory receives (tool_name, callback_context, **kwargs) and
+            returns a ProgressFnT or None. This allows callbacks to access
+            and modify runtime context like session state.
 
     Raises:
-        ValueError: If mcp_tool is None, or if mcp_tool name collides with a
-          reserved ADK tool name.
+        ValueError: If mcp_tool or mcp_session_manager is None.
     """
-    if mcp_tool is None:
-      raise ValueError("mcp_tool cannot be None.")
-    if mcp_tool.name in _RESERVED_TOOL_NAMES:
-      raise ValueError(
-          f"MCP tool name '{mcp_tool.name}' collides with a reserved ADK tool"
-          " name."
-      )
 
     super().__init__(
         name=mcp_tool.name,

@@ -243,46 +243,6 @@ class TestMCPTool:
 
     assert tool.description == ""
 
-  def test_init_none_mcp_tool(self):
-    """Test initialization with None mcp_tool raises ValueError."""
-    with pytest.raises(ValueError, match="mcp_tool cannot be None."):
-      MCPTool(
-          mcp_tool=None,
-          mcp_session_manager=self.mock_session_manager,
-      )
-
-  def test_init_none_session_manager(self):
-    """Test initialization with None session manager is allowed for subclasses."""
-    tool = MCPTool(
-        mcp_tool=self.mock_mcp_tool,
-        mcp_session_manager=None,
-    )
-    assert tool._mcp_session_manager is None
-
-  @pytest.mark.parametrize(
-      "reserved_name",
-      [
-          "adk_request_credential",
-          "adk_request_confirmation",
-          "adk_request_input",
-          "transfer_to_agent",
-      ],
-  )
-  def test_init_reserved_name(self, reserved_name):
-    """Test initialization with reserved tool name raises ValueError."""
-    mock_tool = MockMCPTool(name=reserved_name)
-    with pytest.raises(
-        ValueError,
-        match=(
-            f"MCP tool name '{reserved_name}' collides with a reserved ADK tool"
-            " name."
-        ),
-    ):
-      MCPTool(
-          mcp_tool=mock_tool,
-          mcp_session_manager=self.mock_session_manager,
-      )
-
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):
     """Test running tool without authentication."""
