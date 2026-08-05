@@ -129,6 +129,7 @@ class AgentEvaluator:
       agent_name: Optional[str] = None,
       print_detailed_results: bool = True,
       artifact_service: Optional[BaseArtifactService] = None,
+      output_file: Optional[str] = None,
   ) -> None:
     """Evaluates an agent using the given EvalSet.
 
@@ -150,6 +151,10 @@ class AgentEvaluator:
         Pre-load artifacts here and pin each eval case to a session id (via
         `SessionInput.session_id`) to make them reachable. Defaults to an
         in-memory service.
+      output_file: If provided, per-invocation evaluation results (for both
+        passing and failing metrics) are written to this path as a CSV file.
+        Disabled by default. The parent directory is created if it does not
+        already exist.
     """
     if criteria:
       logger.warning(
@@ -193,7 +198,11 @@ class AgentEvaluator:
     # test failures. We track them and then report them towards the end.
     failures: list[str] = []
 
-    for _, eval_results_per_eval_id in eval_results_by_eval_id.items():
+    # Optionally, we collect per-invocation results across all eval cases and
+    # metrics so that they can be written out to a CSV file at the end.
+    csv_rows: list[dict[str, Any]] = []
+
+    for eval_id, eval_results_per_eval_id in eval_results_by_eval_id.items():
       eval_metric_results = (
           AgentEvaluator._get_eval_metric_results_with_invocation(
               eval_results_per_eval_id
@@ -206,6 +215,20 @@ class AgentEvaluator:
       )
 
       failures.extend(failures_per_eval_case)
+
+      if output_file:
+        csv_rows.extend(
+            AgentEvaluator._get_results_as_rows(
+                eval_set_id=eval_set.eval_set_id,
+                eval_id=eval_id,
+                eval_metric_results=eval_metric_results,
+            )
+        )
+
+    if output_file:
+      AgentEvaluator._write_results_to_csv(
+          rows=csv_rows, output_file=output_file
+      )
 
     failure_message = "Following are all the test failures."
     if not print_detailed_results:
@@ -225,6 +248,7 @@ class AgentEvaluator:
       initial_session_file: Optional[str] = None,
       print_detailed_results: bool = True,
       artifact_service: Optional[BaseArtifactService] = None,
+      output_file: Optional[str] = None,
   ) -> None:
     """Evaluates an Agent given eval data.
 
@@ -247,6 +271,10 @@ class AgentEvaluator:
         Pre-load artifacts here and pin each eval case to a session id (via
         `SessionInput.session_id`) to make them reachable. Defaults to an
         in-memory service.
+      output_file: If provided, per-invocation evaluation results are written to
+        this path as a CSV file. Disabled by default. When the eval data spans
+        multiple test files, results from all of them are appended to the same
+        file.
     """
     test_files = []
     if isinstance(eval_dataset_file_path_or_dir, str) and os.path.isdir(
@@ -275,6 +303,7 @@ class AgentEvaluator:
           agent_name=agent_name,
           print_detailed_results=print_detailed_results,
           artifact_service=artifact_service,
+          output_file=output_file,
       )
 
   @staticmethod
@@ -775,3 +804,76 @@ class AgentEvaluator:
         )
 
     return failures
+
+  @staticmethod
+  def _get_results_as_rows(
+      eval_set_id: str,
+      eval_id: str,
+      eval_metric_results: dict[str, list[_EvalMetricResultWithInvocation]],
+  ) -> list[dict[str, Any]]:
+    """Flattens eval results into one row per metric per invocation.
+
+    The columns mirror the ones used in `_print_details`, with additional
+    identifier columns so that rows from different eval cases and metrics can be
+    distinguished within a single CSV file.
+    """
+    rows: list[dict[str, Any]] = []
+    for metric_name, results_with_invocations in eval_metric_results.items():
+      for result_with_invocation in results_with_invocations:
+        eval_metric_result = result_with_invocation.eval_metric_result
+        expected_invocation = result_with_invocation.expected_invocation
+        actual_invocation = result_with_invocation.actual_invocation
+        rows.append({
+            "eval_set_id": eval_set_id,
+            "eval_id": eval_id,
+            "metric_name": metric_name,
+            "threshold": eval_metric_result.threshold,
+            "score": eval_metric_result.score,
+            "eval_status": eval_metric_result.eval_status.name,
+            "prompt": AgentEvaluator._convert_content_to_text(
+                expected_invocation.user_content
+                if expected_invocation
+                else actual_invocation.user_content
+            ),
+            "expected_response": AgentEvaluator._convert_content_to_text(
+                expected_invocation.final_response
+                if expected_invocation
+                else None
+            ),
+            "actual_response": AgentEvaluator._convert_content_to_text(
+                actual_invocation.final_response
+            ),
+            "expected_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
+                expected_invocation.intermediate_data
+                if expected_invocation
+                else None
+            ),
+            "actual_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
+                actual_invocation.intermediate_data
+            ),
+        })
+    return rows
+
+  @staticmethod
+  def _write_results_to_csv(
+      rows: list[dict[str, Any]], output_file: str
+  ) -> None:
+    """Writes eval results to a CSV file.
+
+    Appends rows to the file if it already exists, writing the header only once.
+    Creates parent directories if necessary.
+    """
+    try:
+      import pandas as pd
+    except ModuleNotFoundError as e:
+      raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
+
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
+      os.makedirs(output_dir, exist_ok=True)
+
+    file_exists = os.path.isfile(output_file)
+    pd.DataFrame(rows).to_csv(
+        output_file, mode="a", header=not file_exists, index=False
+    )
+    logger.info("Saved eval results to %s", output_file)
