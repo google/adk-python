@@ -29,6 +29,7 @@ from ..agents.context import Context
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH_TASK_FC_NAME
 from ..events.event import Event
+from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
 from ..utils.content_utils import to_user_content
 
@@ -84,22 +85,26 @@ def _event_has_eager_tool_calls(
 
   Task-delegation tools (``_TaskAgentTool``) and other deferred / long-running
   tools do not emit an FR from ``handle_function_calls_async``; the chat
-  wrapper synthesizes task FRs itself. Regular tools do emit FRs in the same
-  LLM step, after the model FC event. The wrapper must drain those FR events
-  before closing the generator, or they are lost and the session history
-  becomes unbalanced for Gemini.
+  wrapper synthesizes task FRs itself. Regular tools (including long-running or
+  deferred tools that return a value) do emit FRs in the same LLM step, after
+  the model FC event. The wrapper must drain those FR events before closing the
+  generator, or they are lost and the session history becomes unbalanced for
+  Gemini.
+
+  Args:
+    event: The event containing function calls.
+    tools_dict: Map of tool names to Tool objects.
+
+  Returns:
+    True if the event has eager tool calls.
   """
-  from ..tools.agent_tool import _TaskAgentTool
+  from ..tools.agent_tool import _TaskAgentTool  # pylint: disable=g-import-not-at-top
 
   for fc in event.get_function_calls():
     if not fc.name:
       continue
     tool = tools_dict.get(fc.name)
     if tool is None or isinstance(tool, _TaskAgentTool):
-      continue
-    if getattr(tool, 'is_long_running', False):
-      continue
-    if getattr(tool, '_defers_response', False):
       continue
     return True
   return False
@@ -117,12 +122,29 @@ async def _drain_pending_tool_response_events(
   Stops after the first event that carries function responses, or before the
   next model-role event (which would start another LLM round without
   synthesized task FRs).
+
+  Args:
+    run_iter: The generator to drain events from.
+
+  Yields:
+    Events from the current LLM step.
   """
   async for pending_event in run_iter:
     if (
         pending_event.content is not None
         and pending_event.content.role == 'model'
     ):
+      # Tool confirmation events have role 'model' but they are part of the
+      # current step (asking for confirmation before executing the tool).
+      # We must yield them and continue draining the actual FR.
+      is_confirmation = any(
+          fc.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+          for fc in pending_event.get_function_calls()
+      )
+      if is_confirmation:
+        yield pending_event
+        continue
+
       # Next LLM round already started; abandon it by stopping iteration.
       # Closing the outer generator cancels further work.
       return
@@ -452,10 +474,12 @@ async def run_llm_agent_as_node(
             # breaking, otherwise aclosing drops them and the session is
             # left with unbalanced FC/FR history that Gemini rejects.
             if _event_has_eager_tool_calls(event, tools_dict):
-              async for pending_event in _drain_pending_tool_response_events(
-                  run_iter
-              ):
-                yield pending_event
+              async with aclosing(
+                  _drain_pending_tool_response_events(run_iter)
+              ) as drain_iter:
+                async for pending_event in drain_iter:
+                  yield pending_event
+
             for fc in task_fcs:
               output = await _dispatch_task_fc(agent, fc, ctx)
               yield _synthesize_task_fr_event(fc, output)
