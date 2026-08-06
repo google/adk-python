@@ -987,6 +987,54 @@ class TestConvertInteractionToLlmResponse:
     assert result.finish_reason == types.FinishReason.STOP
     assert result.turn_complete is True
 
+  def test_uses_reported_total_token_count(self):
+    """Total token count comes from the API, not from input + output."""
+    interaction = Interaction(
+        id='interaction_123',
+        status='completed',
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
+        steps=[
+            ModelOutputStep(
+                type='model_output',
+                content=[TextContent(type='text', text='The answer is 4.')],
+            )
+        ],
+        # Thought and tool-use tokens are billed but are not part of input +
+        # output, so the sum (15) undercounts the real total.
+        usage=Usage(
+            total_input_tokens=10,
+            total_output_tokens=5,
+            total_thought_tokens=6,
+            total_tool_use_tokens=2,
+            total_tokens=23,
+        ),
+    )
+    result = interactions_utils.convert_interaction_to_llm_response(interaction)
+
+    assert result.usage_metadata.prompt_token_count == 10
+    assert result.usage_metadata.candidates_token_count == 5
+    assert result.usage_metadata.total_token_count == 23
+
+  def test_total_token_count_falls_back_to_sum_when_absent(self):
+    """When the API omits the total, fall back to input + output."""
+    interaction = Interaction(
+        id='interaction_123',
+        status='completed',
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
+        steps=[
+            ModelOutputStep(
+                type='model_output',
+                content=[TextContent(type='text', text='The answer is 4.')],
+            )
+        ],
+        usage=Usage(total_input_tokens=10, total_output_tokens=5),
+    )
+    result = interactions_utils.convert_interaction_to_llm_response(interaction)
+
+    assert result.usage_metadata.total_token_count == 15
+
   def test_failed_response(self):
     """Test converting a failed response."""
     interaction = Interaction(
@@ -1592,6 +1640,46 @@ class TestConvertInteractionEventToLlmResponse:
     assert final.usage_metadata.prompt_token_count == 12
     assert final.usage_metadata.candidates_token_count == 7
     assert final.usage_metadata.total_token_count == 19
+
+  def test_final_event_uses_reported_total_token_count(self):
+    """The final event reports the API total, not input + output."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'Answer.'},
+        ),
+        state,
+        interaction_id='int_u3',
+    )
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_u3',
+                status='completed',
+                steps=[],
+                # Thought and tool-use tokens are billed but are not part of
+                # input + output, so the sum (19) undercounts the real total.
+                usage=Usage(
+                    total_input_tokens=12,
+                    total_output_tokens=7,
+                    total_thought_tokens=8,
+                    total_tool_use_tokens=3,
+                    total_tokens=30,
+                ),
+            ),
+        ),
+        state,
+        interaction_id='int_u3',
+    )
+    assert final is not None
+    assert final.usage_metadata is not None
+    assert final.usage_metadata.prompt_token_count == 12
+    assert final.usage_metadata.candidates_token_count == 7
+    assert final.usage_metadata.total_token_count == 30
 
   def test_final_event_without_usage_has_no_usage_metadata(self):
     """No interaction.usage -> final event has usage_metadata None."""

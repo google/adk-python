@@ -44,6 +44,7 @@ import pytest
 from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy import text
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -427,6 +428,60 @@ async def test_create_and_list_sessions(session_service):
   assert {s.id for s in sessions} == set(session_ids)
   for session in sessions:
     assert session.state == {'key': 'value' + session.id}
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_list_sessions_orders_by_update_time_then_id():
+  """Database list_sessions returns least-active sessions first, with stable ties."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    app_name = 'my_app'
+    user_id = 'test_user'
+    session_ids = ['orphan', 'active_b', 'middle', 'active_a']
+    for session_id in session_ids:
+      await service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+      )
+
+    schema = service._get_schema_classes()
+    create_times = {
+        'active_b': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'orphan': datetime(2026, 1, 4, tzinfo=timezone.utc),
+    }
+    update_times = {
+        'orphan': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'active_b': datetime(2026, 1, 3, tzinfo=timezone.utc),
+    }
+    async with service.database_session_factory() as sql_session:
+      for session_id, create_time in create_times.items():
+        await sql_session.execute(
+            update(schema.StorageSession)
+            .where(schema.StorageSession.app_name == app_name)
+            .where(schema.StorageSession.user_id == user_id)
+            .where(schema.StorageSession.id == session_id)
+            .values(
+                create_time=create_time,
+                update_time=update_times[session_id],
+            )
+        )
+      await sql_session.commit()
+
+    response = await service.list_sessions(app_name=app_name, user_id=user_id)
+
+    assert [session.id for session in response.sessions] == [
+        'orphan',
+        'middle',
+        'active_a',
+        'active_b',
+    ]
+  finally:
+    await service.close()
 
 
 @pytest.mark.asyncio

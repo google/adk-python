@@ -287,6 +287,7 @@ class AgentTool(BaseTool):
         state=state_dict,
     )
 
+    accumulated_text_parts = []
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
@@ -301,18 +302,25 @@ class AgentTool(BaseTool):
           tool_context.state.update(event.actions.state_delta)
         if event.error_message:
           last_error_message = event.error_message
-        if event.content:
+        if not event.partial and event.content:
           last_content = event.content
+          if event.content.parts:
+            for p in event.content.parts:
+              if not p.thought:
+                part_text = _part_to_text(p)
+                if part_text:
+                  accumulated_text_parts.append(part_text)
           last_grounding_metadata = event.grounding_metadata
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
 
-    if last_content is None or last_content.parts is None:
+    if not accumulated_text_parts and (
+        last_content is None or last_content.parts is None
+    ):
       return last_error_message or ''
-    parts_text = (_part_to_text(p) for p in last_content.parts if not p.thought)
-    merged_text = '\n'.join(t for t in parts_text if t)
+    merged_text = '\n'.join(accumulated_text_parts)
     if not merged_text and last_error_message:
       return last_error_message
     output_schema = _get_output_schema(self.agent)

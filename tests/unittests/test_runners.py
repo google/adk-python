@@ -22,6 +22,7 @@ import textwrap
 from typing import AsyncGenerator
 from typing import Optional
 from unittest.mock import AsyncMock
+from unittest.mock import create_autospec
 
 from google.adk import runners
 from google.adk.agents.base_agent import BaseAgent
@@ -2254,6 +2255,13 @@ async def test_run_async_rejects_user_function_call():
     async with aclosing(agen) as a:
       async for _ in a:
         pass
+
+
+def test_runner_agent_is_a_class_attribute():
+  """``agent`` must stay in ``dir(Runner)`` for callers that mock a Runner."""
+  assert "agent" in dir(Runner)
+  assert Runner.agent is None
+  assert create_autospec(Runner).agent is not None
 
 
 if __name__ == "__main__":

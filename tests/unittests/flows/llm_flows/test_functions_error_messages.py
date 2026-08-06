@@ -71,6 +71,14 @@ def test_tool_not_found_with_different_name():
   assert 'Available tools:' in error_msg
 
 
+def test_tool_call_without_name_is_rejected():
+  """Verify a malformed unnamed function call has a useful error."""
+  function_call = types.FunctionCall(args={})
+
+  with pytest.raises(ValueError, match="Tool 'None' not found"):
+    _get_tool(function_call, {'get_weather': MockTool(name='get_weather')})
+
+
 def test_tool_not_found_shows_all_tools():
   """Verify error message shows all tools (no truncation)."""
   function_call = types.FunctionCall(name='nonexistent', args={})

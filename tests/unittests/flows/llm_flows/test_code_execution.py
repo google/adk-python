@@ -30,7 +30,9 @@ from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.code_execution_utils import File
+from google.adk.code_executors.code_executor_context import CodeExecutorContext
 from google.adk.flows.llm_flows._code_execution import _DATA_FILE_HELPER_LIB
+from google.adk.flows.llm_flows._code_execution import _extract_and_replace_inline_files
 from google.adk.flows.llm_flows._code_execution import _get_data_file_preprocessing_code
 from google.adk.flows.llm_flows._code_execution import request_processor
 from google.adk.flows.llm_flows._code_execution import response_processor
@@ -247,6 +249,30 @@ def test_get_data_file_preprocessing_code_injection_reproduction():
       break
 
   assert read_csv_arg == bad_filename
+
+
+def test_inline_file_preprocessing_only_mutates_user_content():
+  """Model output media must not be converted into user data-file prompts."""
+  model_part = types.Part(
+      inline_data=types.Blob(mime_type='text/csv', data=b'model output')
+  )
+  user_part = types.Part(
+      inline_data=types.Blob(mime_type='text/csv', data=b'user input')
+  )
+  request = LlmRequest(
+      contents=[
+          types.Content(role='model', parts=[model_part]),
+          types.Content(role='user', parts=[user_part]),
+      ]
+  )
+
+  files = _extract_and_replace_inline_files(CodeExecutorContext({}), request)
+
+  assert request.contents[0].parts[0] is model_part
+  assert (
+      request.contents[1].parts[0].text == '\nAvailable file: `data_2_1.csv`\n'
+  )
+  assert [file.name for file in files] == ['data_2_1.csv']
 
 
 @pytest.mark.asyncio

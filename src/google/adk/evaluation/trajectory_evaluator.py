@@ -25,6 +25,7 @@ from typing_extensions import override
 from .eval_case import ConversationScenario
 from .eval_case import get_all_tool_calls
 from .eval_case import Invocation
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetric
 from .eval_metrics import ToolTrajectoryCriterion
 from .evaluator import _validate_invocation_lengths
@@ -90,9 +91,11 @@ class TrajectoryEvaluator(Evaluator):
         )
         raise expected_criterion_type_error from e
     elif eval_metric:
-      self._threshold = eval_metric.threshold
+      self._threshold = _get_metric_threshold(eval_metric)
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
     else:
+      if threshold is None:
+        raise ValueError("A trajectory evaluation threshold is required.")
       self._threshold = threshold
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
 

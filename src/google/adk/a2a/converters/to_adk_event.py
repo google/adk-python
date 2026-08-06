@@ -145,8 +145,8 @@ def _convert_a2a_parts_to_adk_parts(
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> tuple[List[genai_types.Part], set[str]]:
   """Converts a list of A2A parts to a list of ADK parts."""
-  output_parts = []
-  long_running_function_ids = set()
+  output_parts: list[genai_types.Part] = []
+  long_running_function_ids: set[str] = set()
 
   for a2a_part in a2a_parts:
     try:
@@ -494,7 +494,7 @@ def convert_a2a_task_to_event(
   try:
     event_actions = EventActions()
     output_parts: list[genai_types.Part] = []
-    long_running_function_ids = set()
+    long_running_function_ids: set[str] = set()
     metadata_fields: dict[str, Any] = {}
     status_message = _compat.normalize_message(a2a_task.status.message)
     if a2a_task.artifacts:

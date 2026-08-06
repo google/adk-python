@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 import uuid
 
 import kubernetes as k8s
@@ -113,8 +114,8 @@ class GkeCodeExecutor(BaseCodeExecutor):
       self,
       kubeconfig_path: str | None = None,
       kubeconfig_context: str | None = None,
-      **data,
-  ):
+      **data: object,
+  ) -> None:
     """Initializes the executor and the Kubernetes API clients.
 
     This constructor supports multiple authentication methods:
@@ -385,8 +386,11 @@ class GkeCodeExecutor(BaseCodeExecutor):
         )
 
       pod_name = pods.items[0].metadata.name
-      return self._core_v1.read_namespaced_pod_log(
-          name=pod_name, namespace=self.namespace
+      return cast(
+          str,
+          self._core_v1.read_namespaced_pod_log(
+              name=pod_name, namespace=self.namespace
+          ),
       )
     except ApiException as e:
       raise RuntimeError(

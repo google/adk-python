@@ -56,20 +56,22 @@ class PlanReActPlanner(BasePlanner):
     if not response_parts:
       return None
 
-    preserved_parts = []
+    preserved_parts: list[types.Part] = []
     first_fc_part_index = -1
     for i in range(len(response_parts)):
+      response_part = response_parts[i]
+      function_call = response_part.function_call
       # Stop at the first (group of) function calls.
-      if response_parts[i].function_call:
+      if function_call is not None:
         # Ignore and filter out function calls with empty names.
-        if not response_parts[i].function_call.name:
+        if not function_call.name:
           continue
-        preserved_parts.append(response_parts[i])
+        preserved_parts.append(response_part)
         first_fc_part_index = i
         break
 
       # Split the response into reasoning and final answer parts.
-      self._handle_non_function_call_parts(response_parts[i], preserved_parts)
+      self._handle_non_function_call_parts(response_part, preserved_parts)
 
     if first_fc_part_index >= 0:
       j = first_fc_part_index + 1
@@ -82,7 +84,9 @@ class PlanReActPlanner(BasePlanner):
 
     return preserved_parts
 
-  def _split_by_last_pattern(self, text, separator):
+  def _split_by_last_pattern(
+      self, text: str, separator: str
+  ) -> tuple[str, str]:
     """Splits the text by the last occurrence of the separator.
 
     Args:
@@ -100,7 +104,7 @@ class PlanReActPlanner(BasePlanner):
 
   def _handle_non_function_call_parts(
       self, response_part: types.Part, preserved_parts: list[types.Part]
-  ):
+  ) -> None:
     """Handles non-function-call parts of the response.
 
     Args:
@@ -140,7 +144,7 @@ class PlanReActPlanner(BasePlanner):
         self._mark_as_thought(response_part)
       preserved_parts.append(response_part)
 
-  def _mark_as_thought(self, response_part: types.Part):
+  def _mark_as_thought(self, response_part: types.Part) -> None:
     """Marks the response part as thought.
 
     Args:

@@ -426,6 +426,54 @@ class TestPydocHelper:
         == expected_doc
     )
 
+  def test_generate_return_doc_prefers_json_over_other_content_types(self):
+    responses = {
+        '200': {
+            'description': 'Successful response',
+            'content': {
+                'application/xml': {'schema': {'type': 'integer'}},
+                'application/json': {'schema': {'type': 'string'}},
+            },
+        }
+    }
+    expected_doc = 'Returns (str): Successful response'
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == expected_doc
+    )
+
+  def test_generate_return_doc_falls_back_to_first_content_type(self):
+    responses = {
+        '200': {
+            'description': 'Successful response',
+            'content': {
+                'application/xml': {'schema': {'type': 'integer'}},
+                'text/plain': {'schema': {'type': 'string'}},
+            },
+        }
+    }
+    expected_doc = 'Returns (int): Successful response'
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == expected_doc
+    )
+
+  def test_generate_return_doc_content_type_without_schema(self):
+    responses = {
+        '200': {
+            'description': 'Successful response',
+            'content': {
+                'application/json': {},
+                'application/xml': {'schema': {'type': 'integer'}},
+            },
+        }
+    }
+    expected_doc = 'Returns (Any): Successful response'
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == expected_doc
+    )
+
 
 if __name__ == '__main__':
   pytest.main([__file__])
