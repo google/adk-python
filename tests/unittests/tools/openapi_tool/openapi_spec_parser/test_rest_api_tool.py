@@ -1714,3 +1714,43 @@ def test_snake_to_lower_camel():
   assert snake_to_lower_camel("three_word_example") == "threeWordExample"
   assert not snake_to_lower_camel("")
   assert snake_to_lower_camel("alreadyCamelCase") == "alreadyCamelCase"
+
+
+class TestRequestSsrfProtection:
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_localhost(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Blocked host"):
+      await _request(method="GET", url="http://localhost:8080/internal")
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_loopback(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Blocked host"):
+      await _request(method="GET", url="http://127.0.0.1/internal")
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_metadata_endpoint(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Blocked host"):
+      await _request(
+          method="GET", url="http://169.254.169.254/latest/meta-data/"
+      )
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_private_ip(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Blocked host"):
+      await _request(method="GET", url="http://10.0.0.1/admin")
+
+  @pytest.mark.asyncio
+  async def test_request_blocks_file_scheme(self):
+    from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _request
+
+    with pytest.raises(ValueError, match="Unsupported url scheme"):
+      await _request(method="GET", url="file:///etc/passwd")

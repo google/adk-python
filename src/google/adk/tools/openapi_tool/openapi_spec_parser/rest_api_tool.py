@@ -614,9 +614,22 @@ async def _request(
     httpx_client_factory: Optional[HttpxClientFactory] = None,
     **request_params,
 ) -> httpx.Response:
+  # SSRF defence:
+  #   1. validate_url rejects bad schemes, localhost-style names, and any
+  #      hostname whose DNS records include a non-globally-routable IP.
+  #   2. send_pinned_async issues the request against the validated IP so the
+  #      socket can't be flipped by a DNS rebinding between this validation
+  #      and the connect that follows. The Host header and TLS SNI keep the
+  #      original hostname so cert verification still works.
+  from ..._ssrf_protection import send_pinned_async
+  from ..._ssrf_protection import validate_url
+
+  target = validate_url(request_params.get("url", ""))
   verify = request_params.pop("verify", True)
+
   if httpx_client_factory is not None:
     async with httpx_client_factory() as client:
-      return await client.request(**request_params)
+      return await send_pinned_async(client, target, **request_params)
+
   async with httpx.AsyncClient(verify=verify, timeout=None) as client:
-    return await client.request(**request_params)
+    return await send_pinned_async(client, target, **request_params)
