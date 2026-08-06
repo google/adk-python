@@ -16,6 +16,7 @@
 
 import asyncio
 import logging
+from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -1383,6 +1384,203 @@ async def test_run_live_clears_resumption_handle_on_transfer():
   assert (
       invocation_context.run_config.session_resumption.handle == 'test_handle'
   )
+
+
+@pytest.mark.parametrize(
+    ('function_response_names', 'transfer_action', 'expect_transfer'),
+    [
+        # A lone transfer call.
+        (('transfer_to_agent',), 'sub_agent', True),
+        # Parallel calls whose transfer response is merged first.
+        (('transfer_to_agent', 'set_state'), 'sub_agent', True),
+        # Parallel calls whose transfer response is merged after another
+        # tool's response, so it is not `parts[0]`.
+        (('set_state', 'transfer_to_agent'), 'sub_agent', True),
+        (('set_state', 'log_event', 'transfer_to_agent'), 'sub_agent', True),
+        # A tool that requests the transfer by setting the action directly
+        # instead of calling `transfer_to_agent`.
+        (('escalate',), 'sub_agent', True),
+        # Parallel calls that do not transfer.
+        (('set_state', 'other_tool'), None, False),
+        # A transfer response whose action was suppressed, e.g. by a
+        # `before_tool_callback` overriding the transfer tool. The parent
+        # connection must stay open because no child agent takes over.
+        (('transfer_to_agent',), None, False),
+        (('set_state', 'transfer_to_agent'), None, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_live_transfer_is_independent_of_response_order(
+    function_response_names: tuple[str, ...],
+    transfer_action: Optional[str],
+    expect_transfer: bool,
+):
+  """Live transfer keys off the action, not the transfer response's position."""
+
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.run_config = RunConfig()
+
+  flow = BaseLlmFlowForTesting()
+
+  # Parallel function responses are merged into a single event in call order
+  # by `merge_parallel_function_response_events`, so the transfer response may
+  # land at any index.
+  function_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(name=name),
+              )
+              for name in function_response_names
+          ],
+      ),
+  )
+  function_response_event.actions.transfer_to_agent = transfer_action
+
+  # A follow-up model turn, used to tell a live parent connection that is still
+  # usable apart from one that was torn down without a child taking over.
+  follow_up_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(role='model', parts=[types.Part(text='follow up')]),
+  )
+
+  async def mock_receive_from_model(*args, **kwargs):
+    yield function_response_event
+    yield follow_up_event
+
+  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
+
+  mock_sub_agent = mock.Mock()
+
+  async def mock_run_live_sub_agent(child_ctx, *args, **kwargs):
+    for item in []:
+      yield item
+
+  mock_sub_agent.run_live = mock.Mock(side_effect=mock_run_live_sub_agent)
+  flow._get_agent_to_run = mock.Mock(return_value=mock_sub_agent)
+
+  # Mock _send_to_model to prevent it from running indefinitely
+  flow._send_to_model = mock.AsyncMock()
+
+  with (
+      mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
+      mock.patch(
+          'google.adk.flows.llm_flows.base_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
+          0,
+      ),
+  ):
+    mock_connection = mock.AsyncMock()
+    mock_connect.return_value.__aenter__.return_value = mock_connection
+
+    events = [event async for event in flow.run_live(invocation_context)]
+
+  # The merged function response is always forwarded back to the model.
+  assert events[0] is function_response_event
+
+  if expect_transfer:
+    # The child agent takes over exactly once, and the parent connection is
+    # closed first so that only the child processes subsequent responses.
+    mock_sub_agent.run_live.assert_called_once()
+    assert flow._get_agent_to_run.call_args[0][1] == transfer_action
+    assert mock_connection.close.await_count == 1
+  else:
+    # No child agent takes over, so the parent connection must stay open and
+    # keep processing the live session.
+    mock_sub_agent.run_live.assert_not_called()
+    assert mock_connection.close.await_count == 0
+    assert follow_up_event in events
+
+
+@pytest.mark.parametrize(
+    ('function_response_names', 'expect_completion'),
+    [
+        # A lone task_completed call.
+        (('task_completed',), True),
+        # Parallel calls whose task_completed response is merged first.
+        (('task_completed', 'set_state'), True),
+        # Parallel calls whose task_completed response is merged after another
+        # tool's response, so it is not `parts[0]`.
+        (('set_state', 'task_completed'), True),
+        (('set_state', 'log_event', 'task_completed'), True),
+        # Parallel calls that do not signal completion.
+        (('set_state', 'other_tool'), False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_live_task_completion_is_independent_of_response_order(
+    function_response_names: tuple[str, ...], expect_completion: bool
+):
+  """`task_completed` ends the live agent from any position in the event."""
+
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.run_config = RunConfig()
+
+  flow = BaseLlmFlowForTesting()
+
+  # Parallel function responses are merged into a single event in call order,
+  # so the `task_completed` response may land at any index.
+  function_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(name=name),
+              )
+              for name in function_response_names
+          ],
+      ),
+  )
+
+  # A follow-up model turn. `task_completed` must end the agent before this is
+  # processed, so that the next sub-agent of a SequentialAgent can take over.
+  follow_up_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(role='model', parts=[types.Part(text='more')]),
+  )
+
+  async def mock_receive_from_model(*args, **kwargs):
+    yield function_response_event
+    yield follow_up_event
+
+  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
+
+  # Mock _send_to_model to prevent it from running indefinitely
+  flow._send_to_model = mock.AsyncMock()
+
+  with (
+      mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
+      mock.patch(
+          'google.adk.flows.llm_flows.base_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
+          0,
+      ),
+  ):
+    mock_connect.return_value.__aenter__.return_value = mock.AsyncMock()
+
+    events = [event async for event in flow.run_live(invocation_context)]
+
+  assert events[0] is function_response_event
+  # The agent stops right after signaling completion, so the follow-up turn is
+  # only reached when completion was not signaled.
+  assert (follow_up_event not in events) == expect_completion
 
 
 @pytest.mark.asyncio

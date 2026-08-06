@@ -719,13 +719,18 @@ class BaseLlmFlow(ABC):
                 # the same function response. By handling agent transfer here,
                 # we ensure that only child agent processes its own function
                 # responses after the transfer.
-                if (
-                    event.content
-                    and event.content.parts
-                    and event.content.parts[0].function_response
-                    and event.content.parts[0].function_response.name
-                    == 'transfer_to_agent'
-                ):
+                #
+                # The transfer is gated on the `transfer_to_agent` action
+                # rather than on the position of the `transfer_to_agent`
+                # function response: the model may issue the transfer alongside
+                # other function calls, whose responses are merged into a
+                # single event in call order, so the transfer response is not
+                # necessarily `parts[0]`. Gating on the action matches
+                # `_postprocess_handle_function_calls_async`, and also covers
+                # tools that request a transfer by setting the action directly
+                # instead of calling `transfer_to_agent`.
+                transfer_to_agent = event.actions.transfer_to_agent
+                if transfer_to_agent:
                   await asyncio.sleep(DEFAULT_TRANSFER_AGENT_DELAY)
                   # cancel the tasks that belongs to the closed connection.
                   send_task.cancel()
@@ -733,35 +738,34 @@ class BaseLlmFlow(ABC):
                   await llm_connection.close()
                   logger.debug('Live connection closed.')
                   # transfer to the sub agent.
-                  transfer_to_agent = event.actions.transfer_to_agent
-                  if transfer_to_agent:
-                    logger.debug('Transferring to agent: %s', transfer_to_agent)
-                    agent_to_run = self._get_agent_to_run(
-                        invocation_context, transfer_to_agent
+                  logger.debug('Transferring to agent: %s', transfer_to_agent)
+                  agent_to_run = self._get_agent_to_run(
+                      invocation_context, transfer_to_agent
+                  )
+                  child_ctx = invocation_context.model_copy()
+                  # Child Live agent should start a new Live session.
+                  # Do not reuse the parent session's resumption handle.
+                  child_ctx.live_session_resumption_handle = None
+
+                  if child_ctx.run_config:
+                    child_ctx.run_config = child_ctx.run_config.model_copy(
+                        deep=True
                     )
-                    child_ctx = invocation_context.model_copy()
-                    # Child Live agent should start a new Live session.
-                    # Do not reuse the parent session's resumption handle.
-                    child_ctx.live_session_resumption_handle = None
+                    if child_ctx.run_config.session_resumption:
+                      child_ctx.run_config.session_resumption.handle = None
 
-                    if child_ctx.run_config:
-                      child_ctx.run_config = child_ctx.run_config.model_copy(
-                          deep=True
-                      )
-                      if child_ctx.run_config.session_resumption:
-                        child_ctx.run_config.session_resumption.handle = None
-
-                    async with Aclosing(
-                        agent_to_run.run_live(child_ctx)
-                    ) as agen:
-                      async for item in agen:
-                        yield item
-                if (
-                    event.content
-                    and event.content.parts
-                    and event.content.parts[0].function_response
-                    and event.content.parts[0].function_response.name
-                    == 'task_completed'
+                  async with Aclosing(agent_to_run.run_live(child_ctx)) as agen:
+                    async for item in agen:
+                      yield item
+                # `task_completed` is an ordinary tool, so the model may call
+                # it alongside others. Their responses are merged into a single
+                # event in call order, so scan every response rather than only
+                # `parts[0]`. Unlike agent transfer there is no corresponding
+                # action to key off, since `task_completed` only signals
+                # completion through its function response.
+                if any(
+                    function_response.name == 'task_completed'
+                    for function_response in event.get_function_responses()
                 ):
                   # this is used for sequential agent to signal the end of the agent.
                   await asyncio.sleep(DEFAULT_TASK_COMPLETION_DELAY)

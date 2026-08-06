@@ -325,13 +325,13 @@ class SqliteSessionService(BaseSessionService):
       if user_id:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=? AND user_id=?",
+            " app_name=? AND user_id=? ORDER BY update_time, user_id, id",
             (app_name, user_id),
         )
       else:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=?",
+            " app_name=? ORDER BY update_time, user_id, id",
             (app_name,),
         )
 

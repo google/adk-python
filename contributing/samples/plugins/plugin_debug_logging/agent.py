@@ -19,7 +19,7 @@ debug information (LLM requests/responses, tool calls, events, session state)
 to a YAML file for debugging purposes.
 
 Usage:
-  adk run contributing/samples/plugin_debug_logging
+  adk run contributing/samples/plugins/plugin_debug_logging
 
 After running, check the generated `adk_debug.yaml` file for detailed logs.
 """

@@ -485,6 +485,32 @@ async def test_database_session_service_list_sessions_orders_by_update_time_then
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_ordered_by_last_update_time(session_service):
+  app_name = 'my_app'
+  user_id = 'test_user'
+
+  for session_id in ('a', 'b', 'c'):
+    await session_service.create_session(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+
+  # Make the oldest session the most recently active one.
+  session_a = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='a'
+  )
+  await asyncio.sleep(0.01)
+  await session_service.append_event(
+      session=session_a,
+      event=Event(invocation_id='invocation', author='user'),
+  )
+
+  list_sessions_response = await session_service.list_sessions(
+      app_name=app_name, user_id=user_id
+  )
+  assert [s.id for s in list_sessions_response.sessions] == ['b', 'c', 'a']
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_all_users(session_service):
   app_name = 'my_app'
   user_id_1 = 'user1'
