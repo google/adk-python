@@ -96,6 +96,9 @@ class BaseSessionService(abc.ABC):
   ) -> ListSessionsResponse:
     """Lists all the sessions for a user.
 
+    Sessions are ordered by last update time, oldest first, so the last session
+    is the most recently active one.
+
     Args:
       app_name: The name of the app.
       user_id: The ID of the user. If not provided, lists all sessions for all
@@ -164,7 +167,7 @@ class BaseSessionService(abc.ABC):
     session.events.append(event)
     return event
 
-  async def flush(self):
+  async def flush(self) -> None:
     """Flushes any buffered events.
 
     For non-buffering implementations, this can be a no-op.

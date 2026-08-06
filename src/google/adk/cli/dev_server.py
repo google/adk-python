@@ -20,6 +20,12 @@ All dev-only endpoints (eval, debug, graph, test management) are added by DevSer
 
 Use this for local development with `adk web`.
 For production deployments, use api_server.py instead.
+
+Security: like ApiServer, every endpoint here is unauthenticated, and the
+dev-only endpoints additionally read and write agent files on disk and run
+evaluation and debugging code. This server is intended solely for local
+development on a trusted machine. Never expose it to an untrusted or public
+network, and never use it for a production or multi-user deployment.
 """
 
 from __future__ import annotations
@@ -36,22 +42,27 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi import Request as FastAPIRequest
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 import graphviz
 from pydantic import Field
+from pydantic import TypeAdapter
 from pydantic import ValidationError
 from typing_extensions import deprecated
 import yaml
 
 from . import agent_graph
+from ..apps.app import App
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.eval_case import EvalCase
 from ..evaluation.eval_case import SessionInput
+from ..evaluation.eval_config import _UserSimulatorConfig
+from ..evaluation.eval_config import LiveModelConfig
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
@@ -59,6 +70,8 @@ from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
+from ..utils._telemetry_config import read_telemetry_consent
+from ..utils._telemetry_config import write_telemetry_consent
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -100,6 +113,22 @@ class RunEvalRequest(common.BaseModel):
       ),
   )
   eval_metrics: list[EvalMetric]
+  live_model_config: Optional[LiveModelConfig] = Field(
+      default=None,
+      description=(
+          "Config for running inference in live (bidirectional streaming) mode."
+          " Required for Live API models (e.g. `gemini-*-live-*`)."
+      ),
+  )
+  # A raw mapping, not the typed `UserSimulatorConfig` union: the union is not
+  # JSON-schema-able and would break OpenAPI generation. `run_eval` validates it.
+  user_simulator_config: Optional[dict[str, Any]] = Field(
+      default=None,
+      description=(
+          "Optional user-simulator configuration. The concrete type is selected"
+          ' via the `type` discriminator (e.g. `{"type": "llm_audio", ...}`).'
+      ),
+  )
 
 
 class RunEvalResult(common.BaseModel):
@@ -152,12 +181,23 @@ class ListMetricsInfoResponse(common.BaseModel):
   metrics_info: list[MetricInfo]
 
 
+class TelemetryConsentRequest(common.BaseModel):
+  """Request body for setting the telemetry consent configuration."""
+
+  telemetry: bool
+
+
 class DevServer(ApiServer):
   """Development server that extends ApiServer with dev-only endpoints.
 
   Inherits all production endpoints from ApiServer and adds development-specific
   endpoints for evaluation, debugging, and developer UI features.
+
+  Like ApiServer, all endpoints are unauthenticated. This server is intended
+  for local development only and must not be exposed to untrusted networks.
   """
+
+  _allow_special_agents: bool = True
 
   def _get_agent_dir(self, app_name: str) -> str:
     """Resolves the agent directory and validates the app name to prevent path traversal."""
@@ -202,9 +242,27 @@ class DevServer(ApiServer):
   ):
     """Register all development-only endpoints.
 
-    This includes debug, evaluation, and graph visualization endpoints.
-    These endpoints should NOT be exposed in production deployments.
+    This includes debug, evaluation, graph visualization, and telemetry consent
+    endpoints. These endpoints should NOT be exposed in production deployments.
     """
+
+    @app.get("/config/telemetry")
+    async def get_telemetry_consent() -> dict[str, Any]:
+      """Gets the user configuration for telemetry consent."""
+      return {"telemetry": read_telemetry_consent()}
+
+    @app.post("/config/telemetry")
+    async def set_telemetry_consent(
+        req: TelemetryConsentRequest, request: FastAPIRequest
+    ) -> dict[str, Any]:
+      """Sets the user configuration for telemetry consent."""
+      if request.headers.get("x-adk-telemetry-request") != "true":
+        raise HTTPException(
+            status_code=400,
+            detail="Forbidden: missing required security header",
+        )
+      write_telemetry_consent(req.telemetry)
+      return {"telemetry": req.telemetry}
 
     # Import needed for eval endpoints
     from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -634,7 +692,7 @@ class DevServer(ApiServer):
       import subprocess
       import sys
 
-      queue = asyncio.Queue()
+      queue: asyncio.Queue[str | None] = asyncio.Queue()
 
       async def run_pytest_subprocess():
         cmd_args = [
@@ -1027,6 +1085,7 @@ class DevServer(ApiServer):
       # run.
       try:
         from ..evaluation.local_eval_service import LocalEvalService
+        from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
         from .cli_eval import _collect_eval_results
         from .cli_eval import _collect_inferences
 
@@ -1039,8 +1098,20 @@ class DevServer(ApiServer):
 
         agent_or_app = self.agent_loader.load_agent(app_name)
         root_agent = self._get_root_agent(agent_or_app)
+        app = agent_or_app if isinstance(agent_or_app, App) else None
 
         eval_case_results = []
+
+        # The request carries the config as a raw mapping (OpenAPI-safe), so
+        # validate it into the typed `UserSimulatorConfig` union here.
+        if req.user_simulator_config is not None:
+          user_simulator_provider = UserSimulatorProvider(
+              user_simulator_config=TypeAdapter(
+                  _UserSimulatorConfig
+              ).validate_python(req.user_simulator_config)
+          )
+        else:
+          user_simulator_provider = UserSimulatorProvider()
 
         eval_service = LocalEvalService(
             root_agent=root_agent,
@@ -1048,15 +1119,27 @@ class DevServer(ApiServer):
             eval_set_results_manager=self.eval_set_results_manager,
             session_service=self.session_service,
             artifact_service=self.artifact_service,
+            user_simulator_provider=user_simulator_provider,
+            app=app,
         )
-        inference_request = InferenceRequest(
-            app_name=app_name,
-            eval_set_id=eval_set.eval_set_id,
-            eval_case_ids=req.eval_case_ids or req.eval_ids,
-            inference_config=InferenceConfig(),
-        )
+        if req.live_model_config:
+          inference_config = InferenceConfig(
+              use_live=True,
+              live_timeout_seconds=req.live_model_config.timeout_seconds,
+          )
+        else:
+          inference_config = InferenceConfig(use_live=False)
+
         inference_results = await _collect_inferences(
-            inference_requests=[inference_request], eval_service=eval_service
+            inference_requests=[
+                InferenceRequest(
+                    app_name=app_name,
+                    eval_set_id=eval_set.eval_set_id,
+                    eval_case_ids=req.eval_case_ids or req.eval_ids,
+                    inference_config=inference_config,
+                )
+            ],
+            eval_service=eval_service,
         )
 
         eval_case_results = await _collect_eval_results(

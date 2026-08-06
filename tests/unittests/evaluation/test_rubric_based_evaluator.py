@@ -159,8 +159,7 @@ class TestDefaultAutoRaterResponseParser:
       Rationale: It was not bad.
       """  # Missing Verdict
     parsed = DefaultAutoRaterResponseParser().parse(response)
-    assert len(parsed) == 1  # zip will only create one item
-    assert parsed[0].property_text == "Is the response good?"
+    assert parsed == []
 
   def test_parse_auto_rater_response_with_case_insensitive_verdict(self):
     """Tests _parse_auto_rater_response is case-insensitive for verdicts."""
@@ -176,6 +175,82 @@ class TestDefaultAutoRaterResponseParser:
     assert len(parsed) == 2
     assert parsed[0].score == 1.0
     assert parsed[1].score == 0.0
+
+  def test_parse_auto_rater_response_with_id(self):
+    """Tests the parser captures a rubric id echoed by the auto-rater."""
+    response = """
+      ID: 1
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].rubric_id == "1"
+    assert parsed[0].property_text == "Is the response good?"
+    assert parsed[0].score == 1.0
+
+  def test_parse_auto_rater_response_without_id_leaves_id_none(self):
+    """Tests that a response with no ID line leaves rubric_id as None."""
+    response = """
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].rubric_id is None
+    assert parsed[0].property_text == "Is the response good?"
+
+  def test_parse_auto_rater_response_with_first_id_present_second_absent(self):
+    """An id stays with its own property when a later property omits its id."""
+    response = """
+      ID: 1
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+
+      Property: Is the response bad?
+      Rationale: It was not bad.
+      Verdict: no
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 2
+    assert parsed[0].rubric_id == "1"
+    assert parsed[0].property_text == "Is the response good?"
+    assert parsed[1].rubric_id is None
+    assert parsed[1].property_text == "Is the response bad?"
+
+  def test_parse_auto_rater_response_with_first_id_omitted_second_present(self):
+    """A later id is not shifted onto an earlier property that omitted its id."""
+    response = """
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+
+      ID: 2
+      Property: Is the response bad?
+      Rationale: It was not bad.
+      Verdict: no
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 2
+    assert parsed[0].rubric_id is None
+    assert parsed[0].property_text == "Is the response good?"
+    assert parsed[1].rubric_id == "2"
+    assert parsed[1].property_text == "Is the response bad?"
+
+  def test_parse_auto_rater_response_ignores_mid_line_id_substring(self):
+    """A mid-line 'ID: ' (e.g. inside 'UUID: ') is not captured as an id."""
+    response = """
+      Property: Is the response good?
+      Rationale: The session UUID: abc-123 was fine.
+      Verdict: yes
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].rubric_id is None
+    assert parsed[0].property_text == "Is the response good?"
 
 
 class TestMajorityVotePerInvocationResultsAggregator:
@@ -600,6 +675,85 @@ class TestRubricBasedEvaluator:
     assert auto_rater_score.score is None
     assert auto_rater_score.rubric_scores == []
 
+  @pytest.mark.parametrize(
+      "property_text",
+      [
+          "\u2022 Is the response good?",
+          "- Is the response good?",
+          "* **Is the response good?**",
+          "**Is the response good?**",
+          "### Is the response good?",
+          "```Is the response good?```",
+          "> Is the response good?",
+          "\u201cIs the response good?\u201d",
+          "\u2014 Is the response good?",
+          "Is  the   response  good?",
+      ],
+  )
+  def test_convert_auto_rater_response_to_score_with_decorated_property(
+      self,
+      evaluator: RubricBasedEvaluator,
+      property_text: str,
+  ):
+    """Markdown and typographic decoration still resolves to its rubric."""
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(
+                    text=(
+                        f"Property: {property_text}\n"
+                        "Rationale: It was good.\n"
+                        "Verdict: yes\n"
+                    )
+                )
+            ]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1"]
+    assert auto_rater_score.score == 1.0
+
+  def test_convert_auto_rater_response_to_score_keeps_non_ascii_rubric(self):
+    """Normalization must not drop accented characters from rubric text."""
+    criterion = RubricsBasedCriterion(
+        threshold=0.5,
+        rubrics=[
+            Rubric(
+                rubric_id="1",
+                rubric_content=RubricContent(
+                    text_property="La réponse utilise l'outil"
+                ),
+            )
+        ],
+        judge_model_options=JudgeModelOptions(
+            judge_model_config=None, num_samples=1
+        ),
+    )
+    evaluator = FakeRubricBasedEvaluator(
+        EvalMetric(
+            metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+            threshold=0.5,
+            criterion=criterion,
+        )
+    )
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(
+                    text=(
+                        "Property: **La réponse utilise l\u2019outil**\n"
+                        "Rationale: Oui.\n"
+                        "Verdict: yes\n"
+                    )
+                )
+            ]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1"]
+
   def test_create_effective_rubrics_list_with_invocation_rubrics(
       self, evaluator: RubricBasedEvaluator
   ):
@@ -635,6 +789,24 @@ class TestRubricBasedEvaluator:
     effective_rubrics = evaluator.get_effective_rubrics_list()
     assert len(effective_rubrics) == 2
     assert {r.rubric_id for r in effective_rubrics} == {"1", "2"}
+
+  def test_create_effective_rubrics_list_with_no_rubrics_raises_error(self):
+    judge_model_options = JudgeModelOptions(
+        judge_model_config=None,
+        num_samples=3,
+    )
+    criterion = RubricsBasedCriterion(
+        threshold=0.5, judge_model_options=judge_model_options
+    )
+    metric = EvalMetric(
+        metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+        threshold=0.5,
+        criterion=criterion,
+    )
+    evaluator = FakeRubricBasedEvaluator(metric)
+
+    with pytest.raises(ValueError, match="Rubrics are required."):
+      evaluator.create_effective_rubrics_list(None)
 
   def test_get_effective_rubrics_list_before_creation_raises_error(
       self, evaluator: RubricBasedEvaluator
@@ -695,3 +867,99 @@ class TestRubricBasedEvaluator:
         "2",
         "test_type_rubric",
     }
+
+  def test_create_effective_rubrics_filters_to_empty_raises_error(self):
+    judge_model_options = JudgeModelOptions(
+        judge_model_config=None,
+        num_samples=3,
+    )
+    criterion = RubricsBasedCriterion(
+        threshold=0.5, judge_model_options=judge_model_options
+    )
+    metric = EvalMetric(
+        metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+        threshold=0.5,
+        criterion=criterion,
+    )
+    evaluator = FakeRubricBasedEvaluator(metric, rubric_type="EXPECTED_TYPE")
+    invocation_rubrics = [
+        Rubric(
+            rubric_id="wrong_type_rubric",
+            rubric_content=RubricContent(text_property="Invocation rubric"),
+            type="WRONG_TYPE",
+        )
+    ]
+
+    with pytest.raises(ValueError, match="Rubrics are required."):
+      evaluator.create_effective_rubrics_list(invocation_rubrics)
+
+  def test_convert_matches_by_id_when_text_paraphrased(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """A rubric is matched by echoed id even when its text is paraphrased."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    ID: 1
+    Property: Is the reply excellent?
+    Rationale: It was good.
+    Verdict: yes
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert len(auto_rater_score.rubric_scores) == 1
+    assert auto_rater_score.rubric_scores[0].rubric_id == "1"
+    assert auto_rater_score.rubric_scores[0].score == 1.0
+
+  def test_convert_does_not_misattribute_when_first_id_omitted(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """An omitted leading id must not shift a later id onto an earlier property."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    Property: Is the reply excellent?
+    Rationale: It was good.
+    Verdict: yes
+
+    ID: 2
+    Property: Is the reply awful?
+    Rationale: It was not bad.
+    Verdict: no
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    # The first (paraphrased, id-less) property matches no rubric; the second is
+    # matched to rubric "2" by its id and keeps its own "no" verdict.
+    assert len(auto_rater_score.rubric_scores) == 1
+    assert auto_rater_score.rubric_scores[0].rubric_id == "2"
+    assert auto_rater_score.rubric_scores[0].score == 0.0
+
+  def test_convert_falls_back_to_text_when_id_absent(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """Without an id, matching falls back to normalized property text."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    Property: Is the response good?
+    Rationale: It was good.
+    Verdict: yes
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert len(auto_rater_score.rubric_scores) == 1
+    assert auto_rater_score.rubric_scores[0].rubric_id == "1"
+    assert auto_rater_score.rubric_scores[0].score == 1.0

@@ -894,3 +894,204 @@ def test_partial_function_calls_not_executed_in_none_streaming_mode():
   assert (
       len(function_response_events) == 1
   ), f"Expected 1 function response event, got {len(function_response_events)}"
+
+
+def test_progressive_sse_partials_share_event_id():
+  """Partial chunks and the final event of one response share one id."""
+
+  response1 = LlmResponse(
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="Checking weather...")]
+      ),
+  )
+  response2 = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part.from_function_call(
+                  name="get_weather", args={"location": "Tokyo"}
+              )
+          ],
+      ),
+  )
+  response3 = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part.from_function_call(
+                  name="get_weather", args={"location": "New York"}
+              )
+          ],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  mock_model = StreamingMockModel(
+      stream_chunks=[response1, response2, response3]
+  )
+  agent = Agent(name="weather_agent", model=mock_model, tools=[get_weather])
+  run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+  runner = InMemoryRunner(agent=agent)
+  session = runner.session_service.create_session_sync(
+      app_name=runner.app_name, user_id="test_user"
+  )
+
+  events = []
+  for event in runner.run(
+      user_id="test_user",
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="What is the weather?")],
+      ),
+      run_config=run_config,
+  ):
+    events.append(event)
+
+  assert len(events) == 6
+  # events 0-2 are partials and event 3 is the aggregated final of one
+  # streaming response, so they all share the id minted once for that call.
+  assert events[0].id == events[1].id == events[2].id == events[3].id
+  # The function-response event is a separate event with its own id.
+  assert events[4].id != events[0].id
+  # A distinct LLM call mints a fresh id.
+  assert events[5].id != events[0].id
+
+
+def test_progressive_sse_text_stream_shares_event_id():
+  """Every partial and the final of a pure-text stream share one id."""
+
+  response1 = LlmResponse(
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="Hello ")]
+      ),
+  )
+  response2 = LlmResponse(
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="world")]
+      ),
+  )
+  response3 = LlmResponse(
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="!")]
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  mock_model = StreamingMockModel(
+      stream_chunks=[response1, response2, response3]
+  )
+  agent = Agent(name="text_stream_agent", model=mock_model)
+  run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+  runner = InMemoryRunner(agent=agent)
+  session = runner.session_service.create_session_sync(
+      app_name=runner.app_name, user_id="test_user"
+  )
+
+  events = []
+  for event in runner.run(
+      user_id="test_user",
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="Say hello.")],
+      ),
+      run_config=run_config,
+  ):
+    events.append(event)
+
+  model_events = [
+      e for e in events if e.author == "text_stream_agent" and e.content
+  ]
+  assert any(e.partial for e in model_events)
+  assert any(not e.partial for e in model_events)
+  assert len({e.id for e in model_events}) == 1
+
+
+class TwoFinalResponsesMockModel(BaseLlm):
+  """Yields two separate non-partial responses (text then a function call)."""
+
+  model: str = "two-finals-mock"
+  call_count: int = 0
+
+  @classmethod
+  def supported_models(cls) -> list[str]:
+    return ["two-finals-mock"]
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    self.call_count += 1
+    if self.call_count == 1:
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Let me check the weather.")],
+          ),
+          partial=False,
+      )
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part.from_function_call(
+                      name="get_weather", args={"location": "Tokyo"}
+                  )
+              ],
+          ),
+          partial=False,
+          finish_reason=types.FinishReason.STOP,
+      )
+      return
+    yield LlmResponse(
+        content=types.Content(
+            role="model", parts=[types.Part.from_text(text="Done.")]
+        ),
+        partial=False,
+        finish_reason=types.FinishReason.STOP,
+    )
+
+
+def test_progressive_sse_saved_events_get_distinct_ids():
+  """Distinct saved (non-partial) events in one turn must get distinct ids.
+
+  A saved text event and a saved function-call event produced in the same
+  streaming turn must not collapse onto a shared id. The id is re-minted after
+  every complete event, so this must hold regardless of future refactors of the
+  id-minting loop.
+  """
+
+  mock_model = TwoFinalResponsesMockModel()
+  agent = Agent(name="distinct_id_agent", model=mock_model, tools=[get_weather])
+  run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+  runner = InMemoryRunner(agent=agent)
+  session = runner.session_service.create_session_sync(
+      app_name=runner.app_name, user_id="test_user"
+  )
+
+  events = []
+  for event in runner.run(
+      user_id="test_user",
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="What is the weather?")],
+      ),
+      run_config=run_config,
+  ):
+    events.append(event)
+
+  # Only non-partial events are saved to the session.
+  saved_events = [e for e in events if not e.partial]
+  text_event = next(
+      e
+      for e in saved_events
+      if e.author == "distinct_id_agent"
+      and e.content
+      and any(p.text for p in e.content.parts)
+  )
+  function_call_event = next(e for e in saved_events if e.get_function_calls())
+  assert text_event.id != function_call_event.id
+  # Every saved event in the turn has a unique id.
+  saved_ids = [e.id for e in saved_events]
+  assert len(saved_ids) == len(set(saved_ids))

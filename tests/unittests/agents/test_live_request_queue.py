@@ -40,6 +40,17 @@ def test_send_content():
     mock_put_nowait.assert_called_once_with(LiveRequest(content=content))
 
 
+def test_send_content_sets_partial():
+  queue = LiveRequestQueue()
+  content = MagicMock(spec=types.Content)
+
+  with patch.object(queue._queue, "put_nowait") as mock_put_nowait:
+    queue.send_content(content, partial=True)
+    mock_put_nowait.assert_called_once_with(
+        LiveRequest(content=content, partial=True)
+    )
+
+
 def test_send_realtime():
   queue = LiveRequestQueue()
   blob = MagicMock(spec=types.Blob)
@@ -68,3 +79,13 @@ async def test_get():
 
     assert result == res
     mock_get.assert_called_once()
+
+
+def test_state_delta_defaults_to_none():
+  assert LiveRequest().state_delta is None
+
+
+def test_state_delta_json_round_trip():
+  req = LiveRequest(state_delta={"a": 1})
+  restored = LiveRequest.model_validate_json(req.model_dump_json())
+  assert restored.state_delta == {"a": 1}

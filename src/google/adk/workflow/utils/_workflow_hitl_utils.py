@@ -125,6 +125,7 @@ def get_request_input_interrupt_ids(event: Event) -> list[str]:
     if (
         part.function_call
         and part.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
+        and part.function_call.id is not None
     ):
       interrupt_ids.append(part.function_call.id)
   return interrupt_ids

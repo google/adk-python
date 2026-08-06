@@ -18,7 +18,7 @@ from google.genai import types
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
-from ..models import LlmRequest
+from ..models.llm_request import LlmRequest
 from ..utils.model_name_utils import is_gemini_eap_or_2_or_above
 from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_code_executor import BaseCodeExecutor
@@ -34,11 +34,13 @@ class BuiltInCodeExecutor(BaseCodeExecutor):
   """
 
   @override
-  def execute_code(
+  def execute_code(  # type: ignore[empty-body]
       self,
       invocation_context: InvocationContext,
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
+    # Execution is delegated to the model, so there is nothing to run here.
+    # A direct caller gets None; raising instead would change that.
     pass
 
   def process_llm_request(self, llm_request: LlmRequest) -> None:

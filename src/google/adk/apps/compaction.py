@@ -15,10 +15,12 @@
 from __future__ import annotations
 
 import logging
+from typing import AsyncGenerator
 
 from google.genai import types
 
 from ..agents.base_agent import BaseAgent
+from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -385,8 +387,14 @@ async def _run_compaction_for_token_threshold_config(
   if config.token_threshold is None or config.event_retention_size is None:
     return False
 
+  # Drop rewound invocations so the summary covers only live events, consistent
+  # with prompt building and sliding-window compaction (all route through
+  # _apply_rewinds); otherwise rewound content would leak back into future
+  # prompts via the compaction summary.
+  events = _apply_rewinds(session.events)
+
   prompt_token_count = _latest_prompt_token_count(
-      session.events,
+      events,
       current_branch=current_branch,
       agent_name=agent_name,
   )
@@ -394,7 +402,7 @@ async def _run_compaction_for_token_threshold_config(
     return False
 
   events_to_compact = _events_to_compact_for_token_threshold(
-      events=session.events,
+      events=events,
       event_retention_size=config.event_retention_size,
   )
   if not events_to_compact:
@@ -443,7 +451,7 @@ async def _run_compaction_for_sliding_window(
     session_service: BaseSessionService,
     *,
     skip_token_compaction: bool = False,
-):
+) -> AsyncGenerator[Event, None]:
   """Runs compaction for SlidingWindowCompactor.
 
   This method implements the sliding window compaction logic. It determines
@@ -521,16 +529,25 @@ async def _run_compaction_for_sliding_window(
   Args:
     app: The application instance.
     session: The session containing events to compact.
-    session_service: The session service for appending events.
+    session_service: The session service, used by the token-threshold fallback.
     skip_token_compaction: Whether to skip token-threshold compaction.
+
+  Yields:
+    The sliding-window compaction event, if one is produced. The caller (the
+    runner loop) is responsible for appending it to the session, so that
+    persistence of this event stays at the runtime's synchronization point.
   """
-  events = session.events
+  # Drop rewound invocations first so the summary covers only live events. This
+  # keeps the compactor consistent with prompt building (the contents processor
+  # also applies rewinds); otherwise rewound content would leak back into future
+  # prompts via the compaction summary.
+  events = _apply_rewinds(session.events)
   if not events:
-    return None
+    return
 
   config = app.events_compaction_config
   if config is None:
-    return None
+    return
 
   # Prefer token-threshold compaction if configured and triggered.
   if not skip_token_compaction and _has_token_threshold_config(config):
@@ -538,13 +555,13 @@ async def _run_compaction_for_sliding_window(
         app, session, session_service
     )
     if token_compacted:
-      return None
+      return
 
   if not _has_sliding_window_config(config):
-    return None
+    return
 
   if config.compaction_interval is None or config.overlap_size is None:
-    return None
+    return
 
   # Find the last compaction event and its range.
   last_compacted_end_timestamp = 0.0
@@ -573,7 +590,7 @@ async def _run_compaction_for_sliding_window(
   ]
 
   if len(new_invocation_ids) < config.compaction_interval:
-    return None  # Not enough new invocations to trigger compaction.
+    return  # Not enough new invocations to trigger compaction.
 
   # Determine the range of invocations to compact.
   # The end of the compaction range is the last of the new invocations.
@@ -613,13 +630,13 @@ async def _run_compaction_for_sliding_window(
       events_to_compact = _longest_self_contained_prefix(events_to_compact)
 
   if not events_to_compact:
-    return None
+    return
 
   if app.root_agent is None:
-    return None
+    return
   _ensure_compaction_summarizer(config=config, agent=app.root_agent)
   if config.summarizer is None:
-    return None
+    return
 
   compaction_event = await _summarize_events_with_trace(
       session=session,
@@ -627,6 +644,6 @@ async def _run_compaction_for_sliding_window(
       events_to_compact=events_to_compact,
       trigger='sliding_window',
   )
-  if compaction_event:
-    await session_service.append_event(session=session, event=compaction_event)
   logger.debug('Event compactor finished.')
+  if compaction_event:
+    yield compaction_event

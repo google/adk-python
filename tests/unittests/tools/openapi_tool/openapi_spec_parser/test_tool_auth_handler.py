@@ -353,3 +353,65 @@ async def test_refreshed_credential_is_persisted_to_store(
   assert persisted is not None
   assert persisted.oauth2.access_token == 'new_access_token'
   assert persisted.oauth2.refresh_token == 'new_refresh_token'
+
+
+def test_credential_key_is_stable_across_redirect_uri():
+  """get_credential_key should be invariant under redirect_uri changes.
+
+  redirect_uri is deployment configuration (which callback URL the auth
+  server should redirect to), not part of the credential identity. Two
+  AuthCredential instances that share the same client_id, client_secret,
+  and scopes but differ only in redirect_uri should produce the same key.
+  """
+  scheme, _ = get_mock_openid_scheme_credential()
+  credential_local = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='client',
+          client_secret='secret',
+          redirect_uri='http://localhost:8001/oauth2callback',
+      ),
+  )
+  credential_deployed = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='client',
+          client_secret='secret',
+          redirect_uri='https://deployed.example.com/oauth2callback',
+      ),
+  )
+  store = ToolContextCredentialStore(tool_context=create_mock_tool_context())
+
+  assert store.get_credential_key(
+      scheme, credential_local
+  ) == store.get_credential_key(scheme, credential_deployed)
+
+
+def test_legacy_credential_key_is_stable_across_redirect_uri():
+  """_get_legacy_credential_key should be invariant under redirect_uri changes.
+
+  The same redirect_uri-strip behavior must apply to the legacy key path so
+  that already-stored credentials remain findable after the fix.
+  """
+  scheme, _ = get_mock_openid_scheme_credential()
+  credential_local = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='client',
+          client_secret='secret',
+          redirect_uri='http://localhost:8001/oauth2callback',
+      ),
+  )
+  credential_deployed = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='client',
+          client_secret='secret',
+          redirect_uri='https://deployed.example.com/oauth2callback',
+      ),
+  )
+  store = ToolContextCredentialStore(tool_context=create_mock_tool_context())
+
+  assert store._get_legacy_credential_key(
+      scheme, credential_local
+  ) == store._get_legacy_credential_key(scheme, credential_deployed)

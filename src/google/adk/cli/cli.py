@@ -161,7 +161,7 @@ def _prompt_for_function_call(
   # Build the FunctionResponse.
   if fc_name == _REQUEST_CONFIRMATION:
     confirmed = _is_positive_response(user_input)
-    response = {'confirmed': confirmed}
+    response: dict[str, Any] = {'confirmed': confirmed}
   else:
     # Try to parse as JSON, fall back to wrapping as {"result": value}.
     try:
@@ -217,7 +217,7 @@ async def run_interactively(
     collected_events = []
     invocation_id = None
 
-    async def run_and_print():
+    async def run_and_print() -> None:
       nonlocal invocation_id
       async with Aclosing(
           runner.run_async(
@@ -255,17 +255,18 @@ async def run_interactively(
     if pending:
       # Handle each pending function call. If there are multiple,
       # collect all responses into a single Content with multiple parts.
-      parts = []
+      parts: list[types.Part] = []
       for fc_id, fc_name, args in pending:
         response_content = _prompt_for_function_call(fc_id, fc_name, args)
-        parts.extend(response_content.parts)
+        if response_content.parts:
+          parts.extend(response_content.parts)
       next_message = types.Content(role='user', parts=parts)
       resume_invocation_id = invocation_id
 
   await runner.close()
 
 
-def _override_default_llm_model(default_llm_model: str):
+def _override_default_llm_model(default_llm_model: str) -> None:
   """Overrides the default LLM model for LlmAgent."""
   logger.info('Overriding default model to %s', default_llm_model)
   LlmAgent.set_default_model(default_llm_model)
@@ -347,7 +348,7 @@ def _setup_runner_context(
 
 def _print_event(
     event: Event, jsonl: bool = False, session_id: Optional[str] = None
-):
+) -> None:
   """Prints an event to the console.
 
   Args:
@@ -385,7 +386,9 @@ def _print_event(
     # Human readable mode
     author = event.author or 'unknown'
     text_parts = (
-        [p.text for p in event.content.parts if p.text] if event.content else []
+        [p.text for p in event.content.parts if p.text]
+        if event.content and event.content.parts
+        else []
     )
     if text_parts:
       text = ''.join(text_parts)
@@ -647,7 +650,7 @@ async def run_once_cli(
 
   exit_code = 0
 
-  async def execute_query(query: str):
+  async def execute_query(query: str) -> None:
     nonlocal exit_code
 
     # Auto-resume magic: Check if the last event in the session indicates an

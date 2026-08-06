@@ -25,9 +25,9 @@ from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
-from pydantic import ValidationError
 import pytest
 
 
@@ -110,6 +110,33 @@ def test_get_declaration():
   assert declaration.description is not None
 
 
+def test_get_declaration_marks_only_schema_required_fields_required():
+  """Fields carrying a default must not be advertised as required."""
+  tool = SetModelResponseTool(ComplexSchema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  schema = declaration.model_dump(exclude_none=True)['parameters_json_schema']
+  assert schema['required'] == ComplexSchema.model_json_schema()['required']
+  assert sorted(schema['required']) == ['id', 'title']
+
+
+def test_get_declaration_preserves_field_defaults():
+  """Defaults declared on the output schema reach the generated declaration."""
+  tool = SetModelResponseTool(ComplexSchema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  properties = declaration.model_dump(exclude_none=True)[
+      'parameters_json_schema'
+  ]['properties']
+  assert properties['tags']['default'] == []
+  assert properties['metadata']['default'] == {}
+  assert properties['is_active']['default'] is True
+
+
 @pytest.mark.asyncio
 async def test_run_async_valid_data():
   """Test tool execution with valid data."""
@@ -160,11 +187,12 @@ async def test_run_async_complex_schema():
   assert result['tags'] == ['tag1', 'tag2']
   assert result['metadata'] == {'key': 'value'}
   assert result['is_active'] is False
+  assert tool_context.actions.set_model_response == result
 
 
 @pytest.mark.asyncio
 async def test_run_async_validation_error():
-  """Test tool execution with invalid data raises validation error."""
+  """Test tool execution with invalid data returns validation feedback."""
   tool = SetModelResponseTool(PersonSchema)
 
   agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
@@ -172,16 +200,22 @@ async def test_run_async_validation_error():
   tool_context = ToolContext(invocation_context)
 
   # Execute with invalid data (wrong type for age)
-  with pytest.raises(ValidationError):
-    await tool.run_async(
-        args={'name': 'Bob', 'age': 'not_a_number', 'city': 'Portland'},
-        tool_context=tool_context,
-    )
+  result = await tool.run_async(
+      args={'name': 'Bob', 'age': 'not_a_number', 'city': 'Portland'},
+      tool_context=tool_context,
+  )
+
+  assert result is not None
+  assert 'error' in result
+  assert 'Validation Error found' in result['error']
+  assert 'age' in result['error']
+  assert 'int_parsing' in result['error']
+  assert tool_context.actions.set_model_response is None
 
 
 @pytest.mark.asyncio
 async def test_run_async_missing_required_field():
-  """Test tool execution with missing required field."""
+  """Test tool execution with missing required field returns feedback."""
   tool = SetModelResponseTool(PersonSchema)
 
   agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
@@ -189,11 +223,17 @@ async def test_run_async_missing_required_field():
   tool_context = ToolContext(invocation_context)
 
   # Execute with missing required field
-  with pytest.raises(ValidationError):
-    await tool.run_async(
-        args={'name': 'Charlie', 'city': 'Denver'},  # Missing age
-        tool_context=tool_context,
-    )
+  result = await tool.run_async(
+      args={'name': 'Charlie', 'city': 'Denver'},  # Missing age
+      tool_context=tool_context,
+  )
+
+  assert result is not None
+  assert 'error' in result
+  assert 'Validation Error found' in result['error']
+  assert 'age' in result['error']
+  assert 'Field required' in result['error']
+  assert tool_context.actions.set_model_response is None
 
 
 @pytest.mark.asyncio
@@ -215,6 +255,7 @@ async def test_session_state_storage_key():
   assert result['name'] == 'Diana'
   assert result['age'] == 35
   assert result['city'] == 'Miami'
+  assert tool_context.actions.set_model_response == result
 
 
 @pytest.mark.asyncio
@@ -356,11 +397,12 @@ async def test_run_async_list_schema_empty_list():
   assert result is not None
   assert isinstance(result, list)
   assert len(result) == 0
+  assert tool_context.actions.set_model_response == result
 
 
 @pytest.mark.asyncio
 async def test_run_async_list_schema_validation_error():
-  """Test tool execution with invalid list data raises validation error."""
+  """Test tool execution with invalid list data returns validation feedback."""
   tool = SetModelResponseTool(list[ItemSchema])
 
   agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
@@ -368,15 +410,21 @@ async def test_run_async_list_schema_validation_error():
   tool_context = ToolContext(invocation_context)
 
   # Execute with invalid data (wrong type for id)
-  with pytest.raises(ValidationError):
-    await tool.run_async(
-        args={
-            'items': [
-                {'id': 'not_a_number', 'name': 'Item 1'},
-            ]
-        },
-        tool_context=tool_context,
-    )
+  result = await tool.run_async(
+      args={
+          'items': [
+              {'id': 'not_a_number', 'name': 'Item 1'},
+          ]
+      },
+      tool_context=tool_context,
+  )
+
+  assert result is not None
+  assert 'error' in result
+  assert 'Validation Error found' in result['error']
+  assert '0.id' in result['error']
+  assert 'int_parsing' in result['error']
+  assert tool_context.actions.set_model_response is None
 
 
 # Tests for other schema types (list[str], dict, etc.)
@@ -470,6 +518,105 @@ async def test_run_async_dict_schema():
   assert result is not None
   assert isinstance(result, dict)
   assert result == {'a': 1, 'b': 2, 'c': 3}
+
+
+def test_tool_initialization_raw_dict_schema():
+  """Raw dict output_schema must not crash and must be stored as-is."""
+  raw_schema = {
+      'type': 'object',
+      'properties': {'result': {'type': 'string'}},
+  }
+
+  tool = SetModelResponseTool(raw_schema)
+
+  assert tool.output_schema == raw_schema
+  assert not tool._is_basemodel
+  assert not tool._is_list_of_basemodel
+  assert tool.name == 'set_model_response'
+  assert tool.func is not None
+
+
+def test_function_signature_generation_raw_dict_schema():
+  """Raw dict schemas should produce a single `response: dict` parameter.
+
+  The annotation must be the `dict` type (hashable), not the dict instance,
+  so downstream `_is_builtin_primitive_or_compound` does not raise
+  `TypeError: unhashable type: 'dict'`.
+  """
+  raw_schema = {
+      'type': 'object',
+      'properties': {'result': {'type': 'string'}},
+  }
+
+  tool = SetModelResponseTool(raw_schema)
+
+  sig = inspect.signature(tool.func)
+
+  assert 'response' in sig.parameters
+  assert len(sig.parameters) == 1
+  assert sig.parameters['response'].kind == inspect.Parameter.KEYWORD_ONLY
+  # The annotation is the hashable `dict` type, not the dict instance.
+  assert sig.parameters['response'].annotation is dict
+
+
+def test_get_declaration_raw_dict_schema():
+  """`_get_declaration` must not raise when given a raw dict schema."""
+  raw_schema = {
+      'type': 'object',
+      'properties': {'result': {'type': 'string'}},
+  }
+
+  tool = SetModelResponseTool(raw_schema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  assert declaration.name == 'set_model_response'
+  assert declaration.description is not None
+
+
+@pytest.mark.asyncio
+async def test_run_async_raw_dict_schema():
+  """Tool execution with a raw dict schema returns the response unchanged."""
+  raw_schema = {
+      'type': 'object',
+      'properties': {'result': {'type': 'string'}},
+  }
+  tool = SetModelResponseTool(raw_schema)
+
+  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  invocation_context = await _create_invocation_context(agent)
+  tool_context = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={'response': {'result': 'hello'}},
+      tool_context=tool_context,
+  )
+
+  assert result == {'result': 'hello'}
+
+
+def test_tool_initialization_schema_instance():
+  """types.Schema instance output_schema must be converted to dict and not crash."""
+  schema_instance = types.Schema(
+      type=types.Type.OBJECT,
+      properties={'result': types.Schema(type=types.Type.STRING)},
+  )
+
+  tool = SetModelResponseTool(schema_instance)
+
+  # Check that it converted it to a dictionary
+  assert isinstance(tool.output_schema, dict)
+  assert 'result' in tool.output_schema['properties']
+
+  sig = inspect.signature(tool.func)
+  assert 'response' in sig.parameters
+  assert sig.parameters['response'].annotation is dict
+
+  # Check that get_declaration works and doesn't crash with TypeError
+  declaration = tool._get_declaration()
+  assert declaration is not None
+  assert declaration.name == 'set_model_response'
 
 
 class SubSchema(BaseModel):

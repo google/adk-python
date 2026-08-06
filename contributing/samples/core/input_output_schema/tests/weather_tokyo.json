@@ -42,7 +42,7 @@
     },
     {
       "author": "weather_agent",
-      "branch": "weather_agent@1",
+      "branch": "weather_agent@fc-1",
       "content": {
         "parts": [
           {

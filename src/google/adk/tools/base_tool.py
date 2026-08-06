@@ -168,6 +168,12 @@ class BaseTool(ABC):
     # Use the consolidated logic in LlmRequest.append_tools
     llm_request.append_tools([self])
 
+  async def check_require_confirmation(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> bool:
+    """Returns whether the tool requires confirmation for the given args."""
+    return False
+
   @property
   def _api_variant(self) -> GoogleLLMVariant:
     return get_google_llm_variant()

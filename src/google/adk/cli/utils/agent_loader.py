@@ -42,11 +42,16 @@ logger = logging.getLogger("google_adk." + __name__)
 
 def is_single_agent_directory(path: Path | str) -> bool:
   """Returns True if the directory contains a single agent configuration or file."""
-  p = Path(path).resolve()
-  return (
-      p.joinpath("agent.py").is_file()
-      or p.joinpath("root_agent.yaml").is_file()
-  )
+  try:
+    p = Path(path).resolve()
+    if not p.is_dir():
+      return False
+    return (
+        p.joinpath("agent.py").is_file()
+        or p.joinpath("root_agent.yaml").is_file()
+    )
+  except Exception:
+    return False
 
 
 # Special agents directory for agents with names starting with double underscore
@@ -235,6 +240,11 @@ class AgentLoader(BaseAgentLoader):
     """Validate agent name to prevent arbitrary module imports."""
     # Strip the special agent prefix for validation
     if agent_name.startswith("__"):
+      if not self._allow_special_agents:
+        raise PermissionError(
+            f"Loading special internal agent {agent_name!r} is disabled in this"
+            " loader configuration."
+        )
       name_to_check = agent_name[2:]
       check_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
     else:
@@ -471,10 +481,12 @@ class AgentLoader(BaseAgentLoader):
       return "python"
     elif (base_path / "__init__.py").exists():
       return "python"
+    elif (base_path.parent / f"{agent_name}.py").exists():
+      return "python"
 
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
-  def remove_agent_from_cache(self, agent_name: str):
+  def remove_agent_from_cache(self, agent_name: str) -> None:
     # Clear module cache for the agent and its submodules
     keys_to_delete = [
         module_name

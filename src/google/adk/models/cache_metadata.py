@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -58,14 +57,14 @@ class CacheMetadata(BaseModel):
       frozen=True,  # Cache metadata should be immutable
   )
 
-  cache_name: Optional[str] = Field(
+  cache_name: str | None = Field(
       default=None,
       description=(
           "Full resource name of the cached content (None if no active cache)"
       ),
   )
 
-  expire_time: Optional[float] = Field(
+  expire_time: float | None = Field(
       default=None,
       description="Unix timestamp when cache expires (None if no active cache)",
   )
@@ -74,7 +73,7 @@ class CacheMetadata(BaseModel):
       description="Hash of cacheable contents used to detect changes"
   )
 
-  invocations_used: Optional[int] = Field(
+  invocations_used: int | None = Field(
       default=None,
       ge=0,
       description=(
@@ -91,7 +90,7 @@ class CacheMetadata(BaseModel):
       ),
   )
 
-  created_at: Optional[float] = Field(
+  created_at: float | None = Field(
       default=None,
       description=(
           "Unix timestamp when cache was created (None if no active cache)"
@@ -123,6 +122,7 @@ class CacheMetadata(BaseModel):
           f"Fingerprint-only: {self.contents_count} contents, "
           f"fingerprint={self.fingerprint[:8]}..."
       )
+    assert self.expire_time is not None and self.invocations_used is not None
     cache_id = self.cache_name.split("/")[-1]
     time_until_expiry_minutes = (self.expire_time - time.time()) / 60
     return (

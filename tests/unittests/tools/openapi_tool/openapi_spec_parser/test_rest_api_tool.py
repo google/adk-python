@@ -516,6 +516,61 @@ class TestRestApiTool:
     assert request_params["json"] == {"param1": "value1", "param2": 123}
     assert request_params["params"] == {"testQueryParam": "query_value"}
 
+  def test_prepare_request_params_preserves_falsy_query_params(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    mock_operation = Operation(operationId="test_op")
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+
+    params = [
+        ApiParameter(
+            original_name="flag",
+            py_name="flag",
+            param_location="query",
+            param_schema=OpenAPISchema(type="boolean"),
+        ),
+        ApiParameter(
+            original_name="offset",
+            py_name="offset",
+            param_location="query",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+        ApiParameter(
+            original_name="cursor",
+            py_name="cursor",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+        ApiParameter(
+            original_name="empty_param",
+            py_name="empty_param",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+    ]
+    kwargs = {
+        "flag": False,
+        "offset": 0,
+        "cursor": None,
+        "empty_param": "",
+    }
+
+    request_params = tool._prepare_request_params(params, kwargs)
+    # Explicit False/0/"" must be kept; None is omitted.
+    assert request_params["params"] == {
+        "flag": False,
+        "offset": 0,
+        "empty_param": "",
+    }
+
   def test_prepare_request_params_array(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
@@ -673,7 +728,59 @@ class TestRestApiTool:
     request_params = tool._prepare_request_params(params, kwargs)
 
     assert request_params["files"] == {"file1": b"file_content"}
-    assert request_params["headers"]["Content-Type"] == "multipart/form-data"
+    # For multipart/form-data the boundary-bearing Content-Type must be set by
+    # httpx (from the `files` payload), not forced here. Forcing a boundary-less
+    # "multipart/form-data" header would override the boundary httpx generates
+    # and make the request body unparsable.
+    assert "Content-Type" not in request_params["headers"]
+
+  def test_prepare_request_params_multipart_content_type_has_boundary(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    mock_operation = Operation(
+        operationId="test_op",
+        requestBody=RequestBody(
+            content={
+                "multipart/form-data": MediaType(
+                    schema=OpenAPISchema(
+                        type="object",
+                        properties={
+                            "file1": OpenAPISchema(
+                                type="string", format="binary"
+                            )
+                        },
+                    )
+                )
+            }
+        ),
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="file1",
+            py_name="file1",
+            param_location="body",
+            param_schema=OpenAPISchema(type="string", format="binary"),
+        )
+    ]
+    kwargs = {"file1": b"file_content"}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    # Build the request httpx would actually send and assert the wire
+    # Content-Type carries the multipart boundary that matches the body.
+    request = httpx.Client().build_request(**request_params)
+    content_type = request.headers["Content-Type"]
+    assert content_type.startswith("multipart/form-data; boundary=")
+    boundary = content_type.split("boundary=", 1)[1]
+    assert request.read().startswith(f"--{boundary}".encode())
 
   def test_prepare_request_params_octet_stream(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential
@@ -1130,7 +1237,6 @@ class TestRestApiTool:
     httpx defaults to a 5-second timeout, which is too short for many
     real-world API calls. Verify that we explicitly disable the timeout
     to match the previous requests-library behavior (no timeout).
-    Regression test for https://github.com/google/adk-python/issues/4431.
     """
     mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
@@ -1455,7 +1561,6 @@ class TestRestApiTool:
     in the OpenAPI path (e.g. '...execute?triggerId=api_trigger/Name#action').
     These must be moved into the explicit query_params dict so httpx does not
     strip them when it replaces the URL query string with the `params` arg.
-    Regression test for https://github.com/google/adk-python/issues/4555.
     """
     integration_path = (
         "/v2/projects/my-proj/locations/us-central1"

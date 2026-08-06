@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import logging
 import os
 import pprint
 from typing import Any
@@ -23,6 +23,13 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 from google.adk.tools.tool_context import ToolContext
+
+# Configure logging; the mcp_tool logger must be set to
+# DEBUG to capture http_debug_info
+logging.basicConfig(level=logging.INFO)
+logging.getLogger('google_adk.google.adk.tools.mcp_tool.mcp_tool').setLevel(
+    logging.DEBUG
+)
 
 _allowed_path = os.path.dirname(os.path.abspath(__file__))
 

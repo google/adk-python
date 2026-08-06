@@ -70,11 +70,53 @@ class TestReadFileWriteFile:
     assert data == raw
 
   @pytest.mark.asyncio
+  async def test_write_preserves_explicit_crlf(self, env: LocalEnvironment):
+    """Explicit CRLF sequences are written without newline translation."""
+    await env.write_file("crlf.txt", "first\r\nsecond\r\n")
+
+    data = await env.read_file("crlf.txt")
+
+    assert data == b"first\r\nsecond\r\n"
+
+  @pytest.mark.asyncio
   async def test_write_creates_parent_dirs(self, env: LocalEnvironment):
     """Parent directories are created automatically."""
     await env.write_file(Path("sub/dir/file.txt"), "nested")
     data = await env.read_file("sub/dir/file.txt")
     assert data == b"nested"
+
+  @pytest.mark.asyncio
+  async def test_absolute_path_inside_working_dir(self, env: LocalEnvironment):
+    """Absolute paths are accepted when they stay inside the workspace."""
+    path = env.working_dir / "absolute.txt"
+    await env.write_file(path, "absolute")
+    data = await env.read_file(path)
+    assert data == b"absolute"
+
+  @pytest.mark.asyncio
+  async def test_rejects_relative_path_escape(self, env: LocalEnvironment):
+    """Parent traversal cannot escape the workspace."""
+    outside = env.working_dir.parent / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="escapes working directory"):
+      await env.read_file(Path("..") / outside.name)
+
+    with pytest.raises(ValueError, match="escapes working directory"):
+      await env.write_file(Path("..") / "write-outside.txt", "nope")
+
+    assert not (env.working_dir.parent / "write-outside.txt").exists()
+
+  @pytest.mark.asyncio
+  async def test_rejects_absolute_path_outside_working_dir(
+      self, env: LocalEnvironment
+  ):
+    """Absolute paths outside the workspace are rejected."""
+    outside = env.working_dir.parent / "outside-absolute.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="escapes working directory"):
+      await env.read_file(outside)
 
   @pytest.mark.asyncio
   async def test_read_nonexistent_raises(self, env: LocalEnvironment):

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -150,7 +151,9 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       return ExchangeResult(auth_credential, False)
 
     try:
-      tokens = client.fetch_token(
+      # authlib's client is synchronous; run it off the event loop.
+      tokens = await asyncio.to_thread(
+          client.fetch_token,
           token_endpoint,
           grant_type=OAuthGrantType.CLIENT_CREDENTIALS,
       )
@@ -186,7 +189,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
         boolean indicating whether the credential was exchanged.
     """
     client, token_endpoint = create_oauth2_session(auth_scheme, auth_credential)
-    if not client:
+    if not client or not auth_credential.oauth2:
       logger.warning(
           "Could not create OAuth2 session for authorization code exchange"
       )
@@ -201,7 +204,9 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
 
       # Authlib already injects client_id for body-based client auth flows such
       # as client_secret_post, so passing it here would duplicate the field.
-      tokens = client.fetch_token(
+      # authlib's client is synchronous; run it off the event loop.
+      tokens = await asyncio.to_thread(
+          client.fetch_token,
           token_endpoint,
           authorization_response=self._normalize_auth_uri(
               auth_credential.oauth2.auth_response_uri

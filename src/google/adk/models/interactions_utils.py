@@ -60,6 +60,7 @@ from google.genai.interactions import InteractionCompletedEvent
 from google.genai.interactions import InteractionCreatedEvent
 from google.genai.interactions import InteractionSSEEvent
 from google.genai.interactions import InteractionStatusUpdate
+from google.genai.interactions import MCPServerParam
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import ModelOutputStepParam
 from google.genai.interactions import Step
@@ -81,6 +82,9 @@ from typing_extensions import deprecated
 if TYPE_CHECKING:
   from google.genai import Client
 
+  from ..tools._remote_mcp_server import RemoteMcpServer
+
+from ..utils._google_client_headers import merge_tracking_headers
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
@@ -112,6 +116,29 @@ def _extract_stream_interaction_id(
   return None
 
 
+def _extract_stream_environment_id(
+    event: InteractionSSEEvent,
+) -> str | None:
+  """Extract the environment id from an Interactions SSE event, if present.
+
+  The non-streaming ``Interaction`` declares an ``environment_id`` field. On
+  streaming SSE events the id is read opportunistically from the carried
+  interaction (created/completed events allow extra fields), so it is returned
+  only when the API actually includes it and is ``None`` otherwise.
+  """
+  interaction = None
+  if isinstance(event, (InteractionCreatedEvent, InteractionCompletedEvent)):
+    interaction = event.interaction
+  elif isinstance(event, Interaction):
+    interaction = event
+
+  if interaction is None:
+    return None
+
+  env_id = getattr(interaction, 'environment_id', None)
+  return env_id if isinstance(env_id, str) else None
+
+
 def _encode_base64_string(data: bytes) -> str:
   """Encode bytes to a base64 string."""
   return base64.b64encode(data).decode('utf-8')
@@ -130,7 +157,9 @@ def _wrap_content_param_in_step(
     'convert_part_to_interaction_content is deprecated and will be removed in'
     ' future versions'
 )
-def convert_part_to_interaction_content(part: types.Part) -> dict | None:
+def convert_part_to_interaction_content(
+    part: types.Part,
+) -> dict[str, Any] | None:
   """Convert a types.Part to an interaction content dict.
 
   Args:
@@ -228,12 +257,12 @@ def convert_part_to_interaction_content(part: types.Part) -> dict | None:
   elif part.thought:
     # part.thought is a boolean indicating this is a thought part
     # ThoughtContentParam expects 'signature' (base64 encoded bytes)
-    result: dict[str, Any] = {'type': 'thought'}
+    thought_result: dict[str, Any] = {'type': 'thought'}
     if part.thought_signature is not None:
-      result['signature'] = base64.b64encode(part.thought_signature).decode(
-          'utf-8'
-      )
-    return result
+      thought_result['signature'] = base64.b64encode(
+          part.thought_signature
+      ).decode('utf-8')
+    return thought_result
   elif part.code_execution_result is not None:
     is_error = part.code_execution_result.outcome in (
         types.Outcome.OUTCOME_FAILED,
@@ -498,6 +527,27 @@ def convert_tools_config_to_interactions_format(
   return interaction_tools
 
 
+def _build_mcp_server_param(
+    server: RemoteMcpServer,
+    resolved_headers: dict[str, str],
+) -> MCPServerParam:
+  """Map a RemoteMcpServer + resolved headers to an interactions MCPServerParam.
+
+  Built directly (not via ``types.McpServer``) so ``allowed_tools`` can be
+  carried and the "not supported in Vertex AI" restriction on
+  ``types.Tool.mcp_servers`` is avoided. ``resolved_headers`` is the static
+  headers already merged with any ``header_provider`` output by the caller.
+  """
+  param: MCPServerParam = {'type': 'mcp_server', 'url': server.url}
+  if server.name is not None:
+    param['name'] = server.name
+  if resolved_headers:
+    param['headers'] = resolved_headers
+  if server.allowed_tools is not None:
+    param['allowed_tools'] = [{'tools': list(server.allowed_tools)}]
+  return param
+
+
 def _function_result_to_response(
     result: BaseModel | dict[str, Any] | list[Any] | str,
 ) -> dict[str, Any]:
@@ -580,6 +630,7 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
         types.Part(
             function_response=types.FunctionResponse(
                 id=step.call_id or '',
+                name=step.name,
                 response=_function_result_to_response(step.result),
             )
         )
@@ -631,15 +682,21 @@ def _usage_metadata_from_interaction(
   type carried by ``InteractionCompletedEvent``) also exposes ``usage``, so this
   accepts either interaction type.
   """
-  if not interaction.usage:
+  usage = interaction.usage
+  if not usage:
     return None
+  # Prefer the total the API reports: it also covers thought and tool-use
+  # tokens, which input + output alone undercounts. Fall back to the sum only
+  # when the API omits the total.
+  total_token_count = usage.total_tokens
+  if total_token_count is None:
+    total_token_count = (usage.total_input_tokens or 0) + (
+        usage.total_output_tokens or 0
+    )
   return types.GenerateContentResponseUsageMetadata(
-      prompt_token_count=interaction.usage.total_input_tokens,
-      candidates_token_count=interaction.usage.total_output_tokens,
-      total_token_count=(
-          (interaction.usage.total_input_tokens or 0)
-          + (interaction.usage.total_output_tokens or 0)
-      ),
+      prompt_token_count=usage.total_input_tokens,
+      candidates_token_count=usage.total_output_tokens,
+      total_token_count=total_token_count,
   )
 
 
@@ -706,13 +763,23 @@ def convert_interaction_to_llm_response(
 
 @dataclasses.dataclass
 class _StreamState:
-  """Accumulates streamed parts across SSE events.
+  """Accumulates streamed parts and grounding data across SSE events.
 
   ``parts`` collects ``types.Part``s in arrival order to assemble the final
-  ``Content``.
+  ``Content``. The grounding fields accumulate google_search / citation data
+  that maps to ``grounding_metadata`` (a top-level ``LlmResponse`` field, not a
+  part) so it can be reattached to the final, persisted event.
   """
 
   parts: list[types.Part] = dataclasses.field(default_factory=list)
+  web_search_queries: list[str] = dataclasses.field(default_factory=list)
+  grounding_chunks: list[types.GroundingChunk] = dataclasses.field(
+      default_factory=list
+  )
+  grounding_supports: list[types.GroundingSupport] = dataclasses.field(
+      default_factory=list
+  )
+  search_entry_point: types.SearchEntryPoint | None = None
 
 
 def _partial_part_response(
@@ -721,6 +788,18 @@ def _partial_part_response(
   """Build a partial streaming LlmResponse carrying a single content part."""
   return LlmResponse(
       content=types.Content(role='model', parts=[part]),
+      partial=True,
+      turn_complete=False,
+      interaction_id=interaction_id,
+  )
+
+
+def _partial_grounding_response(
+    grounding_metadata: types.GroundingMetadata, interaction_id: str | None
+) -> LlmResponse:
+  """Build a partial streaming LlmResponse carrying incremental grounding."""
+  return LlmResponse(
+      grounding_metadata=grounding_metadata,
       partial=True,
       turn_complete=False,
       interaction_id=interaction_id,
@@ -862,17 +941,99 @@ def _handle_code_execution_result(
   return _partial_part_response(part, interaction_id)
 
 
+def _handle_google_search_call(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  queries = delta.arguments.queries if delta.arguments else None
+  if not queries:
+    return None
+  state.web_search_queries.extend(queries)
+  grounding_metadata = types.GroundingMetadata(web_search_queries=list(queries))
+  return _partial_grounding_response(grounding_metadata, interaction_id)
+
+
+def _handle_google_search_result(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  rendered = None
+  for search_result in delta.result or []:
+    if search_result.search_suggestions:
+      rendered = search_result.search_suggestions
+      break
+  if not rendered:
+    return None
+  entry_point = types.SearchEntryPoint(rendered_content=rendered)
+  state.search_entry_point = entry_point
+  grounding_metadata = types.GroundingMetadata(search_entry_point=entry_point)
+  return _partial_grounding_response(grounding_metadata, interaction_id)
+
+
+def _handle_text_annotation(
+    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+) -> LlmResponse | None:
+  new_chunks: list[types.GroundingChunk] = []
+  new_supports: list[types.GroundingSupport] = []
+  for annotation in delta.annotations or []:
+    if getattr(annotation, 'type', None) != 'url_citation':
+      continue
+    chunk_index = len(state.grounding_chunks) + len(new_chunks)
+    new_chunks.append(
+        types.GroundingChunk(
+            web=types.GroundingChunkWeb(
+                uri=annotation.url, title=annotation.title
+            )
+        )
+    )
+    new_supports.append(
+        types.GroundingSupport(
+            segment=types.Segment(
+                start_index=annotation.start_index,
+                end_index=annotation.end_index,
+            ),
+            grounding_chunk_indices=[chunk_index],
+        )
+    )
+  if not new_chunks:
+    return None
+  state.grounding_chunks.extend(new_chunks)
+  state.grounding_supports.extend(new_supports)
+  grounding_metadata = types.GroundingMetadata(
+      grounding_chunks=new_chunks,
+      grounding_supports=new_supports,
+  )
+  return _partial_grounding_response(grounding_metadata, interaction_id)
+
+
 def _handle_function_result(
     delta: StepDeltaData, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   part = types.Part(
       function_response=types.FunctionResponse(
           id=delta.call_id or '',
+          name=delta.name,
           response=_function_result_to_response(delta.result),
       )
   )
   state.parts.append(part)
   return _partial_part_response(part, interaction_id)
+
+
+def _build_grounding_metadata(
+    state: _StreamState,
+) -> types.GroundingMetadata | None:
+  if not (
+      state.web_search_queries
+      or state.grounding_chunks
+      or state.grounding_supports
+      or state.search_entry_point
+  ):
+    return None
+  return types.GroundingMetadata(
+      web_search_queries=state.web_search_queries or None,
+      grounding_chunks=state.grounding_chunks or None,
+      grounding_supports=state.grounding_supports or None,
+      search_entry_point=state.search_entry_point,
+  )
 
 
 def convert_interaction_event_to_llm_response(
@@ -931,6 +1092,12 @@ def convert_interaction_event_to_llm_response(
       return _handle_code_execution_call(delta, state, interaction_id)
     elif delta_type == 'code_execution_result':
       return _handle_code_execution_result(delta, state, interaction_id)
+    elif delta_type == 'google_search_call':
+      return _handle_google_search_call(delta, state, interaction_id)
+    elif delta_type == 'google_search_result':
+      return _handle_google_search_result(delta, state, interaction_id)
+    elif delta_type == 'text_annotation_delta':
+      return _handle_text_annotation(delta, state, interaction_id)
     elif delta_type == 'function_result':
       return _handle_function_result(delta, state, interaction_id)
     else:
@@ -968,16 +1135,23 @@ def convert_interaction_event_to_llm_response(
     return None
 
   elif isinstance(event, InteractionCompletedEvent):
-    # Final aggregated response
-    if state.parts:
+    grounding_metadata = _build_grounding_metadata(state)
+    if state.parts or grounding_metadata is not None:
+      content = (
+          types.Content(role='model', parts=state.parts)
+          if state.parts
+          else None
+      )
       return LlmResponse(
-          content=types.Content(role='model', parts=state.parts),
+          content=content,
+          grounding_metadata=grounding_metadata,
+          usage_metadata=_usage_metadata_from_interaction(event.interaction),
           partial=False,
           turn_complete=True,
           finish_reason=types.FinishReason.STOP,
           interaction_id=interaction_id,
       )
-    # If no streaming parts were collected, convert the final interaction directly
+    # No streaming parts or grounding collected: convert the final interaction.
     return convert_interaction_to_llm_response(event.interaction)
 
   elif isinstance(event, Interaction):
@@ -1312,6 +1486,7 @@ async def _create_interactions(
     *,
     create_kwargs: dict[str, Any],
     stream: bool,
+    extra_headers: dict[str, str] | None = None,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Issue ``interactions.create`` and convert the response(s) to LlmResponses.
 
@@ -1322,17 +1497,22 @@ async def _create_interactions(
   Args:
     api_client: The Google GenAI client.
     create_kwargs: Keyword arguments passed verbatim to
-      ``api_client.aio.interactions.create`` (excluding ``stream``).
+      ``api_client.aio.interactions.create`` (excluding ``stream`` and
+      ``extra_headers``).
     stream: Whether to stream the response.
+    extra_headers: Optional per-request HTTP headers forwarded to
+      ``interactions.create`` (e.g. ADK tracking headers merged with any
+      user-supplied headers). ``None`` sends no extra headers.
 
   Yields:
     LlmResponse objects converted from interaction responses.
   """
   current_interaction_id: str | None = None
+  current_environment_id: str | None = None
 
   if stream:
     responses = await api_client.aio.interactions.create(
-        **create_kwargs, stream=True
+        **create_kwargs, stream=True, extra_headers=extra_headers
     )
     state = _StreamState()
     async for event in responses:
@@ -1340,18 +1520,24 @@ async def _create_interactions(
       interaction_id = _extract_stream_interaction_id(event)
       if interaction_id:
         current_interaction_id = interaction_id
+      environment_id = _extract_stream_environment_id(event)
+      if environment_id:
+        current_environment_id = environment_id
       llm_response = convert_interaction_event_to_llm_response(
           event, state, current_interaction_id
       )
       if llm_response:
+        llm_response.environment_id = current_environment_id
         yield llm_response
   else:
     interaction = await api_client.aio.interactions.create(
-        **create_kwargs, stream=False
+        **create_kwargs, stream=False, extra_headers=extra_headers
     )
     logger.info('Interaction response received.')
     logger.debug(build_interactions_response_log(interaction))
-    yield convert_interaction_to_llm_response(interaction)
+    llm_response = convert_interaction_to_llm_response(interaction)
+    llm_response.environment_id = interaction.environment_id
+    yield llm_response
 
 
 async def generate_content_via_interactions(
@@ -1426,7 +1612,17 @@ async def generate_content_via_interactions(
       'previous_interaction_id': previous_interaction_id,
   }
 
+  # Re-merge tracking headers into any request-time headers (idempotent) so the
+  # interactions path forwards user-supplied headers instead of dropping them.
+  config_headers = None
+  if llm_request.config and llm_request.config.http_options:
+    config_headers = llm_request.config.http_options.headers
+  extra_headers = merge_tracking_headers(config_headers)
+
   async for llm_response in _create_interactions(
-      api_client, create_kwargs=create_kwargs, stream=stream
+      api_client,
+      create_kwargs=create_kwargs,
+      stream=stream,
+      extra_headers=extra_headers,
   ):
     yield llm_response

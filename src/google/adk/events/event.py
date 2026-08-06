@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import cast
 from typing import Optional
 
 from google.adk.platform import time as platform_time
@@ -24,6 +23,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_serializer
 from pydantic import model_validator
 
 from ..models.llm_response import LlmResponse
@@ -123,6 +123,7 @@ class Event(LlmResponse):
   Agent client will know from this field about which function call is long running.
   only valid for function call event
   """
+
   branch: str | None = None
   """The branch of the event.
 
@@ -154,6 +155,17 @@ class Event(LlmResponse):
   timestamp: float = Field(default_factory=lambda: platform_time.get_time())
   """The timestamp of the event."""
 
+  @field_serializer('long_running_tool_ids')
+  def _serialize_long_running_tool_ids(
+      self, value: set[str] | None
+  ) -> list[str] | None:
+    # A set has no defined iteration order and string hashing is randomized per
+    # process, so the default serialization emits these ids in a different
+    # order every run. Clients that diff serialized events would then see an
+    # unchanged event as changed on every fetch. Emit a sorted list so the same
+    # event always serializes identically.
+    return None if value is None else sorted(value)
+
   @model_validator(mode='before')
   @classmethod
   def _accept_convenience_kwargs(cls, data: Any) -> Any:
@@ -171,6 +183,7 @@ class Event(LlmResponse):
     if not isinstance(data, dict):
       return data
 
+    data = dict(data)
     field_names: set[str] = set(cls.model_fields.keys())
     for f in cls.model_fields.values():
       if f.alias:
@@ -266,7 +279,7 @@ class Event(LlmResponse):
       return ''
     return self.node_info.name
 
-  def model_post_init(self, __context):
+  def model_post_init(self, __context: Any) -> None:
     """Post initialization logic for the event."""
     # Generates a random ID for the event.
     if not self.id:
@@ -301,4 +314,4 @@ class Event(LlmResponse):
 
   @staticmethod
   def new_id() -> str:
-    return cast(str, platform_uuid.new_uuid())
+    return platform_uuid.new_uuid()

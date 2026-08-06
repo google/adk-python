@@ -22,7 +22,15 @@ from google.genai import types as genai_types
 
 
 async def monitor_stock_price(stock_symbol: str) -> AsyncGenerator[str, None]:
-  """This function will monitor the price for the given stock_symbol in a continuous, streaming and asynchronously way."""
+  """Starts a background monitor for the price of the given stock_symbol.
+
+  Call this function ONLY ONCE to initiate monitoring. Once started, it runs
+  continuously in the background and automatically streams price alerts.
+
+  CRITICAL: Do NOT call this function again to "check" or "poll" for updates.
+  Simply wait for the background task to yield new values and report them.
+  Calling this again while running will launch a duplicate background task.
+  """
   print(f"Start monitor stock price for {stock_symbol}!")
 
   # Let's mock stock price change.
@@ -51,13 +59,21 @@ async def monitor_stock_price(stock_symbol: str) -> AsyncGenerator[str, None]:
 async def monitor_video_stream(
     input_stream: LiveRequestQueue,
 ) -> AsyncGenerator[str, None]:
-  """Monitor how many people are in the video streams."""
+  """Starts a background monitor for the video stream.
+
+  Call this function ONLY ONCE to initiate monitoring. Once started, it runs
+  continuously in the background and automatically streams updates back to
+  you whenever the person count changes.
+
+  CRITICAL: Do NOT call this function again to "check" or "poll" for updates.
+  Simply wait for the background task to yield new values and report them.
+  Calling this again while running will launch a duplicate background task.
+  """
   from google.genai import Client
 
   print("start monitor_video_stream!")
-  from google.genai import Client
 
-  client = Client(enterprise=False)
+  client = Client()
   prompt_text = (
       "Count the number of people in this image. Just respond with a numeric"
       " number."
@@ -90,6 +106,7 @@ async def monitor_video_stream(
 
       # Call the model to generate content based on the provided image and prompt
       response = client.models.generate_content(
+          model="gemini-2.5-flash",
           contents=contents,
           config=genai_types.GenerateContentConfig(
               system_instruction=(
@@ -99,12 +116,12 @@ async def monitor_video_stream(
               )
           ),
       )
+      new_count = response.candidates[0].content.parts[0].text.strip()
       if not last_count:
-        last_count = response.candidates[0].content.parts[0].text
-      elif last_count != response.candidates[0].content.parts[0].text:
-        last_count = response.candidates[0].content.parts[0].text
-        yield response
-        print("response:", response)
+        last_count = new_count
+      elif last_count != new_count:
+        last_count = new_count
+        yield new_count
 
     # Wait before checking for new images
     await asyncio.sleep(0.5)
@@ -135,6 +152,11 @@ root_agent = Agent(
       You can use monitor_video_stream function to do that. When monitor_video_stream
       returns the alert, you should tell the users.
       When users want to monitor a stock price, you can use monitor_stock_price.
+      CRITICAL: Only call the monitor tools (monitor_video_stream, monitor_stock_price) at most once per request.
+      Once called, these tools run continuously in the background. Do NOT call them again to "poll" or "check" for updates.
+      Instead, simply wait for the background tool to stream a new message/alert to you, and then report that alert to the user.
+      Calling the tool again while it is already running will cause duplicate tasks and errors.
+      If you need to stop a monitor, call stop_streaming. Only after stopping can you call the monitor tool again if needed.
       Don't ask too many questions. Don't be too talkative.
     """,
     tools=[

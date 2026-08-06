@@ -30,6 +30,7 @@ pip install "google-adk[agent-identity]"
 gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT="YOUR_GOOGLE_CLOUD_PROJECT"
 gcloud auth application-default set-quota-project $GOOGLE_CLOUD_PROJECT
+export GOOGLE_GENAI_USE_ENTERPRISE=true
 ```
 
 ### 4. Create auth providers
@@ -155,7 +156,7 @@ maps_tools = McpToolset(
 ### 1. Test API key and 2LO auth provider using ADK web client
 
 ```bash
-adk web contributing/samples
+adk web contributing/samples/integrations
 ```
 
 - On the ADK web UI, select the agent named `gcp_auth` from the dropdown.
@@ -179,6 +180,8 @@ uvicorn main:app --port 8080 --reload
 
 - Open `http://localhost:8080`. (**Note:** You must use `localhost` and not
   `127.0.0.1`, as the OAuth redirect URL specifically requires it.)
-- In the sidebar, configure your GCP Project ID and Location, click "Load Remote
-  Agents", choose an engine to query, and click "Save & Apply Settings".
+- In the sidebar, select your **Agent Type** (Local Agent or Remote Agent).
+  - For **Local Agent**: Select your local agent module (e.g. `agent`) from the dropdown.
+  - For **Remote Agent**: Configure your GCP Project ID and Location, click "Load Remote Agents", and select an engine.
+- Click "Save & Apply Settings".
 - Try the 3LO sample query to fetch private playlists.

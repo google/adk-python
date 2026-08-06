@@ -26,7 +26,7 @@ from typing_extensions import TypeAlias
 
 from .app_details import AppDetails
 from .common import EvalBaseModel
-from .conversation_scenarios import ConversationScenario
+from .conversation_scenarios import ConversationScenario as ConversationScenario
 from .eval_rubrics import Rubric
 
 
@@ -64,7 +64,7 @@ class InvocationEvent(EvalBaseModel):
   author: str
   """The name of the agent that authored/owned this event."""
 
-  content: Optional[genai_types.Content]
+  content: Optional[genai_types.Content] = None
   """The content of the event."""
 
 
@@ -123,6 +123,16 @@ class SessionInput(EvalBaseModel):
 
   user_id: str
   """The user id."""
+
+  session_id: Optional[str] = None
+  """A fixed session id to use for this eval case, if set.
+
+  Artifacts are keyed by (app_name, user_id, session_id), so a fixed session id
+  lets an eval case reach artifacts that were pre-loaded for that session. When
+  unset, a random session id is generated per case. An existing session under
+  this id is reused as-is, so `state` only applies when the session has to be
+  created.
+  """
 
   state: SessionState = Field(default_factory=dict)
   """The state of the session."""
@@ -245,7 +255,9 @@ def get_all_tool_calls_with_responses(
     intermediate_data: Optional[IntermediateDataType],
 ) -> list[ToolCallAndResponse]:
   """Returns tool calls with the corresponding responses, if available."""
-  tool_responses_by_call_id: dict[str, genai_types.FunctionResponse] = {
+  tool_responses_by_call_id: dict[
+      Optional[str], genai_types.FunctionResponse
+  ] = {
       tool_response.id: tool_response
       for tool_response in get_all_tool_responses(intermediate_data)
   }

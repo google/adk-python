@@ -61,8 +61,17 @@ def mock_load_eval_set_from_file():
 
 @pytest.fixture
 def mock_get_root_agent():
-  with mock.patch("google.adk.cli.cli_eval.get_root_agent") as mock_func:
-    mock_func.return_value = root_agent
+  """Patches the agent resolver used by the eval CLI.
+
+  `cli_eval` resolves agents via `get_app_or_root_agent` (which returns
+  `(app, root_agent)`); the eval-set tests don't exercise the App path,
+  so we yield `(None, root_agent)`.
+  """
+  with mock.patch(
+      "google.adk.cli.cli_eval.get_app_or_root_agent",
+      new_callable=mock.AsyncMock,
+  ) as mock_func:
+    mock_func.return_value = (None, root_agent)
     yield mock_func
 
 
@@ -137,6 +146,258 @@ def test_cli_create_cmd_invokes_run_cmd(
   )
   assert result.exit_code == 0, (result.output, repr(result.exception))
   assert rec.calls, "cli_create.run_cmd must be called"
+
+
+def test_cli_telemetry_captures_subcommand_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should preserve subcommand context to record flags."""
+  monkeypatch.setattr("google.adk.cli.cli_create.run_cmd", lambda *a, **k: None)
+
+  # Mock telemetry consent to True so collector gets initialized
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  # Prevent rate limit checks during shutdown/execution
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._metrics_collector"
+      ".MetricsCollector._is_rate_limited",
+      lambda: True,
+  )
+
+  # Redirect metrics queue to temporary path
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  # Redirect sessions dir to temporary path
+  temp_sessions = tmp_path / "telemetry_sessions"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.TELEMETRY_SESSIONS_DIR",
+      str(temp_sessions),
+  )
+
+  app_dir = tmp_path / "new_app"
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "create",
+          "--model",
+          "gemini-2.0",
+          "--api_key",
+          "dummy",
+          str(app_dir),
+      ],
+  )
+  assert result.exit_code == 0
+
+  # Check that context-reconstruction captured details correctly
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "create"
+    # Ensure options flags are captured properly
+    assert "--model" in source["command_run"]["flags"]
+    assert "--api_key" in source["command_run"]["flags"]
+    # Ensure sanitized positional placeholder is logged
+    assert "<app_name>" in source["command_run"]["flags"]
+
+
+def test_cli_telemetry_skips_when_already_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should skip recording if telemetry_recorded is set in context metadata."""
+
+  # Mock telemetry consent to True
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  # Redirect metrics queue to temporary path
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  # Create a dummy command that manually sets the telemetry_recorded flag
+  @click.command("dummy_web")
+  @click.pass_context
+  def dummy_web_cmd(ctx):
+    # Simulate what adk web does in its lifespan
+    start_time = ctx.meta.get("telemetry_start_time", 0)
+
+    from google.adk.cli._telemetry._metrics_collector import MetricsCollector
+
+    collector = MetricsCollector()
+    collector.record_command_run(
+        command="dummy_web",
+        exit_code=0,
+        duration_ms=100,
+        exception_type="",
+    )
+    ctx.meta["telemetry_recorded"] = True
+
+  # Attach it to a new group that uses TelemetryGroup
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_cmd)
+
+  runner = CliRunner()
+  result = runner.invoke(test_group, ["dummy_web"])
+  assert result.exit_code == 0
+
+  # Ensure only ONE record is in the metrics queue
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web"
+    assert source["command_run"]["duration_ms"] == 100
+    assert source["command_run"]["exit_code"] == 0
+
+
+def test_cli_telemetry_records_early_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should record an exception if telemetry_recorded is not set."""
+
+  # Mock telemetry consent to True
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  # Redirect metrics queue to temporary path
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  # Create a dummy command that throws before setting the telemetry_recorded flag
+  @click.command("dummy_web_crash")
+  @click.pass_context
+  def dummy_web_crash_cmd(ctx):
+    raise KeyboardInterrupt()
+
+  # Attach it to a new group that uses TelemetryGroup
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_crash_cmd)
+
+  runner = CliRunner()
+  result = runner.invoke(test_group, ["dummy_web_crash"])
+
+  # Ensure the interrupt was logged by the wrapper
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web_crash"
+    assert source["command_run"]["exit_code"] == 1
+    assert source["command_run"]["exception_type"] == "KeyboardInterrupt"
+
+
+def test_cli_telemetry_records_clean_shutdown_on_keyboard_interrupt_after_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should record clean exit on KeyboardInterrupt after server startup."""
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  @click.command("dummy_web_running")
+  @click.pass_context
+  def dummy_web_running_cmd(ctx):
+    ctx.meta["server_started"] = True
+    raise KeyboardInterrupt()
+
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_running_cmd)
+
+  runner = CliRunner()
+  runner.invoke(test_group, ["dummy_web_running"])
+
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web_running"
+    assert source["command_run"]["exit_code"] == 0
+    assert "exception_type" not in source["command_run"]
+
+
+def test_cli_telemetry_records_error_after_startup_on_non_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should record an error for non-KeyboardInterrupt exceptions after server startup."""
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  @click.command("dummy_web_runtime_error")
+  @click.pass_context
+  def dummy_web_runtime_error_cmd(ctx):
+    ctx.meta["server_started"] = True
+    raise RuntimeError("Server crashed")
+
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_runtime_error_cmd)
+
+  runner = CliRunner()
+  runner.invoke(test_group, ["dummy_web_runtime_error"])
+
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web_runtime_error"
+    assert source["command_run"]["exit_code"] == 1
+    assert source["command_run"]["exception_type"] == "RuntimeError"
 
 
 # cli run
@@ -247,7 +508,7 @@ def test_cli_run_interactive_with_state(
   (agent_dir / "agent.py").touch()
 
   mock_run_cli = mock.AsyncMock()
-  monkeypatch.setattr("google.adk.cli.cli_tools_click.run_cli", mock_run_cli)
+  monkeypatch.setattr("google.adk.cli.cli.run_cli", mock_run_cli)
 
   runner = CliRunner()
 
@@ -1139,7 +1400,9 @@ def test_cli_eval_missing_deps_raises(
   )
   assert result.exit_code != 0
   assert isinstance(result.exception, SystemExit)
-  assert cli_tools_click.MISSING_EVAL_DEPENDENCIES_MESSAGE in result.output
+  from google.adk.evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+
+  assert MISSING_EVAL_DEPENDENCIES_MESSAGE in result.output
 
 
 # cli web & api_server (uvicorn patched)
@@ -1156,12 +1419,8 @@ def _patch_uvicorn(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     def run(self) -> None:
       rec()
 
-  monkeypatch.setattr(
-      cli_tools_click.uvicorn, "Config", lambda *a, **k: object()
-  )
-  monkeypatch.setattr(
-      cli_tools_click.uvicorn, "Server", lambda *_a, **_k: _DummyServer()
-  )
+  monkeypatch.setattr("uvicorn.Config", lambda *a, **k: object())
+  monkeypatch.setattr("uvicorn.Server", lambda *_a, **_k: _DummyServer())
   return rec
 
 
@@ -1642,3 +1901,342 @@ def test_cli_run_log_level(
   mock_log_to_tmp_folder.assert_called_once()
   kwargs = mock_log_to_tmp_folder.call_args[1]
   assert kwargs.get("level") == expected_logging_level
+
+
+@pytest.mark.unmute_click
+def test_telemetry_cli_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Test adk telemetry commands."""
+  consent_store = {"val": None}
+
+  def mock_read():
+    return consent_store["val"]
+
+  def mock_write(val):
+    consent_store["val"] = val
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent", mock_read
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent", mock_write
+  )
+
+  runner = CliRunner()
+
+  # Test running without subcommand shows help. A group invoked without a
+  # subcommand exits 0 on click 8.1.x but 2 (usage error) on click >= 8.2, and
+  # pyproject.toml allows both, so assert on the help output rather than the
+  # exit code.
+  result = runner.invoke(cli_tools_click.main, ["telemetry"])
+  assert result.exit_code in (0, 2)
+  assert "Usage:" in result.output
+
+  # Test status subcommand
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "status"])
+  assert result.exit_code == 0
+  assert (
+      "Telemetry collection is not configured (defaults to OFF)"
+      in result.output
+  )
+
+  # Test enable
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "enable"])
+  assert result.exit_code == 0
+  assert "Telemetry collection has been enabled" in result.output
+  assert consent_store["val"] is True
+
+  # Test status is updated to enabled
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "status"])
+  assert result.exit_code == 0
+  assert "Telemetry collection is enabled" in result.output
+
+  # Test disable
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "disable"])
+  assert result.exit_code == 0
+  assert "Telemetry collection has been disabled" in result.output
+  assert consent_store["val"] is False
+
+  # Test status is disabled again
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "status"])
+  assert result.exit_code == 0
+  assert "Telemetry collection is disabled" in result.output
+
+
+@pytest.mark.unmute_click
+def test_telemetry_first_run_prompt_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that first-run CLI prompts user and opts-in on 'y'."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      lambda v: consent_store.update({"val": v}),
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["run", str(agent_dir)], input="y\n"
+  )
+  assert result.exit_code == 0
+  assert "Help improve the ADK" in result.output
+  assert "Enable telemetry? [Y/n]:" in result.output
+  assert consent_store["val"] is True
+
+
+@pytest.mark.unmute_click
+def test_telemetry_first_run_prompt_default_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that hitting Enter prompts opts-in by default."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      lambda v: consent_store.update({"val": v}),
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["run", str(agent_dir)], input="\n"
+  )
+  assert result.exit_code == 0
+  assert consent_store["val"] is True
+
+
+@pytest.mark.unmute_click
+def test_telemetry_first_run_prompt_opt_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that user can opt-out by typing 'n'."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      lambda v: consent_store.update({"val": v}),
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["run", str(agent_dir)], input="n\n"
+  )
+  assert result.exit_code == 0
+  assert consent_store["val"] is False
+
+
+@pytest.mark.unmute_click
+def test_telemetry_no_prompt_if_already_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that no prompt is shown if configuration already exists."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": False}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  mock_write = mock.Mock()
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent", mock_write
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  mock_input = mock.Mock(return_value="y")
+  monkeypatch.setattr("builtins.input", mock_input)
+
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["run", str(agent_dir)])
+  assert result.exit_code == 0
+  assert "Help improve the ADK" not in result.output
+  mock_input.assert_not_called()
+  mock_write.assert_not_called()
+
+
+@pytest.mark.unmute_click
+def test_telemetry_no_prompt_when_managing_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Test that running the telemetry command group itself does not prompt."""
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  mock_write = mock.Mock()
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent", mock_write
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  mock_input = mock.Mock(return_value="y")
+  monkeypatch.setattr("builtins.input", mock_input)
+
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "status"])
+  assert result.exit_code == 0
+  assert "Help improve the ADK" not in result.output
+  mock_input.assert_not_called()
+  mock_write.assert_not_called()
+
+
+@pytest.mark.unmute_click
+@pytest.mark.parametrize(
+    "exception_to_raise",
+    [EOFError, KeyboardInterrupt],
+)
+def test_telemetry_first_run_prompt_interrupt_option_a(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exception_to_raise
+) -> None:
+  """Test that prompt handles standard interrupts gracefully, falling back to option A."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  mock_write = mock.Mock()
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent", mock_write
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  def raise_error(prompt):
+    raise exception_to_raise()
+
+  monkeypatch.setattr("builtins.input", raise_error)
+
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["run", str(agent_dir)])
+  # Verify exit code remains 0 (no abrupt crash traceback)
+  assert result.exit_code == 0
+  # Verify consent preference doesn't get written/stored to disk
+  mock_write.assert_not_called()
+  assert consent_store["val"] is None
+
+
+@pytest.mark.unmute_click
+def test_telemetry_first_run_prompt_write_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that prompt handles write exceptions gracefully."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: None,
+  )
+
+  def raise_error(val):
+    raise OSError("Failed filesystem write simulator")
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      raise_error,
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["run", str(agent_dir)], input="y\n"
+  )
+  # Verify no abrupt crash tracebacks (exit code is 0)
+  assert result.exit_code == 0
+  assert "Error: Failed to save telemetry settings" in result.output
+
+
+@pytest.mark.unmute_click
+def test_telemetry_commands_write_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Test that enable and disable commands handle write exceptions gracefully."""
+
+  def raise_error(val):
+    raise OSError("Failed filesystem write simulator")
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      raise_error,
+  )
+
+  runner = CliRunner()
+
+  # Test enable command throws ClickException (exit code 1)
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "enable"])
+  assert result.exit_code == 1
+  assert "Error: Failed to enable telemetry" in result.output
+
+  # Test disable command throws ClickException (exit code 1)
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "disable"])
+  assert result.exit_code == 1
+  assert "Error: Failed to disable telemetry" in result.output

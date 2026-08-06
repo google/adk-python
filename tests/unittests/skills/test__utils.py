@@ -24,6 +24,7 @@ from google.adk.skills import list_skills_in_dir
 from google.adk.skills import list_skills_in_gcs_dir as _list_skills_in_gcs_dir
 from google.adk.skills import load_skill_from_dir as _load_skill_from_dir
 from google.adk.skills import load_skill_from_gcs_dir as _load_skill_from_gcs_dir
+from google.adk.skills import load_skills_from_dir as _load_skills_from_dir
 from google.adk.skills._utils import _load_skill_from_zip_bytes
 from google.adk.skills._utils import _read_skill_properties
 from google.adk.skills._utils import _validate_skill_dir
@@ -393,3 +394,43 @@ def test__load_skill_from_gcs_dir_import_error():
   with mock.patch("builtins.__import__", mock_import):
     with pytest.raises(ImportError, match="google-cloud-storage is required"):
       _load_skill_from_gcs_dir("my-bucket", "skills/my-skill/")
+
+
+def test__load_skills_from_dir(tmp_path):
+  """Tests loading multiple skills from a directory."""
+  skills_dir = tmp_path / "skills"
+  skills_dir.mkdir()
+
+  # Skill 1
+  skill1_dir = skills_dir / "skill1"
+  skill1_dir.mkdir()
+  (skill1_dir / "SKILL.md").write_text(
+      "---\nname: skill1\ndescription: desc1\n---\nbody1"
+  )
+
+  # Skill 2
+  skill2_dir = skills_dir / "skill2"
+  skill2_dir.mkdir()
+  (skill2_dir / "SKILL.md").write_text(
+      "---\nname: skill2\ndescription: desc2\n---\nbody2"
+  )
+
+  # Non-skill directory (no SKILL.md) should be ignored
+  (skills_dir / "__pycache__").mkdir()
+
+  skills = _load_skills_from_dir(skills_dir)
+  assert len(skills) == 2
+  skill_names = [s.name for s in skills]
+  assert "skill1" in skill_names
+  assert "skill2" in skill_names
+
+
+def test__load_skills_from_dir_errors(tmp_path):
+  """Tests errors in load_skills_from_dir."""
+  with pytest.raises(FileNotFoundError, match="does not exist"):
+    _load_skills_from_dir(tmp_path / "nonexistent")
+
+  file_path = tmp_path / "some_file.txt"
+  file_path.write_text("hello")
+  with pytest.raises(ValueError, match="not a directory"):
+    _load_skills_from_dir(file_path)

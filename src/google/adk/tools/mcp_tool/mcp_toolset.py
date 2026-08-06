@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import logging
 import sys
 from typing import Any
@@ -31,6 +32,7 @@ import warnings
 
 from mcp import SamplingCapability
 from mcp import StdioServerParameters
+from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 from mcp.shared.session import ProgressFnT
 from mcp.types import ListResourcesResult
@@ -48,6 +50,7 @@ from ..base_toolset import ToolPredicate
 from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
+from .mcp_session_manager import _http_debug_var
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -95,27 +98,30 @@ class McpToolset(BaseToolset):
   def __init__(
       self,
       *,
-      connection_params: Union[
-          StdioServerParameters,
-          StdioConnectionParams,
-          SseConnectionParams,
-          StreamableHTTPConnectionParams,
-      ],
-      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
-      tool_name_prefix: Optional[str] = None,
+      connection_params: (
+          StdioServerParameters
+          | StdioConnectionParams
+          | SseConnectionParams
+          | StreamableHTTPConnectionParams
+      ),
+      tool_filter: ToolPredicate | list[str] | None = None,
+      tool_name_prefix: str | None = None,
       errlog: TextIO = sys.stderr,
-      auth_scheme: Optional[AuthScheme] = None,
-      auth_credential: Optional[AuthCredential] = None,
-      require_confirmation: Union[bool, Callable[..., bool]] = False,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
-      progress_callback: Optional[
-          Union[ProgressFnT, ProgressCallbackFactory]
-      ] = None,
-      use_mcp_resources: Optional[bool] = False,
-      sampling_callback: Optional[SamplingFnT] = None,
-      sampling_capabilities: Optional[SamplingCapability] = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+      require_confirmation: bool | Callable[..., bool] = False,
+      header_provider: (
+          Callable[
+              [ReadonlyContext],
+              dict[str, str] | Awaitable[dict[str, str]],
+          ]
+          | None
+      ) = None,
+      progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
+      use_mcp_resources: bool | None = False,
+      sampling_callback: SamplingFnT | None = None,
+      sampling_capabilities: SamplingCapability | None = None,
+      elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
   ):
     """Initializes the McpToolset.
@@ -156,6 +162,9 @@ class McpToolset(BaseToolset):
       sampling_callback: Optional callback to handle sampling requests from the
         MCP server.
       sampling_capabilities: Optional capabilities for sampling.
+      elicitation_callback: Optional callback to handle elicitation requests
+        from the MCP server (``elicitation/create``), including URL-mode
+        elicitations used for out-of-band flows such as auth challenges.
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
     """
@@ -164,6 +173,7 @@ class McpToolset(BaseToolset):
 
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
+    self._elicitation_callback = elicitation_callback
 
     if not connection_params:
       raise ValueError("Missing connection params in McpToolset.")
@@ -179,6 +189,7 @@ class McpToolset(BaseToolset):
         errlog=self._errlog,
         sampling_callback=self._sampling_callback,
         sampling_capabilities=self._sampling_capabilities,
+        elicitation_callback=self._elicitation_callback,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
@@ -281,6 +292,41 @@ class McpToolset(BaseToolset):
 
     return headers
 
+  @property
+  def connection_params(self) -> Union[
+      StdioServerParameters,
+      StdioConnectionParams,
+      SseConnectionParams,
+      StreamableHTTPConnectionParams,
+  ]:
+    return self._connection_params
+
+  @property
+  def auth_scheme(self) -> Optional[AuthScheme]:
+    return self._auth_scheme
+
+  @property
+  def auth_credential(self) -> Optional[AuthCredential]:
+    return self._auth_credential
+
+  @property
+  def require_confirmation(self) -> Union[bool, Callable[..., bool]]:
+    return self._require_confirmation
+
+  @property
+  def header_provider(
+      self,
+  ) -> Optional[
+      Callable[
+          [ReadonlyContext], Union[Dict[str, str], Awaitable[Dict[str, str]]]
+      ]
+  ]:
+    return self._header_provider
+
+  @property
+  def errlog(self) -> TextIO:
+    return self._errlog
+
   async def _execute_with_session(
       self,
       coroutine_func: Callable[[Any], Awaitable[T]],
@@ -288,11 +334,19 @@ class McpToolset(BaseToolset):
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> T:
     """Creates a session and executes a coroutine with it."""
+    current_debug: list[dict[str, Any]] = []
+    debug_token = (
+        _http_debug_var.set(current_debug)
+        if logger.isEnabledFor(logging.DEBUG)
+        else None
+    )
     headers: Dict[str, str] = {}
 
     # Add headers from header_provider if available
     if self._header_provider and readonly_context:
       provider_headers = self._header_provider(readonly_context)
+      if inspect.isawaitable(provider_headers):
+        provider_headers = await provider_headers
       if provider_headers:
         headers.update(provider_headers)
 
@@ -301,23 +355,34 @@ class McpToolset(BaseToolset):
     if auth_headers:
       headers.update(auth_headers)
 
-    session = await self._mcp_session_manager.create_session(
-        headers=headers if headers else None
-    )
-    timeout_in_seconds = (
-        self._connection_params.timeout
-        if hasattr(self._connection_params, "timeout")
-        else None
-    )
     try:
-      return await asyncio.wait_for(
-          coroutine_func(session), timeout=timeout_in_seconds
+      session = await self._mcp_session_manager.create_session(
+          headers=headers if headers else None
       )
-    except Exception as e:
-      logger.exception(
-          f"Exception during MCP session execution: {error_message}: {e}"
+      timeout_in_seconds = (
+          self._connection_params.timeout
+          if hasattr(self._connection_params, "timeout")
+          else None
       )
-      raise ConnectionError(f"{error_message}: {e}") from e
+      try:
+        return await asyncio.wait_for(
+            coroutine_func(session), timeout=timeout_in_seconds
+        )
+      except Exception as e:
+        logger.exception(
+            f"Exception during MCP session execution: {error_message}: {e}"
+        )
+        raise ConnectionError(f"{error_message}: {e}") from e
+    finally:
+      if debug_token is not None:
+        _http_debug_var.reset(debug_token)
+        if current_debug and readonly_context is not None:
+          # pylint: disable=protected-access
+          inv_ctx = getattr(readonly_context, "_invocation_context", None)
+          if inv_ctx is not None:
+            inv_ctx._custom_metadata.setdefault("http_debug_info", []).extend(
+                current_debug
+            )
 
   @retry_on_errors
   async def get_tools(
@@ -357,6 +422,11 @@ class McpToolset(BaseToolset):
 
       if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
+
+    # Sort by name for a stable order across turns. The MCP server's
+    # list_tools() order is not contractual; an unstable order would
+    # invalidate the context cache every turn.
+    tools.sort(key=lambda tool: tool.name)
 
     if self._use_mcp_resources:
       load_resource_tool = LoadMcpResourceTool(

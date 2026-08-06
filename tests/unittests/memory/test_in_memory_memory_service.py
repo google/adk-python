@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import threading
+
 from google.adk.events.event import Event
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.platform import thread as platform_thread
 from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
@@ -108,7 +112,7 @@ async def test_add_session_to_memory():
   memory_service = InMemoryMemoryService()
   await memory_service.add_session_to_memory(MOCK_SESSION_1)
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   assert user_key in memory_service._session_events
   session_memory = memory_service._session_events[user_key]
   assert MOCK_SESSION_1.id in session_memory
@@ -129,7 +133,7 @@ async def test_add_events_to_memory_with_explicit_events():
       events=[MOCK_SESSION_1.events[0]],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert len(session_memory[MOCK_SESSION_1.id]) == 1
   assert session_memory[MOCK_SESSION_1.id][0].id == 'event-1a'
@@ -145,7 +149,7 @@ async def test_add_events_to_memory_without_session_id_uses_default_bucket():
       events=[MOCK_SESSION_1.events[0]],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert len(session_memory) == 1
   unknown_session_events = next(iter(session_memory.values()))
@@ -164,7 +168,7 @@ async def test_add_events_to_memory_alias_is_supported():
       events=[MOCK_SESSION_1.events[0]],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
       'event-1a'
@@ -191,7 +195,7 @@ async def test_add_events_to_memory_appends_without_replacing():
       events=[new_event],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
       'event-1a',
@@ -220,7 +224,7 @@ async def test_add_events_to_memory_deduplicates_event_ids():
       events=[duplicate_event],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
       'event-1a',
@@ -234,7 +238,7 @@ async def test_add_session_with_no_events_to_memory():
   memory_service = InMemoryMemoryService()
   await memory_service.add_session_to_memory(MOCK_SESSION_WITH_NO_EVENTS)
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   assert user_key in memory_service._session_events
   session_memory = memory_service._session_events[user_key]
   assert MOCK_SESSION_WITH_NO_EVENTS.id in session_memory
@@ -330,6 +334,37 @@ async def test_search_memory_is_scoped_by_user():
 
 
 @pytest.mark.asyncio
+async def test_search_memory_does_not_collide_on_slash_in_identifiers():
+  """Tests that a slash in app_name cannot alias another app/user pair."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name='app/other-user',
+          user_id='user',
+          id='session-slashed-app',
+          last_update_time=1000,
+          events=[
+              Event(
+                  id='event-slashed-app',
+                  invocation_id='inv-slashed-app',
+                  author='user',
+                  timestamp=12345,
+                  content=types.Content(
+                      parts=[types.Part(text='This is a secret.')]
+                  ),
+              ),
+          ],
+      )
+  )
+
+  result = await memory_service.search_memory(
+      app_name='app', user_id='other-user/user', query='secret'
+  )
+
+  assert not result.memories
+
+
+@pytest.mark.asyncio
 async def test_search_memory_matches_non_latin_text():
   """Tests that search matches non-Latin (e.g. Cyrillic) text."""
   memory_service = InMemoryMemoryService()
@@ -356,3 +391,94 @@ async def test_search_memory_matches_non_latin_text():
 
   assert len(result.memories) == 1
   assert result.memories[0].content.parts[0].text == 'Привет мир'
+
+
+def _make_event(tag: str) -> Event:
+  return Event(
+      id=f'event-{tag}',
+      invocation_id=f'inv-{tag}',
+      author='user',
+      timestamp=1.0,
+      content=types.Content(parts=[types.Part(text=f'fact about {tag}')]),
+  )
+
+
+def _make_session(tag: str) -> Session:
+  return Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      id=f'session-{tag}',
+      last_update_time=1,
+      events=[_make_event(tag)],
+  )
+
+
+def test_search_memory_is_thread_safe_against_concurrent_writes():
+  """Searching while other threads add memory must not crash.
+
+  InMemoryMemoryService documents itself as thread-safe. search_memory must
+  therefore iterate a stable snapshot taken under the lock; iterating a live
+  reference to the shared store while a concurrent writer mutates it raises
+  "RuntimeError: dictionary changed size during iteration".
+  """
+  memory_service = InMemoryMemoryService()
+  seed_loop = asyncio.new_event_loop()
+  try:
+    for i in range(50):
+      seed_loop.run_until_complete(
+          memory_service.add_session_to_memory(_make_session(f'seed-{i}'))
+      )
+  finally:
+    seed_loop.close()
+
+  errors = []
+  stop = threading.Event()
+  barrier = threading.Barrier(3)
+
+  def writer():
+    loop = asyncio.new_event_loop()
+    barrier.wait()
+    try:
+      for i in range(500):
+        if stop.is_set():
+          return
+        loop.run_until_complete(
+            memory_service.add_session_to_memory(_make_session(f'writer-{i}'))
+        )
+    except Exception as e:  # pylint: disable=broad-except
+      errors.append(e)
+      stop.set()
+    finally:
+      loop.close()
+
+  def reader():
+    loop = asyncio.new_event_loop()
+    barrier.wait()
+    try:
+      for _ in range(500):
+        if stop.is_set():
+          return
+        loop.run_until_complete(
+            memory_service.search_memory(
+                app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='fact'
+            )
+        )
+    except Exception as e:  # pylint: disable=broad-except
+      errors.append(e)
+      stop.set()
+    finally:
+      loop.close()
+
+  threads = [
+      platform_thread.create_thread(writer),
+      platform_thread.create_thread(reader),
+      platform_thread.create_thread(reader),
+  ]
+  for thread in threads:
+    thread.start()
+  for thread in threads:
+    thread.join()
+
+  assert (
+      not errors
+  ), f'search_memory raced with concurrent writes: {errors[0]!r}'

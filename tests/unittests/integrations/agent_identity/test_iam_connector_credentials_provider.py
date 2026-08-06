@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import threading
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -32,6 +34,7 @@ from google.adk.integrations.agent_identity import GcpAuthProviderScheme
 from google.adk.integrations.agent_identity._iam_connector_credentials_provider import _IamConnectorCredentialsProvider
 from google.adk.integrations.agent_identity._iam_connector_credentials_provider import Client
 from google.adk.sessions.session import Session
+from google.api_core.exceptions import ServiceUnavailable
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsMetadata
 from google.cloud.iamconnectorcredentials_v1alpha import RetrieveCredentialsResponse
 from google.longrunning.operations_pb2 import Operation
@@ -44,7 +47,10 @@ def mock_client():
 
 @pytest.fixture
 def provider(mock_client):
-  return _IamConnectorCredentialsProvider(client=mock_client)
+  with patch.object(
+      _iam_connector_credentials_provider, "Client", return_value=mock_client
+  ):
+    yield _IamConnectorCredentialsProvider()
 
 
 @pytest.fixture
@@ -95,6 +101,93 @@ def test_get_client_uses_rest_transport(mock_client_class):
   assert kwargs.get("transport") == "rest"
 
 
+@patch.dict(_iam_connector_credentials_provider.os.environ, clear=True)
+@patch.object(_iam_connector_credentials_provider, "Client")
+async def test_get_auth_credential_reuses_client_on_same_thread(
+    mock_client_class, mock_operation, auth_scheme, context
+):
+  """Test that sequential calls on the same worker thread reuse the cached Client."""
+
+  class DummyCall:
+
+    def __init__(self, operation):
+      self.operation = operation
+
+  mock_client_instance = mock_client_class.return_value
+  mock_client_instance.retrieve_credentials.return_value = DummyCall(
+      mock_operation
+  )
+  mock_credential = (
+      _iam_connector_credentials_provider.RetrieveCredentialsResponse(
+          header="Authorization: Bearer", token="test-token"
+      )
+  )
+  mock_operation.response.value = (
+      _iam_connector_credentials_provider.RetrieveCredentialsResponse.serialize(
+          mock_credential
+      )
+  )
+
+  provider = (
+      _iam_connector_credentials_provider._IamConnectorCredentialsProvider()
+  )
+
+  # Sequential 'await' calls guarantee the first request finishes completely
+  # before the second request starts. The idle worker thread is returned to
+  # the pool and reused, ensuring the cached Client is reused (call_count == 1).
+  await provider.get_auth_credential(auth_scheme, context)
+  await provider.get_auth_credential(auth_scheme, context)
+
+  assert mock_client_class.call_count == 1
+
+
+@patch.dict(_iam_connector_credentials_provider.os.environ, clear=True)
+@patch.object(_iam_connector_credentials_provider, "Client")
+async def test_get_auth_credential_scales_clients_across_concurrent_threads(
+    mock_client_class, mock_operation, auth_scheme, context
+):
+  """Test that concurrent calls instantiate 1 Client per worker thread."""
+
+  class DummyCall:
+
+    def __init__(self, operation):
+      self.operation = operation
+
+  mock_client_instance = mock_client_class.return_value
+
+  def slow_retrieve(*args, **kwargs):
+    import time
+
+    # Artificially keep the worker thread busy for 10ms so ThreadPoolExecutor
+    # is forced to spawn parallel worker threads instead of reusing an idle thread.
+    time.sleep(0.01)
+    return DummyCall(mock_operation)
+
+  mock_client_instance.retrieve_credentials.side_effect = slow_retrieve
+  mock_credential = (
+      _iam_connector_credentials_provider.RetrieveCredentialsResponse(
+          header="Authorization: Bearer", token="test-token"
+      )
+  )
+  mock_operation.response.value = (
+      _iam_connector_credentials_provider.RetrieveCredentialsResponse.serialize(
+          mock_credential
+      )
+  )
+
+  provider = (
+      _iam_connector_credentials_provider._IamConnectorCredentialsProvider()
+  )
+
+  await asyncio.gather(
+      *(provider.get_auth_credential(auth_scheme, context) for _ in range(5))
+  )
+
+  # Verify multiple worker threads were created (> 1) and capped at 5 requests (<= 5).
+  # Uses <= 5 instead of == 5 to avoid test flakiness if an OS thread finishes fast.
+  assert 1 < mock_client_class.call_count <= 5
+
+
 @patch.dict(
     _iam_connector_credentials_provider.os.environ,
     {"IAM_CONNECTOR_CREDENTIALS_TARGET_HOST": "some-host"},
@@ -140,6 +233,14 @@ async def test_get_auth_credential_raises_error_if_user_id_is_missing(
       ValueError,
       match="GcpAuthProvider requires a context with a valid user_id",
   ):
+    await provider.get_auth_credential(auth_scheme, context=context)
+
+
+async def test_get_auth_credential_rejects_missing_completed_response(
+    provider, auth_scheme, context, mock_operation
+):
+  """Test that a completed operation without credentials fails explicitly."""
+  with pytest.raises(ValueError, match="completed without a response"):
     await provider.get_auth_credential(auth_scheme, context=context)
 
 
@@ -254,7 +355,7 @@ async def test_get_auth_credential_raises_error_if_upstream_call_fails(
     mock_client, auth_scheme, context, provider
 ):
   """Test get_auth_credential raises RuntimeError for failed calls."""
-  mock_client.retrieve_credentials.side_effect = Exception(
+  mock_client.retrieve_credentials.side_effect = ServiceUnavailable(
       "API Quota Exhausted"
   )
 
@@ -264,47 +365,47 @@ async def test_get_auth_credential_raises_error_if_upstream_call_fails(
   ) as exc_info:
     await provider.get_auth_credential(auth_scheme, context)
 
-  # Assert that the original Exception is the chained cause!
-  assert str(exc_info.value.__cause__) == "API Quota Exhausted"
+  # Assert that the original exception is the chained cause!
+  assert "API Quota Exhausted" in str(exc_info.value.__cause__)
 
 
 @patch.object(_iam_connector_credentials_provider.time, "time")
 async def test_get_auth_credential_raises_error_if_polling_times_out(
     mock_time,
-    mock_operation,
+    mock_client,
     auth_scheme,
     context,
     provider,
 ):
   """Test get_auth_credential raises RuntimeError if polling times out."""
 
-  # Force the operation into the polling loop state
+  # 1. Setup the operation metadata to indicate consent is pending
   meta_pb = RetrieveCredentialsMetadata.pb()()
   meta_pb.consent_pending.SetInParent()
-  meta = RetrieveCredentialsMetadata.deserialize(meta_pb.SerializeToString())
-  mock_operation.metadata.value = RetrieveCredentialsMetadata.serialize(meta)
 
-  # First call sets start_time=0.0, second call checks time > timeout
-  # (20.0 > 10.0)
-  mock_time.side_effect = [0.0, 20.0]
+  # 2. Keep the operation in the pending state (done=False)
+  op_pending = Operation(done=False)
+  op_pending.metadata.value = meta_pb.SerializeToString()
 
-  mock_metadata = Mock(spec=RetrieveCredentialsMetadata)
-  mock_metadata.consent_pending = True
-  mock_metadata.uri_consent_required = False
-  mock_operation.done = True
-  mock_operation.ClearField("error")
-  mock_client = Mock(spec=Client)
-  mock_client.retrieve_credentials.side_effect = Exception(
-      "Timeout waiting for credentials."
-  )
-  provider._client = mock_client
+  # Configure the mock client to repeatedly return this pending operation
+  mock_client.retrieve_credentials.return_value = Mock(operation=op_pending)
 
+  # 3. Simulate the passage of time:
+  # - 1st time.time() sets start/end time (returns 0.0)
+  # - 2nd time.time() inside the while-loop check returns a value exceeding the
+  #   NON_INTERACTIVE_TOKEN_POLL_TIMEOUT_SEC timeout (currently 10.0s)
+  provider_lib = _iam_connector_credentials_provider
+  timeout = provider_lib.NON_INTERACTIVE_TOKEN_POLL_TIMEOUT_SEC
+  mock_time.side_effect = [0.0, timeout + 10.0]
+
+  # 4. Verify that timeout raises RuntimeError wrapping TimeoutError
   with pytest.raises(
       RuntimeError,
       match="Failed to retrieve credential for user 'user' on connector",
   ) as exc_info:
     await provider.get_auth_credential(auth_scheme, context)
 
+  # Assert that the underlying cause was indeed a TimeoutError from polling
   assert "Timeout waiting for credentials." in str(exc_info.value.__cause__)
 
 
@@ -469,3 +570,94 @@ async def test_get_auth_credential_raises_error_if_consent_canceled(
       RuntimeError, match="Failed to retrieve consent based credential."
   ):
     await provider.get_auth_credential(auth_scheme, context)
+
+
+async def test_get_auth_credential_handles_consent_pending_state_correctly(
+    mock_client,
+    auth_scheme,
+    context,
+    provider,
+):
+  """Test get_auth_credential enters the polling loop when consent is pending."""
+  # 1. Setup the first retrieve_credentials call to return a pending Operation
+  # containing consent_pending metadata.
+  meta_pb = RetrieveCredentialsMetadata.pb()()
+  meta_pb.consent_pending.SetInParent()
+
+  op_pending = Operation(done=False)
+  op_pending.metadata.value = meta_pb.SerializeToString()
+
+  # 2. Setup the second retrieve_credentials call (the poll) to return success.
+  op_success = Operation(done=True)
+  resp = RetrieveCredentialsResponse(
+      header="Authorization: Bearer", token="valid-token"
+  )
+  op_success.response.value = RetrieveCredentialsResponse.serialize(resp)
+
+  # Configure mock client to return pending first, then success
+  mock_client.retrieve_credentials.side_effect = [
+      Mock(operation=op_pending),
+      Mock(operation=op_success),
+  ]
+
+  # 3. Call the provider
+  credential = await provider.get_auth_credential(auth_scheme, context)
+
+  # 4. Verify that it polled and successfully returned the token
+  assert credential is not None
+  assert credential.http.credentials.token == "valid-token"
+
+  # Verify that retrieve_credentials was called twice (initial + 1 poll)
+  assert mock_client.retrieve_credentials.call_count == 2
+
+
+@patch.object(_iam_connector_credentials_provider.time, "time")
+@patch.object(_iam_connector_credentials_provider.asyncio, "sleep")
+async def test_get_auth_credential_polling_succeeds_before_timeout(
+    mock_sleep,
+    mock_time,
+    mock_client,
+    auth_scheme,
+    context,
+    provider,
+):
+  """Test get_auth_credential returns credential if polling succeeds."""
+  # 1. Setup the first retrieve_credentials call to return a pending Operation
+  # containing consent_pending metadata.
+  meta_pb = RetrieveCredentialsMetadata.pb()()
+  meta_pb.consent_pending.SetInParent()
+
+  op_pending = Operation(done=False)
+  op_pending.metadata.value = meta_pb.SerializeToString()
+
+  # 2. Setup the operation to succeed on a subsequent poll.
+  op_success = Operation(done=True)
+  resp = RetrieveCredentialsResponse(
+      header="Authorization: Bearer", token="valid-token"
+  )
+  op_success.response.value = RetrieveCredentialsResponse.serialize(resp)
+
+  # Configure mock client to return pending, pending, then success.
+  mock_client.retrieve_credentials.side_effect = [
+      Mock(operation=op_pending),
+      Mock(operation=op_pending),
+      Mock(operation=op_success),
+  ]
+
+  # 3. Simulate the passage of time:
+  # - 1st time.time() sets end_time (returns 0.0)
+  # - 2nd time.time() inside loop (returns 0.0, first poll -> pending)
+  # - 3rd time.time() inside loop (returns timeout / 5.0, 2nd poll -> success)
+  provider_lib = _iam_connector_credentials_provider
+  timeout = provider_lib.NON_INTERACTIVE_TOKEN_POLL_TIMEOUT_SEC
+  mock_time.side_effect = [0.0, 0.0, timeout / 5.0]
+
+  # 4. Call the provider and verify.
+  credential = await provider.get_auth_credential(auth_scheme, context)
+
+  assert credential is not None
+  assert credential.http.credentials.token == "valid-token"
+  assert mock_client.retrieve_credentials.call_count == 3
+  mock_sleep.assert_called_once_with(
+      provider_lib.NON_INTERACTIVE_TOKEN_POLL_INTERVAL_SEC
+  )

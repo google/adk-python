@@ -33,8 +33,8 @@ if TYPE_CHECKING:
 _UNKNOWN_SESSION_ID = '__unknown_session_id__'
 
 
-def _user_key(app_name: str, user_id: str) -> str:
-  return f'{app_name}/{user_id}'
+def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
+  return (app_name, user_id)
 
 
 def _extract_words_lower(text: str) -> set[str]:
@@ -51,11 +51,11 @@ class InMemoryMemoryService(BaseMemoryService):
   development only.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._lock = threading.Lock()
 
-    self._session_events: dict[str, dict[str, list[Event]]] = {}
-    """Keys are "{app_name}/{user_id}". Values are dicts of session_id to
+    self._session_events: dict[tuple[str, str], dict[str, list[Event]]] = {}
+    """Keys are (app_name, user_id). Values are dicts of session_id to
     session event lists.
     """
 
@@ -107,12 +107,19 @@ class InMemoryMemoryService(BaseMemoryService):
     user_key = _user_key(app_name, user_id)
 
     with self._lock:
-      session_event_lists = self._session_events.get(user_key, {})
+      # Copy the events into a stable snapshot while holding the lock. Iterating
+      # a live reference outside the lock would race with concurrent writers
+      # (add_session_to_memory / add_events_to_memory) mutating the same dict
+      # and lists, raising "dictionary changed size during iteration".
+      session_event_lists = [
+          list(events)
+          for events in self._session_events.get(user_key, {}).values()
+      ]
 
     words_in_query = _extract_words_lower(query)
     response = SearchMemoryResponse()
 
-    for session_events in session_event_lists.values():
+    for session_events in session_event_lists:
       for event in session_events:
         if not event.content or not event.content.parts:
           continue

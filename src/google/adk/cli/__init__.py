@@ -27,10 +27,11 @@ def main(args: Any = None, **kwargs: Any) -> Any:
   """Package entry point that disables Windows glob expansion for all CLI commands."""
   kwargs.setdefault("windows_expand_args", False)
   from .cli_tools_click import main as _main
+
   return _main.main(args=args, **kwargs)
 
 
 _LAZY_MEMBERS: dict[str, str] = {}
-__all__ = ['main']
+__all__ = ["main"]
 
 __getattr__, __dir__ = _lazy.accessors(globals(), _LAZY_MEMBERS)

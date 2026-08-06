@@ -16,7 +16,12 @@ from __future__ import annotations
 
 """Credential fetcher for OpenID Connect."""
 
+import logging
 from typing import Optional
+
+from authlib.common.errors import AuthlibBaseError
+from authlib.oauth2.rfc6749 import OAuth2Token
+from requests.exceptions import RequestException
 
 from .....auth.auth_credential import AuthCredential
 from .....auth.auth_credential import AuthCredentialTypes
@@ -24,7 +29,11 @@ from .....auth.auth_credential import HttpAuth
 from .....auth.auth_credential import HttpCredentials
 from .....auth.auth_schemes import AuthScheme
 from .....auth.auth_schemes import AuthSchemeType
+from .....auth.oauth2_credential_util import create_oauth2_session
+from .....auth.oauth2_credential_util import update_credential_with_tokens
 from .base_credential_exchanger import BaseAuthCredentialExchanger
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
@@ -86,6 +95,38 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
     )
     return updated_credential
 
+  def _is_token_expired(self, auth_credential: AuthCredential) -> bool:
+    return bool(
+        OAuth2Token({
+            "expires_at": auth_credential.oauth2.expires_at,
+            "expires_in": auth_credential.oauth2.expires_in,
+        }).is_expired()
+    )
+
+  def _refresh_token(
+      self,
+      auth_scheme: AuthScheme,
+      auth_credential: AuthCredential,
+  ) -> None:
+    """Refreshes the OAuth2 token in place, keeping the stale token on failure."""
+    client, token_endpoint = create_oauth2_session(auth_scheme, auth_credential)
+    if not client:
+      logger.warning("Could not create OAuth2 session for token refresh")
+      return
+
+    try:
+      tokens = client.refresh_token(
+          url=token_endpoint,
+          refresh_token=auth_credential.oauth2.refresh_token,
+      )
+      update_credential_with_tokens(auth_credential, tokens)
+      logger.debug("Successfully refreshed OAuth2 tokens")
+    except (AuthlibBaseError, RequestException) as e:
+      logger.warning(
+          "Failed to refresh OAuth2 tokens, falling back to existing token: %s",
+          e,
+      )
+
   def exchange_credential(
       self,
       auth_scheme: AuthScheme,
@@ -103,8 +144,6 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
     Raises:
         ValueError: If the auth scheme or auth credential is invalid.
     """
-    # TODO: Implement token refresh flow
-
     self._check_scheme_credential_type(auth_scheme, auth_credential)
 
     # If token is already HTTPBearer token, do nothing assuming that this token
@@ -114,6 +153,11 @@ class OAuth2CredentialExchanger(BaseAuthCredentialExchanger):
 
     # If access token is exchanged, exchange a HTTPBearer token.
     if auth_credential.oauth2.access_token:
+      # Refresh an expired access token first so the stale one is not wrapped.
+      if auth_credential.oauth2.refresh_token and self._is_token_expired(
+          auth_credential
+      ):
+        self._refresh_token(auth_scheme, auth_credential)
       return self.generate_auth_token(auth_credential)
 
     return None

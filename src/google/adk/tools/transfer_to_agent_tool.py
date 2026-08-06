@@ -28,10 +28,10 @@ from .tool_context import ToolContext
 #   function directly. TransferToAgentTool provides additional enum constraints
 #   that prevent LLMs from hallucinating invalid agent names.
 def transfer_to_agent(agent_name: str, tool_context: ToolContext) -> None:
-  """Transfer the question to another agent.
+  """Transfer the query to another agent.
 
   Use this tool to hand off control to another agent that is more suitable to
-  answer the user's question according to the agent's description.
+  answer the user's query according to the agent's description.
 
   Args:
     agent_name: the agent name to transfer to.

@@ -14,15 +14,43 @@
 # limitations under the License.
 
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ADK_REAL_ROOT=$(dirname "$(realpath "$REPO_ROOT/src/google/adk/__init__.py")")
+EXCLUDE_TESTS="$ADK_REAL_ROOT/tests"
+EXCLUDE_WORKSPACE="$ADK_REAL_ROOT/open_source_workspace"
+EXCLUDE_CONTRIBUTING="$ADK_REAL_ROOT/contributing"
+
 exit_code=0
 
-# Get list of newly added files using diff-filter=A
-# Using process substitution to avoid subshell and handle spaces in filenames
+get_added_files() {
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git diff --cached --name-only --diff-filter=A
+  elif jj root >/dev/null 2>&1; then
+    jj diff --summary 2>/dev/null | awk '/^A / {print $2}'
+  elif hg root >/dev/null 2>&1; then
+    hg status --added --no-status 2>/dev/null
+  elif g4 info >/dev/null 2>&1; then
+    g4 opened 2>/dev/null | awk '/ - add / {print $1}' | sed 's/#.*//'
+  elif p4 info >/dev/null 2>&1; then
+    p4 opened 2>/dev/null | awk '/ - add / {print $1}' | sed 's/#.*//'
+  fi
+}
+
 while read -r file; do
     # Check if file is not empty (happens if no new files)
     if [[ -n "$file" ]]; then
-        if [[ "$file" == src/google/adk/*.py ]]; then
-            filename=$(basename "$file")
+        # Match only files in the package source (resolving symlinks to support both
+        # open-source and internal layouts) and exclude tests/workspace to avoid
+        # false positives.
+        abs_file=$(realpath "$file" 2>/dev/null || echo "")
+        if [[ -n "$abs_file" ]] && \
+           [[ "$abs_file" == "$ADK_REAL_ROOT"/* ]] && \
+           [[ "$abs_file" != "$EXCLUDE_TESTS"/* ]] && \
+           [[ "$abs_file" != "$EXCLUDE_WORKSPACE"/* ]] && \
+           [[ "$abs_file" != "$EXCLUDE_CONTRIBUTING"/* ]] && \
+           [[ "$abs_file" == *.py ]]; then
+            filename=$(basename "$abs_file")
             if [[ ! "$filename" == _* ]]; then
                 echo "Error: New Python file '$file' must have a '_' prefix."
                 echo "All new Python files in src/google/adk/ must be private by default."
@@ -32,6 +60,6 @@ while read -r file; do
             fi
         fi
     fi
-done < <(git diff --cached --name-only --diff-filter=A)
+done < <(get_added_files)
 
 exit $exit_code

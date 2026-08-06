@@ -58,10 +58,10 @@ class TestNestedAgentLoader:
       dir2.mkdir(parents=True)
       (dir2 / "root_agent.yaml").write_text("")
 
-      # Create sub_dir/sub_sub_dir/agent_three/__init__.py
+      # Create sub_dir/sub_sub_dir/agent_three/agent.py
       dir3 = temp_path / "sub_dir" / "sub_sub_dir" / "agent_three"
       dir3.mkdir(parents=True)
-      (dir3 / "__init__.py").write_text("root_agent = None")
+      (dir3 / "agent.py").write_text("")
 
       loader = NestedAgentLoader(str(temp_path))
       agents = loader.list_agents()
@@ -102,23 +102,24 @@ class TestNestedAgentLoader:
 
       assert agents == ["valid_agent"]
 
-  def test_list_agents_excludes_root_directory_itself(self):
-    """Root app directory itself is not listed as a nested agent sub-app."""
+  def test_single_agent_directory_with_subfolders_remains_single_agent(self):
+    """A directory with an agent.py at root remains in single-agent mode even with subfolders."""
     with tempfile.TemporaryDirectory() as temp_dir:
-      temp_path = Path(temp_dir)
+      temp_path = Path(temp_dir) / "my_single_agent"
+      temp_path.mkdir()
 
-      # Create agent.py at the root itself
+      # Create agent.py at the root of my_single_agent directory
       (temp_path / "agent.py").write_text("")
 
-      # Create a nested valid agent
+      # Create a nested subfolder containing an agent
       dir_nested = temp_path / "sub_agent"
       dir_nested.mkdir()
       (dir_nested / "agent.py").write_text("")
 
       loader = NestedAgentLoader(str(temp_path))
-      agents = loader.list_agents()
-
-      assert agents == ["sub_agent"]
+      assert loader.is_single_agent is True
+      assert loader.single_agent_name == "my_single_agent"
+      assert loader.list_agents() == ["my_single_agent"]
 
   def test_list_agents_sorts_discovered_agents_alphabetically(self):
     """Returned list of discovered agents is sorted alphabetically."""

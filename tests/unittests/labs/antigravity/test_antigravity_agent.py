@@ -95,16 +95,19 @@ async def test_resumed_replayed_steps_are_skipped(tmp_path):
   conversation = MagicMock()
   conversation.send = AsyncMock()
   conversation.receive_steps = _receive_steps
+  conversation_id = _antigravity_agent._derive_conversation_id(
+      'sess_456', 'agy'
+  )
   active_agent = MagicMock()
   active_agent.conversation = conversation
-  active_agent.conversation_id = 'sess_456_agy'
+  active_agent.conversation_id = conversation_id
   active_agent.__aenter__ = AsyncMock(return_value=active_agent)
   active_agent.__aexit__ = AsyncMock(return_value=None)
 
   # A prior trajectory + resume index in save_dir triggers resume at index 1.
   save_dir = tmp_path
-  (save_dir / 'traj-sess_456_agy').write_bytes(b'data')
-  (save_dir / 'traj-sess_456_agy.resume').write_text('1')
+  (save_dir / f'traj-{conversation_id}').write_bytes(b'data')
+  (save_dir / f'traj-{conversation_id}.resume').write_text('1')
   agent = AntigravityAgent(
       name='agy', config=_make_config(save_dir=str(save_dir))
   )

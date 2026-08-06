@@ -42,7 +42,7 @@ oauth_client_secret = os.getenv("OAUTH_CLIENT_SECRET")
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 calendar_toolset = CalendarToolset(
-    # you can also replace below customized `list_calendar_events` with build-in
+    # you can also replace below customized `list_calendar_events` with built-in
     # google calendar tool by adding `calendar_events_list` in the filter list
     client_id=oauth_client_id,
     client_secret=oauth_client_secret,

@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from typing import Any
 from typing import Optional
 
 from google.cloud import exceptions as cloud_exceptions
@@ -42,7 +43,7 @@ _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 class GcsEvalSetsManager(EvalSetsManager):
   """An EvalSetsManager that stores eval sets in a GCS bucket."""
 
-  def __init__(self, bucket_name: str, **kwargs):
+  def __init__(self, bucket_name: str, **kwargs: Any) -> None:
     """Initializes the GcsEvalSetsManager.
 
     Args:
@@ -66,7 +67,7 @@ class GcsEvalSetsManager(EvalSetsManager):
     eval_sets_dir = self._get_eval_sets_dir(app_name)
     return f"{eval_sets_dir}/{eval_set_id}{_EVAL_SET_FILE_EXTENSION}"
 
-  def _validate_id(self, id_name: str, id_value: str):
+  def _validate_id(self, id_name: str, id_value: str) -> None:
     pattern = r"^[a-zA-Z0-9_]+$"
     if not bool(re.fullmatch(pattern, id_value)):
       raise ValueError(
@@ -80,7 +81,7 @@ class GcsEvalSetsManager(EvalSetsManager):
     eval_set_data = blob.download_as_text()
     return EvalSet.model_validate_json(eval_set_data)
 
-  def _write_eval_set_to_blob(self, blob_name: str, eval_set: EvalSet):
+  def _write_eval_set_to_blob(self, blob_name: str, eval_set: EvalSet) -> None:
     """Writes an EvalSet to GCS."""
     blob = self.bucket.blob(blob_name)
     blob.upload_from_string(
@@ -93,7 +94,9 @@ class GcsEvalSetsManager(EvalSetsManager):
         content_type="application/json",
     )
 
-  def _save_eval_set(self, app_name: str, eval_set_id: str, eval_set: EvalSet):
+  def _save_eval_set(
+      self, app_name: str, eval_set_id: str, eval_set: EvalSet
+  ) -> None:
     eval_set_blob_name = self._get_eval_set_blob_name(app_name, eval_set_id)
     self._write_eval_set_to_blob(eval_set_blob_name, eval_set)
 
@@ -156,7 +159,9 @@ class GcsEvalSetsManager(EvalSetsManager):
     return get_eval_case_from_eval_set(eval_set, eval_case_id)
 
   @override
-  def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: EvalCase):
+  def add_eval_case(
+      self, app_name: str, eval_set_id: str, eval_case: EvalCase
+  ) -> None:
     """Adds the given EvalCase to an existing EvalSet.
 
     Args:
@@ -175,7 +180,7 @@ class GcsEvalSetsManager(EvalSetsManager):
   @override
   def update_eval_case(
       self, app_name: str, eval_set_id: str, updated_eval_case: EvalCase
-  ):
+  ) -> None:
     """Updates an existing EvalCase.
 
     Args:
@@ -194,7 +199,7 @@ class GcsEvalSetsManager(EvalSetsManager):
   @override
   def delete_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
-  ):
+  ) -> None:
     """Deletes the EvalCase with the given eval_case_id from the given EvalSet.
 
     Args:

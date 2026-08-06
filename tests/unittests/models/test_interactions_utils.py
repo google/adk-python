@@ -824,11 +824,13 @@ class TestConvertInteractionOutputToParts:
     output = FunctionResultStep(
         type='function_result',
         call_id='call_123',
+        name='get_weather',
         result={'weather': 'Sunny'},
     )
     result_list = interactions_utils._convert_interaction_step_to_parts(output)
     result = result_list[0] if result_list else None
     assert result.function_response.id == 'call_123'
+    assert result.function_response.name == 'get_weather'
     assert result.function_response.response == {'weather': 'Sunny'}
 
   def test_function_result_output_preserves_none_values(self):
@@ -984,6 +986,54 @@ class TestConvertInteractionToLlmResponse:
     assert result.usage_metadata.candidates_token_count == 5
     assert result.finish_reason == types.FinishReason.STOP
     assert result.turn_complete is True
+
+  def test_uses_reported_total_token_count(self):
+    """Total token count comes from the API, not from input + output."""
+    interaction = Interaction(
+        id='interaction_123',
+        status='completed',
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
+        steps=[
+            ModelOutputStep(
+                type='model_output',
+                content=[TextContent(type='text', text='The answer is 4.')],
+            )
+        ],
+        # Thought and tool-use tokens are billed but are not part of input +
+        # output, so the sum (15) undercounts the real total.
+        usage=Usage(
+            total_input_tokens=10,
+            total_output_tokens=5,
+            total_thought_tokens=6,
+            total_tool_use_tokens=2,
+            total_tokens=23,
+        ),
+    )
+    result = interactions_utils.convert_interaction_to_llm_response(interaction)
+
+    assert result.usage_metadata.prompt_token_count == 10
+    assert result.usage_metadata.candidates_token_count == 5
+    assert result.usage_metadata.total_token_count == 23
+
+  def test_total_token_count_falls_back_to_sum_when_absent(self):
+    """When the API omits the total, fall back to input + output."""
+    interaction = Interaction(
+        id='interaction_123',
+        status='completed',
+        created=datetime.now(timezone.utc).isoformat(),
+        updated=datetime.now(timezone.utc).isoformat(),
+        steps=[
+            ModelOutputStep(
+                type='model_output',
+                content=[TextContent(type='text', text='The answer is 4.')],
+            )
+        ],
+        usage=Usage(total_input_tokens=10, total_output_tokens=5),
+    )
+    result = interactions_utils.convert_interaction_to_llm_response(interaction)
+
+    assert result.usage_metadata.total_token_count == 15
 
   def test_failed_response(self):
     """Test converting a failed response."""
@@ -1384,6 +1434,82 @@ class TestConvertInteractionEventToLlmResponse:
     assert part.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
     assert len(state.parts) == 1
 
+  def test_google_search_call_delta(self):
+    """google_search_call delta emits partial grounding web_search_queries."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'google_search_call',
+            'arguments': {'queries': ['rocky project hail mary']},
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_s'
+    )
+    assert result is not None
+    assert result.partial is True
+    assert result.content is None
+    assert result.grounding_metadata.web_search_queries == [
+        'rocky project hail mary'
+    ]
+    assert state.web_search_queries == ['rocky project hail mary']
+
+  def test_google_search_result_delta(self):
+    """google_search_result delta emits a partial search_entry_point."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'google_search_result',
+            'result': [{'search_suggestions': '<div>suggestions</div>'}],
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_sr'
+    )
+    assert result is not None
+    assert result.partial is True
+    assert (
+        result.grounding_metadata.search_entry_point.rendered_content
+        == '<div>suggestions</div>'
+    )
+    assert state.search_entry_point is not None
+
+  def test_text_annotation_delta(self):
+    """url_citation annotations become grounding chunks + supports."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'text_annotation_delta',
+            'annotations': [{
+                'type': 'url_citation',
+                'url': 'https://example.com',
+                'title': 'Example',
+                'start_index': 0,
+                'end_index': 5,
+            }],
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_an'
+    )
+    assert result is not None
+    assert result.partial is True
+    chunk = result.grounding_metadata.grounding_chunks[0]
+    assert chunk.web.uri == 'https://example.com'
+    assert chunk.web.title == 'Example'
+    support = result.grounding_metadata.grounding_supports[0]
+    assert support.grounding_chunk_indices == [0]
+    assert support.segment.start_index == 0
+    assert support.segment.end_index == 5
+    assert len(state.grounding_chunks) == 1
+    assert len(state.grounding_supports) == 1
+
   def test_function_result_delta(self):
     """function_result delta becomes a function_response part."""
     event = StepDelta(
@@ -1392,6 +1518,7 @@ class TestConvertInteractionEventToLlmResponse:
         delta={
             'type': 'function_result',
             'call_id': 'call_9',
+            'name': 'get_temperature',
             'result': {'temp': 72},
         },
     )
@@ -1402,8 +1529,184 @@ class TestConvertInteractionEventToLlmResponse:
     assert result is not None
     part = result.content.parts[0]
     assert part.function_response.id == 'call_9'
+    assert part.function_response.name == 'get_temperature'
     assert part.function_response.response == {'temp': 72}
     assert len(state.parts) == 1
+
+  def test_grounding_accumulated_into_final_event(self):
+    """Grounding from partial deltas is reattached to the final event."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'google_search_call',
+                'arguments': {'queries': ['q1']},
+            },
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'google_search_result',
+                'result': [{'search_suggestions': '<div>s</div>'}],
+            },
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'Mark Watney.'},
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'text_annotation_delta',
+                'annotations': [{
+                    'type': 'url_citation',
+                    'url': 'https://e.com',
+                    'title': 'E',
+                    'start_index': 0,
+                    'end_index': 4,
+                }],
+            },
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_f', status='completed', steps=[]
+            ),
+        ),
+        state,
+        interaction_id='int_f',
+    )
+    assert final is not None
+    assert final.partial is False
+    assert final.turn_complete is True
+    assert final.content.parts[0].text == 'Mark Watney.'
+    gm = final.grounding_metadata
+    assert gm.web_search_queries == ['q1']
+    assert gm.search_entry_point.rendered_content == '<div>s</div>'
+    assert gm.grounding_chunks[0].web.uri == 'https://e.com'
+    assert gm.grounding_supports[0].grounding_chunk_indices == [0]
+
+  def test_final_event_includes_usage_metadata(self):
+    """The streaming final event carries usage_metadata from the interaction."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'Answer.'},
+        ),
+        state,
+        interaction_id='int_u1',
+    )
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_u1',
+                status='completed',
+                steps=[],
+                usage=Usage(total_input_tokens=12, total_output_tokens=7),
+            ),
+        ),
+        state,
+        interaction_id='int_u1',
+    )
+    assert final is not None
+    assert final.partial is False
+    assert final.usage_metadata is not None
+    assert final.usage_metadata.prompt_token_count == 12
+    assert final.usage_metadata.candidates_token_count == 7
+    assert final.usage_metadata.total_token_count == 19
+
+  def test_final_event_uses_reported_total_token_count(self):
+    """The final event reports the API total, not input + output."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'Answer.'},
+        ),
+        state,
+        interaction_id='int_u3',
+    )
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_u3',
+                status='completed',
+                steps=[],
+                # Thought and tool-use tokens are billed but are not part of
+                # input + output, so the sum (19) undercounts the real total.
+                usage=Usage(
+                    total_input_tokens=12,
+                    total_output_tokens=7,
+                    total_thought_tokens=8,
+                    total_tool_use_tokens=3,
+                    total_tokens=30,
+                ),
+            ),
+        ),
+        state,
+        interaction_id='int_u3',
+    )
+    assert final is not None
+    assert final.usage_metadata is not None
+    assert final.usage_metadata.prompt_token_count == 12
+    assert final.usage_metadata.candidates_token_count == 7
+    assert final.usage_metadata.total_token_count == 30
+
+  def test_final_event_without_usage_has_no_usage_metadata(self):
+    """No interaction.usage -> final event has usage_metadata None."""
+    state = interactions_utils._StreamState()
+    conv = interactions_utils.convert_interaction_event_to_llm_response
+    conv(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'Answer.'},
+        ),
+        state,
+        interaction_id='int_u2',
+    )
+    final = conv(
+        InteractionCompletedEvent(
+            event_type='interaction.completed',
+            interaction=InteractionSseEventInteraction(
+                id='int_u2', status='completed', steps=[]
+            ),
+        ),
+        state,
+        interaction_id='int_u2',
+    )
+    assert final is not None
+    assert final.partial is False
+    assert final.usage_metadata is None
 
   def test_known_unhandled_delta_type_logs_debug_and_drops(self, caplog):
     """A known but unhandled delta type logs at debug and emits no event."""
@@ -1755,7 +2058,11 @@ async def test_create_interactions_streaming_forwards_kwargs_and_converts():
 
   # Assert: exactly one create() call forwarding kwargs plus the stream flag.
   assert len(api_client.create_calls) == 1
-  assert api_client.create_calls[0] == {**create_kwargs, 'stream': True}
+  assert api_client.create_calls[0] == {
+      **create_kwargs,
+      'stream': True,
+      'extra_headers': None,
+  }
 
   # Assert: the streamed events are converted into text responses.
   assert responses, 'expected at least one streamed LlmResponse'
@@ -1793,7 +2100,11 @@ async def test_create_interactions_non_streaming_forwards_kwargs_and_yields_sing
 
   # Assert: exactly one create() call forwarding kwargs plus the stream flag.
   assert len(api_client.create_calls) == 1
-  assert api_client.create_calls[0] == {**create_kwargs, 'stream': False}
+  assert api_client.create_calls[0] == {
+      **create_kwargs,
+      'stream': False,
+      'extra_headers': None,
+  }
 
   # Assert: a single converted LlmResponse carrying the interaction output.
   assert len(responses) == 1
@@ -1817,3 +2128,237 @@ async def test_generate_content_via_interactions_non_streaming_yields_single_res
   assert len(responses) == 1
   assert responses[0].interaction_id == 'interaction_ns'
   assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
+
+
+def _build_stream_with_environment() -> list[object]:
+  """A streamed interaction whose completed event carries an environment id."""
+  now = datetime.now(timezone.utc).isoformat()
+  created = InteractionCreatedEvent(
+      event_type='interaction.created',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_env',
+          created=now,
+          updated=now,
+          status='requires_action',
+          steps=[],
+      ),
+  )
+  step_start = StepStart(
+      event_type='step.start',
+      index=0,
+      step=ModelOutputStep(type='model_output'),
+  )
+  step_delta = StepDelta(
+      event_type='step.delta',
+      index=0,
+      delta={'type': 'text', 'text': 'hi'},
+  )
+  step_stop = StepStop(event_type='step.stop', index=0)
+  completed = InteractionCompletedEvent(
+      event_type='interaction.completed',
+      interaction=InteractionSseEventInteraction(
+          id='interaction_env',
+          created=now,
+          updated=now,
+          status='completed',
+          environment_id='env_xyz',
+          steps=[
+              ModelOutputStep(
+                  type='model_output',
+                  content=[TextContent(type='text', text='hi')],
+              )
+          ],
+      ),
+  )
+  return [created, step_start, step_delta, step_stop, completed]
+
+
+def test_create_interactions_surfaces_environment_id():
+  api_client = _FakeApiClient(_build_stream_with_environment())
+
+  async def _collect():
+    out = []
+    async for r in interactions_utils._create_interactions(
+        api_client,
+        create_kwargs={'agent': 'agents/a', 'input': []},
+        stream=True,
+    ):
+      out.append(r)
+    return out
+
+  responses = asyncio.run(_collect())
+  assert responses, 'expected streamed responses'
+  # The env id arrives only on the completed event, so earlier partial
+  # responses carry no environment id.
+  assert responses[0].environment_id is None
+  assert responses[-1].environment_id == 'env_xyz'
+
+
+class _FakeNonStreamInteractions:
+  """Fake interactions resource returning a full Interaction (non-streaming)."""
+
+  def __init__(self, interaction: Interaction):
+    self._interaction = interaction
+
+  async def create(self, **_kwargs):
+    return self._interaction
+
+
+class _FakeNonStreamAio:
+  """Namespace matching the expected api_client.aio shape (non-streaming)."""
+
+  def __init__(self, interaction: Interaction):
+    self.interactions = _FakeNonStreamInteractions(interaction)
+
+
+class _FakeNonStreamApiClient:
+  """Minimal fake API client whose create() returns a full Interaction."""
+
+  def __init__(self, interaction: Interaction):
+    self.aio = _FakeNonStreamAio(interaction)
+
+
+def test_create_interactions_surfaces_environment_id_non_stream():
+  interaction = Interaction(
+      id='interaction_ns',
+      status='completed',
+      created=datetime.now(timezone.utc).isoformat(),
+      updated=datetime.now(timezone.utc).isoformat(),
+      environment_id='env_ns',
+      steps=[
+          ModelOutputStep(
+              type='model_output',
+              content=[TextContent(type='text', text='hi')],
+          )
+      ],
+  )
+  api_client = _FakeNonStreamApiClient(interaction)
+
+  async def _collect():
+    out = []
+    async for r in interactions_utils._create_interactions(
+        api_client,
+        create_kwargs={'agent': 'agents/a', 'input': []},
+        stream=False,
+    ):
+      out.append(r)
+    return out
+
+  responses = asyncio.run(_collect())
+  assert len(responses) == 1
+  assert responses[-1].environment_id == 'env_ns'
+
+
+class TestBuildMcpServerParam:
+  """Tests for _build_mcp_server_param."""
+
+  def _server(self, **kwargs):
+    from google.adk.tools._remote_mcp_server import RemoteMcpServer
+
+    kwargs.setdefault('url', 'https://mcp.example.com/mcp')
+    return RemoteMcpServer(**kwargs)
+
+  def test_minimal_url_only(self):
+    param = interactions_utils._build_mcp_server_param(self._server(), {})
+    assert param == {
+        'type': 'mcp_server',
+        'url': 'https://mcp.example.com/mcp',
+    }
+
+  def test_with_name(self):
+    param = interactions_utils._build_mcp_server_param(
+        self._server(name='maps'), {}
+    )
+    assert param['name'] == 'maps'
+
+  def test_with_headers(self):
+    param = interactions_utils._build_mcp_server_param(
+        self._server(), {'X-Goog-Api-Key': 'k'}
+    )
+    assert param['headers'] == {'X-Goog-Api-Key': 'k'}
+
+  def test_with_allowed_tools(self):
+    param = interactions_utils._build_mcp_server_param(
+        self._server(allowed_tools=['search_places']), {}
+    )
+    assert param['allowed_tools'] == [{'tools': ['search_places']}]
+
+  def test_omits_unset_fields(self):
+    param = interactions_utils._build_mcp_server_param(self._server(), {})
+    assert 'name' not in param
+    assert 'headers' not in param
+    assert 'allowed_tools' not in param
+
+
+async def test_create_interactions_forwards_extra_headers_streaming():
+  """extra_headers is forwarded to interactions.create on the streaming path."""
+  api_client = _FakeApiClient(_build_simple_text_stream())
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [],
+      'previous_interaction_id': None,
+  }
+
+  await _drain(
+      interactions_utils._create_interactions(
+          api_client,
+          create_kwargs=create_kwargs,
+          stream=True,
+          extra_headers={'x-custom': 'v'},
+      )
+  )
+
+  assert api_client.create_calls[0]['extra_headers'] == {'x-custom': 'v'}
+
+
+async def test_create_interactions_forwards_extra_headers_non_streaming():
+  """extra_headers is forwarded to interactions.create on the non-stream path."""
+  api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+  create_kwargs = {
+      'model': 'gemini-2.5-flash',
+      'input': [],
+      'previous_interaction_id': None,
+  }
+
+  await _drain(
+      interactions_utils._create_interactions(
+          api_client,
+          create_kwargs=create_kwargs,
+          stream=False,
+          extra_headers={'x-custom': 'v'},
+      )
+  )
+
+  assert api_client.create_calls[0]['extra_headers'] == {'x-custom': 'v'}
+
+
+async def test_generate_content_via_interactions_forwards_request_headers():
+  """User headers on the request reach interactions.create as extra_headers."""
+  api_client = _FakeApiClient(_build_simple_text_stream())
+  llm_request = _build_llm_request()
+  llm_request.config.http_options = types.HttpOptions(headers={'x-custom': 'v'})
+
+  await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client, llm_request, stream=True
+      )
+  )
+
+  extra_headers = api_client.create_calls[0]['extra_headers']
+  assert extra_headers['x-custom'] == 'v'
+  assert 'google-adk/' in extra_headers['x-goog-api-client']
+
+
+async def test_generate_content_via_interactions_sends_tracking_headers_without_config_headers():
+  """With no request headers, tracking headers are still forwarded."""
+  from google.adk.utils._google_client_headers import get_tracking_headers
+
+  api_client = _FakeApiClient(_build_simple_text_stream())
+
+  await _drain(
+      interactions_utils.generate_content_via_interactions(
+          api_client, _build_llm_request(), stream=True
+      )
+  )
+
+  assert api_client.create_calls[0]['extra_headers'] == get_tracking_headers()

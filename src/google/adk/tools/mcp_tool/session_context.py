@@ -19,6 +19,7 @@ from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import logging
+from types import TracebackType
 from typing import Any
 from typing import Coroutine
 from typing import Optional
@@ -26,6 +27,7 @@ from typing import TypeVar
 
 from mcp import ClientSession
 from mcp import SamplingCapability
+from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 
 from ...features import FeatureName
@@ -89,36 +91,41 @@ class SessionContext:
   def __init__(
       self,
       client: AbstractAsyncContextManager[Any],
-      timeout: Optional[float],
-      sse_read_timeout: Optional[float],
+      timeout: float | None,
+      sse_read_timeout: float | None,
       is_stdio: bool = False,
       *,
-      sampling_callback: Optional[SamplingFnT] = None,
-      sampling_capabilities: Optional[SamplingCapability] = None,
+      sampling_callback: SamplingFnT | None = None,
+      sampling_capabilities: SamplingCapability | None = None,
+      elicitation_callback: ElicitationFnT | None = None,
   ):
-    """
+    """Initializes SessionContext.
+
     Args:
-        client: An MCP client context manager (e.g., from streamablehttp_client,
-            sse_client, or stdio_client).
-        timeout: Timeout in seconds for connection and initialization.
-        sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
-            server.
-        is_stdio: Whether this is a stdio connection (affects read timeout).
-        sampling_callback: Optional callback to handle sampling requests from the
-            MCP server.
-        sampling_capabilities: Optional capabilities for sampling.
+      client: An MCP client context manager (e.g., from streamablehttp_client,
+        sse_client, or stdio_client).
+      timeout: Timeout in seconds for connection and initialization.
+      sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
+        server.
+      is_stdio: Whether this is a stdio connection (affects read timeout).
+      sampling_callback: Optional callback to handle sampling requests from the
+        MCP server.
+      sampling_capabilities: Optional capabilities for sampling.
+      elicitation_callback: Optional callback to handle elicitation requests
+        from the MCP server (``elicitation/create``).
     """
     self._client = client
     self._timeout = timeout
     self._sse_read_timeout = sse_read_timeout
     self._is_stdio = is_stdio
-    self._session: Optional[ClientSession] = None
+    self._session: ClientSession | None = None
     self._ready_event = asyncio.Event()
     self._close_event = asyncio.Event()
-    self._task: Optional[asyncio.Task] = None
+    self._task: asyncio.Task[None] | None = None
     self._task_lock = asyncio.Lock()
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
+    self._elicitation_callback = elicitation_callback
 
   @property
   def session(self) -> Optional[ClientSession]:
@@ -158,7 +165,7 @@ class SessionContext:
       if not self._task:
         self._task = asyncio.create_task(self._run())
 
-        def _retrieve_exception(t: asyncio.Task):
+        def _retrieve_exception(t: asyncio.Task[None]) -> None:
           if not t.cancelled():
             t.exception()
 
@@ -245,7 +252,7 @@ class SessionContext:
         f'MCP session connection lost: {_format_exception(exc)}'
     ) from exc
 
-  async def close(self):
+  async def close(self) -> None:
     """Signal the context task to close and wait for cleanup."""
     # Set the close event to signal the task to close.
     # Even if start has not been called, we need to set the close event
@@ -273,10 +280,15 @@ class SessionContext:
   async def __aenter__(self) -> ClientSession:
     return await self.start()
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb):
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     await self.close()
 
-  async def _run(self):
+  async def _run(self) -> None:
     """Run the complete session context within a single task."""
     try:
       async with AsyncExitStack() as exit_stack:
@@ -314,6 +326,7 @@ class SessionContext:
                   else None,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
+                  elicitation_callback=self._elicitation_callback,
               )
           )
         else:
@@ -327,6 +340,7 @@ class SessionContext:
                   else None,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
+                  elicitation_callback=self._elicitation_callback,
               )
           )
         # pylint: disable-next=protected-access
@@ -347,8 +361,8 @@ class SessionContext:
 
         # Wait for close signal - the session remains valid while we wait
         await self._close_event.wait()
-    except BaseException as e:
-      logger.warning(f'Error on session runner task: {e}')
+    except Exception as e:
+      logger.warning('Error on session runner task: %s', e)
       raise
     finally:
       self._ready_event.set()

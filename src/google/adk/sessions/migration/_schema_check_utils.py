@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 try:
   from sqlalchemy import create_engine as create_sync_engine
@@ -23,6 +24,10 @@ try:
   from sqlalchemy import text
 except ImportError:
   pass
+
+if TYPE_CHECKING:
+  from sqlalchemy.engine import Connection
+  from sqlalchemy.engine.reflection import Inspector
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -32,7 +37,9 @@ SCHEMA_VERSION_1_JSON = "1"
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION_1_JSON
 
 
-def _get_schema_version_impl(inspector, connection) -> str:
+def _get_schema_version_impl(
+    inspector: Inspector, connection: Connection
+) -> str:
   """Gets DB schema version using inspector and connection."""
   if inspector.has_table("adk_internal_metadata"):
     try:
@@ -44,7 +51,10 @@ def _get_schema_version_impl(inspector, connection) -> str:
           {"key": SCHEMA_VERSION_KEY},
       ).fetchone()
       if result:
-        return result[0]
+        version = result[0]
+        if not isinstance(version, str):
+          raise ValueError("Schema version must be stored as text.")
+        return version
       else:
         raise ValueError(
             "Schema version not found in adk_internal_metadata. The database"
@@ -79,7 +89,7 @@ def _get_schema_version_impl(inspector, connection) -> str:
   return LATEST_SCHEMA_VERSION
 
 
-def get_db_schema_version_from_connection(connection) -> str:
+def get_db_schema_version_from_connection(connection: Connection) -> str:
   """Gets DB schema version from a DB connection."""
   inspector = inspect(connection)
   return _get_schema_version_impl(inspector, connection)

@@ -59,6 +59,7 @@ except ImportError:
 from mcp import ClientSession
 from mcp import SamplingCapability
 from mcp import StdioServerParameters
+from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
@@ -80,6 +81,8 @@ from ...features import is_feature_enabled
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_MAX_LOG_BODY_LENGTH = 1000
 
 
 def create_mcp_http_client(
@@ -233,7 +236,7 @@ class _DebugHttpxClientFactory:
       timeout: httpx.Timeout | None = None,
       auth: httpx.Auth | None = None,
   ) -> httpx.AsyncClient:
-    client = self._base_factory(headers, timeout, auth)
+    client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
     if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
       client.event_hooks.setdefault('response', []).append(self._response_hook)
     return client
@@ -271,6 +274,8 @@ class _DebugHttpxClientFactory:
         request_body = response.request.content.decode(
             'utf-8', errors='replace'
         )
+        if len(request_body) > _MAX_LOG_BODY_LENGTH:
+          request_body = request_body[:_MAX_LOG_BODY_LENGTH] + '... [truncated]'
       except Exception:  # pylint: disable=broad-exception-caught
         request_body = '<binary>'
 
@@ -278,6 +283,10 @@ class _DebugHttpxClientFactory:
       try:
         await response.aread()
         response_body = response.text
+        if len(response_body) > _MAX_LOG_BODY_LENGTH:
+          response_body = (
+              response_body[:_MAX_LOG_BODY_LENGTH] + '... [truncated]'
+          )
       except Exception as e:  # pylint: disable=broad-exception-caught
         response_body = f'<failed to read body: {e}>'
     else:
@@ -391,7 +400,7 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
         )
         return
 
-    if 'Authorization' in headers:
+    if any(k.lower() == 'authorization' for k in headers):
       logger.debug('Authorization header already present, not overwriting')
       return
 
@@ -528,6 +537,7 @@ class MCPSessionManager:
       *,
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
+      elicitation_callback: ElicitationFnT | None = None,
   ):
     """Initializes the MCP session manager.
 
@@ -537,12 +547,16 @@ class MCPSessionManager:
           parameters but it's not configurable for now.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
-        sampling_callback: Optional callback to handle sampling requests from the
-          MCP server.
+        sampling_callback: Optional callback to handle sampling requests from
+          the MCP server.
         sampling_capabilities: Optional capabilities for sampling.
+        elicitation_callback: Optional callback to handle elicitation requests
+          from the MCP server (``elicitation/create``), including URL-mode
+          elicitations used for out-of-band flows such as auth challenges.
     """
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
+    self._elicitation_callback = elicitation_callback
 
     if isinstance(connection_params, StdioServerParameters):
       # So far timeout is not configurable. Given MCP is still evolving, we
@@ -982,6 +996,7 @@ class MCPSessionManager:
             is_stdio=is_stdio,
             sampling_callback=self._sampling_callback,
             sampling_capabilities=self._sampling_capabilities,
+            elicitation_callback=self._elicitation_callback,
         )
 
         if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access

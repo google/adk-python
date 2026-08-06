@@ -20,6 +20,8 @@ from typing import NamedTuple
 
 from google.genai import types
 
+from ..errors import input_validation_error
+
 
 class ParsedArtifactUri(NamedTuple):
   """The result of parsing an artifact URI."""
@@ -113,3 +115,58 @@ def is_artifact_ref(artifact: types.Part) -> bool:
       and artifact.file_data.file_uri
       and artifact.file_data.file_uri.startswith("artifact://")
   )
+
+
+def validate_artifact_reference_scope(
+    *,
+    app_name: str,
+    user_id: str,
+    session_id: str | None,
+    parsed_uri: ParsedArtifactUri,
+) -> None:
+  """Ensures artifact references cannot escape the caller's scope."""
+  if parsed_uri.app_name != app_name or parsed_uri.user_id != user_id:
+    raise input_validation_error.InputValidationError(
+        "Artifact references must stay within the same app and user scope."
+    )
+  if parsed_uri.session_id is not None and parsed_uri.session_id != session_id:
+    raise input_validation_error.InputValidationError(
+        "Session-scoped artifact references must stay within the same"
+        " session scope."
+    )
+
+
+def validate_path_segment(value: str, field_name: str) -> None:
+  """Rejects values that could alter the constructed path.
+
+  Args:
+    value: The caller-supplied identifier (e.g. user_id or session_id).
+    field_name: Human-readable name used in the error message.
+
+  Raises:
+    InputValidationError: If the value contains traversal segments, null bytes,
+      or is an absolute path / starts with a slash.
+  """
+  if not value:
+    raise input_validation_error.InputValidationError(
+        f"{field_name} must not be empty."
+    )
+  if "\x00" in value:
+    raise input_validation_error.InputValidationError(
+        f"{field_name} must not contain null bytes."
+    )
+  if isinstance(value, str) and (
+      value.startswith("/") or value.startswith("\\")
+  ):
+    raise input_validation_error.InputValidationError(
+        f"{field_name} {value!r} must not be an absolute path or start with a"
+        " slash."
+    )
+  if (
+      value in (".", "..")
+      or ".." in value.split("/")
+      or ".." in value.split("\\")
+  ):
+    raise input_validation_error.InputValidationError(
+        f"{field_name} {value!r} must not contain traversal segments."
+    )

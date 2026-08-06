@@ -17,7 +17,11 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import logging
 import os
+import sys
+import threading
+import time
 from unittest import mock
 
 from google.adk.agents import base_agent
@@ -27,6 +31,7 @@ from google.adk.events import event as event_lib
 from google.adk.events import event_actions as event_actions_lib
 from google.adk.models import llm_request as llm_request_lib
 from google.adk.models import llm_response as llm_response_lib
+from google.adk.platform import thread as platform_thread
 from google.adk.plugins import bigquery_agent_analytics_plugin
 from google.adk.plugins import plugin_manager as plugin_manager_lib
 from google.adk.sessions import base_session_service as base_session_service_lib
@@ -402,6 +407,10 @@ def test_recursive_smart_truncate_redaction():
       "id_token": "eyJhb",
       "api_key": "AIza",
       "password": "my-password",
+      "private_key": "private-key-material",
+      "token": "generic-token",
+      "secret": "generic-secret",
+      "authorization": "Bearer credential",
       "safe_key": "safe-value",
       "temp:auth_state": "some-auth-state",
       "nested": {
@@ -420,6 +429,10 @@ def test_recursive_smart_truncate_redaction():
   assert truncated["id_token"] == "[REDACTED]"
   assert truncated["api_key"] == "[REDACTED]"
   assert truncated["password"] == "[REDACTED]"
+  assert truncated["private_key"] == "[REDACTED]"
+  assert truncated["token"] == "[REDACTED]"
+  assert truncated["secret"] == "[REDACTED]"
+  assert truncated["authorization"] == "[REDACTED]"
   assert truncated["safe_key"] == "safe-value"
   assert truncated["temp:auth_state"] == "[REDACTED]"
   assert truncated["nested"]["CLIENT_SECRET"] == "[REDACTED]"
@@ -591,7 +604,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.before_model_callback(
           callback_context=callback_context, llm_request=llm_request
       )
-      await asyncio.sleep(0.01)  # Allow background task to run
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       mock_write_client.append_rows.reset_mock()
       user_message = types.Content(parts=[types.Part(text="What is up?")])
@@ -599,7 +612,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)  # Allow background task to run
+      await plugin.flush()
       mock_write_client.append_rows.assert_not_called()
 
   @pytest.mark.asyncio
@@ -628,11 +641,11 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_not_called()
       bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
       await plugin.before_run_callback(invocation_context=invocation_context)
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
 
   @pytest.mark.asyncio
@@ -646,7 +659,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       dummy_arrow_schema,
       mock_asyncio_to_thread,
   ):
-    """Regression test for cross-region writes (issue #262).
+    """Regression test for cross-region writes.
 
     The Storage Write API streaming AppendRows RPC does not
     auto-populate the request-routing header, so writes to a dataset
@@ -675,7 +688,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.before_model_callback(
           callback_context=callback_context, llm_request=llm_request
       )
-      await asyncio.sleep(0.01)  # Allow background task to run
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       metadata = mock_write_client.append_rows.call_args.kwargs.get("metadata")
       assert metadata is not None, "append_rows must receive routing metadata"
@@ -715,7 +728,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -754,13 +767,20 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
       )
-      # If formatter fails, it logs a warning and continues with original content.
-      assert log_entry["content"] == '{"text_summary": "Secret message"}'
+      # Fail CLOSED: a raising formatter must never fall back
+      # to the unformatted payload. The row keeps its metadata but content
+      # is replaced with the sentinel, and the loss is observable.
+      assert "Secret message" not in str(log_entry["content"])
+      assert bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL in str(
+          log_entry["content"]
+      )
+      assert log_entry["event_type"] == "USER_MESSAGE_RECEIVED"
+      assert plugin.get_drop_stats().get("formatter_failed") == 1
 
   @pytest.mark.asyncio
   async def test_max_content_length(
@@ -792,7 +812,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -820,7 +840,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.before_model_callback(
           callback_context=callback_context, llm_request=llm_request
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -873,7 +893,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_args={"param": "A" * 100},
           tool_context=tool_context,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -919,7 +939,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_args={"param": "A" * 100},
           tool_context=tool_context,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -968,7 +988,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_context=tool_context,
           result={"res": "A" * 100},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -1017,7 +1037,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_context=tool_context,
           result={"res": "A" * 100},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -1028,6 +1048,98 @@ class TestBigQueryAgentAnalyticsPlugin:
       content_dict = json.loads(log_entry["content"])
       assert content_dict["tool"] == "MyTool"
       assert content_dict["result"]["res"] == "A" * 100
+
+  @pytest.mark.asyncio
+  async def test_after_tool_callback_logs_agent_response_for_final_tool(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """A configured final-response tool also logs AGENT_RESPONSE from its args."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        final_response_tool_names=frozenset({"submit_final_response"})
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      mock_tool = mock.create_autospec(
+          base_tool_lib.BaseTool, instance=True, spec_set=True
+      )
+      type(mock_tool).name = mock.PropertyMock(
+          return_value="submit_final_response"
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args={"answer": "The table has 241 rows."},
+          tool_context=tool_context,
+          result={"status": "SUCCESS"},
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+      assert "TOOL_COMPLETED" in event_types
+      assert event_types.count("AGENT_RESPONSE") == 1
+      agent_resp = next(r for r in rows if r["event_type"] == "AGENT_RESPONSE")
+      content_dict = json.loads(agent_resp["content"])
+      assert content_dict["response"] == {"answer": "The table has 241 rows."}
+      attributes = json.loads(agent_resp["attributes"])
+      assert attributes["source_tool"] == "submit_final_response"
+
+  @pytest.mark.asyncio
+  async def test_after_tool_callback_no_agent_response_by_default(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """With the default empty set, a tool never emits AGENT_RESPONSE."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+    _ = mock_to_arrow_schema
+    _ = mock_asyncio_to_thread
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      mock_tool = mock.create_autospec(
+          base_tool_lib.BaseTool, instance=True, spec_set=True
+      )
+      type(mock_tool).name = mock.PropertyMock(
+          return_value="submit_final_response"
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+      await plugin.after_tool_callback(
+          tool=mock_tool,
+          tool_args={"answer": "hi"},
+          tool_context=tool_context,
+          result={"status": "SUCCESS"},
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+      assert "AGENT_RESPONSE" not in event_types
 
   @pytest.mark.asyncio
   async def test_max_content_length_tool_error(
@@ -1061,7 +1173,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_context=tool_context,
           error=ValueError("Oops"),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -1088,7 +1200,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.on_user_message_callback(
         invocation_context=invocation_context, user_message=user_message
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1139,7 +1251,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       await plugin.on_user_message_callback(
           invocation_context=invocation_context, user_message=user_message
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -1189,9 +1301,13 @@ class TestBigQueryAgentAnalyticsPlugin:
             invocation_context=invocation_context,
             user_message=types.Content(parts=[types.Part(text="Test")]),
         )
-        await asyncio.sleep(0.01)
+        await plugin_with_fail.flush()
         mock_logger.error.assert_called_with(
-            "Failed to initialize BigQuery Plugin: %s", mock.ANY
+            "Failed to initialize BigQuery Plugin (attempt %d, next"
+            " retry in %.0fs): %s",
+            mock.ANY,
+            mock.ANY,
+            mock.ANY,
         )
       mock_write_client.append_rows.assert_not_called()
 
@@ -1219,7 +1335,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           invocation_context=invocation_context,
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       # The logger is called multiple times, check that one of them is the error message
       # Or just check that it was called with the expected message at some point
       mock_logger.error.assert_any_call(
@@ -1252,7 +1368,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           invocation_context=invocation_context,
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       mock_logger.warning.assert_any_call(
           "BigQuery Write API returned error code %s: %s",
           10,
@@ -1286,7 +1402,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           invocation_context=invocation_context,
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       mock_logger.error.assert_called_with(
           "BigQuery Schema Mismatch: %s. This usually means the"
           " table schema does not match the expected schema.",
@@ -1317,7 +1433,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_run_callback(
         invocation_context=invocation_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1336,7 +1452,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.after_run_callback(
         invocation_context=invocation_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1356,7 +1472,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_agent_callback(
         agent=mock_agent, callback_context=callback_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1376,7 +1492,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.after_agent_callback(
         agent=mock_agent, callback_context=callback_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1405,7 +1521,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1435,7 +1551,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1451,7 +1567,161 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert attributes["llm_config"]["temperature"] == 0.5
     assert attributes["llm_config"]["top_p"] == 0.9
     assert attributes["llm_config"]["top_p"] == 0.9
-    assert attributes["tools"] == ["tool1", "tool2"]
+    # Tools without a name/description/declaration fall back to just the key.
+    assert attributes["tools"] == [{"name": "tool1"}, {"name": "tool2"}]
+
+  @pytest.mark.asyncio
+  async def test_before_model_callback_logs_tool_declarations(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """LLM_REQUEST tools carry name, description, and parameter schema."""
+
+    class _FakeTool(base_tool_lib.BaseTool):
+
+      def __init__(self, name, description, declaration):
+        super().__init__(name=name, description=description)
+        self._declaration = declaration
+
+      def _get_declaration(self):
+        return self._declaration
+
+    execute_sql = _FakeTool(
+        name="execute_sql",
+        description="Run a SQL query against BigQuery.",
+        declaration=types.FunctionDeclaration(
+            name="execute_sql",
+            description="Run a SQL query against BigQuery.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="The SQL query to run.",
+                    )
+                },
+                required=["query"],
+            ),
+        ),
+    )
+    # A tool without a declaration still contributes name + description.
+    list_datasets = _FakeTool(
+        name="list_dataset_ids",
+        description="List available datasets.",
+        declaration=None,
+    )
+
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(role="user", parts=[types.Part(text="hi")])],
+    )
+    llm_request.tools_dict = {
+        "execute_sql": execute_sql,
+        "list_dataset_ids": list_datasets,
+    }
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await bq_plugin_inst.flush()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_REQUEST")
+    attributes = json.loads(log_entry["attributes"])
+    tools_by_name = {t["name"]: t for t in attributes["tools"]}
+
+    assert tools_by_name["execute_sql"]["description"] == (
+        "Run a SQL query against BigQuery."
+    )
+    params = tools_by_name["execute_sql"]["parameters"]
+    assert params["type"] == "OBJECT"
+    assert params["properties"]["query"]["type"] == "STRING"
+    assert params["required"] == ["query"]
+
+    assert tools_by_name["list_dataset_ids"]["description"] == (
+        "List available datasets."
+    )
+    assert "parameters" not in tools_by_name["list_dataset_ids"]
+
+  def test_extract_tool_declarations_declaration_error_is_isolated(self):
+    """A tool whose _get_declaration raises still yields name + description."""
+
+    class _RaisingTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        raise ValueError("boom")
+
+    class _OkTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        return None
+
+    result = bigquery_agent_analytics_plugin._extract_tool_declarations({
+        "raiser": _RaisingTool(name="raiser", description="Raises."),
+        "ok": _OkTool(name="ok", description="Fine."),
+    })
+    by_name = {t["name"]: t for t in result}
+
+    # The raising tool is not dropped; other tools are unaffected.
+    assert by_name["raiser"] == {"name": "raiser", "description": "Raises."}
+    assert by_name["ok"] == {"name": "ok", "description": "Fine."}
+
+  def test_extract_tool_declarations_parameters_serialization_error(self):
+    """A parameters object that fails to serialize is dropped, not fatal."""
+
+    class _BadParams:
+
+      def model_dump(self, *args, **kwargs):
+        raise ValueError("cannot serialize")
+
+    class _BadDecl:
+      description = None
+      parameters = _BadParams()
+
+    class _BadParamTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        return _BadDecl()
+
+    result = bigquery_agent_analytics_plugin._extract_tool_declarations(
+        {"bad_params": _BadParamTool(name="bad_params", description="Bad.")}
+    )
+
+    # Name + description survive; the unserializable parameters key is omitted.
+    assert result == [{"name": "bad_params", "description": "Bad."}]
+
+  def test_extract_tool_declarations_uses_parameters_json_schema(self):
+    """Declarations exposing parameters_json_schema log that raw schema."""
+
+    json_schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    }
+
+    class _JsonSchemaTool(base_tool_lib.BaseTool):
+
+      def _get_declaration(self):
+        return types.FunctionDeclaration(
+            name="read_file",
+            description="Read a file.",
+            parameters_json_schema=json_schema,
+        )
+
+    result = bigquery_agent_analytics_plugin._extract_tool_declarations(
+        {"read_file": _JsonSchemaTool(name="read_file", description="Read.")}
+    )
+
+    # parameters_json_schema is logged verbatim (preferred over `parameters`).
+    assert result == [{
+        "name": "read_file",
+        "description": "Read.",
+        "parameters": json_schema,
+    }]
 
   @pytest.mark.asyncio
   async def test_before_model_callback_with_full_config(
@@ -1484,7 +1754,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1533,7 +1803,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1555,13 +1825,15 @@ class TestBigQueryAgentAnalyticsPlugin:
             prompt_token_count=10, total_token_count=15
         ),
     )
-    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "llm_request"
+    )
     await bq_plugin_inst.after_model_callback(
         callback_context=callback_context,
         llm_response=llm_response,
         # latency_ms is now calculated internally via TraceManager
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1599,7 +1871,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context=callback_context,
         llm_response=llm_response,
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1623,7 +1895,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_tool_callback(
         tool=mock_tool, tool_args={"param": "value"}, tool_context=tool_context
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1648,7 +1920,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         tool_context=tool_context,
         result={"res": "success"},
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1678,7 +1950,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         tool_context=tool_context,
         result={"res": "success"},
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
 
     # Only TOOL_COMPLETED should be logged; STATE_DELTA is handled
     # by on_event_callback now.
@@ -1708,7 +1980,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     # Must return None to not modify the event
     assert result is None
 
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1762,7 +2034,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context,
         raw_content="test content",
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1794,7 +2066,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context,
         raw_content="test content",
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1839,7 +2111,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       callback_context,
       dummy_arrow_schema,
   ):
-    """Regression for #6063: None agent falls back to source event author."""
+    """Regression: None agent falls back to source event author."""
     # Workflow-driven invocations leave ``InvocationContext.agent`` as None.
     # Reading ``callback_context.agent_name`` then raised ``AttributeError``,
     # which ``@_safe_callback`` swallowed, silently dropping the BigQuery row.
@@ -1855,7 +2127,7 @@ class TestBigQueryAgentAnalyticsPlugin:
             source_event=event
         ),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1871,7 +2143,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       callback_context,
       dummy_arrow_schema,
   ):
-    """Regression for #6063: callback-only row with no agent writes null."""
+    """Regression: callback-only row with no agent writes null."""
     callback_context._invocation_context.agent = None
 
     await bq_plugin_inst._log_event(
@@ -1879,7 +2151,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         callback_context,
         raw_content="test content",
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1904,7 +2176,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.on_model_error_callback(
         callback_context=callback_context, llm_request=llm_request, error=error
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1930,7 +2202,7 @@ class TestBigQueryAgentAnalyticsPlugin:
         tool_context=tool_context,
         error=error,
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -1940,6 +2212,189 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert content_dict["args"] == {"param": "value"}
     assert log_entry["error_message"] == "Tool timed out"
     assert log_entry["status"] == "ERROR"
+
+  @pytest.mark.asyncio
+  async def test_on_agent_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """on_agent_error_callback emits AGENT_ERROR with traceback."""
+    error = RuntimeError("Agent crashed")
+    try:
+      raise error
+    except RuntimeError:
+      pass  # populate __traceback__
+    pushed_span_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "agent"
+    )
+    await bq_plugin_inst.on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=callback_context,
+        error=error,
+    )
+    await bq_plugin_inst.flush()
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+    assert log_entry["error_message"] == "Agent crashed"
+    assert log_entry["status"] == "ERROR"
+    # The agent span BQAA pushed is popped and attributed to the error row.
+    assert log_entry["span_id"] == pushed_span_id
+    content = json.loads(log_entry["content"])
+    assert "error_traceback" in content
+    assert "RuntimeError: Agent crashed" in content["error_traceback"]
+
+  @pytest.mark.asyncio
+  async def test_on_agent_error_does_not_pop_foreign_invocation_span(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """on_agent_error must not pop a span BQAA did not push for this agent.
+
+    Simulates another plugin's before_agent_callback raising before BQAA's
+    own before_agent_callback ran: the stack holds only the invocation root.
+    The guarded pop must leave the invocation span in place so the
+    subsequent INVOCATION_ERROR keeps correct span/latency data.
+    """
+    trace_manager = bigquery_agent_analytics_plugin.TraceManager
+    inv_span_id = trace_manager.push_span(callback_context, "invocation")
+
+    error = RuntimeError("other plugin's before_agent failed")
+    try:
+      raise error
+    except RuntimeError:
+      pass
+
+    await bq_plugin_inst.on_agent_error_callback(
+        agent=mock_agent,
+        callback_context=callback_context,
+        error=error,
+    )
+    await bq_plugin_inst.flush()
+
+    # The invocation root was NOT consumed by the agent-error pop.
+    assert trace_manager.get_current_span_id() == inv_span_id
+    # The AGENT_ERROR row is still emitted.
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+    assert log_entry["error_message"] == "other plugin's before_agent failed"
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_callback_logs_correctly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """on_run_error_callback emits INVOCATION_ERROR with traceback."""
+    error = ValueError("Invocation failed")
+    try:
+      raise error
+    except ValueError:
+      pass
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        invocation_context, "invocation"
+    )
+    await bq_plugin_inst.on_run_error_callback(
+        invocation_context=invocation_context,
+        error=error,
+    )
+    await bq_plugin_inst.flush()
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    log_entry = next(r for r in rows if r["event_type"] == "INVOCATION_ERROR")
+    assert log_entry["error_message"] == "Invocation failed"
+    assert log_entry["status"] == "ERROR"
+    content = json.loads(log_entry["content"])
+    assert "error_traceback" in content
+    assert "ValueError: Invocation failed" in content["error_traceback"]
+
+  @pytest.mark.asyncio
+  async def test_on_run_error_callback_cleanup_runs_on_log_failure(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+  ):
+    """on_run_error_callback cleans up even when _log_event raises."""
+    # Push spans and set context vars to simulate active invocation
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    bigquery_agent_analytics_plugin._active_invocation_id_ctx.set("test-inv")
+    bigquery_agent_analytics_plugin._root_agent_name_ctx.set("test-agent")
+
+    # Make _log_event raise
+    with mock.patch.object(
+        bq_plugin_inst, "_log_event", side_effect=RuntimeError("boom")
+    ):
+      # @_safe_callback swallows the exception
+      await bq_plugin_inst.on_run_error_callback(
+          invocation_context=invocation_context,
+          error=ValueError("app error"),
+      )
+
+    # finally block must have cleaned up
+    assert (
+        bigquery_agent_analytics_plugin._active_invocation_id_ctx.get(None)
+        is None
+    )
+    assert (
+        bigquery_agent_analytics_plugin._root_agent_name_ctx.get(None) is None
+    )
+
+  @pytest.mark.asyncio
+  async def test_traceback_not_truncated_with_negative_max_len(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      invocation_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """Traceback is not truncated when max_content_length is -1."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=-1,
+        create_views=False,
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      await plugin._ensure_started()
+
+      error = RuntimeError("x" * 2000)
+      try:
+        raise error
+      except RuntimeError:
+        pass
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin.on_agent_error_callback(
+          agent=mock_agent,
+          callback_context=bigquery_agent_analytics_plugin.CallbackContext(
+              invocation_context
+          ),
+          error=error,
+      )
+      await plugin.flush()
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      log_entry = next(r for r in rows if r["event_type"] == "AGENT_ERROR")
+      content = json.loads(log_entry["content"])
+      # Should NOT be truncated
+      assert "[truncated]" not in content["error_traceback"]
+      assert "x" * 2000 in content["error_traceback"]
 
   @pytest.mark.asyncio
   async def test_table_creation_options(
@@ -2005,18 +2460,22 @@ class TestBigQueryAgentAnalyticsPlugin:
           # that if it were called in a thread, it would work.
           # For this test, we just ensure the plugin is accessible and started.
           loop.run_until_complete(p._ensure_started())
+          return p._started, bool(p._loop_state_by_loop)
         finally:
-          loop.close()
+          try:
+            loop.run_until_complete(p.shutdown())
+          finally:
+            loop.close()
 
       # Run in a separate thread to simulate ThreadPoolExecutor-0_0
       from concurrent.futures import ThreadPoolExecutor
 
       with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_run_in_thread, plugin)
-        future.result()  # Should not raise "no current event loop"
-      assert plugin._started
-      # Verify loop states are populated
-      assert plugin._loop_state_by_loop
+        started, had_loop_state = future.result()
+      assert started
+      assert had_loop_state
+      assert not plugin._loop_state_by_loop
 
   @pytest.mark.asyncio
   async def test_multimodal_offloading(
@@ -2114,7 +2573,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     """Verify no quota_project_id is set when credentials don't provide one.
 
     This is critical for Workload Identity Federation flows where setting
-    quota_project_id on the client breaks auth token refresh (issue #4370).
+    quota_project_id on the client breaks auth token refresh.
     """
     mock_creds = mock.create_autospec(
         google.auth.credentials.Credentials, instance=True, spec_set=True
@@ -2210,7 +2669,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     pickled = pickle.dumps(plugin)
     unpickled = pickle.loads(pickled)
     assert unpickled.project_id == PROJECT_ID
-    assert unpickled._setup_lock is None
+    assert unpickled._setup_future is None
     assert unpickled._executor is None
     # Start the plugin
     await plugin._ensure_started()
@@ -2221,7 +2680,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       unpickled_started = pickle.loads(pickled_started)
       assert unpickled_started.project_id == PROJECT_ID
       # Runtime objects should be None after unpickling
-      assert unpickled_started._setup_lock is None
+      assert unpickled_started._setup_future is None
       assert unpickled_started._executor is None
       assert not unpickled_started._loop_state_by_loop
     finally:
@@ -2259,7 +2718,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     # Capture the actual LLM Span ID (pushed by before_model_callback)
     llm_span_id = (
         bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
@@ -2285,7 +2744,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await bq_plugin_inst.after_model_callback(
         callback_context=callback_context, llm_response=llm_response
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry_resp = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -2348,7 +2807,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           tool_context,
           raw_content=content,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       mock_write_client.append_rows.assert_called_once()
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
@@ -2363,7 +2822,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       self,
       callback_context,
   ):
-    """Regression guard for the duplicate-Cloud-Trace bug (issue #94).
+    """Regression guard for the duplicate-Cloud-Trace bug.
 
     The plugin must NOT call ``tracer.start_span(...)`` from
     ``push_span`` / ``pop_span``.  Any owned OTel span goes through
@@ -2399,7 +2858,7 @@ class TestBigQueryAgentAnalyticsPlugin:
   async def test_push_pop_does_not_export_spans_through_real_provider(
       self, callback_context
   ):
-    """End-to-end regression guard against #94 with a real OTel
+    """End-to-end guard against duplicate Cloud Trace spans with a real OTel
 
     provider + in-memory exporter.
 
@@ -2442,7 +2901,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert exporter.get_finished_spans() == (), (
           "Plugin must not export OTel spans; any owned span would"
           " surface as a duplicate in Cloud Trace alongside the"
-          " framework's real spans (issue #94)."
+          " framework's real spans."
       )
 
     provider.shutdown()
@@ -2886,7 +3345,7 @@ class TestSafeCallbackDecorator:
       await bq_plugin_inst.before_run_callback(
           invocation_context=invocation_context,
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       mock_write_client.append_rows.assert_called_once()
 
   @pytest.mark.asyncio
@@ -3011,33 +3470,41 @@ class TestParserReuse:
         invocation_context=invocation_context,
         user_message=types.Content(parts=[types.Part(text="Hello")]),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
 
     # Parser should be the same instance, not a new one
     assert bq_plugin_inst.parser is parser_after_init
 
   @pytest.mark.asyncio
-  async def test_parser_trace_id_updated_per_call(
+  async def test_parser_identity_not_mutated_per_call(
       self,
       bq_plugin_inst,
       mock_write_client,
       invocation_context,
       dummy_arrow_schema,
   ):
-    """trace_id and span_id on the parser should update per _log_event."""
+    """_log_event must NOT store request identity on the shared parser.
+
+    trace_id/span_id are passed per parse() call: mutating the
+    shared instance let a concurrent event's await resume with another
+    event's identity and overwrite its GCS objects.
+    """
     parser = bq_plugin_inst.parser
     original_trace_id = parser.trace_id
+    original_span_id = parser.span_id
 
     bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
     await bq_plugin_inst.on_user_message_callback(
         invocation_context=invocation_context,
         user_message=types.Content(parts=[types.Part(text="Test")]),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
 
-    # After logging, trace_id/span_id should have been updated
-    # (they're derived from TraceManager, not the initial empty strings)
-    assert parser.span_id != ""
+    # The shared parser's constructor-time fields are untouched; identity
+    # travelled through the parse() call arguments instead.
+    assert parser.trace_id == original_trace_id
+    assert parser.span_id == original_span_id
+    mock_write_client.append_rows.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_parser_not_recreated_with_constructor(
@@ -3058,7 +3525,7 @@ class TestParserReuse:
           invocation_context=invocation_context,
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
       # Constructor should NOT have been called during _log_event
       mock_parser_cls.assert_not_called()
 
@@ -3275,10 +3742,12 @@ class TestLoopStateValidation:
   def _make_loop_state(self):
     """Creates a mock _LoopState with batch_processor and write_client."""
     state = mock.MagicMock()
-    state.batch_processor = mock.MagicMock(
-        spec=bigquery_agent_analytics_plugin.BatchProcessor
+    state.batch_processor = mock.create_autospec(
+        bigquery_agent_analytics_plugin.BatchProcessor,
+        instance=True,
+        spec_set=True,
     )
-    state.batch_processor.flush = mock.AsyncMock()
+    state.batch_processor.get_drop_stats.return_value = {}
     state.write_client = mock.MagicMock()
     return state
 
@@ -3459,7 +3928,7 @@ class TestDuplicateLabels:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -3486,7 +3955,7 @@ class TestDuplicateLabels:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -3510,7 +3979,7 @@ class TestDuplicateLabels:
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -4085,7 +4554,7 @@ class TestMultiSubagentToolLogging:
           tool_args={"project_id": "my-project"},
           tool_context=ctx_a,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # --- Subagent B: image_describer calls describe_this_image ---
       inv_ctx_b = self._make_invocation_context("image_describer", session)
@@ -4098,7 +4567,7 @@ class TestMultiSubagentToolLogging:
           tool_args={"image_uri": "gs://bucket/image.jpg"},
           tool_context=ctx_b,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4152,14 +4621,14 @@ class TestMultiSubagentToolLogging:
           tool_args={"project_id": "proj"},
           tool_context=ctx_1,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_1,
           tool_args={"project_id": "proj"},
           tool_context=ctx_1,
           result={"datasets": ["ds1", "ds2"]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # --- Turn 2: query_analyst calls execute_sql ---
       inv_ctx_2 = self._make_invocation_context(
@@ -4174,14 +4643,14 @@ class TestMultiSubagentToolLogging:
           tool_args={"sql": "SELECT * FROM t"},
           tool_context=ctx_2,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_2,
           tool_args={"sql": "SELECT * FROM t"},
           tool_context=ctx_2,
           result={"rows": [{"col": "val"}]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4246,7 +4715,7 @@ class TestMultiSubagentToolLogging:
       await plugin.before_agent_callback(
           agent=mock_agent, callback_context=cb_ctx
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 2. LLM_REQUEST (agent decides to call a tool)
       llm_req = llm_request_lib.LlmRequest(
@@ -4258,7 +4727,7 @@ class TestMultiSubagentToolLogging:
       await plugin.before_model_callback(
           callback_context=cb_ctx, llm_request=llm_req
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 3. LLM_RESPONSE (function call)
       llm_resp = llm_response_lib.LlmResponse(
@@ -4276,7 +4745,7 @@ class TestMultiSubagentToolLogging:
       await plugin.after_model_callback(
           callback_context=cb_ctx, llm_response=llm_resp
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 4. TOOL_STARTING
       bigquery_agent_analytics_plugin.TraceManager.push_span(tool_ctx, "tool")
@@ -4285,7 +4754,7 @@ class TestMultiSubagentToolLogging:
           tool_args={"table": "events"},
           tool_context=tool_ctx,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 5. TOOL_COMPLETED
       await plugin.after_tool_callback(
@@ -4294,13 +4763,13 @@ class TestMultiSubagentToolLogging:
           tool_context=tool_ctx,
           result={"schema": [{"name": "id", "type": "INT64"}]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # 6. AGENT_COMPLETED
       await plugin.after_agent_callback(
           agent=mock_agent, callback_context=cb_ctx
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4365,7 +4834,7 @@ class TestMultiSubagentToolLogging:
           tool_context=tool_ctx,
           error=RuntimeError("Table not found"),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4414,14 +4883,14 @@ class TestMultiSubagentToolLogging:
           tool_args={"dataset": "analytics"},
           tool_context=ctx_1,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_1,
           tool_args={"dataset": "analytics"},
           tool_context=ctx_1,
           result={"tables": ["events", "metrics"]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Subagent 2: image_describer — full tool cycle
       inv_ctx_2 = self._make_invocation_context(
@@ -4435,14 +4904,14 @@ class TestMultiSubagentToolLogging:
           tool_args={"image_uri": "https://example.com/img.jpg"},
           tool_context=ctx_2,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_2,
           tool_args={"image_uri": "https://example.com/img.jpg"},
           tool_context=ctx_2,
           result={"description": "A photo of scones"},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4516,7 +4985,7 @@ class TestMultiSubagentToolLogging:
           agent=inv_ctx_t1_orch.agent,
           callback_context=cb_ctx_t1_orch,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Orchestrator delegates to schema_explorer
       inv_ctx_t1_sub = self._make_invocation_context(
@@ -4531,7 +5000,7 @@ class TestMultiSubagentToolLogging:
           agent=inv_ctx_t1_sub.agent,
           callback_context=cb_ctx_t1_sub,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # schema_explorer calls tool
       tool_1 = self._make_tool("list_dataset_ids")
@@ -4543,28 +5012,28 @@ class TestMultiSubagentToolLogging:
           tool_args={"project_id": "proj"},
           tool_context=tool_ctx_t1,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_1,
           tool_args={"project_id": "proj"},
           tool_context=tool_ctx_t1,
           result={"datasets": ["ds1"]},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # schema_explorer done
       await plugin.after_agent_callback(
           agent=inv_ctx_t1_sub.agent,
           callback_context=cb_ctx_t1_sub,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Orchestrator done
       await plugin.after_agent_callback(
           agent=inv_ctx_t1_orch.agent,
           callback_context=cb_ctx_t1_orch,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # ===== Turn 2: image_describer =====
       inv_ctx_t2_orch = self._make_invocation_context(
@@ -4576,7 +5045,7 @@ class TestMultiSubagentToolLogging:
           agent=inv_ctx_t2_orch.agent,
           callback_context=cb_ctx_t2_orch,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Orchestrator delegates to image_describer
       inv_ctx_t2_sub = self._make_invocation_context(
@@ -4591,7 +5060,7 @@ class TestMultiSubagentToolLogging:
           agent=inv_ctx_t2_sub.agent,
           callback_context=cb_ctx_t2_sub,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # image_describer calls tool
       tool_2 = self._make_tool("describe_this_image")
@@ -4603,28 +5072,28 @@ class TestMultiSubagentToolLogging:
           tool_args={"image_uri": "gs://b/img.jpg"},
           tool_context=tool_ctx_t2,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
       await plugin.after_tool_callback(
           tool=tool_2,
           tool_args={"image_uri": "gs://b/img.jpg"},
           tool_context=tool_ctx_t2,
           result={"desc": "Scones on a table"},
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # image_describer done
       await plugin.after_agent_callback(
           agent=inv_ctx_t2_sub.agent,
           callback_context=cb_ctx_t2_sub,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       # Orchestrator done
       await plugin.after_agent_callback(
           agent=inv_ctx_t2_orch.agent,
           callback_context=cb_ctx_t2_orch,
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -4734,7 +5203,7 @@ class TestSchemaAutoUpgrade:
     plugin = self._make_plugin(auto_schema_upgrade=True)
     existing = mock.MagicMock(spec=bigquery.Table)
     existing.schema = [
-        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
     ]
     existing.labels = {"other": "label"}
     plugin.client.get_table.return_value = existing
@@ -4766,18 +5235,51 @@ class TestSchemaAutoUpgrade:
     plugin._ensure_schema_exists()
     plugin.client.update_table.assert_not_called()
 
-  def test_upgrade_error_is_logged_not_raised(self):
-    """Schema upgrade errors are logged, not propagated."""
+  def test_upgrade_error_propagates_when_fields_missing(self):
+    """Schema upgrade failure raises when required fields are missing.
+
+    Swallowing it let _ensure_started mark the plugin ready against a
+    table every later write can fail on, with no readiness retry.
+    """
     plugin = self._make_plugin(auto_schema_upgrade=True)
     existing = mock.MagicMock(spec=bigquery.Table)
     existing.schema = [
-        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
     ]
     existing.labels = {}
     plugin.client.get_table.return_value = existing
     plugin.client.update_table.side_effect = Exception("boom")
-    # Should not raise
-    plugin._ensure_schema_exists()
+    with pytest.raises(Exception, match="boom"):
+      plugin._ensure_schema_exists()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("existing_type", "existing_mode"),
+      [("STRING", "REQUIRED"), ("TIMESTAMP", "NULLABLE")],
+      ids=("type", "mode"),
+  )
+  async def test_incompatible_existing_field_blocks_startup(
+      self, existing_type, existing_mode
+  ):
+    """Same-name fields with incompatible type/mode are not ready."""
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    plugin.config.create_views = False
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", existing_type, mode=existing_mode),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    try:
+      outcome = await plugin._ensure_started()
+      assert outcome == "failed"
+      assert plugin._started is False
+      assert isinstance(plugin._startup_error, ValueError)
+      assert "timestamp" in str(plugin._startup_error)
+      plugin.client.update_table.assert_not_called()
+    finally:
+      await plugin.shutdown()
 
   def test_upgrade_preserves_existing_columns(self):
     """Existing columns are never dropped or altered during upgrade."""
@@ -4787,7 +5289,7 @@ class TestSchemaAutoUpgrade:
     custom_field = bigquery.SchemaField("my_custom_col", "STRING")
     existing = mock.MagicMock(spec=bigquery.Table)
     existing.schema = [
-        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
         bigquery.SchemaField("event_type", "STRING"),
         custom_field,
     ]
@@ -4830,7 +5332,7 @@ class TestSchemaAutoUpgrade:
     plugin = self._make_plugin(auto_schema_upgrade=True)
     existing = mock.MagicMock(spec=bigquery.Table)
     existing.schema = [
-        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
         bigquery.SchemaField("event_type", "STRING"),
     ]
     # Simulate a table stamped with an older version.
@@ -4861,7 +5363,7 @@ class TestSchemaAutoUpgrade:
     # First call: table exists with old schema.
     existing = mock.MagicMock(spec=bigquery.Table)
     existing.schema = [
-        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
     ]
     existing.labels = {}
     plugin.client.get_table.return_value = existing
@@ -4883,7 +5385,7 @@ class TestSchemaAutoUpgrade:
     plugin = self._make_plugin(auto_schema_upgrade=True)
     existing = mock.MagicMock(spec=bigquery.Table)
     existing.schema = [
-        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
     ]
     existing.labels = {}
     plugin.client.get_table.return_value = existing
@@ -4899,15 +5401,67 @@ class TestSchemaAutoUpgrade:
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
     assert config.auto_schema_upgrade is True
 
-  def test_create_table_conflict_is_ignored(self):
-    """Race condition (Conflict) during create_table is silently handled."""
+  def test_create_table_conflict_refetches_concurrent_table(self):
+    """Conflict during create_table re-fetches the concurrently created
+
+    table instead of blindly trusting it.
+    """
     plugin = self._make_plugin()
-    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = plugin._schema
+    existing.labels = {}
+    plugin.client.get_table.side_effect = [
+        cloud_exceptions.NotFound("not found"),
+        existing,
+    ]
     plugin.client.create_table.side_effect = cloud_exceptions.Conflict(
         "already exists"
     )
     # Should not raise.
     plugin._ensure_schema_exists()
+    assert plugin.client.get_table.call_count == 2
+
+  def test_create_table_conflict_upgrades_incompatible_table(self):
+    """A concurrently created table missing required columns goes through
+
+    the normal upgrade path after Conflict.
+    """
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    incompatible = mock.MagicMock(spec=bigquery.Table)
+    incompatible.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED")
+    ]
+    incompatible.labels = {}
+    plugin.client.get_table.side_effect = [
+        cloud_exceptions.NotFound("not found"),
+        incompatible,
+    ]
+    plugin.client.create_table.side_effect = cloud_exceptions.Conflict(
+        "already exists"
+    )
+    plugin._ensure_schema_exists()
+    assert plugin.client.get_table.call_count == 2
+    plugin.client.update_table.assert_called_once()
+    updated_names = {
+        f.name for f in plugin.client.update_table.call_args[0][0].schema
+    }
+    assert "event_type" in updated_names
+
+  def test_create_table_conflict_refetch_failure_propagates(self):
+    """If the post-Conflict readiness check fails, setup must fail so
+
+    _ensure_started retries later.
+    """
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    plugin.client.get_table.side_effect = [
+        cloud_exceptions.NotFound("not found"),
+        cloud_exceptions.ServiceUnavailable("control plane down"),
+    ]
+    plugin.client.create_table.side_effect = cloud_exceptions.Conflict(
+        "already exists"
+    )
+    with pytest.raises(cloud_exceptions.ServiceUnavailable):
+      plugin._ensure_schema_exists()
 
 
 class TestToolProvenance:
@@ -5152,7 +5706,7 @@ class TestToolProvenance:
           tool_context=tool_ctx,
           error=RuntimeError("connection refused"),
       )
-      await asyncio.sleep(0.01)
+      await plugin.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -5214,6 +5768,9 @@ class TestHITLTracing:
     part = types.Part(function_call=fc)
     event.content = types.Content(role="model", parts=[part])
     event.actions = event_actions_lib.EventActions()
+    # Pydantic fields are not in the spec; without this, on_event_callback
+    # raises AttributeError and _safe_callback hides the truncation.
+    event.partial = None
     return event
 
   def _make_fr_event(self, fr_name, response=None):
@@ -5223,6 +5780,9 @@ class TestHITLTracing:
     part = types.Part(function_response=fr)
     event.content = types.Content(role="user", parts=[part])
     event.actions = event_actions_lib.EventActions()
+    # Pydantic fields are not in the spec; without this, on_event_callback
+    # raises AttributeError and _safe_callback hides the truncation.
+    event.partial = None
     return event
 
   @pytest.mark.asyncio
@@ -5237,7 +5797,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "HITL_CONFIRMATION_REQUEST" in event_types
@@ -5254,7 +5814,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "HITL_CREDENTIAL_REQUEST" in event_types
@@ -5271,7 +5831,7 @@ class TestHITLTracing:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "HITL_CONFIRMATION_REQUEST_COMPLETED" in event_types
@@ -5283,12 +5843,17 @@ class TestHITLTracing:
       mock_write_client,
       invocation_context,
       dummy_arrow_schema,
+      caplog,
   ):
     event = self._make_fc_event("regular_tool", {"x": 1})
-    await bq_plugin_inst.on_event_callback(
-        invocation_context=invocation_context, event=event
-    )
-    await asyncio.sleep(0.05)
+    with caplog.at_level(logging.ERROR):
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context, event=event
+      )
+    await bq_plugin_inst.flush()
+    # _safe_callback swallows callback exceptions, so an empty row set does
+    # not by itself prove the callback ran; a truncated one emits none either.
+    assert "plugin error in on_event_callback" not in caplog.text
     # No HITL events should be emitted for non-HITL function calls.
     # on_event_callback only logs STATE_DELTA and HITL events; a regular
     # function call produces neither.
@@ -5296,12 +5861,12 @@ class TestHITLTracing:
 
 
 # ==============================================================================
-# TEST CLASS: Span Hierarchy Isolation (Issue #4561)
+# TEST CLASS: Span Hierarchy Isolation
 # ==============================================================================
 
 
 class TestSpanHierarchyIsolation:
-  """Regression tests for https://github.com/google/adk-python/issues/4561.
+  """Regression tests for span hierarchy isolation.
 
   ``push_span()`` must NOT attach its span to the ambient OTel context.
   If it does, any subsequent ``tracer.start_as_current_span()`` in the
@@ -5696,7 +6261,7 @@ class TestForkSafety:
     plugin._executor = mock.MagicMock()
     plugin.offloader = mock.MagicMock()
     plugin.parser = mock.MagicMock()
-    plugin._setup_lock = mock.MagicMock()
+    plugin._setup_future = mock.MagicMock()
     # Keep pure-data fields
     plugin._schema = ["kept"]
     plugin.arrow_schema = "kept_arrow"
@@ -5711,7 +6276,7 @@ class TestForkSafety:
     assert plugin._executor is None
     assert plugin.offloader is None
     assert plugin.parser is None
-    assert plugin._setup_lock is None
+    assert plugin._setup_future is None
     # Pure-data fields are preserved
     assert plugin._schema == ["kept"]
     assert plugin.arrow_schema == "kept_arrow"
@@ -5978,6 +6543,47 @@ class TestAnalyticsViews:
       view_name = "v_" + event_type.lower()
       assert view_name in all_sql, f"View {view_name} not found in SQL"
 
+  def test_error_views_contain_traceback_column(self):
+    """AGENT_ERROR and INVOCATION_ERROR views include error_traceback."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    all_sqls = {c[0][0] for c in calls}
+
+    agent_error_sqls = [s for s in all_sqls if "v_agent_error" in s]
+    assert len(agent_error_sqls) == 1
+    assert "error_traceback" in agent_error_sqls[0]
+    assert "total_ms" in agent_error_sqls[0]
+
+    inv_error_sqls = [s for s in all_sqls if "v_invocation_error" in s]
+    assert len(inv_error_sqls) == 1
+    assert "error_traceback" in inv_error_sqls[0]
+
+  def test_llm_response_view_exposes_token_usage_columns(self):
+    """LLM_RESPONSE view surfaces cached/thinking/tool-use token columns.
+
+    These are read from the full ``usage_metadata`` proto that is already
+    logged to ``attributes.usage_metadata``, so they are sourced from
+    ``attributes`` rather than the ``content.usage`` summary.
+    """
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    plugin.client.query.return_value = mock.MagicMock()
+
+    plugin._ensure_schema_exists()
+
+    all_sql = " ".join(c[0][0] for c in plugin.client.query.call_args_list)
+    assert "usage_cached_tokens" in all_sql
+    assert "usage_thinking_tokens" in all_sql
+    assert "usage_tool_use_tokens" in all_sql
+    assert "$.usage_metadata.thoughts_token_count" in all_sql
+    assert "$.usage_metadata.tool_use_prompt_token_count" in all_sql
+
   def test_config_create_views_default_true(self):
     """Config create_views defaults to True."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
@@ -6008,12 +6614,16 @@ class TestAnalyticsViews:
     await plugin.shutdown()
 
   def test_views_not_created_after_table_creation_failure(self):
-    """View creation is skipped when create_table raises a non-Conflict error."""
+    """create_table failure raises (fail setup) and skips views."""
     plugin = self._make_plugin(create_views=True)
     plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
     plugin.client.create_table.side_effect = RuntimeError("BQ down")
 
-    plugin._ensure_schema_exists()
+    # Table readiness is a startup requirement: the failure propagates so
+    # _ensure_started keeps _started=False and retries later, instead of
+    # marking the plugin started against a missing table.
+    with pytest.raises(RuntimeError, match="BQ down"):
+      plugin._ensure_schema_exists()
 
     # Views should NOT be attempted since table creation failed
     plugin.client.query.assert_not_called()
@@ -6114,12 +6724,10 @@ class TestAnalyticsViews:
 
 
 # ==============================================================================
-# Trace-ID Continuity Tests (Issue #4645)
+# Trace-ID Continuity Tests
 # ==============================================================================
 class TestTraceIdContinuity:
   """Tests for trace_id continuity across all events in an invocation.
-
-  Regression tests for https://github.com/google/adk-python/issues/4645.
 
   When there is no ambient OTel span (e.g. Agent Engine, custom runners),
   early events (USER_MESSAGE_RECEIVED, INVOCATION_STARTING) used to fall
@@ -6132,9 +6740,9 @@ class TestTraceIdContinuity:
   async def test_trace_id_continuity_no_ambient_span(self, callback_context):
     """All events share one trace_id when no ambient OTel span exists.
 
-    Simulates the #4645 scenario: OTel IS configured (real TracerProvider)
-    but the Runner's ambient span is NOT present (e.g. Agent Engine,
-    custom runners).
+    Simulates the broken-continuity scenario: OTel IS configured (real
+    TracerProvider) but the Runner's ambient span is NOT present (e.g. Agent
+    Engine, custom runners).
     """
     from opentelemetry.sdk.trace import TracerProvider as SdkProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -6287,7 +6895,7 @@ class TestTraceIdContinuity:
       await bq_plugin_inst.after_run_callback(
           invocation_context=invocation_context
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       # Collect all emitted rows.
       rows = await _get_captured_rows_async(
@@ -6454,7 +7062,7 @@ class TestSpanIdConsistency:
             invocation_context=invocation_context
         )
 
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -6520,7 +7128,7 @@ class TestSpanIdConsistency:
           invocation_context=invocation_context
       )
 
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -6590,7 +7198,7 @@ class TestSpanIdConsistency:
       await bq_plugin_inst.after_run_callback(
           invocation_context=invocation_context
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -6659,7 +7267,7 @@ class TestStackLeakSafety:
   def test_clear_stack_does_not_export_spans(self, callback_context):
     """``clear_stack()`` clears the internal records but does NOT
 
-    export any OTel spans (issue #94 regression guard).
+    export any OTel spans (duplicate-Cloud-Trace regression guard).
 
     Pre-fix, ``clear_stack()`` called ``record.span.end()`` for every
     owned record, which delivered the now-finished span to whatever
@@ -6696,11 +7304,11 @@ class TestStackLeakSafety:
       result = bigquery_agent_analytics_plugin._span_records_ctx.get()
       assert result == []
 
-      # Still no exported spans — the regression guard for #94.
+      # Still no exported spans — the duplicate-Cloud-Trace guard.
       assert exporter.get_finished_spans() == (), (
           "clear_stack() must not export OTel spans; any owned span"
           " would surface as a duplicate in Cloud Trace alongside the"
-          " framework's real spans (issue #94)."
+          " framework's real spans."
       )
 
     provider.shutdown()
@@ -6907,7 +7515,7 @@ class TestStackLeakSafety:
       await bq_plugin_inst.after_run_callback(
           invocation_context=invocation_context
       )
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -6995,7 +7603,7 @@ class TestRootAgentNameAcrossInvocations:
           agent=inv1.agent, callback_context=cb1
       )
       await bq_plugin_inst.after_run_callback(invocation_context=inv1)
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows_inv1 = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -7014,7 +7622,7 @@ class TestRootAgentNameAcrossInvocations:
           agent=inv2.agent, callback_context=cb2
       )
       await bq_plugin_inst.after_run_callback(invocation_context=inv2)
-      await asyncio.sleep(0.01)
+      await bq_plugin_inst.flush()
 
       rows_inv2 = await _get_captured_rows_async(
           mock_write_client, dummy_arrow_schema
@@ -7237,6 +7845,31 @@ class TestSchemaUpgradeNestedFields:
     assert "key" in sub_names
     assert "value" in sub_names
 
+  def test_nested_field_mode_mismatch_is_rejected(self):
+    """Nested same-name fields must match type and mode too."""
+    plugin = self._make_plugin()
+    plugin._schema = [
+        bigquery.SchemaField(
+            "metadata",
+            "RECORD",
+            fields=[bigquery.SchemaField("key", "STRING", mode="REQUIRED")],
+        )
+    ]
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField(
+            "metadata",
+            "RECORD",
+            fields=[bigquery.SchemaField("key", "STRING", mode="NULLABLE")],
+        )
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+
+    with pytest.raises(ValueError, match=r"metadata\.key"):
+      plugin._ensure_schema_exists()
+    plugin.client.update_table.assert_not_called()
+
   def test_version_label_not_stamped_on_failure(self):
     """A failed update_table does not persist the version label."""
     plugin = self._make_plugin()
@@ -7253,8 +7886,10 @@ class TestSchemaUpgradeNestedFields:
     plugin.client.get_table.return_value = existing
     plugin.client.update_table.side_effect = Exception("network error")
 
-    # Should not raise.
-    plugin._ensure_schema_exists()
+    # Raises so setup is not marked ready against a table with missing
+    # fields.
+    with pytest.raises(Exception, match="network error"):
+      plugin._ensure_schema_exists()
 
     # The label is set on the table object before update_table is
     # called, but since update_table failed the label was never
@@ -7330,7 +7965,12 @@ class TestMultiLoopShutdownDrainsOtherLoops:
       mock_to_arrow_schema,
       mock_asyncio_to_thread,
   ):
-    """Shutdown drains batch_processor.shutdown on non-current loops."""
+    """Shutdown drains batch_processor.shutdown on non-current loops.
+
+    Uses a REAL second loop: the drain task is
+    created inside the remote loop's own callback (no
+    run_coroutine_threadsafe), so the drain must actually execute there.
+    """
     plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
         project_id=PROJECT_ID,
         dataset_id=DATASET_ID,
@@ -7338,42 +7978,51 @@ class TestMultiLoopShutdownDrainsOtherLoops:
     )
     await plugin._ensure_started()
 
-    # Create a mock "other" loop with a mock batch processor.
-    other_loop = mock.MagicMock(spec=asyncio.AbstractEventLoop)
-    other_loop.is_closed.return_value = False
+    other_loop = asyncio.new_event_loop()
+    thread = platform_thread.create_thread(target=other_loop.run_forever)
+    thread.daemon = True
+    thread.start()
+    try:
+      drain_thread_ids = []
 
-    mock_other_bp = mock.AsyncMock()
-    mock_other_write_client = mock.MagicMock()
-    mock_other_write_client.transport = mock.AsyncMock()
+      async def record_shutdown(timeout=None):
+        del timeout
+        drain_thread_ids.append(threading.get_ident())
 
-    other_state = bigquery_agent_analytics_plugin._LoopState(
-        write_client=mock_other_write_client,
-        batch_processor=mock_other_bp,
-    )
-    plugin._loop_state_by_loop[other_loop] = other_state
+      # get_drop_stats() is synchronous; a blanket AsyncMock makes it return a
+      # coroutine, and the AttributeError shutdown() then swallows truncates the
+      # rest of its body.
+      mock_other_bp = mock.create_autospec(
+          bigquery_agent_analytics_plugin.BatchProcessor,
+          instance=True,
+          spec_set=True,
+      )
+      mock_other_bp.shutdown = record_shutdown
+      mock_other_bp.get_drop_stats.return_value = {}
+      mock_other_write_client = mock.MagicMock()
+      mock_other_write_client.transport = mock.AsyncMock()
 
-    # Patch run_coroutine_threadsafe to verify it's called for
-    # the other loop's batch_processor.  Close the coroutine arg
-    # to avoid "coroutine was never awaited" RuntimeWarning.
-    mock_future = mock.MagicMock()
-    mock_future.result.return_value = None
+      other_state = bigquery_agent_analytics_plugin._LoopState(
+          write_client=mock_other_write_client,
+          batch_processor=mock_other_bp,
+      )
+      plugin._loop_state_by_loop[other_loop] = other_state
 
-    def _fake_run_coroutine_threadsafe(coro, loop):
-      coro.close()
-      return mock_future
+      await plugin.shutdown(timeout=5)
 
-    with mock.patch.object(
-        asyncio,
-        "run_coroutine_threadsafe",
-        side_effect=_fake_run_coroutine_threadsafe,
-    ) as mock_rcts:
-      await plugin.shutdown()
-
-      # Verify run_coroutine_threadsafe was called with
-      # the other loop.
-      mock_rcts.assert_called()
-      call_args = mock_rcts.call_args
-      assert call_args[0][1] is other_loop
+      # The drain ran on the OTHER loop's thread and the state was
+      # claimed after a clean completion.
+      assert drain_thread_ids == [thread.ident]
+      assert other_loop not in plugin._loop_state_by_loop
+      mock_other_write_client.transport.close.assert_awaited()
+      # shutdown() swallows exceptions, so only its tail work proves the body
+      # ran past the drop-stat fold.
+      assert plugin._loop_state_by_loop == {}
+      assert plugin.client is None
+    finally:
+      other_loop.call_soon_threadsafe(other_loop.stop)
+      thread.join(timeout=5)
+      other_loop.close()
 
 
 class TestCacheMetadataLogging:
@@ -7397,7 +8046,7 @@ class TestCacheMetadataLogging:
         callback_context=callback_context,
         llm_response=llm_response,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
 
@@ -7432,7 +8081,7 @@ class TestCacheMetadataLogging:
         callback_context=callback_context,
         llm_response=mock_response,
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     log_entry = next(r for r in rows if r["event_type"] == "LLM_RESPONSE")
 
@@ -7480,7 +8129,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "A2A_INTERACTION" in event_types
@@ -7519,7 +8168,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     event_types = [r["event_type"] for r in rows]
     assert "A2A_INTERACTION" in event_types
@@ -7552,7 +8201,7 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     # No events logged — a2a:task_id alone is not a meaningful
     # interaction payload.
     assert mock_write_client.append_rows.call_count == 0
@@ -7572,12 +8221,12 @@ class TestA2AInteractionLogging:
     )
     assert result is None
 
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
 
 # ================================================================
-# TEST CLASS: Dataset location handling (Issue #5476)
+# TEST CLASS: Dataset location handling
 # ================================================================
 class TestDatasetLocationHandling:
   """Tests that BQ client is created without a default location.
@@ -7675,7 +8324,7 @@ class TestDatasetLocationHandling:
 
 
 # ================================================================
-# TEST CLASS: Fork detection after pickle (Issue #86 / PR #5528)
+# TEST CLASS: Fork detection after pickle
 # ================================================================
 class TestForkDetectionAfterPickle:
   """Tests that unpickled plugins do not false-positive fork detection."""
@@ -7745,7 +8394,7 @@ class TestForkDetectionAfterPickle:
 
 
 # ================================================================
-# TEST CLASS: GCS offload unit mismatch fix (Issue #5561)
+# TEST CLASS: GCS offload unit mismatch fix
 # ================================================================
 class TestOffloadUnitSeparation:
   """Tests that byte-based inline limit and character-based truncation
@@ -7858,9 +8507,108 @@ class TestOffloadUnitSeparation:
     assert parts[0]["storage_mode"] == "INLINE"
     assert "TRUNCATED" in parts[0]["text"]
 
+  @pytest.mark.asyncio
+  async def test_raw_prompt_text_is_sanitized_inline(self):
+    """Prompt, role, and system strings are redacted before row storage."""
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+    secret = "INLINE-CONTENT-SECRET"
+    request = llm_request_lib.LlmRequest(
+        contents=[
+            types.Content(
+                role=json.dumps({"authorization": secret}),
+                parts=[types.Part(text=json.dumps({"secret": secret}))],
+            )
+        ],
+        config=types.GenerateContentConfig(
+            system_instruction=json.dumps({"private_key": secret})
+        ),
+    )
+
+    payload, parts, _ = await parser.parse(request)
+    stored = json.dumps({"content": payload, "content_parts": parts})
+    assert secret not in stored
+    assert stored.count("[REDACTED]") >= 3
+
+  @pytest.mark.asyncio
+  async def test_raw_prompt_text_is_redacted_at_row_boundary(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """The serialized BigQuery row never regains parser-redacted text."""
+    secret = "ROW-BOUNDARY-CONTENT-SECRET"
+    request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part(text=json.dumps({"access_token": secret}))],
+            )
+        ],
+    )
+
+    await bq_plugin_inst._log_event(
+        "LLM_REQUEST",
+        callback_context,
+        raw_content=request,
+        event_data=bigquery_agent_analytics_plugin.EventData(
+            model=request.model
+        ),
+    )
+    await bq_plugin_inst.flush()
+    row = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    stored = json.dumps(row, default=str)
+    assert secret not in stored
+    assert "[REDACTED]" in stored
+
+  @pytest.mark.asyncio
+  async def test_gcs_text_upload_receives_only_sanitized_content(self):
+    """Raw text is sanitized before either its GCS or row representation."""
+    mock_offloader = mock.AsyncMock()
+    mock_offloader.upload_content.return_value = "gs://bucket/safe.txt"
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=mock_offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+    secret = "GCS-CONTENT-SECRET"
+    text = json.dumps({"token": secret, "padding": "x" * (33 * 1024)})
+
+    payload, parts, _ = await parser.parse(
+        types.Content(parts=[types.Part(text=text)])
+    )
+
+    uploaded = mock_offloader.upload_content.call_args.args[0]
+    assert secret not in uploaded
+    assert "[REDACTED]" in uploaded
+    stored = json.dumps({"content": payload, "content_parts": parts})
+    assert secret not in stored
+    assert "[REDACTED]" in stored
+
+  @pytest.mark.asyncio
+  async def test_internal_formatter_sentinel_is_preserved(self):
+    """Raw-text sanitization never corrupts generated formatter sentinels."""
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None, trace_id="t", span_id="s"
+    )
+    payload, _, _ = await parser.parse(
+        bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+    )
+    assert payload == bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+
 
 # ================================================================
-# TEST CLASS: AGENT_RESPONSE logging (Issue #87)
+# TEST CLASS: AGENT_RESPONSE logging
 # ================================================================
 class TestAgentResponseLogging:
   """Tests that final agent response events are captured correctly."""
@@ -7886,7 +8634,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
     assert len(agent_resp_rows) == 1
@@ -7914,7 +8662,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -7935,7 +8683,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -7955,7 +8703,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -7982,7 +8730,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     types_emitted = [r["event_type"] for r in rows]
     assert "AGENT_RESPONSE" not in types_emitted
@@ -8007,7 +8755,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8033,7 +8781,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     agent_resp_rows = [r for r in rows if r["event_type"] == "AGENT_RESPONSE"]
     assert len(agent_resp_rows) == 1
@@ -8057,7 +8805,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8076,7 +8824,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
   @pytest.mark.asyncio
@@ -8103,7 +8851,7 @@ class TestAgentResponseLogging:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.05)
+    await bq_plugin_inst.flush()
     assert mock_write_client.append_rows.call_count == 0
 
 
@@ -8132,6 +8880,19 @@ class TestDropStats:
     fake_batch = mock.MagicMock()
     fake_batch.serialize.return_value.to_pybytes.return_value = b"batch"
     bp._prepare_arrow_batch = mock.MagicMock(return_value=fake_batch)
+
+  @pytest.mark.asyncio
+  async def test_flush_waits_for_dequeued_write(self, dummy_arrow_schema):
+    bp = self._make_processor(dummy_arrow_schema)
+    await bp.append({"event": 0})
+    await bp._queue.get()
+
+    flush_task = asyncio.create_task(bp.flush())
+    await asyncio.sleep(0)
+
+    assert not flush_task.done()
+    bp._queue.task_done()
+    await flush_task
 
   @pytest.mark.asyncio
   async def test_queue_full_drops_are_counted(self, dummy_arrow_schema):
@@ -8170,7 +8931,9 @@ class TestDropStats:
     assert bp.dropped_event_count == 2
 
   @pytest.mark.asyncio
-  async def test_non_retryable_drops_are_counted(self, dummy_arrow_schema):
+  async def test_non_retryable_drops_are_counted(
+      self, dummy_arrow_schema, caplog
+  ):
     bp = self._make_processor(dummy_arrow_schema)
     self._stub_arrow_prep(bp)
 
@@ -8185,10 +8948,17 @@ class TestDropStats:
 
     bp.write_client.append_rows.side_effect = fake_append_rows
 
-    await bp._write_rows_with_retry([{"a": 1}])
+    secret = "NONRETRYABLE-ROW-SECRET"
+    with caplog.at_level(
+        logging.ERROR,
+        logger="google_adk.google.adk.plugins.bigquery_agent_analytics_plugin",
+    ):
+      await bp._write_rows_with_retry([{"a": secret}])
 
     assert bp.get_drop_stats()["non_retryable"] == 1
     assert bp.dropped_event_count == 1
+    assert secret not in caplog.text
+    assert "1 row(s) dropped" in caplog.text
 
   def test_plugin_get_drop_stats_aggregates_across_loops(
       self, dummy_arrow_schema
@@ -8297,7 +9067,7 @@ class TestAdkEnvelope:
         invocation_context=invocation_context,
         user_message=types.Content(role="user", parts=[types.Part(text="hi")]),
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -8335,7 +9105,7 @@ class TestAdkEnvelope:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -8380,7 +9150,7 @@ class TestAdkEnvelope:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -8410,7 +9180,7 @@ class TestC4AgentTransfer:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     transfers = [r for r in rows if r["event_type"] == "AGENT_TRANSFER"]
     assert len(transfers) == 1
@@ -8447,7 +9217,7 @@ class TestC5EventCompaction:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     compactions = [r for r in rows if r["event_type"] == "EVENT_COMPACTION"]
     assert len(compactions) == 1
@@ -8478,7 +9248,7 @@ class TestC6AgentStateCheckpoint:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     cps = [r for r in rows if r["event_type"] == "AGENT_STATE_CHECKPOINT"]
     assert len(cps) == 1
@@ -8503,7 +9273,7 @@ class TestC6AgentStateCheckpoint:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     cps = [r for r in rows if r["event_type"] == "AGENT_STATE_CHECKPOINT"]
     assert len(cps) == 1
@@ -8531,7 +9301,7 @@ class TestC6AgentStateCheckpoint:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     cps = [r for r in rows if r["event_type"] == "AGENT_STATE_CHECKPOINT"]
     assert len(cps) == 1
@@ -8688,7 +9458,7 @@ class TestC8ActionAttributes:
     await bq_plugin_inst.on_event_callback(
         invocation_context=invocation_context, event=event
     )
-    await asyncio.sleep(0.01)
+    await bq_plugin_inst.flush()
     log_entry = await _get_captured_event_dict_async(
         mock_write_client, dummy_arrow_schema
     )
@@ -8815,3 +9585,4824 @@ class TestUnmatchedLongRunningIdFallback:
     rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
     pauses = [r for r in rows if r["event_type"] == "TOOL_PAUSED"]
     assert len(pauses) == 1
+
+
+# ==============================================================================
+# Observability controls (otel correlation, custom_metadata allowlist,
+# column projection)
+# ==============================================================================
+
+
+class _FakeMetaEvent:
+  """Minimal stand-in for an Event carrying custom_metadata."""
+
+  def __init__(self, custom_metadata=None):
+    self.custom_metadata = custom_metadata
+
+
+def _make_offline_plugin(config):
+  """Constructs a plugin without starting the BQ/network path."""
+  return bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+      PROJECT_ID, DATASET_ID, config=config
+  )
+
+
+# --- custom_metadata allowlist ---
+
+
+def test_parse_custom_metadata_allowlist_exact_and_prefix():
+  exact, prefixes = (
+      bigquery_agent_analytics_plugin._parse_custom_metadata_allowlist(
+          ["citation_metadata", "a2a:*", "tool:*"]
+      )
+  )
+  assert exact == frozenset({"citation_metadata"})
+  assert prefixes == ("a2a:", "tool:")
+
+
+def test_parse_custom_metadata_allowlist_none():
+  exact, prefixes = (
+      bigquery_agent_analytics_plugin._parse_custom_metadata_allowlist(None)
+  )
+  assert exact == frozenset()
+  assert prefixes == ()
+
+
+def test_custom_metadata_allowed_exact_and_prefix():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["citation_metadata", "trace:*"]
+      )
+  )
+  assert plugin._custom_metadata_allowed("citation_metadata")
+  assert plugin._custom_metadata_allowed("trace:foo")
+  # a plain key is never treated as a prefix
+  assert not plugin._custom_metadata_allowed("citation")
+  assert not plugin._custom_metadata_allowed("other")
+  assert not plugin._custom_metadata_allowed(123)
+
+
+def test_capture_custom_metadata_namespace_and_allowlist():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["citation_metadata"]
+      )
+  )
+  event_data = bigquery_agent_analytics_plugin.EventData(
+      source_event=_FakeMetaEvent(
+          {"citation_metadata": {"c1": "sql1"}, "other": "drop"}
+      )
+  )
+  attrs: dict = {}
+  truncated = plugin._capture_custom_metadata(event_data, attrs)
+  assert truncated is False
+  assert attrs["custom_metadata"] == {"citation_metadata": {"c1": "sql1"}}
+  assert "other" not in attrs["custom_metadata"]
+
+
+def test_capture_custom_metadata_redaction_does_not_set_flag():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["secrets"]
+      )
+  )
+  event_data = bigquery_agent_analytics_plugin.EventData(
+      source_event=_FakeMetaEvent({"secrets": {"api_key": "abc", "ok": "v"}})
+  )
+  attrs: dict = {}
+  truncated = plugin._capture_custom_metadata(event_data, attrs)
+  # redaction returns [REDACTED] without flipping is_truncated
+  assert truncated is False
+  assert attrs["custom_metadata"]["secrets"]["api_key"] == "[REDACTED]"
+  assert attrs["custom_metadata"]["secrets"]["ok"] == "v"
+
+
+def test_capture_custom_metadata_truncation_sets_flag():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["big"], max_content_length=5
+      )
+  )
+  event_data = bigquery_agent_analytics_plugin.EventData(
+      source_event=_FakeMetaEvent({"big": "x" * 100})
+  )
+  attrs: dict = {}
+  truncated = plugin._capture_custom_metadata(event_data, attrs)
+  assert truncated is True
+  assert attrs["custom_metadata"]["big"].endswith("...[TRUNCATED]")
+
+
+def test_capture_custom_metadata_non_allowlisted_absent():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["citation_metadata"]
+      )
+  )
+  event_data = bigquery_agent_analytics_plugin.EventData(
+      source_event=_FakeMetaEvent({"unrelated": "v"})
+  )
+  attrs: dict = {}
+  assert plugin._capture_custom_metadata(event_data, attrs) is False
+  assert attrs == {}
+
+
+def test_capture_custom_metadata_no_source_event():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          custom_metadata_allowlist=["x"]
+      )
+  )
+  attrs: dict = {}
+  assert (
+      plugin._capture_custom_metadata(
+          bigquery_agent_analytics_plugin.EventData(), attrs
+      )
+      is False
+  )
+  assert attrs == {}
+
+
+def test_default_config_has_no_custom_metadata_capture():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  assert plugin._custom_metadata_exact == frozenset()
+  assert plugin._custom_metadata_prefixes == ()
+
+
+# --- payload column projection ---
+
+
+def test_validate_payload_column_denylist_accepts_payload_columns():
+  denied = bigquery_agent_analytics_plugin._validate_payload_column_denylist(
+      ["content", "attributes"]
+  )
+  assert denied == frozenset({"content", "attributes"})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["span_id", "trace_id", "timestamp", "event_type", "is_truncated", "nope"],
+)
+def test_validate_payload_column_denylist_rejects_protected_or_unknown(bad):
+  with pytest.raises(ValueError):
+    bigquery_agent_analytics_plugin._validate_payload_column_denylist([bad])
+
+
+def test_plugin_construction_rejects_protected_denylist():
+  with pytest.raises(ValueError):
+    _make_offline_plugin(
+        bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            payload_column_denylist=["span_id"]
+        )
+    )
+
+
+def test_project_schema_removes_denied_keeps_protected():
+  full = bigquery_agent_analytics_plugin._get_events_schema()
+  full_names = {f.name for f in full}
+  projected = bigquery_agent_analytics_plugin._project_schema(
+      full, frozenset({"content", "attributes"})
+  )
+  names = {f.name for f in projected}
+  assert "content" not in names and "attributes" not in names
+  for col in (
+      "timestamp",
+      "event_type",
+      "span_id",
+      "parent_span_id",
+      "is_truncated",
+      "latency_ms",
+  ):
+    assert col in names
+  assert names == full_names - {"content", "attributes"}
+
+
+def test_project_schema_to_arrow_consistency():
+  # schema-first: the Arrow schema derived from the projected BQ schema
+  # omits the denied column too.
+  projected = bigquery_agent_analytics_plugin._project_schema(
+      bigquery_agent_analytics_plugin._get_events_schema(),
+      frozenset({"content"}),
+  )
+  arrow = bigquery_agent_analytics_plugin.to_arrow_schema(projected)
+  assert "content" not in arrow.names
+  assert "span_id" in arrow.names
+
+
+def test_project_view_columns_drops_denied_refs():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          payload_column_denylist=["attributes"]
+      )
+  )
+  exprs = [
+      "JSON_VALUE(attributes, '$.model') AS model",
+      "content AS request_content",
+      "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+  ]
+  kept = plugin._project_view_columns(exprs)
+  assert "JSON_VALUE(attributes, '$.model') AS model" not in kept
+  assert "content AS request_content" in kept
+  assert any("latency_ms" in e for e in kept)
+
+
+def test_project_view_columns_drops_content_and_latency_refs():
+  # view degradation is not attributes-only: content and latency_ms too.
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          payload_column_denylist=["content", "latency_ms"]
+      )
+  )
+  exprs = [
+      "JSON_QUERY(content, '$.response') AS response",
+      "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+      "JSON_VALUE(attributes, '$.model') AS model",
+  ]
+  kept = plugin._project_view_columns(exprs)
+  assert kept == ["JSON_VALUE(attributes, '$.model') AS model"]
+
+
+def test_project_view_columns_noop_without_denylist():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  exprs = ["JSON_VALUE(attributes, '$.model') AS model"]
+  assert plugin._project_view_columns(exprs) == exprs
+
+
+# --- otel correlation ---
+
+
+def test_enrich_attributes_captures_valid_ambient_otel_span(callback_context):
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          enable_otel_correlation=True
+      )
+  )
+  ctx = trace.SpanContext(
+      trace_id=0x1234567890ABCDEF1234567890ABCDEF,
+      span_id=0xFEEDFACECAFEBEEF,
+      is_remote=False,
+      trace_flags=trace.TraceFlags(trace.TraceFlags.SAMPLED),
+  )
+  fake_span = mock.Mock()
+  fake_span.get_span_context.return_value = ctx
+  with (
+      mock.patch.object(plugin, "_build_adk_envelope", return_value={}),
+      mock.patch.object(
+          bigquery_agent_analytics_plugin.trace,
+          "get_current_span",
+          return_value=fake_span,
+      ),
+  ):
+    attrs = plugin._enrich_attributes(
+        bigquery_agent_analytics_plugin.EventData(), callback_context
+    )
+  assert attrs["otel"]["span_id"] == format(0xFEEDFACECAFEBEEF, "016x")
+  assert attrs["otel"]["trace_id"] == format(
+      0x1234567890ABCDEF1234567890ABCDEF, "032x"
+  )
+
+
+def test_enrich_attributes_no_otel_when_correlation_disabled(callback_context):
+  # enable_otel_correlation defaults to False: even with a valid ambient span,
+  # no attributes.otel is emitted (the feature is opt-in / off by default).
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  ctx = trace.SpanContext(
+      trace_id=0x1234567890ABCDEF1234567890ABCDEF,
+      span_id=0xFEEDFACECAFEBEEF,
+      is_remote=False,
+      trace_flags=trace.TraceFlags(trace.TraceFlags.SAMPLED),
+  )
+  fake_span = mock.Mock()
+  fake_span.get_span_context.return_value = ctx
+  with (
+      mock.patch.object(plugin, "_build_adk_envelope", return_value={}),
+      mock.patch.object(
+          bigquery_agent_analytics_plugin.trace,
+          "get_current_span",
+          return_value=fake_span,
+      ),
+  ):
+    attrs = plugin._enrich_attributes(
+        bigquery_agent_analytics_plugin.EventData(), callback_context
+    )
+  assert "otel" not in attrs
+
+
+def test_enrich_attributes_no_otel_when_span_invalid(callback_context):
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          enable_otel_correlation=True
+      )
+  )
+  fake_span = mock.Mock()
+  fake_span.get_span_context.return_value = trace.INVALID_SPAN_CONTEXT
+  with (
+      mock.patch.object(plugin, "_build_adk_envelope", return_value={}),
+      mock.patch.object(
+          bigquery_agent_analytics_plugin.trace,
+          "get_current_span",
+          return_value=fake_span,
+      ),
+  ):
+    attrs = plugin._enrich_attributes(
+        bigquery_agent_analytics_plugin.EventData(), callback_context
+    )
+  assert "otel" not in attrs
+
+
+class _FakeTable:
+  """Minimal stand-in for a bigquery.Table for schema-upgrade tests."""
+
+  def __init__(self, schema, labels):
+    self.schema = schema
+    self.labels = labels
+
+
+def test_schema_upgrade_adds_columns_when_denylist_relaxed():
+  # Table was created under a restrictive projection (missing content +
+  # attributes) but its version label is current. Relaxing the denylist must
+  # still add the now-desired columns instead of early-returning on the label.
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  full = bigquery_agent_analytics_plugin._get_events_schema()
+  plugin._schema = full  # desired = full schema (denylist relaxed)
+  plugin.full_table_id = "p.d.t"
+  plugin.client = mock.Mock()
+  projected = [f for f in full if f.name not in ("content", "attributes")]
+  existing = _FakeTable(
+      schema=list(projected),
+      labels={
+          bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+              bigquery_agent_analytics_plugin._SCHEMA_VERSION
+          )
+      },
+  )
+  plugin._maybe_upgrade_schema(existing)
+  plugin.client.update_table.assert_called_once()
+  names = {f.name for f in existing.schema}
+  assert "content" in names and "attributes" in names
+
+
+def test_schema_upgrade_noop_when_current_and_complete():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+  )
+  full = bigquery_agent_analytics_plugin._get_events_schema()
+  plugin._schema = full
+  plugin.full_table_id = "p.d.t"
+  plugin.client = mock.Mock()
+  existing = _FakeTable(
+      schema=list(full),
+      labels={
+          bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+              bigquery_agent_analytics_plugin._SCHEMA_VERSION
+          )
+      },
+  )
+  plugin._maybe_upgrade_schema(existing)
+  plugin.client.update_table.assert_not_called()
+
+
+def test_attributes_denylist_with_custom_metadata_rejected():
+  with pytest.raises(ValueError):
+    _make_offline_plugin(
+        bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            payload_column_denylist=["attributes"],
+            custom_metadata_allowlist=["citation_metadata"],
+        )
+    )
+
+
+def test_attributes_denylist_without_custom_metadata_ok():
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          payload_column_denylist=["attributes"]
+      )
+  )
+  assert "attributes" in plugin._denied_columns
+
+
+def test_enrich_attributes_skips_otel_when_attributes_denied(callback_context):
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          enable_otel_correlation=True,
+          payload_column_denylist=["attributes"],
+      )
+  )
+  ctx = trace.SpanContext(
+      trace_id=0x1234567890ABCDEF1234567890ABCDEF,
+      span_id=0xFEEDFACECAFEBEEF,
+      is_remote=False,
+      trace_flags=trace.TraceFlags(trace.TraceFlags.SAMPLED),
+  )
+  fake_span = mock.Mock()
+  fake_span.get_span_context.return_value = ctx
+  with (
+      mock.patch.object(plugin, "_build_adk_envelope", return_value={}),
+      mock.patch.object(
+          bigquery_agent_analytics_plugin.trace,
+          "get_current_span",
+          return_value=fake_span,
+      ),
+  ):
+    attrs = plugin._enrich_attributes(
+        bigquery_agent_analytics_plugin.EventData(), callback_context
+    )
+  assert "otel" not in attrs
+
+
+@pytest.mark.asyncio
+async def test_content_parts_denied_disables_gcs_offload(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  # denying content_parts (which holds the offload object reference)
+  # must disable GCS offload, otherwise the payload is uploaded with no
+  # retained reference (leak + cost).
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content_parts"],
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is None
+    mock_blob = (
+        mock_storage_client.return_value.bucket.return_value.blob.return_value
+    )
+    large_text = "A" * (32 * 1024 + 1)
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text=large_text)])],
+    )
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await plugin.flush()
+    mock_blob.upload_from_string.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_both_payload_columns_denied_skips_parse_and_offload(
+    mock_write_client,
+    callback_context,
+    mock_auth_default,
+    mock_bq_client,
+    mock_to_arrow_schema,
+    dummy_arrow_schema,
+    mock_storage_client,
+):
+  # with both content and content_parts denied, parsing is skipped
+  # entirely -- no inline summary, no parts, and no GCS upload work.
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket",
+      payload_column_denylist=["content", "content_parts"],
+  )
+  async with managed_plugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  ) as plugin:
+    await plugin._ensure_started(
+        storage_client=mock_storage_client.return_value
+    )
+    assert plugin.offloader is None
+    mock_blob = (
+        mock_storage_client.return_value.bucket.return_value.blob.return_value
+    )
+    large_text = "A" * (32 * 1024 + 1)
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text=large_text)])],
+    )
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await plugin.flush()
+    mock_blob.upload_from_string.assert_not_called()
+
+
+class TestSafetyLifecycleHardening:
+  """Safety and lifecycle invariants."""
+
+  def test_invalid_runtime_config_rejected_at_construction(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Invalid batch/queue/duration/retry settings fail at construction."""
+    _ = mock_auth_default, mock_bq_client
+    retry = bigquery_agent_analytics_plugin.RetryConfig
+    bad_configs = [
+        dict(batch_size=0),
+        dict(batch_flush_interval=0.0),
+        dict(shutdown_timeout=0.0),
+        dict(queue_max_size=0),
+        dict(max_content_length=0),
+        dict(retry_config=retry(max_retries=-1)),
+        dict(retry_config=retry(initial_delay=-1.0)),
+        dict(retry_config=retry(multiplier=0.5)),
+        dict(retry_config=retry(initial_delay=5.0, max_delay=1.0)),
+    ]
+    for kwargs in bad_configs:
+      config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(**kwargs)
+      with pytest.raises(ValueError):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+        )
+
+  @pytest.mark.asyncio
+  async def test_final_attributes_pass_redacts_direct_producers(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """state_delta, custom_tags, nested keys, and JSON blobs are redacted.
+
+    These producers copy values into attributes without going through
+    _recursive_smart_truncate; the final pre-serialization pass must
+    redact them.
+    """
+    _ = mock_auth_default, mock_bq_client
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        custom_tags={"team": "sre", "password": "hunter2"},
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin._log_event(
+          "STATE_DELTA",
+          callback_context,
+          event_data=bigquery_agent_analytics_plugin.EventData(
+              extra_attributes={
+                  "state_delta": {
+                      "access_token": "ya29.SECRET",
+                      "nested": {"refresh_token": "1//SECRET2"},
+                      "temp:scratch": "ephemeral",
+                      "plain": "keep-me",
+                  },
+                  "cred_blob": '{"access_token": "SECRETTOK", "expiry": 1}',
+              },
+          ),
+      )
+      await plugin.flush()
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      attrs = json.loads(log_entry["attributes"])
+      blob = str(log_entry["attributes"])
+      assert "ya29.SECRET" not in blob
+      assert "1//SECRET2" not in blob
+      assert "SECRETTOK" not in blob
+      assert "hunter2" not in blob
+      assert attrs["state_delta"]["access_token"] == "[REDACTED]"
+      assert attrs["state_delta"]["nested"]["refresh_token"] == "[REDACTED]"
+      assert attrs["state_delta"]["temp:scratch"] == "[REDACTED]"
+      assert attrs["state_delta"]["plain"] == "keep-me"
+      assert attrs["custom_tags"]["password"] == "[REDACTED]"
+      assert attrs["custom_tags"]["team"] == "sre"
+      assert json.loads(attrs["cred_blob"])["access_token"] == "[REDACTED]"
+
+  @pytest.mark.asyncio
+  async def test_concurrent_parses_never_share_gcs_paths(self):
+    """Two overlapping two-part parses keep call-local trace/span paths.
+
+    Regression: with identity stored on the shared parser,
+    event A resumed after event B's mutation and wrote under B's object
+    name, overwriting B's part.
+    """
+    uploaded: list[str] = []
+
+    class _FakeOffloader:
+
+      async def upload_content(self, data, mime, path):
+        uploaded.append(path)
+        await asyncio.sleep(0)  # force interleave between part uploads
+        return f"gs://bucket/{path}"
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=_FakeOffloader(), trace_id="ctor", span_id="ctor"
+    )
+
+    def two_parts():
+      return types.Content(
+          parts=[
+              types.Part.from_bytes(data=b"x", mime_type="image/png"),
+              types.Part.from_bytes(data=b"y", mime_type="image/png"),
+          ]
+      )
+
+    await asyncio.gather(
+        parser.parse(two_parts(), trace_id="trace-a", span_id="span-a"),
+        parser.parse(two_parts(), trace_id="trace-b", span_id="span-b"),
+    )
+    assert len(uploaded) == 4
+    assert len(set(uploaded)) == 4, f"path collision: {uploaded}"
+    assert sum("trace-a/span-a" in p for p in uploaded) == 2
+    assert sum("trace-b/span-b" in p for p in uploaded) == 2
+
+  @pytest.mark.asyncio
+  async def test_setup_failure_keeps_not_started_then_retries(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Failed table readiness leaves _started=False, counts the loss, and
+
+    a later event retries successfully.
+    """
+    _ = mock_auth_default
+    mock_bq_client.get_table.side_effect = cloud_exceptions.InternalServerError(
+        "control plane hiccup"
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin.before_run_callback(invocation_context=invocation_context)
+      assert plugin._started is False
+      assert plugin._startup_error is not None
+
+      # A row logged while setup is unavailable is counted, not silent.
+      await plugin._log_event("USER_MESSAGE_RECEIVED", callback_context)
+      assert plugin.get_drop_stats().get("setup_unavailable", 0) >= 1
+
+      # Control plane recovers; retry succeeds on a later event once the
+      # backoff window elapses.
+      failed_calls = mock_bq_client.get_table.call_count
+      mock_bq_client.get_table.side_effect = None
+      plugin._setup_retry_at = 0.0
+      await plugin._ensure_started()
+      assert plugin._started is True
+      assert plugin._startup_error is None
+      # Table readiness must re-run on the retry: a cached _schema used to
+      # skip _ensure_schema_exists entirely, marking the plugin started
+      # without ever re-checking the table.
+      assert mock_bq_client.get_table.call_count == failed_calls + 1
+
+  @pytest.mark.asyncio
+  async def test_enabled_false_has_zero_side_effects(
+      self, mock_auth_default, mock_bq_client, invocation_context
+  ):
+    """enabled=False performs no auth/client/table/writer side effects
+
+    through Runner callbacks or async context-manager use.
+    """
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(enabled=False)
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+    await plugin.before_run_callback(invocation_context=invocation_context)
+    async with plugin:
+      pass
+    assert plugin._started is False
+    assert plugin.client is None
+    assert plugin._loop_state_by_loop == {}
+    mock_auth_default.assert_not_called()
+    mock_bq_client.get_table.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_drop_stats_survive_shutdown_and_include_local_reasons(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Pre-processor drop reasons are queryable, including after shutdown."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._count_local_drop("formatter_failed")
+    plugin._count_local_drop("setup_unavailable")
+    plugin._count_local_drop("setup_unavailable")
+    await plugin.shutdown()
+    stats = plugin.get_drop_stats()
+    assert stats["formatter_failed"] == 1
+    assert stats["setup_unavailable"] == 2
+
+  def test_json_blob_redaction_survives_escapes_and_arrays(self):
+    """Decode-first blob sanitizing defeats raw-substring bypasses.
+
+    `{"access\\u005ftoken": ...}` contains no literal sensitive substring,
+    and arrays of credential objects have no top-level dict. Both must still be
+    redacted; innocent strings stay unchanged.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    escaped = '{"access\\u005ftoken": "SECRET-A"}'
+    out, _ = truncate({"blob": escaped}, 10000)
+    assert "SECRET-A" not in json.dumps(out)
+    assert json.loads(out["blob"])["access_token"] == "[REDACTED]"
+
+    array_blob = '[{"api_key": "SECRET-B"}, {"plain": "ok"}]'
+    out, _ = truncate({"blob": array_blob}, 10000)
+    assert "SECRET-B" not in json.dumps(out)
+    decoded = json.loads(out["blob"])
+    assert decoded[0]["api_key"] == "[REDACTED]"
+    assert decoded[1]["plain"] == "ok"
+
+    # No redaction needed -> string returned byte-for-byte (no cosmetic
+    # re-serialization).
+    innocent = '{"note":  "spacing preserved"}'
+    out, _ = truncate({"blob": innocent}, 10000)
+    assert out["blob"] == innocent
+
+  @pytest.mark.asyncio
+  async def test_multi_message_offloads_get_unique_paths(self):
+    """Two messages in ONE request must not collide at the same part index.
+
+    The part ordinal restarts per Content while trace/span are shared, so
+    paths need the per-parse uid + content ordinal.
+    """
+    uploaded: list[str] = []
+
+    class _FakeOffloader:
+
+      async def upload_content(self, data, mime, path):
+        uploaded.append(path)
+        return f"gs://bucket/{path}"
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=_FakeOffloader(), trace_id="t", span_id="s"
+    )
+    request = llm_request_lib.LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part.from_bytes(data=b"a", mime_type="image/png")],
+            ),
+            types.Content(
+                role="user",
+                parts=[types.Part.from_bytes(data=b"b", mime_type="image/png")],
+            ),
+        ]
+    )
+    await parser.parse(request, trace_id="trace-x", span_id="span-x")
+    assert len(uploaded) == 2
+    assert len(set(uploaded)) == 2, f"collision within request: {uploaded}"
+
+  @pytest.mark.asyncio
+  async def test_formatter_failure_log_does_not_leak_payload(
+      self,
+      mock_write_client,
+      invocation_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+      caplog,
+  ):
+    """The formatter-failure log line must not carry the protected content.
+
+    A formatter that embeds content in its exception message would leak it
+    through exc_info tracebacks; only the exception
+    class is logged.
+    """
+    _ = mock_auth_default, mock_bq_client
+
+    def leaky_formatter(content, event_type):
+      raise ValueError(f"could not redact: {content}")
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=leaky_formatter
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      with caplog.at_level(logging.WARNING):
+        await plugin.on_user_message_callback(
+            invocation_context=invocation_context,
+            user_message=types.Content(
+                parts=[types.Part(text="TOPSECRET-PAYLOAD")]
+            ),
+        )
+      assert "TOPSECRET-PAYLOAD" not in caplog.text
+      # The message is CONSTANT — even the exception class
+      # name can be payload-derived, so it is no longer logged.
+      assert "Content formatter failed" in caplog.text
+      assert "ValueError" not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_shutdown_folds_processor_drops_into_stats(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Processor drop counters survive shutdown via the plugin counters.
+
+    get_drop_stats() used to read only live loop states, which shutdown()
+    clears.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    processor = mock.create_autospec(
+        bigquery_agent_analytics_plugin.BatchProcessor,
+        instance=True,
+        spec_set=True,
+    )
+    processor.get_drop_stats.return_value = {"queue_full": 2}
+    state = mock.MagicMock()
+    state.batch_processor = processor
+    state.write_client = None
+    plugin._loop_state_by_loop[asyncio.get_running_loop()] = state
+
+    assert plugin.get_drop_stats() == {"queue_full": 2}
+    await plugin.shutdown()
+    assert plugin._loop_state_by_loop == {}
+    assert plugin.get_drop_stats() == {"queue_full": 2}
+
+  def test_setstate_backfills_new_runtime_fields(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Pickles from older code lack the new fields; __setstate__ must
+
+    backfill them so get_drop_stats()/_ensure_started don't raise.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    legacy_state = plugin.__getstate__()
+    for key in ("_local_drop_counts", "_setup_failures", "_setup_retry_at"):
+      legacy_state.pop(key, None)
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    restored.__setstate__(legacy_state)
+    assert restored.get_drop_stats() == {}
+    assert restored._setup_failures == 0
+    assert restored._setup_retry_at == 0.0
+
+  def test_invalid_config_rejects_nan_and_wrong_types(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """NaN and wrong-typed values must fail construction: ordered comparisons alone let NaN pass every range check."""
+    _ = mock_auth_default, mock_bq_client
+    retry = bigquery_agent_analytics_plugin.RetryConfig
+    nan = float("nan")
+    bad_configs = [
+        dict(batch_size=nan),
+        dict(batch_size=2.0),
+        dict(batch_size=True),
+        dict(batch_flush_interval=nan),
+        dict(shutdown_timeout=float("inf")),
+        dict(queue_max_size="10"),
+        dict(max_content_length=1.5),
+        dict(retry_config=retry(max_retries=nan)),
+        dict(retry_config=retry(initial_delay=nan)),
+        dict(retry_config=retry(multiplier=nan)),
+        dict(retry_config=retry(max_delay=nan)),
+    ]
+    for kwargs in bad_configs:
+      config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(**kwargs)
+      with pytest.raises(ValueError):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+        )
+
+  def test_json_blob_duplicate_keys_always_reserialized(self):
+    """Duplicate JSON members must not defeat the changed-blob check.
+
+     json.loads keeps only the last duplicate, so sanitized == parsed can
+     hold while the raw string still carries an earlier secret member
+    .
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    blob = '{"access_token": "SECRET-DUP", "access_token": "[REDACTED]"}'
+    out, _ = truncate({"blob": blob}, 10000)
+    assert "SECRET-DUP" not in json.dumps(out)
+    assert json.loads(out["blob"])["access_token"] == "[REDACTED]"
+
+  def test_mapping_views_are_redacted(self):
+    """Mapping types beyond dict must be walked, not stringified.
+
+    MappingProxyType/UserDict used to hit the stringify fallback, leaking
+    sensitive members.
+    """
+    import collections
+    from types import MappingProxyType
+
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    proxy = MappingProxyType({"access_token": "SECRET-PROXY"})
+    userdict = collections.UserDict({"refresh_token": "SECRET-USERDICT"})
+    out, _ = truncate({"proxy": proxy, "userdict": userdict}, 10000)
+    dumped = json.dumps(out)
+    assert "SECRET-PROXY" not in dumped
+    assert "SECRET-USERDICT" not in dumped
+    assert out["proxy"]["access_token"] == "[REDACTED]"
+    assert out["userdict"]["refresh_token"] == "[REDACTED]"
+
+  def test_deep_json_blob_fails_closed(self):
+    """A blob beyond the fixed nesting limit fails closed on every runtime.
+
+    Older Python runtimes raise RecursionError while Python 3.14's iterative
+    JSON decoder accepts this input. The row must keep flowing with the same
+    whole-blob sentinel regardless.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    deep = "[" * 10000 + "]" * 10000
+    out, _ = truncate({"blob": deep}, 500 * 1024)
+    assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]"
+
+  def test_json_nesting_limit_ignores_brackets_inside_strings(self):
+    """Payload punctuation does not count as structural JSON nesting."""
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    blob = json.dumps({"note": "prose " + "[" * 1001 + "]" * 1001})
+    out, truncated = truncate({"blob": blob}, 500 * 1024)
+    assert out["blob"] == blob
+    assert truncated is False
+
+  @pytest.mark.asyncio
+  async def test_shutdown_timeout_counts_lost_rows(self):
+    """Rows stranded by a shutdown timeout are counted, not silent.
+
+    In-flight batch rows are counted by the cancelled worker and queued
+    rows by the drain in shutdown().
+    """
+    write_started = asyncio.Event()
+
+    async def hung_writer(batch):
+      write_started.set()
+      await asyncio.sleep(3600)
+
+    processor = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=mock.MagicMock(),
+        write_stream="stream",
+        batch_size=1,
+        flush_interval=0.05,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=0.1,
+    )
+    with mock.patch.object(
+        processor, "_write_rows_with_retry", side_effect=hung_writer
+    ):
+      await processor.start()
+      await processor.append({"row": 1})
+      await write_started.wait()  # row 1 is in-flight in the hung writer
+      await processor.append({"row": 2})  # row 2 stays queued
+      await processor.shutdown(timeout=0.1)
+
+    stats = processor.get_drop_stats()
+    assert stats.get("shutdown_timeout") == 2
+
+  @pytest.mark.asyncio
+  async def test_stale_loop_cleanup_preserves_drop_stats(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Closed-loop cleanup folds processor counters before deletion
+
+    .
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    dead_loop = mock.MagicMock()
+    dead_loop.is_closed.return_value = True
+    state = mock.MagicMock()
+    state.batch_processor.get_drop_stats.return_value = {"write_failed": 7}
+    plugin._loop_state_by_loop[dead_loop] = state
+
+    plugin._cleanup_stale_loop_states()
+
+    assert plugin._loop_state_by_loop == {}
+    assert plugin.get_drop_stats().get("write_failed") == 7
+
+  def test_setstate_validates_restored_config(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Legacy pickles with invalid runtime config fail at restore, not as
+
+    a silent write-loop skip.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    state = plugin.__getstate__()
+    state["config"].retry_config.max_retries = float("nan")
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    with pytest.raises(ValueError):
+      restored.__setstate__(state)
+
+  @pytest.mark.asyncio
+  async def test_gcs_uploads_use_full_uid_and_create_only(self):
+    """Object names carry the full 128-bit uid; uploads are create-only.
+
+    32 random bits reach ~50% birthday collision around 77k parses; a
+    collision must fail the upload instead of rebinding an existing row
+    to another event's bytes.
+    """
+    uploaded: list[str] = []
+
+    class _FakeOffloader:
+
+      async def upload_content(self, data, mime, path):
+        uploaded.append(path)
+        return f"gs://bucket/{path}"
+
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=_FakeOffloader(), trace_id="t", span_id="s"
+    )
+    await parser.parse(
+        types.Content(
+            parts=[types.Part.from_bytes(data=b"a", mime_type="image/png")]
+        ),
+        trace_id="trace-y",
+        span_id="span-y",
+    )
+    assert len(uploaded) == 1
+    # .../{span}_{32-hex-uid}_c{n}_p{idx}.png
+    uid_segment = uploaded[0].split("span-y_")[1].split("_c")[0]
+    assert len(uid_segment) == 32
+
+    # And the sync upload path passes create-only semantics.
+    bucket = mock.MagicMock()
+    offloader = bigquery_agent_analytics_plugin.GCSOffloader.__new__(
+        bigquery_agent_analytics_plugin.GCSOffloader
+    )
+    offloader.bucket = bucket
+    offloader._upload_sync(b"data", "image/png", "p")
+    _, kwargs = bucket.blob.return_value.upload_from_string.call_args
+    assert kwargs.get("if_generation_match") == 0
+
+  def test_unmaterializable_json_blob_fails_closed(self):
+    """Valid JSON that Python cannot materialize becomes a sentinel.
+
+    Integers over the interpreter digit limit raise a plain ValueError
+    from json.loads on syntactically valid JSON; returning the raw string
+    would leak members the sanitizer never inspected.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    blob = '{"access_token": "SECRET-BIGINT", "n": ' + "9" * 5000 + "}"
+    out, _ = truncate({"blob": blob}, 500 * 1024)
+    assert "SECRET-BIGINT" not in json.dumps(out)
+    assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]"
+
+  def test_label_only_upgrade_failure_does_not_block_readiness(self):
+    """A label-only update_table failure must not fail setup.
+
+    The table schema is write-compatible; only the governance label is
+    stale. Blocking readiness turned every event into setup_unavailable
+    although writes would succeed.
+    """
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        auto_schema_upgrade=True,
+    )
+    with mock.patch("google.cloud.bigquery.Client"):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=config,
+      )
+    plugin.client = mock.MagicMock()
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema()
+    existing = mock.MagicMock(spec=bigquery.Table)
+    # Identical schema: no new fields, no updated records.
+    existing.schema = list(plugin._schema)
+    existing.labels = {}  # stale version label only
+    plugin.client.get_table.return_value = existing
+    plugin.client.update_table.side_effect = Exception("labels forbidden")
+
+    # Does not raise; the stale label is retried on the next run.
+    plugin._ensure_schema_exists()
+    plugin.client.update_table.assert_called_once()
+
+  def test_ensure_started_coalesces_across_event_loops(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """_ensure_started must be safe when called from multiple loops.
+
+    One shared asyncio.Lock is loop-bound: a second thread's loop raised
+    'Non-thread-safe operation' and could strand waiters. Per-loop locks make
+    each loop coalesce independently.
+    """
+    _ = mock_auth_default, mock_bq_client
+    import threading
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    setup_calls = []
+
+    async def fake_lazy_setup(**kwargs):
+      setup_calls.append(threading.get_ident())
+      await asyncio.sleep(0.05)
+
+    errors: list[BaseException] = []
+
+    def run_in_fresh_loop():
+      try:
+        asyncio.run(plugin._ensure_started())
+      except BaseException as e:  # noqa: BLE001 - collecting for assertion
+        errors.append(e)
+
+    # Patch from this thread only. patch.object swaps a single shared
+    # attribute and is not itself thread safe, so entering it from both
+    # threads raced on _lazy_setup instead of on the code under test.
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=fake_lazy_setup):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=10)
+    assert not errors, f"cross-loop startup raised: {errors}"
+
+  def test_concurrent_stale_cleanup_folds_once(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Repeated/concurrent cleanups fold a processor's counters exactly once.
+
+    Read-fold-delete raced: two cleanups produced doubled counts and a
+    KeyError; the pop-claim makes folding idempotent.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    dead_loop = mock.MagicMock()
+    dead_loop.is_closed.return_value = True
+    state = mock.MagicMock()
+    state.batch_processor.get_drop_stats.return_value = {"write_failed": 7}
+    plugin._loop_state_by_loop[dead_loop] = state
+
+    plugin._cleanup_stale_loop_states()
+    plugin._cleanup_stale_loop_states()  # second pass: nothing left to claim
+
+    assert plugin.get_drop_stats().get("write_failed") == 7
+
+  @pytest.mark.asyncio
+  async def test_close_counts_lost_rows_like_shutdown(self):
+    """close() shares shutdown()'s drain/accounting for stranded rows
+
+    .
+    """
+    write_started = asyncio.Event()
+
+    async def hung_writer(batch):
+      write_started.set()
+      await asyncio.sleep(3600)
+
+    processor = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=mock.MagicMock(),
+        write_stream="stream",
+        batch_size=1,
+        flush_interval=0.05,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=0.1,
+    )
+    with mock.patch.object(
+        processor, "_write_rows_with_retry", side_effect=hung_writer
+    ):
+      await processor.start()
+      await processor.append({"row": 1})
+      await write_started.wait()
+      await processor.append({"row": 2})
+      await processor.close()
+
+    assert processor.get_drop_stats().get("shutdown_timeout") == 2
+    assert processor._queue.empty()
+
+  def test_malformed_container_blobs_fail_closed(self):
+    """Container-shaped strings that fail to parse become the sentinel.
+
+    One trailing character on valid credential JSON must not bypass
+    redaction, including with escaped keys.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    cases = [
+        '{"access\\u005ftoken":"SECRET-TRAIL"} trailing',
+        '{"access_token":"SECRET-MALFORMED"',
+        '[{"api_key":"SECRET-ARRAY"}, oops]',
+    ]
+    for blob in cases:
+      out, _ = truncate({"blob": blob}, 10000)
+      assert "SECRET" not in json.dumps(out), blob
+      assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]", blob
+
+  def test_over_limit_blob_never_parsed(self):
+    """json.loads must not run for container blobs over the content limit.
+
+    Materializing a multi-megabyte attribute blocks the callback loop and
+    allocates far beyond the configured limit.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    big_blob = '{"k": "' + "x" * 5000 + '"}'
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin.json,
+        "loads",
+        side_effect=AssertionError("json.loads must not be called"),
+    ):
+      out, truncated = truncate({"blob": big_blob}, 100)
+    assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert truncated
+
+  def test_shared_setup_runs_exactly_once_across_loops(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Concurrent loops coalesce onto ONE shared setup.
+
+    Per-loop locks let both loops run _lazy_setup, which mutates shared
+    clients/executor/parser state across awaits and is not idempotent.
+    """
+    _ = mock_auth_default, mock_bq_client
+    import threading
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    setup_calls = []
+    release = threading.Event()
+    entered = threading.Event()
+
+    async def slow_setup(**kwargs):
+      setup_calls.append(threading.get_ident())
+      entered.set()
+      await asyncio.get_running_loop().run_in_executor(None, release.wait)
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def run_in_fresh_loop():
+      try:
+        barrier.wait(timeout=5)
+        asyncio.run(plugin._ensure_started())
+      except BaseException as e:  # noqa: BLE001
+        errors.append(e)
+
+    # Patch from this thread only. patch.object swaps a single shared
+    # attribute and is not itself thread safe, so entering it from both
+    # threads raced on _lazy_setup instead of on the code under test.
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=slow_setup):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      # Deterministic rendezvous: hold the owner inside setup until BOTH
+      # threads have entered _ensure_started.
+      entered.wait(timeout=5)
+      release.set()
+      for t in threads:
+        t.join(timeout=10)
+        assert not t.is_alive(), "thread failed to terminate"
+
+    assert not errors, f"cross-loop startup raised: {errors}"
+    assert len(setup_calls) == 1, f"shared setup ran {len(setup_calls)} times"
+    assert plugin._started is True
+    assert plugin._startup_error is None
+    assert plugin._setup_future is None
+
+  def test_failed_shared_setup_is_consistent_across_loops(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A failing owner leaves consistent shared state for every waiter."""
+    _ = mock_auth_default, mock_bq_client
+    import threading
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+
+    setup_calls = []
+    release = threading.Event()
+    entered = threading.Event()
+
+    async def failing_setup(**kwargs):
+      setup_calls.append(threading.get_ident())
+      entered.set()
+      await asyncio.get_running_loop().run_in_executor(None, release.wait)
+      raise RuntimeError("setup boom")
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def run_in_fresh_loop():
+      try:
+        barrier.wait(timeout=5)
+        asyncio.run(plugin._ensure_started())
+      except BaseException as e:  # noqa: BLE001
+        errors.append(e)
+
+    # Patch from this thread only to prevent race conditions on plugin's dictionary
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=failing_setup):
+      threads = [
+          platform_thread.create_thread(run_in_fresh_loop) for _ in range(2)
+      ]
+      for t in threads:
+        t.start()
+      entered.wait(timeout=5)
+      release.set()
+      for t in threads:
+        t.join(timeout=10)
+      assert not t.is_alive(), "thread failed to terminate"
+
+    assert not errors  # _ensure_started never raises to callers
+    assert len(setup_calls) == 1, f"setup ran {len(setup_calls)} times"
+    assert plugin._started is False
+    assert plugin._startup_error is not None
+    assert plugin._setup_future is None  # cleared for the next retry window
+
+  @pytest.mark.asyncio
+  async def test_namedtuple_attribute_does_not_drop_row(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """A namedtuple in attributes serializes as a mapping, not a TypeError.
+
+    Reconstructing tuple subclasses positionally raised in the final pass
+    and the safe callback dropped the entire row;
+    then required the mapping shape so field-name redaction
+    can run.
+    """
+    _ = mock_auth_default, mock_bq_client
+    import collections
+
+    Point = collections.namedtuple("Point", ["x", "y"])
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin._log_event(
+          "STATE_DELTA",
+          callback_context,
+          event_data=bigquery_agent_analytics_plugin.EventData(
+              extra_attributes={"point": Point(1, 2)},
+          ),
+      )
+      await plugin.flush()
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      attrs = json.loads(log_entry["attributes"])
+      # Namedtuples serialize as a MAPPING so field-name redaction can run;
+      # the
+      # row is still emitted either way.
+      assert attrs["point"] == {"x": 1, "y": 2}
+
+  @pytest.mark.asyncio
+  async def test_setup_blocked_before_loop_state_does_not_leak(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A shutdown() that completes while setup is blocked
+
+    creating the shared client must abort the resumed setup, publish
+    nothing, and release every resource the attempt created.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._credentials = mock.MagicMock(quota_project_id=None)
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def gated_client(*args, **kwargs):
+      del args, kwargs
+      entered.set()
+      release.wait(10)
+      return mock.MagicMock()
+
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.bigquery.Client",
+        side_effect=gated_client,
+    ):
+      owner = asyncio.create_task(plugin._ensure_started())
+      while not entered.is_set():
+        await asyncio.sleep(0.01)
+      # Shutdown completes fully while setup is blocked in the executor.
+      await plugin.shutdown()
+      release.set()
+      outcome = await owner  # aborts internally; never raises
+
+    assert outcome == "aborted"
+    assert plugin._started is False
+    assert plugin.client is None
+    assert plugin._executor is None
+    assert plugin.parser is None
+    assert plugin.offloader is None
+    assert plugin._loop_state_by_loop == {}
+    # A direct start (no row) records no phantom loss; the
+    # structured outcome lets the row owner count instead.
+    assert plugin.get_drop_stats().get("shutdown_race", 0) == 0
+    # The abort is not a service failure: no poisoned backoff window.
+    assert plugin._startup_error is None
+
+  def test_concurrent_shutdown_folds_counters_once(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Two threads racing into shutdown() must not both be
+
+    admitted — the same processors' drop counters were folded twice.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+
+    def make_state():
+      state = mock.MagicMock()
+      state.write_client = None
+      state.batch_processor = mock.MagicMock(
+          spec=bigquery_agent_analytics_plugin.BatchProcessor
+      )
+      state.batch_processor.shutdown = mock.AsyncMock()
+      state.batch_processor.get_drop_stats = mock.MagicMock(
+          return_value={"queue_full": 1}
+      )
+      return state
+
+    for _ in range(2):
+      # Closed fakes: shutdown claims and folds them without scheduling
+      # coroutines on them (a non-closed MagicMock loop leaked unawaited
+      # AsyncMock coroutines).
+      fake_loop = mock.MagicMock(spec=asyncio.AbstractEventLoop)
+      fake_loop.is_closed.return_value = True
+      plugin._loop_state_by_loop[fake_loop] = make_state()
+
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def run_shutdown():
+      try:
+        barrier.wait(timeout=10)
+        asyncio.run(plugin.shutdown(timeout=0.1))
+      except Exception as e:  # pylint: disable=broad-except
+        errors.append(e)
+
+    threads = [
+        platform_thread.create_thread(target=run_shutdown) for _ in range(2)
+    ]
+    for t in threads:
+      t.start()
+    for t in threads:
+      t.join(timeout=30)
+      assert not t.is_alive()
+
+    assert not errors
+    # Two states, one queue_full each: exactly one shutdown owner folds
+    # them, so anything above 2 means double-folding.
+    assert plugin.get_drop_stats().get("queue_full", 0) == 2
+
+  def test_drop_counters_are_thread_safe(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Concurrent _count_local_drop() increments from
+
+    multiple threads must not lose updates.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    increments = 5_000
+    n_threads = 4
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    try:
+
+      def worker():
+        for _ in range(increments):
+          plugin._count_local_drop("stress")
+
+      threads = [
+          platform_thread.create_thread(target=worker) for _ in range(n_threads)
+      ]
+      for t in threads:
+        t.start()
+      for t in threads:
+        t.join(timeout=60)
+        assert not t.is_alive()
+    finally:
+      sys.setswitchinterval(old_interval)
+
+    assert plugin.get_drop_stats()["stress"] == increments * n_threads
+
+  def test_unlimited_mode_scans_entire_emitted_value(self):
+    """In unlimited mode the ENTIRE emitted value is
+
+    classified — a credential document just past the inspection window
+    fails closed; escape-free giant quoted prose passes whole.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    ceiling = bigquery_agent_analytics_plugin._MAX_JSON_INSPECT_CHARS
+
+    raw = (
+        '"'
+        + "a" * (ceiling + 10)
+        + '\\u007b\\"access\\u005ftoken\\":'
+        + '\\"R15-UNLIMITED-SECRET\\"\\u007d"'
+    )
+    out, truncated = truncate({"blob": raw}, -1)
+    assert "R15-UNLIMITED-SECRET" not in json.dumps(out)
+    assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert truncated is True
+
+    prose = '"' + "hello world " * ((ceiling // 12) + 10) + '"'
+    out, truncated = truncate({"s": prose}, -1)
+    assert out["s"] == prose
+    assert truncated is False
+
+  def test_normalizer_redacts_and_bounds(self):
+    """The JSON-native normalizer applies
+
+    sensitive-key/temp: redaction and the configured length bound, while
+    preserving sentinels and bracketed prose.
+    """
+    normalize = bigquery_agent_analytics_plugin._normalize_json_native
+
+    out, _ = normalize(
+        {"prompt": [{"role": {"access_token": "R15-NATIVE-SECRET"}}]},
+        10000,
+    )
+    assert "R15-NATIVE-SECRET" not in json.dumps(out)
+    assert out["prompt"][0]["role"]["access_token"] == "[REDACTED]"
+
+    out, replaced = normalize("R15-ROLE-" + "x" * 1_000_000, 10)
+    assert out == "R15-ROLE-x...[TRUNCATED]"
+    assert replaced is True
+
+    for preserved in ("[FORMATTER_FAILED]", "[bracketed] prose"):
+      out, replaced = normalize(preserved, 10000)
+      assert out == preserved
+      assert replaced is False
+
+  def test_normalizer_preserves_post_normalization_key_collisions(self):
+    """Normalized keys never silently overwrite an earlier value."""
+    normalize = bigquery_agent_analytics_plugin._normalize_json_native
+
+    unsupported_first, replaced = normalize(
+        {object(): "unsupported", "[UNSUPPORTED_KEY_1]": "genuine"},
+        10000,
+    )
+    assert unsupported_first == {
+        "[UNSUPPORTED_KEY_1]": "unsupported",
+        "[KEY_COLLISION_2][UNSUPPORTED_KEY_1]": "genuine",
+    }
+    assert replaced is True
+
+    genuine_first, replaced = normalize(
+        {"[UNSUPPORTED_KEY_1]": "genuine", object(): "unsupported"},
+        10000,
+    )
+    assert genuine_first == {
+        "[UNSUPPORTED_KEY_1]": "genuine",
+        "[KEY_COLLISION_2][UNSUPPORTED_KEY_1]": "unsupported",
+    }
+    assert replaced is True
+
+    marker_reserved, replaced = normalize(
+        {
+            object(): "unsupported",
+            "[KEY_COLLISION_2][UNSUPPORTED_KEY_1]": "reserved",
+            "[UNSUPPORTED_KEY_1]": "genuine",
+        },
+        10000,
+    )
+    assert marker_reserved == {
+        "[UNSUPPORTED_KEY_1]": "unsupported",
+        "[KEY_COLLISION_2][UNSUPPORTED_KEY_1]": "reserved",
+        "[KEY_COLLISION_3][UNSUPPORTED_KEY_1]": "genuine",
+    }
+    assert replaced is True
+
+    budget_reserved, replaced = normalize(
+        {
+            "[SANITIZE_BUDGET_EXCEEDED]": "reserved",
+            "[KEY_COLLISION_1][SANITIZE_BUDGET_EXCEEDED]": "marker",
+            "omitted": "value",
+        },
+        10000,
+        budget=[3],
+    )
+    assert budget_reserved == {
+        "[SANITIZE_BUDGET_EXCEEDED]": "reserved",
+        "[KEY_COLLISION_1][SANITIZE_BUDGET_EXCEEDED]": "marker",
+        "[KEY_COLLISION_2][SANITIZE_BUDGET_EXCEEDED]": (
+            "[SANITIZE_BUDGET_EXCEEDED]"
+        ),
+    }
+    assert replaced is True
+
+  @pytest.mark.asyncio
+  async def test_native_secret_mapping_via_model_field_redacted(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """At the row boundary: a nested model property handing
+
+    the parser a raw credential mapping is redacted in the written row.
+    """
+    _ = mock_auth_default, mock_bq_client
+
+    class EvilContent(types.Content):
+
+      def __getattribute__(self, name):
+        if name == "role":
+          return {"access_token": "R15-NATIVE-SECRET"}
+        return super().__getattribute__(name)
+
+    hostile = llm_request_lib.LlmRequest(contents=[EvilContent(parts=[])])
+    assert type(hostile) is llm_request_lib.LlmRequest
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=lambda content, event_type: hostile
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin._log_event(
+          "LLM_REQUEST",
+          callback_context,
+          event_data=bigquery_agent_analytics_plugin.EventData(),
+      )
+      await asyncio.sleep(0.01)
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      assert "R15-NATIVE-SECRET" not in json.dumps(log_entry, default=str)
+      assert "[REDACTED]" in json.dumps(log_entry, default=str)
+
+  def test_overlimit_prose_prefixed_encoded_string_fails_closed(self):
+    """An over-limit quoted value whose EMITTED prefix
+
+    hides an escaped container after prose fails closed; escape-free
+    over-limit quoted prose still raw-truncates.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    raw = (
+        '"note \\u007b\\"access\\u005ftoken\\":'
+        '\\"R14-OVERLIMIT-SECRET\\"\\u007d'
+        + "x" * 10050
+        + '"'
+    )
+    out, truncated = truncate({"blob": raw}, 10000)
+    assert "R14-OVERLIMIT-SECRET" not in json.dumps(out)
+    assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert truncated is True
+
+    prose = '"' + "hello world " * 2000 + '"'
+    out, truncated = truncate({"s": prose}, 1000)
+    assert out["s"].endswith("...[TRUNCATED]")
+    assert truncated is True
+
+  @pytest.mark.asyncio
+  async def test_late_detonating_nested_model_normalized(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+      caplog,
+  ):
+    """A nested model that parses cleanly but plants an
+
+    object whose __repr__ raises must be normalized inside the parse
+    boundary — the row survives Arrow preparation and the payload never
+    reaches the logs.
+    """
+    _ = mock_auth_default, mock_bq_client
+
+    class LateBomb:
+
+      def __repr__(self):
+        raise RuntimeError("R14-LATE-SERIALIZE-SECRET")
+
+    class EvilContent(types.Content):
+
+      def __getattribute__(self, name):
+        if name == "role":
+          return LateBomb()
+        return super().__getattribute__(name)
+
+    hostile = llm_request_lib.LlmRequest(contents=[EvilContent(parts=[])])
+    assert type(hostile) is llm_request_lib.LlmRequest
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=lambda content, event_type: hostile
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      with caplog.at_level(logging.WARNING):
+        await plugin._log_event(
+            "LLM_REQUEST",
+            callback_context,
+            event_data=bigquery_agent_analytics_plugin.EventData(),
+        )
+        await asyncio.sleep(0.01)
+      # The row survives Arrow preparation (exercised by the capture
+      # helper) with the hostile object replaced by a sentinel.
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      dumped = json.dumps(log_entry, default=str)
+      assert "R14-LATE-SERIALIZE-SECRET" not in dumped
+      assert "R14-LATE-SERIALIZE-SECRET" not in caplog.text
+      assert "[UNSUPPORTED_OBJECT]" in dumped
+      assert plugin.get_drop_stats().get("arrow_prep_failed", 0) == 0
+
+  @pytest.mark.asyncio
+  async def test_remote_scheduling_failure_keeps_teardown_incomplete(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """An exception from _schedule_remote_drain() itself
+
+    counts the state as retained, so shutdown raises instead of
+    reporting success over live state.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    remote_loop = asyncio.new_event_loop()
+    thread = platform_thread.create_thread(target=remote_loop.run_forever)
+    thread.daemon = True
+    thread.start()
+    try:
+      state = mock.MagicMock()
+      state.write_client = None
+      state.batch_processor = mock.MagicMock(
+          spec=bigquery_agent_analytics_plugin.BatchProcessor
+      )
+      state.batch_processor.get_drop_stats = mock.MagicMock(return_value={})
+      plugin._loop_state_by_loop[remote_loop] = state
+
+      with mock.patch.object(
+          plugin,
+          "_schedule_remote_drain",
+          side_effect=RuntimeError("loop closed during scheduling"),
+      ):
+        with pytest.raises(
+            bigquery_agent_analytics_plugin._ShutdownIncompleteError
+        ):
+          await plugin.shutdown(timeout=2)
+      assert remote_loop in plugin._loop_state_by_loop
+    finally:
+      remote_loop.call_soon_threadsafe(remote_loop.stop)
+      thread.join(timeout=5)
+      remote_loop.close()
+
+  def test_prose_inside_encoded_string_fails_closed(self):
+    """A single valid encoded string whose DECODED content
+
+    hides a container after prose fails closed; ordinary quoted prose
+    (including inner quotes) passes through.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    raw = '"note \\u007b\\"access\\u005ftoken\\":\\"R13-SECRET\\"\\u007d"'
+    out, truncated = truncate({"blob": raw}, 10000)
+    assert "R13-SECRET" not in json.dumps(out)
+    assert out["blob"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert truncated is True
+
+    for prose in (
+        '"just quoted prose"',
+        json.dumps('he said "hi"'),
+    ):
+      out, truncated = truncate({"s": prose}, 10000)
+      assert out["s"] == prose
+      assert truncated is False
+
+  @pytest.mark.asyncio
+  async def test_nested_hostile_model_subclass_fails_closed(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+      caplog,
+  ):
+    """A hostile model subclass NESTED inside an
+
+    exact-typed formatter result fails closed at the parse boundary — the
+    row is written with a sentinel and the payload-bearing exception
+    never reaches the logs.
+    """
+    _ = mock_auth_default, mock_bq_client
+
+    class EvilPart(types.Part):
+
+      def __getattribute__(self, name):
+        if name == "file_data":
+          raise RuntimeError("R13-NESTED-SECRET")
+        return super().__getattribute__(name)
+
+    hostile = types.Content(parts=[EvilPart()])
+    assert type(hostile) is types.Content  # passes the exact-type gate
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=lambda content, event_type: hostile
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      with caplog.at_level(logging.WARNING):
+        await plugin._log_event(
+            "STATE_DELTA",
+            callback_context,
+            event_data=bigquery_agent_analytics_plugin.EventData(),
+        )
+      await asyncio.sleep(0.01)
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      assert "R13-NESTED-SECRET" not in json.dumps(log_entry, default=str)
+      assert "R13-NESTED-SECRET" not in caplog.text
+      assert "[CONTENT_PARSE_FAILED]" in log_entry["content"]
+      assert log_entry["is_truncated"] is True
+      assert plugin.get_drop_stats().get("content_parse_failed", 0) == 1
+
+  @pytest.mark.asyncio
+  async def test_failed_remote_drain_fails_coalesced_waiter_too(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A failed remote drain keeps teardown incomplete for
+
+    the coalesced waiter as well — neither caller reports success over
+    live state.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    remote_loop = asyncio.new_event_loop()
+    thread = platform_thread.create_thread(target=remote_loop.run_forever)
+    thread.daemon = True
+    thread.start()
+    try:
+      entered = threading.Event()
+      release = threading.Event()
+
+      async def failing_drain(timeout=None):
+        del timeout
+        entered.set()
+        while not release.is_set():
+          await asyncio.sleep(0.01)
+        raise RuntimeError("remote drain fails")
+
+      bp = mock.MagicMock(spec=bigquery_agent_analytics_plugin.BatchProcessor)
+      bp.shutdown = failing_drain
+      bp.get_drop_stats = mock.MagicMock(return_value={})
+      state = mock.MagicMock()
+      state.write_client = None
+      state.batch_processor = bp
+      plugin._loop_state_by_loop[remote_loop] = state
+
+      owner = asyncio.create_task(plugin.shutdown(timeout=5))
+      while not entered.is_set():
+        await asyncio.sleep(0.01)
+      waiter = asyncio.create_task(plugin.shutdown())
+      await asyncio.sleep(0.05)
+      release.set()
+      with pytest.raises(
+          bigquery_agent_analytics_plugin._ShutdownIncompleteError
+      ):
+        await owner
+      # The retrying waiter hits the same persistent remote failure.
+      with pytest.raises(
+          bigquery_agent_analytics_plugin._ShutdownIncompleteError
+      ):
+        await asyncio.wait_for(waiter, timeout=10)
+      assert remote_loop in plugin._loop_state_by_loop
+    finally:
+      remote_loop.call_soon_threadsafe(remote_loop.stop)
+      thread.join(timeout=5)
+      remote_loop.close()
+
+  def test_prose_then_encoded_document_redacted(self):
+    """An encoded credential document after a stretch of
+
+    raw prose in the suffix is still decoded and redacted.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    v = '"note" then "\\u007b\\"access_token\\":\\"R12-SECRET\\"\\u007d"'
+    out, truncated = truncate({"b": v}, 10000)
+    assert "R12-SECRET" not in json.dumps(out)
+    assert "[REDACTED]" in out["b"]
+    del truncated
+
+    # A chain of prose and documents is walked to the depth cap.
+    chain = (
+        '"note" one "plain" two'
+        ' "\\u007b\\"refresh_token\\":\\"R12-CHAIN-SECRET\\"\\u007d"'
+    )
+    out, _ = truncate({"b": chain}, 10000)
+    assert "R12-CHAIN-SECRET" not in json.dumps(out)
+
+    # An escape hidden in a prose gap cannot be verified.
+    out, truncated = truncate({"s": '"note" \\then "x"'}, 10000)
+    assert out["s"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert truncated is True
+
+    # Multi-quote prose still passes through.
+    prose = '"a" and then "b" happened'
+    out, truncated = truncate({"s": prose}, 10000)
+    assert out["s"] == prose
+    assert truncated is False
+
+  @pytest.mark.asyncio
+  async def test_native_subclass_formatter_result_fails_closed(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+      caplog,
+  ):
+    """A SUBCLASS of a parser-native model shape from the
+
+    formatter fails closed at the boundary instead of reaching parser
+    attribute accesses outside it.
+    """
+    _ = mock_auth_default, mock_bq_client
+
+    class SubRequest(llm_request_lib.LlmRequest):
+      pass
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=lambda content, event_type: SubRequest()
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      with caplog.at_level(logging.WARNING):
+        await plugin._log_event(
+            "STATE_DELTA",
+            callback_context,
+            event_data=bigquery_agent_analytics_plugin.EventData(),
+        )
+      await asyncio.sleep(0.01)
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      assert (
+          bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+          in log_entry["content"]
+      )
+      assert "SubRequest" not in caplog.text
+      assert plugin.get_drop_stats().get("formatter_failed", 0) == 1
+
+  @pytest.mark.asyncio
+  async def test_persistent_teardown_failure_raises_to_all_callers(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A persistently failing teardown must not report
+
+    success to the owner or to retrying waiters.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def always_failing_drain(timeout=None):
+      del timeout
+      calls.append(1)
+      if len(calls) == 1:
+        entered.set()
+        await release.wait()
+      raise RuntimeError("drain always fails")
+
+    state = mock.MagicMock()
+    state.write_client = None
+    state.batch_processor = mock.MagicMock(
+        spec=bigquery_agent_analytics_plugin.BatchProcessor
+    )
+    state.batch_processor.shutdown = mock.AsyncMock(
+        side_effect=always_failing_drain
+    )
+    state.batch_processor.get_drop_stats = mock.MagicMock(return_value={})
+    plugin._loop_state_by_loop[asyncio.get_running_loop()] = state
+
+    owner = asyncio.create_task(plugin.shutdown(timeout=5))
+    await entered.wait()
+    waiter = asyncio.create_task(plugin.shutdown())
+    await asyncio.sleep(0.05)
+    release.set()
+    with pytest.raises(RuntimeError, match="drain always fails"):
+      await owner
+    # The retrying waiter becomes the owner, fails the same way, and
+    # surfaces the failure instead of returning success over live state.
+    with pytest.raises(RuntimeError, match="drain always fails"):
+      await asyncio.wait_for(waiter, timeout=5)
+    assert len(calls) == 2
+    assert plugin._loop_state_by_loop != {}
+
+  def test_unicode_escaped_trailing_document_redacted(self):
+    """A trailing quoted JSON document whose decoded
+
+    content hides a container behind Unicode escapes is decoded and
+    redacted; quoted prose and prose suffixes stay untouched.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    v = '"note" "\\u007b\\"access_token\\":\\"R11-SECRET\\"\\u007d"'
+    out, truncated = truncate({"b": v}, 10000)
+    assert "R11-SECRET" not in json.dumps(out)
+    assert "[REDACTED]" in out["b"]
+    del truncated
+
+    # A stray leading escape in the suffix cannot be classified.
+    out, truncated = truncate({"s": '"note" \\x'}, 10000)
+    assert out["s"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert truncated is True
+
+    for prose in (
+        '"hello" she said',
+        '"a" and then "b" happened',
+        '"note" "just more prose"',
+    ):
+      out, truncated = truncate({"s": prose}, 10000)
+      assert out["s"] == prose
+      assert truncated is False
+
+  @pytest.mark.asyncio
+  async def test_waiter_retries_after_failed_owner_teardown(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """An ordinary teardown exception must not report
+
+    successful completion to coalesced waiters; they retry ownership.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def failing_first_drain(timeout=None):
+      del timeout
+      calls.append(1)
+      if len(calls) == 1:
+        entered.set()
+        await release.wait()
+        raise RuntimeError("first drain fails")
+
+    state = mock.MagicMock()
+    state.write_client = None
+    state.batch_processor = mock.MagicMock(
+        spec=bigquery_agent_analytics_plugin.BatchProcessor
+    )
+    state.batch_processor.shutdown = mock.AsyncMock(
+        side_effect=failing_first_drain
+    )
+    state.batch_processor.get_drop_stats = mock.MagicMock(return_value={})
+    plugin._loop_state_by_loop[asyncio.get_running_loop()] = state
+
+    owner = asyncio.create_task(plugin.shutdown(timeout=5))
+    await entered.wait()
+    waiter = asyncio.create_task(plugin.shutdown())
+    await asyncio.sleep(0.05)
+    release.set()
+    # The OWNER must not report success over live state —
+    # the teardown error propagates to its caller.
+    with pytest.raises(RuntimeError, match="first drain fails"):
+      await owner
+    # The waiter must not have accepted the failed teardown as success:
+    # it retries ownership, the second drain succeeds, state is claimed.
+    await asyncio.wait_for(waiter, timeout=5)
+    assert len(calls) == 2
+    assert plugin._loop_state_by_loop == {}
+
+  @pytest.mark.asyncio
+  @pytest.mark.filterwarnings("error::RuntimeWarning")
+  async def test_rejecting_task_factory_does_not_leak_coroutine(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """If the remote loop's task factory rejects task
+
+    creation, the drain coroutine is closed instead of leaking.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    remote_loop = asyncio.new_event_loop()
+
+    def rejecting_factory(loop, coro, **kwargs):
+      del loop, coro, kwargs
+      raise RuntimeError("factory rejects")
+
+    remote_loop.set_task_factory(rejecting_factory)
+    thread = platform_thread.create_thread(target=remote_loop.run_forever)
+    thread.daemon = True
+    thread.start()
+    try:
+      state = mock.MagicMock()
+      state.write_client = None
+      bp = mock.MagicMock(spec=bigquery_agent_analytics_plugin.BatchProcessor)
+
+      async def drain(timeout=None):
+        del timeout
+
+      bp.shutdown = drain
+      bp.get_drop_stats = mock.MagicMock(return_value={})
+      state.batch_processor = bp
+      plugin._loop_state_by_loop[remote_loop] = state
+
+      # The failed drain keeps teardown incomplete.
+      with pytest.raises(
+          bigquery_agent_analytics_plugin._ShutdownIncompleteError
+      ):
+        await plugin.shutdown(timeout=2)
+      # The failed drain retains the state; no never-awaited warning
+      # (filterwarnings turns it into a hard error).
+      assert remote_loop in plugin._loop_state_by_loop
+    finally:
+      remote_loop.call_soon_threadsafe(remote_loop.stop)
+      thread.join(timeout=5)
+      remote_loop.close()
+
+  def test_unterminated_quoted_container_fails_closed(self):
+    """A quoted layer that visibly begins an encoded
+
+    container but is missing its final quote fails closed; unterminated
+    quoted prose passes through.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    v = '"{\\"access_token\\":\\"R10-SECRET\\"}'
+    out, truncated = truncate({"cache": v}, 10000)
+    assert "R10-SECRET" not in json.dumps(out)
+    assert out["cache"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert truncated is True
+
+    prose = '"unterminated prose without a container'
+    out, truncated = truncate({"s": prose}, 10000)
+    assert out["s"] == prose
+    assert truncated is False
+
+  @pytest.mark.asyncio
+  async def test_identity_formatter_preserves_native_shapes(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """An identity formatter must not destroy parser-native
+
+    shapes (dict/list) that it returns untransformed.
+    """
+    _ = mock_auth_default, mock_bq_client
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=lambda content, event_type: content
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin._log_event(
+          "STATE_DELTA",
+          callback_context,
+          raw_content={"response": "safe-dict-content"},
+          event_data=bigquery_agent_analytics_plugin.EventData(),
+      )
+      await asyncio.sleep(0.01)
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      assert "safe-dict-content" in json.dumps(log_entry, default=str)
+      assert (
+          bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+          not in json.dumps(log_entry, default=str)
+      )
+      assert plugin.get_drop_stats().get("formatter_failed", 0) == 0
+
+  @pytest.mark.asyncio
+  async def test_waiter_retries_after_cancelled_owner_shutdown(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A coalesced caller must not claim success when the
+
+    owning shutdown was cancelled mid-teardown; it retries ownership and
+    finishes the job.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    gate = asyncio.Event()
+    calls = []
+
+    async def gated_first_shutdown(timeout=None):
+      del timeout
+      calls.append(1)
+      if len(calls) == 1:
+        await gate.wait()
+
+    state = mock.MagicMock()
+    state.write_client = None
+    state.batch_processor = mock.MagicMock(
+        spec=bigquery_agent_analytics_plugin.BatchProcessor
+    )
+    state.batch_processor.shutdown = mock.AsyncMock(
+        side_effect=gated_first_shutdown
+    )
+    state.batch_processor.get_drop_stats = mock.MagicMock(return_value={})
+    plugin._loop_state_by_loop[asyncio.get_running_loop()] = state
+
+    owner = asyncio.create_task(plugin.shutdown(timeout=5))
+    await asyncio.sleep(0.05)
+    waiter = asyncio.create_task(plugin.shutdown())
+    await asyncio.sleep(0.05)
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await owner
+
+    # The waiter retried ownership and completed the teardown.
+    await asyncio.wait_for(waiter, timeout=5)
+    assert plugin._loop_state_by_loop == {}
+    assert len(calls) == 2
+
+  @pytest.mark.asyncio
+  async def test_slow_remote_drain_is_retained_without_close_errors(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A remote drain still running at the deadline is
+
+    retained and keeps running remotely; the caller never closes a
+    coroutine it no longer owns (no 'coroutine already executing').
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    remote_loop = asyncio.new_event_loop()
+    thread = platform_thread.create_thread(target=remote_loop.run_forever)
+    thread.daemon = True
+    thread.start()
+    try:
+      release = threading.Event()
+      drain_finished = threading.Event()
+
+      async def slow_drain(timeout=None):
+        del timeout
+        while not release.is_set():
+          await asyncio.sleep(0.01)
+        drain_finished.set()
+
+      bp = mock.MagicMock(spec=bigquery_agent_analytics_plugin.BatchProcessor)
+      bp.shutdown = slow_drain
+      bp.get_drop_stats = mock.MagicMock(return_value={})
+      state = mock.MagicMock()
+      state.write_client = None
+      state.batch_processor = bp
+      plugin._loop_state_by_loop[remote_loop] = state
+
+      # The timed-out drain keeps teardown incomplete.
+      with pytest.raises(
+          bigquery_agent_analytics_plugin._ShutdownIncompleteError
+      ):
+        await plugin.shutdown(timeout=0.2)
+      # Timed out: state retained, no ValueError from closing a running
+      # coroutine (shutdown would have logged/raised through its guard).
+      assert remote_loop in plugin._loop_state_by_loop
+      # The remote drain keeps running to completion on its own loop.
+      release.set()
+      assert drain_finished.wait(timeout=5)
+    finally:
+      remote_loop.call_soon_threadsafe(remote_loop.stop)
+      thread.join(timeout=5)
+      remote_loop.close()
+
+  @pytest.mark.asyncio
+  async def test_formatter_logs_never_carry_payload_derived_names(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+      caplog,
+  ):
+    """Formatter log lines are constant — payload-derived
+
+    result/exception CLASS NAMES never reach the logs.
+    """
+    _ = mock_auth_default, mock_bq_client
+    secret_result_cls = type("R10_RESULT_SECRET", (), {})
+    secret_error_cls = type("R10_ERROR_SECRET", (Exception,), {})
+
+    outcomes = iter([secret_result_cls(), None])
+
+    def formatter(content, event_type):
+      del content, event_type
+      value = next(outcomes)
+      if value is None:
+        raise secret_error_cls()
+      return value
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=formatter
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      with caplog.at_level(logging.WARNING):
+        for _ in range(2):
+          await plugin._log_event(
+              "STATE_DELTA",
+              callback_context,
+              event_data=bigquery_agent_analytics_plugin.EventData(),
+          )
+      assert "R10_RESULT_SECRET" not in caplog.text
+      assert "R10_ERROR_SECRET" not in caplog.text
+      assert plugin.get_drop_stats().get("formatter_failed", 0) == 2
+
+  def test_unicode_ws_and_bom_quoted_layers_fail_closed(self):
+    """BOM/NBSP/EM-SPACE prefixes inside quoted JSON layers
+
+    are normalized before every shape check, under- and over-limit.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    for pad in ("\u00a0", "\u2003", "\ufeff"):
+      v = json.dumps(pad + json.dumps({"access_token": "R8-WS-SECRET"}))
+      out, _ = truncate({"b": v}, 10000)
+      assert "R8-WS-SECRET" not in json.dumps(out), repr(pad)
+
+    secret = "R8-WS-OVER-SECRET-" + "x" * 300
+    for pad in ("\u00a0", "\u2003", "\ufeff"):
+      v = json.dumps(
+          pad + json.dumps({"access_token": secret}), ensure_ascii=False
+      )
+      out, truncated = truncate({"b": v}, 120)
+      assert "R8-WS-OVER-SECRET" not in json.dumps(out), repr(pad)
+      assert truncated
+
+  def test_quoted_prefix_suffix_smuggling_fails_closed(self):
+    """Credential JSON smuggled after a harmless quoted
+
+    prefix fails closed; container-free quoted prose passes through.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    for v in (
+        '"note" {"access_token":"R8-SUFFIX-SECRET"}',
+        '"note" blah {"refresh_token":"R8-SUFFIX-SECRET-2"}',
+    ):
+      out, truncated = truncate({"b": v}, 10000)
+      assert "R8-SUFFIX-SECRET" not in json.dumps(out)
+      assert truncated
+
+    prose = '"hello" she said, "twice"'
+    out, truncated = truncate({"s": prose}, 10000)
+    assert out["s"] == prose
+    assert truncated is False
+
+  def test_safe_scalar_subclass_str_not_published(self):
+    """Subclasses of allowlisted scalar types cannot leak
+
+    values through an overridden __str__; base conversions are used.
+    """
+    import enum
+    import pathlib
+
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    class Credential(enum.Enum):
+      access_token = "R8-ENUM-SECRET"
+
+      def __str__(self):
+        return self.value
+
+    out, _ = truncate({"c": Credential.access_token}, 10000)
+    assert "R8-ENUM-SECRET" not in json.dumps(out)
+    assert out["c"] == "Credential.access_token"
+
+    class SneakyPath(pathlib.PurePosixPath):
+
+      def __str__(self):
+        return "R8-PATH-SECRET"
+
+    out, _ = truncate({"p": SneakyPath("/tmp/x")}, 10000)
+    assert "R8-PATH-SECRET" not in json.dumps(out)
+    assert out["p"] == "/tmp/x"
+
+  def test_safe_scalar_truncation_reports_flag(self):
+    """An over-limit safe scalar reports truncation."""
+    import pathlib
+
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    out, truncated = truncate(pathlib.PurePosixPath("x" * 40), 8)
+    assert "[TRUNCATED]" in out
+    assert truncated is True
+
+  def test_hostile_container_protocols_fail_closed(self):
+    """Raising items()/iteration/field access fails closed
+
+    to a sentinel instead of escaping the sanitizer.
+    """
+    import collections.abc
+
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    class EvilMapping(collections.abc.Mapping):
+
+      def __getitem__(self, k):
+        raise KeyError(k)
+
+      def __len__(self):
+        return 1
+
+      def __iter__(self):
+        return iter(["a"])
+
+      def items(self):
+        raise RuntimeError("R8-MAPPING-SECRET")
+
+    class EvilList(list):
+
+      def __iter__(self):
+        raise RuntimeError("R8-LIST-SECRET")
+
+    out, truncated = truncate({"m": EvilMapping(), "l": EvilList([1])}, 10000)
+    assert out["m"] == "[UNSUPPORTED_OBJECT]"
+    assert out["l"] == "[UNSUPPORTED_OBJECT]"
+    assert truncated is True
+    assert "R8-MAPPING-SECRET" not in json.dumps(out)
+
+  @pytest.mark.asyncio
+  async def test_hostile_protocol_row_still_emitted_no_canary_in_logs(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+      caplog,
+  ):
+    """At the real callback boundary: the row is emitted and
+
+    the payload-controlled exception message reaches neither the row nor
+    the application logs.
+    """
+    _ = mock_auth_default, mock_bq_client
+    import collections.abc
+
+    class EvilMapping(collections.abc.Mapping):
+
+      def __getitem__(self, k):
+        raise KeyError(k)
+
+      def __len__(self):
+        return 1
+
+      def __iter__(self):
+        return iter(["a"])
+
+      def items(self):
+        raise RuntimeError("R8-CALLBACK-SECRET")
+
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin._log_event(
+          "STATE_DELTA",
+          callback_context,
+          event_data=bigquery_agent_analytics_plugin.EventData(
+              extra_attributes={"hostile": EvilMapping()},
+          ),
+      )
+      await asyncio.sleep(0.01)
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      assert "R8-CALLBACK-SECRET" not in json.dumps(log_entry, default=str)
+      assert "R8-CALLBACK-SECRET" not in caplog.text
+      attrs = json.loads(log_entry["attributes"])
+      assert attrs["hostile"] == "[UNSUPPORTED_OBJECT]"
+      assert log_entry["is_truncated"] is True
+
+  def test_scalar_key_collisions_fail_closed(self):
+    """Scalar keys are normalized to their JSON form and
+
+    collisions get an explicit marker instead of silently collapsing.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    for pair in (
+        {1: "n", "1": "s"},
+        {True: "b", "true": "s"},
+        {None: "x", "null": "s"},
+    ):
+      out, truncated = truncate(pair, 10000)
+      assert truncated is True
+      assert len(out) == 2
+      # Round-trip through JSON keeps both values.
+      assert len(json.loads(json.dumps(out))) == 2
+
+    # A pre-existing key in the marker namespace is never
+    # overwritten — markers are re-allocated until unique.
+    out, truncated = truncate(
+        {"[KEY_COLLISION_1]1": "reserved", "1": "string", 1: "numeric"},
+        10000,
+    )
+    assert truncated is True
+    assert out["[KEY_COLLISION_1]1"] == "reserved"
+    assert out["1"] == "string"
+    assert len(out) == 3
+    assert sorted(out.values()) == ["numeric", "reserved", "string"]
+
+  def test_object_attr_traversal_bounded_and_selfref_terminates(self):
+    """__dict__ traversal charges the budget per entry and
+
+    self-references terminate immediately.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    class Big:
+      pass
+
+    big = Big()
+    for i in range(200):
+      setattr(big, f"attr{i}", i)
+    out, truncated = truncate({"b": big}, 10000, None, 0, [50])
+    assert truncated is True
+    assert len(out["b"]) <= 51
+
+    class Node:
+      pass
+
+    node = Node()
+    node.self = node
+    node.access_token = "R8-SELF-SECRET"
+    out, _ = truncate({"n": node}, 10000)
+    assert out["n"]["self"] == "[CIRCULAR_REFERENCE]"
+    assert "R8-SELF-SECRET" not in json.dumps(out)
+
+  def test_unlimited_mode_inspection_ceiling(self):
+    """Max_content_length=-1 still bounds json.loads
+
+    materialization; over-ceiling container blobs fail closed.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    ceiling = bigquery_agent_analytics_plugin._MAX_JSON_INSPECT_CHARS
+    big = "[" + "1," * (ceiling // 2 + 10) + "1]"
+    out, truncated = truncate({"b": big}, -1)
+    assert out["b"] == "[UNPARSEABLE_JSON_BLOB]"
+    assert truncated is True
+
+  @pytest.mark.asyncio
+  async def test_cancelled_shutdown_accounting_is_o1(self):
+    """External cancellation accounts queued rows without
+
+    a per-item synchronous drain.
+    """
+
+    class CountingQueue(asyncio.Queue):
+
+      def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.get_nowait_calls = 0
+
+      def get_nowait(self):
+        self.get_nowait_calls += 1
+        return super().get_nowait()
+
+    bp = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=None,
+        write_stream="s",
+        batch_size=1,
+        flush_interval=0.05,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=100,
+        shutdown_timeout=5.0,
+    )
+    counting_queue = CountingQueue(maxsize=100)
+    bp._queue = counting_queue
+
+    write_entered = asyncio.Event()
+    write_release = asyncio.Event()
+
+    async def blocked_write(rows):
+      del rows
+      write_entered.set()
+      await write_release.wait()
+
+    with mock.patch.object(
+        bp, "_write_rows_with_retry", side_effect=blocked_write
+    ):
+      await bp.start()
+      await bp.append({"r": 0})
+      await write_entered.wait()
+      for i in range(3):
+        await bp.append({"r": i + 1})
+
+      closer = asyncio.create_task(bp.shutdown(timeout=30))
+      await asyncio.sleep(0.05)
+      calls_before = counting_queue.get_nowait_calls
+      closer.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await closer
+
+    # O(1): no per-item dequeue happened during cancellation — the queue
+    # was swapped out instead.
+    assert counting_queue.get_nowait_calls == calls_before
+    assert bp._queue is not counting_queue
+    assert bp.get_drop_stats()["shutdown_cancelled"] == 3
+
+  @pytest.mark.asyncio
+  async def test_aborted_setup_holds_rendezvous_and_allows_restart(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """The setup rendezvous stays claimed until aborted
+
+    teardown completes, and a later restart fully succeeds.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._credentials = mock.MagicMock(quota_project_id=None)
+
+    entered = threading.Event()
+    release = threading.Event()
+    first_call = threading.Event()
+
+    def gated_client(*args, **kwargs):
+      del args, kwargs
+      if not first_call.is_set():
+        first_call.set()
+        entered.set()
+        release.wait(10)
+      return mock.MagicMock()
+
+    future_held_during_teardown = []
+    original_teardown = plugin._teardown_aborted_setup
+
+    async def spying_teardown():
+      future_held_during_teardown.append(plugin._setup_future is not None)
+      await original_teardown()
+
+    write_client = mock.MagicMock()
+    write_client.transport = mock.MagicMock()
+    write_client.transport.close = mock.AsyncMock()
+
+    with (
+        mock.patch(
+            "google.adk.plugins.bigquery_agent_analytics_plugin.bigquery.Client",
+            side_effect=gated_client,
+        ),
+        mock.patch.object(plugin, "_teardown_aborted_setup", spying_teardown),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin,
+            "BigQueryWriteAsyncClient",
+            return_value=write_client,
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin.BatchProcessor,
+            "start",
+            mock.AsyncMock(),
+        ),
+    ):
+      owner = asyncio.create_task(plugin._ensure_started())
+      while not entered.is_set():
+        await asyncio.sleep(0.01)
+      await plugin.shutdown()
+      release.set()
+      outcome = await owner
+      assert outcome == "aborted"
+      # The rendezvous was still claimed while teardown ran, so no new
+      # setup could interleave and have its resources destroyed.
+      assert future_held_during_teardown == [True]
+      assert plugin._setup_future is None
+
+      # A fresh start after the abort fully succeeds.
+      outcome2 = await plugin._ensure_started()
+      assert outcome2 == "ok"
+      assert plugin._started is True
+      assert plugin.client is not None
+
+  @pytest.mark.asyncio
+  @pytest.mark.filterwarnings("error::RuntimeWarning")
+  @pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
+  async def test_host_timeout_effective_during_remote_drain(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A stuck remote loop must not block the event loop —
+
+    an outer host timeout fires instead of waiting out the full drain.
+    Warning-clean: the shutdown coroutine created for
+    the never-running loop is explicitly closed, not leaked.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+
+    remote_loop = asyncio.new_event_loop()  # never runs
+    try:
+      state = mock.MagicMock()
+      state.write_client = None
+      state.batch_processor = bigquery_agent_analytics_plugin.BatchProcessor(
+          write_client=mock.MagicMock(),
+          arrow_schema=None,
+          write_stream="s",
+          batch_size=1,
+          flush_interval=0.05,
+          retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+          queue_max_size=10,
+          shutdown_timeout=5.0,
+      )
+      plugin._loop_state_by_loop[remote_loop] = state
+
+      start = time.monotonic()
+      with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(plugin.shutdown(timeout=5), timeout=0.1)
+      elapsed = time.monotonic() - start
+      # The old synchronous future.result(timeout=5) blocked the loop for
+      # the full remote timeout before the host timeout could fire.
+      assert elapsed < 2.0
+      # The undrained state is retained for a retried close.
+      assert remote_loop in plugin._loop_state_by_loop
+    finally:
+      remote_loop.close()
+
+  def test_drop_stats_stable_while_shutdown_folds(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Claim+fold is one atomic transition, so readers never
+
+    observe a state as both live and folded (or neither).
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+
+    async def scenario():
+      gate = asyncio.Event()
+
+      async def gated_processor_shutdown(timeout=None):
+        del timeout
+        await gate.wait()
+
+      state = mock.MagicMock()
+      state.write_client = None
+      state.batch_processor = mock.MagicMock(
+          spec=bigquery_agent_analytics_plugin.BatchProcessor
+      )
+      state.batch_processor.shutdown = mock.AsyncMock(
+          side_effect=gated_processor_shutdown
+      )
+      state.batch_processor.get_drop_stats = mock.MagicMock(
+          return_value={"queue_full": 2}
+      )
+      loop = asyncio.get_running_loop()
+      plugin._loop_state_by_loop[loop] = state
+
+      closer = asyncio.create_task(plugin.shutdown(timeout=5))
+      for _ in range(10):
+        await asyncio.sleep(0.005)
+        assert plugin.get_drop_stats().get("queue_full", 0) == 2
+      gate.set()
+      await closer
+      assert plugin.get_drop_stats().get("queue_full", 0) == 2
+
+    asyncio.run(scenario())
+
+  @pytest.mark.asyncio
+  async def test_raced_event_counts_exactly_one_loss(
+      self, mock_auth_default, mock_bq_client, callback_context
+  ):
+    """One event racing shutdown records exactly one loss
+
+    (shutdown_race), not shutdown_race + setup_unavailable.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    with mock.patch.object(
+        plugin, "_ensure_started", mock.AsyncMock(return_value="aborted")
+    ):
+      await plugin._log_event(
+          "STATE_DELTA",
+          callback_context,
+          event_data=bigquery_agent_analytics_plugin.EventData(),
+      )
+    stats = plugin.get_drop_stats()
+    assert stats.get("shutdown_race", 0) == 1
+    assert stats.get("setup_unavailable", 0) == 0
+
+  @pytest.mark.asyncio
+  async def test_cancelled_setup_closes_eventual_client_and_executor(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Cancelling a setup blocked in the client constructor
+
+    closes the eventual client and terminates the executor.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._credentials = mock.MagicMock(quota_project_id=None)
+
+    entered = threading.Event()
+    release = threading.Event()
+    eventual_client = mock.MagicMock()
+
+    def gated_client(*args, **kwargs):
+      del args, kwargs
+      entered.set()
+      release.wait(10)
+      return eventual_client
+
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.bigquery.Client",
+        side_effect=gated_client,
+    ):
+      owner = asyncio.create_task(plugin._ensure_started())
+      while not entered.is_set():
+        await asyncio.sleep(0.01)
+      executor = plugin._executor
+      owner.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await owner
+      release.set()
+      # The constructor thread finishes and the done-callback closes the
+      # orphaned client.
+      for _ in range(100):
+        if eventual_client.close.called:
+          break
+        await asyncio.sleep(0.02)
+
+    assert eventual_client.close.called
+    assert plugin.client is None
+    assert plugin._executor is None
+    assert executor is not None and executor._shutdown
+
+  @pytest.mark.asyncio
+  async def test_formatter_result_shapes_fail_closed(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+      caplog,
+  ):
+    """Non-native formatter RESULTS fail closed inside the
+
+    boundary — a secret-returning or raising __str__ never reaches the
+    parser's str() fallback, the row, or the logs.
+    """
+    _ = mock_auth_default, mock_bq_client
+
+    class LeakyResult:
+
+      def __str__(self):
+        return "R9-FORMATTER-SECRET"
+
+    class RaisingResult:
+
+      def __str__(self):
+        raise RuntimeError("R9-FORMATTER-RAISE-SECRET")
+
+    results = iter([LeakyResult(), RaisingResult()])
+
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=lambda content, event_type: next(results)
+    )
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    ) as plugin:
+      await plugin._ensure_started()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      with caplog.at_level(logging.WARNING):
+        for _ in range(2):
+          mock_write_client.append_rows.reset_mock()
+          await plugin._log_event(
+              "STATE_DELTA",
+              callback_context,
+              event_data=bigquery_agent_analytics_plugin.EventData(),
+          )
+          await asyncio.sleep(0.01)
+          log_entry = await _get_captured_event_dict_async(
+              mock_write_client, dummy_arrow_schema
+          )
+          dumped = json.dumps(log_entry, default=str)
+          assert "R9-FORMATTER-SECRET" not in dumped
+          assert "R9-FORMATTER-RAISE-SECRET" not in dumped
+          assert (
+              bigquery_agent_analytics_plugin._FORMATTER_FAILED_SENTINEL
+              in log_entry["content"]
+          )
+      assert "R9-FORMATTER-SECRET" not in caplog.text
+      assert "R9-FORMATTER-RAISE-SECRET" not in caplog.text
+      assert plugin.get_drop_stats().get("formatter_failed", 0) == 2
+
+  def test_value_backed_enums_not_published(self):
+    """StrEnum / (str, Enum) / bytes-backed members are
+
+    stringified through Enum.__str__ (member name), never their value.
+    """
+    import enum
+
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    class StrCred(str, enum.Enum):
+      access_token = "R9-STR-ENUM-SECRET"
+
+    class BytesCred(bytes, enum.Enum):
+      token = b"R9-BYTES-ENUM-SECRET"
+
+    payload = {"s": StrCred.access_token, "b": BytesCred.token}
+    if sys.version_info >= (3, 11):
+
+      class NativeStrCred(enum.StrEnum):
+        refresh_token = "R9-STRENUM-SECRET"
+
+      payload["n"] = NativeStrCred.refresh_token
+
+    out, _ = truncate(payload, 10000)
+    dumped = json.dumps(out, default=str)
+    for canary in (
+        "R9-STR-ENUM-SECRET",
+        "R9-BYTES-ENUM-SECRET",
+        "R9-STRENUM-SECRET",
+    ):
+      assert canary not in dumped, canary
+    assert out["s"] == "StrCred.access_token"
+
+  def test_strip_bom_ws_is_linear(self):
+    """An alternating whitespace/BOM prefix is stripped in
+
+    one linear scan (the fixed-point slicing loop was quadratic).
+    """
+    strip = bigquery_agent_analytics_plugin._strip_bom_ws
+    prefix = " \ufeff" * 200_000
+    start = time.monotonic()
+    assert strip(prefix + "{}") == "{}"
+    elapsed = time.monotonic() - start
+    # Quadratic behavior took minutes at this size; linear is ~25ms.
+    assert elapsed < 2.0
+
+  @pytest.mark.asyncio
+  async def test_failed_remote_drain_retains_state(
+      self, mock_auth_default, mock_bq_client, caplog
+  ):
+    """A remote drain that raises must NOT claim/fold its
+
+    state; it is retained for a retried close and the payload-controlled
+    message stays out of the logs.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    remote_loop = asyncio.new_event_loop()
+    thread = platform_thread.create_thread(target=remote_loop.run_forever)
+    thread.daemon = True
+    thread.start()
+    try:
+      state = mock.MagicMock()
+      state.write_client = None
+      bp = mock.MagicMock(spec=bigquery_agent_analytics_plugin.BatchProcessor)
+
+      async def failing_shutdown(timeout=None):
+        del timeout
+        raise RuntimeError("R9-DRAIN-SECRET")
+
+      bp.shutdown = failing_shutdown
+      bp.get_drop_stats = mock.MagicMock(return_value={"queue_full": 1})
+      state.batch_processor = bp
+      plugin._loop_state_by_loop[remote_loop] = state
+
+      with caplog.at_level(logging.WARNING):
+        # A failed remote drain keeps teardown incomplete
+        # and surfaces to the owner instead of reporting success.
+        with pytest.raises(
+            bigquery_agent_analytics_plugin._ShutdownIncompleteError
+        ):
+          await plugin.shutdown(timeout=2)
+
+      # Retained, not silently claimed as a successful drain.
+      assert remote_loop in plugin._loop_state_by_loop
+      assert plugin.get_drop_stats().get("queue_full", 0) == 1
+      assert "R9-DRAIN-SECRET" not in caplog.text
+      assert "RuntimeError" in caplog.text
+    finally:
+      remote_loop.call_soon_threadsafe(remote_loop.stop)
+      thread.join(timeout=5)
+      remote_loop.close()
+
+  @pytest.mark.asyncio
+  async def test_concurrent_shutdown_caller_awaits_completion(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A concurrent shutdown() caller coalesces on the
+
+    owner's completion instead of returning while teardown is running.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    gate = asyncio.Event()
+
+    async def gated_shutdown(timeout=None):
+      del timeout
+      await gate.wait()
+
+    state = mock.MagicMock()
+    state.write_client = None
+    state.batch_processor = mock.MagicMock(
+        spec=bigquery_agent_analytics_plugin.BatchProcessor
+    )
+    state.batch_processor.shutdown = mock.AsyncMock(side_effect=gated_shutdown)
+    state.batch_processor.get_drop_stats = mock.MagicMock(return_value={})
+    plugin._loop_state_by_loop[asyncio.get_running_loop()] = state
+
+    first = asyncio.create_task(plugin.shutdown(timeout=5))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(plugin.shutdown())
+    await asyncio.sleep(0.05)
+    assert not second.done(), "second caller returned mid-teardown"
+    gate.set()
+    await first
+    await asyncio.wait_for(second, timeout=5)
+    assert plugin._loop_state_by_loop == {}
+
+  @pytest.mark.asyncio
+  async def test_shutdown_counts_rows_on_closed_loop(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Queued rows owned by an already-closed loop are
+
+    counted as stale_loop when shutdown() claims the state.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    closed_loop = asyncio.new_event_loop()
+    closed_loop.close()
+
+    bp = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=None,
+        write_stream="s",
+        batch_size=10,
+        flush_interval=0.05,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=1.0,
+    )
+    bp._queue.put_nowait({"r": 1})
+    state = mock.MagicMock()
+    state.write_client = None
+    state.batch_processor = bp
+    plugin._loop_state_by_loop[closed_loop] = state
+
+    await plugin.shutdown(timeout=1)
+    assert closed_loop not in plugin._loop_state_by_loop
+    assert plugin.get_drop_stats().get("stale_loop", 0) == 1
+
+  @pytest.mark.asyncio
+  async def test_completed_constructor_close_dispatched_off_loop(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """When the constructor future is already done at
+
+    cancellation time, the orphan client's close still runs off-loop and
+    does not extend the cancellation window.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._credentials = mock.MagicMock(quota_project_id=None)
+
+    loop_thread_id = threading.get_ident()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+    close_thread_ids = []
+    eventual = mock.MagicMock()
+
+    def slow_close():
+      close_thread_ids.append(threading.get_ident())
+      close_started.set()
+      time.sleep(0.2)
+      close_finished.set()
+
+    eventual.close = slow_close
+
+    def wrap_and_cancel(cf, **kwargs):
+      del kwargs
+      # Deterministic completed-before-cancel interleaving: wait for the
+      # constructor to finish, then deliver the cancellation.
+      cf.result(timeout=5)
+      raise asyncio.CancelledError()
+
+    with (
+        mock.patch(
+            "google.adk.plugins.bigquery_agent_analytics_plugin.bigquery.Client",
+            return_value=eventual,
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin.asyncio,
+            "wrap_future",
+            side_effect=wrap_and_cancel,
+        ),
+    ):
+      start = time.monotonic()
+      with pytest.raises(asyncio.CancelledError):
+        await plugin._ensure_started()
+      elapsed = time.monotonic() - start
+
+    assert close_started.wait(timeout=5)
+    assert close_finished.wait(timeout=5)
+    # The 200ms close did not run inline on the event-loop thread.
+    assert elapsed < 0.15
+    assert close_thread_ids and close_thread_ids[0] != loop_thread_id
+
+  def test_stale_cleanup_accounts_in_o1(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Stale-loop cleanup accounts queued rows via qsize
+
+    minus sentinels, without a per-item synchronous drain.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+
+    class CountingQueue(asyncio.Queue):
+
+      def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.get_nowait_calls = 0
+
+      def get_nowait(self):
+        self.get_nowait_calls += 1
+        return super().get_nowait()
+
+    closed_loop = asyncio.new_event_loop()
+    closed_loop.close()
+    bp = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=None,
+        write_stream="s",
+        batch_size=10,
+        flush_interval=0.05,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=2000,
+        shutdown_timeout=1.0,
+    )
+    counting = CountingQueue(maxsize=2000)
+    for i in range(1000):
+      counting.put_nowait({"r": i})
+    bp._queue = counting
+    state = mock.MagicMock()
+    state.write_client = None
+    state.batch_processor = bp
+    plugin._loop_state_by_loop[closed_loop] = state
+
+    plugin._cleanup_stale_loop_states()
+    assert counting.get_nowait_calls == 0
+    assert plugin.get_drop_stats().get("stale_loop", 0) == 1000
+
+  @pytest.mark.asyncio
+  async def test_shutdown_closes_shared_client(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Normal shutdown closes the shared BigQuery client
+
+    instead of just dropping the reference.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    client = mock.MagicMock()
+    plugin.client = client
+    await plugin.shutdown(timeout=1)
+    assert client.close.called
+    assert plugin.client is None
+
+  @pytest.mark.asyncio
+  async def test_cancelled_processor_shutdown_is_retryable(self):
+    """An externally cancelled BatchProcessor.shutdown()
+
+    (real processor, blocked writer) must not make later shutdown calls
+    re-raise the historical CancelledError; the retry completes and every
+    queued/in-flight row is accounted.
+    """
+    bp = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=None,
+        write_stream="s",
+        batch_size=1,
+        flush_interval=0.05,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=100,
+        shutdown_timeout=5.0,
+    )
+    write_entered = asyncio.Event()
+    write_release = asyncio.Event()
+
+    async def blocked_write(rows):
+      del rows
+      write_entered.set()
+      await write_release.wait()
+
+    with mock.patch.object(
+        bp, "_write_rows_with_retry", side_effect=blocked_write
+    ):
+      await bp.start()
+      await bp.append({"r": 1})
+      await write_entered.wait()  # worker is blocked mid-write (in-flight=1)
+      for i in range(3):
+        await bp.append({"r": i + 2})  # three rows stay queued
+
+      closer = asyncio.create_task(bp.shutdown(timeout=30))
+      await asyncio.sleep(0.05)  # let shutdown reach its wait_for
+      closer.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await closer
+
+      # The retry completes instead of re-raising the historical
+      # cancellation, and nothing is left queued.
+      await bp.shutdown(timeout=1)
+
+    assert bp._batch_processor_task.cancelled()
+    assert bp._queue.empty()
+    stats = bp.get_drop_stats()
+    # 3 queued rows (shutdown_cancelled) + 1 in-flight row counted by the
+    # cancelled worker (shutdown_timeout).
+    assert stats["shutdown_cancelled"] == 3
+    assert stats["shutdown_timeout"] == 1
+
+  def test_overlimit_and_garbage_quoted_blobs_fail_closed(self):
+    """Over-limit multi-layer quoted JSON and a valid quoted
+
+    credential layer with trailing garbage must not republish the secret.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    secret = "ROUND7-TRIPLE-SECRET-" + "x" * 300
+    triple = json.dumps(json.dumps(json.dumps({"access_token": secret})))
+    out, truncated = truncate({"blob": triple}, 64)
+    assert "ROUND7-TRIPLE-SECRET" not in json.dumps(out)
+    assert truncated
+
+    trailing = (
+        json.dumps(json.dumps({"access_token": "ROUND7-TRAIL-SECRET"}))
+        + " trailing"
+    )
+    out, truncated = truncate({"blob": trailing}, 10000)
+    assert "ROUND7-TRAIL-SECRET" not in json.dumps(out)
+    # Refined the policy: the leading string layer is
+    # redacted in place and the container-free suffix is preserved, so
+    # this is a redaction (changed), not a truncation.
+    assert "[REDACTED]" in out["blob"]
+    assert out["blob"].endswith(" trailing")
+
+    # Ordinary quoted prose — with or without a suffix — stays untouched.
+    for prose in ('"hello" she said', '"just a quote"'):
+      out, truncated = truncate({"s": prose}, 10000)
+      assert out["s"] == prose
+      assert truncated is False
+
+  @pytest.mark.asyncio
+  async def test_shapes_redacted_at_row_boundary(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+      caplog,
+  ):
+    """Shapes at the final row boundary: the
+
+    row is always emitted, no canary reaches the row or the logs,
+    unsupported keys fail closed, and discarded binary reports
+    is_truncated.
+    """
+    _ = mock_auth_default, mock_bq_client
+    import collections
+    import types as types_module
+
+    Cred = collections.namedtuple("Cred", ["access_token"])
+
+    class Trap:
+
+      @property
+      def model_dump(self):
+        raise RuntimeError("ROUND7-PROPERTY-SECRET")
+
+    class SneakyStr(str):
+
+      def lstrip(self, *args):
+        return "plain"
+
+      def startswith(self, *args):
+        return False
+
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin._log_event(
+          "STATE_DELTA",
+          callback_context,
+          event_data=bigquery_agent_analytics_plugin.EventData(
+              extra_attributes={
+                  "named": Cred("ROUND7-NAMED-SECRET"),
+                  "ns": types_module.SimpleNamespace(
+                      access_token="ROUND7-REPR-SECRET", note="ok"
+                  ),
+                  "trap": Trap(),
+                  "sneaky": SneakyStr('{"access_token":"ROUND7-STR-SUBCLASS"}'),
+                  "bad_key": {(1, 2): "value"},
+                  "binary": b"\xff\xfe",
+              },
+          ),
+      )
+      await asyncio.sleep(0.01)
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      dumped_row = json.dumps(log_entry, default=str)
+      for canary in (
+          "ROUND7-NAMED-SECRET",
+          "ROUND7-REPR-SECRET",
+          "ROUND7-PROPERTY-SECRET",
+          "ROUND7-STR-SUBCLASS",
+      ):
+        assert canary not in dumped_row, canary
+        assert canary not in caplog.text, canary
+      attrs = json.loads(log_entry["attributes"])
+      assert attrs["named"] == {"access_token": "[REDACTED]"}
+      assert attrs["ns"] == {"access_token": "[REDACTED]", "note": "ok"}
+      assert attrs["trap"] == "[UNSUPPORTED_OBJECT]"
+      assert attrs["bad_key"] == {"[UNSUPPORTED_KEY]": "value"}
+      assert attrs["binary"] == "[BINARY_DATA]"
+      assert log_entry["is_truncated"] is True
+
+  def test_setup_future_leaves_no_loop_references(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Repeated fresh-loop startups retain no per-loop setup structures.
+
+     The per-loop lock map kept strong references to every closed loop;
+    the cross-loop future replaces it.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+
+    async def noop_setup(**kwargs):
+      return None
+
+    for _ in range(4):
+      plugin._started = False
+      with mock.patch.object(plugin, "_lazy_setup", side_effect=noop_setup):
+        asyncio.run(plugin._ensure_started())
+      assert plugin._setup_future is None
+    assert not hasattr(plugin, "_setup_locks")
+
+  def test_cleanup_survives_concurrent_insertion(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Cleanup snapshots keys, so insertion during is_closed() cannot raise
+
+    'dictionary changed size during iteration'.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    dead_loop = mock.MagicMock()
+    state = mock.MagicMock()
+    state.batch_processor.get_drop_stats.return_value = {"write_failed": 7}
+
+    def is_closed_and_mutate():
+      # Simulates another thread inserting mid-scan.
+      plugin._loop_state_by_loop[mock.MagicMock()] = mock.MagicMock()
+      return True
+
+    dead_loop.is_closed.side_effect = is_closed_and_mutate
+    plugin._loop_state_by_loop[dead_loop] = state
+
+    plugin._cleanup_stale_loop_states()  # must not raise
+    assert plugin.get_drop_stats().get("write_failed") == 7
+
+  @pytest.mark.asyncio
+  async def test_depth_capped_payload_flags_row_truncated(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """A real payload cut off by the depth cap marks the ROW as truncated
+
+    .
+    """
+    _ = mock_auth_default, mock_bq_client
+    deep: dict = {"leaf": "payload"}
+    for _ in range(60):
+      deep = {"level": deep}
+    async with managed_plugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    ) as plugin:
+      await plugin._ensure_started()
+      mock_write_client.append_rows.reset_mock()
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await plugin._log_event(
+          "STATE_DELTA",
+          callback_context,
+          event_data=bigquery_agent_analytics_plugin.EventData(
+              extra_attributes={"deep": deep},
+          ),
+      )
+      await plugin.flush()
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      assert "[MAX_DEPTH_EXCEEDED]" in log_entry["attributes"]
+      assert log_entry["is_truncated"] is True
+
+  def test_zero_delay_retry_config_still_constructs(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Long-supported zero-delay retry configs must not be rejected
+
+    .
+    """
+    _ = mock_auth_default, mock_bq_client
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(
+            max_retries=0, initial_delay=0, max_delay=0
+        )
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+    assert plugin.config.retry_config.max_retries == 0
+
+  @pytest.mark.asyncio
+  async def test_owner_cancellation_does_not_poison_rendezvous(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A cancelled setup owner finalizes the shared future so later
+
+    startups are not stuck forever.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    entered = asyncio.Event()
+
+    async def hung_setup(**kwargs):
+      entered.set()
+      await asyncio.sleep(3600)
+
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=hung_setup):
+      owner = asyncio.create_task(plugin._ensure_started())
+      await entered.wait()
+      owner.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    assert plugin._setup_future is None  # rendezvous cleared
+
+    # A later attempt is not stuck: it claims a fresh future and runs.
+    async def ok_setup(**kwargs):
+      return None
+
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=ok_setup):
+      await asyncio.wait_for(plugin._ensure_started(), timeout=5)
+    assert plugin._started is True
+
+  @pytest.mark.asyncio
+  async def test_waiter_cancellation_does_not_cancel_shared_future(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Cancelling one waiter must not cancel the owner's shared future
+
+    .
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_setup(**kwargs):
+      entered.set()
+      await release.wait()
+
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=gated_setup):
+      owner = asyncio.create_task(plugin._ensure_started())
+      await entered.wait()
+      waiter = asyncio.create_task(plugin._ensure_started())
+      await asyncio.sleep(0.05)  # waiter reaches the shielded await
+      waiter.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await waiter
+      release.set()
+      await owner  # owner publishes without InvalidStateError
+
+    assert plugin._started is True
+
+  @pytest.mark.asyncio
+  async def test_shutdown_wins_over_in_flight_setup(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Setup completing after shutdown() must not resurrect _started
+
+    .
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_setup(**kwargs):
+      entered.set()
+      await release.wait()
+
+    with mock.patch.object(plugin, "_lazy_setup", side_effect=gated_setup):
+      owner = asyncio.create_task(plugin._ensure_started())
+      await entered.wait()
+      await plugin.shutdown()
+      release.set()
+      outcome = await owner
+
+    assert plugin._started is False
+    # The abort is reported structurally, not counted here;
+    # only a row owner converts it into a shutdown_race loss.
+    assert outcome == "aborted"
+    assert plugin.get_drop_stats().get("shutdown_race", 0) == 0
+
+  @pytest.mark.asyncio
+  async def test_close_invokes_full_shutdown(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """plugin.close() (Runner/PluginManager ownership) performs the real
+
+    shutdown instead of the inherited no-op.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._started = True
+    await plugin.close()
+    assert plugin._started is False
+    assert plugin._is_shutting_down is False
+    # And it routes through shutdown() semantics: counters remain queryable.
+    assert isinstance(plugin.get_drop_stats(), dict)
+
+  @pytest.mark.asyncio
+  async def test_cancelled_close_releases_guard_and_allows_retry(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A close() cancelled mid-drain (PluginManager's close timeout) must
+
+    release _is_shutting_down, re-raise the cancellation, and leave the
+    retained loop state retryable by a second close.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    loop = asyncio.get_running_loop()
+
+    blocked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_shutdown(timeout=None):
+      del timeout
+      blocked.set()
+      await release.wait()
+
+    state = mock.MagicMock()
+    state.write_client = None
+    state.batch_processor = mock.MagicMock(
+        spec=bigquery_agent_analytics_plugin.BatchProcessor
+    )
+    state.batch_processor.shutdown = mock.AsyncMock(
+        side_effect=blocking_shutdown
+    )
+    state.batch_processor.get_drop_stats = mock.MagicMock(return_value={})
+    plugin._loop_state_by_loop[loop] = state
+
+    closer = asyncio.create_task(plugin.close())
+    await blocked.wait()
+    closer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await closer
+
+    # The guard is released and the undrained state is still retryable.
+    assert plugin._is_shutting_down is False
+    assert loop in plugin._loop_state_by_loop
+
+    # A second close now completes and removes the retained state.
+    state.batch_processor.shutdown = mock.AsyncMock()
+    await plugin.close()
+    assert plugin._is_shutting_down is False
+    assert loop not in plugin._loop_state_by_loop
+
+  @pytest.mark.asyncio
+  async def test_get_loop_state_uses_single_lookup(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A concurrent removal cannot split an existence check from lookup."""
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    loop = asyncio.get_running_loop()
+    expected_state = mock.MagicMock()
+
+    class DeleteOnContainsDict(dict):
+
+      def __contains__(self, key):
+        present = super().__contains__(key)
+        if present:
+          del self[key]
+        return present
+
+    plugin._loop_state_by_loop = DeleteOnContainsDict({loop: expected_state})
+
+    assert await plugin._get_loop_state() is expected_state
+
+  @pytest.mark.asyncio
+  async def test_writer_built_during_shutdown_is_not_published(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """A shutdown() that completes while _get_loop_state() is mid-build
+
+    must not let the fresh writer be published afterwards; the new
+    processor and transport are torn down instead.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._credentials = mock.MagicMock(quota_project_id=None)
+
+    start_entered = asyncio.Event()
+    start_gate = asyncio.Event()
+    processor_shutdowns = []
+
+    async def gated_start(self):
+      del self
+      start_entered.set()
+      await start_gate.wait()
+
+    async def record_shutdown(self, timeout=None):
+      del self
+      processor_shutdowns.append(timeout)
+
+    transport = mock.MagicMock()
+    transport.close = mock.AsyncMock()
+    write_client = mock.MagicMock()
+    write_client.transport = transport
+
+    with (
+        mock.patch.object(
+            bigquery_agent_analytics_plugin.BatchProcessor,
+            "start",
+            gated_start,
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin.BatchProcessor,
+            "shutdown",
+            record_shutdown,
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin,
+            "BigQueryWriteAsyncClient",
+            return_value=write_client,
+        ),
+    ):
+      builder = asyncio.create_task(plugin._get_loop_state())
+      await start_entered.wait()
+      # shutdown() completes while the writer is still being built: its
+      # snapshot is empty, so only the publication guard can stop the leak.
+      await plugin.shutdown()
+      start_gate.set()
+      with pytest.raises(RuntimeError):
+        await builder
+
+    assert plugin._loop_state_by_loop == {}
+    assert processor_shutdowns, "fresh processor must be shut down"
+    transport.close.assert_awaited()
+
+  def test_sanitizer_covers_bytes_bom_str_and_mapping_converters(self):
+    """Shapes: bytes/bytearray blobs, BOM-prefixed JSON,
+
+    __str__-returned credential JSON, and Mapping converter results.
+    """
+    import collections
+
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    class ToDictMapping:
+
+      def to_dict(self):
+        return collections.UserDict({"access_token": "SECRET-MAPPING"})
+
+    class StrLeaker:
+
+      def __str__(self):
+        return '{"access_token": "SECRET-STR"}'
+
+    payload = {
+        "bytes": b'{"access_token":"SECRET-BYTES"}',
+        "bytearray": bytearray(b'{"access_token":"SECRET-BA"}'),
+        "bom": '\ufeff{"access_token":"SECRET-BOM"}',
+        "converter": ToDictMapping(),
+        "strleak": StrLeaker(),
+    }
+    out, _ = truncate(payload, 10000)
+    dumped = json.dumps(out)
+    for marker in (
+        "SECRET-BYTES",
+        "SECRET-BA",
+        "SECRET-BOM",
+        "SECRET-MAPPING",
+        "SECRET-STR",
+    ):
+      assert marker not in dumped, marker
+
+  def test_double_encoded_and_rootmodel_blobs_are_redacted(self):
+    """Shapes: JSON-encoded string layers (double/triple
+
+    json.dumps) and scalar model_dump() results (RootModel[str]) re-enter
+    the redaction path instead of bypassing it.
+    """
+    import pydantic
+
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    double = json.dumps(json.dumps({"access_token": "DOUBLE-ENCODED-SECRET"}))
+    out, _ = truncate({"blob": double}, 10000)
+    assert "DOUBLE-ENCODED-SECRET" not in json.dumps(out)
+
+    triple = json.dumps(double)
+    out, _ = truncate({"blob": triple}, 10000)
+    assert "DOUBLE-ENCODED-SECRET" not in json.dumps(out)
+
+    root = pydantic.RootModel[str]('{"access_token":"ROOT-SECRET"}')
+    out, _ = truncate({"model": root}, 10000)
+    assert "ROOT-SECRET" not in json.dumps(out)
+
+    # Ordinary quoted prose (not a JSON document) is left untouched.
+    prose = '"hello" she said'
+    out, truncated = truncate({"s": prose}, 10000)
+    assert out["s"] == prose
+    assert truncated is False
+
+  def test_depth_truncated_json_blob_reports_truncation(self):
+    """A JSON blob rewritten with [MAX_DEPTH_EXCEEDED]
+
+    discards payload and must therefore report truncated=True.
+    """
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+    deep = "[" * 60 + "]" * 60
+    out, truncated = truncate({"blob": deep}, 10000)
+    assert "[MAX_DEPTH_EXCEEDED]" in out["blob"]
+    assert truncated is True
+
+  def test_sanitizer_stops_at_node_budget(self):
+    """A very wide payload stops at the work budget, emits ONE remainder
+
+    sentinel, and the output stays bounded by the budget — iteration used
+    to continue over the full input, appending one sentinel per remaining
+    element.
+    """
+    max_nodes = bigquery_agent_analytics_plugin._MAX_SANITIZE_NODES
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    wide = list(range(max_nodes * 2))
+    out, truncated = truncate({"wide": wide}, 10000)
+    assert truncated
+    assert out["wide"][-1] == "[SANITIZE_BUDGET_EXCEEDED]"
+    assert out["wide"].count("[SANITIZE_BUDGET_EXCEEDED]") == 1
+    # Bounded output: budget entries plus the single remainder sentinel.
+    assert len(out["wide"]) <= max_nodes + 1
+
+  def test_sanitizer_budget_covers_directly_redacted_entries(self):
+    """Directly redacted keys (temp:/sensitive) consume budget too — a
+
+    wide temp: mapping used to bypass the bound entirely and report
+    truncated=False.
+    """
+    max_nodes = bigquery_agent_analytics_plugin._MAX_SANITIZE_NODES
+    truncate = bigquery_agent_analytics_plugin._recursive_smart_truncate
+
+    wide_temp = {f"temp:{i}": i for i in range(max_nodes * 2)}
+    out, truncated = truncate(wide_temp, 10000)
+    assert truncated
+    assert len(out) <= max_nodes + 1
+    assert "[SANITIZE_BUDGET_EXCEEDED]" in out
+
+  @pytest.mark.asyncio
+  async def test_stale_loop_cleanup_counts_queued_rows(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """Queued rows on a closed loop are counted under stale_loop
+
+    .
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    dead_loop = mock.MagicMock()
+    dead_loop.is_closed.return_value = True
+    state = mock.MagicMock()
+    queue = asyncio.Queue()
+    queue.put_nowait({"row": 1})
+    state.batch_processor._queue = queue
+    state.batch_processor.get_drop_stats.return_value = {}
+    state.write_client = None
+    plugin._loop_state_by_loop[dead_loop] = state
+
+    plugin._cleanup_stale_loop_states()
+    assert plugin.get_drop_stats().get("stale_loop") == 1
+
+  @pytest.mark.asyncio
+  async def test_restart_rebuilds_parser_and_offloader(
+      self, mock_auth_default, mock_bq_client
+  ):
+    """shutdown() clears parser/offloader so a restart cannot reuse the
+
+    terminated executor.
+    """
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin.parser = mock.MagicMock()
+    plugin.offloader = mock.MagicMock()
+    await plugin.shutdown()
+    assert plugin.parser is None
+    assert plugin.offloader is None
+
+
+class TestLatestReviewLifecycleRegressions:
+  """Regressions for lifecycle findings."""
+
+  @pytest.mark.asyncio
+  async def test_later_before_model_short_circuit_does_not_leak_span(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    """A synthesized response row belongs to the parent agent span."""
+
+    class ShortCircuitPlugin(bigquery_agent_analytics_plugin.BasePlugin):
+
+      def __init__(self):
+        super().__init__(name="short_circuit")
+
+      async def before_model_callback(self, **kwargs):
+        del kwargs
+        return llm_response_lib.LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part(text="cached response")]
+            )
+        )
+
+    trace_manager = bigquery_agent_analytics_plugin.TraceManager
+    trace_manager.clear_stack()
+    try:
+      parent_span_id = trace_manager.push_span(callback_context, "agent")
+      manager = plugin_manager_lib.PluginManager(
+          [bq_plugin_inst, ShortCircuitPlugin()]
+      )
+      request = llm_request_lib.LlmRequest(
+          model="gemini-pro",
+          contents=[
+              types.Content(role="user", parts=[types.Part(text="prompt")])
+          ],
+      )
+
+      short_response = await manager.run_before_model_callback(
+          callback_context=callback_context, llm_request=request
+      )
+      assert short_response is not None
+      leaked_span_id = trace_manager.get_current_span_id()
+      assert leaked_span_id != parent_span_id
+
+      # ADK intentionally skips run_after_model_callback on this path and
+      # emits the synthesized response as a non-partial event instead.
+      await bq_plugin_inst.flush()
+      mock_write_client.append_rows.reset_mock()
+      event = event_lib.Event(
+          author="agent",
+          content=short_response.content,
+      )
+      await manager.run_on_event_callback(
+          invocation_context=invocation_context, event=event
+      )
+      await bq_plugin_inst.flush()
+
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      response_row = next(
+          row for row in rows if row["event_type"] == "AGENT_RESPONSE"
+      )
+      assert response_row["span_id"] == parent_span_id
+      assert response_row["span_id"] != leaked_span_id
+      assert trace_manager.get_current_span_id() == parent_span_id
+    finally:
+      trace_manager.clear_stack()
+
+  @pytest.mark.asyncio
+  async def test_partial_event_preserves_live_llm_span(
+      self, bq_plugin_inst, callback_context, invocation_context
+  ):
+    trace_manager = bigquery_agent_analytics_plugin.TraceManager
+    trace_manager.clear_stack()
+    try:
+      trace_manager.push_span(callback_context, "agent")
+      await bq_plugin_inst.before_model_callback(
+          callback_context=callback_context,
+          llm_request=llm_request_lib.LlmRequest(model="gemini-pro"),
+      )
+      llm_span_id = trace_manager.get_current_span_id()
+
+      await bq_plugin_inst.on_event_callback(
+          invocation_context=invocation_context,
+          event=event_lib.Event(
+              author="agent",
+              partial=True,
+              content=types.Content(
+                  role="model", parts=[types.Part(text="stream chunk")]
+              ),
+          ),
+      )
+      assert trace_manager.get_current_span_id() == llm_span_id
+    finally:
+      trace_manager.clear_stack()
+
+  @pytest.mark.asyncio
+  async def test_external_cancel_during_worker_ack_is_not_swallowed(self):
+    processor = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=None,
+        write_stream="stream",
+        batch_size=1,
+        flush_interval=1.0,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=1.0,
+    )
+    first_cancel_seen = asyncio.Event()
+    never = asyncio.Event()
+
+    async def slow_cancel_ack():
+      try:
+        await never.wait()
+      except asyncio.CancelledError:
+        first_cancel_seen.set()
+        await never.wait()
+
+    processor._batch_processor_task = asyncio.create_task(slow_cancel_ack())
+    processor._queue.put_nowait({"row": 1})
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin.asyncio,
+        "wait_for",
+        new=mock.AsyncMock(side_effect=asyncio.TimeoutError),
+    ):
+      owner = asyncio.create_task(processor.shutdown(timeout=0.01))
+      await first_cancel_seen.wait()
+      owner.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    # A later close owns the retained terminal task/queue and accounts it.
+    await processor.shutdown(timeout=1.0)
+    assert processor._batch_processor_task.cancelled()
+    assert processor._queue.empty()
+    assert processor.get_drop_stats()["shutdown_timeout"] == 1
+
+  @pytest.mark.asyncio
+  async def test_dead_loop_state_is_replaced_once_and_rows_are_accounted(
+      self, mock_auth_default, mock_bq_client
+  ):
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._credentials = mock.MagicMock(quota_project_id=None)
+    plugin._write_stream_name = DEFAULT_STREAM_NAME
+
+    old_transport = mock.MagicMock()
+    close_entered = asyncio.Event()
+    close_release = asyncio.Event()
+
+    async def gated_old_close():
+      close_entered.set()
+      await close_release.wait()
+
+    old_transport.close = mock.AsyncMock(side_effect=gated_old_close)
+    old_client = mock.MagicMock(transport=old_transport)
+    old_processor = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=old_client,
+        arrow_schema=None,
+        write_stream=DEFAULT_STREAM_NAME,
+        batch_size=1,
+        flush_interval=0.01,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=1.0,
+    )
+    old_processor._shutdown = True
+    old_processor._dropped["queue_full"] = 2
+    old_processor._queue.put_nowait({"old": 1})
+    old_processor._queue.put_nowait({"old": 2})
+    old_processor._batch_processor_task = asyncio.create_task(asyncio.sleep(0))
+    await old_processor._batch_processor_task
+
+    loop = asyncio.get_running_loop()
+    old_state = bigquery_agent_analytics_plugin._LoopState(
+        old_client, old_processor
+    )
+    plugin._loop_state_by_loop[loop] = old_state
+
+    new_transport = mock.MagicMock()
+    new_transport.close = mock.AsyncMock()
+    new_client = mock.MagicMock(transport=new_transport)
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin,
+        "BigQueryWriteAsyncClient",
+        return_value=new_client,
+    ):
+      builder = asyncio.create_task(plugin._get_loop_state())
+      await close_entered.wait()
+
+      # Replacement is already published while the sole owner closes the old
+      # transport, so a concurrent caller cannot build a second processor.
+      concurrent_state = await plugin._get_loop_state()
+      close_release.set()
+      replacement = await builder
+
+    assert replacement is concurrent_state
+    assert replacement is plugin._loop_state_by_loop[loop]
+    assert replacement is not old_state
+    old_transport.close.assert_awaited_once()
+    stats = plugin.get_drop_stats()
+    assert stats["queue_full"] == 2
+    assert stats["shutdown_timeout"] == 2
+
+    write_rows = mock.AsyncMock()
+    with mock.patch.object(
+        replacement.batch_processor,
+        "_write_rows_with_retry",
+        new=write_rows,
+    ):
+      row = {"new": 1}
+      await replacement.batch_processor.append(row)
+      await asyncio.wait_for(replacement.batch_processor.flush(), timeout=1)
+      write_rows.assert_awaited_once_with([row])
+
+    await plugin.shutdown(timeout=1)
+
+  @pytest.mark.asyncio
+  async def test_normal_timeout_retrieves_worker_cancel_and_drains_queue(self):
+    """The 3.10-compatible acknowledgement path handles worker cancel."""
+    processor = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=None,
+        write_stream="stream",
+        batch_size=1,
+        flush_interval=1.0,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=1.0,
+    )
+    never = asyncio.Event()
+    processor._batch_processor_task = asyncio.create_task(never.wait())
+    processor._queue.put_nowait({"row": 1})
+
+    await processor.shutdown(timeout=0.001)
+
+    assert processor._batch_processor_task.cancelled()
+    assert processor._queue.empty()
+    assert processor.get_drop_stats()["shutdown_timeout"] == 1
+
+  @pytest.mark.asyncio
+  async def test_error_columns_and_tracebacks_redact_embedded_credentials(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    secrets = (
+        "AUTH-SECRET",
+        "QUERY-SECRET",
+        "JSON-SECRET",
+        "SIGNATURE-SECRET",
+        "ESCAPED-SECRET",
+    )
+    message = (
+        "safe prefix Authorization: Bearer AUTH-SECRET; "
+        "access-token=QUERY-SECRET"
+    )
+    traceback_text = (
+        'Traceback safe prefix {"access_token":"JSON-SECRET"}; '
+        'next {"access\\u005ftoken":"ESCAPED-SECRET"}; '
+        "x-goog-signature=SIGNATURE-SECRET"
+    )
+
+    await bq_plugin_inst._log_event(
+        "AGENT_ERROR",
+        callback_context,
+        raw_content={"error_traceback": traceback_text},
+        event_data=bigquery_agent_analytics_plugin.EventData(
+            status="ERROR", error_message=message
+        ),
+    )
+    await bq_plugin_inst.flush()
+    row = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    stored = json.dumps(row, default=str)
+    assert all(secret not in stored for secret in secrets)
+    assert row["error_message"].startswith("safe prefix Authorization:")
+    assert bigquery_agent_analytics_plugin._sanitize_sensitive_text(
+        "Authorization: Bearer AUTH-SECRET", -1
+    ) == ("Authorization: [REDACTED]", True)
+    for escaped in (
+        r"access\u005ftoken=ESCAPED-SECRET",
+        r'Traceback { "access\u005ftoken":"ESCAPED-SECRET"}',
+    ):
+      assert bigquery_agent_analytics_plugin._sanitize_sensitive_text(
+          escaped, -1
+      ) == ("[REDACTED_SENSITIVE_TEXT]", True)
+    assert bigquery_agent_analytics_plugin._sanitize_sensitive_text(
+        "temp:credential=TEMP-SECRET", -1
+    ) == ("temp:credential=[REDACTED]", True)
+    assert "[REDACTED]" in stored
+    assert row["is_truncated"] is True
+
+  @pytest.mark.asyncio
+  async def test_safe_error_message_is_preserved_exactly(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    message = "[INFO] ordinary failure at worker 7"
+    await bq_plugin_inst._log_event(
+        "LLM_ERROR",
+        callback_context,
+        event_data=bigquery_agent_analytics_plugin.EventData(
+            status="ERROR", error_message=message
+        ),
+    )
+    await bq_plugin_inst.flush()
+    row = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert row["error_message"] == message
+    assert row["is_truncated"] is False
+
+  def test_sensitive_text_redacts_complete_values_and_encoded_constructs(self):
+    sanitize = bigquery_agent_analytics_plugin._sanitize_sensitive_text
+    redacted_cases = {
+        "access_token=[REDACTED]SECRET": "SECRET",
+        "access_token=[REDACTED]]SECRET": "SECRET",
+        "access_token=[REDACTED]/SECRET": "SECRET",
+        'Authorization: Digest username="u", response="DIGEST-SECRET"': (
+            "DIGEST-SECRET"
+        ),
+        (
+            "Authorization: AWS4-HMAC-SHA256 "
+            "Credential=AWS-SECRET, SignedHeaders=host"
+        ): "AWS-SECRET",
+        "Proxy-Authorization: Negotiate NEGOTIATE-SECRET": "NEGOTIATE-SECRET",
+        "Bearer\nBEARER-SECRET": "BEARER-SECRET",
+        "Basic\tdXNlcjpwYXNz": "dXNlcjpwYXNz",
+        "Basic dXNlcg==": "dXNlcg==",
+        "sig=SIG-SECRET": "SIG-SECRET",
+        "x-amz-signature=AMZ-SIGNATURE-SECRET": "AMZ-SIGNATURE-SECRET",
+        "x_amz_credential=AMZ-CREDENTIAL-SECRET": "AMZ-CREDENTIAL-SECRET",
+        "google-access-id=GOOGLE-ID-SECRET": "GOOGLE-ID-SECRET",
+        r"access\u005ftoken=UNICODE-SECRET": "UNICODE-SECRET",
+        r"access\x5ftoken=HEX-SECRET": "HEX-SECRET",
+        "access_token%3DPERCENT-SECRET": "PERCENT-SECRET",
+        "access%255Ftoken%253DDOUBLE-SECRET": "DOUBLE-SECRET",
+    }
+    for value, secret in redacted_cases.items():
+      sanitized, changed = sanitize(value, -1)
+      assert changed is True, value
+      assert secret not in sanitized, value
+
+    # A sentinel is idempotent only when it is the complete value.
+    assert sanitize("access_token=[REDACTED]", -1) == (
+        "access_token=[REDACTED]",
+        False,
+    )
+
+    structured, _ = bigquery_agent_analytics_plugin._recursive_smart_truncate(
+        {
+            "x-amz-signature": "STRUCTURED-AMZ-SECRET",
+            "google_access_id": "STRUCTURED-GOOGLE-SECRET",
+            "safe": True,
+        },
+        -1,
+    )
+    assert structured == {
+        "x-amz-signature": "[REDACTED]",
+        "google_access_id": "[REDACTED]",
+        "safe": True,
+    }
+
+  def test_sensitive_text_preserves_safe_slashes_and_encoded_prose_exactly(
+      self,
+  ):
+    sanitize = bigquery_agent_analytics_plugin._sanitize_sensitive_text
+    safe = (
+        r"C:\Users\secret\project\file.json",
+        r"Invalid \escape at position 4",
+        r"can't decode \x5c in position 2",
+        "the bearer of bad news",
+        "a basic principle",
+        "a basic test",
+        "design=balanced",
+        "signal=strong",
+        "progress%3D100%25 complete",
+        "literal%2525value",
+    )
+    for value in safe:
+      assert sanitize(value, -1) == (value, False)
+
+    # A moderately wide safe input exercises the bounded stack scanner while
+    # pinning the useful property instead of a timing threshold.
+    wide = (r"C:\safe\secret\file%25.txt; " * 20_000).rstrip()
+    assert sanitize(wide, len(wide)) == (wide, False)
+
+  @pytest.mark.asyncio
+  async def test_live_shutting_down_writer_aborts_owner_and_waiter_once(
+      self, mock_auth_default, mock_bq_client, callback_context
+  ):
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    processor = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(),
+        arrow_schema=None,
+        write_stream="stream",
+        batch_size=1,
+        flush_interval=1.0,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=1.0,
+    )
+    never = asyncio.Event()
+    processor._batch_processor_task = asyncio.create_task(never.wait())
+    processor._shutdown = True
+    loop = asyncio.get_running_loop()
+    plugin._loop_state_by_loop[loop] = (
+        bigquery_agent_analytics_plugin._LoopState(mock.MagicMock(), processor)
+    )
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def attempt_setup(**kwargs):
+      del kwargs
+      entered.set()
+      await release.wait()
+      await plugin._get_loop_state()
+
+    try:
+      with mock.patch.object(plugin, "_lazy_setup", side_effect=attempt_setup):
+        owner = asyncio.create_task(plugin._ensure_started())
+        await entered.wait()
+        waiter = asyncio.create_task(plugin._ensure_started())
+        await asyncio.sleep(0)
+        release.set()
+        assert await owner == "aborted"
+        assert await waiter == "aborted"
+
+        assert plugin._startup_error is None
+        assert plugin._setup_failures == 0
+        assert plugin._setup_retry_at == 0
+        assert plugin._loop_state_by_loop[loop].batch_processor is processor
+
+        await plugin._log_event(
+            "STATE_DELTA",
+            callback_context,
+            event_data=bigquery_agent_analytics_plugin.EventData(),
+        )
+      assert plugin.get_drop_stats()["shutdown_race"] == 1
+    finally:
+      processor._batch_processor_task.cancel()
+      with contextlib.suppress(asyncio.CancelledError):
+        await processor._batch_processor_task
+
+  @pytest.mark.asyncio
+  async def test_detached_transport_closed_when_replacement_build_fails(
+      self, mock_auth_default, mock_bq_client
+  ):
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._credentials = mock.MagicMock(quota_project_id=None)
+    loop = asyncio.get_running_loop()
+
+    old_transport = mock.MagicMock(close=mock.AsyncMock())
+    old_processor = bigquery_agent_analytics_plugin.BatchProcessor(
+        write_client=mock.MagicMock(transport=old_transport),
+        arrow_schema=None,
+        write_stream="stream",
+        batch_size=1,
+        flush_interval=1.0,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=10,
+        shutdown_timeout=1.0,
+    )
+    old_processor._shutdown = True
+    old_processor._batch_processor_task = asyncio.create_task(asyncio.sleep(0))
+    await old_processor._batch_processor_task
+    plugin._loop_state_by_loop[loop] = (
+        bigquery_agent_analytics_plugin._LoopState(
+            mock.MagicMock(transport=old_transport), old_processor
+        )
+    )
+
+    fresh_transport = mock.MagicMock(close=mock.AsyncMock())
+    fresh_client = mock.MagicMock(transport=fresh_transport)
+    with (
+        mock.patch.object(
+            bigquery_agent_analytics_plugin,
+            "BigQueryWriteAsyncClient",
+            return_value=fresh_client,
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin.BatchProcessor,
+            "__init__",
+            side_effect=RuntimeError("construction failed"),
+        ),
+    ):
+      with pytest.raises(RuntimeError, match="construction failed"):
+        await plugin._get_loop_state()
+
+    old_transport.close.assert_awaited_once()
+    fresh_transport.close.assert_awaited_once()
+    assert loop not in plugin._loop_state_by_loop
+
+  @pytest.mark.asyncio
+  async def test_invalidated_writer_transport_closes_when_shutdown_is_cancelled(
+      self, mock_auth_default, mock_bq_client
+  ):
+    _ = mock_auth_default, mock_bq_client
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+    plugin._credentials = mock.MagicMock(quota_project_id=None)
+
+    start_entered = asyncio.Event()
+    start_release = asyncio.Event()
+    shutdown_entered = asyncio.Event()
+    shutdown_never = asyncio.Event()
+
+    async def gated_start(self):
+      del self
+      start_entered.set()
+      await start_release.wait()
+
+    async def blocked_shutdown(self, timeout=None):
+      del self, timeout
+      shutdown_entered.set()
+      await shutdown_never.wait()
+
+    transport = mock.MagicMock(close=mock.AsyncMock())
+    write_client = mock.MagicMock(transport=transport)
+    with (
+        mock.patch.object(
+            bigquery_agent_analytics_plugin.BatchProcessor,
+            "start",
+            gated_start,
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin.BatchProcessor,
+            "shutdown",
+            blocked_shutdown,
+        ),
+        mock.patch.object(
+            bigquery_agent_analytics_plugin,
+            "BigQueryWriteAsyncClient",
+            return_value=write_client,
+        ),
+    ):
+      builder = asyncio.create_task(plugin._get_loop_state())
+      await start_entered.wait()
+      await plugin.shutdown()
+      start_release.set()
+      await shutdown_entered.wait()
+      builder.cancel()
+      with pytest.raises(asyncio.CancelledError):
+        await builder
+
+    transport.close.assert_awaited_once()
+    assert plugin._loop_state_by_loop == {}
+
+  @pytest.mark.asyncio
+  async def test_raw_bracket_prose_preserved_inline_and_gcs(self):
+    inline = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+    prose = ("[INFO] ready", "[link](https://example.test)", "{not json}")
+    for value in prose:
+      payload, parts, truncated = await inline.parse(
+          types.Content(parts=[types.Part(text=value)])
+      )
+      assert payload == {"text_summary": value}
+      assert parts[0]["text"] == value
+      assert truncated is False
+
+    offloader = mock.AsyncMock()
+    offloader.upload_content.return_value = "gs://bucket/safe.txt"
+    offloaded = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+    large_prose = "[INFO] " + "safe prose " * 4000
+    await offloaded.parse(types.Content(parts=[types.Part(text=large_prose)]))
+    assert offloader.upload_content.call_args.args[0] == large_prose
+
+  @pytest.mark.asyncio
+  async def test_bracket_prose_auth_and_signature_classification(self):
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+    safe = (
+        r"[INFO] C:\Users\secret\project",
+        "[INFO] the bearer of bad news",
+        "[INFO] a basic principle",
+        "[INFO] a basic test",
+        "[INFO] design=balanced and progress%3D100%25",
+    )
+    for value in safe:
+      payload, parts, truncated = await parser.parse(
+          types.Content(parts=[types.Part(text=value)])
+      )
+      assert payload == {"text_summary": value}
+      assert parts[0]["text"] == value
+      assert truncated is False
+
+    unsafe = (
+        ("[WARN] Bearer\tBRACKET-BEARER-SECRET", "BRACKET-BEARER-SECRET"),
+        ("[WARN] Basic\ndXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ("[WARN] sig=BRACKET-SIG-SECRET", "BRACKET-SIG-SECRET"),
+        (
+            "[WARN] x-amz-signature=BRACKET-AMZ-SECRET",
+            "BRACKET-AMZ-SECRET",
+        ),
+        (
+            "[WARN] access%255Ftoken%253DBRACKET-ENCODED-SECRET",
+            "BRACKET-ENCODED-SECRET",
+        ),
+    )
+    for value, secret in unsafe:
+      payload, parts, truncated = await parser.parse(
+          types.Content(parts=[types.Part(text=value)])
+      )
+      stored = json.dumps({"payload": payload, "parts": parts})
+      assert secret not in stored
+      assert "[UNPARSEABLE_JSON_BLOB]" in stored
+      assert truncated is True
+
+  @pytest.mark.asyncio
+  async def test_malformed_bracket_credentials_still_fail_closed(self):
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+    for value in (
+        '{"access_token":"MALFORMED-SECRET"',
+        '{"access\\u005ftoken":"ESCAPED-SECRET"',
+    ):
+      payload, parts, truncated = await parser.parse(
+          types.Content(parts=[types.Part(text=value)])
+      )
+      stored = json.dumps({"payload": payload, "parts": parts})
+      assert "MALFORMED-SECRET" not in stored
+      assert "ESCAPED-SECRET" not in stored
+      assert "[UNPARSEABLE_JSON_BLOB]" in stored
+      assert truncated is True
+
+  @pytest.mark.asyncio
+  async def test_external_uri_redacts_query_fragment_and_userinfo(self):
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+    signed = (
+        "https://storage.example.test/safe/path?safe=kept"
+        "&X-Goog-Credential=URI-CREDENTIAL"
+        "&X-Goog-Signature=URI-SIGNATURE#access-token=FRAGMENT-SECRET"
+    )
+    _, parts, truncated = await parser.parse(
+        types.Content(
+            parts=[types.Part.from_uri(file_uri=signed, mime_type="text/plain")]
+        )
+    )
+    uri = parts[0]["uri"]
+    assert uri.startswith("https://storage.example.test/safe/path?")
+    assert "safe=kept" in uri
+    assert all(
+        secret not in uri
+        for secret in ("URI-CREDENTIAL", "URI-SIGNATURE", "FRAGMENT-SECRET")
+    )
+    assert truncated is True
+
+    userinfo = types.Part(
+        file_data=types.FileData(
+            file_uri="https://user:password@example.test/safe",
+            mime_type="text/plain",
+        )
+    )
+    _, parts, truncated = await parser.parse(types.Content(parts=[userinfo]))
+    assert parts[0]["uri"] == "[REDACTED_SENSITIVE_URI]"
+    assert truncated is True
+
+  @pytest.mark.asyncio
+  async def test_external_uri_redacts_sensitive_path_segments_and_variants(
+      self,
+  ):
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+    uri = (
+        "https://example.test/public/access-token/PATH-SECRET/report"
+        "?x-amz-signature=QUERY-SIGNATURE-SECRET"
+        "&access%255Ftoken%253DDOUBLE-QUERY-SECRET"
+    )
+    _, parts, truncated = await parser.parse(
+        types.Content(
+            parts=[types.Part.from_uri(file_uri=uri, mime_type="text/plain")]
+        )
+    )
+    stored_uri = parts[0]["uri"]
+    for secret in (
+        "PATH-SECRET",
+        "QUERY-SIGNATURE-SECRET",
+        "DOUBLE-QUERY-SECRET",
+    ):
+      assert secret not in stored_uri
+    assert "/public/%5BREDACTED%5D/%5BREDACTED%5D/report" in stored_uri
+    assert truncated is True
+
+    safe_uri = "https://example.test/design/signal/public/progress%25/report"
+    _, parts, truncated = await parser.parse(
+        types.Content(
+            parts=[
+                types.Part.from_uri(file_uri=safe_uri, mime_type="text/plain")
+            ]
+        )
+    )
+    assert parts[0]["uri"] == safe_uri
+    assert truncated is False
+
+    missing = types.Part(
+        file_data=types.FileData(file_uri=None, mime_type="text/plain")
+    )
+    _, parts, truncated = await parser.parse(types.Content(parts=[missing]))
+    assert parts[0]["uri"] == "[REDACTED_SENSITIVE_URI]"
+    assert truncated is True
+
+  @pytest.mark.asyncio
+  async def test_structured_non_text_parts_are_complete_and_private(self):
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=1000,
+    )
+    secret = "STRUCTURED-PART-SECRET"
+    content = types.Content(
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name="lookup", response={"access_token": secret, "ok": True}
+                )
+            ),
+            types.Part(
+                executable_code=types.ExecutableCode(
+                    language=types.Language.PYTHON,
+                    code=json.dumps({"private_key": secret}),
+                )
+            ),
+            types.Part(
+                code_execution_result=types.CodeExecutionResult(
+                    outcome=types.Outcome.OUTCOME_OK,
+                    output=f"Authorization: Bearer {secret}",
+                )
+            ),
+        ]
+    )
+
+    payload, parts, truncated = await parser.parse(content)
+    stored = json.dumps({"payload": payload, "parts": parts})
+    assert secret not in stored
+    assert truncated is True
+    assert "Function response: lookup" in payload["text_summary"]
+    assert "Executable code" in payload["text_summary"]
+    assert "Code execution result" in payload["text_summary"]
+    assert "function_response" in json.loads(parts[0]["part_attributes"])
+    assert "executable_code" in json.loads(parts[1]["part_attributes"])
+    assert "code_execution_result" in json.loads(parts[2]["part_attributes"])
+
+  def test_structured_part_dictionary_keys_are_sanitized_without_collisions(
+      self,
+  ):
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=1000,
+    )
+    value = mock.MagicMock()
+    value.model_dump.return_value = {
+        "access_token=[REDACTED]": "genuine-marker",
+        "access_token=KEY-ONE-SECRET": "first",
+        "access-token=KEY-TWO-SECRET": "second",
+        "[KEY_COLLISION_1]access_token=[REDACTED]": "genuine-collision",
+        "sig": "STRUCTURED-SIG-SECRET",
+        "x-amz-credential": "STRUCTURED-AMZ-SECRET",
+    }
+
+    serialized, content_lost = parser._serialize_part_model(value)
+    dumped = json.dumps(serialized)
+    assert "KEY-ONE-SECRET" not in dumped
+    assert "KEY-TWO-SECRET" not in dumped
+    assert "STRUCTURED-SIG-SECRET" not in dumped
+    assert "STRUCTURED-AMZ-SECRET" not in dumped
+    assert sorted(serialized.values()) == [
+        "[REDACTED]",
+        "[REDACTED]",
+        "first",
+        "genuine-collision",
+        "genuine-marker",
+        "second",
+    ]
+    assert len(serialized) == 6
+    assert any(key.startswith("[KEY_COLLISION_") for key in serialized)
+    assert content_lost is True

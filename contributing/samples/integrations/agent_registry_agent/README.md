@@ -44,6 +44,8 @@ The sample uses `AgentRegistry` to:
 
 - List registered agents using `list_agents()`.
 - List registered MCP servers using `list_mcp_servers()`.
+- Search registered agents using `search_agents(search_string)`.
+- Search registered MCP servers using `search_mcp_servers(search_string)`.
 
 It also shows (in comments) how to:
 

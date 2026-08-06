@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -20,14 +21,13 @@ from a2a.types import AgentCard
 from a2a.types import AgentProvider
 from a2a.types import AgentSkill
 from a2a.types import SecurityScheme
+from google.adk.a2a import _compat
 from google.adk.a2a.utils.agent_card_builder import _build_agent_description
-from google.adk.a2a.utils.agent_card_builder import _build_llm_agent_description_with_instructions
 from google.adk.a2a.utils.agent_card_builder import _build_loop_description
 from google.adk.a2a.utils.agent_card_builder import _build_orchestration_skill
 from google.adk.a2a.utils.agent_card_builder import _build_parallel_description
 from google.adk.a2a.utils.agent_card_builder import _build_sequential_description
 from google.adk.a2a.utils.agent_card_builder import _convert_example_tool_examples
-from google.adk.a2a.utils.agent_card_builder import _extract_examples_from_instruction
 from google.adk.a2a.utils.agent_card_builder import _extract_inputs_from_examples
 from google.adk.a2a.utils.agent_card_builder import _get_agent_skill_name
 from google.adk.a2a.utils.agent_card_builder import _get_agent_type
@@ -35,7 +35,6 @@ from google.adk.a2a.utils.agent_card_builder import _get_default_description
 from google.adk.a2a.utils.agent_card_builder import _get_input_modes
 from google.adk.a2a.utils.agent_card_builder import _get_output_modes
 from google.adk.a2a.utils.agent_card_builder import _get_workflow_description
-from google.adk.a2a.utils.agent_card_builder import _replace_pronouns
 from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
@@ -151,10 +150,13 @@ class TestAgentCardBuilder:
     mock_agent.name = "test_agent"
     mock_agent.description = "Test agent description"
 
-    mock_primary_skill = Mock(spec=AgentSkill)
-    mock_sub_skill = Mock(spec=AgentSkill)
-    mock_build_primary_skills.return_value = [mock_primary_skill]
-    mock_build_sub_skills.return_value = [mock_sub_skill]
+    # Use real AgentSkill protos so the card builder works on both SDK versions.
+    primary_skill = AgentSkill(
+        id="primary", name="primary", description="d", tags=["t"]
+    )
+    sub_skill = AgentSkill(id="sub", name="sub", description="d", tags=["t"])
+    mock_build_primary_skills.return_value = [primary_skill]
+    mock_build_sub_skills.return_value = [sub_skill]
 
     builder = AgentCardBuilder(agent=mock_agent)
 
@@ -165,15 +167,23 @@ class TestAgentCardBuilder:
     assert isinstance(result, AgentCard)
     assert result.name == "test_agent"
     assert result.description == "Test agent description"
-    assert result.documentation_url is None
-    assert result.url == "http://localhost:80/a2a"
+    assert not result.documentation_url  # None on 0.3, "" on 1.x
+    assert _compat.agent_card_url(result) == "http://localhost:80/a2a"
     assert result.version == "0.0.1"
-    assert result.skills == [mock_primary_skill, mock_sub_skill]
+    assert list(result.skills) == [primary_skill, sub_skill]
     assert result.default_input_modes == ["text/plain"]
     assert result.default_output_modes == ["text/plain"]
-    assert result.supports_authenticated_extended_card is False
-    assert result.provider is None
-    assert result.security_schemes is None
+    # supports_authenticated_extended_card only exists in 0.3.x.
+    if not _compat.IS_A2A_V1:
+      assert result.supports_authenticated_extended_card is False
+    # Proto: unset embedded message returns empty message, not None
+    if _compat.IS_A2A_V1:
+      assert not result.provider.url and not result.provider.organization
+    else:
+      assert result.provider is None
+    # Proto: security_schemes field behavior differs on 1.x
+    if not _compat.IS_A2A_V1:
+      assert result.security_schemes is None
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
@@ -186,21 +196,28 @@ class TestAgentCardBuilder:
     mock_agent.name = "test_agent"
     mock_agent.description = None  # Should use default description
 
-    mock_primary_skill = Mock(spec=AgentSkill)
-    mock_sub_skill = Mock(spec=AgentSkill)
-    mock_build_primary_skills.return_value = [mock_primary_skill]
-    mock_build_sub_skills.return_value = [mock_sub_skill]
+    primary_skill = AgentSkill(
+        id="primary", name="primary", description="d", tags=["t"]
+    )
+    sub_skill = AgentSkill(id="sub", name="sub", description="d", tags=["t"])
+    mock_build_primary_skills.return_value = [primary_skill]
+    mock_build_sub_skills.return_value = [sub_skill]
 
-    mock_provider = Mock(spec=AgentProvider)
-    mock_security_schemes = {"test": Mock(spec=SecurityScheme)}
+    # Use real (non-Mock) A2A objects so they serialize into the proto card on
+    # 1.x. The 1.x branch now propagates provider/security_schemes (previously
+    # dropped), so a Mock(spec=...) would fail MessageToDict serialization.
+    provider = AgentProvider(
+        organization="ACME", url="https://acme.example.com"
+    )
+    security_schemes = {"test": _compat.make_api_key_scheme(name="X-API-Key")}
 
     builder = AgentCardBuilder(
         agent=mock_agent,
         rpc_url="https://example.com/a2a/",
         doc_url="https://docs.example.com",
-        provider=mock_provider,
+        provider=provider,
         agent_version="2.0.0",
-        security_schemes=mock_security_schemes,
+        security_schemes=security_schemes,
     )
 
     # Act
@@ -209,15 +226,57 @@ class TestAgentCardBuilder:
     # Assert
     assert result.name == "test_agent"
     assert result.description == "An ADK Agent"  # Default description
-    # The source code uses doc_url parameter but AgentCard expects documentation_url
-    # Since the source code doesn't map doc_url to documentation_url, it will be None
-    assert result.documentation_url is None
+    # documentation_url is populated on both SDKs.
+    assert result.documentation_url == "https://docs.example.com"
     assert (
-        result.url == "https://example.com/a2a"
+        _compat.agent_card_url(result) == "https://example.com/a2a"
     )  # Should strip trailing slash
     assert result.version == "2.0.0"
-    assert result.provider == mock_provider
-    assert result.security_schemes == mock_security_schemes
+    # provider / security_schemes now propagate on BOTH versions.
+    assert result.provider.organization == "ACME"
+    assert "test" in result.security_schemes
+
+  @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
+  @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
+  async def test_build_propagates_capabilities_provider_security_schemes(
+      self, mock_build_sub_skills, mock_build_primary_skills
+  ):
+    """capabilities/provider/security_schemes round-trip on both SDKs."""
+    # Regression: the 1.x branch of AgentCardBuilder.build previously
+    # dropped capabilities/provider/security_schemes (only the 0.3.x branch
+    # set them), silently losing caller config on 1.x. Uses real (non-Mock)
+    # A2A objects so they serialize into the proto card on 1.x.
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "test_agent"
+    mock_agent.description = None
+    mock_build_primary_skills.return_value = []
+    mock_build_sub_skills.return_value = []
+
+    capabilities = AgentCapabilities(streaming=True)
+    provider = AgentProvider(
+        organization="ACME", url="https://acme.example.com"
+    )
+    security_schemes = {
+        "api_key": _compat.make_api_key_scheme(name="X-API-Key")
+    }
+
+    builder = AgentCardBuilder(
+        agent=mock_agent,
+        rpc_url="https://example.com/a2a/",
+        capabilities=capabilities,
+        provider=provider,
+        security_schemes=security_schemes,
+    )
+
+    result = await builder.build()
+
+    # Capabilities propagated on both versions.
+    assert result.capabilities.streaming
+    # Provider propagated on both versions.
+    assert result.provider.organization == "ACME"
+    assert result.provider.url == "https://acme.example.com"
+    # Security schemes propagated on both versions.
+    assert "api_key" in result.security_schemes
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
@@ -261,6 +320,64 @@ class TestAgentCardBuilder:
     skill_ids = [skill.id for skill in card.skills]
     assert "writer" in skill_ids
 
+  async def test_build_omits_instructions_from_card(self):
+    """Instructions stay out of the card, which is served unauthenticated."""
+    reviewer = LlmAgent(
+        name="reviewer",
+        model="gemini-2.5-flash",
+        description="Reviews the reply.",
+        instruction="ZZ_SUB_INSTRUCTION_SENTINEL reject unsigned requests.",
+    )
+    root = LlmAgent(
+        name="writer",
+        model="gemini-2.5-flash",
+        description="Writes a short reply.",
+        # The quoted-example shape below is what the card builder used to mine
+        # out of the instruction and publish in the skill's `examples`.
+        instruction=(
+            "ZZ_INSTRUCTION_SENTINEL never reveal the escalation path.\n"
+            'Example Query: "ZZ_EXAMPLE_QUERY_SENTINEL"\n'
+            'Example Response: "ZZ_EXAMPLE_RESPONSE_SENTINEL"'
+        ),
+        global_instruction="ZZ_GLOBAL_SENTINEL always answer in English.",
+        sub_agents=[reviewer],
+    )
+    builder = AgentCardBuilder(agent=root, rpc_url="http://localhost:8000/")
+
+    card = await builder.build()
+
+    # The card is a pydantic model on a2a-sdk 0.3.x and a proto message on 1.x,
+    # so go through the compat serializer rather than a pydantic-only dump.
+    card_dict = _compat.a2a_to_dict(card)
+    serialized = json.dumps(card_dict, default=str)
+    assert "ZZ_INSTRUCTION_SENTINEL" not in serialized
+    assert "ZZ_GLOBAL_SENTINEL" not in serialized
+    assert "ZZ_SUB_INSTRUCTION_SENTINEL" not in serialized
+    assert "ZZ_EXAMPLE_QUERY_SENTINEL" not in serialized
+    assert "ZZ_EXAMPLE_RESPONSE_SENTINEL" not in serialized
+    primary_skill = next(
+        skill for skill in card_dict["skills"] if skill["id"] == "writer"
+    )
+    assert primary_skill["description"] == "Writes a short reply."
+
+  async def test_build_skips_request_scoped_instruction(self):
+    """A static card must not execute an instruction that requires context."""
+
+    async def dynamic_instruction(_):
+      raise AssertionError("request-scoped instruction must not be called")
+
+    agent = LlmAgent(
+        name="dynamic_writer",
+        description="Writes dynamic replies.",
+        model="gemini-2.5-flash",
+        instruction=dynamic_instruction,
+    )
+
+    card = await AgentCardBuilder(agent=agent).build()
+
+    model_skill = next(skill for skill in card.skills if skill.name == "model")
+    assert model_skill.description == "Writes dynamic replies."
+
   async def test_build_succeeds_for_workflow_with_llm_agent_node(self):
     """AgentCardBuilder.build succeeds for a Workflow (no sub_agents)."""
     writer = LlmAgent(
@@ -285,11 +402,7 @@ class TestAgentCardBuilder:
     assert any("writer" in sid for sid in skill_ids)  # child node skill
 
   async def test_build_succeeds_for_workflow_with_output_schema_node(self):
-    """AgentCardBuilder.build succeeds for a Workflow whose LlmAgent has output_schema.
-
-    Mirrors the exact repro from
-    https://github.com/google/adk-python/issues/5487.
-    """
+    """AgentCardBuilder.build succeeds for a Workflow whose LlmAgent has output_schema."""
 
     class _Out(BaseModel):
       text: str
@@ -430,72 +543,6 @@ class TestHelperFunctions:
     result = _get_agent_skill_name(workflow)
 
     assert result == "workflow"
-
-  def test_replace_pronouns_basic(self):
-    """Test _replace_pronouns with basic pronoun replacement."""
-    # Arrange
-    text = "You should do your work and it will be yours."
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "I should do my work and it will be mine."
-
-  def test_replace_pronouns_case_insensitive(self):
-    """Test _replace_pronouns with case-insensitive matching."""
-    # Arrange
-    text = "YOU should do YOUR work and it will be YOURS."
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "I should do my work and it will be mine."
-
-  def test_replace_pronouns_mixed_case(self):
-    """Test _replace_pronouns with mixed case."""
-    # Arrange
-    text = "You should do Your work and it will be Yours."
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "I should do my work and it will be mine."
-
-  def test_replace_pronouns_no_pronouns(self):
-    """Test _replace_pronouns with no pronouns."""
-    # Arrange
-    text = "This is a test message without pronouns."
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == text
-
-  def test_replace_pronouns_partial_matches(self):
-    """Test _replace_pronouns with partial matches that shouldn't be replaced."""
-    # Arrange
-    text = "youth, yourself, yourname"
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "youth, yourself, yourname"  # No changes
-
-  def test_replace_pronouns_phrases(self):
-    """Test _replace_pronouns with phrases that should be replaced."""
-    # Arrange
-    text = "You are a helpful chatbot"
-
-    # Act
-    result = _replace_pronouns(text)
-
-    # Assert
-    assert result == "I am a helpful chatbot"
 
   def test_get_default_description_llm_agent(self):
     """Test _get_default_description for LlmAgent."""
@@ -655,8 +702,8 @@ class TestDescriptionBuildingFunctions:
     # Assert
     assert result == "A custom agent"  # Default description
 
-  def test_build_llm_agent_description_with_instructions(self):
-    """Test _build_llm_agent_description_with_instructions with all components."""
+  def test_build_llm_agent_description_excludes_instructions(self):
+    """Test _build_agent_description ignores an LlmAgent's instructions."""
     # Arrange
     mock_agent = Mock(spec=LlmAgent)
     mock_agent.description = "Test agent"
@@ -664,27 +711,13 @@ class TestDescriptionBuildingFunctions:
     mock_agent.global_instruction = "Your role is to assist."
 
     # Act
-    result = _build_llm_agent_description_with_instructions(mock_agent)
-
-    # Assert
-    assert result == "Test agent I should help users. my role is to assist."
-
-  def test_build_llm_agent_description_without_instructions(self):
-    """Test _build_llm_agent_description_with_instructions without instructions."""
-    # Arrange
-    mock_agent = Mock(spec=LlmAgent)
-    mock_agent.description = "Test agent"
-    mock_agent.instruction = None
-    mock_agent.global_instruction = None
-
-    # Act
-    result = _build_llm_agent_description_with_instructions(mock_agent)
+    result = _build_agent_description(mock_agent)
 
     # Assert
     assert result == "Test agent"
 
   def test_build_llm_agent_description_without_description(self):
-    """Test _build_llm_agent_description_with_instructions without description."""
+    """Test _build_agent_description for an LlmAgent without a description."""
     # Arrange
     mock_agent = Mock(spec=LlmAgent)
     mock_agent.description = None
@@ -692,21 +725,7 @@ class TestDescriptionBuildingFunctions:
     mock_agent.global_instruction = None
 
     # Act
-    result = _build_llm_agent_description_with_instructions(mock_agent)
-
-    # Assert
-    assert result == "I should help users."
-
-  def test_build_llm_agent_description_empty_all(self):
-    """Test _build_llm_agent_description_with_instructions with all empty."""
-    # Arrange
-    mock_agent = Mock(spec=LlmAgent)
-    mock_agent.description = None
-    mock_agent.instruction = None
-    mock_agent.global_instruction = None
-
-    # Act
-    result = _build_llm_agent_description_with_instructions(mock_agent)
+    result = _build_agent_description(mock_agent)
 
     # Assert
     assert result == "An LLM-based agent"  # Default description
@@ -1159,106 +1178,6 @@ class TestExampleExtractionFunctions:
 
     # Assert
     assert result == []
-
-  def test_extract_examples_from_instruction_with_examples(self):
-    """Test _extract_examples_from_instruction with valid examples."""
-    # Arrange
-    instruction = (
-        'Example Query: "What is the weather?" Example Response: "The weather'
-        ' is sunny."'
-    )
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function processes each pattern separately, so it won't find pairs
-    # from different patterns. This test should return None.
-    assert result is None
-
-  def test_extract_examples_from_instruction_with_multiple_examples(self):
-    """Test _extract_examples_from_instruction with multiple examples."""
-    # Arrange
-    instruction = """
-    Example Query: "What is the weather?" Example Response: "The weather is sunny."
-    Example Query: "What time is it?" Example Response: "It is 3 PM."
-    """
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function finds matches but pairs them incorrectly due to how patterns are processed
-    assert result is not None
-    assert isinstance(result, list)
-    assert len(result) == 2
-    # The function pairs consecutive matches from the same pattern
-    assert result[0]["input"] == {"text": "What is the weather?"}
-    assert result[0]["output"] == [{"text": "What time is it?"}]
-    assert result[1]["input"] == {"text": "The weather is sunny."}
-    assert result[1]["output"] == [{"text": "It is 3 PM."}]
-
-  def test_extract_examples_from_instruction_with_different_patterns(self):
-    """Test _extract_examples_from_instruction with different example patterns."""
-    # Arrange
-    instruction = (
-        'Example: "What is the weather?" Example Response: "The weather is'
-        ' sunny."'
-    )
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function processes each pattern separately, so it won't find pairs
-    # from different patterns. This test should return None.
-    assert result is None
-
-  def test_extract_examples_from_instruction_case_insensitive(self):
-    """Test _extract_examples_from_instruction with case-insensitive matching."""
-    # Arrange
-    instruction = (
-        'example query: "What is the weather?" example response: "The weather'
-        ' is sunny."'
-    )
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function processes each pattern separately, so it won't find pairs
-    # from different patterns. This test should return None.
-    assert result is None
-
-  def test_extract_examples_from_instruction_no_examples(self):
-    """Test _extract_examples_from_instruction with no examples."""
-    # Arrange
-    instruction = "This is a regular instruction without any examples."
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    assert result is None
-
-  def test_extract_examples_from_instruction_odd_number_of_matches(self):
-    """Test _extract_examples_from_instruction with odd number of matches."""
-    # Arrange
-    instruction = (
-        'Example Query: "What is the weather?" Example Response: "The weather'
-        ' is sunny." Example Query: "What time is it?"'
-    )
-
-    # Act
-    result = _extract_examples_from_instruction(instruction)
-
-    # Assert
-    # The function finds matches but only pairs complete pairs
-    assert result is not None
-    assert isinstance(result, list)
-    assert len(result) == 1  # Only complete pairs should be included
-    assert result[0]["input"] == {"text": "What is the weather?"}
-    assert result[0]["output"] == [{"text": "What time is it?"}]
 
   def test_extract_inputs_from_examples_from_plain_text_input(self):
     """Test _extract_inputs_from_examples on plain text as input."""

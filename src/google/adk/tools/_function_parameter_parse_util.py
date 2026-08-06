@@ -151,7 +151,7 @@ def _raise_for_unsupported_param(
   ) from exception
 
 
-def _raise_for_invalid_enum_value(param: inspect.Parameter):
+def _raise_for_invalid_enum_value(param: inspect.Parameter) -> None:
   """Raises an error if the default value is not a valid enum value."""
   if inspect.isclass(param.annotation) and issubclass(param.annotation, Enum):
     if param.default is not inspect.Parameter.empty and param.default not in [
@@ -193,14 +193,14 @@ def _is_builtin_primitive_or_compound(
   return annotation in _py_builtin_type_to_schema_type.keys()
 
 
-def _raise_for_any_of_if_mldev(schema: types.Schema):
+def _raise_for_any_of_if_mldev(schema: types.Schema) -> None:
   if schema.any_of:
     raise ValueError(
         'AnyOf is not supported in function declaration schema for Google AI.'
     )
 
 
-def _update_for_default_if_mldev(schema: types.Schema):
+def _update_for_default_if_mldev(schema: types.Schema) -> None:
   if schema.default is not None:
     # TODO: Remove this workaround once mldev supports default value.
     schema.default = None
@@ -212,7 +212,7 @@ def _update_for_default_if_mldev(schema: types.Schema):
 
 def _raise_if_schema_unsupported(
     variant: GoogleLLMVariant, schema: types.Schema
-):
+) -> None:
   if variant == GoogleLLMVariant.GEMINI_API:
     _raise_for_any_of_if_mldev(schema)
     # _update_for_default_if_mldev(schema) # No need of this since GEMINI now supports default value
@@ -222,6 +222,8 @@ def _is_default_value_compatible(
     default_value: Any, annotation: inspect.Parameter.annotation
 ) -> bool:
   # None type is expected to be handled external to this function
+  if annotation is Any:
+    return True
   if _is_builtin_primitive_or_compound(annotation):
     return isinstance(default_value, annotation)
 
@@ -338,12 +340,10 @@ def _parse_schema_from_parameter(
           ),
           func_name,
       )
-      if (
-          schema_in_any_of.model_dump_json(exclude_none=True)
-          not in unique_types
-      ):
+      schema_key = schema_in_any_of.model_dump_json(exclude_none=True)
+      if schema_key not in unique_types:
         schema.any_of.append(schema_in_any_of)
-        unique_types.add(schema_in_any_of.model_dump_json(exclude_none=True))
+        unique_types.add(schema_key)
     if len(schema.any_of) == 1:  # param: list | None -> Array
       collapsed = schema.any_of[0]
       if schema.nullable:
@@ -367,6 +367,19 @@ def _parse_schema_from_parameter(
     args = get_args(param.annotation)
     if origin is dict:
       schema.type = types.Type.OBJECT
+      # args[1] is the value type of dict[K, V]. Untyped dictionaries (where
+      # len(args) == 0) intentionally leave additional_properties unset.
+      if len(args) == 2:
+        value_type = args[1]
+        schema.additional_properties = _parse_schema_from_parameter(
+            variant,
+            inspect.Parameter(
+                'value',
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=value_type,
+            ),
+            func_name,
+        )
       if param.default is not inspect.Parameter.empty:
         if not _is_default_value_compatible(param.default, param.annotation):
           raise ValueError(default_value_error_msg)
@@ -468,12 +481,10 @@ def _parse_schema_from_parameter(
             ):
               # Optional type with list, for example Optional[list[str]]
               schema.items = schema_in_any_of.items
-        if (
-            schema_in_any_of.model_dump_json(exclude_none=True)
-            not in unique_types
-        ):
+        schema_key = schema_in_any_of.model_dump_json(exclude_none=True)
+        if schema_key not in unique_types:
           schema.any_of.append(schema_in_any_of)
-          unique_types.add(schema_in_any_of.model_dump_json(exclude_none=True))
+          unique_types.add(schema_key)
       if len(schema.any_of) == 1:  # param: Union[List, None] -> Array
         collapsed = schema.any_of[0]
         if schema.nullable:
@@ -546,7 +557,7 @@ def _parse_schema_from_parameter(
 
 def _get_required_fields(schema: types.Schema) -> list[str]:
   if not schema.properties:
-    return
+    return []
   return [
       field_name
       for field_name, field_schema in schema.properties.items()

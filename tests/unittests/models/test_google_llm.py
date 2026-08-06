@@ -29,6 +29,7 @@ from google.adk.models.google_llm import _ResourceExhaustedError
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.tools import load_artifacts_tool
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
 from google.adk.utils._google_client_headers import get_tracking_headers
@@ -239,6 +240,20 @@ def test_gemini_repr_excludes_client_kwargs():
   )
   repr_str = repr(model)
   assert "client_kwargs" not in repr_str
+
+
+def test_gemini_api_client_when_client_kwargs_missing_from_dict():
+  model = Gemini(model="gemini-2.5-flash")
+  model.__dict__.pop("client_kwargs", None)
+  assert "client_kwargs" not in model.__dict__
+
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+    mock_client.assert_called_once()
+
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+    mock_client.assert_called_once()
 
 
 def test_client_version_header():
@@ -558,25 +573,32 @@ async def test_generate_content_async_other_client_error(
 
 @pytest.mark.asyncio
 async def test_connect(gemini_llm, llm_request):
-  # Create a mock connection
-  mock_connection = mock.MagicMock(spec=GeminiLlmConnection)
+  """Test that connect yields a GeminiLlmConnection wrapping the live session."""
+  mock_live_session = mock.AsyncMock()
 
-  # Create a mock context manager
-  class MockContextManager:
+  # Patch the live API client boundary so the real connect() body runs.
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
 
-    async def __aenter__(self):
-      return mock_connection
+    class MockLiveConnect:
 
-    async def __aexit__(self, *args):
-      pass
+      async def __aenter__(self):
+        return mock_live_session
 
-  # Mock the connect method at the class level
-  with mock.patch(
-      "google.adk.models.google_llm.Gemini.connect",
-      return_value=MockContextManager(),
-  ):
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
     async with gemini_llm.connect(llm_request) as connection:
-      assert connection is mock_connection
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      assert call_args.kwargs["model"] == llm_request.model
+      assert call_args.kwargs["config"] is llm_request.live_connect_config
+
+      assert isinstance(connection, GeminiLlmConnection)
+      assert connection._gemini_session is mock_live_session
+      assert connection._api_backend == gemini_llm._api_backend
+      assert connection._model_version == llm_request.model
 
 
 @pytest.mark.asyncio
@@ -1035,6 +1057,42 @@ async def test_preprocess_request_handles_backend_specific_fields(
     assert file_part.file_data.display_name == expected_file_display_name
     assert inline_part.inline_data.display_name == expected_inline_display_name
     assert llm_request_with_files.config.labels == expected_labels
+
+
+@pytest.mark.asyncio
+async def test_preprocess_request_converts_inline_data_safely():
+  """Tests that _preprocess_request uses _as_safe_part_for_llm to sanitize inline data."""
+  with mock.patch.object(
+      load_artifacts_tool, "_as_safe_part_for_llm", autospec=True
+  ) as mock_safe_part:
+    # Arrange
+    mock_safe_part.return_value = Part.from_text(text="safe_text")
+    my_gemini_llm = Gemini(model="gemini-2.5-flash")
+
+    my_llm_request = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=[
+            Content(
+                role="user",
+                parts=[
+                    Part(
+                        inline_data=types.Blob(
+                            data=b"some bytes",
+                            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        )
+                    )
+                ],
+            )
+        ],
+    )
+
+    # Act
+    await my_gemini_llm._preprocess_request(my_llm_request)  # pylint: disable=protected-access
+
+    # Assert
+    mock_safe_part.assert_called_once()
+    assert mock_safe_part.call_args[0][1] == "inline-file"
+    assert my_llm_request.contents[0].parts[0].text == "safe_text"
 
 
 @pytest.mark.asyncio
@@ -2005,6 +2063,46 @@ async def test_generate_content_async_with_cache_metadata_integration(
       assert second_arg.invocations_used == cache_metadata.invocations_used
 
 
+@pytest.mark.asyncio
+async def test_interactions_api_does_not_apply_explicit_cache(llm_request):
+  """Interactions requests use implicit caching without mutating the prompt."""
+  gemini = Gemini(model="gemini-2.5-flash", use_interactions_api=True)
+  llm_request.cache_config = ContextCacheConfig()
+  original_request = llm_request.model_copy(deep=True)
+
+  async def generate_via_interactions(_llm_request, _stream):
+    yield LlmResponse(
+        content=Content(
+            role="model", parts=[Part.from_text(text="interaction response")]
+        )
+    )
+
+  with (
+      mock.patch.object(gemini, "_preprocess_request", new=AsyncMock()),
+      mock.patch.object(
+          gemini,
+          "_generate_content_via_interactions",
+          new=generate_via_interactions,
+      ),
+      mock.patch(
+          "google.adk.models.gemini_context_cache_manager.GeminiContextCacheManager"
+      ) as cache_manager_class,
+  ):
+    responses = [
+        response
+        async for response in gemini.generate_content_async(llm_request)
+    ]
+
+  assert responses[0].content.parts[0].text == "interaction response"
+  assert llm_request.contents == original_request.contents
+  assert (
+      llm_request.config.system_instruction
+      == original_request.config.system_instruction
+  )
+  assert llm_request.config.cached_content is None
+  cache_manager_class.assert_not_called()
+
+
 def test_build_function_declaration_log():
   """Test that _build_function_declaration_log formats function declarations correctly."""
   # Test case 1: Function with parameters and response
@@ -2368,6 +2466,47 @@ async def test_connect_speech_config_remains_none_when_both_are_none(
       # Verify the final speech_config is still None
       assert config_arg.speech_config is None
       assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log_level,should_call",
+    [
+        (logging.WARNING, False),
+        (logging.INFO, False),
+        (logging.DEBUG, True),
+    ],
+)
+async def test_generate_content_async_skips_request_log_build_above_debug(
+    gemini_llm,
+    llm_request,
+    generate_content_response,
+    log_level,
+    should_call,
+):
+  gemini_logger = logging.getLogger("google_adk.google.adk.models.google_llm")
+  original_level = gemini_logger.level
+  gemini_logger.setLevel(log_level)
+  try:
+    with mock.patch(
+        "google.adk.models.google_llm._build_request_log",
+        return_value="log",
+    ) as mock_build:
+      with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+        async def mock_coro():
+          return generate_content_response
+
+        mock_client.aio.models.generate_content.return_value = mock_coro()
+
+        async for _ in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        ):
+          pass
+
+      assert mock_build.called is should_call
+  finally:
+    gemini_logger.setLevel(original_level)
 
 
 @pytest.mark.asyncio

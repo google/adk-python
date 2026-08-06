@@ -17,6 +17,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Dict
 from typing import Generator
+from unittest import mock
 
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -446,6 +447,7 @@ def test_schema_sanitization_for_complex_union_type():
   assert declaration.parameters.properties['tags'] == types.Schema(
       type=types.Type.OBJECT,
       nullable=True,
+      additional_properties=types.Schema(type=types.Type.STRING),
   )
 
 
@@ -519,3 +521,174 @@ def test_tuple_types_work_in_json_schema_fallback() -> None:
   assert array_schema.items.items.any_of[0].type == types.Type.STRING
   assert array_schema.items.items.any_of[0].format is None
   assert array_schema.items.items.any_of[1].type == types.Type.STRING
+
+
+def test_from_function_with_options_any_type_with_default_value():
+  """Test that typing.Any with a default value works and doesn't crash."""
+
+  def my_tool(param: Any = 'default_string') -> str:
+    return f'ok {param}'
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      my_tool, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.parameters is not None
+  assert declaration.parameters.properties['param'].default == 'default_string'
+  # Any type maps to None (no type) in schema
+  assert declaration.parameters.properties['param'].type is None
+
+
+class _UnserializableReturn:
+  """A plain class that has no genai/JSON schema representation."""
+
+
+def test_from_function_with_options_unserializable_return_vertex_degrades_gracefully():
+  """VERTEX_AI omits the response schema instead of raising when it can't be derived."""
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return type cannot be turned into a schema."""
+    return _UnserializableReturn()
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  # Parameters are still populated; only the return schema is dropped.
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['param'].type == 'STRING'
+  assert declaration.response is None
+
+
+def test_from_function_with_options_logs_warning_on_return_schema_failure(
+    caplog,
+):
+  """A warning naming the function is emitted when the return schema is dropped."""
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return type cannot be turned into a schema."""
+    return _UnserializableReturn()
+
+  with caplog.at_level(
+      'WARNING',
+      logger='google_adk.google.adk.tools._automatic_function_calling_util',
+  ):
+    _automatic_function_calling_util.from_function_with_options(
+        test_function, GoogleLLMVariant.VERTEX_AI
+    )
+
+  warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+  assert len(warnings) == 1
+  assert 'test_function' in warnings[0].getMessage()
+
+
+def test_from_function_with_options_valid_pydantic_return_still_gets_schema_vertex():
+  """A serializable pydantic return type keeps producing a response schema."""
+
+  class MyModel(pydantic.BaseModel):
+    result: str
+
+  def test_function(param: str) -> MyModel:
+    """A function that returns a valid pydantic model."""
+    return MyModel(result=param)
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.OBJECT
+
+
+def test_from_function_with_options_non_value_error_return_degrades_gracefully(
+    monkeypatch,
+):
+  """A non-ValueError from schema parsing is caught (not propagated) and degrades."""
+
+  parse_util = _automatic_function_calling_util._function_parameter_parse_util
+  original_parse = parse_util._parse_schema_from_parameter
+
+  def _raise_type_error_for_return(variant, param, func_name):
+    # Only the return-schema parse should raise; leave parameter parsing intact.
+    if param.name == 'return_value':
+      raise TypeError('simulated non-ValueError from schema parsing')
+    return original_parse(variant, param, func_name)
+
+  monkeypatch.setattr(
+      parse_util,
+      '_parse_schema_from_parameter',
+      _raise_type_error_for_return,
+  )
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return schema parsing raises a non-ValueError."""
+    return _UnserializableReturn()
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.response is None
+
+
+def test_from_function_with_options_warning_includes_original_error(caplog):
+  """The warning names both the fallback and the original parsing error."""
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return type cannot be turned into a schema."""
+    return _UnserializableReturn()
+
+  with caplog.at_level(
+      'WARNING',
+      logger='google_adk.google.adk.tools._automatic_function_calling_util',
+  ):
+    _automatic_function_calling_util.from_function_with_options(
+        test_function, GoogleLLMVariant.VERTEX_AI
+    )
+
+  warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+  assert len(warnings) == 1
+  message = warnings[0].getMessage()
+  assert 'Fallback error:' in message
+  assert 'Original error:' in message
+
+
+def test_optional_arg_does_not_double_serialize_for_dedup():
+  """Each union member is serialized at most once during any_of deduplication.
+
+  The dedup loop previously called `Schema.model_dump_json` twice per union
+  member (once for the membership check, once for the set add). For `T | None`
+  (a 2-member union that always reduces to a single any_of entry) that doubled
+  the cost on every parse.
+  """
+
+  def tool_with_optionals(
+      a: str | None = None,
+      b: int | None = None,
+      c: str | int = 'x',
+  ) -> str:
+    """A tool whose params exercise the optional/union dedup path."""
+    return f'{a}{b}{c}'
+
+  call_count = 0
+  real_dump = types.Schema.model_dump_json
+
+  def counting_dump(self, *args, **kwargs):
+    nonlocal call_count
+    call_count += 1
+    return real_dump(self, *args, **kwargs)
+
+  with mock.patch.object(types.Schema, 'model_dump_json', counting_dump):
+    _automatic_function_calling_util.from_function_with_options(
+        tool_with_optionals, GoogleLLMVariant.GEMINI_API
+    )
+
+  # 2 `| None` args (1 non-None member) + 1 union arg (2 non-None members)
+  # = 4 calls after the fix. Before, this was 8 (every member was serialized
+  # twice — once for the membership check, once for the set add).
+  assert (
+      call_count == 4
+  ), f'expected 4 model_dump_json calls during dedup, got {call_count}'

@@ -21,5 +21,5 @@ class SessionNotFoundError(ValueError):
   Inherits from ValueError (for backward compatibility).
   """
 
-  def __init__(self, message="Session not found."):
+  def __init__(self, message: str = "Session not found.") -> None:
     super().__init__(message)

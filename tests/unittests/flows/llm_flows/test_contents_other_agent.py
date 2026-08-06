@@ -15,6 +15,7 @@
 """Behavioral tests for other agent message processing in contents module."""
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.models.llm_request import LlmRequest
@@ -82,6 +83,111 @@ async def test_other_agent_thoughts_are_excluded():
       types.Part(text="For context:"),
       types.Part(text="[other_agent] said: Public message"),
       types.Part(text="[other_agent] said: Another public message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_other_agent_thoughts_can_be_included_as_context():
+  """Test opt-in inclusion of thoughts from other agents."""
+  agent = Agent(model="gemini-2.5-flash", name="current_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      run_config=RunConfig(include_thoughts_from_other_agents=True),
+  )
+  other_agent_event = Event(
+      invocation_id="test_inv",
+      author="other_agent",
+      content=types.ModelContent([
+          types.Part(text="Public message", thought=False),
+          types.Part(text="Private thought", thought=True),
+          types.Part(text="Another public message"),
+      ]),
+  )
+  invocation_context.session.events = [other_agent_event]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert llm_request.contents[0].role == "user"
+  assert llm_request.contents[0].parts == [
+      types.Part(text="For context:"),
+      types.Part(text="[other_agent] said: Public message"),
+      types.Part(text="[other_agent] thought: Private thought"),
+      types.Part(text="[other_agent] said: Another public message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_other_agent_thought_only_message_can_be_included_as_context():
+  """Test opt-in inclusion of thought-only messages from other agents."""
+  agent = Agent(model="gemini-2.5-flash", name="current_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      run_config=RunConfig(include_thoughts_from_other_agents=True),
+  )
+  other_agent_event = Event(
+      invocation_id="test_inv",
+      author="other_agent",
+      content=types.ModelContent([
+          types.Part(text="First private thought", thought=True),
+          types.Part(text="Second private thought", thought=True),
+      ]),
+  )
+  invocation_context.session.events = [other_agent_event]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert llm_request.contents[0].role == "user"
+  assert llm_request.contents[0].parts == [
+      types.Part(text="For context:"),
+      types.Part(text="[other_agent] thought: First private thought"),
+      types.Part(text="[other_agent] thought: Second private thought"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_other_agent_thoughts_excluded_from_current_turn_only_context():
+  """Test include_contents='none' does not include other-agent thoughts."""
+  agent = Agent(
+      model="gemini-2.5-flash",
+      name="current_agent",
+      include_contents="none",
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      run_config=RunConfig(include_thoughts_from_other_agents=True),
+  )
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Earlier user message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="other_agent",
+          content=types.ModelContent([
+              types.Part(text="Private thought", thought=True),
+              types.Part(text="Visible handoff"),
+          ]),
+      ),
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert llm_request.contents == [
+      types.Content(
+          role="user",
+          parts=[
+              types.Part(text="For context:"),
+              types.Part(text="[other_agent] said: Visible handoff"),
+          ],
+      )
   ]
 
 

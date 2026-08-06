@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from typing import Optional
 
 from pydantic import BaseModel
@@ -32,7 +33,7 @@ class ActiveStreamingTool(BaseModel):
   )
   """The pydantic model config."""
 
-  task: Optional[asyncio.Task] = None
+  task: Optional[asyncio.Task[Any]] = None
   """The active task of this streaming tool."""
 
   stream: Optional[LiveRequestQueue] = None

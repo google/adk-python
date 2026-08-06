@@ -260,6 +260,7 @@ class TestGkeCodeExecutor:
     # Check pod template properties
     pod_spec = job.spec.template.spec
     assert pod_spec.restart_policy == "Never"
+    assert pod_spec.automount_service_account_token is False
     assert pod_spec.runtime_class_name == "gvisor"
     assert len(pod_spec.tolerations) == 1
     assert pod_spec.tolerations[0].value == "gvisor"

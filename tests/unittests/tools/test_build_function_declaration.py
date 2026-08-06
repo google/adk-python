@@ -13,10 +13,12 @@
 # limitations under the License.
 
 from enum import Enum
+from typing import Any
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools import _automatic_function_calling_util
+from google.adk.tools import _function_parameter_parse_util
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
@@ -107,6 +109,85 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.name == 'simple_function'
     assert function_decl.parameters.type == 'OBJECT'
     assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties[
+            'input_str'
+        ].additional_properties.type
+        == 'STRING'
+    )
+
+  def test_dict_input_with_int_values(self):
+    def simple_function(input_str: dict[str, int]) -> str:
+      return {'result': input_str}
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.name == 'simple_function'
+    assert function_decl.parameters.type == 'OBJECT'
+    assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties[
+            'input_str'
+        ].additional_properties.type
+        == 'INTEGER'
+    )
+
+  def test_dict_input_with_any_values(self):
+    def simple_function(input_str: dict[str, Any]) -> str:
+      return {'result': input_str}
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.name == 'simple_function'
+    assert function_decl.parameters.type == 'OBJECT'
+    assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties[
+            'input_str'
+        ].additional_properties.type
+        is None
+    )
+
+  def test_untyped_dict_input(self):
+    def simple_function(input_str: dict) -> str:
+      return {'result': input_str}
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.name == 'simple_function'
+    assert function_decl.parameters.type == 'OBJECT'
+    assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties['input_str'].additional_properties
+        is None
+    )
+
+  def test_list_of_dict_input(self):
+    """Test list[dict[str, str]] emits proper schema with additional_properties."""
+
+    def simple_function(fruits: list[dict[str, str]]) -> str:
+      return str(fruits)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.name == 'simple_function'
+    assert function_decl.parameters.type == 'OBJECT'
+    assert function_decl.parameters.properties['fruits'].type == 'ARRAY'
+    assert function_decl.parameters.properties['fruits'].items.type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties[
+            'fruits'
+        ].items.additional_properties.type
+        == 'STRING'
+    )
 
   def test_basemodel_input(self):
     class CustomInput(BaseModel):
@@ -198,6 +279,44 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.parameters.properties['input_str'].type == 'STRING'
     assert 'tool_context' not in function_decl.parameters.properties
 
+  def test_get_required_fields_no_properties_returns_empty_list(self):
+    # A schema without properties must yield [] rather than None for any
+    # caller that relies on the declared list[str] return.
+    assert (
+        _function_parameter_parse_util._get_required_fields(
+            types.Schema(type='OBJECT')
+        )
+        == []
+    )
+    assert (
+        _function_parameter_parse_util._get_required_fields(
+            types.Schema(type='OBJECT', properties={})
+        )
+        == []
+    )
+
+  def test_build_declaration_includes_required_parameters(self):
+    def simple_function(input_str: str) -> str:
+      return {'result': input_str}
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.parameters.required == ['input_str']
+
+  def test_all_parameters_ignored_results_in_no_parameters_schema(self):
+    def only_context(tool_context: ToolContext) -> str:
+      return ''
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=only_context, ignore_params=['tool_context']
+    )
+
+    # No parameters remain after ignoring tool_context, so the declaration
+    # carries no parameter schema instead of one with required=None.
+    assert function_decl.parameters is None
+
   def test_basemodel(self):
     class SimpleFunction(BaseModel):
       input_str: str
@@ -282,6 +401,12 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.parameters.properties['input_dir'].type == 'ARRAY'
     assert (
         function_decl.parameters.properties['input_dir'].items.type == 'OBJECT'
+    )
+    assert (
+        function_decl.parameters.properties[
+            'input_dir'
+        ].items.additional_properties.type
+        == 'STRING'
     )
 
   def test_enums(self):
@@ -490,6 +615,39 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.parameters.properties['agent_name'].enum == agent_names
     assert 'tool_context' not in function_decl.parameters.properties
 
+  def test_callable_object_is_declared_under_its_class_name(self):
+    """A callable object has no __name__ and falls back to its class name."""
+
+    class Calc:
+      """Adds two numbers."""
+
+      def __call__(self, a: int, b: int) -> int:
+        return a + b
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=Calc()
+    )
+
+    assert function_decl.name == 'Calc'
+    assert function_decl.parameters.properties['a'].type == 'INTEGER'
+
+  def test_callable_object_reaches_the_response_schema_branch(self):
+    """Only non-GEMINI_API variants build a response schema, which also names
+    the callable."""
+
+    class Calc:
+      """Adds two numbers."""
+
+      def __call__(self, a: int, b: int):
+        return a + b
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=Calc(), variant=GoogleLLMVariant.VERTEX_AI
+    )
+
+    assert function_decl.name == 'Calc'
+    assert function_decl.response is not None
+
 
 class TestBuildFunctionDeclarationWithJsonSchema:
   """Tests for build_function_declaration when JSON_SCHEMA_FOR_FUNC_DECL is enabled."""
@@ -575,6 +733,42 @@ class TestBuildFunctionDeclarationWithJsonSchema:
         'type': 'object',
     }
 
+  def test_dict_parameter_with_any(self):
+    """Test dict[str, Any] parameter with feature flag enabled."""
+
+    def process_data(data: dict[str, Any]) -> str:
+      """Process a dictionary."""
+      return str(data)
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        process_data
+    )
+
+    schema = decl.parameters_json_schema
+    assert schema['properties']['data'] == {
+        'additionalProperties': True,
+        'title': 'Data',
+        'type': 'object',
+    }
+
+  def test_untyped_dict_parameter(self):
+    """Test untyped dict parameter with feature flag enabled."""
+
+    def process_data(data: dict) -> str:
+      """Process a dictionary."""
+      return str(data)
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        process_data
+    )
+
+    schema = decl.parameters_json_schema
+    assert schema['properties']['data'] == {
+        'additionalProperties': True,
+        'title': 'Data',
+        'type': 'object',
+    }
+
   def test_optional_parameter(self):
     """Test optional parameter with feature flag enabled."""
 
@@ -641,7 +835,7 @@ class TestBuildFunctionDeclarationWithJsonSchema:
         get_data, variant=GoogleLLMVariant.GEMINI_API
     )
 
-    # GEMINI_API should not have response_json_schema due to bug b/421991354
+    # GEMINI_API should not have response_json_schema: the API rejects it.
     assert decl.response_json_schema is None
 
   @pytest.mark.parametrize(
