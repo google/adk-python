@@ -147,7 +147,7 @@ def create_error_status_event(
 @a2a_experimental
 def convert_event_to_a2a_events(
     event: Event,
-    agents_artifacts: Dict[str, str],
+    agents_artifacts: Optional[Dict[str, str]],
     task_id: Optional[str] = None,
     context_id: Optional[str] = None,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,

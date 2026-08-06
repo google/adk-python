@@ -293,8 +293,12 @@ class TelemetryGroup(click.Group):
       )
       raise
     except BaseException as e:
-      exit_code = 1
-      exception_type = type(e).__name__
+      if isinstance(e, KeyboardInterrupt) and ctx.meta.get("server_started"):
+        exit_code = 0
+        exception_type = ""
+      else:
+        exit_code = 1
+        exception_type = type(e).__name__
       raise
     finally:
       # Exclude help requests and telemetry command group itself
@@ -2004,24 +2008,8 @@ def cli_web(
 """,
         fg="green",
     )
-    try:
-      if (
-          ctx
-          and read_telemetry_consent() is True
-          and not ctx.meta.get("telemetry_recorded")
-      ):
-        start_time = ctx.meta.get("telemetry_start_time", time.monotonic())
-        collector = MetricsCollector()
-        collector.record_command_run(
-            command="web",
-            exit_code=0,
-            duration_ms=int((time.monotonic() - start_time) * 1000),
-            exception_type="",
-        )
-        ctx.meta["telemetry_recorded"] = True
-    except Exception:  # pylint: disable=broad-except
-      # Failsafe: telemetry errors must never crash the CLI
-      pass
+    if ctx:
+      ctx.meta["server_started"] = True
     yield  # Startup is done, now app is running
     click.secho(
         """
@@ -2172,24 +2160,8 @@ def cli_api_server(
 
   @asynccontextmanager
   async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    try:
-      if (
-          ctx
-          and read_telemetry_consent() is True
-          and not ctx.meta.get("telemetry_recorded")
-      ):
-        start_time = ctx.meta.get("telemetry_start_time", time.monotonic())
-        collector = MetricsCollector()
-        collector.record_command_run(
-            command="api_server",
-            exit_code=0,
-            duration_ms=int((time.monotonic() - start_time) * 1000),
-            exception_type="",
-        )
-        ctx.meta["telemetry_recorded"] = True
-    except Exception:  # pylint: disable=broad-except
-      # Failsafe: telemetry errors must never crash the CLI
-      pass
+    if ctx:
+      ctx.meta["server_started"] = True
     yield
 
   config = uvicorn.Config(

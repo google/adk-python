@@ -21,6 +21,7 @@ import os
 import re
 import threading
 from typing import Any
+from typing import cast
 from typing import TYPE_CHECKING
 
 from pydantic import PrivateAttr
@@ -128,10 +129,9 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           try:
             # Create a default Agent Engine.
             created_engine = self._get_api_client().agent_engines.create()
-            created_name: object = created_engine.api_resource.name
-            if not isinstance(created_name, str):
-              raise RuntimeError('Created Agent Engine has no resource name.')
-            self.agent_engine_resource_name = created_name
+            self.agent_engine_resource_name = cast(
+                str, created_engine.api_resource.name
+            )
             logger.info(
                 'Created Agent Engine: %s', self.agent_engine_resource_name
             )
@@ -146,9 +146,9 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       from vertexai import types
 
       # use sandbox name stored in session if available.
-      stored_sandbox_name = invocation_context.session.state.get('sandbox_name')
-      sandbox_name = (
-          stored_sandbox_name if isinstance(stored_sandbox_name, str) else None
+      sandbox_name = cast(
+          'str | None',
+          invocation_context.session.state.get('sandbox_name', None),
       )
       create_new_sandbox = False
       if sandbox_name is None:
@@ -170,8 +170,6 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
             raise
 
       if create_new_sandbox:
-        if self.agent_engine_resource_name is None:
-          raise RuntimeError('Agent Engine resource name is not available.')
         # Create a new sandbox and assign it to sandbox_name.
         operation = self._get_api_client().agent_engines.sandboxes.create(
             spec={'code_execution_environment': {}},
@@ -185,14 +183,8 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
                 ttl='31536000s',
             ),
         )
-        created_sandbox_name: object = operation.response.name
-        if not isinstance(created_sandbox_name, str):
-          raise RuntimeError('Created sandbox has no resource name.')
-        sandbox_name = created_sandbox_name
+        sandbox_name = cast(str, operation.response.name)
         invocation_context.session.state['sandbox_name'] = sandbox_name
-
-    if sandbox_name is None:
-      raise RuntimeError('Sandbox resource name is not available.')
 
     # Execute the code.
     input_data: dict[str, object] = {

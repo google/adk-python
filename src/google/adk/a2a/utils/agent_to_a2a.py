@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from contextlib import asynccontextmanager
 import logging
 from typing import AsyncIterator
@@ -86,7 +87,9 @@ def to_a2a(
     push_config_store: PushNotificationConfigStore | None = None,
     task_store: TaskStore | None = None,
     runner: Runner | None = None,
-    lifespan: Callable[[Starlette], AsyncIterator[None]] | None = None,
+    lifespan: (
+        Callable[[Starlette], AbstractAsyncContextManager[None]] | None
+    ) = None,
     agent_executor_factory: Callable[[Runner], A2aAgentExecutor] | None = None,
 ) -> Starlette:
   """Convert an ADK BaseAgent or Workflow to an A2A Starlette application.
@@ -159,32 +162,46 @@ def to_a2a(
 
   def create_runner() -> Runner:
     """Create a runner for the agent or workflow."""
-    runner_kwargs = {
-        "app_name": agent.name or "adk_agent",
-        # Use minimal services - in a real implementation these could be configured
-        "artifact_service": InMemoryArtifactService(),
-        "session_service": InMemorySessionService(),
-        "memory_service": InMemoryMemoryService(),
-        "credential_service": InMemoryCredentialService(),
-    }
+    # Use minimal services - in a real implementation these could be configured
+    artifact_service = InMemoryArtifactService()
+    session_service = InMemorySessionService()
+    memory_service = InMemoryMemoryService()
+    credential_service = InMemoryCredentialService()
     if isinstance(agent, Workflow):
-      runner_kwargs["node"] = agent
-    else:
-      runner_kwargs["agent"] = agent
-    return Runner(**runner_kwargs)
+      return Runner(
+          app_name=agent.name or "adk_agent",
+          node=agent,
+          artifact_service=artifact_service,
+          session_service=session_service,
+          memory_service=memory_service,
+          credential_service=credential_service,
+      )
+    return Runner(
+        app_name=agent.name or "adk_agent",
+        agent=agent,
+        artifact_service=artifact_service,
+        session_service=session_service,
+        memory_service=memory_service,
+        credential_service=credential_service,
+    )
 
   # Create A2A components
-  if task_store is None:
-    task_store = InMemoryTaskStore()
-
-  agent_executor = (
-      agent_executor_factory(runner or create_runner())
-      if agent_executor_factory is not None
-      else A2aAgentExecutor(runner=runner or create_runner)
+  resolved_task_store = (
+      task_store if task_store is not None else InMemoryTaskStore()
   )
 
-  if push_config_store is None:
-    push_config_store = InMemoryPushNotificationConfigStore()
+  if agent_executor_factory is not None:
+    executor_runner = runner if runner is not None else create_runner()
+    agent_executor = agent_executor_factory(executor_runner)
+  else:
+    runner_or_factory = runner if runner is not None else create_runner
+    agent_executor = A2aAgentExecutor(runner=runner_or_factory)
+
+  resolved_push_config_store = (
+      push_config_store
+      if push_config_store is not None
+      else InMemoryPushNotificationConfigStore()
+  )
 
   # Use provided agent card or build one from the agent
   normalized_path = rpc_path.strip("/")
@@ -217,8 +234,8 @@ def to_a2a(
         app,
         agent_card=final_agent_card,
         agent_executor=agent_executor,
-        task_store=task_store,
-        push_config_store=push_config_store,
+        task_store=resolved_task_store,
+        push_config_store=resolved_push_config_store,
         prefix=prefix,
     )
 

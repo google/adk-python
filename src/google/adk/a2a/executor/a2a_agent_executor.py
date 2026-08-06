@@ -18,7 +18,6 @@ import inspect
 import logging
 from typing import Awaitable
 from typing import Callable
-from typing import Optional
 
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution import RequestContext
@@ -42,6 +41,7 @@ from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
 from .task_result_aggregator import TaskResultAggregator
 from .utils import _enqueue_canceled_task_event
+from .utils import _require_request_context
 from .utils import execute_after_agent_interceptors
 from .utils import execute_after_event_interceptors
 from .utils import execute_before_agent_interceptors
@@ -67,7 +67,7 @@ class A2aAgentExecutor(AgentExecutor):
       self,
       *,
       runner: Runner | Callable[..., Runner | Awaitable[Runner]],
-      config: Optional[A2aAgentExecutorConfig] = None,
+      config: A2aAgentExecutorConfig | None = None,
       use_legacy: bool = False,
       force_new_version: bool = False,
   ):
@@ -88,14 +88,14 @@ class A2aAgentExecutor(AgentExecutor):
       result = self._runner()
 
       # Handle async callables
-      if inspect.iscoroutine(result):
+      if inspect.isawaitable(result):
         resolved_runner = await result
       else:
         resolved_runner = result
 
       # Cache the resolved runner for future calls
       self._runner = resolved_runner
-      return resolved_runner
+      return self._runner
 
     raise TypeError(
         'Runner must be a Runner instance or a callable that returns a'
@@ -180,6 +180,7 @@ class A2aAgentExecutor(AgentExecutor):
       context: RequestContext,
       event_queue: EventQueue,
   ) -> None:
+    _, task_id, context_id = _require_request_context(context)
     # Resolve the runner instance
     runner = await self._resolve_runner()
 
@@ -209,8 +210,8 @@ class A2aAgentExecutor(AgentExecutor):
     # publish the task working event
     await event_queue.enqueue_event(
         _compat.make_task_status_update_event(
-            task_id=context.task_id,
-            context_id=context.context_id,
+            task_id=task_id,
+            context_id=context_id,
             status=_compat.make_task_status(_compat.TS_WORKING),
             final=False,
             metadata={
@@ -229,8 +230,8 @@ class A2aAgentExecutor(AgentExecutor):
         for a2a_event in self._config.event_converter(
             adk_event,
             invocation_context,
-            context.task_id,
-            context.context_id,
+            task_id,
+            context_id,
             self._config.gen_ai_part_converter,
         ):
           a2a_events = await execute_after_event_interceptors(
@@ -269,9 +270,9 @@ class A2aAgentExecutor(AgentExecutor):
       # the final result according to a2a protocol.
       await event_queue.enqueue_event(
           TaskArtifactUpdateEvent(
-              task_id=context.task_id,
+              task_id=task_id,
               last_chunk=True,
-              context_id=context.context_id,
+              context_id=context_id,
               artifact=Artifact(
                   artifact_id=platform_uuid.new_uuid(),
                   parts=task_result_aggregator.task_status_message.parts,
@@ -281,16 +282,16 @@ class A2aAgentExecutor(AgentExecutor):
       )
       # publish the final status update event
       final_event = _compat.make_task_status_update_event(
-          task_id=context.task_id,
-          context_id=context.context_id,
+          task_id=task_id,
+          context_id=context_id,
           status=_compat.make_task_status(_compat.TS_COMPLETED),
           final=True,
           metadata=final_metadata,
       )
     else:
       final_event = _compat.make_task_status_update_event(
-          task_id=context.task_id,
-          context_id=context.context_id,
+          task_id=task_id,
+          context_id=context_id,
           status=_compat.make_task_status(
               task_result_aggregator.task_state,
               message=task_result_aggregator.task_status_message,
@@ -316,11 +317,13 @@ class A2aAgentExecutor(AgentExecutor):
     session_id = run_request.session_id
     # create a new session if not exists
     user_id = run_request.user_id
-    session = await runner.session_service.get_session(
-        app_name=runner.app_name,
-        user_id=user_id,
-        session_id=session_id,
-    )
+    session = None
+    if session_id:
+      session = await runner.session_service.get_session(
+          app_name=runner.app_name,
+          user_id=user_id,
+          session_id=session_id,
+      )
     if session is None:
       session = await runner.session_service.create_session(
           app_name=runner.app_name,

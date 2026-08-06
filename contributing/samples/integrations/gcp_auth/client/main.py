@@ -14,6 +14,7 @@
 
 """A FastAPI client for interacting with ADK remote agents and handling GCP authentication."""
 
+import asyncio
 import base64
 import importlib
 import json
@@ -32,18 +33,15 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from google.adk.auth import AuthConfig
 from google.adk.runners import InMemoryRunner
+from google.api_core.client_options import ClientOptions
 import google.auth
 import google.auth.transport.requests
+from google.cloud.agentidentitycredentials_v1 import AuthProviderCredentialsServiceClient
+from google.cloud.agentidentitycredentials_v1 import FinalizeCredentialsRequest
 from google.genai import types
-import httpx
 from pydantic import BaseModel
 import uvicorn
 import vertexai
-
-TARGET_HOST = (
-    os.environ.get("IAM_CONNECTOR_CREDENTIALS_TARGET_HOST")
-    or "iamconnectorcredentials.googleapis.com"
-)
 
 # Add agent project directory to path to allow importing local agents
 AGENT_PROJECT_DIR = os.environ.get("AGENT_PROJECT_DIR") or os.path.dirname(
@@ -375,6 +373,10 @@ async def validate_user_id(request: Request):
   auth_provider_name = request.query_params.get(
       "connector_name"
   ) or request.query_params.get("auth_provider_name")
+  if auth_provider_name:
+    auth_provider_name = auth_provider_name.replace(
+        "/connectors/", "/authProviders/"
+    )
 
   print(
       f"Callback received: user_id_validation_state={user_id_validation_state},"
@@ -408,51 +410,47 @@ async def validate_user_id(request: Request):
     }
 
   try:
-    url = (
-        f"https://{TARGET_HOST}/v1alpha/{auth_provider_name}"
-        "/credentials:finalize"
+    state_bytes = base64.urlsafe_b64decode(
+        user_id_validation_state + "=" * (-len(user_id_validation_state) % 4)
     )
-    headers = {
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "userId": user_id,
-        "userIdValidationState": user_id_validation_state,
-        "consentNonce": consent_nonce,
-    }
 
-    print(f"Calling FinalizeCredentials via HTTP POST to: {url}")
-    print(f"Headers: {headers}")
-    print(f"Payload: {payload}")
+    client_options = None
+    if host := os.environ.get("AGENT_IDENTITY_CREDENTIALS_TARGET_HOST"):
+      client_options = ClientOptions(api_endpoint=host)
 
-    async with httpx.AsyncClient() as client:
-      response = await client.post(url, json=payload, headers=headers)
+    client = AuthProviderCredentialsServiceClient(
+        client_options=client_options, transport="rest"
+    )
 
-    print(f"HTTP Response Status: {response.status_code}")
-    print(f"HTTP Response Body: {response.text}")
+    finalize_request = FinalizeCredentialsRequest(
+        auth_provider=auth_provider_name,
+        user_id=user_id,
+        user_id_validation_state=state_bytes,
+        consent_nonce=consent_nonce,
+    )
 
-    if response.status_code == 200:
-      # Return a simple HTML page to indicate OAuth success
-      html_content = """
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <title>Authorization Successful</title>
-      </head>
-      <body>
-          <p>Authorization successful! You can close this window.</p>
-      </body>
-      </html>
-      """
-      return HTMLResponse(content=html_content)
-    else:
-      return {
-          "status": "error",
-          "message": f"HTTP Error {response.status_code}: {response.text}",
-      }
+    print(
+        "Calling FinalizeCredentials via AuthProviderCredentialsServiceClient"
+        f" for auth_provider: {auth_provider_name}"
+    )
+    await asyncio.to_thread(client.finalize_credentials, finalize_request)
+
+    # Return a simple HTML page to indicate OAuth success
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Authorization Successful</title>
+    </head>
+    <body>
+        <p>Authorization successful! You can close this window.</p>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
   except Exception as e:
-    print(f"Error calling FinalizeCredentials via HTTP: {e}")
+    print(f"Error finalizing credentials: {e}")
     return {
         "status": "error",
         "message": f"Failed to finalize credentials: {str(e)}",

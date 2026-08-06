@@ -66,12 +66,7 @@ class CodeExecutorContext:
     Returns:
       The session ID for the code executor context.
     """
-    execution_id = self._context.get(_SESSION_ID_KEY)
-    if execution_id is None:
-      return None
-    if not isinstance(execution_id, str):
-      raise TypeError('Stored code-execution session ID must be a string.')
-    return execution_id
+    return cast(str | None, self._context.get(_SESSION_ID_KEY))
 
   def set_execution_id(self, session_id: str) -> None:
     """Sets the session ID for the code executor.
@@ -90,11 +85,7 @@ class CodeExecutorContext:
     file_names = self._context.get(_PROCESSED_FILE_NAMES_KEY)
     if file_names is None:
       return []
-    if not isinstance(file_names, list) or not all(
-        isinstance(file_name, str) for file_name in file_names
-    ):
-      raise TypeError('Stored processed file names must be a list of strings.')
-    return file_names
+    return cast(list[str], file_names)
 
   def add_processed_file_names(self, file_names: list[str]) -> None:
     """Adds the processed file name to the session state.
@@ -126,9 +117,9 @@ class CodeExecutorContext:
     Args:
       input_files: The input files to add to the code executor context.
     """
-    stored_files = self._session_state.get(_INPUT_FILE_KEY, [])
-    if not isinstance(stored_files, list):
-      raise TypeError('Stored code-executor input files must be a list.')
+    stored_files = cast(
+        list[dict[str, Any]], self._session_state.get(_INPUT_FILE_KEY, [])
+    )
     for input_file in input_files:
       stored_files.append(dataclasses.asdict(input_file))
     self._session_state[_INPUT_FILE_KEY] = stored_files
@@ -149,15 +140,12 @@ class CodeExecutorContext:
     Returns:
       The error count for the given invocation ID.
     """
-    error_counts = self._session_state.get(_ERROR_COUNT_KEY)
+    error_counts = cast(
+        dict[str, int] | None, self._session_state.get(_ERROR_COUNT_KEY)
+    )
     if error_counts is None:
       return 0
-    if not isinstance(error_counts, dict):
-      raise TypeError('Stored code-executor error counts must be a dict.')
-    error_count = error_counts.get(invocation_id, 0)
-    if not isinstance(error_count, int):
-      raise TypeError('Stored code-executor error count must be an integer.')
-    return error_count
+    return error_counts.get(invocation_id, 0)
 
   def increment_error_count(self, invocation_id: str) -> None:
     """Increments the error count from the session state.
@@ -165,9 +153,9 @@ class CodeExecutorContext:
     Args:
       invocation_id: The invocation ID to increment the error count for.
     """
-    stored_counts = self._session_state.get(_ERROR_COUNT_KEY, {})
-    if not isinstance(stored_counts, dict):
-      raise TypeError('Stored code-executor error counts must be a dict.')
+    stored_counts = cast(
+        dict[str, int], self._session_state.get(_ERROR_COUNT_KEY, {})
+    )
     stored_counts[invocation_id] = self.get_error_count(invocation_id) + 1
     self._session_state[_ERROR_COUNT_KEY] = stored_counts
 
@@ -177,11 +165,11 @@ class CodeExecutorContext:
     Args:
       invocation_id: The invocation ID to reset the error count for.
     """
-    stored_counts = self._session_state.get(_ERROR_COUNT_KEY)
+    stored_counts = cast(
+        dict[str, int] | None, self._session_state.get(_ERROR_COUNT_KEY)
+    )
     if stored_counts is None:
       return
-    if not isinstance(stored_counts, dict):
-      raise TypeError('Stored code-executor error counts must be a dict.')
     stored_counts.pop(invocation_id, None)
     self._session_state[_ERROR_COUNT_KEY] = stored_counts
 
@@ -200,14 +188,11 @@ class CodeExecutorContext:
       result_stdout: The standard output of the code execution.
       result_stderr: The standard error of the code execution.
     """
-    stored_results = self._session_state.get(_CODE_EXECUTION_RESULTS_KEY, {})
-    if not isinstance(stored_results, dict):
-      raise TypeError('Stored code-execution results must be a dict.')
+    stored_results = cast(
+        dict[str, list[dict[str, Any]]],
+        self._session_state.get(_CODE_EXECUTION_RESULTS_KEY, {}),
+    )
     invocation_results = stored_results.get(invocation_id, [])
-    if not isinstance(invocation_results, list):
-      raise TypeError(
-          'Stored invocation code-execution results must be a list.'
-      )
     invocation_results.append({
         'code': code,
         'result_stdout': result_stdout,
@@ -228,14 +213,6 @@ class CodeExecutorContext:
     Returns:
       A dict of code executor context.
     """
-    stored_context = session_state.get(_CONTEXT_KEY)
-    if stored_context is None:
-      stored_context = {}
-      session_state[_CONTEXT_KEY] = stored_context
-    if not isinstance(stored_context, dict) or not all(
-        isinstance(key, str) for key in stored_context
-    ):
-      raise TypeError(
-          'Stored code-executor context must be a string-keyed dict.'
-      )
-    return cast(dict[str, Any], stored_context)
+    if _CONTEXT_KEY not in session_state:
+      session_state[_CONTEXT_KEY] = {}
+    return cast(dict[str, Any], session_state[_CONTEXT_KEY])

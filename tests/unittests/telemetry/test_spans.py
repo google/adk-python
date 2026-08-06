@@ -846,6 +846,123 @@ async def test_trace_send_data_disabling_request_response_content(
 
 
 @pytest.mark.asyncio
+async def test_trace_call_llm_summarizes_response_inline_data(
+    monkeypatch, mock_span_fixture
+):
+  """Inline binary data in the response is described, not copied to the span."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(
+      model='gemini-pro', config=types.GenerateContentConfig()
+  )
+  llm_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(text='hi'),
+              types.Part.from_bytes(data=b'test_data', mime_type='audio/pcm'),
+          ],
+      )
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  llm_response_json = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.llm_response'
+  )
+
+  # b'test_data' base64-encodes to 'dGVzdF9kYXRh'.
+  assert 'dGVzdF9kYXRh' not in llm_response_json
+  assert 'hi' in llm_response_json
+  assert '<inline_data: audio/pcm, 9 bytes>' in llm_response_json
+
+
+@pytest.mark.asyncio
+async def test_trace_send_data_summarizes_inline_data(
+    monkeypatch, mock_span_fixture
+):
+  """Inline binary data is described on the span, never copied onto it."""
+  monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'true')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_send_data(
+      invocation_context=invocation_context,
+      event_id='test_event_id',
+      data=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(text='hi'),
+                  types.Part.from_bytes(
+                      data=b'test_data', mime_type='audio/pcm'
+                  ),
+              ],
+          )
+      ],
+  )
+
+  data_json = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.data'
+  )
+
+  # b'test_data' base64-encodes to 'dGVzdF9kYXRh'.
+  assert 'dGVzdF9kYXRh' not in data_json
+  assert 'hi' in data_json
+  assert '<inline_data: audio/pcm, 9 bytes>' in data_json
+
+
+@pytest.mark.asyncio
+async def test_trace_send_data_summarizes_blob_without_mime_type(
+    monkeypatch, mock_span_fixture
+):
+  """A blob is described even when its mime type and bytes are unset.
+
+  The parts-less content in the same call pins that summarizing tolerates
+  ``Content.parts`` being unset.
+  """
+  monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'true')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_send_data(
+      invocation_context=invocation_context,
+      event_id='test_event_id',
+      data=[
+          types.Content(role='user'),
+          types.Content(
+              role='user', parts=[types.Part(inline_data=types.Blob())]
+          ),
+      ],
+  )
+
+  data_json = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.data'
+  )
+
+  assert '<inline_data: unknown, 0 bytes>' in data_json
+  assert 'inlineData' not in data_json
+
+
+@pytest.mark.asyncio
 @mock.patch('google.adk.telemetry.tracing.otel_logger')
 @mock.patch('google.adk.telemetry.tracing.tracer')
 @mock.patch(

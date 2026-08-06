@@ -360,6 +360,24 @@ class TestAgentCardBuilder:
     )
     assert primary_skill["description"] == "Writes a short reply."
 
+  async def test_build_skips_request_scoped_instruction(self):
+    """A static card must not execute an instruction that requires context."""
+
+    async def dynamic_instruction(_):
+      raise AssertionError("request-scoped instruction must not be called")
+
+    agent = LlmAgent(
+        name="dynamic_writer",
+        description="Writes dynamic replies.",
+        model="gemini-2.5-flash",
+        instruction=dynamic_instruction,
+    )
+
+    card = await AgentCardBuilder(agent=agent).build()
+
+    model_skill = next(skill for skill in card.skills if skill.name == "model")
+    assert model_skill.description == "Writes dynamic replies."
+
   async def test_build_succeeds_for_workflow_with_llm_agent_node(self):
     """AgentCardBuilder.build succeeds for a Workflow (no sub_agents)."""
     writer = LlmAgent(

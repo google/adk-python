@@ -15,6 +15,7 @@
 """Tests for LlmRequest functionality."""
 
 import asyncio
+import logging
 from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -858,3 +859,34 @@ def test_is_managed_agent_can_be_set_true():
   request = LlmRequest()
   request._is_managed_agent = True
   assert request._is_managed_agent is True
+
+
+def test_append_tools_declared_name_matches_registered_name():
+  """A callable object is advertised under the name it is registered as."""
+
+  class Calc:
+    """Adds two numbers."""
+
+    def __call__(self, a: int, b: int) -> int:
+      return a + b
+
+  request = LlmRequest()
+  request.append_tools([FunctionTool(Calc())])
+
+  declaration = request.config.tools[0].function_declarations[0]
+  assert declaration.name in request.tools_dict
+
+
+def test_append_tools_warns_on_duplicate_tool_name(caplog):
+  """A shadowed duplicate tool name is reported rather than silently dropped."""
+
+  def search(q: str) -> str:
+    """Search."""
+    return q
+
+  request = LlmRequest()
+  with caplog.at_level(logging.WARNING):
+    request.append_tools([FunctionTool(search), FunctionTool(search)])
+
+  assert 'Duplicate tool name' in caplog.text
+  assert len(request.tools_dict) == 1

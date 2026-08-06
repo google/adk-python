@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import threading
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -43,7 +45,10 @@ def mock_client():
 
 @pytest.fixture
 def provider(mock_client):
-  return _AgentIdentityCredentialsProvider(client=mock_client)
+  with patch.object(
+      _agent_identity_credentials_provider, "Client", return_value=mock_client
+  ):
+    yield _AgentIdentityCredentialsProvider()
 
 
 @pytest.fixture
@@ -86,6 +91,65 @@ def test_get_client_uses_rest_transport(mock_client_class):
   mock_client_class.assert_called_once()
   _, kwargs = mock_client_class.call_args
   assert kwargs.get("transport") == "rest"
+
+
+@patch.dict(_agent_identity_credentials_provider.os.environ, clear=True)
+@patch.object(_agent_identity_credentials_provider, "Client")
+async def test_get_auth_credential_reuses_client_on_same_thread(
+    mock_client_class, auth_scheme, context
+):
+  """Test that sequential calls on the same worker thread reuse the cached Client."""
+  mock_client_instance = mock_client_class.return_value
+  mock_client_instance.retrieve_credentials.return_value = (
+      _agent_identity_credentials_provider.RetrieveCredentialsResponse({
+          "success": {"header": "Authorization: Bearer", "token": "test-token"}
+      })
+  )
+
+  provider = (
+      _agent_identity_credentials_provider._AgentIdentityCredentialsProvider()
+  )
+
+  # Sequential 'await' calls guarantee the first request finishes completely
+  # before the second request starts. The idle worker thread is returned to
+  # the pool and reused, ensuring the cached Client is reused (call_count == 1).
+  await provider.get_auth_credential(auth_scheme, context)
+  await provider.get_auth_credential(auth_scheme, context)
+
+  assert mock_client_class.call_count == 1
+
+
+@patch.dict(_agent_identity_credentials_provider.os.environ, clear=True)
+@patch.object(_agent_identity_credentials_provider, "Client")
+async def test_get_auth_credential_scales_clients_across_concurrent_threads(
+    mock_client_class, auth_scheme, context
+):
+  """Test that concurrent calls instantiate 1 Client per worker thread."""
+  mock_client_instance = mock_client_class.return_value
+
+  def slow_retrieve(*args, **kwargs):
+    import time
+
+    # Artificially keep the worker thread busy for 10ms so ThreadPoolExecutor
+    # is forced to spawn parallel worker threads instead of reusing an idle thread.
+    time.sleep(0.01)
+    return _agent_identity_credentials_provider.RetrieveCredentialsResponse(
+        {"success": {"header": "Authorization: Bearer", "token": "test-token"}}
+    )
+
+  mock_client_instance.retrieve_credentials.side_effect = slow_retrieve
+
+  provider = (
+      _agent_identity_credentials_provider._AgentIdentityCredentialsProvider()
+  )
+
+  await asyncio.gather(
+      *(provider.get_auth_credential(auth_scheme, context) for _ in range(5))
+  )
+
+  # Verify multiple worker threads were created (> 1) and capped at 5 requests (<= 5).
+  # Uses <= 5 instead of == 5 to avoid test flakiness if an OS thread finishes fast.
+  assert 1 < mock_client_class.call_count <= 5
 
 
 @patch.dict(
@@ -140,7 +204,7 @@ async def test_get_auth_credential_rejects_unsupported_response(
     provider, auth_scheme, context, mock_response
 ):
   """Test that an empty upstream state fails explicitly."""
-  with pytest.raises(RuntimeError, match="returned an unsupported state"):
+  with pytest.raises(ValueError, match="returned an unsupported state"):
     await provider.get_auth_credential(auth_scheme, context=context)
 
 

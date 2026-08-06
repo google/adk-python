@@ -15,14 +15,18 @@
 """Unit tests for BaseLlmFlow toolset integration."""
 
 import asyncio
+import logging
+from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.invocation_context import LlmCallsLimitExceededError
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import StreamingMode
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
@@ -40,6 +44,7 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.google_search_tool import GoogleSearchTool
+from google.adk.utils.context_utils import Aclosing
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pytest
@@ -928,6 +933,59 @@ async def test_run_live_skips_send_history_on_resumption():
 
 
 @pytest.mark.asyncio
+async def test_run_live_does_not_log_http_options_headers(caplog):
+  """run_live must not log http_options headers, which can carry secrets."""
+
+  sentinel = 'do-not-log-this-live-credential'
+  agent = Agent(name='test_agent', model=Gemini())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      run_config=RunConfig(
+          http_options=types.HttpOptions(
+              headers={'Authorization': f'Bearer {sentinel}'}
+          )
+      ),
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  # We need a way to break the infinite loop in run_live for testing.
+  class StopError(Exception):
+    pass
+
+  async def mock_receive():
+    if False:  # Makes this function an async generator.
+      yield
+    raise StopError('stop')
+
+  mock_connection = mock.AsyncMock()
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  with caplog.at_level(logging.DEBUG, logger='google_adk'):
+    with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+      with mock.patch(
+          'google.adk.models.google_llm.Gemini.connect'
+      ) as mock_connect:
+        mock_connect.return_value.__aenter__.return_value = mock_connection
+
+        try:
+          async for _ in flow.run_live(invocation_context):
+            pass
+        except StopError:
+          pass
+
+  # The request headers reached the flow, so the log line had access to them.
+  assert (
+      invocation_context.run_config.http_options.headers['Authorization']
+      == f'Bearer {sentinel}'
+  )
+  assert sentinel not in caplog.text
+  # The log line is still there and still useful.
+  assert 'Establishing live connection for agent: test_agent' in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_live_session_resumption_go_away():
   """Test that go_away triggers reconnection."""
 
@@ -1326,6 +1384,203 @@ async def test_run_live_clears_resumption_handle_on_transfer():
   assert (
       invocation_context.run_config.session_resumption.handle == 'test_handle'
   )
+
+
+@pytest.mark.parametrize(
+    ('function_response_names', 'transfer_action', 'expect_transfer'),
+    [
+        # A lone transfer call.
+        (('transfer_to_agent',), 'sub_agent', True),
+        # Parallel calls whose transfer response is merged first.
+        (('transfer_to_agent', 'set_state'), 'sub_agent', True),
+        # Parallel calls whose transfer response is merged after another
+        # tool's response, so it is not `parts[0]`.
+        (('set_state', 'transfer_to_agent'), 'sub_agent', True),
+        (('set_state', 'log_event', 'transfer_to_agent'), 'sub_agent', True),
+        # A tool that requests the transfer by setting the action directly
+        # instead of calling `transfer_to_agent`.
+        (('escalate',), 'sub_agent', True),
+        # Parallel calls that do not transfer.
+        (('set_state', 'other_tool'), None, False),
+        # A transfer response whose action was suppressed, e.g. by a
+        # `before_tool_callback` overriding the transfer tool. The parent
+        # connection must stay open because no child agent takes over.
+        (('transfer_to_agent',), None, False),
+        (('set_state', 'transfer_to_agent'), None, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_live_transfer_is_independent_of_response_order(
+    function_response_names: tuple[str, ...],
+    transfer_action: Optional[str],
+    expect_transfer: bool,
+):
+  """Live transfer keys off the action, not the transfer response's position."""
+
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.run_config = RunConfig()
+
+  flow = BaseLlmFlowForTesting()
+
+  # Parallel function responses are merged into a single event in call order
+  # by `merge_parallel_function_response_events`, so the transfer response may
+  # land at any index.
+  function_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(name=name),
+              )
+              for name in function_response_names
+          ],
+      ),
+  )
+  function_response_event.actions.transfer_to_agent = transfer_action
+
+  # A follow-up model turn, used to tell a live parent connection that is still
+  # usable apart from one that was torn down without a child taking over.
+  follow_up_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(role='model', parts=[types.Part(text='follow up')]),
+  )
+
+  async def mock_receive_from_model(*args, **kwargs):
+    yield function_response_event
+    yield follow_up_event
+
+  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
+
+  mock_sub_agent = mock.Mock()
+
+  async def mock_run_live_sub_agent(child_ctx, *args, **kwargs):
+    for item in []:
+      yield item
+
+  mock_sub_agent.run_live = mock.Mock(side_effect=mock_run_live_sub_agent)
+  flow._get_agent_to_run = mock.Mock(return_value=mock_sub_agent)
+
+  # Mock _send_to_model to prevent it from running indefinitely
+  flow._send_to_model = mock.AsyncMock()
+
+  with (
+      mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
+      mock.patch(
+          'google.adk.flows.llm_flows.base_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
+          0,
+      ),
+  ):
+    mock_connection = mock.AsyncMock()
+    mock_connect.return_value.__aenter__.return_value = mock_connection
+
+    events = [event async for event in flow.run_live(invocation_context)]
+
+  # The merged function response is always forwarded back to the model.
+  assert events[0] is function_response_event
+
+  if expect_transfer:
+    # The child agent takes over exactly once, and the parent connection is
+    # closed first so that only the child processes subsequent responses.
+    mock_sub_agent.run_live.assert_called_once()
+    assert flow._get_agent_to_run.call_args[0][1] == transfer_action
+    assert mock_connection.close.await_count == 1
+  else:
+    # No child agent takes over, so the parent connection must stay open and
+    # keep processing the live session.
+    mock_sub_agent.run_live.assert_not_called()
+    assert mock_connection.close.await_count == 0
+    assert follow_up_event in events
+
+
+@pytest.mark.parametrize(
+    ('function_response_names', 'expect_completion'),
+    [
+        # A lone task_completed call.
+        (('task_completed',), True),
+        # Parallel calls whose task_completed response is merged first.
+        (('task_completed', 'set_state'), True),
+        # Parallel calls whose task_completed response is merged after another
+        # tool's response, so it is not `parts[0]`.
+        (('set_state', 'task_completed'), True),
+        (('set_state', 'log_event', 'task_completed'), True),
+        # Parallel calls that do not signal completion.
+        (('set_state', 'other_tool'), False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_live_task_completion_is_independent_of_response_order(
+    function_response_names: tuple[str, ...], expect_completion: bool
+):
+  """`task_completed` ends the live agent from any position in the event."""
+
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context.run_config = RunConfig()
+
+  flow = BaseLlmFlowForTesting()
+
+  # Parallel function responses are merged into a single event in call order,
+  # so the `task_completed` response may land at any index.
+  function_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(name=name),
+              )
+              for name in function_response_names
+          ],
+      ),
+  )
+
+  # A follow-up model turn. `task_completed` must end the agent before this is
+  # processed, so that the next sub-agent of a SequentialAgent can take over.
+  follow_up_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(role='model', parts=[types.Part(text='more')]),
+  )
+
+  async def mock_receive_from_model(*args, **kwargs):
+    yield function_response_event
+    yield follow_up_event
+
+  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
+
+  # Mock _send_to_model to prevent it from running indefinitely
+  flow._send_to_model = mock.AsyncMock()
+
+  with (
+      mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
+      mock.patch(
+          'google.adk.flows.llm_flows.base_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
+          0,
+      ),
+  ):
+    mock_connect.return_value.__aenter__.return_value = mock.AsyncMock()
+
+    events = [event async for event in flow.run_live(invocation_context)]
+
+  assert events[0] is function_response_event
+  # The agent stops right after signaling completion, so the follow-up turn is
+  # only reached when completion was not signaled.
+  assert (follow_up_event not in events) == expect_completion
 
 
 @pytest.mark.asyncio
@@ -2089,3 +2344,80 @@ async def test_resume_short_circuit_skips_partial_function_call():
   # not re-executed as a transfer.
   assert root_agent.model.response_index == 0
   assert not any(e.actions and e.actions.transfer_to_agent for e in events)
+
+
+class _CfcFlowForTesting(BaseLlmFlow):
+  """BaseLlmFlow subclass that stubs run_live so the CFC branch can be driven."""
+
+  async def run_live(self, invocation_context):
+    yield LlmResponse(
+        content=testing_utils.ModelContent(
+            [types.Part.from_text(text='live_hello')]
+        ),
+        turn_complete=True,
+    )
+
+
+async def _drive_one_llm_call(flow, invocation_context):
+  """Runs `_call_llm_async` once, draining whatever it yields."""
+  model_response_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author='root_agent',
+  )
+  async with Aclosing(
+      flow._call_llm_async(
+          invocation_context,
+          LlmRequest(model='mock'),
+          model_response_event,
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+
+@pytest.mark.asyncio
+async def test_cfc_llm_calls_are_counted_against_max_llm_calls():
+  """support_cfc must not exempt a run from the max_llm_calls spend cap."""
+  agent = Agent(
+      name='root_agent', model=testing_utils.MockModel.create(responses=[])
+  )
+  flow = _CfcFlowForTesting()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(
+          support_cfc=True,
+          streaming_mode=StreamingMode.SSE,
+          max_llm_calls=2,
+      ),
+  )
+
+  await _drive_one_llm_call(flow, invocation_context)
+  await _drive_one_llm_call(flow, invocation_context)
+  assert invocation_context._invocation_cost_manager._number_of_llm_calls == 2
+
+  with pytest.raises(LlmCallsLimitExceededError):
+    await _drive_one_llm_call(flow, invocation_context)
+
+
+@pytest.mark.asyncio
+async def test_llm_calls_are_counted_against_max_llm_calls():
+  """The cap still applies on the ordinary (non-CFC) path."""
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=['a', 'b', 'c']),
+  )
+  flow = BaseLlmFlowForTesting()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(max_llm_calls=2),
+  )
+
+  await _drive_one_llm_call(flow, invocation_context)
+  await _drive_one_llm_call(flow, invocation_context)
+  assert invocation_context._invocation_cost_manager._number_of_llm_calls == 2
+
+  with pytest.raises(LlmCallsLimitExceededError):
+    await _drive_one_llm_call(flow, invocation_context)

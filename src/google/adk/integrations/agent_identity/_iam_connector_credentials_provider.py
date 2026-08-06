@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 
 from google.adk.agents.callback_context import CallbackContext
@@ -104,7 +105,8 @@ def _require_credentials_response(
 ) -> RetrieveCredentialsResponse:
   """Require a credential response from a completed operation."""
   if response is None:
-    raise RuntimeError(
+    # ValueError so BaseLlmFlow._resolve_toolset_auth can degrade gracefully.
+    raise ValueError(
         "IAM Connector Credentials operation completed without a response."
     )
   return response
@@ -113,19 +115,21 @@ def _require_credentials_response(
 class _IamConnectorCredentialsProvider:
   """Implementation for auth provider using IAM Connector credentials service."""
 
-  _client: Client | None = None
-
-  def __init__(self, client: Client | None = None):
-    self._client = client
+  def __init__(self, client: Client | None = None) -> None:
+    self._thread_local = threading.local()
+    if client is not None:
+      self._thread_local.client = client
 
   def _get_client(self) -> Client:
-    """Lazy loads the client to avoid unnecessary setup on startup."""
-    if self._client is None:
+    """Returns a thread-local client to ensure thread safety while reusing client instances."""
+    client = getattr(self._thread_local, "client", None)
+    if client is None:
       client_options = None
       if host := os.environ.get("IAM_CONNECTOR_CREDENTIALS_TARGET_HOST"):
         client_options = ClientOptions(api_endpoint=host)
-      self._client = Client(client_options=client_options, transport="rest")
-    return self._client
+      client = Client(client_options=client_options, transport="rest")
+      self._thread_local.client = client
+    return client
 
   async def _retrieve_credentials(
       self,
@@ -142,7 +146,7 @@ class _IamConnectorCredentialsProvider:
     # TODO: Use async client once available. Temporarily using threading to
     # prevent blocking the event loop.
     operation = await asyncio.to_thread(
-        self._get_client().retrieve_credentials, request
+        lambda: self._get_client().retrieve_credentials(request)
     )
     return operation.operation
 
@@ -284,6 +288,9 @@ class _IamConnectorCredentialsProvider:
           ),
       )
 
-    raise RuntimeError(
+    # ValueError, not RuntimeError: BaseLlmFlow._resolve_toolset_auth catches
+    # ValueError to log and continue without auth. Raising anything else turns
+    # a survivable auth state into an aborted invocation.
+    raise ValueError(
         "IAM Connector Credentials service returned an unsupported state."
     )

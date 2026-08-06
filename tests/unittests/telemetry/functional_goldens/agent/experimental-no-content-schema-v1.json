@@ -24,6 +24,10 @@
               "gcp.vertex.agent.event_id": "PRESENT",
               "gcp.vertex.agent.llm_request": "{}",
               "gcp.vertex.agent.llm_response": "{}",
+              "gen_ai.usage.input_tokens": 100,
+              "gen_ai.usage.output_tokens": 25,
+              "gen_ai.usage.cache_read.input_tokens": 40,
+              "gen_ai.usage.reasoning.output_tokens": 5,
               "gen_ai.response.finish_reasons": [
                 "stop"
               ]
@@ -42,6 +46,10 @@
                   "gen_ai.response.finish_reasons": [
                     "stop"
                   ],
+                  "gen_ai.usage.input_tokens": 100,
+                  "gen_ai.usage.output_tokens": 25,
+                  "gen_ai.usage.cache_read.input_tokens": 40,
+                  "gen_ai.usage.reasoning.output_tokens": 5,
                   "gen_ai.tool.definitions": [
                     {
                       "name": "some_tool",
@@ -84,6 +92,10 @@
                       "gen_ai.response.finish_reasons": [
                         "stop"
                       ],
+                      "gen_ai.usage.input_tokens": 100,
+                      "gen_ai.usage.output_tokens": 25,
+                      "gen_ai.usage.cache_read.input_tokens": 40,
+                      "gen_ai.usage.reasoning.output_tokens": 5,
                       "gen_ai.tool.definitions": [
                         {
                           "name": "some_tool",
@@ -108,6 +120,10 @@
               "gcp.vertex.agent.event_id": "PRESENT",
               "gcp.vertex.agent.llm_request": "{}",
               "gcp.vertex.agent.llm_response": "{}",
+              "gen_ai.usage.input_tokens": 150,
+              "gen_ai.usage.output_tokens": 50,
+              "gen_ai.usage.cache_read.input_tokens": 60,
+              "gen_ai.usage.reasoning.output_tokens": 15,
               "gen_ai.response.finish_reasons": [
                 "stop"
               ]
@@ -126,6 +142,10 @@
                   "gen_ai.response.finish_reasons": [
                     "stop"
                   ],
+                  "gen_ai.usage.input_tokens": 150,
+                  "gen_ai.usage.output_tokens": 50,
+                  "gen_ai.usage.cache_read.input_tokens": 60,
+                  "gen_ai.usage.reasoning.output_tokens": 15,
                   "gen_ai.tool.definitions": [
                     {
                       "name": "some_tool",
@@ -148,6 +168,10 @@
                       "gen_ai.response.finish_reasons": [
                         "stop"
                       ],
+                      "gen_ai.usage.input_tokens": 150,
+                      "gen_ai.usage.output_tokens": 50,
+                      "gen_ai.usage.cache_read.input_tokens": 60,
+                      "gen_ai.usage.reasoning.output_tokens": 15,
                       "gen_ai.tool.definitions": [
                         {
                           "name": "some_tool",
@@ -179,6 +203,30 @@
           "gen_ai.response.model": "mock"
         },
         "value": "PRESENT"
+      }
+    ],
+    "gen_ai.client.token.usage": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "mock",
+          "gen_ai.response.model": "mock",
+          "gen_ai.token.type": "input"
+        },
+        "value": 250
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "mock",
+          "gen_ai.response.model": "mock",
+          "gen_ai.token.type": "output"
+        },
+        "value": 75
       }
     ],
     "gen_ai.execute_tool.duration": [

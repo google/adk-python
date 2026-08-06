@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import sys
+import types
 from typing import Any
 
 from google.adk.agents.llm_agent import Agent
@@ -119,6 +120,8 @@ def fixture_mock_gepa(mocker):
 
   mock_gepa_adapter_module.EvaluationBatch = MockEvaluationBatchSpec
   mock_gepa_adapter_module.GEPAAdapter = MockGEPAAdapterSpec
+  mock_gepa_api = types.ModuleType("gepa.api")
+  mock_gepa_api.optimize = mock_gepa_module.optimize
 
   mock_gepa_module.core = mocker.create_autospec(MockCoreSpec)
   mock_gepa_module.core.adapter = mock_gepa_adapter_module
@@ -134,6 +137,7 @@ def fixture_mock_gepa(mocker):
       sys.modules,
       {
           "gepa": mock_gepa_module,
+          "gepa.api": mock_gepa_api,
           "gepa.core": mock_gepa_module.core,
           "gepa.core.adapter": mock_gepa_adapter_module,
           "gepa.strategies": mock_gepa_module.strategies,
@@ -343,6 +347,13 @@ def test_adapter_make_reflective_dataset(mock_adapter):
           },
       ],
   }
+
+
+def test_adapter_rejects_missing_trajectories(mock_adapter):
+  eval_batch = MockEvaluationBatchSpec(outputs=[], scores=[], trajectories=None)
+
+  with pytest.raises(ValueError, match="without captured trajectories"):
+    mock_adapter.make_reflective_dataset({}, eval_batch, [])
 
 
 def test_adapter_propose_new_texts(mock_gepa, mock_adapter):

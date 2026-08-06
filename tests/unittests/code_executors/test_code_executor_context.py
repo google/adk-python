@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import create_autospec
+
 from google.adk.code_executors.code_execution_utils import File
 from google.adk.code_executors.code_executor_context import CodeExecutorContext
 from google.adk.sessions.state import State
@@ -290,3 +292,17 @@ def test_nested_state_mutations_are_recorded_as_delta():
   assert "_code_executor_input_files" in delta
   assert "_code_executor_error_counts" in delta
   assert "_code_execution_results" in delta
+
+
+def test_mocked_session_state_is_not_rejected():
+  """A session state passed as a test double must not be type-checked at runtime."""
+  ctx = CodeExecutorContext(create_autospec(dict, instance=True))
+
+  assert ctx.get_execution_id() is not None
+  assert ctx.get_processed_file_names() is not None
+  assert ctx.get_error_count("invocation") is not None
+
+  ctx.add_input_files([File(name="input.txt", content="YQ==")])
+  ctx.increment_error_count("invocation")
+  ctx.reset_error_count("invocation")
+  ctx.update_code_execution_result("invocation", "code", "stdout", "")

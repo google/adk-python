@@ -307,6 +307,90 @@ def test_cli_telemetry_records_early_crash(
     assert source["command_run"]["exception_type"] == "KeyboardInterrupt"
 
 
+def test_cli_telemetry_records_clean_shutdown_on_keyboard_interrupt_after_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should record clean exit on KeyboardInterrupt after server startup."""
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  @click.command("dummy_web_running")
+  @click.pass_context
+  def dummy_web_running_cmd(ctx):
+    ctx.meta["server_started"] = True
+    raise KeyboardInterrupt()
+
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_running_cmd)
+
+  runner = CliRunner()
+  runner.invoke(test_group, ["dummy_web_running"])
+
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web_running"
+    assert source["command_run"]["exit_code"] == 0
+    assert "exception_type" not in source["command_run"]
+
+
+def test_cli_telemetry_records_error_after_startup_on_non_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should record an error for non-KeyboardInterrupt exceptions after server startup."""
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  @click.command("dummy_web_runtime_error")
+  @click.pass_context
+  def dummy_web_runtime_error_cmd(ctx):
+    ctx.meta["server_started"] = True
+    raise RuntimeError("Server crashed")
+
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_runtime_error_cmd)
+
+  runner = CliRunner()
+  runner.invoke(test_group, ["dummy_web_runtime_error"])
+
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web_runtime_error"
+    assert source["command_run"]["exit_code"] == 1
+    assert source["command_run"]["exception_type"] == "RuntimeError"
+
+
 # cli run
 @pytest.mark.parametrize(
     "cli_args,expected_session_uri,expected_artifact_uri,expected_memory_uri",

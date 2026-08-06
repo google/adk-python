@@ -30,8 +30,8 @@ from google.adk.flows.llm_flows.functions import _is_sync_tool
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
-from google.genai import types
 from pydantic import BaseModel
 import pytest
 
@@ -222,6 +222,99 @@ class TestCallToolInThreadPool:
     assert result == {'result': 'success'}
     assert tool_thread_id is not None
     assert tool_thread_id != main_thread_id
+
+  @pytest.mark.asyncio
+  async def test_sync_tool_preserves_function_tool_confirmation(self):
+    calls: list[str] = []
+
+    def write(value: str) -> dict[str, str]:
+      calls.append(value)
+      return {'value': value}
+
+    tool = FunctionTool(write, require_confirmation=True)
+    agent = Agent(
+        name='test_agent',
+        model=testing_utils.MockModel.create(responses=[]),
+        tools=[tool],
+    )
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    result = await _call_tool_in_thread_pool(
+        tool, {'value': 'write'}, tool_context
+    )
+
+    assert result['error'].startswith('This tool call requires confirmation')
+    assert calls == []
+    assert 'test_id' in tool_context.actions.requested_tool_confirmations
+
+  @pytest.mark.asyncio
+  async def test_sync_tool_runs_in_thread_pool_once_confirmed(self):
+    main_thread_id = threading.current_thread().ident
+    tool_thread_id = None
+    calls: list[str] = []
+
+    def write(value: str) -> dict[str, str]:
+      nonlocal tool_thread_id
+      tool_thread_id = threading.current_thread().ident
+      calls.append(value)
+      return {'value': value}
+
+    tool = FunctionTool(write, require_confirmation=True)
+    agent = Agent(
+        name='test_agent',
+        model=testing_utils.MockModel.create(responses=[]),
+        tools=[tool],
+    )
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+        tool_confirmation=ToolConfirmation(confirmed=True),
+    )
+
+    result = await _call_tool_in_thread_pool(
+        tool, {'value': 'write'}, tool_context
+    )
+
+    assert result == {'value': 'write'}
+    assert calls == ['write']
+    assert tool_thread_id is not None
+    assert tool_thread_id != main_thread_id
+
+  @pytest.mark.asyncio
+  async def test_sync_tool_does_not_leak_runner_into_nested_function_tool(self):
+    inner_tool = FunctionTool(lambda: 'nested result')
+    agent = Agent(
+        name='test_agent',
+        model=testing_utils.MockModel.create(responses=[]),
+        tools=[inner_tool],
+    )
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='test_id',
+    )
+
+    def outer() -> str:
+      return asyncio.run(
+          inner_tool.run_async(args={}, tool_context=tool_context)
+      )
+
+    result = await _call_tool_in_thread_pool(
+        FunctionTool(outer), {}, tool_context
+    )
+
+    assert result == 'nested result'
 
   @pytest.mark.asyncio
   async def test_async_tool_runs_in_thread_pool(self):

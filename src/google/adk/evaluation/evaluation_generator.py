@@ -471,10 +471,14 @@ class EvaluationGenerator:
     else:
       app_obj = None
       root_agent = getattr(agent_package, "root_agent", None)
-    if not isinstance(root_agent, BaseAgent):
+    if root_agent is None:
+      # Matches the original `agent_module.agent.root_agent` attribute access,
+      # which raised when the module exposed no root. A BaseNode root is a
+      # supported App.root_agent value, so it is not rejected here.
       raise TypeError(
           f"Module {module_name!r} does not expose agent.root_agent."
       )
+    root_agent = cast(BaseAgent, root_agent)
 
     reset_candidate = getattr(agent_package, "reset_data", None)
     reset_func: Optional[Callable[[], object]] = None
@@ -572,7 +576,7 @@ class EvaluationGenerator:
 
   @staticmethod
   async def _generate_inferences_from_root_agent_live(
-      root_agent: Agent,
+      root_agent: BaseAgent,
       user_simulator: UserSimulator,
       reset_func: Optional[Callable[[], object]] = None,
       initial_session: Optional[SessionInput] = None,

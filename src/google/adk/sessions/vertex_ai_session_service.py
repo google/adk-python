@@ -329,6 +329,7 @@ class VertexAiSessionService(BaseSessionService):
             )
         )
 
+    sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
     return ListSessionsResponse(sessions=sessions)
 
   async def delete_session(

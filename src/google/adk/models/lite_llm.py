@@ -1221,7 +1221,9 @@ async def _content_to_message_param(
         # extra_content.google.thought_signature payload to survive.
         # See https://ai.google.dev/gemini-api/docs/thought-signatures.
         if part.thought_signature:
-          sig = base64.b64encode(part.thought_signature).decode("utf-8")
+          sig: str | bytes = part.thought_signature
+          if isinstance(sig, bytes):
+            sig = base64.b64encode(sig).decode("utf-8")
           tool_call_dict["provider_specific_fields"] = {
               "thought_signature": sig
           }
@@ -1258,7 +1260,9 @@ async def _content_to_message_param(
       thinking_blocks: list[_ThinkingBlock] = []
       for part in aggregated_parts:
         if part.text and part.thought_signature:
-          signature = base64.b64encode(part.thought_signature).decode("utf-8")
+          signature: str | bytes = part.thought_signature
+          if isinstance(signature, bytes):
+            signature = base64.b64encode(signature).decode("utf-8")
           thinking_blocks.append(
               _ThinkingBlock(
                   type="thinking",
@@ -1286,9 +1290,10 @@ async def _content_to_message_param(
         if part.text:
           block = _ThinkingBlock(type="thinking", thinking=part.text)
           if part.thought_signature:
-            block["signature"] = base64.b64encode(
-                part.thought_signature
-            ).decode("utf-8")
+            block_sig: str | bytes = part.thought_signature
+            if isinstance(block_sig, bytes):
+              block_sig = base64.b64encode(block_sig).decode("utf-8")
+            block["signature"] = block_sig
           content_list.append(block)
       if isinstance(final_content, list):
         content_list.extend(final_content)
