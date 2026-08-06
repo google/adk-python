@@ -16,6 +16,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from collections.abc import Callable
+import contextlib
 import copy
 from functools import cached_property
 import json
@@ -41,9 +44,11 @@ except ImportError as e:
   ) from e
 
 from pydantic import BaseModel
+from pydantic import Field
 from typing_extensions import override
 
 from ...models.base_llm import BaseLlm
+from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ._openai_schema import enforce_strict_openai_schema
@@ -329,10 +334,17 @@ class OpenAILlm(BaseLlm):
   Attributes:
       model: The name of the OpenAI model.
       max_tokens: The maximum number of tokens to generate.
+      api_key: An OpenAI API key or asynchronous key provider.
+      client: A pre-configured asynchronous OpenAI client. When provided, this
+        takes precedence over ``api_key``.
   """
 
   model: str = "gpt-4o"
   max_tokens: int = 4096
+  api_key: str | Callable[[], Awaitable[str]] | None = Field(
+      default=None, exclude=True, repr=False
+  )
+  client: AsyncOpenAI | None = Field(default=None, exclude=True, repr=False)
 
   @classmethod
   @override
@@ -491,6 +503,34 @@ class OpenAILlm(BaseLlm):
         partial=False,
     )
 
+  @contextlib.asynccontextmanager
+  async def connect(  # type: ignore[override]
+      self, llm_request: LlmRequest
+  ) -> AsyncGenerator[BaseLlmConnection, None]:
+    """Connects to the OpenAI Realtime API.
+
+    Args:
+      llm_request: The request whose live configuration is applied to the
+        Realtime session.
+
+    Yields:
+      A live model connection driven by ADK's existing live flow.
+    """
+    # Imported lazily to keep the unary Chat Completions integration isolated
+    # from the optional Realtime WebSocket dependency until live mode is used.
+    from ._openai_realtime import _OpenAIRealtimeLlmConnection
+
+    model = llm_request.model or self.model
+    async with self._openai_client.realtime.connect(model=model) as session:
+      connection = _OpenAIRealtimeLlmConnection(
+          session,
+          model_version=model,
+      )
+      await connection.configure(llm_request)
+      yield connection
+
   @cached_property
   def _openai_client(self) -> AsyncOpenAI:
-    return AsyncOpenAI()
+    if self.client is not None:
+      return self.client
+    return AsyncOpenAI(api_key=self.api_key)
