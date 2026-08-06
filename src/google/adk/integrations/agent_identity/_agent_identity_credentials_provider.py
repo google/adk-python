@@ -250,6 +250,9 @@ class _AgentIdentityCredentialsProvider:
           ),
       )
 
-    raise RuntimeError(
+    # ValueError, not RuntimeError: BaseLlmFlow._resolve_toolset_auth catches
+    # ValueError to log and continue without auth. Raising anything else turns
+    # a survivable auth state into an aborted invocation.
+    raise ValueError(
         "Agent Identity Credentials service returned an unsupported state."
     )

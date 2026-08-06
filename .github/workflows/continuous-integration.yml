@@ -145,10 +145,12 @@ jobs:
           source .venv/bin/activate
           uv sync --extra test
 
+      - name: List installed packages
+        run: uv pip list
+
       - name: Run unit tests with pytest
         run: |
-          source .venv/bin/activate
-          pytest tests/unittests \
+          uv run pytest tests/unittests \
             -n auto \
             --ignore=tests/unittests/artifacts/test_artifact_service.py \
             --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
@@ -185,10 +187,13 @@ jobs:
           source .venv/bin/activate
           uv sync --extra test
 
+      - name: List installed packages (before reinstall)
+        run: uv pip list
+
       - name: Run A2A tests against a2a-sdk v0.3
         run: |
-          source .venv/bin/activate
           uv pip install --reinstall-package a2a-sdk 'a2a-sdk>=0.3.4,<0.4'
-          pytest tests/unittests/a2a \
+          uv pip list
+          uv run pytest tests/unittests/a2a \
             tests/unittests/agents/test_remote_a2a_agent.py \
             tests/unittests/integrations/agent_registry/test_agent_registry.py

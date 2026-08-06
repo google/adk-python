@@ -767,35 +767,41 @@ _UNSCOPED_SCOPE = {
 
 
 @pytest.mark.asyncio
-async def test_file_artifact_reads_fall_back_to_unscoped_layout(
+@pytest.mark.parametrize("app_name", ["app-a", "app-b"])
+async def test_file_artifact_reads_never_serve_the_unscoped_layout(
     tmp_path: Path,
+    app_name: str,
 ):
-  """Artifacts written before app scoping stay readable after the upgrade."""
+  """A root can be shared, so no app may read the pre-app-scoped tree."""
   root = tmp_path / "artifacts"
   _write_unscoped_artifact(root, "older", "legacy")
   service = FileArtifactService(root_dir=root)
 
-  assert await service.load_artifact(
-      app_name="app-a", **_UNSCOPED_SCOPE
-  ) == types.Part(text="legacy")
-  assert await service.list_versions(app_name="app-a", **_UNSCOPED_SCOPE) == [
-      0,
-      1,
-  ]
   assert (
-      await service.get_artifact_version(app_name="app-a", **_UNSCOPED_SCOPE)
-      is not None
+      await service.load_artifact(app_name=app_name, **_UNSCOPED_SCOPE) is None
   )
-  assert await service.list_artifact_keys(
-      app_name="app-a", user_id="user", session_id="session"
-  ) == ["report.txt"]
+  assert await service.list_versions(app_name=app_name, **_UNSCOPED_SCOPE) == []
+  assert (
+      await service.list_artifact_versions(app_name=app_name, **_UNSCOPED_SCOPE)
+      == []
+  )
+  assert (
+      await service.get_artifact_version(app_name=app_name, **_UNSCOPED_SCOPE)
+      is None
+  )
+  assert (
+      await service.list_artifact_keys(
+          app_name=app_name, user_id="user", session_id="session"
+      )
+      == []
+  )
 
 
 @pytest.mark.asyncio
 async def test_file_artifact_saves_never_reuse_unscoped_layout(
     tmp_path: Path,
 ):
-  """Saving after the upgrade writes app-scoped and shadows the older copy."""
+  """Saving after the upgrade writes app-scoped and ignores the older copy."""
   root = tmp_path / "artifacts"
   _write_unscoped_artifact(root, "older", "legacy")
   service = FileArtifactService(root_dir=root)
@@ -828,25 +834,35 @@ async def test_file_artifact_saves_never_reuse_unscoped_layout(
 
 
 @pytest.mark.asyncio
-async def test_file_artifact_delete_purges_unscoped_copy_for_every_app(
+async def test_file_artifact_delete_only_removes_the_calling_apps_copy(
     tmp_path: Path,
 ):
-  """The pre-app-scoped copy is shared, so any app's delete removes it."""
+  """A delete on a shared root never reaches data outside the calling app."""
   root = tmp_path / "artifacts"
   _write_unscoped_artifact(root, "legacy")
+  unscoped_dir = (
+      root
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / "report.txt"
+  )
   service = FileArtifactService(root_dir=root)
+  await service.save_artifact(
+      app_name="app-a",
+      artifact=types.Part(text="secret-a"),
+      **_UNSCOPED_SCOPE,
+  )
 
   await service.delete_artifact(app_name="app-b", **_UNSCOPED_SCOPE)
 
-  assert (
-      await service.load_artifact(app_name="app-a", **_UNSCOPED_SCOPE) is None
-  )
-  assert (
-      await service.list_artifact_keys(
-          app_name="app-a", user_id="user", session_id="session"
-      )
-      == []
-  )
+  assert unscoped_dir.is_dir()
+  assert await service.load_artifact(
+      app_name="app-a", **_UNSCOPED_SCOPE
+  ) == types.Part(text="secret-a")
+  assert await service.list_versions(app_name="app-a", **_UNSCOPED_SCOPE) == [0]
 
 
 @pytest.mark.asyncio

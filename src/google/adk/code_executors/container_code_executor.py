@@ -18,6 +18,7 @@ import atexit
 import logging
 import os
 from typing import Any
+from typing import cast
 
 import docker
 from docker.client import DockerClient
@@ -180,8 +181,8 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   # optimize_data_file.
   optimize_data_file: bool = Field(default=False, frozen=True, exclude=True)
 
-  _client: DockerClient = PrivateAttr()
-  _container: Container = PrivateAttr()
+  _client: DockerClient | None = PrivateAttr(default=None)
+  _container: Container | None = PrivateAttr(default=None)
 
   def __init__(
       self,
@@ -236,7 +237,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   ) -> CodeExecutionResult:
     output = ''
     error = ''
-    exec_result = self._container.exec_run(
+    exec_result = cast(Container, self._container).exec_run(
         [
             'python3',
             '-c',
@@ -281,7 +282,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
       raise FileNotFoundError(f'Invalid Docker path: {self.docker_path}')
 
     logger.info('Building Docker image...')
-    self._client.images.build(
+    cast(DockerClient, self._client).images.build(
         path=self.docker_path,
         tag=self.image,
         rm=True,
@@ -290,12 +291,17 @@ class ContainerCodeExecutor(BaseCodeExecutor):
 
   def _verify_python_installation(self) -> None:
     """Verifies the container has python3 installed."""
-    exec_result = self._container.exec_run(['which', 'python3'])
+    exec_result = cast(Container, self._container).exec_run(
+        ['which', 'python3']
+    )
     if exec_result.exit_code != 0:
       raise ValueError('python3 is not installed in the container.')
 
   def __init_container(self) -> None:
     """Initializes the container."""
+    if not self._client:
+      raise RuntimeError('Docker client is not initialized.')
+
     if self.docker_path:
       self._build_docker_image()
 
@@ -319,6 +325,9 @@ class ContainerCodeExecutor(BaseCodeExecutor):
 
   def __cleanup_container(self) -> None:
     """Closes the container on exit."""
+    if not self._container:
+      return
+
     logger.info('[Cleanup] Stopping the container...')
     self._container.stop()
     self._container.remove()

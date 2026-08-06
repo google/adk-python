@@ -33,8 +33,8 @@ if TYPE_CHECKING:
 _UNKNOWN_SESSION_ID = '__unknown_session_id__'
 
 
-def _user_key(app_name: str, user_id: str) -> str:
-  return f'{app_name}/{user_id}'
+def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
+  return (app_name, user_id)
 
 
 def _extract_words_lower(text: str) -> set[str]:
@@ -54,8 +54,8 @@ class InMemoryMemoryService(BaseMemoryService):
   def __init__(self) -> None:
     self._lock = threading.Lock()
 
-    self._session_events: dict[str, dict[str, list[Event]]] = {}
-    """Keys are "{app_name}/{user_id}". Values are dicts of session_id to
+    self._session_events: dict[tuple[str, str], dict[str, list[Event]]] = {}
+    """Keys are (app_name, user_id). Values are dicts of session_id to
     session event lists.
     """
 

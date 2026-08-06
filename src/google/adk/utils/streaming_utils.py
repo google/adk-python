@@ -35,7 +35,9 @@ class StreamingResponseAggregator:
   def __init__(self) -> None:
     self._text: list[str] = []
     self._thought_text: list[str] = []
-    self._usage_metadata = None
+    self._usage_metadata: Optional[
+        types.GenerateContentResponseUsageMetadata
+    ] = None
     self._grounding_metadata: Optional[types.GroundingMetadata] = None
     self._citation_metadata: Optional[types.CitationMetadata] = None
     self._response = None
@@ -264,7 +266,10 @@ class StreamingResponseAggregator:
     # results = []
     self._response = response
     llm_response = LlmResponse.create(response)
-    self._usage_metadata = llm_response.usage_metadata
+    # Usage is typically reported on a single chunk; keep the last reported
+    # value rather than letting a usage-less trailing chunk erase it.
+    if llm_response.usage_metadata:
+      self._usage_metadata = llm_response.usage_metadata
     if llm_response.grounding_metadata:
       self._grounding_metadata = llm_response.grounding_metadata
     if llm_response.citation_metadata:

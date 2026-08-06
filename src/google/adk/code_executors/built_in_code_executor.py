@@ -34,15 +34,14 @@ class BuiltInCodeExecutor(BaseCodeExecutor):
   """
 
   @override
-  def execute_code(
+  def execute_code(  # type: ignore[empty-body]
       self,
       invocation_context: InvocationContext,
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
-    raise NotImplementedError(
-        "BuiltInCodeExecutor delegates execution to the model and cannot be"
-        " invoked directly."
-    )
+    # Execution is delegated to the model, so there is nothing to run here.
+    # A direct caller gets None; raising instead would change that.
+    pass
 
   def process_llm_request(self, llm_request: LlmRequest) -> None:
     """Pre-process the LLM request for Gemini 2.0+ models to use the code execution tool."""

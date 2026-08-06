@@ -31,6 +31,7 @@ import json
 import logging
 import pickle
 from typing import Any
+from typing import cast
 from typing import Optional
 
 from google.adk.platform import uuid as platform_uuid
@@ -122,9 +123,7 @@ class DynamicPickleType(TypeDecorator[object]):  # type: ignore[misc]
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
       if dialect.name in ("spanner+spanner", "mysql"):
-        if not isinstance(value, (bytes, bytearray)):
-          raise TypeError("Expected pickled bytes from the database.")
-        decoded: object = pickle.loads(value)
+        decoded: object = pickle.loads(cast("bytes | bytearray", value))
         return decoded
     return value
 

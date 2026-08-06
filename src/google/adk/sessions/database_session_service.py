@@ -22,6 +22,7 @@ import logging
 from types import TracebackType
 from typing import Any
 from typing import AsyncIterator
+from typing import cast
 from typing import overload
 from typing import Protocol
 from typing import TypeAlias
@@ -126,16 +127,12 @@ class _DbapiConnection(Protocol):
 
 def _require_storage_session(value: object) -> _StorageSession:
   """Narrows a row returned through a runtime-selected ORM model."""
-  if not isinstance(value, (StorageSessionV0, StorageSessionV1)):
-    raise TypeError(f"Expected a storage session row, got {type(value)!r}.")
-  return value
+  return cast(_StorageSession, value)
 
 
 def _require_storage_event(value: object) -> _StorageEvent:
   """Narrows an event returned through a runtime-selected ORM model."""
-  if not isinstance(value, (StorageEventV0, StorageEventV1)):
-    raise TypeError(f"Expected a storage event row, got {type(value)!r}.")
-  return value
+  return cast(_StorageEvent, value)
 
 
 def _optional_storage_app_state(
@@ -149,9 +146,7 @@ def _optional_storage_app_state(
 
 def _require_storage_app_state(value: object) -> _StorageAppState:
   """Narrows an app-state row selected through the schema bundle."""
-  if not isinstance(value, (StorageAppStateV0, StorageAppStateV1)):
-    raise TypeError(f"Expected an app-state row, got {type(value)!r}.")
-  return value
+  return cast(_StorageAppState, value)
 
 
 def _optional_storage_user_state(
@@ -165,9 +160,7 @@ def _optional_storage_user_state(
 
 def _require_storage_user_state(value: object) -> _StorageUserState:
   """Narrows a user-state row selected through the schema bundle."""
-  if not isinstance(value, (StorageUserStateV0, StorageUserStateV1)):
-    raise TypeError(f"Expected a user-state row, got {type(value)!r}.")
-  return value
+  return cast(_StorageUserState, value)
 
 
 async def _select_required_state(
@@ -747,6 +740,11 @@ class DatabaseSessionService(BaseSessionService):
       )
       if user_id is not None:
         stmt = stmt.filter(schema.StorageSession.user_id == user_id)
+      stmt = stmt.order_by(
+          schema.StorageSession.update_time.asc(),
+          schema.StorageSession.user_id.asc(),
+          schema.StorageSession.id.asc(),
+      )
 
       result = await sql_session.execute(stmt)
       results = [

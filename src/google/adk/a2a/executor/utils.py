@@ -18,6 +18,7 @@ from typing import Optional
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events import Event as A2AEvent
 from a2a.server.events.event_queue import EventQueue
+from a2a.types import Message
 from a2a.types import TaskStatusUpdateEvent
 
 from .. import _compat
@@ -47,6 +48,20 @@ async def _enqueue_canceled_task_event(
   )
 
 
+def _require_request_context(
+    context: RequestContext,
+) -> tuple[Message, str, str]:
+  """Return the values guaranteed for an executor-ready A2A request."""
+  message = context.message
+  if message is None:
+    raise ValueError('A2A request must have a message')
+  if not context.task_id:
+    raise ValueError('A2A request must have a task ID')
+  if not context.context_id:
+    raise ValueError('A2A request must have a context ID')
+  return message, context.task_id, context.context_id
+
+
 async def execute_before_agent_interceptors(
     context: RequestContext,
     execute_interceptors: Optional[list[ExecuteInterceptor]],
@@ -68,7 +83,7 @@ async def execute_after_event_interceptors(
   if execute_interceptors:
     for interceptor in execute_interceptors:
       if interceptor.after_event:
-        next_events = []
+        next_events: list[A2AEvent] = []
         for e in events:
           res = await interceptor.after_event(executor_context, e, adk_event)
           if res is None:

@@ -281,6 +281,10 @@ class InMemorySessionService(BaseSessionService):
         copied_session.events = []
         copied_session = self._merge_state(app_name, user_id, copied_session)
         sessions_without_events.append(copied_session)
+
+    sessions_without_events.sort(
+        key=lambda s: (s.last_update_time, s.user_id, s.id)
+    )
     return ListSessionsResponse(sessions=sessions_without_events)
 
   @override

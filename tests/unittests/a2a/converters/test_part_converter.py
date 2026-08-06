@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 from a2a import types as a2a_types
 from google.adk.a2a import _compat
+from google.adk.a2a.converters import part_converter
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
@@ -1296,6 +1297,157 @@ class TestThoughtSignaturePreservation:
     assert result.function_call.name == "invalid_sig_tool"
     # thought_signature should be None due to decode failure
     assert result.thought_signature is None
+
+
+class TestMediaControlFieldPreservation:
+  """Tests that per-part media control fields survive A2A conversion.
+
+  These fields say which slice of the caller's media to read and at what
+  fidelity, so losing them silently changes the request the model answers.
+  """
+
+  VIDEO_METADATA = genai_types.VideoMetadata(
+      start_offset="10s", end_offset="25s", fps=2.0
+  )
+
+  def _file_data_part(self, **kwargs) -> genai_types.Part:
+    return genai_types.Part(
+        file_data=genai_types.FileData(
+            file_uri="gs://bucket/clip.mp4", mime_type="video/mp4"
+        ),
+        **kwargs,
+    )
+
+  def _inline_data_part(self, **kwargs) -> genai_types.Part:
+    return genai_types.Part(
+        inline_data=genai_types.Blob(
+            data=b"fake video bytes", mime_type="video/mp4"
+        ),
+        **kwargs,
+    )
+
+  @pytest.mark.parametrize(
+      "part_name,field_names",
+      [
+          ("_file_data_part", ["video_metadata"]),
+          ("_inline_data_part", ["video_metadata"]),
+          ("_file_data_part", ["media_resolution"]),
+          ("_file_data_part", ["video_metadata", "media_resolution"]),
+      ],
+  )
+  def test_media_control_fields_round_trip(self, part_name, field_names):
+    """A media part must arrive on the far side describing the same media."""
+    # Arrange
+    values = {
+        "video_metadata": self.VIDEO_METADATA,
+        "media_resolution": genai_types.PartMediaResolution(num_tokens=64),
+    }
+    original = getattr(self, part_name)(
+        **{name: values[name] for name in field_names}
+    )
+
+    # Act
+    a2a_part = convert_genai_part_to_a2a_part(original)
+    restored = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert a2a_part is not None
+    assert restored is not None
+    for name in field_names:
+      assert getattr(restored, name) == getattr(original, name), name
+
+  def test_media_part_without_control_fields_adds_no_metadata(self):
+    """A plain media part must not grow metadata keys it never had."""
+    # Act
+    a2a_part = convert_genai_part_to_a2a_part(self._file_data_part())
+    restored = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    metadata = _compat.part_metadata(a2a_part)
+    assert not metadata or _get_adk_metadata_key("video_metadata") not in (
+        metadata
+    )
+    assert restored is not None
+    assert restored.video_metadata is None
+    assert restored.media_resolution is None
+
+  def test_unknown_media_control_field_is_skipped(self, monkeypatch):
+    """A field this build's google-genai lacks must not break conversion.
+
+    A peer built against a newer google-genai can name a field that does not
+    exist here; the part still has to convert.
+    """
+    # Arrange
+    monkeypatch.setattr(
+        part_converter,
+        "_MEDIA_CONTROL_PART_FIELDS",
+        {
+            "video_metadata": _get_adk_metadata_key("video_metadata"),
+            "not_a_real_part_field": _get_adk_metadata_key(
+                "not_a_real_part_field"
+            ),
+        },
+    )
+    a2a_part = _compat.make_file_part_with_uri(
+        uri="gs://bucket/clip.mp4", mime_type="video/mp4", name=None
+    )
+    _compat.set_part_metadata(
+        a2a_part,
+        {
+            _get_adk_metadata_key("not_a_real_part_field"): "surprise",
+            _get_adk_metadata_key("video_metadata"): {"fps": 2.0},
+        },
+    )
+
+    # Act
+    restored = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert restored is not None
+    assert restored.file_data is not None
+    assert restored.video_metadata is not None
+    assert restored.video_metadata.fps == 2.0
+    assert restored.part_metadata == {
+        _get_adk_metadata_key("not_a_real_part_field"): "surprise"
+    }
+
+  def test_restored_part_does_not_also_carry_the_transport_key(self):
+    """A field read back onto the part must leave the metadata it came from.
+
+    Keeping it in both places sends it twice on the next hop, so a part that
+    has been converted once stops matching a part that has been converted
+    twice.
+    """
+    # Arrange
+    original = self._file_data_part(
+        video_metadata=self.VIDEO_METADATA,
+        part_metadata={"caller_key": "caller_value"},
+    )
+
+    # Act
+    a2a_part = convert_genai_part_to_a2a_part(original)
+    restored = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert restored is not None
+    assert restored.video_metadata == self.VIDEO_METADATA
+    assert restored.part_metadata == {"caller_key": "caller_value"}
+
+  def test_second_hop_matches_the_first(self):
+    """Converting an already-converted part must not change it again."""
+    # Arrange
+    original = self._file_data_part(video_metadata=self.VIDEO_METADATA)
+
+    # Act
+    first = convert_a2a_part_to_genai_part(
+        convert_genai_part_to_a2a_part(original)
+    )
+    second = convert_a2a_part_to_genai_part(
+        convert_genai_part_to_a2a_part(first)
+    )
+
+    # Assert
+    assert first == second
 
 
 class TestBytesSerialization:

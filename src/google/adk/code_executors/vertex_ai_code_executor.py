@@ -14,10 +14,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import logging
 import mimetypes
 import os
+from typing import cast
 from typing import TYPE_CHECKING
 from typing import TypedDict
 
@@ -121,39 +121,6 @@ def _get_code_interpreter_extension(
         new_code_interpreter.gca_resource.name
     )
   return new_code_interpreter
-
-
-def _normalize_execution_response(response: object) -> _ExecutionResponse:
-  """Validate the dynamic response returned by the Vertex extension SDK."""
-  if not isinstance(response, Mapping):
-    raise TypeError('Code interpreter response must be an object.')
-
-  normalized: _ExecutionResponse = {}
-  for field in ('execution_result', 'execution_error'):
-    value = response.get(field)
-    if value is not None:
-      if not isinstance(value, str):
-        raise TypeError(f'Code interpreter {field} must be a string.')
-      normalized[field] = value
-
-  raw_output_files = response.get('output_files', [])
-  if not isinstance(raw_output_files, list):
-    raise TypeError('Code interpreter output_files must be a list.')
-  output_files: list[_OutputFile] = []
-  for raw_file in raw_output_files:
-    if not isinstance(raw_file, Mapping):
-      raise TypeError('Each code interpreter output file must be an object.')
-    name = raw_file.get('name')
-    contents = raw_file.get('contents')
-    if not isinstance(name, str):
-      raise TypeError('Code interpreter output file name must be a string.')
-    if not isinstance(contents, (str, bytes)):
-      raise TypeError(
-          'Code interpreter output file contents must be text or bytes.'
-      )
-    output_files.append({'name': name, 'contents': contents})
-  normalized['output_files'] = output_files
-  return normalized
 
 
 class VertexAiCodeExecutor(BaseCodeExecutor):
@@ -276,7 +243,7 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
         operation_id='execute',
         operation_params=operation_params,
     )
-    return _normalize_execution_response(response)
+    return cast(_ExecutionResponse, response)
 
   def _get_code_with_imports(self, code: str) -> str:
     """Builds the code string with built-in imports.

@@ -367,6 +367,19 @@ def _parse_schema_from_parameter(
     args = get_args(param.annotation)
     if origin is dict:
       schema.type = types.Type.OBJECT
+      # args[1] is the value type of dict[K, V]. Untyped dictionaries (where
+      # len(args) == 0) intentionally leave additional_properties unset.
+      if len(args) == 2:
+        value_type = args[1]
+        schema.additional_properties = _parse_schema_from_parameter(
+            variant,
+            inspect.Parameter(
+                'value',
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=value_type,
+            ),
+            func_name,
+        )
       if param.default is not inspect.Parameter.empty:
         if not _is_default_value_compatible(param.default, param.annotation):
           raise ValueError(default_value_error_msg)

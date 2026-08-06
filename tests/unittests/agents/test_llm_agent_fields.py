@@ -96,6 +96,54 @@ def test_canonical_model_inherit():
   assert sub_agent.canonical_model == parent_agent.canonical_model
 
 
+def test_canonical_model_str_resolved_once():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+
+  with mock.patch.object(
+      LLMRegistry, 'new_llm', wraps=LLMRegistry.new_llm
+  ) as new_llm:
+    first = agent.canonical_model
+    second = agent.canonical_model
+    third = agent.canonical_model
+
+  assert new_llm.call_count == 1
+  assert first is second is third
+
+
+def test_canonical_model_str_resolved_again_after_reassignment():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  first = agent.canonical_model
+
+  agent.model = 'gemini-2.5-flash'
+  second = agent.canonical_model
+
+  assert second is not first
+  assert second.model == 'gemini-2.5-flash'
+
+
+def test_canonical_model_str_not_stale_after_model_copy():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  assert agent.canonical_model.model == 'gemini-pro'
+
+  copied = agent.model_copy(update={'model': 'gemini-2.5-flash'})
+
+  assert copied.canonical_model.model == 'gemini-2.5-flash'
+  assert agent.canonical_model.model == 'gemini-pro'
+
+
+def test_canonical_live_model_str_resolved_once():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+
+  with mock.patch.object(
+      LLMRegistry, 'new_llm', wraps=LLMRegistry.new_llm
+  ) as new_llm:
+    first = agent.canonical_live_model
+    second = agent.canonical_live_model
+
+  assert new_llm.call_count == 1
+  assert first is second
+
+
 def test_canonical_live_model_default_fallback():
   original_default = LlmAgent._default_live_model
   LlmAgent.set_default_live_model('gemini-2.0-flash')
