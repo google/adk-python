@@ -22,7 +22,6 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Optional
 
 from typing_extensions import override
 
@@ -44,8 +43,8 @@ class LocalEnvironment(BaseEnvironment):
   def __init__(
       self,
       *,
-      working_dir: Optional[Path] = None,
-      env_vars: Optional[dict[str, str]] = None,
+      working_dir: Path | None = None,
+      env_vars: dict[str, str] | None = None,
   ):
     """Create a local environment.
 
@@ -59,6 +58,7 @@ class LocalEnvironment(BaseEnvironment):
     self._working_dir = working_dir
     self._env_vars = env_vars
     self._auto_created = False
+    self._is_initialized = False
 
   @property
   @override
@@ -75,6 +75,7 @@ class LocalEnvironment(BaseEnvironment):
       logger.debug('Created temporary folder: %s', self._working_dir)
     else:
       os.makedirs(self._working_dir, exist_ok=True)
+    self._is_initialized = True
 
   @override
   async def close(self) -> None:
@@ -82,13 +83,14 @@ class LocalEnvironment(BaseEnvironment):
       shutil.rmtree(self._working_dir, ignore_errors=True)
       logger.debug('Removed temporary workspace: %s', self._working_dir)
       self._working_dir = None
+    self._is_initialized = False
 
   @override
   async def execute(
       self,
       command: str,
       *,
-      timeout: Optional[float] = None,
+      timeout: float | None = None,
   ) -> ExecutionResult:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
@@ -138,22 +140,29 @@ class LocalEnvironment(BaseEnvironment):
     resolved = self._resolve_path(path)
     return await asyncio.to_thread(self._sync_write, resolved, content)
 
-  def _resolve_path(self, path: str | Path) -> str:
-    """Resolve a relative path against the working directory."""
-    path = str(path)
-    if os.path.isabs(path):
-      return path
-    return os.path.join(self._working_dir, path)
+  def _resolve_path(self, path: str | Path) -> Path:
+    """Resolve a file path inside the working directory."""
+    candidate = Path(path)
+    working_dir = self.working_dir.resolve()
+    if not candidate.is_absolute():
+      candidate = working_dir / candidate
+
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(working_dir):
+      raise ValueError(f'Path escapes working directory: {path}')
+    return resolved
 
   @staticmethod
-  def _sync_read(path: str) -> bytes:
+  def _sync_read(path: Path) -> bytes:
     with open(path, 'rb') as f:
       return f.read()
 
   @staticmethod
-  def _sync_write(path: str, content: str | bytes) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    mode = 'w' if isinstance(content, str) else 'wb'
-    kwargs = {'encoding': 'utf-8'} if isinstance(content, str) else {}
-    with open(path, mode, **kwargs) as f:
-      f.write(content)
+  def _sync_write(path: Path, content: str | bytes) -> None:
+    os.makedirs(path.parent, exist_ok=True)
+    if isinstance(content, str):
+      with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(content)
+    else:
+      with open(path, 'wb') as f:
+        f.write(content)

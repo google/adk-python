@@ -19,6 +19,7 @@ import logging
 import ssl
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Dict
 from typing import Final
 from typing import List
@@ -176,7 +177,7 @@ class OpenAPIToolset(BaseToolset):
 
   def _configure_auth_all(
       self, auth_scheme: AuthScheme, auth_credential: AuthCredential
-  ):
+  ) -> None:
     """Configure auth scheme and credential for all tools."""
 
     for tool in self._tools:
@@ -185,14 +186,14 @@ class OpenAPIToolset(BaseToolset):
       if auth_credential:
         tool.configure_auth_credential(auth_credential)
 
-  def _configure_credential_key_all(self, credential_key: str):
+  def _configure_credential_key_all(self, credential_key: str) -> None:
     """Configure credential key for all tools."""
     for tool in self._tools:
       tool.configure_credential_key(credential_key)
 
   def configure_ssl_verify_all(
       self, ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None
-  ):
+  ) -> None:
     """Configure SSL certificate verification for all tools.
 
     This is useful for enterprise environments where requests go through a
@@ -231,9 +232,9 @@ class OpenAPIToolset(BaseToolset):
   ) -> Dict[str, Any]:
     """Loads the OpenAPI spec string into a dictionary."""
     if spec_type == "json":
-      return json.loads(spec_str)
+      return cast(Dict[str, Any], json.loads(spec_str))
     elif spec_type == "yaml":
-      return yaml.safe_load(spec_str)
+      return cast(Dict[str, Any], yaml.safe_load(spec_str))
     else:
       raise ValueError(f"Unsupported spec type: {spec_type}")
 
@@ -257,5 +258,5 @@ class OpenAPIToolset(BaseToolset):
     return tools
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     pass

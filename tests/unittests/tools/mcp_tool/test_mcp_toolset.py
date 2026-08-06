@@ -20,8 +20,13 @@ import sys
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
+from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -30,6 +35,7 @@ from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
+from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
@@ -96,6 +102,69 @@ class TestMcpToolset:
     )
     assert toolset._use_mcp_resources is True
 
+  def test_connection_params(self):
+    """Test getting connection params."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.connection_params == self.mock_stdio_params
+
+  def test_auth_scheme(self):
+    """Test getting auth scheme."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.auth_scheme is None
+
+  def test_auth_credential(self):
+    """Test getting auth credential."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.auth_credential is None
+
+  def test_error_log(self):
+    """Test getting error log."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset.errlog == sys.stderr
+
+  def test_auth_scheme_with_value(self):
+    """Test getting auth scheme when provided at initialization."""
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="https://example.com/auth",
+                tokenUrl="https://example.com/token",
+                scopes={"read": "Read access"},
+            )
+        )
+    )
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        auth_scheme=auth_scheme,
+    )
+    assert toolset.auth_scheme == auth_scheme
+
+  def test_require_confirmation(self):
+    """Test getting require_confirmation flag."""
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        require_confirmation=True,
+    )
+    assert toolset.require_confirmation is True
+
+  def test_header_provider(self):
+    """Test getting header_provider."""
+    mock_header_provider = Mock()
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        header_provider=mock_header_provider,
+    )
+    assert toolset.header_provider == mock_header_provider
+
+  def test_auth_credential_with_value(self):
+    """Test getting auth credential when provided at initialization."""
+    mock_credential = Mock(spec=AuthCredential)
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        auth_credential=mock_credential,
+    )
+    assert toolset.auth_credential == mock_credential
+
   def test_init_with_stdio_connection_params(self):
     """Test initialization with StdioConnectionParams."""
     stdio_params = StdioConnectionParams(
@@ -131,9 +200,8 @@ class TestMcpToolset:
         connection_params=self.mock_stdio_params, tool_filter=tool_filter
     )
 
-    # The tool filter is stored in the parent BaseToolset class
-    # We can verify it by checking the filtering behavior in get_tools
-    assert toolset._is_tool_selected is not None
+    # The tool filter is stored on the parent BaseToolset class.
+    assert toolset.tool_filter == tool_filter
 
   def test_init_with_auth(self):
     """Test initialization with authentication."""
@@ -226,6 +294,26 @@ class TestMcpToolset:
     assert tools[3].name == "load_mcp_resource"
 
   @pytest.mark.asyncio
+  async def test_get_tools_returns_sorted_by_name(self):
+    """Test that get_tools returns tools sorted by name for cache stability."""
+    # Mock tools from MCP server in non-alphabetical order.
+    mock_tools = [
+        MockMCPTool("charlie"),
+        MockMCPTool("alpha"),
+        MockMCPTool("bravo"),
+    ]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["alpha", "bravo", "charlie"]
+
+  @pytest.mark.asyncio
   async def test_get_tools_with_list_filter(self):
     """Test getting tools with list-based filtering."""
     # Mock tools from MCP server
@@ -299,6 +387,32 @@ class TestMcpToolset:
 
     assert len(tools) == 2
     header_provider.assert_called_once_with(mock_readonly_context)
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=expected_headers
+    )
+
+  @pytest.mark.asyncio
+  async def test_get_tools_with_async_header_provider(self):
+    """Test get_tools with an async header_provider."""
+    mock_tools = [MockMCPTool("tool1"), MockMCPTool("tool2")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+    mock_readonly_context = Mock(spec=ReadonlyContext)
+    expected_headers = {"X-Tenant-ID": "test-tenant"}
+
+    async def header_provider(_context):
+      return expected_headers
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        header_provider=header_provider,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools(readonly_context=mock_readonly_context)
+
+    assert len(tools) == 2
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=expected_headers
     )
@@ -679,6 +793,37 @@ class TestMcpToolset:
     assert result["content"]["text"] == "sampling response"
 
   @pytest.mark.asyncio
+  async def test_elicitation_callback_plumbed_to_session_manager(self):
+    """Elicitation callback reaches the session manager unchanged."""
+
+    # pylint: disable=protected-access
+    async def mock_elicitation_handler(context, params):
+      del context, params
+      return {"action": "decline"}
+
+    toolset = McpToolset(
+        connection_params=StreamableHTTPConnectionParams(
+            url="http://localhost:9999",
+            timeout=10,
+        ),
+        elicitation_callback=mock_elicitation_handler,
+    )
+    assert toolset._elicitation_callback is mock_elicitation_handler
+    assert (
+        toolset._mcp_session_manager._elicitation_callback
+        is mock_elicitation_handler
+    )
+    # pylint: enable=protected-access
+
+  @pytest.mark.asyncio
+  async def test_elicitation_callback_defaults_to_none(self):
+    # pylint: disable=protected-access
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    assert toolset._elicitation_callback is None
+    assert toolset._mcp_session_manager._elicitation_callback is None
+    # pylint: enable=protected-access
+
+  @pytest.mark.asyncio
   async def test_get_auth_headers_includes_additional_headers(self):
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.HTTP,
@@ -707,3 +852,99 @@ class TestMcpToolset:
     unpickled = pickle.loads(pickled)
     assert unpickled._connection_params == self.mock_stdio_params
     assert unpickled._errlog == sys.stderr
+
+
+class TestMcpToolsetHttpDebug:
+  """Tests that McpToolset._execute_with_session captures HTTP debug info based on context mutability."""
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_toolset.logger.isEnabledFor",
+      return_value=True,
+  )
+  async def test_execute_with_session_captures_http_debug_when_context_is_mutable(
+      self, mock_is_enabled
+  ):
+    mock_session_manager = MagicMock(spec=MCPSessionManager)
+    mock_session = AsyncMock()
+    mock_session_manager.create_session.return_value = mock_session
+
+    toolset = McpToolset(
+        connection_params=StdioConnectionParams(
+            server_params=StdioServerParameters(command="mock"), timeout=5
+        )
+    )
+    toolset._mcp_session_manager = mock_session_manager
+
+    # Mock Context (mutable)
+    mock_invocation_context = Mock(spec=InvocationContext)
+    mock_invocation_context._custom_metadata = {}
+    mock_ctx_session = Mock()
+    mock_ctx_session.state = {}
+    mock_invocation_context.session = mock_ctx_session
+    context = Context(mock_invocation_context)
+
+    async def dummy_coro(session):
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        debug_list.append(
+            {"url": "https://example.com/api", "status_code": 200}
+        )
+      return "done"
+
+    res = await toolset._execute_with_session(
+        dummy_coro, "error", readonly_context=context
+    )
+    assert res == "done"
+
+    assert "http_debug_info" in context.custom_metadata
+    debug_info = context.custom_metadata["http_debug_info"]
+    assert len(debug_info) == 1
+    assert debug_info[0]["url"] == "https://example.com/api"
+    assert debug_info[0]["status_code"] == 200
+
+  @pytest.mark.asyncio
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_toolset.logger.isEnabledFor",
+      return_value=True,
+  )
+  async def test_execute_with_session_captures_http_debug_when_context_is_readonly(
+      self, mock_is_enabled
+  ):
+    mock_session_manager = MagicMock(spec=MCPSessionManager)
+    mock_session = AsyncMock()
+    mock_session_manager.create_session.return_value = mock_session
+
+    toolset = McpToolset(
+        connection_params=StdioConnectionParams(
+            server_params=StdioServerParameters(command="mock"), timeout=5
+        )
+    )
+    toolset._mcp_session_manager = mock_session_manager
+
+    # Mock ReadonlyContext (read-only)
+    mock_invocation_context = Mock(spec=InvocationContext)
+    mock_invocation_context._custom_metadata = {}
+    mock_ctx_session = Mock()
+    mock_ctx_session.state = {}
+    mock_invocation_context.session = mock_ctx_session
+    context = ReadonlyContext(mock_invocation_context)
+
+    async def dummy_coro(session):
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        debug_list.append(
+            {"url": "https://example.com/api", "status_code": 200}
+        )
+      return "done"
+
+    res = await toolset._execute_with_session(
+        dummy_coro, "error", readonly_context=context
+    )
+    assert res == "done"
+
+    assert "http_debug_info" in context.custom_metadata
+    debug_info = context.custom_metadata["http_debug_info"]
+    assert len(debug_info) == 1
+    assert debug_info[0]["url"] == "https://example.com/api"
+    assert debug_info[0]["status_code"] == 200

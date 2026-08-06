@@ -36,12 +36,24 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
+from ._agent_engine import _get_agent_engine_metrics_setup
+from ._agent_engine import telemetry_user_agent_headers
+from ._agent_engine_metric_exporter import MIN_EXPORT_INTERVAL_MS
 from .setup import OTelHooks
 
 if TYPE_CHECKING:
   from google.auth.credentials import Credentials
+  from google.auth.transport.requests import AuthorizedSession
+  from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 
 logger = logging.getLogger("google_adk." + __name__)
+
+try:
+  from opentelemetry.semconv._incubating.attributes.cloud_attributes import CLOUD_RESOURCE_ID
+except ImportError:
+  # cloud.resource_id only lives in the private _incubating package; fall back
+  # to the literal key the Agent Engine dashboard filters on if that path moves.
+  CLOUD_RESOURCE_ID = "cloud.resource_id"
 
 _GCP_LOG_NAME_ENV_VARIABLE_NAME = "GOOGLE_CLOUD_DEFAULT_LOG_NAME"
 _DEFAULT_LOG_NAME = "adk-otel"
@@ -49,6 +61,12 @@ _DEFAULT_LOG_NAME = "adk-otel"
 _DEFAULT_TELEMETRY_TRACES_ENPOINT = "https://telemetry.googleapis.com/v1/traces"
 _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT = (
     "https://telemetry.mtls.googleapis.com/v1/traces"
+)
+_DEFAULT_TELEMETRY_METRICS_ENDPOINT = (
+    "https://telemetry.googleapis.com/v1/metrics"
+)
+_DEFAULT_MTLS_TELEMETRY_METRICS_ENDPOINT = (
+    "https://telemetry.mtls.googleapis.com/v1/metrics"
 )
 
 
@@ -111,18 +129,18 @@ def get_gcp_exporters(
 
   metric_readers: list[MetricReader] = []
   if enable_cloud_metrics:
-    exporter = _get_gcp_metrics_exporter(project_id)
-    if exporter:
-      metric_readers.append(exporter)
+    if reader := _get_gcp_metrics_exporter((credentials, project_id)):
+      metric_readers.append(reader)
+    if agent_engine_metrics := _get_agent_engine_metrics_setup():
+      span_processors.append(agent_engine_metrics.span_processor)
 
   log_record_processors: list[LogRecordProcessor] = []
   if enable_cloud_logging:
-    exporter = _get_gcp_logs_exporter(
+    logs_exporter = _get_gcp_logs_exporter(
         project_id=project_id,
-        credentials=credentials,
     )
-    if exporter:
-      log_record_processors.append(exporter)
+    if logs_exporter:
+      log_record_processors.append(logs_exporter)
 
   return OTelHooks(
       span_processors=span_processors,
@@ -139,59 +157,116 @@ def _get_gcp_span_exporter(credentials: Credentials) -> SpanProcessor:
 
   session = AuthorizedSession(credentials=credentials)
 
-  use_client_cert = _use_client_cert_effective()
-  if use_client_cert:
-    client_cert_source = (
-        mtls.default_client_cert_source()
-        if mtls.has_default_client_cert_source()
-        else None
-    )
-    session.configure_mtls_channel()
-    endpoint = _get_api_endpoint(client_cert_source)
-  else:
-    endpoint = _DEFAULT_TELEMETRY_TRACES_ENPOINT
-
-  headers = None
-  if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"):
-    from google.cloud.aiplatform import version as aip_version
-
-    try:
-      from opentelemetry.exporter.otlp.proto.http import version as otlp_http_version
-    except (ImportError, AttributeError):
-      otlp_http_version = None
-
-    user_agent = f"Vertex-Agent-Engine/{aip_version.__version__}"
-    if otlp_http_version:
-      user_agent += (
-          f" OTel-OTLP-Exporter-Python/{otlp_http_version.__version__}"
-      )
-    headers = {"User-Agent": user_agent}
+  endpoint = _get_telemetry_endpoint(
+      session,
+      _DEFAULT_TELEMETRY_TRACES_ENPOINT,
+      _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT,
+  )
 
   return BatchSpanProcessor(
       OTLPSpanExporter(
           session=session,
           endpoint=endpoint,
-          headers=headers,
+          headers=telemetry_user_agent_headers(),
       )
   )
 
 
-def _get_gcp_metrics_exporter(project_id: str) -> MetricReader:
-  from opentelemetry.exporter.cloud_monitoring import CloudMonitoringMetricsExporter
+def _get_gcp_otlp_metric_exporter(
+    google_auth: tuple[Credentials, str] | None = None,
+) -> OTLPMetricExporter | None:
+  """Returns a raw OTLP push metric exporter to telemetry.googleapis.com.
 
+  This is the default GCP metric exporter (over Cloud Monitoring). It returns a
+  bare push exporter so any metric reader can drain it -- a periodic reader for
+  the local ``adk web`` path, or the request-driven reader on Agent Engine's
+  request-billed runtime. Returns None if the OTLP exporter package is
+  unavailable.
+
+  Args:
+    google_auth: optional custom credentials and project_id.
+      google.auth.default() is used when this is omitted.
+  """
+  try:
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+  except (ImportError, AttributeError):
+    logger.warning(
+        "opentelemetry-exporter-otlp-proto-http is not installed; request-path"
+        " metric export is disabled."
+    )
+    return None
+
+  from google.auth.transport.requests import AuthorizedSession
+
+  credentials, _ = (
+      google_auth if google_auth is not None else google.auth.default()
+  )
+  session = AuthorizedSession(credentials=credentials)
+  endpoint = _get_telemetry_endpoint(
+      session,
+      _DEFAULT_TELEMETRY_METRICS_ENDPOINT,
+      _DEFAULT_MTLS_TELEMETRY_METRICS_ENDPOINT,
+  )
+  return OTLPMetricExporter(
+      session=session,
+      endpoint=endpoint,
+      headers=telemetry_user_agent_headers(),
+  )
+
+
+def _get_telemetry_endpoint(
+    session: AuthorizedSession, default_endpoint: str, mtls_endpoint: str
+) -> str:
+  """Configures the session for mTLS if enabled and returns the endpoint.
+
+  Args:
+    session: The AuthorizedSession to (maybe) configure for mTLS in place.
+    default_endpoint: The plain telemetry.googleapis.com endpoint.
+    mtls_endpoint: The telemetry.mtls.googleapis.com endpoint.
+
+  Returns:
+    The effective endpoint to export to.
+  """
+  if not _use_client_cert_effective():
+    return default_endpoint
+  client_cert_source = (
+      mtls.default_client_cert_source()
+      if mtls.has_default_client_cert_source()
+      else None
+  )
+  session.configure_mtls_channel()
+  return _get_api_endpoint(
+      client_cert_source,
+      default_endpoint=default_endpoint,
+      mtls_endpoint=mtls_endpoint,
+  )
+
+
+def _get_gcp_metrics_exporter(
+    google_auth: tuple[Credentials, str],
+) -> MetricReader | None:
+  """Returns the metric reader to install, or None if metrics are unavailable.
+
+  On Agent Engine this is the request-driven reader (background export is
+  starved by the request-billed runtime); elsewhere a periodic reader over the
+  default OTLP metric exporter.
+  """
+  if agent_engine_metrics := _get_agent_engine_metrics_setup():
+    return agent_engine_metrics.reader
+  exporter = _get_gcp_otlp_metric_exporter(google_auth=google_auth)
+  if exporter is None:
+    return None
   return PeriodicExportingMetricReader(
-      CloudMonitoringMetricsExporter(project_id=project_id),
-      export_interval_millis=5000,
+      exporter,
+      export_interval_millis=MIN_EXPORT_INTERVAL_MS,
   )
 
 
 def _get_gcp_logs_exporter(
     project_id: str,
-    credentials: Optional["Credentials"] = None,
-) -> LogRecordProcessor:
+) -> LogRecordProcessor | None:
   if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
     return _get_agent_engine_logs_exporter(
-        credentials=credentials,
         project_id=project_id,
     )
 
@@ -249,7 +324,7 @@ def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
       ),
   }
   if cloud_resource_id is not None:
-    resource_attributes["cloud.resource.id"] = cloud_resource_id
+    resource_attributes[CLOUD_RESOURCE_ID] = cloud_resource_id
 
   if agent_engine_id:
     resource = Resource.create(attributes=resource_attributes).merge(
@@ -279,12 +354,16 @@ def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
 
 def _get_api_endpoint(
     client_cert_source: Callable[[], tuple[bytes, bytes]] | None = None,
+    default_endpoint: str = _DEFAULT_TELEMETRY_TRACES_ENPOINT,
+    mtls_endpoint: str = _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT,
 ) -> str:
   """Returns API endpoint based on mTLS configuration and cert availability.
 
   Args:
       client_cert_source: A callable that returns the client certificate and
         key, or None.
+      default_endpoint: The endpoint to use without mTLS.
+      mtls_endpoint: The endpoint to use with mTLS.
 
   Returns:
       str: The API endpoint to be used.
@@ -307,9 +386,9 @@ def _get_api_endpoint(
   if (use_mtls_endpoint is _MtlsEndpoint.ALWAYS) or (
       use_mtls_endpoint is _MtlsEndpoint.AUTO and client_cert_source
   ):
-    return _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT
+    return mtls_endpoint
 
-  return _DEFAULT_TELEMETRY_TRACES_ENPOINT
+  return default_endpoint
 
 
 def _use_client_cert_effective() -> bool:
@@ -338,18 +417,14 @@ def _use_client_cert_effective() -> bool:
 
 def _get_agent_engine_logs_exporter(
     *,
-    credentials: "Credentials",
     project_id: str,
-):
+) -> LogRecordProcessor | None:
   """Configures logging for Agent Engine.
 
   Args:
-    credentials: Credentials to use for export calls.
     project_id: Project to which to write logs.
   """
   try:
-    from google.cloud.logging_v2.services import logging_service_v2
-    from google.cloud.logging_v2.services.logging_service_v2.transports import grpc
     from opentelemetry.exporter import cloud_logging
   except (ImportError, AttributeError):
     logger.warning(
@@ -361,48 +436,23 @@ def _get_agent_engine_logs_exporter(
         "proceeding with logging disabled because not all packages for"
         " logging have been installed"
     )
-    return
+    return None
 
-  if "gen_ai_latest_experimental" in os.getenv(
-      "OTEL_SEMCONV_STABILITY_OPT_IN", ""
-  ).split(","):
-    # Specify credentials to avoid expensive call to `google.auth.default()`
-    channel = grpc.LoggingServiceV2GrpcTransport.create_channel(
-        credentials=credentials,
-        # pylint: disable-next=protected-access
-        options=cloud_logging._OPTIONS,
-    )
-    return BatchLogRecordProcessor(
-        cloud_logging.CloudLoggingExporter(
-            client=logging_service_v2.LoggingServiceV2Client(
-                transport=grpc.LoggingServiceV2GrpcTransport(
-                    credentials=credentials,
-                    channel=channel,
-                ),
-            ),
-            project_id=project_id,
-            default_log_name=os.getenv(
-                "GCP_DEFAULT_LOG_NAME", "adk-on-agent-engine"
-            ),
-        ),
-    )
-  else:
+  class _SimpleLogRecordProcessor(SimpleLogRecordProcessor):
 
-    class _SimpleLogRecordProcessor(SimpleLogRecordProcessor):
+    def force_flush(
+        self, timeout_millis: int = 30000
+    ) -> bool:  # pylint: disable=no-self-use
+      _ = sys.stdout.flush()
+      _ = sys.stderr.flush()
+      return super().force_flush()
 
-      def force_flush(
-          self, timeout_millis: int = 30000
-      ) -> bool:  # pylint: disable=no-self-use
-        _ = sys.stdout.flush()
-        _ = sys.stderr.flush()
-        return super().force_flush()
-
-    return _SimpleLogRecordProcessor(
-        cloud_logging.CloudLoggingExporter(
-            project_id=project_id,
-            default_log_name=os.getenv(
-                "GCP_DEFAULT_LOG_NAME", "adk-on-agent-engine"
-            ),
-            structured_json_file=sys.stdout,
-        ),
-    )
+  return _SimpleLogRecordProcessor(
+      cloud_logging.CloudLoggingExporter(
+          project_id=project_id,
+          default_log_name=os.getenv(
+              "GCP_DEFAULT_LOG_NAME", "adk-on-agent-engine"
+          ),
+          structured_json_file=sys.stdout,
+      ),
+  )

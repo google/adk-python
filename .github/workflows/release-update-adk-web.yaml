@@ -1,3 +1,17 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: "Release: Update ADk Web"
 
 on:
@@ -14,6 +28,7 @@ on:
 
 jobs:
   update-frontend:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -21,7 +36,9 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v5
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        persist-credentials: false
 
     - name: Fetch and unzip frontend assets
       run: |
@@ -51,14 +68,25 @@ jobs:
         rm frontend.zip
         echo "Assets extracted successfully."
 
+    - name: Extract Bot Identity
+      id: bot-identity
+      env:
+        GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+      run: |
+        USER_JSON=$(gh api user)
+        echo "name=$(echo "$USER_JSON" | jq -r '.login')" >> $GITHUB_OUTPUT
+        echo "email=$(echo "$USER_JSON" | jq -r '.id')+$(echo "$USER_JSON" | jq -r '.login')@users.noreply.github.com" >> $GITHUB_OUTPUT
+
     - name: Create Pull Request
-      uses: peter-evans/create-pull-request@v6
+      uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.RELEASE_PAT }}
         commit-message: "Update compiled adk web files from ${{ github.event.inputs.adk_web_repo }}@${{ github.event.inputs.adk_web_tag || 'latest' }}"
         branch: update-frontend-assets
         delete-branch: true
         title: "chore: update compiled adk web assets"
+        committer: "${{ steps.bot-identity.outputs.name }} <${{ steps.bot-identity.outputs.email }}>"
+        author: "${{ steps.bot-identity.outputs.name }} <${{ steps.bot-identity.outputs.email }}>"
         body: |
           This PR automatically updates the compiled adk web files in `src/google/adk/cli/browser/` using the assets from `${{ github.event.inputs.adk_web_repo }}@${{ github.event.inputs.adk_web_tag || 'latest' }}`.
           Please review the diff before merging.

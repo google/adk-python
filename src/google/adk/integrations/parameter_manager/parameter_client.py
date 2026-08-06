@@ -15,19 +15,25 @@
 from __future__ import annotations
 
 import json
-from typing import cast
 from typing import Optional
 
 from google.api_core.gapic_v1 import client_info
-import google.auth
 from google.auth import default as default_service_credential
-import google.auth.transport.requests
 from google.cloud import parametermanager_v1
+from google.oauth2 import credentials as user_credentials
 from google.oauth2 import service_account
 
 from ... import version
+from ...utils._mtls_utils import get_api_endpoint
 
 USER_AGENT = f"google-adk/{version.__version__}"
+
+_DEFAULT_REGIONAL_ENDPOINT_TEMPLATE = (
+    "parametermanager.{location}.rep.googleapis.com"
+)
+_DEFAULT_MTLS_REGIONAL_ENDPOINT_TEMPLATE = (
+    "parametermanager.{location}.rep.mtls.googleapis.com"
+)
 
 
 class ParameterManagerClient:
@@ -81,15 +87,7 @@ class ParameterManagerClient:
       except json.JSONDecodeError as e:
         raise ValueError(f"Invalid service account JSON: {e}") from e
     elif auth_token:
-      credentials = google.auth.credentials.Credentials(
-          token=auth_token,
-          refresh_token=None,
-          token_uri=None,
-          client_id=None,
-          client_secret=None,
-      )
-      request = google.auth.transport.requests.Request()
-      credentials.refresh(request)
+      credentials = user_credentials.Credentials(token=auth_token)
     else:
       try:
         credentials, _ = default_service_credential(
@@ -98,7 +96,7 @@ class ParameterManagerClient:
       except Exception as e:
         raise ValueError(
             "'service_account_json' or 'auth_token' are both missing, and"
-            " error occurred while trying to use default credentials: {e}"
+            f" error occurred while trying to use default credentials: {e}"
         ) from e
 
     if not credentials:
@@ -113,7 +111,11 @@ class ParameterManagerClient:
     client_options = None
     if location:
       client_options = {
-          "api_endpoint": f"parametermanager.{location}.rep.googleapis.com"
+          "api_endpoint": get_api_endpoint(
+              location,
+              _DEFAULT_REGIONAL_ENDPOINT_TEMPLATE,
+              _DEFAULT_MTLS_REGIONAL_ENDPOINT_TEMPLATE,
+          )
       }
 
     self._client = parametermanager_v1.ParameterManagerClient(
@@ -142,4 +144,4 @@ class ParameterManagerClient:
         name=resource_name
     )
     response = self._client.render_parameter_version(request=request)
-    return cast(str, response.rendered_payload.decode("UTF-8"))
+    return response.rendered_payload.decode("UTF-8")

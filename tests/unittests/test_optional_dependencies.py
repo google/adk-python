@@ -22,14 +22,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
 import subprocess
 import sys
 from unittest import mock
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+from .isolated_import_utils import REPO_ROOT as _REPO_ROOT
 
 # Check if we should run integration tests that require network/install
 RUN_INTEGRATION = os.environ.get("ADK_TEST_NETWORK") == "1"
@@ -72,26 +71,6 @@ def test_pydantic_version():
 
   print(f"Pydantic version: {pydantic.__version__}")
   assert True
-
-
-def test_no_eager_imports():
-  """Verify that importing google.adk does not eagerly load heavy optional deps.
-
-  Runs in the current environment but in a fresh subprocess, ensuring it
-  only checks the import side-effects without modifying the environment.
-  """
-  code = """
-import sys
-import google.adk
-heavy_modules = ['google.cloud.aiplatform', 'sqlalchemy', 'a2a']
-loaded = [mod for mod in heavy_modules if mod in sys.modules]
-print(','.join(loaded))
-"""
-  result = subprocess.run(
-      [sys.executable, "-c", code], capture_output=True, text=True, check=True
-  )
-  loaded_modules = result.stdout.strip()
-  assert loaded_modules == "", f"Heavy modules loaded eagerly: {loaded_modules}"
 
 
 def test_a2a_remote_agent_config_raises_importerror():
@@ -170,8 +149,10 @@ def test_vertex_ai_session_service_fails_on_creation():
 
 def test_vertexai_dependency_shim_raises_clear_importerror():
   """Verify that the Vertex AI dependency shim points users to the dependency."""
+  module_path = _REPO_ROOT / "dependencies_internal/vertexai.py"
+  if not module_path.is_file():
+    pytest.skip("Vertex AI dependency shim is not present in this build.")
   with mock.patch.dict("sys.modules", {"google.cloud.aiplatform": None}):
-    module_path = _REPO_ROOT / "dependencies_internal/vertexai.py"
     spec = importlib.util.spec_from_file_location(
         "_test_google_adk_dependencies_vertexai", module_path
     )

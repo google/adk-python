@@ -17,10 +17,13 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Dict
 from typing import Generator
+from unittest import mock
 
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+import pydantic
+import pytest
 
 
 def test_from_function_with_options_no_return_annotation_gemini():
@@ -228,6 +231,52 @@ def test_from_function_with_collections_type_parameter():
   assert declaration.response.type == types.Type.STRING
 
 
+def test_from_function_with_tuple_type_parameter():
+  """Test from_function_with_options with fixed-size homogeneous tuple."""
+
+  def test_function(
+      coordinate: tuple[float, float],
+  ) -> str:
+    """Formats a coordinate pair."""
+    return f'{coordinate[0]}, {coordinate[1]}'
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == types.Type.OBJECT
+  coordinate_schema = declaration.parameters.properties['coordinate']
+  assert coordinate_schema.type == types.Type.ARRAY
+  assert coordinate_schema.items.type == types.Type.NUMBER
+  # Fixed-size tuples pin the array length so the model emits exactly the
+  # expected number of items.
+  assert coordinate_schema.min_items == 2
+  assert coordinate_schema.max_items == 2
+  assert declaration.response.type == types.Type.STRING
+
+
+def test_from_function_with_variadic_tuple_type_parameter():
+  """Test from_function_with_options with variable-length homogeneous tuple."""
+
+  def test_function(
+      tags: tuple[str, ...],
+  ) -> str:
+    """Joins tags."""
+    return ', '.join(tags)
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  tags_schema = declaration.parameters.properties['tags']
+  assert tags_schema.type == types.Type.ARRAY
+  assert tags_schema.items.type == types.Type.STRING
+  # Variadic tuples are unbounded, so no size constraints are set.
+  assert tags_schema.min_items is None
+  assert tags_schema.max_items is None
+
+
 def test_from_function_with_collections_return_type():
   """Test from_function_with_options with collections return type."""
 
@@ -321,14 +370,8 @@ def test_from_function_with_async_generator_complex_yield_type_vertex():
   assert declaration.response.type == types.Type.OBJECT
 
 
-def test_required_fields_set_in_json_schema_fallback():
-  """Test that required fields are populated when the json_schema fallback path is used.
-
-  When a parameter has a complex type (e.g. tuple[str, ...] | None) that
-  _parse_schema_from_parameter can't handle, from_function_with_options falls
-  back to the parameters_json_schema branch. This test verifies that the
-  required fields are correctly populated in that fallback branch.
-  """
+def test_required_fields_set_with_optional_tuple_parameter():
+  """Test that required fields are populated with optional tuple parameters."""
 
   def complex_tool(
       query: str,
@@ -350,14 +393,301 @@ def test_required_fields_set_in_json_schema_fallback():
           'query': types.Schema(type=types.Type.STRING),
           'mode': types.Schema(type=types.Type.STRING, default='default'),
           'tags': types.Schema(
-              any_of=[
-                  types.Schema(
-                      items=types.Schema(type=types.Type.STRING),
-                      type=types.Type.ARRAY,
-                  ),
-                  types.Schema(type=types.Type.NULL),
-              ],
+              items=types.Schema(type=types.Type.STRING),
               nullable=True,
+              type=types.Type.ARRAY,
           ),
       },
   )
+
+
+def test_required_fields_set_in_json_schema_fallback():
+  """Required fields are populated when the json_schema fallback path is used.
+
+  A parameter whose type `_parse_schema_from_parameter` cannot handle (here
+  `Sequence[str]`) forces from_function_with_options onto the pydantic
+  json_schema fallback branch. This verifies that branch still derives required
+  fields correctly: parameters without defaults are required, parameters with
+  defaults are not.
+  """
+
+  def complex_tool(
+      query: str,
+      items: Sequence[str],
+      mode: str = 'default',
+  ) -> str:
+    return query
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      complex_tool, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'complex_tool'
+  assert declaration.parameters.type == types.Type.OBJECT
+  # query and items have no defaults -> required; mode has a default -> not.
+  assert set(declaration.parameters.required) == {'query', 'items'}
+  assert declaration.parameters.properties['items'].type == types.Type.ARRAY
+  assert declaration.parameters.properties['mode'].default == 'default'
+
+
+def test_schema_sanitization_for_complex_union_type():
+  """Test schema is sanitized for complex union type."""
+
+  def complex_tool(
+      query: str,
+      mode: str = 'default',
+      tags: dict[str, str] | None = None,
+  ) -> str:
+    return query
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      complex_tool, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.parameters.properties['tags'] == types.Schema(
+      type=types.Type.OBJECT,
+      nullable=True,
+  )
+
+
+def test_format_preservation_for_vertex_fallback():
+  """Test that format is preserved for VERTEX_AI variant in fallback path."""
+
+  class ComplexModel(pydantic.BaseModel):
+    # Field with format that would be stripped by Gemini sanitization
+    email: str = pydantic.Field(json_schema_extra={'format': 'email'})
+    # Complex field to trigger fallback (Sequence is not handled by
+    # _parse_schema_from_parameter)
+    complex_field: Sequence[str]
+
+  def my_tool(param: ComplexModel) -> str:
+    return f'ok {param}'
+
+  # Run with VERTEX_AI, should preserve format
+  declaration_vertex = (
+      _automatic_function_calling_util.from_function_with_options(
+          my_tool, GoogleLLMVariant.VERTEX_AI
+      )
+  )
+
+  # Check that format is preserved
+  param_schema_vertex = declaration_vertex.parameters.properties['param']
+  assert param_schema_vertex.properties['email'].format == 'email'
+
+  # Run with GEMINI_API, should strip format (current behavior)
+  declaration_gemini = (
+      _automatic_function_calling_util.from_function_with_options(
+          my_tool, GoogleLLMVariant.GEMINI_API
+      )
+  )
+  param_schema_gemini = declaration_gemini.parameters.properties['param']
+  assert param_schema_gemini.properties['email'].format is None
+
+
+def test_tuple_types_work_in_json_schema_fallback() -> None:
+  """Test that tuple schemas work in json schema fallback."""
+
+  def generate_image(
+      prompt: str,
+      input_bytes: list[tuple[bytes, str]] | None = None,
+  ) -> dict[str, str]:
+    """Generate an image from a prompt."""
+    del input_bytes
+    return {'status': prompt}
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      generate_image, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.parameters is not None
+  assert declaration.parameters.required == ['prompt']
+  input_bytes_schema = declaration.parameters.properties['input_bytes']
+  assert input_bytes_schema.nullable
+  assert input_bytes_schema.any_of is not None
+
+  array_schema = next(
+      schema
+      for schema in input_bytes_schema.any_of
+      if schema.type == types.Type.ARRAY
+  )
+  assert array_schema.items is not None
+  assert array_schema.items.type == types.Type.ARRAY
+  assert array_schema.items.max_items == 2
+  assert array_schema.items.min_items == 2
+  assert array_schema.items.items is not None
+  assert array_schema.items.items.any_of is not None
+  assert len(array_schema.items.items.any_of) == 2
+  assert array_schema.items.items.any_of[0].type == types.Type.STRING
+  assert array_schema.items.items.any_of[0].format is None
+  assert array_schema.items.items.any_of[1].type == types.Type.STRING
+
+
+def test_from_function_with_options_any_type_with_default_value():
+  """Test that typing.Any with a default value works and doesn't crash."""
+
+  def my_tool(param: Any = 'default_string') -> str:
+    return f'ok {param}'
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      my_tool, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.parameters is not None
+  assert declaration.parameters.properties['param'].default == 'default_string'
+  # Any type maps to None (no type) in schema
+  assert declaration.parameters.properties['param'].type is None
+
+
+class _UnserializableReturn:
+  """A plain class that has no genai/JSON schema representation."""
+
+
+def test_from_function_with_options_unserializable_return_vertex_degrades_gracefully():
+  """VERTEX_AI omits the response schema instead of raising when it can't be derived."""
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return type cannot be turned into a schema."""
+    return _UnserializableReturn()
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  # Parameters are still populated; only the return schema is dropped.
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['param'].type == 'STRING'
+  assert declaration.response is None
+
+
+def test_from_function_with_options_logs_warning_on_return_schema_failure(
+    caplog,
+):
+  """A warning naming the function is emitted when the return schema is dropped."""
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return type cannot be turned into a schema."""
+    return _UnserializableReturn()
+
+  with caplog.at_level(
+      'WARNING',
+      logger='google_adk.google.adk.tools._automatic_function_calling_util',
+  ):
+    _automatic_function_calling_util.from_function_with_options(
+        test_function, GoogleLLMVariant.VERTEX_AI
+    )
+
+  warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+  assert len(warnings) == 1
+  assert 'test_function' in warnings[0].getMessage()
+
+
+def test_from_function_with_options_valid_pydantic_return_still_gets_schema_vertex():
+  """A serializable pydantic return type keeps producing a response schema."""
+
+  class MyModel(pydantic.BaseModel):
+    result: str
+
+  def test_function(param: str) -> MyModel:
+    """A function that returns a valid pydantic model."""
+    return MyModel(result=param)
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.OBJECT
+
+
+def test_from_function_with_options_non_value_error_return_degrades_gracefully(
+    monkeypatch,
+):
+  """A non-ValueError from schema parsing is caught (not propagated) and degrades."""
+
+  parse_util = _automatic_function_calling_util._function_parameter_parse_util
+  original_parse = parse_util._parse_schema_from_parameter
+
+  def _raise_type_error_for_return(variant, param, func_name):
+    # Only the return-schema parse should raise; leave parameter parsing intact.
+    if param.name == 'return_value':
+      raise TypeError('simulated non-ValueError from schema parsing')
+    return original_parse(variant, param, func_name)
+
+  monkeypatch.setattr(
+      parse_util,
+      '_parse_schema_from_parameter',
+      _raise_type_error_for_return,
+  )
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return schema parsing raises a non-ValueError."""
+    return _UnserializableReturn()
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.response is None
+
+
+def test_from_function_with_options_warning_includes_original_error(caplog):
+  """The warning names both the fallback and the original parsing error."""
+
+  def test_function(param: str) -> _UnserializableReturn:
+    """A function whose return type cannot be turned into a schema."""
+    return _UnserializableReturn()
+
+  with caplog.at_level(
+      'WARNING',
+      logger='google_adk.google.adk.tools._automatic_function_calling_util',
+  ):
+    _automatic_function_calling_util.from_function_with_options(
+        test_function, GoogleLLMVariant.VERTEX_AI
+    )
+
+  warnings = [r for r in caplog.records if r.levelname == 'WARNING']
+  assert len(warnings) == 1
+  message = warnings[0].getMessage()
+  assert 'Fallback error:' in message
+  assert 'Original error:' in message
+
+
+def test_optional_arg_does_not_double_serialize_for_dedup():
+  """Each union member is serialized at most once during any_of deduplication.
+
+  The dedup loop previously called `Schema.model_dump_json` twice per union
+  member (once for the membership check, once for the set add). For `T | None`
+  (a 2-member union that always reduces to a single any_of entry) that doubled
+  the cost on every parse.
+  """
+
+  def tool_with_optionals(
+      a: str | None = None,
+      b: int | None = None,
+      c: str | int = 'x',
+  ) -> str:
+    """A tool whose params exercise the optional/union dedup path."""
+    return f'{a}{b}{c}'
+
+  call_count = 0
+  real_dump = types.Schema.model_dump_json
+
+  def counting_dump(self, *args, **kwargs):
+    nonlocal call_count
+    call_count += 1
+    return real_dump(self, *args, **kwargs)
+
+  with mock.patch.object(types.Schema, 'model_dump_json', counting_dump):
+    _automatic_function_calling_util.from_function_with_options(
+        tool_with_optionals, GoogleLLMVariant.GEMINI_API
+    )
+
+  # 2 `| None` args (1 non-None member) + 1 union arg (2 non-None members)
+  # = 4 calls after the fix. Before, this was 8 (every member was serialized
+  # twice — once for the membership check, once for the set add).
+  assert (
+      call_count == 4
+  ), f'expected 4 model_dump_json calls during dedup, got {call_count}'

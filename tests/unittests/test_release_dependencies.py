@@ -23,6 +23,10 @@ regressions documented in the bare-install audit cannot silently re-emerge:
 * ``ValidationError`` in ``environment_simulation_config`` MUST come from
   ``pydantic`` (which always installs alongside the package), NOT from the
   undeclared ``pydantic_core``.
+* The LangGraph extras MUST exclude the releases that reconstruct unsafe
+  objects while deserializing checkpoint data.
+* ``google-genai`` MUST exclude 2.11 and include 2.12.1, whose types module
+  defers the optional MCP server stack instead of importing it at Agent startup.
 """
 
 from __future__ import annotations
@@ -35,25 +39,40 @@ try:
 except ImportError:
   import tomli as tomllib
 
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name
+from packaging.version import Version
 import pytest
+
+# Releases that can reconstruct unsafe objects while deserializing checkpoint
+# data, mapped to the first release of the same distribution without it.
+_UNSAFE_CHECKPOINT_RELEASES = {
+    'langgraph': (('0.2.60', '0.4.7', '1.0.9'), '1.0.10'),
+    'langgraph-checkpoint': (('2.1.0', '3.0.0', '4.0.0', '4.1.0'), '4.1.1'),
+}
 
 
 def _find_pyproject() -> Path:
   """Locates pyproject.toml by walking up from this file's directory.
 
-  Works in both layouts:
-  * Open-source: pyproject.toml lives at the repo root.
-  * google3: pyproject.toml lives under open_source_workspace/ and tests/ is
-    a symlink into the package root, so .resolve() lands in the wrong place.
+  Handles layouts where pyproject.toml is at an ancestor directory as well as
+  layouts where it lives in a sibling build directory next to the package. The
+  test tree may be symlinked, so the walk avoids ``.resolve()``.
   """
   start = Path(__file__).parent
   for candidate in [start, *start.parents]:
     direct = candidate / 'pyproject.toml'
     if direct.is_file():
       return direct
-    sibling = candidate / 'open_source_workspace' / 'pyproject.toml'
-    if sibling.is_file():
-      return sibling
+    try:
+      children = sorted(p for p in candidate.iterdir() if p.is_dir())
+    except OSError:
+      continue
+    for child in children:
+      sibling = child / 'pyproject.toml'
+      if sibling.is_file():
+        return sibling
   raise FileNotFoundError(
       f'Could not find pyproject.toml walking up from {start}.'
   )
@@ -85,6 +104,22 @@ def _requirement_names(requirements: list[str]) -> set[str]:
   return names
 
 
+def _requirement_specifier(
+    requirements: list[str], distribution: str
+) -> SpecifierSet | None:
+  """Returns the version specifier ``requirements`` declares for a dependency.
+
+  Returns ``None`` when the distribution is not declared at all, so callers can
+  tell "unconstrained" apart from "absent".
+  """
+  wanted = canonicalize_name(distribution)
+  for requirement in requirements:
+    parsed = Requirement(requirement)
+    if canonicalize_name(parsed.name) == wanted:
+      return parsed.specifier
+  return None
+
+
 def test_main_deps_include_packaging(pyproject: dict) -> None:
   """``packaging`` is imported unguarded by core ADK; it must be a main dep."""
   main_deps = _requirement_names(pyproject['project']['dependencies'])
@@ -97,6 +132,55 @@ def test_main_deps_include_packaging(pyproject: dict) -> None:
   )
 
 
+@pytest.mark.parametrize('extra', ['extensions', 'test'])
+@pytest.mark.parametrize('distribution', sorted(_UNSAFE_CHECKPOINT_RELEASES))
+def test_langgraph_extras_exclude_unsafe_checkpoint_releases(
+    pyproject: dict, extra: str, distribution: str
+) -> None:
+  """Both LangGraph extras resolve past the unsafe-deserialization releases.
+
+  ``langgraph`` does not constrain ``langgraph-checkpoint`` tightly enough to
+  rule the unsafe releases out on its own, so each extra must declare both.
+  """
+  unsafe_versions, first_safe = _UNSAFE_CHECKPOINT_RELEASES[distribution]
+  specifier = _requirement_specifier(
+      pyproject['project']['optional-dependencies'][extra], distribution
+  )
+
+  assert specifier is not None, (
+      f'The {extra!r} extra must declare {distribution}; without it the '
+      'resolver is free to install a release that can reconstruct unsafe '
+      'objects from checkpoint data.'
+  )
+  admitted = [v for v in unsafe_versions if specifier.contains(v)]
+  assert not admitted, (
+      f'The {extra!r} extra admits {distribution} {admitted}, which can '
+      'reconstruct unsafe objects from checkpoint data. Require '
+      f'{distribution}>={first_safe}.'
+  )
+  assert specifier.contains(first_safe), (
+      f'The {extra!r} extra excludes {distribution} {first_safe}, the first '
+      'release without the unsafe behavior.'
+  )
+
+
+def test_main_deps_require_lazy_mcp_google_genai_release(
+    pyproject: dict,
+) -> None:
+  """The google-genai floor preserves its lazy optional-MCP boundary."""
+  requirements = [
+      Requirement(raw) for raw in pyproject['project']['dependencies']
+  ]
+  google_genai = next(
+      requirement
+      for requirement in requirements
+      if requirement.name == 'google-genai'
+  )
+
+  assert Version('2.11.0') not in google_genai.specifier
+  assert Version('2.12.1') in google_genai.specifier
+
+
 def test_environment_simulation_config_imports_validation_error_from_pydantic() -> (
     None
 ):
@@ -105,8 +189,8 @@ def test_environment_simulation_config_imports_validation_error_from_pydantic() 
   pydantic-core is undeclared; importing from it directly is fragile. pydantic
   re-exports ValidationError, so use that.
   """
-  # Use importlib to locate the source file so the test works in both the
-  # open-source layout (src/google/adk/...) and inside google3 (flat layout).
+  # Use importlib to locate the source file so the test is independent of the
+  # on-disk package layout.
   spec = importlib.util.find_spec(
       'google.adk.tools.environment_simulation.environment_simulation_config'
   )

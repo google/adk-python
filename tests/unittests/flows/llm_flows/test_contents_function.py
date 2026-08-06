@@ -552,8 +552,8 @@ async def test_function_rearrangement_preserves_other_content():
 
 
 @pytest.mark.asyncio
-async def test_error_when_function_response_without_matching_call():
-  """Test error when function response has no matching function call."""
+async def test_function_response_without_matching_call_is_dropped():
+  """An orphaned function response is pruned, not raised on."""
   agent = Agent(model="gemini-2.5-flash", name="test_agent")
   llm_request = LlmRequest(model="gemini-2.5-flash")
   invocation_context = await testing_utils.create_invocation_context(
@@ -584,9 +584,58 @@ async def test_error_when_function_response_without_matching_call():
   ]
   invocation_context.session.events = events
 
-  # This should raise a ValueError during processing
-  with pytest.raises(ValueError, match="No function call event found"):
-    async for _ in contents.request_processor.run_async(
-        invocation_context, llm_request
-    ):
-      pass
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # The orphan is gone and the surrounding turn still reaches the model.
+  assert testing_utils.simplify_contents(llm_request.contents) == [
+      ("user", "Regular message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_orphaned_function_response_dropped_mid_history():
+  """An orphan is pruned the same way when it is not the trailing event."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  orphaned_response = types.FunctionResponse(
+      id="no_matching_call",
+      name="orphaned_tool",
+      response={"error": "no matching call"},
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Regular message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=orphaned_response)]
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Later message"),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert testing_utils.simplify_contents(llm_request.contents) == [
+      ("user", "Regular message"),
+      ("user", "Later message"),
+  ]

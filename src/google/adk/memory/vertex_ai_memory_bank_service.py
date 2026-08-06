@@ -33,6 +33,7 @@ from .memory_entry import MemoryEntry
 
 if TYPE_CHECKING:
   import vertexai
+  from vertexai import types as vertex_types
 
   from ..events.event import Event
   from ..sessions.session import Session
@@ -41,7 +42,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 # Strong references to fire-and-forget tasks to prevent garbage collection.
 # See https://docs.python.org/3/library/asyncio-task.html#creating-tasks
-_background_tasks: set[asyncio.Task] = set()
+_background_tasks: set[asyncio.Task[object]] = set()
 
 _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS = frozenset({
     'disable_consolidation',
@@ -107,22 +108,21 @@ _MAX_DIRECT_MEMORIES_PER_GENERATE_CALL = 5
 def _supports_generate_memories_metadata() -> bool:
   """Returns whether installed Vertex SDK supports config.metadata."""
   try:
-    from vertexai._genai.types import common as vertex_common_types
+    from vertexai import types as vertex_types
   except ImportError:
     return False
   return (
-      'metadata'
-      in vertex_common_types.GenerateAgentEngineMemoriesConfig.model_fields
+      'metadata' in vertex_types.GenerateAgentEngineMemoriesConfig.model_fields
   )
 
 
 def _supports_create_memory_metadata() -> bool:
   """Returns whether installed Vertex SDK supports create config.metadata."""
   try:
-    from vertexai._genai.types import common as vertex_common_types
+    from vertexai import types as vertex_types
   except ImportError:
     return False
-  return 'metadata' in vertex_common_types.AgentEngineMemoryConfig.model_fields
+  return 'metadata' in vertex_types.AgentEngineMemoryConfig.model_fields
 
 
 @lru_cache(maxsize=1)
@@ -133,14 +133,12 @@ def _get_generate_memories_config_keys() -> frozenset[str]:
   allowlist to preserve compatibility when introspection is unavailable.
   """
   try:
-    from vertexai._genai.types import common as vertex_common_types
+    from vertexai import types as vertex_types
   except ImportError:
     return _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
 
   try:
-    model_fields = (
-        vertex_common_types.GenerateAgentEngineMemoriesConfig.model_fields
-    )
+    model_fields = vertex_types.GenerateAgentEngineMemoriesConfig.model_fields
   except AttributeError:
     return _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
 
@@ -157,12 +155,12 @@ def _get_create_memory_config_keys() -> frozenset[str]:
   allowlist to preserve compatibility when introspection is unavailable.
   """
   try:
-    from vertexai._genai.types import common as vertex_common_types
+    from vertexai import types as vertex_types
   except ImportError:
     return _CREATE_MEMORY_CONFIG_FALLBACK_KEYS
 
   try:
-    model_fields = vertex_common_types.AgentEngineMemoryConfig.model_fields
+    model_fields = vertex_types.AgentEngineMemoryConfig.model_fields
   except AttributeError:
     return _CREATE_MEMORY_CONFIG_FALLBACK_KEYS
 
@@ -194,7 +192,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
         ``agent_engine.api_resource.name.split('/')[-1]``
       express_mode_api_key: The API key to use for Express Mode. If not
         provided, the API key from the GOOGLE_API_KEY environment variable will
-        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true. Do
+        be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true. Do
         not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
@@ -204,7 +202,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       )
 
     try:
-      import vertexai
+      import vertexai  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
@@ -523,7 +521,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
       logger.debug('Generate direct memory response: %s', operation)
 
   @override
-  async def search_memory(self, *, app_name: str, user_id: str, query: str):
+  async def search_memory(
+      self, *, app_name: str, user_id: str, query: str
+  ) -> SearchMemoryResponse:
     api_client = self._get_api_client()
     retrieved_memories_iterator = (
         await api_client.agent_engines.memories.retrieve(
@@ -541,20 +541,71 @@ class VertexAiMemoryBankService(BaseMemoryService):
     logger.info('Search memory response received.')
 
     memory_events: list[MemoryEntry] = []
-    async for retrieved_memory in retrieved_memories_iterator:
-      # TODO: add more complex error handling
-      logger.debug('Retrieved memory: %s', retrieved_memory)
-      memory_events.append(
-          MemoryEntry(
-              author='user',
-              content=types.Content(
-                  parts=[types.Part(text=retrieved_memory.memory.fact)],
-                  role='user',
-              ),
-              timestamp=retrieved_memory.memory.update_time.isoformat(),
+    try:
+      async for retrieved_memory in retrieved_memories_iterator:
+        try:
+          memory = retrieved_memory.memory
+          if memory is None:
+            logger.warning('Skipping memory entry with missing memory object.')
+            continue
+          fact = memory.fact
+          if not fact:
+            logger.warning('Skipping memory entry with empty or missing fact.')
+            continue
+          update_time = memory.update_time
+          memory_events.append(
+              MemoryEntry(
+                  author='user',
+                  content=types.Content(
+                      parts=[types.Part(text=fact)],
+                      role='user',
+                  ),
+                  timestamp=update_time.isoformat() if update_time else None,
+              )
           )
+        except AttributeError:
+          logger.warning(
+              'Skipping malformed memory entry: %s', retrieved_memory
+          )
+    except Exception:
+      logger.exception(
+          'Error while iterating memory results. Returning %d partial results.',
+          len(memory_events),
       )
     return SearchMemoryResponse(memories=memory_events)
+
+  async def retrieve_profiles(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+  ) -> list[vertex_types.MemoryProfile]:
+    """Retrieves structured user profiles for the scope, one per schema.
+
+    Profiles are a Vertex Memory Bank capability distinct from memory search:
+    a scope-keyed lookup, not a semantic query.
+
+    Args:
+      app_name: The application name for the profile scope.
+      user_id: The user ID for the profile scope.
+
+    Returns:
+      The structured profiles for the scope, one per registered schema.
+    """
+    api_client = self._get_api_client()
+    response = await api_client.agent_engines.memories.retrieve_profiles(
+        name='reasoningEngines/' + self._agent_engine_id,
+        scope={
+            'app_name': app_name,
+            'user_id': user_id,
+        },
+    )
+    profiles = list((response.profiles or {}).values())
+    if profiles:
+      logger.info('Retrieved %d memory profiles.', len(profiles))
+    else:
+      logger.info('Retrieved no memory profiles.')
+    return profiles
 
   def _get_api_client(self) -> vertexai.AsyncClient:
     """Instantiates an API client for the given project and location.
@@ -572,7 +623,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     return vertexai.Client(project=self._project, location=self._location).aio
 
 
-def _log_ingest_task_error(task: asyncio.Task) -> None:
+def _log_ingest_task_error(task: asyncio.Task[object]) -> None:
   """Logs errors from fire-and-forget ingest_events tasks."""
   if task.cancelled():
     return
@@ -581,7 +632,7 @@ def _log_ingest_task_error(task: asyncio.Task) -> None:
     logger.error('Background ingest_events task failed: %s', exception)
 
 
-def _should_filter_out_event(content: types.Content) -> bool:
+def _should_filter_out_event(content: types.Content | None) -> bool:
   """Returns whether the event should be filtered out."""
   if not content or not content.parts:
     return True
@@ -792,11 +843,12 @@ def _memory_entry_to_fact(
     index: int,
 ) -> str:
   """Builds a memories.create fact payload from MemoryEntry text content."""
-  if _should_filter_out_event(memory.content):
+  parts = memory.content.parts
+  if not parts or _should_filter_out_event(memory.content):
     raise ValueError(f'memories[{index}] must include text.')
 
   text_parts: list[str] = []
-  for part in memory.content.parts:
+  for part in parts:
     if part.inline_data or part.file_data:
       raise ValueError(
           f'memories[{index}] must include text only; inline_data and '

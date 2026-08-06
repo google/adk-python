@@ -20,7 +20,6 @@ from abc import ABC
 from abc import abstractmethod
 import dataclasses
 from pathlib import Path
-from typing import Optional
 
 from ..utils.feature_decorator import experimental
 
@@ -58,6 +57,17 @@ class BaseEnvironment(ABC):
     4. Call ``close()`` when done.
   """
 
+  _is_initialized: bool = False
+
+  @property
+  def is_initialized(self) -> bool:
+    """Whether the environment has been initialized."""
+    return self._is_initialized
+
+  @is_initialized.setter
+  def is_initialized(self, value: bool) -> None:
+    self._is_initialized = value
+
   async def initialize(self) -> None:
     """Initialize the environment (e.g. create working directory).
 
@@ -83,7 +93,7 @@ class BaseEnvironment(ABC):
       self,
       command: str,
       *,
-      timeout: Optional[float] = None,
+      timeout: float | None = None,
   ) -> ExecutionResult:
     """Execute a shell command in the working directory.
 

@@ -47,6 +47,15 @@ MOCK_SPEC_CONTENT = {"contents": base64.b64encode(b"spec content").decode()}
 # Test cases
 class TestAPIHubClient:
 
+  @pytest.fixture(autouse=True)
+  def no_client_cert(self):
+    """Keeps endpoint assertions independent of the host's mTLS configuration."""
+    with patch(
+        "google.adk.utils._mtls_utils.use_client_cert_effective",
+        return_value=False,
+    ):
+      yield
+
   @pytest.fixture
   def client(self):
     return APIHubClient(access_token="mocked_token")
@@ -61,7 +70,7 @@ class TestAPIHubClient:
         "private_key": "1234",
     })
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_list_apis(self, mock_get, client):
     mock_get.return_value.json.return_value = MOCK_API_LIST
     mock_get.return_value.status_code = 200
@@ -74,9 +83,10 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=30,
     )
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_list_apis_empty(self, mock_get, client):
     mock_get.return_value.json.return_value = {"apis": []}
     mock_get.return_value.status_code = 200
@@ -84,14 +94,14 @@ class TestAPIHubClient:
     apis = client.list_apis("test-project", "us-central1")
     assert apis == []
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_list_apis_error(self, mock_get, client):
     mock_get.return_value.raise_for_status.side_effect = HTTPError
 
     with pytest.raises(HTTPError):
       client.list_apis("test-project", "us-central1")
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_api(self, mock_get, client):
     mock_get.return_value.json.return_value = MOCK_API_DETAIL
     mock_get.return_value.status_code = 200
@@ -105,15 +115,16 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=30,
     )
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_api_error(self, mock_get, client):
     mock_get.return_value.raise_for_status.side_effect = HTTPError
     with pytest.raises(HTTPError):
       client.get_api("projects/test-project/locations/us-central1/apis/api1")
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_api_version(self, mock_get, client):
     mock_get.return_value.json.return_value = MOCK_API_VERSION
     mock_get.return_value.status_code = 200
@@ -127,9 +138,10 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=30,
     )
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_api_version_error(self, mock_get, client):
     mock_get.return_value.raise_for_status.side_effect = HTTPError
     with pytest.raises(HTTPError):
@@ -137,7 +149,7 @@ class TestAPIHubClient:
           "projects/test-project/locations/us-central1/apis/api1/versions/v1"
       )
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_spec_content(self, mock_get, client):
     mock_get.return_value.json.return_value = MOCK_SPEC_CONTENT
     mock_get.return_value.status_code = 200
@@ -151,9 +163,10 @@ class TestAPIHubClient:
             "accept": "application/json, text/plain, */*",
             "Authorization": "Bearer mocked_token",
         },
+        timeout=30,
     )
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_spec_content_empty(self, mock_get, client):
     mock_get.return_value.json.return_value = {"contents": ""}
     mock_get.return_value.status_code = 200
@@ -162,7 +175,7 @@ class TestAPIHubClient:
     )
     assert spec_content == ""
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_spec_content_error(self, mock_get, client):
     mock_get.return_value.raise_for_status.side_effect = HTTPError
     with pytest.raises(HTTPError):
@@ -417,7 +430,7 @@ class TestAPIHubClient:
     ):
       APIHubClient()._get_access_token()
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_spec_content_api_level(self, mock_get, client):
     mock_get.side_effect = [
         MagicMock(status_code=200, json=lambda: MOCK_API_DETAIL),  # For get_api
@@ -436,7 +449,7 @@ class TestAPIHubClient:
     # Check calls - get_api, get_api_version, then get_spec_content
     assert mock_get.call_count == 3
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_spec_content_version_level(self, mock_get, client):
     mock_get.side_effect = [
         MagicMock(
@@ -453,7 +466,7 @@ class TestAPIHubClient:
     assert content == "spec content"
     assert mock_get.call_count == 2  # get_api_version and get_spec_content
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_spec_content_spec_level(self, mock_get, client):
     mock_get.return_value.json.return_value = MOCK_SPEC_CONTENT
     mock_get.return_value.status_code = 200
@@ -464,7 +477,7 @@ class TestAPIHubClient:
     assert content == "spec content"
     mock_get.assert_called_once()  # Only get_spec_content should be called
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_spec_content_no_versions(self, mock_get, client):
     mock_get.return_value.json.return_value = {
         "name": "projects/test-project/locations/us-central1/apis/api1",
@@ -482,7 +495,7 @@ class TestAPIHubClient:
           "projects/test-project/locations/us-central1/apis/api1"
       )
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_spec_content_no_specs(self, mock_get, client):
     mock_get.side_effect = [
         MagicMock(status_code=200, json=lambda: MOCK_API_DETAIL),
@@ -508,7 +521,7 @@ class TestAPIHubClient:
           "projects/test-project/locations/us-central1/apis/api1/versions/v1"
       )
 
-  @patch("requests.get")
+  @patch("requests.Session.get")
   def test_get_spec_content_invalid_path(self, mock_get, client):
     with pytest.raises(
         ValueError,
@@ -518,6 +531,97 @@ class TestAPIHubClient:
         ),
     ):
       client.get_spec_content("invalid-path")
+
+  @patch("google.adk.utils._mtls_utils.configure_session_for_mtls")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
+  @patch("requests.Session.get")
+  def test_request_uses_mtls_endpoint_when_client_cert_available(
+      self, mock_get, mock_use_client_cert, mock_configure_session, client
+  ):
+    mock_use_client_cert.return_value = True
+    mock_configure_session.return_value = True
+    mock_get.return_value.json.return_value = MOCK_API_LIST
+    mock_get.return_value.status_code = 200
+
+    client.list_apis("test-project", "us-central1")
+
+    mock_configure_session.assert_called_once()
+    mock_get.assert_called_once_with(
+        "https://apihub.mtls.googleapis.com/v1/projects/test-project/locations/us-central1/apis",
+        headers={
+            "accept": "application/json, text/plain, */*",
+            "Authorization": "Bearer mocked_token",
+        },
+        timeout=30,
+    )
+
+  @patch("google.adk.utils._mtls_utils.configure_session_for_mtls")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
+  @patch("requests.Session.get")
+  def test_request_uses_default_endpoint_when_no_client_cert_available(
+      self, mock_get, mock_use_client_cert, mock_configure_session, client
+  ):
+    mock_use_client_cert.return_value = True
+    mock_configure_session.return_value = False
+    mock_get.return_value.json.return_value = MOCK_API_LIST
+    mock_get.return_value.status_code = 200
+
+    client.list_apis("test-project", "us-central1")
+
+    assert mock_get.call_args.args[0].startswith(
+        "https://apihub.googleapis.com/v1/"
+    )
+
+  @patch("google.adk.utils._mtls_utils.configure_session_for_mtls")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
+  @patch("requests.Session.get")
+  def test_request_skips_mtls_when_client_cert_disabled(
+      self, mock_get, mock_use_client_cert, mock_configure_session, client
+  ):
+    mock_use_client_cert.return_value = False
+    mock_get.return_value.json.return_value = MOCK_API_LIST
+    mock_get.return_value.status_code = 200
+
+    client.list_apis("test-project", "us-central1")
+
+    mock_configure_session.assert_not_called()
+    assert mock_get.call_args.args[0].startswith(
+        "https://apihub.googleapis.com/v1/"
+    )
+
+  @patch("google.adk.utils._mtls_utils.configure_session_for_mtls")
+  @patch("google.adk.utils._mtls_utils.use_client_cert_effective")
+  @patch("requests.Session.get")
+  def test_request_honors_mtls_endpoint_opt_out(
+      self,
+      mock_get,
+      mock_use_client_cert,
+      mock_configure_session,
+      client,
+      monkeypatch,
+  ):
+    monkeypatch.setenv("GOOGLE_API_USE_MTLS_ENDPOINT", "never")
+    mock_use_client_cert.return_value = True
+    mock_configure_session.return_value = True
+    mock_get.return_value.json.return_value = MOCK_API_LIST
+    mock_get.return_value.status_code = 200
+
+    client.list_apis("test-project", "us-central1")
+
+    assert mock_get.call_args.args[0].startswith(
+        "https://apihub.googleapis.com/v1/"
+    )
+
+  def test_get_spec_content_includes_path_in_fallback_error(self, client):
+    with (
+        patch.object(
+            client, "_extract_resource_name", return_value=(None, None, None)
+        ),
+        pytest.raises(
+            ValueError, match="No API Hub resource found in path: actual-path"
+        ),
+    ):
+      client.get_spec_content("actual-path")
 
 
 if __name__ == "__main__":

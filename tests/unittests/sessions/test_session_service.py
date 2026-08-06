@@ -17,10 +17,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
 import enum
+import os
 import sqlite3
+import time
 from unittest import mock
+import warnings
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
+from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
@@ -29,11 +33,20 @@ from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.schemas.shared import DynamicJSON
+from google.adk.sessions.schemas.v0 import DynamicPickleType
+from google.adk.sessions.schemas.v1 import StorageSession
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
 from sqlalchemy import delete
+from sqlalchemy import select
+from sqlalchemy import text
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import StaticPool
 
 
 class SessionServiceType(enum.Enum):
@@ -103,45 +116,61 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
   assert captured_kwargs.get('pool_pre_ping') is True
 
 
-@pytest.mark.parametrize('dialect_name', ['sqlite', 'postgresql'])
-def test_database_session_service_strips_timezone_for_dialect(dialect_name):
-  """Verifies that timezone-aware datetimes are converted to naive datetimes
-  for SQLite and PostgreSQL to avoid 'can't subtract offset-naive and
-  offset-aware datetimes' errors.
+@pytest.mark.parametrize('decorator', [DynamicJSON, DynamicPickleType])
+def test_session_type_decorators_opt_into_statement_cache(decorator):
+  """Session TypeDecorators must declare cache_ok to stay cacheable.
 
-  PostgreSQL's default TIMESTAMP type is WITHOUT TIME ZONE, which cannot
-  accept timezone-aware datetime objects when using asyncpg. SQLite also
-  requires naive datetimes.
+  SQLAlchemy discards the cache key of any statement whose traversal reaches a
+  TypeDecorator that has not set cache_ok, and warns while doing so. Both types
+  qualify: neither defines __init__, so the key is the bare class, and every
+  method branches only on the dialect, which the compiled cache already keys on.
   """
-  # Simulate the logic in create_session
-  is_sqlite = dialect_name == 'sqlite'
-  is_postgres = dialect_name == 'postgresql'
-
-  now = datetime.now(timezone.utc)
-  assert now.tzinfo is not None  # Starts with timezone
-
-  if is_sqlite or is_postgres:
-    now = now.replace(tzinfo=None)
-
-  # Both SQLite and PostgreSQL should have timezone stripped
-  assert now.tzinfo is None
+  assert decorator.__dict__.get('cache_ok') is True
+  assert decorator()._static_cache_key == (decorator,)
 
 
-def test_database_session_service_preserves_timezone_for_other_dialects():
-  """Verifies that timezone info is preserved for dialects that support it."""
-  # For dialects like MySQL with explicit timezone support, we don't strip
-  dialect_name = 'mysql'
-  is_sqlite = dialect_name == 'sqlite'
-  is_postgres = dialect_name == 'postgresql'
+def test_dynamic_json_column_statement_is_cacheable():
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter('always')
+    cache_key = select(StorageSession.state)._generate_cache_key()
 
-  now = datetime.now(timezone.utc)
-  assert now.tzinfo is not None
+  assert cache_key is not None
+  assert not [w for w in caught if 'cache_ok' in str(w.message)]
 
-  if is_sqlite or is_postgres:
-    now = now.replace(tzinfo=None)
 
-  # MySQL should preserve timezone (if the column type supports it)
-  assert now.tzinfo is not None
+@pytest.mark.parametrize(
+    'dialect_name', ['sqlite', 'postgresql', 'mysql', 'mariadb']
+)
+def test_database_session_service_uses_naive_datetime_for_dialect(dialect_name):
+  """Verifies dialects that store DATETIME WITHOUT TIME ZONE are treated as naive.
+
+  SQLite, PostgreSQL, MySQL, and MariaDB all store DATETIME/TIMESTAMP WITHOUT
+  TIME ZONE, so create_session must strip tzinfo before storing. Otherwise the
+  marker produced by create_session (with +00:00) mismatches the marker read
+  back from storage (without +00:00), triggering a false stale-writer error on
+  the first append_event after create_session.
+
+  This exercises the production decision (_uses_naive_datetime) directly rather
+  than re-implementing the strip logic, so it actually guards create_session.
+  """
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = dialect_name
+  fake_engine.sync_engine = mock.Mock()
+
+  service = DatabaseSessionService(db_engine=fake_engine)
+
+  assert service._uses_naive_datetime() is True
+
+
+def test_database_session_service_keeps_timezone_for_spanner():
+  """Spanner's TIMESTAMP is timezone-aware, so tzinfo must be preserved."""
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = 'spanner+spanner'
+  fake_engine.sync_engine = mock.Mock()
+
+  service = DatabaseSessionService(db_engine=fake_engine)
+
+  assert service._uses_naive_datetime() is False
 
 
 def test_database_session_service_respects_pool_pre_ping_override():
@@ -284,29 +313,29 @@ async def test_get_empty_session(session_service):
 
 @pytest.mark.asyncio
 async def test_database_session_service_get_session_uses_read_only_factory():
-  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  service._prepare_tables = mock.AsyncMock()
+  async with DatabaseSessionService('sqlite+aiosqlite:///:memory:') as service:
+    service.prepare_tables = mock.AsyncMock()
 
-  read_only_session = mock.AsyncMock()
-  read_only_session.get = mock.AsyncMock(return_value=None)
+    read_only_session = mock.AsyncMock()
+    read_only_session.get = mock.AsyncMock(return_value=None)
 
-  @asynccontextmanager
-  async def fake_read_only_session():
-    yield read_only_session
+    @asynccontextmanager
+    async def fake_read_only_session():
+      yield read_only_session
 
-  service.database_session_factory = mock.Mock(
-      side_effect=AssertionError('write session factory should not be used')
-  )
-  service._read_only_database_session_factory = mock.Mock(
-      return_value=fake_read_only_session()
-  )
+    service.database_session_factory = mock.Mock(
+        side_effect=AssertionError('write session factory should not be used')
+    )
+    service._read_only_database_session_factory = mock.Mock(
+        return_value=fake_read_only_session()
+    )
 
-  session = await service.get_session(
-      app_name='my_app', user_id='test_user', session_id='123'
-  )
+    session = await service.get_session(
+        app_name='my_app', user_id='test_user', session_id='123'
+    )
 
-  assert session is None
-  service._read_only_database_session_factory.assert_called_once_with()
+    assert session is None
+    service._read_only_database_session_factory.assert_called_once_with()
   service.database_session_factory.assert_not_called()
 
   await service.close()
@@ -315,7 +344,7 @@ async def test_database_session_service_get_session_uses_read_only_factory():
 @pytest.mark.asyncio
 async def test_database_session_service_list_sessions_uses_read_only_factory():
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  service._prepare_tables = mock.AsyncMock()
+  service.prepare_tables = mock.AsyncMock()
 
   read_only_session = mock.AsyncMock()
   empty_result = mock.Mock()
@@ -356,19 +385,13 @@ async def test_create_get_session(session_service):
   assert session.user_id == user_id
   assert session.id
   assert session.state == state
-  assert (
-      session.last_update_time
-      <= datetime.now().astimezone(timezone.utc).timestamp()
-  )
+  assert session.last_update_time <= time.time()
 
   got_session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert got_session == session
-  assert (
-      got_session.last_update_time
-      <= datetime.now().astimezone(timezone.utc).timestamp()
-  )
+  assert got_session.last_update_time <= time.time()
 
   session_id = session.id
   await session_service.delete_session(
@@ -405,6 +428,60 @@ async def test_create_and_list_sessions(session_service):
   assert {s.id for s in sessions} == set(session_ids)
   for session in sessions:
     assert session.state == {'key': 'value' + session.id}
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_list_sessions_orders_by_update_time_then_id():
+  """Database list_sessions returns least-active sessions first, with stable ties."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    app_name = 'my_app'
+    user_id = 'test_user'
+    session_ids = ['orphan', 'active_b', 'middle', 'active_a']
+    for session_id in session_ids:
+      await service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+      )
+
+    schema = service._get_schema_classes()
+    create_times = {
+        'active_b': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'orphan': datetime(2026, 1, 4, tzinfo=timezone.utc),
+    }
+    update_times = {
+        'orphan': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'active_b': datetime(2026, 1, 3, tzinfo=timezone.utc),
+    }
+    async with service.database_session_factory() as sql_session:
+      for session_id, create_time in create_times.items():
+        await sql_session.execute(
+            update(schema.StorageSession)
+            .where(schema.StorageSession.app_name == app_name)
+            .where(schema.StorageSession.user_id == user_id)
+            .where(schema.StorageSession.id == session_id)
+            .values(
+                create_time=create_time,
+                update_time=update_times[session_id],
+            )
+        )
+      await sql_session.commit()
+
+    response = await service.list_sessions(app_name=app_name, user_id=user_id)
+
+    assert [session.id for session in response.sessions] == [
+        'orphan',
+        'middle',
+        'active_a',
+        'active_b',
+    ]
+  finally:
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -734,6 +811,51 @@ async def test_append_event_complete(session_service):
   )
 
 
+# pylint: disable=redefined-outer-name
+@pytest.mark.asyncio
+async def test_append_event_with_requested_tool_confirmations(session_service):
+  """Tests that EventActions.requested_tool_confirmations is preserved in session service."""
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      actions=EventActions(
+          requested_tool_confirmations={
+              'tool_call_1': ToolConfirmation(
+                  hint='dynamic hint',
+                  confirmed=False,
+                  payload={
+                      'collection_name': 'photos',
+                      'resource_id': 'album_1',
+                  },
+              )
+          }
+      ),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  refreshed_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert refreshed_session is not None
+  assert len(refreshed_session.events) == 1
+  retrieved_event = refreshed_session.events[0]
+  assert retrieved_event.actions is not None
+  assert 'tool_call_1' in retrieved_event.actions.requested_tool_confirmations
+  tc = retrieved_event.actions.requested_tool_confirmations['tool_call_1']
+  assert tc.hint == 'dynamic hint'
+  assert tc.payload == {
+      'collection_name': 'photos',
+      'resource_id': 'album_1',
+  }
+  assert not tc.confirmed
+
+
 @pytest.mark.asyncio
 async def test_session_last_update_time_updates_on_event(session_service):
   app_name = 'my_app'
@@ -762,6 +884,32 @@ async def test_session_last_update_time_updates_on_event(session_service):
       event_timestamp, abs=1e-6
   )
   assert refreshed_session.last_update_time > original_update_time
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.DATABASE, SessionServiceType.SQLITE]
+)
+async def test_append_event_to_deleted_session_raises_session_not_found(
+    service_type, tmp_path
+):
+  session_service = get_session_service(service_type, tmp_path)
+  try:
+    app_name = 'my_app'
+    user_id = 'user'
+    session = await session_service.create_session(
+        app_name=app_name, user_id=user_id
+    )
+    await session_service.delete_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+
+    event = Event(invocation_id='inv1', author='user')
+    with pytest.raises(SessionNotFoundError):
+      await session_service.append_event(session, event)
+  finally:
+    if isinstance(session_service, DatabaseSessionService):
+      await session_service.close()
 
 
 @pytest.mark.asyncio
@@ -1044,11 +1192,12 @@ async def test_get_session_with_config(session_service):
   user_id = 'user'
 
   num_test_events = 5
+  base_timestamp = int(time.time())
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
   )
   for i in range(1, num_test_events + 1):
-    event = Event(author='user', timestamp=i)
+    event = Event(author='user', timestamp=base_timestamp + i)
     await session_service.append_event(session, event)
 
   # No config, expect all events to be returned.
@@ -1058,6 +1207,13 @@ async def test_get_session_with_config(session_service):
   events = session.events
   assert len(events) == num_test_events
 
+  # Explicitly requesting zero recent events should return no event history.
+  config = GetSessionConfig(num_recent_events=0)
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id, config=config
+  )
+  assert not session.events
+
   # Only expect the most recent 3 events.
   num_recent_events = 3
   config = GetSessionConfig(num_recent_events=num_recent_events)
@@ -1066,20 +1222,24 @@ async def test_get_session_with_config(session_service):
   )
   events = session.events
   assert len(events) == num_recent_events
-  assert events[0].timestamp == num_test_events - num_recent_events + 1
+  assert (
+      events[0].timestamp
+      == base_timestamp + num_test_events - num_recent_events + 1
+  )
 
-  # Only expect events after timestamp 4.0 (inclusive), i.e., 2 events.
-  after_timestamp = 4.0
+  # Only expect events after the fourth timestamp (inclusive), i.e., 2 events.
+  after_event_index = 4
+  after_timestamp = base_timestamp + after_event_index
   config = GetSessionConfig(after_timestamp=after_timestamp)
   session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
   )
   events = session.events
-  assert len(events) == num_test_events - after_timestamp + 1
+  assert len(events) == num_test_events - after_event_index + 1
   assert events[0].timestamp == after_timestamp
 
   # Expect no events if none are > after_timestamp.
-  way_after_timestamp = num_test_events * 10
+  way_after_timestamp = base_timestamp + num_test_events * 10
   config = GetSessionConfig(after_timestamp=way_after_timestamp)
   session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
@@ -1095,7 +1255,7 @@ async def test_get_session_with_config(session_service):
       app_name=app_name, user_id=user_id, session_id=session.id, config=config
   )
   events = session.events
-  assert len(events) == num_test_events - after_timestamp + 1
+  assert len(events) == num_test_events - after_event_index + 1
 
 
 @pytest.mark.asyncio
@@ -1247,6 +1407,137 @@ async def test_append_event_calls_rollback_on_commit_failure():
     await service.close()
 
 
+class _CommitOrderSpySession:
+  """SQLAlchemy session spy that marks when commit() has completed."""
+
+  def __init__(self, real_session, on_committed):
+    self._real = real_session
+    self._on_committed = on_committed
+
+  async def __aenter__(self):
+    self._real = await self._real.__aenter__()
+    return self
+
+  async def __aexit__(self, *args):
+    return await self._real.__aexit__(*args)
+
+  async def commit(self):
+    result = await self._real.commit()
+    self._on_committed()
+    return result
+
+  def __getattr__(self, name):
+    return getattr(self._real, name)
+
+
+@pytest.mark.asyncio
+async def test_append_event_reads_storage_revision_before_commit():
+  """append_event captures session revision before commit completes."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  await service.prepare_tables()
+  schema = service._get_schema_classes()
+  original_get_update_timestamp = schema.StorageSession.get_update_timestamp
+  original_get_update_marker = schema.StorageSession.get_update_marker
+  revision_read_state = {'committed': False, 'post_commit_reads': 0}
+
+  def _track_revision_read(original):
+    def wrapper(self, *args, **kwargs):
+      if revision_read_state['committed']:
+        revision_read_state['post_commit_reads'] += 1
+      return original(self, *args, **kwargs)
+
+    return wrapper
+
+  schema.StorageSession.get_update_timestamp = _track_revision_read(
+      original_get_update_timestamp
+  )
+  schema.StorageSession.get_update_marker = _track_revision_read(
+      original_get_update_marker
+  )
+
+  try:
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    event_timestamp = session.last_update_time + 10
+    event = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=event_timestamp,
+    )
+
+    original_factory = service.database_session_factory
+
+    def _spy_factory():
+      return _CommitOrderSpySession(
+          original_factory(),
+          on_committed=lambda: revision_read_state.update({'committed': True}),
+      )
+
+    service.database_session_factory = _spy_factory
+
+    await service.append_event(session, event)
+
+    assert revision_read_state['post_commit_reads'] == 0
+    assert session.last_update_time == pytest.approx(event_timestamp, abs=1e-6)
+    assert session._storage_update_marker is not None
+  finally:
+    schema.StorageSession.get_update_timestamp = original_get_update_timestamp
+    schema.StorageSession.get_update_marker = original_get_update_marker
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_create_session_reads_storage_revision_before_commit():
+  """create_session captures session revision before commit completes."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  await service.prepare_tables()
+  schema = service._get_schema_classes()
+  original_get_update_timestamp = schema.StorageSession.get_update_timestamp
+  original_get_update_marker = schema.StorageSession.get_update_marker
+  revision_read_state = {'committed': False, 'post_commit_reads': 0}
+
+  def _track_revision_read(original):
+    def wrapper(self, *args, **kwargs):
+      if revision_read_state['committed']:
+        revision_read_state['post_commit_reads'] += 1
+      return original(self, *args, **kwargs)
+
+    return wrapper
+
+  schema.StorageSession.get_update_timestamp = _track_revision_read(
+      original_get_update_timestamp
+  )
+  schema.StorageSession.get_update_marker = _track_revision_read(
+      original_get_update_marker
+  )
+
+  try:
+    original_factory = service.database_session_factory
+
+    def _spy_factory():
+      return _CommitOrderSpySession(
+          original_factory(),
+          on_committed=lambda: revision_read_state.update({'committed': True}),
+      )
+
+    service.database_session_factory = _spy_factory
+
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+
+    assert revision_read_state['post_commit_reads'] == 0
+    assert session.last_update_time is not None
+    assert session._storage_update_marker is not None
+  finally:
+    schema.StorageSession.get_update_timestamp = original_get_update_timestamp
+    schema.StorageSession.get_update_marker = original_get_update_marker
+
+    await service.close()
+
+
 @pytest.mark.asyncio
 async def test_delete_session_calls_rollback_on_commit_failure():
   """Verifies that a commit failure during delete_session triggers an explicit
@@ -1332,10 +1623,9 @@ async def test_service_recovers_after_multiple_failures():
 
 @pytest.mark.asyncio
 async def test_concurrent_prepare_tables_no_race_condition():
-  """Verifies that concurrent calls to _prepare_tables wait for table creation.
-  Reproduces the race condition from
-  https://github.com/google/adk-python/issues/4445: when concurrent requests
-  arrive at startup, _prepare_tables must not return before tables exist.
+  """Verifies that concurrent calls to prepare_tables wait for table creation.
+  Reproduces the race condition where concurrent requests
+  arrive at startup, prepare_tables must not return before tables exist.
   Previously, the early-return guard checked _db_schema_version (set during
   schema detection) instead of _tables_created, so a second request could
   slip through after schema detection but before table creation finished.
@@ -1348,7 +1638,7 @@ async def test_concurrent_prepare_tables_no_race_condition():
 
     # Launch several concurrent create_session calls, each with a unique
     # app_name to avoid IntegrityError on the shared app_states row.
-    # Each will call _prepare_tables internally.  If the race condition
+    # Each will call prepare_tables internally.  If the race condition
     # exists, some of these will fail because the "sessions" table doesn't
     # exist yet.
     num_concurrent = 5
@@ -1366,7 +1656,7 @@ async def test_concurrent_prepare_tables_no_race_condition():
     for i, result in enumerate(results):
       assert not isinstance(result, BaseException), (
           f'Concurrent create_session #{i} raised {result!r}; tables were'
-          ' likely not ready due to the _prepare_tables race condition.'
+          ' likely not ready due to the prepare_tables race condition.'
       )
 
     # All sessions should be retrievable.
@@ -1385,7 +1675,7 @@ async def test_concurrent_prepare_tables_no_race_condition():
 async def test_prepare_tables_serializes_schema_detection_and_creation():
   """Verifies schema detection and table creation happen atomically under one
   lock, so concurrent callers cannot observe a partially-initialized state.
-  After _prepare_tables completes, both _db_schema_version and _tables_created
+  After prepare_tables completes, both _db_schema_version and _tables_created
   must be set.
   """
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
@@ -1393,9 +1683,9 @@ async def test_prepare_tables_serializes_schema_detection_and_creation():
     assert not service._tables_created
     assert service._db_schema_version is None
 
-    await service._prepare_tables()
+    await service.prepare_tables()
 
-    # Both must be set after a single _prepare_tables call.
+    # Both must be set after a single prepare_tables call.
     assert service._tables_created
     assert service._db_schema_version is not None
 
@@ -1414,7 +1704,7 @@ async def test_get_or_create_state_returns_existing_row():
   """_get_or_create_state returns an existing row without inserting."""
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
-    await service._prepare_tables()
+    await service.prepare_tables()
     schema = service._get_schema_classes()
 
     # Pre-create the app_state row.
@@ -1441,7 +1731,7 @@ async def test_get_or_create_state_creates_new_row():
   """_get_or_create_state creates a row when none exists."""
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
-    await service._prepare_tables()
+    await service.prepare_tables()
     schema = service._get_schema_classes()
 
     async with service.database_session_factory() as sql_session:
@@ -1467,14 +1757,14 @@ async def test_get_or_create_state_creates_new_row():
 async def test_get_or_create_state_handles_race_condition():
   """_get_or_create_state recovers when a concurrent INSERT wins the race.
 
-  Simulates the race from https://github.com/google/adk-python/issues/4954:
+  Simulates the race:
   the initial SELECT returns None (another caller hasn't committed yet), but
   by the time we INSERT, the other caller has committed — so the INSERT fails
   with IntegrityError and we fall back to re-fetching.
   """
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
-    await service._prepare_tables()
+    await service.prepare_tables()
     schema = service._get_schema_classes()
 
     # Pre-create the row to guarantee the INSERT will fail.
@@ -1542,17 +1832,17 @@ async def test_create_session_sequential_same_app_name():
 
 @pytest.mark.asyncio
 async def test_prepare_tables_idempotent_after_creation():
-  """Calling _prepare_tables multiple times is safe and idempotent.
+  """Calling prepare_tables multiple times is safe and idempotent.
   After tables are created, subsequent calls should return immediately via
   the fast path without errors.
   """
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
-    await service._prepare_tables()
+    await service.prepare_tables()
     assert service._tables_created
 
     # Call again — should be a no-op via the fast path.
-    await service._prepare_tables()
+    await service.prepare_tables()
     assert service._tables_created
 
     # Service should still work.
@@ -1562,6 +1852,30 @@ async def test_prepare_tables_idempotent_after_creation():
     assert session.id == 's1'
   finally:
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_public_prepare_tables_eager_initialization():
+  """Calling the public prepare_tables() eagerly initializes tables so that
+  the first real database operation does not pay the setup cost.
+  """
+  async with DatabaseSessionService('sqlite+aiosqlite:///:memory:') as service:
+    # Before calling prepare_tables, tables are not created.
+    assert not service._tables_created
+    assert service._db_schema_version is None
+
+    # Eagerly prepare tables via the public API.
+    await service.prepare_tables()
+
+    # Tables should now be ready.
+    assert service._tables_created
+    assert service._db_schema_version is not None
+
+    # Subsequent operations should work without any additional setup cost.
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert session.id == 's1'
 
 
 @pytest.mark.asyncio
@@ -1777,3 +2091,278 @@ async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_sta
   service = VertexAiSessionService(project='proj', location='us-central1')
   with pytest.raises(NotImplementedError):
     await service.get_user_state(app_name='my_app', user_id='u1')
+
+
+def test_database_session_service_visible_in_module_namespace():
+  """DatabaseSessionService must be in dir() so Sphinx autodoc renders it.
+
+  It is imported lazily via module __getattr__, so without an explicit
+  __dir__ it drops out of the generated API reference.
+  """
+  import google.adk.sessions as sessions_module
+
+  assert 'DatabaseSessionService' in dir(sessions_module)
+  assert sessions_module.DatabaseSessionService is DatabaseSessionService
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_with_db_url():
+  """Test DatabaseSessionService initialization with db_url."""
+  # Test db_url as positional argument
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  app_name = 'test_app'
+  user_id = 'test_user'
+
+  # Create and retrieve a session
+  session = await service.create_session(
+      app_name=app_name, user_id=user_id, state={'key': 'value'}
+  )
+  assert session.app_name == app_name
+  assert session.user_id == user_id
+  assert session.state == {'key': 'value'}
+
+  # Let's check that we can retrieve it
+  retrieved = await service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert retrieved == session
+
+  # test db_url as keyword argument
+  service2 = DatabaseSessionService(db_url='sqlite+aiosqlite:///:memory:')
+  session2 = await service2.create_session(
+      app_name=app_name, user_id=user_id, state={'key': 'value2'}
+  )
+  assert session2.state == {'key': 'value2'}
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_with_db_engine():
+  """Test DatabaseSessionService initialization with db_engine."""
+  # Create an engine manually with StaticPool to avoid flakes
+  engine = create_async_engine(
+      'sqlite+aiosqlite:///:memory:',
+      poolclass=StaticPool,
+      connect_args={'check_same_thread': False},
+  )
+
+  # Create service with db_engine
+  service = DatabaseSessionService(db_engine=engine)
+  app_name = 'test_app'
+  user_id = 'test_user'
+
+  # Create and retrieve a session
+  session = await service.create_session(
+      app_name=app_name, user_id=user_id, state={'key': 'value'}
+  )
+  assert session.app_name == app_name
+  assert session.user_id == user_id
+  assert session.state == {'key': 'value'}
+
+  # Let's check that we can retrieve it
+  retrieved = await service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert retrieved == session
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_caller_owned_engine_not_disposed_on_close():
+  """Verifies that a caller-owned engine is not disposed when the service is closed."""
+  engine = create_async_engine(
+      'sqlite+aiosqlite:///:memory:',
+      poolclass=StaticPool,
+      connect_args={'check_same_thread': False},
+  )
+
+  service = DatabaseSessionService(db_engine=engine)
+
+  # Use the service
+  session = await service.create_session(app_name='app', user_id='user')
+  assert session is not None
+
+  # Close the service
+  await service.close()
+
+  # Verify engine is still usable by running a query
+  async with engine.connect() as conn:
+    result = await conn.execute(text('SELECT 1;'))
+    assert result.scalar() == 1
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_requires_one_argument():
+  """Test that DatabaseSessionService requires exactly one of db_url or db_engine."""
+  # Neither argument provided
+  with pytest.raises(
+      ValueError,
+      match="Exactly one of 'db_url' or 'db_engine' must be provided",
+  ):
+    DatabaseSessionService()
+
+  # Both arguments provided
+  engine = create_async_engine('sqlite+aiosqlite:///:memory:')
+  with pytest.raises(
+      ValueError,
+      match="Exactly one of 'db_url' or 'db_engine' must be provided",
+  ):
+    DatabaseSessionService(
+        db_url='sqlite+aiosqlite:///:memory:', db_engine=engine
+    )
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
+    tmp_path,
+):
+  """Regression test for SQLite REAL-affinity timestamp reads."""
+  # SQLite REAL-affinity columns can end up storing raw Unix epoch floats
+  # instead of the text format SQLAlchemy's DateTime type normally writes
+  # (for example, if the row was written by a different code path than the
+  # SQLAlchemy ORM). Reading such a row back must not raise TypeError, since
+  # TypeDecorator.process_result_value runs after the impl's own result
+  # processor, which chokes on a float before process_result_value can run.
+  # This test forces that condition directly via raw SQL.
+  db_path = tmp_path / 'timestamp_regression.db'
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+  app_name = 'my_app'
+  user_id = 'user'
+
+  service = DatabaseSessionService(db_url)
+  try:
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+    event = Event(author='user', timestamp=time.time())
+    await service.append_event(session, event)
+  finally:
+    await service.close()
+
+  # Directly overwrite the stored timestamp with a raw float via raw SQL,
+  # simulating a REAL-affinity column value that bypassed SQLAlchemy's
+  # normal text-based DateTime serialization.
+  raw_epoch_float = time.time()
+  conn = sqlite3.connect(str(db_path))
+  try:
+    conn.execute(
+        'UPDATE events SET timestamp = ? WHERE session_id = ?',
+        (raw_epoch_float, session.id),
+    )
+    conn.commit()
+  finally:
+    conn.close()
+
+  # Read it back with a fresh service instance; this must not raise
+  # TypeError: fromisoformat: argument must be str.
+  service2 = DatabaseSessionService(db_url)
+  try:
+    retrieved_session = await service2.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+  finally:
+    await service2.close()
+
+  assert retrieved_session is not None
+  assert len(retrieved_session.events) == 1
+  assert retrieved_session.events[0].timestamp == pytest.approx(
+      raw_epoch_float, abs=1.0
+  )
+
+
+@pytest.fixture
+def local_timezone_with_dst():
+  """Runs the test in a local timezone that repeats an hour every autumn.
+
+  ``time.tzset`` is POSIX-only, so on other platforms the test runs in the
+  host zone instead. Restoring ``TZ`` without a second ``tzset`` would leave
+  the C library pinned for the rest of the session, so both are undone.
+  """
+  if not hasattr(time, 'tzset'):
+    yield
+    return
+  original_tz = os.environ.get('TZ')
+  os.environ['TZ'] = 'America/New_York'
+  time.tzset()
+  try:
+    yield
+  finally:
+    if original_tz is None:
+      del os.environ['TZ']
+    else:
+      os.environ['TZ'] = original_tz
+    time.tzset()
+
+
+@pytest.mark.asyncio
+async def test_get_session_keeps_exact_epoch_across_a_repeated_local_hour(
+    session_service, local_timezone_with_dst
+):
+  """Events written during a repeated local hour read back at the same instant.
+
+  2024-11-03 06:00 and 06:30 UTC are 01:00 and 01:30 in US Eastern for the
+  second time that morning; the same local wall-clock times already happened
+  an hour earlier. A round trip that reconstructs the epoch from local wall
+  clock alone cannot tell the two passes apart, so those events come back an
+  hour early and sort into the wrong place in the conversation.
+  """
+  app_name = 'my_app'
+  user_id = 'user'
+  # Both instants fall in the repeated hour, so their local times are
+  # ambiguous.
+  repeated_hour_epochs = [1730613600.0, 1730615400.0]
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  for epoch in repeated_hour_epochs:
+    await session_service.append_event(
+        session, Event(author='user', timestamp=epoch)
+    )
+
+  retrieved_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+
+  assert [
+      event.timestamp for event in retrieved_session.events
+  ] == repeated_hour_epochs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.DATABASE, SessionServiceType.SQLITE]
+)
+@pytest.mark.parametrize('append_ids_in_reverse', [False, True])
+async def test_get_session_orders_tied_timestamps_by_id(
+    service_type, append_ids_in_reverse, tmp_path
+):
+  """Events sharing a timestamp come back in a stable, id-ordered sequence.
+
+  Without a tiebreaker the database is free to return tied events in any
+  order, so a replayed conversation shuffles between fetches and
+  `num_recent_events` truncates at an arbitrary point inside the tie. Ordering
+  on id as well also keeps the last returned event consistent with the event
+  the stale-session check treats as the latest one.
+  """
+  app_name = 'my_app'
+  user_id = 'user'
+  event_ids = ['event_a', 'event_m', 'event_z']
+  shared_timestamp = 100.0
+
+  service = get_session_service(service_type, tmp_path)
+  try:
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+    append_order = (
+        list(reversed(event_ids)) if append_ids_in_reverse else event_ids
+    )
+    for event_id in append_order:
+      await service.append_event(
+          session,
+          Event(author='user', id=event_id, timestamp=shared_timestamp),
+      )
+
+    retrieved_session = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+  finally:
+    if isinstance(service, DatabaseSessionService):
+      await service.close()
+
+  assert [event.id for event in retrieved_session.events] == event_ids

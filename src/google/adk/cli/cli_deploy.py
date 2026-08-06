@@ -21,6 +21,8 @@ import shutil
 import subprocess
 import sys
 import traceback
+from typing import Any
+from typing import Callable
 from typing import Final
 from typing import Literal
 from typing import Optional
@@ -63,8 +65,8 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
   with open(requirements_txt_path, 'a', encoding='utf-8') as f:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
-    f.write('google-cloud-aiplatform[agent_engines]\n')
-    f.write(f'google-adk=={__version__}\n')
+    f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
+    f.write(f'google-adk[a2a]=={__version__}\n')
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
@@ -80,21 +82,21 @@ USER myuser
 # Set up environment variables - Start
 ENV PATH="/home/myuser/.local/bin:$PATH"
 
-ENV GOOGLE_GENAI_USE_VERTEXAI=1
+ENV GOOGLE_GENAI_USE_ENTERPRISE=1
 ENV GOOGLE_CLOUD_PROJECT={gcp_project_id}
 ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 
 # Set up environment variables - End
 
 # Install ADK - Start
-RUN pip install google-adk=={adk_version}
+RUN pip install "google-adk[a2a]=={adk_version}"
 # Install ADK - End
 
 # Copy agent - Start
 
 # Set permission
 COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
-
+{extra_packages_copy}
 # Copy agent - End
 
 # Install Agent Deps - Start
@@ -147,6 +149,8 @@ _AGENT_ENGINE_CLASS_METHODS = [
                 'user_id': {'type': 'string'},
                 'session_id': {'type': 'string', 'nullable': True},
                 'state': {'type': 'object', 'nullable': True},
+                'ttl': {'type': 'string', 'nullable': True},
+                'expire_time': {'type': 'string', 'nullable': True},
             },
             'required': ['user_id'],
             'type': 'object',
@@ -215,19 +219,24 @@ _AGENT_ENGINE_CLASS_METHODS = [
             'Creates a new session.\n\n        Args:\n            user_id'
             ' (str):\n                Required. The ID of the user.\n          '
             '  session_id (str):\n                Optional. The ID of the'
-            ' session. If not provided, an ID\n                will be be'
+            ' session. If not provided, an ID\n                will be'
             ' generated for the session.\n            state (dict[str, Any]):\n'
             '                Optional. The initial state of the session.\n     '
-            '       **kwargs (dict[str, Any]):\n                Optional.'
-            ' Additional keyword arguments to pass to the\n               '
-            ' session service.\n\n        Returns:\n            Session: The'
-            ' newly created session instance.\n        '
+            '       ttl (str):\n                Optional. The time-to-live for'
+            ' the session.\n            expire_time (str):\n               '
+            ' Optional. The expiration time for the session.\n           '
+            ' **kwargs (dict[str, Any]):\n                Optional. Additional'
+            ' keyword arguments to pass to the\n                session'
+            ' service.\n\n        Returns:\n            Session: The newly'
+            ' created session instance.\n        '
         ),
         'parameters': {
             'properties': {
                 'user_id': {'type': 'string'},
                 'session_id': {'type': 'string', 'nullable': True},
                 'state': {'type': 'object', 'nullable': True},
+                'ttl': {'type': 'string', 'nullable': True},
+                'expire_time': {'type': 'string', 'nullable': True},
             },
             'required': ['user_id'],
             'type': 'object',
@@ -603,6 +612,36 @@ def _get_service_option_by_adk_version(
   return ' '.join(options)
 
 
+def _get_ignore_patterns_func(
+    agent_folder: str,
+) -> Callable[[Any, list[str]], set[str]]:
+  """Returns a shutil.ignore_patterns function with combined patterns from .gitignore, .gcloudignore and .ae_ignore."""
+  patterns = set('.adk/')
+
+  for filename in ['.gitignore', '.gcloudignore', '.ae_ignore']:
+    filepath = os.path.join(agent_folder, filename)
+    if os.path.exists(filepath):
+      click.echo(f'Reading ignore patterns from {filename}...')
+      try:
+        with open(filepath, 'r') as f:
+          for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+              # If it ends with /, remove it for fnmatch compatibility
+              if line.endswith('/'):
+                line = line[:-1]
+              # Strip leading / from root-anchored patterns; shutil.ignore_patterns
+              # matches basenames via fnmatch, so '/venv' would match nothing.
+              if line.startswith('/'):
+                line = line[1:]
+              if line:
+                patterns.add(line)
+      except Exception as e:
+        click.secho(f'Warning: Failed to read {filename}: {e}', fg='yellow')
+
+  return shutil.ignore_patterns(*patterns)
+
+
 def to_cloud_run(
     *,
     agent_folder: str,
@@ -626,7 +665,7 @@ def to_cloud_run(
     a2a: bool = False,
     trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
-):
+) -> None:
   """Deploys an agent to Google Cloud Run.
 
   `agent_folder` should contain the following files:
@@ -679,7 +718,8 @@ def to_cloud_run(
     # copy agent source code
     click.echo('Copying agent source code...')
     agent_src_path = os.path.join(temp_folder, 'agents', app_name)
-    shutil.copytree(agent_folder, agent_src_path)
+    ignore_func = _get_ignore_patterns_func(agent_folder)
+    shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = (
         f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
@@ -721,6 +761,7 @@ def to_cloud_run(
         trigger_sources_option=trigger_sources_option,
         gemini_enterprise_option='',
         express_mode_option='',
+        extra_packages_copy='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -746,6 +787,7 @@ def to_cloud_run(
     # Build the command with extra gcloud args
     gcloud_cmd = [
         _GCLOUD_CMD,
+        'beta',
         'run',
         'deploy',
         service_name,
@@ -758,6 +800,7 @@ def to_cloud_run(
         str(port),
         '--verbosity',
         log_level.lower() if log_level else verbosity,
+        '--sandbox-launcher',
     ]
 
     # Handle labels specially - merge user labels with ADK label
@@ -832,7 +875,8 @@ def to_agent_engine(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     adk_version: Optional[str] = None,
-):
+    extra_packages: Optional[list[str]] = None,
+) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
   `agent_folder` should contain the following files:
@@ -857,7 +901,7 @@ def to_agent_engine(
       Google Cloud.
     api_key (str): Optional. The API key to use for Express Mode. If not
       provided, the API key from the GOOGLE_API_KEY environment variable will be
-      used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
+      used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true.
     adk_app_object (str): Deprecated. This argument is no longer required or
       used.
     agent_engine_id (str): Optional. The ID of the Agent Runtime instance to
@@ -896,6 +940,8 @@ def to_agent_engine(
     adk_version (str): Optional. The ADK version to use in Agent Platform
       deployment. If not specified, the version in the dev environment will be
       used.
+    extra_packages (list[str]): Optional. Additional local file or directory
+      paths to stage alongside the agent and make importable in the image.
   """
   app_name = os.path.basename(agent_folder)
   display_name = display_name or app_name
@@ -926,6 +972,7 @@ def to_agent_engine(
     click.echo(f'Using default ADK version: {adk_version}')
 
   original_cwd = os.getcwd()
+  agent_folder_abs = os.path.abspath(agent_folder)
   did_change_cwd = False
   if parent_folder != original_cwd:
     click.echo(
@@ -943,18 +990,12 @@ def to_agent_engine(
     shutil.rmtree(temp_folder_path)
 
   try:
-    ignore_patterns = None
-    ae_ignore_path = os.path.join(agent_folder, '.ae_ignore')
-    if os.path.exists(ae_ignore_path):
-      click.echo(f'Ignoring files matching the patterns in {ae_ignore_path}')
-      with open(ae_ignore_path, 'r') as f:
-        patterns = [pattern.strip() for pattern in f.readlines()]
-        ignore_patterns = shutil.ignore_patterns(*patterns)
+    ignore_func = _get_ignore_patterns_func(agent_folder)
     click.echo('Copying agent source code...')
     shutil.copytree(
         agent_folder,
         agent_src_path,
-        ignore=ignore_patterns,
+        ignore=ignore_func,
         dirs_exist_ok=True,
     )
     os.chdir(temp_folder_path)
@@ -998,6 +1039,31 @@ def to_agent_engine(
         )
       agent_config['description'] = description
 
+    config_extra_packages = agent_config.pop('extra_packages', None) or []
+    # CLI entries resolve against the invocation dir; config-file entries
+    # against the agent folder that declared them.
+    requested_extra_packages = [
+        (pkg, original_cwd) for pkg in extra_packages or []
+    ] + [(pkg, agent_folder_abs) for pkg in config_extra_packages]
+    staged_extra_packages = []
+    for pkg, base_dir in requested_extra_packages:
+      pkg_src = pkg if os.path.isabs(pkg) else os.path.join(base_dir, pkg)
+      pkg_src = os.path.abspath(pkg_src)
+      if not os.path.exists(pkg_src):
+        raise click.ClickException(f'extra_packages path not found: {pkg}')
+      base = os.path.basename(os.path.normpath(pkg_src))
+      dst = os.path.join(temp_folder_path, base)
+      # The Dockerfile is written after this loop, so it is not on disk yet.
+      if os.path.exists(dst) or base == 'Dockerfile':
+        raise click.ClickException(
+            f'extra_packages entry has a conflicting name: {base}'
+        )
+      if os.path.isdir(pkg_src):
+        shutil.copytree(pkg_src, dst, dirs_exist_ok=True)
+      else:
+        shutil.copy2(pkg_src, dst)
+      staged_extra_packages.append(base)
+
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     if requirements_file:
       warnings.warn(
@@ -1016,9 +1082,9 @@ def to_agent_engine(
     if not os.path.exists(requirements_txt_path):
       click.echo(f'Creating {requirements_txt_path}...')
       with open(requirements_txt_path, 'w', encoding='utf-8') as f:
-        f.write('google-cloud-aiplatform[agent_engines]\n')
-        f.write(f'google-adk=={__version__}\n')
-        click.echo(f'Using google-adk=={__version__} in requirements')
+        f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
+        f.write(f'google-adk[a2a]=={__version__}\n')
+        click.echo(f'Using google-adk[a2a]=={__version__} in requirements')
       click.echo(f'Created {requirements_txt_path}')
     _ensure_agent_engine_dependency(requirements_txt_path)
 
@@ -1063,7 +1129,7 @@ def to_agent_engine(
             fg='yellow',
         )
       else:
-        env_vars['GOOGLE_GENAI_USE_VERTEXAI'] = '1'
+        env_vars['GOOGLE_GENAI_USE_ENTERPRISE'] = '1'
         env_vars['GOOGLE_API_KEY'] = api_key
     elif not project:
       if 'GOOGLE_API_KEY' in env_vars:
@@ -1139,7 +1205,7 @@ def to_agent_engine(
           stacklevel=2,
       )
 
-    def create_dockerfile_for_agent_engine(resource_name: str):
+    def create_dockerfile_for_agent_engine(resource_name: str) -> None:
       requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
       install_agent_deps = (
           f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
@@ -1149,6 +1215,16 @@ def to_agent_engine(
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
       )
+      extra_packages_copy = ''
+      if staged_extra_packages:
+        copy_lines = [
+            f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
+            if os.path.isdir(os.path.join(temp_folder_path, base))
+            else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
+            for base in staged_extra_packages
+        ]
+        copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+        extra_packages_copy = '\n'.join(copy_lines)
       agent_engine_uri = f'agentengine://{resource_name}'
       dockerfile_content = _DOCKERFILE_TEMPLATE.format(
           gcp_project_id=project,
@@ -1175,6 +1251,7 @@ def to_agent_engine(
           express_mode_option=(
               ' --express_mode' if api_key and not project else ''
           ),
+          extra_packages_copy=extra_packages_copy,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
         f.write(dockerfile_content)
@@ -1187,7 +1264,11 @@ def to_agent_engine(
           stacklevel=2,
       )
     click.echo('Deploying to Agent Platform...')
-    agent_config['source_packages'] = [f'agents/{app_name}', 'Dockerfile']
+    agent_config['source_packages'] = [
+        f'agents/{app_name}',
+        'Dockerfile',
+        *staged_extra_packages,
+    ]
     agent_config['image_spec'] = {}  # Use the Dockerfile
     agent_config['class_methods'] = _AGENT_ENGINE_CLASS_METHODS
     agent_config['agent_framework'] = 'google-adk'
@@ -1245,7 +1326,7 @@ def to_gke(
     service_type: Literal[
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
-):
+) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
   Args:
@@ -1302,7 +1383,8 @@ def to_gke(
     # copy agent source code
     click.echo('  - Copying agent source code...')
     agent_src_path = os.path.join(temp_folder, 'agents', app_name)
-    shutil.copytree(agent_folder, agent_src_path)
+    ignore_func = _get_ignore_patterns_func(agent_folder)
+    shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = (
         f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
@@ -1344,6 +1426,7 @@ def to_gke(
         ),
         gemini_enterprise_option='',
         express_mode_option='',
+        extra_packages_copy='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)

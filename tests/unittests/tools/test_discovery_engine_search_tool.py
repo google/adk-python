@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import concurrent.futures
+import threading
+import time
 from unittest import mock
 
 from google.adk.tools import discovery_engine_search_tool
@@ -112,16 +115,19 @@ class TestDiscoveryEngineSearchTool:
           ),
       ],
   )
+  @mock.patch.object(discovery_engine_search_tool, "_get_api_endpoint")
   @mock.patch.object(discovery_engine_search_tool, "client_options")
   @mock.patch.object(discoveryengine, "SearchServiceClient")
   def test_init_with_regional_location_uses_regional_endpoint(
       self,
       mock_search_client,
       mock_client_options,
+      mock_get_api_endpoint,
       tool_kwargs,
       expected_endpoint,
   ):
     """Test initialization uses the expected regional API endpoint."""
+    mock_get_api_endpoint.return_value = expected_endpoint
     DiscoveryEngineSearchTool(**tool_kwargs)
 
     mock_client_options.ClientOptions.assert_called_once_with(
@@ -132,12 +138,14 @@ class TestDiscoveryEngineSearchTool:
         client_options=mock_client_options.ClientOptions.return_value,
     )
 
+  @mock.patch.object(discovery_engine_search_tool, "_get_api_endpoint")
   @mock.patch.object(discovery_engine_search_tool, "client_options")
   @mock.patch.object(discoveryengine, "SearchServiceClient")
   def test_init_with_explicit_location_override_uses_input_location(
-      self, mock_search_client, mock_client_options
+      self, mock_search_client, mock_client_options, mock_get_api_endpoint
   ):
     """Test initialization uses explicit location when resource has none."""
+    mock_get_api_endpoint.return_value = "eu-discoveryengine.googleapis.com"
     DiscoveryEngineSearchTool(
         data_store_id="test_data_store",
         location="eu",
@@ -239,12 +247,14 @@ class TestDiscoveryEngineSearchTool:
         credentials="credentials", client_options=None
     )
 
+  @mock.patch.object(discovery_engine_search_tool, "_get_api_endpoint")
   @mock.patch.object(discovery_engine_search_tool, "client_options")
   @mock.patch.object(discoveryengine, "SearchServiceClient")
   def test_init_with_regional_location_and_quota_project_id(
-      self, mock_search_client, mock_client_options
+      self, mock_search_client, mock_client_options, mock_get_api_endpoint
   ):
     """Test initialization uses endpoint and quota project id together."""
+    mock_get_api_endpoint.return_value = "eu-discoveryengine.googleapis.com"
     mock_credentials = mock.MagicMock()
     mock_credentials.quota_project_id = "test-quota-project"
 
@@ -487,6 +497,100 @@ class TestDiscoveryEngineSearchTool:
     assert result["results"][0]["title"] == "Jira Issue"
     assert mock_search_client.return_value.search.call_count == 2
     # Mode should be persisted so subsequent calls skip the retry.
+    assert tool._search_result_mode == SearchResultMode.DOCUMENTS
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_auto_detect_caches_chunks_on_success(self, mock_search_client):
+    """Test auto-detect caches CHUNKS mode on successful search."""
+    mock_chunk = discoveryengine.Chunk(
+        document_metadata={
+            "title": "Jira Issue",
+            "uri": "https://jira.example.com/123",
+            "struct_data": {
+                "summary": "Bug fix",
+            },
+        },
+        content="Bug fix",
+    )
+    mock_response = discoveryengine.SearchResponse()
+    mock_response.results = [
+        discoveryengine.SearchResponse.SearchResult(chunk=mock_chunk)
+    ]
+    mock_search_client.return_value.search.return_value = mock_response
+
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+    result = tool.discovery_engine_search("test query")
+
+    assert result["status"] == "success"
+    assert len(result["results"]) == 1
+    assert result["results"][0]["title"] == "Jira Issue"
+    assert result["results"][0]["url"] == "https://jira.example.com/123"
+    assert result["results"][0]["content"] == "Bug fix"
+    assert mock_search_client.return_value.search.call_count == 1
+    # Mode should be persisted as CHUNKS.
+    assert tool._search_result_mode == SearchResultMode.CHUNKS
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_auto_detect_singleflights_structured_fallback(
+      self, mock_search_client
+  ):
+    """Concurrent cold calls should share one CHUNKS probe."""
+    spec_cls = discoveryengine.SearchRequest.ContentSearchSpec
+    worker_count = 8
+    start_barrier = threading.Barrier(worker_count)
+    search_lock = threading.Lock()
+    search_modes = []
+    structured_error = exceptions.InvalidArgument(
+        "`content_search_spec.search_result_mode` must be set to"
+        " SearchRequest.ContentSearchSpec.SearchResultMode.DOCUMENTS"
+        " when the engine contains structured data store."
+    )
+    mock_doc = discoveryengine.Document(
+        name="projects/p/locations/l/doc1",
+        id="doc1",
+        struct_data={
+            "title": "Jira Issue",
+            "uri": "https://jira.example.com/123",
+            "summary": "Bug fix",
+        },
+    )
+    mock_doc_response = discoveryengine.SearchResponse()
+    mock_doc_response.results = [
+        discoveryengine.SearchResponse.SearchResult(document=mock_doc)
+    ]
+
+    def search(request):
+      mode = request.content_search_spec.search_result_mode
+      with search_lock:
+        search_modes.append(mode)
+      if mode == spec_cls.SearchResultMode.CHUNKS:
+        time.sleep(0.05)
+        raise structured_error
+      return mock_doc_response
+
+    mock_search_client.return_value.search.side_effect = search
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+
+    def run_search(index):
+      start_barrier.wait(timeout=5)
+      return tool.discovery_engine_search(f"test query {index}")
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=worker_count
+    ) as executor:
+      results = list(executor.map(run_search, range(worker_count)))
+
+    assert all(result["status"] == "success" for result in results)
+    assert search_modes.count(spec_cls.SearchResultMode.CHUNKS) == 1
+    assert (
+        search_modes.count(spec_cls.SearchResultMode.DOCUMENTS) == worker_count
+    )
     assert tool._search_result_mode == SearchResultMode.DOCUMENTS
 
   @mock.patch.object(

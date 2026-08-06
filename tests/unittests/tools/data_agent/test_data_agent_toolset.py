@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from unittest import mock
 
-from google.adk.tools.data_agent import DataAgentCredentialsConfig
-from google.adk.tools.data_agent import DataAgentToolset
 from google.adk.tools.data_agent.config import DataAgentToolConfig
+from google.adk.tools.data_agent.credentials import DataAgentCredentialsConfig
+from google.adk.tools.data_agent.data_agent_toolset import DataAgentToolset
 from google.adk.tools.google_tool import GoogleTool
 import pytest
 

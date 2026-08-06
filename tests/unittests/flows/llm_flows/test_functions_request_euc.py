@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from typing import Any
 from typing import Optional
 
@@ -151,6 +152,68 @@ def test_function_request_euc():
         args.auth_config.raw_auth_credential
         == auth_configs[idx].raw_auth_credential
     )
+
+  assert len(mock_model.requests) == 1
+
+
+def test_function_request_euc_args_are_json_serializable():
+  responses = [
+      [
+          types.Part.from_function_call(name='call_external_api', args={}),
+      ],
+      [
+          types.Part.from_text(text='response1'),
+      ],
+  ]
+
+  auth_config = AuthConfig(
+      auth_scheme=OAuth2(
+          flows=OAuthFlows(
+              authorizationCode=OAuthFlowAuthorizationCode(
+                  authorizationUrl='https://accounts.google.com/o/oauth2/auth',
+                  tokenUrl='https://oauth2.googleapis.com/token',
+                  scopes={
+                      'https://www.googleapis.com/auth/calendar': (
+                          'See, edit, share, and permanently delete all the'
+                          ' calendars you can access using Google Calendar'
+                      )
+                  },
+              )
+          )
+      ),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='oauth_client_id',
+              client_secret='oauth_client_secret',
+          ),
+      ),
+  )
+
+  mock_model = testing_utils.MockModel.create(responses=responses)
+
+  def call_external_api(tool_context: ToolContext) -> Optional[int]:
+    tool_context.request_credential(auth_config)
+
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[call_external_api],
+  )
+  runner = testing_utils.InMemoryRunner(agent)
+  events = runner.run('test')
+
+  request_euc_function_call = events[1].content.parts[0].function_call
+  assert (
+      request_euc_function_call.name == functions.REQUEST_EUC_FUNCTION_CALL_NAME
+  )
+
+  # python-mode dump leaves auth_scheme.type a live enum, breaking json.dumps
+  json.dumps(request_euc_function_call.args)
+  assert (
+      request_euc_function_call.args['authConfig']['authScheme']['type']
+      == 'oauth2'
+  )
 
 
 def test_function_get_auth_response():
@@ -309,7 +372,7 @@ def test_function_get_auth_response():
   )
   runner = testing_utils.InMemoryRunner(agent)
   runner.run('test')
-  request_euc_function_call_event = runner.session.events[-3]
+  request_euc_function_call_event = runner.session.events[-2]
   function_response1 = types.FunctionResponse(
       name=request_euc_function_call_event.content.parts[0].function_call.name,
       response=auth_response1.model_dump(),
@@ -505,7 +568,7 @@ def test_function_get_auth_response_partial():
   )
   runner = testing_utils.InMemoryRunner(agent)
   runner.run('test')
-  request_euc_function_call_event = runner.session.events[-3]
+  request_euc_function_call_event = runner.session.events[-2]
   function_response1 = types.FunctionResponse(
       name=request_euc_function_call_event.content.parts[0].function_call.name,
       response=auth_response1.model_dump(),
@@ -531,7 +594,7 @@ def test_function_get_auth_response_partial():
   )
 
   assert function_invoked == 3
-  assert len(mock_model.requests) == 3
+  assert len(mock_model.requests) == 2
   request = mock_model.requests[-1]
   content = request.contents[-1]
   parts = content.parts
@@ -550,7 +613,7 @@ def test_function_get_auth_response_partial():
       ),
   )
   assert function_invoked == 4
-  assert len(mock_model.requests) == 4
+  assert len(mock_model.requests) == 3
   request = mock_model.requests[-1]
   content = request.contents[-1]
   parts = content.parts

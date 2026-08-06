@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
@@ -24,7 +23,6 @@ from typing import TYPE_CHECKING
 
 from ...agents.context import Context
 from .._base_node import BaseNode
-from .._node_state import NodeState
 from .._node_status import NodeStatus
 from ._rehydration_utils import _ChildScanState
 from ._rehydration_utils import _process_rehydrated_output
@@ -58,11 +56,9 @@ class InterceptionResult:
 
 def check_interception(
     *,
-    node_path: str,
     node: BaseNode,
     recovered: _ChildScanState | None = None,
     current_run: DynamicNodeRun | None = None,
-    curr_parent_ctx: Context,
 ) -> InterceptionResult:
   """Determine if a node execution should be intercepted based on history."""
   from .._workflow import Workflow  # pylint: disable=g-import-not-at-top
@@ -132,12 +128,14 @@ def check_interception(
 
   else:
     # Case 5: Cross-turn no events, or events contain no output, route, or interrupts.
-    # Rerun Workflow nodes to guide nested children; otherwise fall through.
+    # Rerun Workflow nodes, wait_for_output nodes, and rerun_on_resume nodes
+    # with no prior output so they can guide nested children or resume execution;
+    # otherwise fall through.
     if (
         isinstance(node, Workflow)
-        and node.wait_for_output
-        and recovered.output is None
-    ):
+        or getattr(node, "wait_for_output", False)
+        or getattr(node, "rerun_on_resume", False)
+    ) and recovered.output is None:
       should_run = True
       resume_inputs = recovered.resolved_responses
     else:

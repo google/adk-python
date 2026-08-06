@@ -1,6 +1,11 @@
 # Agent Development Kit (ADK) 2.0
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/google-adk.svg)](https://pypi.org/project/google-adk/)
+[![Python versions](https://img.shields.io/pypi/pyversions/google-adk.svg)](https://pypi.org/project/google-adk/)
+[![PyPI downloads](https://static.pepy.tech/badge/google-adk/month)](https://pepy.tech/project/google-adk)
+[![Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
+[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://google.github.io/adk-docs/)
 
 <h2 align="center">
   <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/agent-development-kit.png" width="256"/>
@@ -42,7 +47,19 @@ ______________________________________________________________________
 pip install google-adk
 ```
 
-**Requirements:** Python 3.11+.
+**Requirements:** Python 3.10+.
+
+For transitive dependency protection, we recommend to install with our companion
+constraints files (for python 3.10 to 3.14).
+
+Choose the constraints file matching your Python version:
+
+```bash
+# For example, for Python 3.10
+curl -o constraints-3.10.txt https://github.com/google/adk-python/blob/main/constraints-3.10.txt
+pip install google-adk -c constraints-3.10.txt
+rm constraints-3.10.txt
+```
 
 To install optional integrations, you can use the following command:
 
@@ -53,6 +70,10 @@ pip install "google-adk[extensions]"
 The release cadence is roughly bi-weekly.
 
 ## Quick Start
+
+> **Beginner Note:** ADK applications are built using two main classes:
+> **`Agent`** (defines an AI's instructions, tools, and behavior) and
+> **`Workflow`** (orchestrates agents and tasks in a graph-based flow).
 
 ### Agent
 

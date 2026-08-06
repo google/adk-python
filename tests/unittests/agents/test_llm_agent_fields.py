@@ -96,6 +96,54 @@ def test_canonical_model_inherit():
   assert sub_agent.canonical_model == parent_agent.canonical_model
 
 
+def test_canonical_model_str_resolved_once():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+
+  with mock.patch.object(
+      LLMRegistry, 'new_llm', wraps=LLMRegistry.new_llm
+  ) as new_llm:
+    first = agent.canonical_model
+    second = agent.canonical_model
+    third = agent.canonical_model
+
+  assert new_llm.call_count == 1
+  assert first is second is third
+
+
+def test_canonical_model_str_resolved_again_after_reassignment():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  first = agent.canonical_model
+
+  agent.model = 'gemini-2.5-flash'
+  second = agent.canonical_model
+
+  assert second is not first
+  assert second.model == 'gemini-2.5-flash'
+
+
+def test_canonical_model_str_not_stale_after_model_copy():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  assert agent.canonical_model.model == 'gemini-pro'
+
+  copied = agent.model_copy(update={'model': 'gemini-2.5-flash'})
+
+  assert copied.canonical_model.model == 'gemini-2.5-flash'
+  assert agent.canonical_model.model == 'gemini-pro'
+
+
+def test_canonical_live_model_str_resolved_once():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+
+  with mock.patch.object(
+      LLMRegistry, 'new_llm', wraps=LLMRegistry.new_llm
+  ) as new_llm:
+    first = agent.canonical_live_model
+    second = agent.canonical_live_model
+
+  assert new_llm.call_count == 1
+  assert first is second
+
+
 def test_canonical_live_model_default_fallback():
   original_default = LlmAgent._default_live_model
   LlmAgent.set_default_live_model('gemini-2.0-flash')
@@ -329,6 +377,31 @@ def test_validate_generate_content_config_response_schema_throw():
     )
 
 
+def test_validate_generate_content_config_http_options_base_url_throw():
+  """Tests that a transport base URL cannot be set directly in config."""
+  with pytest.raises(ValueError):
+    _ = LlmAgent(
+        name='test_agent',
+        generate_content_config=types.GenerateContentConfig(
+            http_options=types.HttpOptions(base_url='http://example.invalid')
+        ),
+    )
+
+
+def test_validate_generate_content_config_http_options_allowed():
+  """Tests that request-time http options remain settable in config."""
+  extra_body = {'tool_config': {'function_calling_config': {'mode': 'AUTO'}}}
+  agent = LlmAgent(
+      name='test_agent',
+      generate_content_config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(timeout=1000, extra_body=extra_body)
+      ),
+  )
+
+  assert agent.generate_content_config.http_options.timeout == 1000
+  assert agent.generate_content_config.http_options.extra_body == extra_body
+
+
 def test_allow_transfer_by_default():
   sub_agent = LlmAgent(name='sub_agent')
   agent = LlmAgent(name='test_agent', sub_agents=[sub_agent])
@@ -337,7 +410,7 @@ def test_allow_transfer_by_default():
   assert not agent.disallow_transfer_to_peers
 
 
-# TODO(b/448114567): Remove TestCanonicalTools once the workaround
+# Pending cleanup: remove TestCanonicalTools once the workaround
 # is no longer needed.
 class TestCanonicalTools:
   """Unit tests for canonical_tools in LlmAgent."""

@@ -87,17 +87,7 @@ def long_running_tool_func():
   return None
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False, marks=pytest.mark.xfail(reason='Fails in non-resumable mode')
-        ),
-        pytest.param(
-            True, marks=pytest.mark.xfail(reason='Resumability broken in V2')
-        ),
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_workflow_pause_and_resume(
     request: pytest.FixtureRequest,
@@ -228,17 +218,17 @@ async def test_workflow_pause_and_resume(
             }
         },
     )
-  # Verify end_of_agent was emitted.
-  end_events = [
-      e
-      for e in simplified_events2
-      if e[0] == 'test_workflow_agent_hitl'
-      and e[1] == testing_utils.END_OF_AGENT
-  ]
-  assert len(end_events) == 1
+    # Verify end_of_agent was emitted. Checkpoints and the end-of-agent
+    # marker are only produced in resumable mode.
+    end_events = [
+        e
+        for e in simplified_events2
+        if e[0] == 'test_workflow_agent_hitl'
+        and e[1] == testing_utils.END_OF_AGENT
+    ]
+    assert len(end_events) == 1
 
 
-@pytest.mark.xfail(reason='Resumability broken in V2')
 @pytest.mark.asyncio
 async def test_workflow_interrupt_allows_parallel_execution(
     request: pytest.FixtureRequest,
@@ -310,15 +300,7 @@ async def test_workflow_interrupt_allows_parallel_execution(
   )
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        False,
-        pytest.param(
-            True, marks=pytest.mark.xfail(reason='Resumability broken in V2')
-        ),
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_workflow_request_input_resume(
     request: pytest.FixtureRequest, resumable: bool
@@ -552,9 +534,7 @@ async def test_workflow_allows_mixing_output_and_request_input(
   assert simplified[1][1].function_call.args['interruptId'] == 'req1'
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_workflow_rerun_on_resume(
     request: pytest.FixtureRequest, resumable: bool
@@ -682,9 +662,7 @@ async def test_workflow_rerun_on_resume(
     )
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_workflow_rerun_with_multiple_inputs(
     request: pytest.FixtureRequest,
@@ -920,9 +898,7 @@ class _MultiHitlRerunNode(BaseNode):
     yield Event(output='final_output')
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_rerun_with_multiple_hitl_and_outputs(
     request: pytest.FixtureRequest,
@@ -1024,7 +1000,15 @@ async def test_rerun_with_multiple_hitl_and_outputs(
     [
         False,
         pytest.param(
-            True, marks=pytest.mark.xfail(reason='Resumability broken in V2')
+            True,
+            marks=pytest.mark.xfail(
+                reason=(
+                    'A rerun_on_resume node is re-run as soon as one interrupt'
+                    ' resolves instead of waiting for all pending interrupts;'
+                    ' fixing this needs a change to the shared replay'
+                    ' interception logic.'
+                )
+            ),
         ),
     ],
 )
@@ -1198,9 +1182,7 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_wrapped_response_unwrapped_for_node(
     request: pytest.FixtureRequest, resumable: bool
@@ -1246,9 +1228,7 @@ async def test_wrapped_response_unwrapped_for_node(
   assert node_b.received_inputs == ['hello world']
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_dict_response_not_unwrapped(
     request: pytest.FixtureRequest, resumable: bool
@@ -1375,9 +1355,7 @@ async def test_request_input_rerun_with_same_interrupt_id(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_function_node_auth_config(
     request: pytest.FixtureRequest, resumable: bool
@@ -1463,9 +1441,7 @@ async def test_function_node_auth_config(
   assert node_b.received_inputs == [{'result': 'authed'}]
 
 
-@pytest.mark.parametrize(
-    'resumable', [False, pytest.param(True, marks=pytest.mark.xfail)]
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_second_auth_node_skips_auth_when_credential_exists(
     request: pytest.FixtureRequest, resumable: bool
@@ -1573,16 +1549,7 @@ class _InputCapturingRerunNode(BaseNode):
       yield RequestInput(message='Need approval', interrupt_id='approval')
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(reason='Fails in non-resumable mode'),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_resume_preserves_node_input(
     request: pytest.FixtureRequest, resumable: bool
@@ -1637,16 +1604,7 @@ async def test_resume_preserves_node_input(
   assert node_c.received_inputs[0] == {'approved': {'yes': True}}
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(reason='Fails in non-resumable mode'),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_resume_preserves_input_from_start(
     request: pytest.FixtureRequest, resumable: bool
@@ -1689,16 +1647,7 @@ async def test_resume_preserves_input_from_start(
   assert len(node_a.captured_inputs) == 2
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(reason='Fails in non-resumable mode'),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_resume_fan_in_both_predecessors_completed(
     request: pytest.FixtureRequest, resumable: bool
@@ -1756,16 +1705,7 @@ async def test_resume_fan_in_both_predecessors_completed(
   assert node_c.captured_inputs[-1] in ('output_from_a', 'output_from_b')
 
 
-@pytest.mark.parametrize(
-    'resumable',
-    [
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(reason='Fails in non-resumable mode'),
-        ),
-        True,
-    ],
-)
+@pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_resume_loop_receives_latest_input(
     request: pytest.FixtureRequest, resumable: bool
@@ -1858,15 +1798,16 @@ async def test_resume_loop_receives_latest_input(
 async def test_multiple_invocations_isolation(request: pytest.FixtureRequest):
   """Verify that a new invocation ignores events from a previous invocation."""
 
+  run_counts = []
+
   class CounterNode(BaseNode):
     name: str = Field(default='counter_node')
-    run_count: int = Field(default=0)
 
     async def _run_impl(
         self, *, ctx: Context, node_input: Any
     ) -> AsyncGenerator[Any, None]:
-      self.run_count += 1
-      yield f'Run {self.run_count}'
+      run_counts.append(1)
+      yield f'Run {len(run_counts)}'
 
   node_a = CounterNode()
   wf = Workflow(name='wf', edges=[(START, node_a)])
@@ -1883,7 +1824,7 @@ async def test_multiple_invocations_isolation(request: pytest.FixtureRequest):
   ):
     events1.append(event)
 
-  assert node_a.run_count == 1
+  assert len(run_counts) == 1
 
   # Invocation 2 (New invocation in SAME session)
   msg2 = types.Content(parts=[types.Part(text='go 2')], role='user')
@@ -1894,7 +1835,7 @@ async def test_multiple_invocations_isolation(request: pytest.FixtureRequest):
     events2.append(event)
 
   # If isolation works, CounterNode should run AGAIN!
-  assert node_a.run_count == 2
+  assert len(run_counts) == 2
 
 
 @pytest.mark.asyncio
@@ -2150,3 +2091,111 @@ async def test_trigger_buffer_insertion_order_deterministic(
   # We assert that the FIRST trigger (for from_a) was processed FIRST!
   assert interrupt_id_2_first == 'req_d_from_a'
   assert interrupt_id_2_second == 'req_e_from_b'
+
+
+class _BranchRouterNode(BaseNode):
+  """Routes the first invocation and later invocations down different branches.
+
+  Stands in for the LlmAgent classification in the original report: the model
+  is incidental, what matters is that two invocations in one session take
+  different branches, so the first invocation ends on a node the second never
+  runs.
+  """
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
+  seen_invocations: list[str] = Field(default_factory=list)
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    self.seen_invocations.append(ctx.invocation_id)
+    distinct = list(dict.fromkeys(self.seen_invocations))
+    route = 'DONE' if len(distinct) == 1 else 'NEEDS_INPUT'
+    yield Event(output=node_input, route=route)
+
+
+class _ClarifyNode(BaseNode):
+  """Pauses for input on first execution, emits the answer once resumed."""
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
+  rerun_on_resume: bool = Field(default=True)
+
+  @override
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
+  ) -> AsyncGenerator[Any, None]:
+    interrupt_id = f'clarify:{ctx.run_id}'
+    response = ctx.resume_inputs.get(interrupt_id)
+    if response is None:
+      yield RequestInput(interrupt_id=interrupt_id, message='Which city?')
+      return
+    yield Event(output=f'resumed:{response}')
+
+
+@pytest.mark.asyncio
+async def test_request_input_resume_after_earlier_invocation_completed(
+    request: pytest.FixtureRequest,
+):
+  """A completed earlier invocation must not block a later HITL resume.
+
+  Regression test. The first invocation finishes on the `finish`
+  branch. The second invocation takes the `clarify` branch and pauses for
+  input. When the replay sequence was built from every event in the session,
+  the terminal `finish` event of the first invocation entered the sequence
+  and, being chronologically first, was the only key the sequence barrier
+  unblocked. `finish` never runs during the resume, so the pending node waited
+  out the barrier timeout and raised "Replay divergence detected".
+  """
+  prepare = _TestingNode(name='prepare_intent_text', message='prepped')
+  router = _BranchRouterNode(name='route')
+  finish = _TestingNode(name='finish', message='done')
+  clarify = _ClarifyNode(name='clarify')
+
+  agent = Workflow(
+      name='test_workflow_replay_across_invocations',
+      edges=[
+          Edge(from_node=START, to_node=prepare),
+          Edge(from_node=prepare, to_node=router),
+          Edge(from_node=router, to_node=finish, route='DONE'),
+          Edge(from_node=router, to_node=clarify, route='NEEDS_INPUT'),
+      ],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Invocation 1: runs to completion down the `finish` branch.
+  events1 = await runner.run_async(
+      testing_utils.get_user_content('who are you')
+  )
+  outputs1 = [e.output for e in events1 if e.output is not None]
+  assert 'done' in outputs1
+
+  # Invocation 2, same session: takes the `clarify` branch and pauses.
+  events2 = await runner.run_async(
+      testing_utils.get_user_content('weather please')
+  )
+  request_input_event = workflow_testing_utils.find_function_call_event(
+      events2, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert request_input_event is not None
+  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  invocation_id = request_input_event.invocation_id
+
+  # Resuming must reach the pending node instead of timing out on `finish`.
+  events3 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {'result': 'Berlin'})
+      ),
+      invocation_id=invocation_id,
+  )
+
+  outputs3 = [e.output for e in events3 if e.output is not None]
+  assert any(
+      isinstance(output, str) and output.startswith('resumed:')
+      for output in outputs3
+  ), outputs3

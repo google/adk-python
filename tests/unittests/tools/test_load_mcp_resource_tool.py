@@ -80,8 +80,8 @@ class TestLoadMcpResourceTool:
         tool_context=self.mock_tool_context, llm_request=llm_request
     )
 
-    llm_request.append_instructions.assert_called_once()
-    instructions = llm_request.append_instructions.call_args[0][0]
+    llm_request._append_dynamic_instructions.assert_called_once()
+    instructions = llm_request._append_dynamic_instructions.call_args[0][0]
     assert "res1" in instructions[0]
     assert "res2" in instructions[0]
 

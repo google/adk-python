@@ -14,13 +14,9 @@
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import json
 import logging
 import re
-from typing import Any
-from typing import Dict
 from typing import List
 
 from google.adk.models.llm_request import LlmRequest
@@ -134,7 +130,7 @@ class ToolConnectionAnalyzer:
       clean_json_text = re.sub(r"^```[a-zA-Z]*\n", "", response_text)
       clean_json_text = re.sub(r"\n```$", "", clean_json_text)
       response_json = json.loads(clean_json_text.strip())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
       logging.warning(
           "Failed to parse tool connection analysis from LLM. Proceeding"
           " without connection map. Error: %s\nLLM Output:\n%s",

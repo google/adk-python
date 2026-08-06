@@ -20,22 +20,27 @@ import importlib
 import logging
 from typing import Any
 from typing import AsyncGenerator
+from typing import Callable
+from typing import cast
 from typing import Optional
+from typing import TYPE_CHECKING
 import uuid
 
-from google.genai import errors
 from google.genai import types
 from google.genai.types import Content
 from pydantic import BaseModel
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
+from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
 from ..agents.invocation_context import InvocationContext
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
+from ..agents.readonly_context import ReadonlyContext
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
+from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..events.event import Event
@@ -43,6 +48,7 @@ from ..flows.llm_flows.functions import handle_function_calls_live
 from ..memory.base_memory_service import BaseMemoryService
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..models.llm_request import LlmRequest
+from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
@@ -59,14 +65,109 @@ from .eval_case import InvocationEvents
 from .eval_case import SessionInput
 from .eval_set import EvalSet
 from .request_intercepter_plugin import _RequestIntercepterPlugin
+from .simulation.user_simulator import BaseUserSimulatorConfig
 from .simulation.user_simulator import Status as UserSimulatorStatus
 from .simulation.user_simulator import UserSimulator
 from .simulation.user_simulator_provider import UserSimulatorProvider
+
+if TYPE_CHECKING:
+  from types import TracebackType
 
 logger = logging.getLogger("google_adk." + __name__)
 
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"
+
+# Chunk size for streaming audio blobs to the Live API.
+# See https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api#technical-specifications
+_AUDIO_CHUNK_BYTES = 16000
+
+
+def _send_audio_to_live(
+    live_request_queue: LiveRequestQueue, content: Content
+) -> None:
+  """Streams a user turn's audio to the Live API as realtime input."""
+  live_request_queue.send_activity_start()
+  for part in content.parts or []:
+    blob = part.inline_data
+    if not (blob and blob.data):
+      continue
+    for start in range(0, len(blob.data), _AUDIO_CHUNK_BYTES):
+      chunk = blob.data[start : start + _AUDIO_CHUNK_BYTES]
+      live_request_queue.send_realtime(
+          types.Blob(data=chunk, mime_type=blob.mime_type)
+      )
+  live_request_queue.send_activity_end()
+
+
+async def _get_or_create_eval_session(
+    session_service: BaseSessionService,
+    initial_session: Optional[SessionInput],
+    fallback_session_id: Optional[str],
+) -> Session:
+  """Returns the session an eval case runs in."""
+  app_name = (
+      initial_session.app_name if initial_session else "EvaluationGenerator"
+  )
+  user_id = initial_session.user_id if initial_session else "test_user_id"
+  pinned_session_id = initial_session.session_id if initial_session else None
+
+  if pinned_session_id:
+    # A pinned id may name a session the caller prepared, so reuse it instead
+    # of replacing it; `initial_session.state` then applies only on create.
+    session = await session_service.get_session(
+        app_name=app_name, user_id=user_id, session_id=pinned_session_id
+    )
+    if session:
+      return session
+
+  return await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      state=initial_session.state if initial_session else {},
+      session_id=pinned_session_id or fallback_session_id or str(uuid.uuid4()),
+  )
+
+
+# Keyword-argument names accepted by `Runner`, used when building the eval
+# Runner kwargs so the strings are not duplicated at each call site.
+_APP_NAME_KEY = "app_name"
+_AGENT_KEY = "agent"
+_PLUGINS_KEY = "plugins"
+_APP_KEY = "app"
+
+
+def _build_eval_runner_kwargs(
+    root_agent: BaseAgent,
+    app_name: str,
+    app: Optional[App],
+    internal_eval_plugins: list[BasePlugin],
+) -> dict[str, Any]:
+  """Returns the Runner kwargs used to evaluate `root_agent`.
+
+  When `app` is provided, the Runner is built from a copy of the App with the
+  internal eval plugins merged into `app.plugins`, so the App's
+  `context_cache_config`, `resumability_config`, and any other
+  application-wide configuration participate in the eval run. The copy leaves
+  the caller's App instance untouched, and `root_agent` is overridden so the
+  Runner targets the agent the caller asked to evaluate, which may be a
+  sub-agent. When `app` is None, the Runner is built from the bare
+  `root_agent` with only the internal eval plugins.
+  """
+  if app is None:
+    return {
+        _APP_NAME_KEY: app_name,
+        _AGENT_KEY: root_agent,
+        _PLUGINS_KEY: internal_eval_plugins,
+    }
+
+  runner_app = app.model_copy(
+      update={
+          "plugins": list(app.plugins) + internal_eval_plugins,
+          "root_agent": root_agent,
+      }
+  )
+  return {_APP_KEY: runner_app, _APP_NAME_KEY: app_name}
 
 
 class EvalCaseResponses(BaseModel):
@@ -94,11 +195,11 @@ class _LiveSession:
     self.user_id = user_id
     self.session_id = session_id
     self.live_request_queue = LiveRequestQueue()
-    self.event_queue = asyncio.Queue()
+    self.event_queue: asyncio.Queue[Event] = asyncio.Queue()
     self.turn_complete_event = asyncio.Event()
     self.live_finished = asyncio.Event()
     self.current_invocation_id = Event.new_id()
-    self.consume_task = None
+    self.consume_task: Optional[asyncio.Task[None]] = None
 
   async def __aenter__(self) -> _LiveSession:
     """Starts the background task."""
@@ -113,22 +214,34 @@ class _LiveSession:
           response_modalities=["AUDIO"],
           output_audio_transcription=types.AudioTranscriptionConfig(),
           input_audio_transcription=types.AudioTranscriptionConfig(),
+          # Disable server-side voice-activity detection so turn boundaries are
+          # controlled explicitly via activity markers around the sent audio.
+          realtime_input_config=types.RealtimeInputConfig(
+              automatic_activity_detection=types.AutomaticActivityDetection(
+                  disabled=True
+              )
+          ),
       )
+
+      root_agent = self.runner.agent
+      if not isinstance(root_agent, BaseAgent):
+        raise ValueError("Live evaluation requires an agent root node.")
 
       invocation_context = self.runner._new_invocation_context_for_live(
           self.session,
           live_request_queue=self.live_request_queue,
           run_config=run_config,
       )
-      invocation_context.agent = self.runner._find_agent_to_run(
-          self.session, self.runner.agent
-      )
+      agent_to_run = self.runner._find_agent_to_run(self.session, root_agent)
+      if not isinstance(agent_to_run, Agent):
+        raise ValueError("Live evaluation requires an LlmAgent.")
+      invocation_context.agent = agent_to_run
 
       callback_context = None
       llm_request = LlmRequest()
 
       async with Aclosing(
-          invocation_context.agent._llm_flow._preprocess_async(
+          agent_to_run._llm_flow._preprocess_async(
               invocation_context, llm_request
           )
       ) as agen:
@@ -146,9 +259,7 @@ class _LiveSession:
       )
 
       in_function_call_loop = False
-      async with Aclosing(
-          invocation_context.agent.run_live(invocation_context)
-      ) as agen:
+      async with Aclosing(agent_to_run.run_live(invocation_context)) as agen:
         async for event in agen:
           assert event is not None
           event.invocation_id = self.current_invocation_id
@@ -168,14 +279,14 @@ class _LiveSession:
             inv_context = InvocationContext(
                 session_service=self.runner.session_service,
                 invocation_id=event.invocation_id,
-                agent=self.runner.agent,
+                agent=root_agent,
                 session=self.session,
                 run_config=run_config,
             )
 
             if isinstance(self.runner.agent, Agent):
               resolved_tools = await self.runner.agent.canonical_tools(
-                  inv_context
+                  ReadonlyContext(inv_context)
               )
               tools_dict = {t.name: t for t in resolved_tools}
             else:
@@ -226,17 +337,26 @@ class _LiveSession:
       self.live_finished.set()
       self.turn_complete_event.set()  # Unblock any waiters
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     """Closes the queue and waits for the background task to finish."""
+    from google.genai import errors
+
     self.live_request_queue.close()
+    consume_task = self.consume_task
+    if consume_task is None:
+      raise RuntimeError("Live session was exited before it was started.")
     try:
-      await asyncio.wait_for(self.consume_task, timeout=30)
+      await asyncio.wait_for(consume_task, timeout=30)
     except asyncio.TimeoutError:
       logger.warning("Timed out waiting for run_live to finish.")
-      assert self.consume_task is not None
-      self.consume_task.cancel()
+      consume_task.cancel()
       try:
-        await self.consume_task
+        await consume_task
       except asyncio.CancelledError:
         pass
     except (ConnectionClosed, errors.APIError) as e:
@@ -262,7 +382,8 @@ class EvaluationGenerator:
       eval_set: EvalSet,
       agent_module_path: str,
       repeat_num: int = 3,
-      agent_name: str = None,
+      agent_name: Optional[str] = None,
+      user_simulator_config: Optional[BaseUserSimulatorConfig] = None,
   ) -> list[EvalCaseResponses]:
     """Returns evaluation responses for the given dataset and agent.
 
@@ -273,14 +394,20 @@ class EvaluationGenerator:
         usually done to remove uncertainty that a single run may bring.
       agent_name: The name of the agent that should be evaluated. This is
         usually the sub-agent.
+      user_simulator_config: Optional configuration for the user simulator.
+        Only relevant for eval cases that use a `conversation_scenario` (which
+        are driven by `LlmBackedUserSimulator`); ignored for static
+        conversations. Pass an `LlmBackedUserSimulatorConfig` to override the
+        user-simulation model, max invocations, or custom instructions.
     """
     results = []
 
     for eval_case in eval_set.eval_cases:
-      # assume only static conversations are needed
-      user_simulator = UserSimulatorProvider().provide(eval_case)
       responses = []
       for _ in range(repeat_num):
+        user_simulator = UserSimulatorProvider(
+            user_simulator_config=user_simulator_config
+        ).provide(eval_case)
         response_invocations = await EvaluationGenerator._process_query(
             agent_module_path,
             user_simulator,
@@ -296,7 +423,10 @@ class EvaluationGenerator:
     return results
 
   @staticmethod
-  def generate_responses_from_session(session_path, eval_dataset):
+  def generate_responses_from_session(
+      session_path: str,
+      eval_dataset: list[list[dict[str, object]]],
+  ) -> list[list[dict[str, object]]]:
     """Returns evaluation responses by combining session data with eval data.
 
     Args:
@@ -331,20 +461,45 @@ class EvaluationGenerator:
     """Process a query using the agent and evaluation dataset."""
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
-    root_agent = agent_module.agent.root_agent
+    agent_package = getattr(agent_module, "agent", None)
+    # Prefer the wrapping `App` when the module exposes one, so that
+    # `app.plugins`, context-cache, and resumability configs participate
+    # in eval runs the same way they do for `adk web` / `adk run`.
+    app_obj = getattr(agent_package, "app", None)
+    if isinstance(app_obj, App):
+      root_agent = app_obj.root_agent
+    else:
+      app_obj = None
+      root_agent = getattr(agent_package, "root_agent", None)
+    if root_agent is None:
+      # Matches the original `agent_module.agent.root_agent` attribute access,
+      # which raised when the module exposed no root. A BaseNode root is a
+      # supported App.root_agent value, so it is not rejected here.
+      raise TypeError(
+          f"Module {module_name!r} does not expose agent.root_agent."
+      )
+    root_agent = cast(BaseAgent, root_agent)
 
-    reset_func = getattr(agent_module.agent, "reset_data", None)
+    reset_candidate = getattr(agent_package, "reset_data", None)
+    reset_func: Optional[Callable[[], object]] = None
+    if reset_candidate is not None:
+      if not callable(reset_candidate):
+        raise TypeError("agent.reset_data must be callable when provided.")
+      reset_func = cast(Callable[[], object], reset_candidate)
 
     agent_to_evaluate = root_agent
     if agent_name:
-      agent_to_evaluate = root_agent.find_agent(agent_name)
-      assert agent_to_evaluate, f"Sub-Agent `{agent_name}` not found."
+      selected_agent = root_agent.find_agent(agent_name)
+      if selected_agent is None:
+        raise ValueError(f"Sub-Agent {agent_name!r} not found.")
+      agent_to_evaluate = selected_agent
 
     return await EvaluationGenerator._generate_inferences_from_root_agent(
         agent_to_evaluate,
         user_simulator=user_simulator,
         reset_func=reset_func,
         initial_session=initial_session,
+        app=app_obj,
     )
 
   @staticmethod
@@ -383,7 +538,6 @@ class EvaluationGenerator:
       current_invocation_id: str,
       turn_complete_event: asyncio.Event,
       live_timeout_seconds: int,
-      agent_name: str = _DEFAULT_AUTHOR,
   ) -> AsyncGenerator[Event, None]:
     """Generates inferences for a single user invocation in live mode."""
     yield Event(
@@ -392,7 +546,15 @@ class EvaluationGenerator:
         invocation_id=current_invocation_id,
     )
 
-    live_request_queue.send_content(user_message)
+    # If the user message contains audio parts, send only the audio to the
+    # agent so a native-audio Live model receives audio-only input. The full
+    # Content (with text) is preserved in the Event above for trajectory
+    # logging and autorater evaluation.
+    has_audio = any(p.inline_data for p in user_message.parts or [])
+    if has_audio:
+      _send_audio_to_live(live_request_queue, user_message)
+    else:
+      live_request_queue.send_content(user_message)
 
     try:
       await asyncio.wait_for(
@@ -405,58 +567,44 @@ class EvaluationGenerator:
       )
       raise
 
+    # Yield raw events; transcription-bearing events are normalized later by
+    # `_normalize_live_transcriptions` before they are consumed.
     while not event_queue.empty():
       event = await event_queue.get()
       if event.invocation_id == current_invocation_id:
         yield event
-        # Emit a synthetic text event for each transcription, preserving
-        # the order in which events are received.
-        if (
-            event.author != _USER_AUTHOR
-            and event.output_transcription
-            and event.output_transcription.text
-            and event.partial
-        ):
-          yield Event(
-              content=Content(
-                  role="model",
-                  parts=[types.Part(text=event.output_transcription.text)],
-              ),
-              author=agent_name,
-              invocation_id=current_invocation_id,
-          )
 
   @staticmethod
   async def _generate_inferences_from_root_agent_live(
-      root_agent: Agent,
+      root_agent: BaseAgent,
       user_simulator: UserSimulator,
-      reset_func: Optional[Any] = None,
+      reset_func: Optional[Callable[[], object]] = None,
       initial_session: Optional[SessionInput] = None,
       session_id: Optional[str] = None,
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
       live_timeout_seconds: int = DEFAULT_LIVE_TIMEOUT_SECONDS,
+      app: Optional[App] = None,
   ) -> list[Invocation]:
-    """Scrapes the root agent in coordination with the user simulator in live mode."""
+    """Scrapes the root agent in coordination with the user simulator in live mode.
+
+    Mirrors `_generate_inferences_from_root_agent`: when `app` is provided the
+    Runner carries the App's plugins and configuration, otherwise the bare
+    `root_agent` is used.
+    """
     if not session_service:
       session_service = InMemorySessionService()
 
     if not memory_service:
       memory_service = InMemoryMemoryService()
 
-    app_name = (
-        initial_session.app_name if initial_session else "EvaluationGenerator"
+    session = await _get_or_create_eval_session(
+        session_service, initial_session, session_id
     )
-    user_id = initial_session.user_id if initial_session else "test_user_id"
-    session_id = session_id if session_id else str(uuid.uuid4())
-
-    session = await session_service.create_session(
-        app_name=app_name,
-        user_id=user_id,
-        state=initial_session.state if initial_session else {},
-        session_id=session_id,
-    )
+    app_name = session.app_name
+    user_id = session.user_id
+    session_id = session.id
 
     if not artifact_service:
       artifact_service = InMemoryArtifactService()
@@ -474,15 +622,23 @@ class EvaluationGenerator:
     request_intercepter_plugin = _RequestIntercepterPlugin(
         name="request_intercepter_plugin"
     )
-    async with Runner(
+    runner_kwargs = _build_eval_runner_kwargs(
+        root_agent=root_agent,
         app_name=app_name,
-        agent=root_agent,
+        app=app,
+        internal_eval_plugins=[
+            request_intercepter_plugin,
+            ensure_retry_options_plugin,
+        ],
+    )
+
+    async with Runner(
+        **runner_kwargs,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
-      events = []
+      events: list[Event] = []
 
       # `_LiveSession` is a runtime connection manager wrapping the `Session`
       # data model (which stores conversation history/state). It manages the
@@ -495,9 +651,16 @@ class EvaluationGenerator:
         while True:
           turn_idx += 1
           next_user_message = await user_simulator.get_next_user_message(
-              copy.deepcopy(events)
+              EvaluationGenerator._normalize_live_transcriptions(
+                  copy.deepcopy(events)
+              )
           )
           if next_user_message.status == UserSimulatorStatus.SUCCESS:
+            user_message = next_user_message.user_message
+            if user_message is None:
+              raise RuntimeError(
+                  "A successful user-simulator result must include a message."
+              )
             live_session.current_invocation_id = Event.new_id()
             live_session.turn_complete_event.clear()
 
@@ -508,11 +671,10 @@ class EvaluationGenerator:
             ) in EvaluationGenerator._generate_inferences_for_single_user_invocation_live(
                 live_request_queue=live_session.live_request_queue,
                 event_queue=live_session.event_queue,
-                user_message=next_user_message.user_message,
+                user_message=user_message,
                 current_invocation_id=live_session.current_invocation_id,
                 turn_complete_event=live_session.turn_complete_event,
                 live_timeout_seconds=live_timeout_seconds,
-                agent_name=runner.agent.name,
             ):
               events.append(event)
 
@@ -530,21 +692,31 @@ class EvaluationGenerator:
           )
       )
       return EvaluationGenerator.convert_events_to_eval_invocations(
-          events, app_details_by_invocation_id
+          EvaluationGenerator._normalize_live_transcriptions(events),
+          app_details_by_invocation_id,
       )
 
   @staticmethod
   async def _generate_inferences_from_root_agent(
-      root_agent: Agent,
+      root_agent: BaseAgent,
       user_simulator: UserSimulator,
-      reset_func: Optional[Any] = None,
+      reset_func: Optional[Callable[[], object]] = None,
       initial_session: Optional[SessionInput] = None,
       session_id: Optional[str] = None,
       session_service: Optional[BaseSessionService] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
+      app: Optional[App] = None,
   ) -> list[Invocation]:
-    """Scrapes the root agent in coordination with the user simulator."""
+    """Scrapes the root agent in coordination with the user simulator.
+
+    If `app` is provided, the eval Runner is built from a copy of the App
+    with internal eval plugins merged into `app.plugins`, preserving the
+    App's `context_cache_config`, `resumability_config`, and any other
+    application-wide configuration. Otherwise the Runner is built from
+    the bare `root_agent` with only the internal eval plugins, matching
+    the legacy behavior.
+    """
 
     if not session_service:
       session_service = InMemorySessionService()
@@ -552,18 +724,12 @@ class EvaluationGenerator:
     if not memory_service:
       memory_service = InMemoryMemoryService()
 
-    app_name = (
-        initial_session.app_name if initial_session else "EvaluationGenerator"
+    session = await _get_or_create_eval_session(
+        session_service, initial_session, session_id
     )
-    user_id = initial_session.user_id if initial_session else "test_user_id"
-    session_id = session_id if session_id else str(uuid.uuid4())
-
-    _ = await session_service.create_session(
-        app_name=app_name,
-        user_id=user_id,
-        state=initial_session.state if initial_session else {},
-        session_id=session_id,
-    )
+    app_name = session.app_name
+    user_id = session.user_id
+    session_id = session.id
 
     if not artifact_service:
       artifact_service = InMemoryArtifactService()
@@ -581,24 +747,37 @@ class EvaluationGenerator:
     ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
         name="ensure_retry_options"
     )
-    async with Runner(
+    runner_kwargs = _build_eval_runner_kwargs(
+        root_agent=root_agent,
         app_name=app_name,
-        agent=root_agent,
+        app=app,
+        internal_eval_plugins=[
+            request_intercepter_plugin,
+            ensure_retry_options_plugin,
+        ],
+    )
+
+    async with Runner(
+        **runner_kwargs,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
-      events = []
+      events: list[Event] = []
       while True:
         next_user_message = await user_simulator.get_next_user_message(
             copy.deepcopy(events)
         )
         if next_user_message.status == UserSimulatorStatus.SUCCESS:
+          user_message = next_user_message.user_message
+          if user_message is None:
+            raise RuntimeError(
+                "A successful user-simulator result must include a message."
+            )
           async for (
               event
           ) in EvaluationGenerator._generate_inferences_for_single_user_invocation(
-              runner, user_id, session_id, next_user_message.user_message
+              runner, user_id, session_id, user_message
           ):
             events.append(event)
         else:  # no message generated
@@ -625,10 +804,10 @@ class EvaluationGenerator:
 
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
-      final_response = None
-      final_event = None
+      final_response: Optional[Content] = None
+      final_event: Optional[Event] = None
       user_content = Content(parts=[])
-      invocation_timestamp = 0
+      invocation_timestamp: float = 0
       app_details = None
       if (
           app_details_per_invocation
@@ -637,21 +816,28 @@ class EvaluationGenerator:
         app_details = app_details_per_invocation[invocation_id]
 
       events_to_add = []
-
       for event in events:
         current_author = (event.author or _DEFAULT_AUTHOR).lower()
 
         if current_author == _USER_AUTHOR:
           # If the author is the user, then we just identify it and move on
           # to the next event.
-          user_content = event.content
-          invocation_timestamp = event.timestamp
+          if event.content is not None:
+            user_content = event.content
+            invocation_timestamp = event.timestamp
           continue
 
         if event.content and event.content.parts:
           if event.is_final_response():
-            final_response = event.content
-            final_event = event
+            # A live response is both audio and a text transcript; keep the
+            # text one as the gradable response.
+            final_has_text = final_response is not None and any(
+                p.text for p in final_response.parts or []
+            )
+            event_has_text = any(p.text for p in event.content.parts or [])
+            if not final_has_text or event_has_text:
+              final_response = event.content
+              final_event = event
 
           for p in event.content.parts:
             if (
@@ -666,7 +852,9 @@ class EvaluationGenerator:
       invocation_events = [
           InvocationEvent(author=e.author, content=e.content)
           for e in events_to_add
-          if e is not final_event
+          if final_event is None
+          or e is not final_event
+          or e.get_function_calls()
       ]
       invocations.append(
           Invocation(
@@ -717,7 +905,40 @@ class EvaluationGenerator:
     return app_details_by_invocation_id
 
   @staticmethod
-  def _collect_events_by_invocation_id(events: list[Event]) -> dict[str, Event]:
+  def _normalize_live_transcriptions(events: list[Event]) -> list[Event]:
+    """Rewrites native-audio Live transcription events into text content events."""
+    # Only consolidated (non-partial) transcription events are rewritten,
+    # mirroring `contents.py`; every other event passes through untouched.
+    normalized: list[Event] = []
+    for event in events:
+      if event.content is not None or event.partial:
+        normalized.append(event)
+        continue
+
+      if event.input_transcription and event.input_transcription.text:
+        transcription = event.input_transcription
+        role = "user"
+      elif event.output_transcription and event.output_transcription.text:
+        transcription = event.output_transcription
+        role = "model"
+      else:
+        normalized.append(event)
+        continue
+
+      rewritten = event.model_copy(deep=True)
+      rewritten.input_transcription = None
+      rewritten.output_transcription = None
+      rewritten.content = Content(
+          role=role, parts=[types.Part(text=transcription.text)]
+      )
+      normalized.append(rewritten)
+
+    return normalized
+
+  @staticmethod
+  def _collect_events_by_invocation_id(
+      events: list[Event],
+  ) -> dict[str, list[Event]]:
     # Group Events by invocation id. Events that share the same invocation id
     # belong to the same invocation.
     events_by_invocation_id: dict[str, list[Event]] = {}
@@ -733,16 +954,21 @@ class EvaluationGenerator:
     return events_by_invocation_id
 
   @staticmethod
-  def _process_query_with_session(session_data, data):
+  def _process_query_with_session(
+      session_data: Session,
+      data: list[dict[str, object]],
+  ) -> list[dict[str, object]]:
     """Process the queries using the existing session data without invoking the runner."""
     responses = data.copy()
 
     # Iterate through the provided queries and align them with the session
     # events
     for index, eval_entry in enumerate(responses):
-      query = eval_entry["query"]
-      actual_tool_uses = []
-      response = None
+      query = eval_entry.get("query")
+      if not isinstance(query, str):
+        raise ValueError("Each evaluation entry must contain a string query.")
+      actual_tool_uses: list[dict[str, object]] = []
+      response: Optional[str] = None
 
       # Search for the corresponding session events
       for event in session_data.events:
@@ -756,15 +982,19 @@ class EvaluationGenerator:
           # Look for subsequent tool usage or model responses
           for subsequent_event in session_data.events:
             if subsequent_event.invocation_id == event.invocation_id:
+              content = subsequent_event.content
+              if content is None or not content.parts:
+                continue
+              first_part = content.parts[0]
               # Extract tool usage
-              if subsequent_event.content.parts[0].function_call:
-                call = subsequent_event.content.parts[0].function_call
+              if first_part.function_call:
+                call = first_part.function_call
                 actual_tool_uses.append(
                     {"tool_name": call.name, "tool_input": call.args}
                 )
               # Extract final response
               elif subsequent_event.author != "user":
-                response = subsequent_event.content.parts[0].text
+                response = first_part.text
 
       # Update the results for the current query
       responses[index]["actual_tool_use"] = actual_tool_uses

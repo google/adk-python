@@ -16,10 +16,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import json
 import logging
+import re
+import struct
 from typing import Any
 from typing import TYPE_CHECKING
+import zipfile
 
 from google.genai import types
 from typing_extensions import override
@@ -35,10 +39,28 @@ _GEMINI_SUPPORTED_INLINE_MIME_PREFIXES = (
     'video/',
 )
 _GEMINI_SUPPORTED_INLINE_MIME_TYPES = frozenset({'application/pdf'})
+# MIME subtypes that match a supported prefix above but that Gemini
+# rejects with 400 INVALID_ARGUMENT when sent as inline data. These
+# must fall through to the text-conversion path in
+# `_as_safe_part_for_llm` instead of being forwarded as inline image
+# data. Verified empirically against gemini-2.5-flash via
+# google-genai 1.69.0 on 2026-05-13.
+_GEMINI_UNSUPPORTED_INLINE_SUBTYPES = frozenset({
+    'image/svg',
+    'image/svg+xml',
+    'image/xml',
+})
 _TEXT_LIKE_MIME_TYPES = frozenset({
     'application/csv',
     'application/json',
+    'application/svg+xml',
     'application/xml',
+    # SVG/XML image variants are XML-based and Gemini rejects them as
+    # inline image data (see _GEMINI_UNSUPPORTED_INLINE_SUBTYPES above), so
+    # they fall through here and are delivered to the model as text.
+    'image/svg',
+    'image/svg+xml',
+    'image/xml',
 })
 
 if TYPE_CHECKING:
@@ -60,6 +82,8 @@ def _is_inline_mime_type_supported(mime_type: str | None) -> bool:
   normalized = _normalize_mime_type(mime_type)
   if not normalized:
     return False
+  if normalized in _GEMINI_UNSUPPORTED_INLINE_SUBTYPES:
+    return False
   return normalized.startswith(_GEMINI_SUPPORTED_INLINE_MIME_PREFIXES) or (
       normalized in _GEMINI_SUPPORTED_INLINE_MIME_TYPES
   )
@@ -74,6 +98,42 @@ def _maybe_base64_to_bytes(data: str) -> bytes | None:
       return base64.urlsafe_b64decode(data)
     except (binascii.Error, ValueError):
       return None
+
+
+def _try_extract_docx_text(data: bytes) -> str | None:
+  """Extracts raw text from a DOCX binary."""
+  # We use regex instead of standard XML parser to avoid XML bomb vulnerabilities,
+  # and cap the zip extraction at 10 MB to prevent zip bombs.
+  try:
+    with zipfile.ZipFile(io.BytesIO(data)) as docx_zip:
+      if 'word/document.xml' not in docx_zip.namelist():
+        return None
+      with docx_zip.open('word/document.xml') as xml_file:
+        xml_content = xml_file.read(10 * 1024 * 1024).decode(
+            'utf-8', errors='ignore'
+        )
+
+      # Find the prefix for the WordprocessingML namespace
+      # xmlns:w="..." or xmlns:something="..."
+      ns_match = re.search(
+          r'xmlns:(\w+)="http://schemas.openxmlformats.org/wordprocessingml/2006/main"',
+          xml_content,
+      )
+      prefix = ns_match.group(1) if ns_match else 'w'
+
+      p_tag = f'{prefix}:p'
+      t_tag = f'{prefix}:t'
+
+      paragraphs = []
+      for p in re.split(rf'<{p_tag}(?:[^>]*)>', xml_content):
+        texts = re.findall(rf'<{t_tag}(?:[^>]*)>([^<]*)</{t_tag}>', p)
+        if texts:
+          paragraphs.append(''.join(texts))
+
+      return '\n'.join(paragraphs)
+  except (zipfile.BadZipFile, KeyError, struct.error) as e:
+    logger.debug('Failed to parse docx layout: %s', e)
+    return None
 
 
 def _as_safe_part_for_llm(
@@ -105,7 +165,23 @@ def _as_safe_part_for_llm(
       return types.Part.from_text(text=data)
     data = decoded
 
-  if mime_type.startswith('text/') or mime_type in _TEXT_LIKE_MIME_TYPES:
+  # Attempt DOCX extraction if file seems to be a docx document.
+  is_docx = mime_type in (
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/octet-stream',
+  ) or artifact_name.lower().endswith('.docx')
+  if is_docx:
+    extracted_text = _try_extract_docx_text(data)
+    if extracted_text is not None:
+      return types.Part.from_text(text=extracted_text)
+
+  # Fallback to general text extraction
+  is_text_like = (
+      mime_type.startswith('text/')
+      or mime_type in _TEXT_LIKE_MIME_TYPES
+      or artifact_name.lower().endswith(('.csv', '.txt', '.json', '.xml'))
+  )
+  if is_text_like:
     try:
       return types.Part.from_text(text=data.decode('utf-8'))
     except UnicodeDecodeError:
@@ -196,8 +272,7 @@ web UI)."""),
     if not artifact_names:
       return
 
-    # Tell the model about the available artifacts.
-    llm_request.append_instructions([f"""You have a list of artifacts:
+    instruction_text = f"""You have a list of artifacts:
   {json.dumps(artifact_names)}
 
   When the user asks questions about any of the artifacts, you should call the
@@ -205,7 +280,8 @@ web UI)."""),
   before answering questions related to the artifacts, regardless of whether the
   artifacts have been loaded before. Do not depend on prior answers about the
   artifacts.
-  """])
+  """
+    llm_request._append_dynamic_instructions([instruction_text])
 
     # Attach the content of the artifacts if the model requests them.
     # This only adds the content to the model request, instead of the session.

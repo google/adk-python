@@ -123,6 +123,9 @@ class LlmResponse(BaseModel):
   go_away: Optional[types.LiveServerGoAway] = None
   """The GoAway signal from the Live model."""
 
+  voice_activity: Optional[types.VoiceActivity] = None
+  """Voice activity signal from the Live model."""
+
   input_transcription: Optional[types.Transcription] = None
   """Audio transcription of user input."""
 
@@ -153,6 +156,14 @@ class LlmResponse(BaseModel):
 
   This field is populated when using the interactions API for model invocation.
   It can be used to identify and chain interactions for stateful conversations.
+  """
+
+  environment_id: Optional[str] = None
+  """The execution environment ID from the interactions API.
+
+  This field is populated when an interactions-API agent (e.g. ManagedAgent)
+  provisions or reuses a sandbox environment. It is persisted on the resulting
+  Event so subsequent turns can reuse the same environment for stateful work.
   """
 
   def get_function_calls(self) -> list[types.FunctionCall]:

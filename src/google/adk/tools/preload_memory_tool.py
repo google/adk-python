@@ -38,7 +38,7 @@ class PreloadMemoryTool(BaseTool):
   NOTE: Currently this tool only uses text part from the memory.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     # Name and description are not used because this tool only
     # changes llm_request.
     super().__init__(name='preload_memory', description='preload_memory')
@@ -86,7 +86,7 @@ They may be useful for answering the user's current query.
 {full_memory_text}
 </PAST_CONVERSATIONS>
 """
-    llm_request.append_instructions([si])
+    llm_request._append_dynamic_instructions([si])
 
 
 preload_memory_tool = PreloadMemoryTool()

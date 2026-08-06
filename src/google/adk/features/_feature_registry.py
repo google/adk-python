@@ -37,10 +37,19 @@ class FeatureName(str, Enum):
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
+  DYNAMIC_INSTRUCTION_ROUTING = "DYNAMIC_INSTRUCTION_ROUTING"
+  DAYTONA_ENVIRONMENT = "DAYTONA_ENVIRONMENT"
+  E2B_ENVIRONMENT = "E2B_ENVIRONMENT"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
+  EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
+  EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
+  GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
+  GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
+  GCS_TOOLSET = "GCS_TOOLSET"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
+  MCP_AGENT_SERVER = "MCP_AGENT_SERVER"
   # Private (leading underscore): not part of the public API surface.
   # GE flips this on by setting the env var
   # `ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING=1`; nothing should import this
@@ -120,12 +129,36 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOL_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
+        FeatureStage.STABLE, default_on=True
+    ),
+    FeatureName.DYNAMIC_INSTRUCTION_ROUTING: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
+    ),
+    FeatureName.DAYTONA_ENVIRONMENT: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.E2B_ENVIRONMENT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.EVENTARC_TOOL_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.EVENTARC_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GCS_ADMIN_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GCS_TOOL_SETTINGS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GCS_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
@@ -135,6 +168,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.MCP_AGENT_SERVER: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName._MCP_GRACEFUL_ERROR_HANDLING: FeatureConfig(
