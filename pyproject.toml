@@ -109,6 +109,7 @@ optional-dependencies.eval = [
   "gepa>=0.1",
   "google-cloud-aiplatform[evaluation]>=1.148",
   "jinja2>=3.1.4,<4",                           # For eval template rendering
+  "nltk!=3.10.1",                               # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
@@ -128,6 +129,7 @@ optional-dependencies.extensions = [
   "llama-index-embeddings-google-genai>=0.3",                        # For files retrieval using LlamaIndex.
   "llama-index-readers-file>=0.4",                                   # For retrieval using LlamaIndex.
   "lxml>=5.3",                                                       # For load_web_page tool.
+  "nltk!=3.10.1",                                                    # Transitive via llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "pypika>=0.50",                                                    # For crewai->chromadb dependency
   "toolbox-adk>=1,<2",                                               # For tools.toolbox_toolset.ToolboxToolset
 ]
@@ -145,6 +147,7 @@ optional-dependencies.test = [
   "langgraph>=0.2.60,<0.4.8",                                        # For LangGraphAgent
   "litellm>=1.83.7,<=1.83.14",                                       # For LiteLLM tests. Lower bound: 5 CVE patches (2026-04). Upper bound pinned to current latest; bump deliberately. See #5488.
   "llama-index-readers-file>=0.4",                                   # For retrieval tests
+  "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=1.100.2",                                                 # For LiteLLM
   "opentelemetry-instrumentation-google-genai>=0.3b0,<1",
   "pypika>=0.50",                                                    # For crewai->chromadb dependency
