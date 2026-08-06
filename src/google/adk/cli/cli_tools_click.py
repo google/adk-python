@@ -34,7 +34,7 @@ from fastapi import FastAPI
 import uvicorn
 
 from .. import version
-from ..agents.run_config import StreamingMode
+from ..agents._streaming_mode import StreamingMode
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_result import EvalCaseResult
 from ..features import FeatureName
