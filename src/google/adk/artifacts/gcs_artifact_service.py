@@ -49,14 +49,14 @@ _GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
 class GcsArtifactService(BaseArtifactService):
   """An artifact service implementation using Google Cloud Storage (GCS)."""
 
-  def __init__(self, bucket_name: str, **kwargs):
+  def __init__(self, bucket_name: str, **kwargs: Any):
     """Initializes the GcsArtifactService.
 
     Args:
         bucket_name: The name of the bucket to use.
         **kwargs: Keyword arguments to pass to the Google Cloud Storage client.
     """
-    from google.cloud import storage
+    from google.cloud import storage  # pylint: disable=g-import-not-at-top
 
     self.bucket_name = bucket_name
     self.storage_client = storage.Client(**kwargs)
@@ -239,8 +239,11 @@ class GcsArtifactService(BaseArtifactService):
       blob.metadata = blob_metadata
 
     if artifact.inline_data:
+      data = artifact.inline_data.data
+      if data is None:
+        raise InputValidationError("Artifact inline_data must contain data.")
       blob.upload_from_string(
-          data=artifact.inline_data.data,
+          data=data,
           content_type=artifact.inline_data.mime_type,
       )
     elif artifact.text is not None:
@@ -445,15 +448,25 @@ class GcsArtifactService(BaseArtifactService):
 
     Returns:
         A list of version numbers (integers) available for the specified
-        artifact.
+        artifact, in ascending order.
         Returns an empty list if no versions are found.
     """
     prefix = self._get_blob_prefix(app_name, user_id, filename, session_id)
     blobs = self.storage_client.list_blobs(self.bucket, prefix=f"{prefix}/")
     versions = []
     for blob in blobs:
-      *_, version = blob.name.split("/")
-      versions.append(int(version))
+      try:
+        version = int(blob.name.split("/")[-1])
+      except ValueError:
+        logger.warning(
+            "Skipping blob %s because it does not end with a version number.",
+            blob.name,
+        )
+        continue
+
+      versions.append(version)
+
+    versions.sort()
     return versions
 
   def _get_artifact_version_sync(

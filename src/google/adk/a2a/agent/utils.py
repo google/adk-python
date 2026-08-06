@@ -20,6 +20,7 @@ from typing import Any
 from typing import Optional
 from typing import Union
 
+from a2a.server.events import Event as A2AEvent
 from a2a.types import Message as A2AMessage
 
 from .. import _compat
@@ -81,14 +82,15 @@ async def execute_before_request_interceptors(
 async def execute_after_request_interceptors(
     request_interceptors: Optional[list[RequestInterceptor]],
     ctx: InvocationContext,
-    a2a_response: A2AMessage | A2AClientEvent,
+    a2a_response: A2AEvent | A2AClientEvent,
     event: Event,
 ) -> Optional[Event]:
   """Executes registered after_request interceptors."""
   if request_interceptors:
     for interceptor in reversed(request_interceptors):
       if interceptor.after_request:
-        event = await interceptor.after_request(ctx, a2a_response, event)
-        if not event:
+        result = await interceptor.after_request(ctx, a2a_response, event)
+        if not result:
           return None
+        event = result
   return event

@@ -188,8 +188,19 @@ def record_tool_execution_duration(
     agent_name: str,
     elapsed_s: float,
     error: Exception | None = None,
+    error_type: str | None = None,
 ):
-  """Records the duration of the tool execution."""
+  """Records the duration of the tool execution.
+
+  Args:
+    tool_name: Name of the tool that ran.
+    tool_type: Class name of the tool that ran.
+    agent_name: Name of the agent that ran the tool.
+    elapsed_s: Duration of the tool execution, in seconds.
+    error: The exception raised by the tool, if any.
+    error_type: An error type detected from a tool response that reported a
+      failure without raising. Ignored when `error` is also set.
+  """
   attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
       gen_ai_attributes.GEN_AI_TOOL_NAME: tool_name,
@@ -197,6 +208,8 @@ def record_tool_execution_duration(
   }
   if error is not None:
     attrs[error_attributes.ERROR_TYPE] = tracing.resolve_error_type(error)
+  elif error_type is not None:
+    attrs[error_attributes.ERROR_TYPE] = error_type
   _tool_execution_duration.record(elapsed_s, attributes=attrs)
 
 
@@ -212,7 +225,9 @@ def record_client_operation_duration(
   attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
       gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
-      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(),
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
+          llm_request.model
+      ),
   }
   if llm_request.model:
     attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
@@ -262,7 +277,9 @@ def record_client_token_usage(
   base_attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
       gen_ai_attributes.GEN_AI_OPERATION_NAME: "generate_content",
-      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(),
+      gen_ai_attributes.GEN_AI_PROVIDER_NAME: _get_provider_name(
+          llm_request.model
+      ),
   }
   if llm_request.model:
     base_attrs[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = llm_request.model
@@ -280,8 +297,8 @@ def record_client_token_usage(
     _client_token_usage.record(output_token_count, attributes=output_attrs)
 
 
-def _get_provider_name() -> str:
-  return tracing._guess_gemini_system_name()
+def _get_provider_name(model: str | None) -> str:
+  return tracing._resolve_gen_ai_system_name(model)
 
 
 def get_elapsed_s(

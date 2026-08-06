@@ -22,8 +22,6 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from typing_extensions import override
 
 from . import data_agent_tool
-from ...features import experimental
-from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
@@ -32,7 +30,6 @@ from .config import DataAgentToolConfig
 from .credentials import DataAgentCredentialsConfig
 
 
-@experimental(FeatureName.DATA_AGENT_TOOLSET)
 class DataAgentToolset(BaseToolset):
   """Data Agent Toolset contains tools for interacting with data agents."""
 

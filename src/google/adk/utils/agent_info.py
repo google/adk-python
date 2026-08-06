@@ -46,10 +46,11 @@ async def get_tools_info(tools: list[ToolUnion]) -> list[Any]:
       final_tools.extend(tools_res)
     else:
       final_tools.append(FunctionTool(tool))
+  declarations = (tool._get_declaration() for tool in final_tools)
   return [
-      types.Tool(function_declarations=[tool._get_declaration()])
-      for tool in final_tools
-      if tool._get_declaration()
+      types.Tool(function_declarations=[declaration])
+      for declaration in declarations
+      if declaration
   ]
 
 

@@ -25,7 +25,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
   if name in [
       "A2aCardRequestConfig",
       "A2aRemoteAgentConfig",

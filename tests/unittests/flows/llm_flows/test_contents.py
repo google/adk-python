@@ -929,6 +929,117 @@ async def test_code_execution_result_not_in_first_part_is_not_skipped():
 
 
 @pytest.mark.asyncio
+async def test_standalone_thought_signature_part_is_not_skipped():
+  """Test that a signature-only part survives the per-turn history rebuild.
+
+  Models return a thought signature on a part carrying no text at all. The
+  signature is opaque state the model expects back verbatim, so losing it
+  makes the model repeat work it already did.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("What happens at 3:15?"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      text="",
+                      thought=True,
+                      thought_signature=b"opaque-signature",
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.ModelContent("A dog appears."),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  signatures = [
+      part.thought_signature
+      for content in llm_request.contents
+      for part in content.parts or []
+      if part.thought_signature
+  ]
+  assert b"opaque-signature" in signatures
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        types.Part(thought=True, thought_signature=b"sig"),
+        types.Part(thought_signature=b"sig"),
+        types.Part(text="reasoning", thought=True, thought_signature=b"sig"),
+        types.Part(text="the answer", thought_signature=b"sig"),
+    ],
+    ids=[
+        "signature_only_marked_thought",
+        "signature_only_unmarked",
+        "thought_text_with_signature",
+        "answer_text_with_signature",
+    ],
+)
+@pytest.mark.asyncio
+async def test_thought_signature_survives_in_every_part_shape(part):
+  """Test that a signature is kept whatever else the part does or doesn't hold.
+
+  Only the answer-text shape used to survive, and it did so incidentally,
+  because the text alone already made the part visible.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("What happens at 3:15?"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(parts=[part], role="model"),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  signatures = [
+      p.thought_signature
+      for content in llm_request.contents
+      for p in content.parts or []
+      if p.thought_signature
+  ]
+  assert signatures == [b"sig"]
+
+
+@pytest.mark.asyncio
 async def test_function_call_with_thought_not_filtered():
   """Test that function calls marked as thought are not filtered out.
 
@@ -1324,7 +1435,7 @@ async def test_adk_function_call_ids_preserved_for_interactions_model():
 @pytest.mark.asyncio
 async def test_adk_function_call_ids_preserved_for_anthropic_model():
   """Anthropic ids must round-trip through replay so Claude can match
-  tool_use blocks with their tool_result blocks (issue #5074).
+  tool_use blocks with their tool_result blocks.
   """
   from google.adk.models.anthropic_llm import AnthropicLlm
 
@@ -1875,8 +1986,8 @@ def test_recover_compacted_function_calls_uses_latest_sibling_response():
 def test_get_contents_recovers_compacted_long_running_call_on_resume():
   """A long-running call compacted before resume is restored during assembly.
 
-  Reproduces issue #5602: the call and its intermediate placeholder response are
-  summarized away, then the real result arrives on resume. Without recovery,
+  The call and its intermediate placeholder response are summarized away, then
+  the real result arrives on resume. Without recovery,
   assembly raises because the resumed response has no matching call.
   """
   compaction = EventCompaction(

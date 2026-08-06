@@ -374,11 +374,6 @@ def _extract_tool_declarations(
     # The parameter schema lives on the tool's FunctionDeclaration, which some
     # tools (e.g. built-in tools) do not provide. Resolve defensively so a
     # single failing tool does not discard the whole tools list.
-    #
-    # Note: FunctionTool._get_declaration() rebuilds the declaration from the
-    # function signature on each call (no caching), so this repeats work the
-    # framework already did when assembling the request. Acceptable for typical
-    # toolsets; revisit with a cache if it shows up on the hot path.
     declaration = None
     try:
       get_declaration = getattr(tool, "_get_declaration", None)
@@ -1870,7 +1865,7 @@ class _SpanRecord:
     with ``GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY=true``), those
     plugin-owned spans were exported to Cloud Trace alongside the
     framework's real spans — producing a duplicate-span view for
-    every BQAA-instrumented operation.  See haiyuan-eng-google/BQAA-SDK#94.
+    every BQAA-instrumented operation.
 
     The plugin already tracked all parent / child relationships on
     this internal stack, so the OTel span object was incidental to
@@ -5616,7 +5611,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     ``InvocationContext.agent.name`` with no None guard, but ``agent`` is
     legitimately ``None`` for workflow-driven invocations with deterministic
     nodes. Reading it at row-build time then raised ``AttributeError``, which
-    ``@_safe_callback`` swallowed, silently dropping the row (issue #6063).
+    ``@_safe_callback`` swallowed, silently dropping the row.
 
     Resolution order:
 
@@ -6563,7 +6558,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     try:
       # Capture trace_id BEFORE popping the invocation-root span so
       # that INVOCATION_COMPLETED shares the same trace_id as all
-      # earlier events in this invocation (fixes #4645).
+      # earlier events in this invocation.
       callback_ctx = CallbackContext(invocation_context)
       trace_id = TraceManager.get_trace_id(callback_ctx)
 

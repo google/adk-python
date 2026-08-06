@@ -12,31 +12,52 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import importlib
-from typing import Any
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
-from .base_agent import BaseAgent
-from .base_agent_config import BaseAgentConfig
-from .context import Context
-from .invocation_context import InvocationContext
-from .live_request_queue import LiveRequest
-from .live_request_queue import LiveRequestQueue
-from .llm_agent import Agent
-from .llm_agent import LlmAgent
-from .llm_agent_config import LlmAgentConfig
-from .loop_agent import LoopAgent
-from .loop_agent_config import LoopAgentConfig
-from .parallel_agent import ParallelAgent
-from .parallel_agent_config import ParallelAgentConfig
-from .run_config import RunConfig
-from .sequential_agent import SequentialAgent
-from .sequential_agent_config import SequentialAgentConfig
+from ..utils import _lazy
 
 if TYPE_CHECKING:
   from ._managed_agent import ManagedAgent
+  from .base_agent import BaseAgent
+  from .base_agent_config import BaseAgentConfig
+  from .context import Context
+  from .invocation_context import InvocationContext
+  from .live_request_queue import LiveRequest
+  from .live_request_queue import LiveRequestQueue
+  from .llm_agent import Agent
+  from .llm_agent import LlmAgent
+  from .llm_agent_config import LlmAgentConfig
+  from .loop_agent import LoopAgent
+  from .loop_agent_config import LoopAgentConfig
   from .mcp_instruction_provider import McpInstructionProvider
+  from .parallel_agent import ParallelAgent
+  from .parallel_agent_config import ParallelAgentConfig
+  from .run_config import RunConfig
+  from .sequential_agent import SequentialAgent
+  from .sequential_agent_config import SequentialAgentConfig
 
+_LAZY_MEMBERS: dict[str, str] = {
+    'Agent': '.llm_agent',
+    'BaseAgent': '.base_agent',
+    'BaseAgentConfig': '.base_agent_config',
+    'Context': '.context',
+    'InvocationContext': '.invocation_context',
+    'LiveRequest': '.live_request_queue',
+    'LiveRequestQueue': '.live_request_queue',
+    'LlmAgent': '.llm_agent',
+    'LlmAgentConfig': '.llm_agent_config',
+    'LoopAgent': '.loop_agent',
+    'LoopAgentConfig': '.loop_agent_config',
+    'ManagedAgent': '._managed_agent',
+    'McpInstructionProvider': '.mcp_instruction_provider',
+    'ParallelAgent': '.parallel_agent',
+    'ParallelAgentConfig': '.parallel_agent_config',
+    'RunConfig': '.run_config',
+    'SequentialAgent': '.sequential_agent',
+    'SequentialAgentConfig': '.sequential_agent_config',
+}
 __all__ = [
     'Agent',
     'BaseAgent',
@@ -58,21 +79,4 @@ __all__ = [
     'SequentialAgentConfig',
 ]
 
-
-_LAZY_ATTRS = {
-    'ManagedAgent': '._managed_agent',
-    'McpInstructionProvider': '.mcp_instruction_provider',
-}
-
-
-def __getattr__(name: str) -> Any:
-  if name in _LAZY_ATTRS:
-    module = importlib.import_module(_LAZY_ATTRS[name], __name__)
-    attr = getattr(module, name)
-    globals()[name] = attr
-    return attr
-  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
-
-
-def __dir__() -> list[str]:
-  return list(globals().keys()) + __all__
+__getattr__, __dir__ = _lazy.accessors(globals(), _LAZY_MEMBERS)

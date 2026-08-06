@@ -23,6 +23,7 @@ from ...apps.compaction import _has_token_threshold_config
 from ...apps.compaction import _run_compaction_for_token_threshold_config
 from ...events.event import Event
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import require_agent
 
 if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
@@ -41,12 +42,13 @@ class CompactionRequestProcessor(BaseLlmRequestProcessor):
       return
       yield  # Required for AsyncGenerator.
 
+    agent = require_agent(invocation_context)
     token_compacted = await _run_compaction_for_token_threshold_config(
         config=config,
         session=invocation_context.session,
         session_service=invocation_context.session_service,
-        agent=invocation_context.agent,
-        agent_name=invocation_context.agent.name,
+        agent=agent,
+        agent_name=agent.name,
         current_branch=invocation_context.branch,
     )
     if token_compacted:

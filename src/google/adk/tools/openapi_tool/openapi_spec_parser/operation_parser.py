@@ -142,6 +142,7 @@ class OperationParser:
 
       if schema and schema.type == 'object':
         properties = schema.properties or {}
+        required_properties = set(schema.required or [])
         for prop_name, prop_details in properties.items():
           self._params.append(
               ApiParameter(
@@ -149,6 +150,7 @@ class OperationParser:
                   param_location='body',
                   param_schema=prop_details,
                   description=prop_details.description,
+                  required=prop_name in required_properties,
                   py_name=self._get_py_name(prop_name),
               )
           )

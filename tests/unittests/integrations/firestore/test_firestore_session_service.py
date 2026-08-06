@@ -14,9 +14,13 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 import json
+import os
+import time
 from unittest import mock
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
@@ -720,6 +724,133 @@ async def test_get_session_with_config(mock_firestore_client):
 
   events_collection_ref.where.assert_called_once()
   events_collection_ref.limit_to_last.assert_called_once_with(5)
+
+
+@pytest.mark.asyncio
+async def test_get_session_with_zero_recent_events(mock_firestore_client):
+  """Requesting zero events returns none of them, not the whole transcript.
+
+  Callers use a count of zero to check whether a session exists without
+  paying for its history, so the events query must be skipped entirely.
+  """
+  service = FirestoreSessionService(client=mock_firestore_client)
+  app_name = "test_app"
+  user_id = "test_user"
+  session_id = "test_session"
+
+  doc_snapshot = (
+      mock_firestore_client.collection.return_value.document.return_value.collection.return_value.document.return_value.get.return_value
+  )
+  doc_snapshot.exists = True
+  doc_snapshot.to_dict.return_value = {
+      "id": session_id,
+      "appName": app_name,
+      "userId": user_id,
+  }
+
+  events_collection_ref = (
+      mock_firestore_client.collection.return_value.document.return_value.collection.return_value.document.return_value.collection.return_value.document.return_value.collection.return_value
+  )
+  stored_event_doc = mock.MagicMock()
+  stored_event_doc.to_dict.return_value = {
+      "event_data": (
+          Event(invocation_id="inv", author="user").model_dump(mode="json")
+      )
+  }
+  events_collection_ref.get = mock.AsyncMock(return_value=[stored_event_doc])
+
+  session = await service.get_session(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      config=GetSessionConfig(num_recent_events=0),
+  )
+
+  assert session is not None
+  assert session.events == []
+  events_collection_ref.get.assert_not_called()
+  events_collection_ref.limit_to_last.assert_not_called()
+
+
+@contextlib.contextmanager
+def _pinned_local_timezone(name: str):
+  """Pins the process timezone for the duration of the block.
+
+  ``time.tzset`` is POSIX-only, so on other platforms the block runs in the
+  host zone instead. Restoring ``TZ`` without a second ``tzset`` would leave
+  the C library pinned for the rest of the session, so both are undone.
+  """
+  if not hasattr(time, "tzset"):
+    yield
+    return
+  previous = os.environ.get("TZ")
+  os.environ["TZ"] = name
+  time.tzset()
+  try:
+    yield
+  finally:
+    if previous is None:
+      os.environ.pop("TZ", None)
+    else:
+      os.environ["TZ"] = previous
+    time.tzset()
+
+
+def _wire_epoch(value: datetime) -> float:
+  """The epoch the Firestore client encodes for ``value``.
+
+  The client reads a naive datetime as UTC rather than as local time, so a
+  naive cursor lands on the wire shifted by the host's UTC offset.
+  """
+  if value.tzinfo is None:
+    value = value.replace(tzinfo=timezone.utc)
+  return value.timestamp()
+
+
+@pytest.mark.asyncio
+async def test_get_session_after_timestamp_cursor_is_utc_aware(
+    mock_firestore_client,
+):
+  """The after_timestamp cursor must be an aware UTC datetime.
+
+  Events are written with an aware UTC server timestamp, so a naive local
+  cursor is compared against them shifted by the host's UTC offset: it
+  replays events west of UTC and silently drops them east of it.
+  """
+  service = FirestoreSessionService(client=mock_firestore_client)
+  app_name = "test_app"
+  user_id = "test_user"
+  session_id = "test_session"
+  after_timestamp = 1234567890.0
+
+  doc_snapshot = (
+      mock_firestore_client.collection.return_value.document.return_value.collection.return_value.document.return_value.get.return_value
+  )
+  doc_snapshot.exists = True
+  doc_snapshot.to_dict.return_value = {
+      "id": session_id,
+      "appName": app_name,
+      "userId": user_id,
+  }
+
+  events_collection_ref = (
+      mock_firestore_client.collection.return_value.document.return_value.collection.return_value.document.return_value.collection.return_value.document.return_value.collection.return_value
+  )
+
+  # Pinned east of UTC so a naive cursor is skewed even on a UTC host.
+  with _pinned_local_timezone("Asia/Tokyo"):
+    await service.get_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        config=GetSessionConfig(after_timestamp=after_timestamp),
+    )
+
+  events_collection_ref.where.assert_called_once()
+  field, operator, cursor = events_collection_ref.where.call_args.args
+  assert (field, operator) == ("timestamp", ">=")
+  assert cursor.utcoffset() == timedelta(0), f"cursor is not UTC: {cursor!r}"
+  assert _wire_epoch(cursor) == after_timestamp
 
 
 @pytest.mark.asyncio

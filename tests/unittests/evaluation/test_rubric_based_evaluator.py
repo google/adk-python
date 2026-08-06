@@ -675,6 +675,85 @@ class TestRubricBasedEvaluator:
     assert auto_rater_score.score is None
     assert auto_rater_score.rubric_scores == []
 
+  @pytest.mark.parametrize(
+      "property_text",
+      [
+          "\u2022 Is the response good?",
+          "- Is the response good?",
+          "* **Is the response good?**",
+          "**Is the response good?**",
+          "### Is the response good?",
+          "```Is the response good?```",
+          "> Is the response good?",
+          "\u201cIs the response good?\u201d",
+          "\u2014 Is the response good?",
+          "Is  the   response  good?",
+      ],
+  )
+  def test_convert_auto_rater_response_to_score_with_decorated_property(
+      self,
+      evaluator: RubricBasedEvaluator,
+      property_text: str,
+  ):
+    """Markdown and typographic decoration still resolves to its rubric."""
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(
+                    text=(
+                        f"Property: {property_text}\n"
+                        "Rationale: It was good.\n"
+                        "Verdict: yes\n"
+                    )
+                )
+            ]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1"]
+    assert auto_rater_score.score == 1.0
+
+  def test_convert_auto_rater_response_to_score_keeps_non_ascii_rubric(self):
+    """Normalization must not drop accented characters from rubric text."""
+    criterion = RubricsBasedCriterion(
+        threshold=0.5,
+        rubrics=[
+            Rubric(
+                rubric_id="1",
+                rubric_content=RubricContent(
+                    text_property="La réponse utilise l'outil"
+                ),
+            )
+        ],
+        judge_model_options=JudgeModelOptions(
+            judge_model_config=None, num_samples=1
+        ),
+    )
+    evaluator = FakeRubricBasedEvaluator(
+        EvalMetric(
+            metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+            threshold=0.5,
+            criterion=criterion,
+        )
+    )
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(
+                    text=(
+                        "Property: **La réponse utilise l\u2019outil**\n"
+                        "Rationale: Oui.\n"
+                        "Verdict: yes\n"
+                    )
+                )
+            ]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1"]
+
   def test_create_effective_rubrics_list_with_invocation_rubrics(
       self, evaluator: RubricBasedEvaluator
   ):

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -712,3 +713,403 @@ def test_ensure_agent_engine_dependency(tmp_path: Path):
   cli_deploy._ensure_agent_engine_dependency(str(requirements_file))
   content = requirements_file.read_text()
   assert content == "google-cloud-aiplatform[adk,agent_engines]\n"
+
+
+def _make_recording_vertexai(
+    captured_configs: List[Dict[str, Any]],
+) -> types.ModuleType:
+  """Returns a fake `vertexai` module whose client records deploy configs."""
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, **kwargs: Any) -> Any:
+      del kwargs
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+      del name
+      captured_configs.append(config)
+
+    def delete(self, *, name: str) -> None:
+      del name
+
+  class _FakeVertexClient:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args
+      del kwargs
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  return fake_vertexai
+
+
+def test_to_agent_engine_with_extra_packages_adds_to_source_packages(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """extra_packages basenames should be appended to source_packages."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  extra_pkg = src_dir.parent / "my_extra_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_pkg)],
+  )
+
+  assert len(captured) == 1
+  source_packages = captured[0]["source_packages"]
+  assert "agents/agent" in source_packages
+  assert "Dockerfile" in source_packages
+  assert "my_extra_pkg" in source_packages
+
+
+def test_to_agent_engine_with_extra_packages_copies_into_temp_and_dockerfile(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """extra_packages should be staged into the temp folder and copied in Docker."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  extra_pkg = src_dir.parent / "my_extra_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_pkg)],
+  )
+
+  assert (tmp_dir / "my_extra_pkg" / "helper.py").is_file()
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "my_extra_pkg/" "/app/my_extra_pkg/"'
+      in dockerfile_content
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile_content
+
+
+def test_to_agent_engine_extra_packages_missing_path_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """A nonexistent extra_packages path should raise a ClickException."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  missing = tmp_path / "does_not_exist"
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        extra_packages=[str(missing)],
+    )
+
+  assert "extra_packages path not found" in str(exc_info.value)
+
+
+def test_to_agent_engine_extra_packages_from_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """The config-file `extra_packages` key should stage without being forwarded."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  extra_pkg = src_dir.parent / "cfg_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+  config_file = src_dir.parent / "config.json"
+  config_file.write_text(json.dumps({"extra_packages": [str(extra_pkg)]}))
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      agent_engine_config_file=str(config_file),
+  )
+
+  assert len(captured) == 1
+  config = captured[0]
+  assert "cfg_pkg" in config["source_packages"]
+  assert "extra_packages" not in config
+
+
+def test_to_agent_engine_config_file_relative_entry_resolves_to_agent_folder(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """Relative config-file entries resolve against the agent folder, not cwd."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  extra_pkg = src_dir / "local_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+  config_file = src_dir / ".agent_engine_config.json"
+  config_file.write_text(json.dumps({"extra_packages": ["local_pkg"]}))
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  assert len(captured) == 1
+  assert "local_pkg" in captured[0]["source_packages"]
+
+
+def test_cli_deploy_agent_engine_passes_extra_packages(tmp_path: Path) -> None:
+  """Repeatable --extra_packages should reach to_agent_engine as a list."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            "--extra_packages=pkg_a",
+            "--extra_packages=pkg_b",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["extra_packages"] == ["pkg_a", "pkg_b"]
+
+
+def test_to_agent_engine_extra_packages_single_file_uses_file_form_copy(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """A single-file extra package is staged and copied with the file-form COPY."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  extra_file = src_dir.parent / "my_helper.py"
+  extra_file.write_text("VALUE = 1\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_file)],
+  )
+
+  assert (tmp_dir / "my_helper.py").is_file()
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  # File form: no trailing slash on either side of the COPY.
+  assert (
+      'COPY --chown=myuser:myuser "my_helper.py" "/app/my_helper.py"'
+      in dockerfile_content
+  )
+  assert '"my_helper.py/"' not in dockerfile_content
+  assert "my_helper.py" in captured[0]["source_packages"]
+
+
+def test_to_agent_engine_extra_packages_conflicting_name_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """A package basename that collides with a reserved name raises."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  reserved_pkg = src_dir.parent / "Dockerfile"
+  reserved_pkg.mkdir()
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        extra_packages=[str(reserved_pkg)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
+
+
+def test_to_agent_engine_extra_packages_duplicate_basename_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """Two extra packages that share a basename raise a ClickException."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  pkg_a = tmp_path / "a" / "shared"
+  pkg_b = tmp_path / "b" / "shared"
+  pkg_a.mkdir(parents=True)
+  pkg_b.mkdir(parents=True)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        extra_packages=[str(pkg_a), str(pkg_b)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
+
+
+def test_to_agent_engine_extra_packages_dockerfile_keeps_inherited_pythonpath(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """The emitted PYTHONPATH prepends `/app` instead of discarding the old value."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  extra_pkg = src_dir.parent / "my_extra_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_pkg)],
+  )
+
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  assert [
+      line
+      for line in dockerfile_content.splitlines()
+      if line.startswith("ENV PYTHONPATH")
+  ] == ['ENV PYTHONPATH="/app:$PYTHONPATH"']
+
+
+def test_to_agent_engine_extra_packages_agents_name_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """A package basename already staged in the build context raises."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  clashing_pkg = tmp_path / "outside" / "agents"
+  clashing_pkg.mkdir(parents=True)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        extra_packages=[str(clashing_pkg)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
+
+
+def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """An extra package named requirements.txt leaves the agent's file intact."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  extra_file = tmp_path / "outside" / "requirements.txt"
+  extra_file.parent.mkdir(parents=True)
+  extra_file.write_text("some-unrelated-package\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_file)],
+  )
+
+  assert (
+      "google-adk[a2a]=="
+      in (tmp_dir / "agents" / "agent" / "requirements.txt").read_text()
+  )
+  assert (tmp_dir / "requirements.txt").read_text() == (
+      "some-unrelated-package\n"
+  )

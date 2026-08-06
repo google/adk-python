@@ -407,6 +407,39 @@ class TestMCPSessionManager:
           mock_exit_stack.enter_async_context.assert_called_once()
 
   @pytest.mark.asyncio
+  async def test_create_session_passes_elicitation_callback(self):
+    """Elicitation callback is forwarded to the SessionContext."""
+
+    async def elicitation_callback(context, params):
+      del context, params
+      return {"action": "decline"}
+
+    manager = MCPSessionManager(
+        self.mock_stdio_connection_params,
+        elicitation_callback=elicitation_callback,
+    )
+    mock_exit_stack = MockAsyncExitStack()
+    with patch(
+        "google.adk.tools.mcp_tool.mcp_session_manager.stdio_client"
+    ) as mock_stdio:
+      with patch(
+          "google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack"
+      ) as mock_exit_stack_class:
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ) as mock_session_context_class:
+          mock_exit_stack_class.return_value = mock_exit_stack
+          mock_stdio.return_value = AsyncMock()
+          mock_session = AsyncMock()
+          mock_session_context = MockSessionContext(session=mock_session)
+          mock_session_context_class.return_value = mock_session_context
+          mock_exit_stack.enter_async_context.return_value = mock_session
+          await manager.create_session()
+          mock_session_context_class.assert_called_once()
+          _, kwargs = mock_session_context_class.call_args
+          assert kwargs["elicitation_callback"] is elicitation_callback
+
+  @pytest.mark.asyncio
   async def test_create_session_reuse_existing(self):
     """Test reusing an existing connected session."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)

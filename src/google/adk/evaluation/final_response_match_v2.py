@@ -127,7 +127,7 @@ def _parse_critique(response: str) -> Label:
 
 
 @experimental
-class FinalResponseMatchV2Evaluator(LlmAsJudge):
+class FinalResponseMatchV2Evaluator(LlmAsJudge[LlmAsAJudgeCriterion]):
   """V2 final response match evaluator which uses an LLM to judge responses.
 
   The evaluator prompts the LLM to output whether the agent final response is

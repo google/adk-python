@@ -16,11 +16,13 @@ import asyncio
 import json
 from typing import Any
 from typing import Optional
+from unittest.mock import patch
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -33,9 +35,11 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.runners import Runner
+import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.types import Part
@@ -1134,6 +1138,51 @@ async def test_run_async_extracts_executable_code_only():
   assert result == 'print("hi")'
 
 
+async def _run_agent_tool_with_multiple_contents(
+    contents: list[types.Content],
+) -> Any:
+  """Drives AgentTool with an inner agent that yields multiple event contents."""
+
+  class _MultiContentAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      for content in contents:
+        yield Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=content,
+        )
+
+  inner = _MultiContentAgent(name='inner_agent', description='multi')
+  agent_tool = AgentTool(agent=inner)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=inner,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  return await agent_tool.run_async(
+      args={'request': 'test request'}, tool_context=tool_context
+  )
+
+
+@mark.asyncio
+async def test_run_async_accumulates_text_across_multiple_contents():
+  """Text parts from multiple sequential content events are accumulated and joined."""
+  result = await _run_agent_tool_with_multiple_contents([
+      types.Content(role='model', parts=[types.Part(text='First answer.')]),
+      types.Content(role='model', parts=[types.Part(text='Second answer.')]),
+  ])
+  assert result == 'First answer.\nSecond answer.'
+
+
 @mark.asyncio
 async def test_run_async_skips_thought_parts():
   """Parts marked thought=True are dropped regardless of kind."""
@@ -1200,6 +1249,54 @@ async def test_run_async_preserves_error_when_only_thought_parts():
       Event(author='inner_agent', error_message='A2A request failed: 503'),
   ])
   assert result == 'A2A request failed: 503'
+
+
+@mark.asyncio
+async def test_run_async_skips_partial_events():
+  """Partial events are ignored so that streamed chunks do not duplicate final content."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='Hello')],
+          ),
+          partial=True,
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text=' world')],
+          ),
+          partial=True,
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='Hello world')],
+          ),
+          partial=False,
+      ),
+  ])
+  assert result == 'Hello world'
+
+
+@mark.asyncio
+async def test_run_async_with_only_partial_events_returns_empty():
+  """When only partial events are emitted, no content is accumulated."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='streamed chunk')],
+          ),
+          partial=True,
+      ),
+  ])
+  assert result == ''
 
 
 class TestAgentToolWithCompositeAgents:
@@ -1680,3 +1777,149 @@ def test_agent_tool_skip_summarization_handles_non_string_result(
   text_parts = [p.text for p in last_event.content.parts if p.text]
 
   assert text_parts == ['{"value": 123}']
+
+
+# ---------------------------------------------------------------------------
+# Tests for input_schema message wrapping
+# ---------------------------------------------------------------------------
+
+
+async def _run_agent_tool_and_capture_content(
+    args: dict,
+    input_schema=None,
+    output_schema=None,
+) -> types.Content:
+  """Drives AgentTool and captures the Content passed to the inner agent.
+
+  This uses a stub Runner (same pattern as test_agent_tool_inherits_parent_app_name)
+  to intercept the new_message without executing the actual agent pipeline.
+  """
+  if input_schema is not None:
+    inner = LlmAgent(
+        name='inner_agent',
+        description='captures input',
+        model=testing_utils.MockModel.create(responses=['done']),
+        input_schema=input_schema,
+        output_schema=output_schema,
+    )
+  else:
+    inner = Agent(name='inner_agent', model='test-model')
+
+  new_message_holder: list = []
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class _StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(
+        self,
+        *,
+        user_id,
+        session_id,
+        invocation_id=None,
+        new_message=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      new_message_holder.append(new_message)
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  with patch.object(_runners_module, 'Runner', _StubRunner):
+    agent_tool = AgentTool(agent=inner)
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name='test_app', user_id='test_user'
+    )
+    invocation_context = InvocationContext(
+        invocation_id='invocation_id',
+        agent=inner,
+        session=session,
+        session_service=session_service,
+    )
+    tool_context = ToolContext(invocation_context=invocation_context)
+    await agent_tool.run_async(args=args, tool_context=tool_context)
+
+  return new_message_holder[0] if new_message_holder else None
+
+
+@mark.asyncio
+async def test_run_async_no_input_schema_passes_request_unchanged():
+  """Without input_schema, the message is args['request'] verbatim."""
+  content = await _run_agent_tool_and_capture_content(
+      args={'request': 'hello world'},
+      input_schema=None,
+  )
+
+  assert content is not None
+  assert len(content.parts) == 1
+  assert content.parts[0].text == 'hello world'
+
+
+class _RoundTripInput(BaseModel):
+  query: str
+  limit: int
+
+
+class _RoundTripOutput(BaseModel):
+  result: str
+
+
+@mark.asyncio
+@pytest.mark.parametrize('output_schema', [None, _RoundTripOutput])
+async def test_run_async_with_input_schema_passes_bare_json(output_schema):
+  """With input_schema the message is the bare serialized payload."""
+  content = await _run_agent_tool_and_capture_content(
+      args={'query': 'hello', 'limit': 5},
+      input_schema=_RoundTripInput,
+      output_schema=output_schema,
+  )
+
+  assert content is not None
+  assert len(content.parts) == 1
+  payload = json.loads(content.parts[0].text)
+  assert payload == {'query': 'hello', 'limit': 5}
+
+
+@mark.asyncio
+@pytest.mark.parametrize('output_schema', [None, _RoundTripOutput])
+async def test_run_async_input_schema_content_survives_node_validation(
+    output_schema,
+):
+  """The message AgentTool sends must validate against the same input_schema.
+
+  The node runtime re-validates the first user message against the inner
+  agent's input_schema, so anything AgentTool prepends to the payload breaks
+  the call before the agent runs. This drives the real validator rather than
+  the stubbed runner used above.
+  """
+  content = await _run_agent_tool_and_capture_content(
+      args={'query': 'hello', 'limit': 5},
+      input_schema=_RoundTripInput,
+      output_schema=output_schema,
+  )
+
+  assert validate_node_data(
+      _RoundTripInput, content, preserve_content=False
+  ) == {'query': 'hello', 'limit': 5}

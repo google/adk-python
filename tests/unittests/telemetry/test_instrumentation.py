@@ -17,8 +17,10 @@
 import time
 from unittest import mock
 
+from google.adk.telemetry import _instrumentation
 from google.adk.telemetry import _metrics
 from opentelemetry import trace
+import pytest
 
 
 def test_get_elapsed_s_span_none():
@@ -80,3 +82,27 @@ def test_get_elapsed_s_span_non_int_end():
   with mock.patch("time.monotonic", return_value=12.0):
     elapsed = _metrics.get_elapsed_s(mock_span, start_time)
   assert elapsed == 2.0
+
+
+@pytest.mark.asyncio
+async def test_record_tool_execution_forwards_detected_error_type():
+  """A failure detected in the tool response reaches the duration metric."""
+  tool = mock.MagicMock()
+  tool.name = "sample_tool"
+  agent = mock.MagicMock()
+  agent.name = "sample_agent"
+
+  with mock.patch.object(
+      _metrics, "record_tool_execution_duration"
+  ) as mock_record:
+    async with _instrumentation.record_tool_execution(
+        tool=tool,
+        agent=agent,
+        function_args={},
+        invocation_context=mock.MagicMock(),
+    ) as tel_ctx:
+      tel_ctx.error_type = "MCP_TOOL_ERROR"
+
+  mock_record.assert_called_once()
+  assert mock_record.call_args.kwargs["error"] is None
+  assert mock_record.call_args.kwargs["error_type"] == "MCP_TOOL_ERROR"

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 import unicodedata
 
@@ -53,6 +54,9 @@ class RougeEvaluator(Evaluator):
     _validate_invocation_lengths(actual_invocations, expected_invocations)
     del conversation_scenario  # not used by this metric.
 
+    threshold = self._eval_metric.threshold
+    assert threshold is not None
+
     total_score = 0.0
     num_invocations = 0
     per_invocation_results = []
@@ -68,7 +72,7 @@ class RougeEvaluator(Evaluator):
               actual_invocation=actual,
               expected_invocation=expected,
               score=score,
-              eval_status=_get_eval_status(score, self._eval_metric.threshold),
+              eval_status=_get_eval_status(score, threshold),
           )
       )
       total_score += score
@@ -78,9 +82,7 @@ class RougeEvaluator(Evaluator):
       overall_score = total_score / num_invocations
       return EvaluationResult(
           overall_score=overall_score,
-          overall_eval_status=_get_eval_status(
-              overall_score, self._eval_metric.threshold
-          ),
+          overall_eval_status=_get_eval_status(overall_score, threshold),
           per_invocation_results=per_invocation_results,
       )
 
@@ -150,7 +152,7 @@ class _UnicodeAwareTokenizer:
 
   def tokenize(self, text: str) -> list[str]:
     text = unicodedata.normalize("NFKC", text).lower()
-    processed_chars = []
+    processed_chars: list[str] = []
     for char in text:
       if _is_cjk(char):
         processed_chars.extend([" ", char, " "])
@@ -166,7 +168,7 @@ class _UnicodeAwareTokenizer:
       else:
         processed_chars.append(" ")
     words = "".join(processed_chars).split()
-    tokens = []
+    tokens: list[str] = []
     for word in words:
       if word.isascii():
         tokens.extend(self._default_tokenizer.tokenize(word))
@@ -175,7 +177,7 @@ class _UnicodeAwareTokenizer:
     return tokens
 
 
-def _calculate_rouge_1_scores(candidate: str, reference: str):
+def _calculate_rouge_1_scores(candidate: str, reference: str) -> Any:
   """Calculates the ROUGE-1 score between a candidate and reference text.
 
   ROUGE-1 measures the overlap of unigrams (single words) between the

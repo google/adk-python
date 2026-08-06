@@ -17,9 +17,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
 import enum
+import os
 import sqlite3
 import time
 from unittest import mock
+import warnings
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
@@ -31,13 +33,18 @@ from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.schemas.shared import DynamicJSON
+from google.adk.sessions.schemas.v0 import DynamicPickleType
+from google.adk.sessions.schemas.v1 import StorageSession
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
 from sqlalchemy import delete
+from sqlalchemy import select
 from sqlalchemy import text
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -107,6 +114,28 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
     )
 
   assert captured_kwargs.get('pool_pre_ping') is True
+
+
+@pytest.mark.parametrize('decorator', [DynamicJSON, DynamicPickleType])
+def test_session_type_decorators_opt_into_statement_cache(decorator):
+  """Session TypeDecorators must declare cache_ok to stay cacheable.
+
+  SQLAlchemy discards the cache key of any statement whose traversal reaches a
+  TypeDecorator that has not set cache_ok, and warns while doing so. Both types
+  qualify: neither defines __init__, so the key is the bare class, and every
+  method branches only on the dialect, which the compiled cache already keys on.
+  """
+  assert decorator.__dict__.get('cache_ok') is True
+  assert decorator()._static_cache_key == (decorator,)
+
+
+def test_dynamic_json_column_statement_is_cacheable():
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter('always')
+    cache_key = select(StorageSession.state)._generate_cache_key()
+
+  assert cache_key is not None
+  assert not [w for w in caught if 'cache_ok' in str(w.message)]
 
 
 @pytest.mark.parametrize(
@@ -399,6 +428,60 @@ async def test_create_and_list_sessions(session_service):
   assert {s.id for s in sessions} == set(session_ids)
   for session in sessions:
     assert session.state == {'key': 'value' + session.id}
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_list_sessions_orders_by_update_time_then_id():
+  """Database list_sessions returns least-active sessions first, with stable ties."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    app_name = 'my_app'
+    user_id = 'test_user'
+    session_ids = ['orphan', 'active_b', 'middle', 'active_a']
+    for session_id in session_ids:
+      await service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+      )
+
+    schema = service._get_schema_classes()
+    create_times = {
+        'active_b': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'orphan': datetime(2026, 1, 4, tzinfo=timezone.utc),
+    }
+    update_times = {
+        'orphan': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'active_b': datetime(2026, 1, 3, tzinfo=timezone.utc),
+    }
+    async with service.database_session_factory() as sql_session:
+      for session_id, create_time in create_times.items():
+        await sql_session.execute(
+            update(schema.StorageSession)
+            .where(schema.StorageSession.app_name == app_name)
+            .where(schema.StorageSession.user_id == user_id)
+            .where(schema.StorageSession.id == session_id)
+            .values(
+                create_time=create_time,
+                update_time=update_times[session_id],
+            )
+        )
+      await sql_session.commit()
+
+    response = await service.list_sessions(app_name=app_name, user_id=user_id)
+
+    assert [session.id for session in response.sessions] == [
+        'orphan',
+        'middle',
+        'active_a',
+        'active_b',
+    ]
+  finally:
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -2014,7 +2097,7 @@ def test_database_session_service_visible_in_module_namespace():
   """DatabaseSessionService must be in dir() so Sphinx autodoc renders it.
 
   It is imported lazily via module __getattr__, so without an explicit
-  __dir__ it drops out of the generated API reference (issue #4331).
+  __dir__ it drops out of the generated API reference.
   """
   import google.adk.sessions as sessions_module
 
@@ -2131,7 +2214,7 @@ async def test_database_session_service_requires_one_argument():
 async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
     tmp_path,
 ):
-  """Regression test for #6352 (SQLite REAL-affinity timestamp reads)."""
+  """Regression test for SQLite REAL-affinity timestamp reads."""
   # SQLite REAL-affinity columns can end up storing raw Unix epoch floats
   # instead of the text format SQLAlchemy's DateTime type normally writes
   # (for example, if the row was written by a different code path than the
@@ -2181,3 +2264,105 @@ async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
   assert retrieved_session.events[0].timestamp == pytest.approx(
       raw_epoch_float, abs=1.0
   )
+
+
+@pytest.fixture
+def local_timezone_with_dst():
+  """Runs the test in a local timezone that repeats an hour every autumn.
+
+  ``time.tzset`` is POSIX-only, so on other platforms the test runs in the
+  host zone instead. Restoring ``TZ`` without a second ``tzset`` would leave
+  the C library pinned for the rest of the session, so both are undone.
+  """
+  if not hasattr(time, 'tzset'):
+    yield
+    return
+  original_tz = os.environ.get('TZ')
+  os.environ['TZ'] = 'America/New_York'
+  time.tzset()
+  try:
+    yield
+  finally:
+    if original_tz is None:
+      del os.environ['TZ']
+    else:
+      os.environ['TZ'] = original_tz
+    time.tzset()
+
+
+@pytest.mark.asyncio
+async def test_get_session_keeps_exact_epoch_across_a_repeated_local_hour(
+    session_service, local_timezone_with_dst
+):
+  """Events written during a repeated local hour read back at the same instant.
+
+  2024-11-03 06:00 and 06:30 UTC are 01:00 and 01:30 in US Eastern for the
+  second time that morning; the same local wall-clock times already happened
+  an hour earlier. A round trip that reconstructs the epoch from local wall
+  clock alone cannot tell the two passes apart, so those events come back an
+  hour early and sort into the wrong place in the conversation.
+  """
+  app_name = 'my_app'
+  user_id = 'user'
+  # Both instants fall in the repeated hour, so their local times are
+  # ambiguous.
+  repeated_hour_epochs = [1730613600.0, 1730615400.0]
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  for epoch in repeated_hour_epochs:
+    await session_service.append_event(
+        session, Event(author='user', timestamp=epoch)
+    )
+
+  retrieved_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+
+  assert [
+      event.timestamp for event in retrieved_session.events
+  ] == repeated_hour_epochs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type', [SessionServiceType.DATABASE, SessionServiceType.SQLITE]
+)
+@pytest.mark.parametrize('append_ids_in_reverse', [False, True])
+async def test_get_session_orders_tied_timestamps_by_id(
+    service_type, append_ids_in_reverse, tmp_path
+):
+  """Events sharing a timestamp come back in a stable, id-ordered sequence.
+
+  Without a tiebreaker the database is free to return tied events in any
+  order, so a replayed conversation shuffles between fetches and
+  `num_recent_events` truncates at an arbitrary point inside the tie. Ordering
+  on id as well also keeps the last returned event consistent with the event
+  the stale-session check treats as the latest one.
+  """
+  app_name = 'my_app'
+  user_id = 'user'
+  event_ids = ['event_a', 'event_m', 'event_z']
+  shared_timestamp = 100.0
+
+  service = get_session_service(service_type, tmp_path)
+  try:
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+    append_order = (
+        list(reversed(event_ids)) if append_ids_in_reverse else event_ids
+    )
+    for event_id in append_order:
+      await service.append_event(
+          session,
+          Event(author='user', id=event_id, timestamp=shared_timestamp),
+      )
+
+    retrieved_session = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+  finally:
+    if isinstance(service, DatabaseSessionService):
+      await service.close()
+
+  assert [event.id for event in retrieved_session.events] == event_ids

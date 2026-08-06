@@ -30,7 +30,7 @@ class TaskResultAggregator:
 
   def __init__(self) -> None:
     self._task_state = _compat.TS_WORKING
-    self._task_status_message = None
+    self._task_status_message: Message | None = None
 
   def process_event(self, event: Event) -> None:
     """Process an event from the agent run and detect signals about the task status.

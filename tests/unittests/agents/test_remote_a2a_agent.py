@@ -26,6 +26,7 @@ from a2a.client.client import ClientConfig
 from a2a.client.client_factory import ClientFactory
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
+from a2a.types import AgentInterface
 from a2a.types import AgentSkill
 from a2a.types import Artifact
 from a2a.types import Message as A2AMessage
@@ -161,6 +162,37 @@ def create_test_agent_card(
               description="A test skill",
               tags=["test"],
           )
+      ],
+  )
+
+
+def _make_multi_interface_card(interfaces) -> AgentCard:
+  """Build a card offering several RPC endpoints, version-agnostically.
+
+  ``interfaces`` is a list of ``(url, transport)`` pairs; the first pair is the
+  card's primary endpoint. On 1.x every pair becomes a ``supported_interfaces``
+  entry; on 0.3.x the first pair is the top-level ``url``/``preferredTransport``
+  and the rest land in ``additional_interfaces``.
+  """
+  if _compat.IS_A2A_V1:
+    return _compat.parse_agent_card({
+        "name": "test-agent",
+        "description": "Test agent",
+        "version": "1.0",
+        "supported_interfaces": [
+            {"url": url, "protocol_binding": transport}
+            for url, transport in interfaces
+        ],
+        "default_input_modes": ["text/plain"],
+        "default_output_modes": ["text/plain"],
+    })
+  (primary_url, primary_transport), *extra = interfaces
+  return _make_agent_card(
+      url=primary_url,
+      preferred_transport=primary_transport,
+      additional_interfaces=[
+          AgentInterface(url=url, transport=transport)
+          for url, transport in extra
       ],
   )
 
@@ -783,6 +815,141 @@ class TestRemoteA2aAgentResolution:
 
     with pytest.raises(AgentCardResolutionError, match="Invalid RPC URL"):
       await agent._validate_agent_card(invalid_card)
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_accepts_same_origin_https_rpc_url(self):
+    """A fetched card pointing back at its own origin is accepted."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    # Should not raise any exception.
+    await agent._validate_agent_card(
+        create_test_agent_card(url="https://example.com/rpc")
+    )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_rejects_cross_origin_rpc_url(self):
+    """A fetched card cannot redirect RPC traffic to an unrelated host."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="same origin"):
+      await agent._validate_agent_card(
+          create_test_agent_card(url="https://attacker.example.net/rpc")
+      )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_rejects_plain_http_rpc_url(self):
+    """A fetched card cannot downgrade RPC traffic to cleartext."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="must use https"):
+      await agent._validate_agent_card(
+          create_test_agent_card(url="http://example.com/rpc")
+      )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "rpc_url",
+      [
+          "http://127.0.0.1:8080/rpc",
+          "http://[::1]:8080/rpc",
+          "http://169.254.169.254/rpc",
+          "http://metadata.internal/rpc",
+      ],
+  )
+  async def test_validate_agent_card_rejects_internal_rpc_url(self, rpc_url):
+    """A fetched card cannot aim RPC traffic at host-local or internal hosts."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    with pytest.raises(AgentCardResolutionError):
+      await agent._validate_agent_card(create_test_agent_card(url=rpc_url))
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_allows_local_development_http(self):
+    """Plain http stays allowed for a same-origin loopback card."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://localhost:8000/.well-known/agent.json",
+    )
+
+    # Should not raise any exception.
+    await agent._validate_agent_card(
+        create_test_agent_card(url="http://localhost:8000/a2a")
+    )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_file_source_is_not_origin_checked(self):
+    """A card read from a local file is configuration, not remote data."""
+    agent = RemoteA2aAgent(name="test_agent", agent_card="/path/to/agent.json")
+
+    # Should not raise any exception.
+    await agent._validate_agent_card(
+        create_test_agent_card(url="http://internal-host:8080/rpc")
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "interfaces",
+      [
+          # A second interface on the transport the client already prefers
+          # displaces the benign endpoint during transport negotiation.
+          [
+              ("https://example.com/rpc", "JSONRPC"),
+              ("http://169.254.169.254/", "JSONRPC"),
+          ],
+          # The primary endpoint advertises a transport the client cannot
+          # speak, so negotiation falls through to the second interface.
+          [
+              ("https://example.com/rpc", "GRPC"),
+              ("http://127.0.0.1:9000/", "HTTP+JSON"),
+          ],
+      ],
+      ids=["displaces_primary", "primary_transport_unsupported"],
+  )
+  async def test_validate_agent_card_rejects_off_origin_extra_interface(
+      self, interfaces
+  ):
+    """Every endpoint the card offers is constrained, not just the first."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    with pytest.raises(AgentCardResolutionError):
+      await agent._validate_agent_card(_make_multi_interface_card(interfaces))
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_accepts_same_origin_extra_interface(self):
+    """A card may still offer several endpoints on its own origin."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+
+    # Should not raise any exception.
+    await agent._validate_agent_card(
+        _make_multi_interface_card([
+            ("https://example.com/rpc", "JSONRPC"),
+            ("https://example.com/rest", "HTTP+JSON"),
+        ])
+    )
+
+  def test_agent_card_rpc_urls_lists_every_endpoint(self):
+    """Validation enumerates every endpoint on the card, in card order."""
+    card = _make_multi_interface_card([
+        ("https://example.com/rpc", "JSONRPC"),
+        ("https://example.com/rest", "HTTP+JSON"),
+    ])
+
+    assert _compat.agent_card_rpc_urls(card) == [
+        "https://example.com/rpc",
+        "https://example.com/rest",
+    ]
 
   @pytest.mark.asyncio
   async def test_ensure_resolved_with_direct_agent_card(self):
@@ -1448,7 +1615,7 @@ class TestRemoteA2aAgentMessageHandling:
   ):
     """Test streaming A2A response handling when content/parts are missing.
 
-    This verifies the fix for issue #3769 where the code could raise when it
+    This verifies the fix for the case where the code could raise when it
     tried to read parts[0] without checking for empty/missing content.
     """
     mock_a2a_task = create_autospec(A2ATask, instance=True)
@@ -1731,7 +1898,7 @@ class TestRemoteA2aAgentMessageHandling:
 
 
 class TestRemoteA2aAgentStreamingArtifactChunks:
-  """Regression tests for chunked artifact streams (#6343)."""
+  """Regression tests for chunked artifact streams."""
 
   def setup_method(self):
     """Setup test fixtures."""
@@ -3762,3 +3929,332 @@ class TestRemoteA2aAgentDeepcopy:
         copied_config.request_interceptors[0]
         is not config.request_interceptors[0]
     )
+
+
+class TestRemoteA2aAgentWorkflowOutput:
+  """Tests that RemoteA2aAgent surfaces a workflow-node output value.
+
+  Without ``_promote_response_to_output``, a ``RemoteA2aAgent`` used as
+  a Workflow node leaves ``ctx.output`` as None, which causes
+  downstream JoinNode aggregation to record ``None`` for that
+  predecessor.
+  """
+
+  # Node path stamped on this agent's events by ``BaseAgent._run_impl``.
+  _NODE_PATH = "wf/remote_agent@1"
+
+  def _make_agent(self) -> RemoteA2aAgent:
+    return RemoteA2aAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+
+  def test_promotes_text_content_to_output(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="Findings: ok")],
+        ),
+    )
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is True
+    assert event.output == "Findings: ok"
+    assert event.node_info.message_as_output is True
+
+  def test_joins_multiple_text_parts(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[
+                genai_types.Part(text="line1\n"),
+                genai_types.Part(text="line2"),
+            ],
+        ),
+    )
+    event.node_info.path = self._NODE_PATH
+
+    agent._promote_response_to_output(event, self._NODE_PATH)
+
+    assert event.output == "line1\nline2"
+
+  def test_skips_thought_parts(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[
+                genai_types.Part(text="streaming update", thought=True),
+            ],
+        ),
+    )
+    event.node_info.path = self._NODE_PATH
+
+    agent._promote_response_to_output(event, self._NODE_PATH)
+
+    assert event.output is None
+    assert event.node_info.message_as_output is None
+
+  def test_skips_function_call_parts(self):
+    """input-required events carry a mock function call and no text."""
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[
+                genai_types.Part(
+                    function_call=genai_types.FunctionCall(
+                        id="fc1",
+                        name="mock_function_call_for_required_user_input",
+                        args={"input_required": "Please confirm"},
+                    )
+                ),
+            ],
+        ),
+    )
+    event.node_info.path = self._NODE_PATH
+
+    agent._promote_response_to_output(event, self._NODE_PATH)
+
+    assert event.output is None
+
+  def test_skips_partial_events(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        partial=True,
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="streaming...")],
+        ),
+    )
+    event.node_info.path = self._NODE_PATH
+
+    agent._promote_response_to_output(event, self._NODE_PATH)
+
+    assert event.output is None
+
+  def test_skips_events_from_other_node_path(self):
+    """Events whose node path differs are foreign, even if same-named.
+
+    Agent names can collide across a workflow hierarchy, so promotion
+    is gated on the node path rather than ``event.author``.
+    """
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="Not mine")],
+        ),
+    )
+    event.node_info.path = "wf/other_branch/remote_agent@1"
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is False
+    assert event.output is None
+
+  def test_preserves_existing_output(self):
+    agent = self._make_agent()
+    event = Event(
+        author="remote_agent",
+        output="preset",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="text")],
+        ),
+    )
+    event.node_info.path = self._NODE_PATH
+
+    agent._promote_response_to_output(event, self._NODE_PATH)
+
+    assert event.output == "preset"
+
+  def test_no_content_no_output(self):
+    agent = self._make_agent()
+    event = Event(author="remote_agent")
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is False
+    assert event.output is None
+
+  def _make_text_event(
+      self, text: str = "reply", task_state: str | None = None
+  ) -> Event:
+    event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text=text)],
+        ),
+    )
+    if task_state is not None:
+      event.custom_metadata = {
+          A2A_METADATA_PREFIX + "response": {"status": {"state": task_state}}
+      }
+    return event
+
+  @pytest.mark.parametrize(
+      "state",
+      [
+          "submitted",
+          "working",
+          "input-required",
+          "auth-required",
+          "unknown",
+      ],
+  )
+  def test_skips_non_final_task_states(self, state):
+    """Streaming converters may leave non-final text un-thoughted.
+
+    The task-state check on ``custom_metadata['a2a:response']`` is the
+    guard that prevents ``ctx.output`` from being overwritten by an
+    intermediate event and then raising on the real final event.
+    """
+    agent = self._make_agent()
+    event = self._make_text_event(text="in-progress chunk", task_state=state)
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is False
+    assert event.output is None
+
+  @pytest.mark.parametrize(
+      "state",
+      ["completed", "failed", "canceled", "rejected"],
+  )
+  def test_promotes_terminal_task_states(self, state):
+    agent = self._make_agent()
+    event = self._make_text_event(text="final answer", task_state=state)
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is True
+    assert event.output == "final answer"
+
+  def test_promotes_when_response_metadata_absent(self):
+    """Non-Task A2A responses (plain Message) carry no task status."""
+    agent = self._make_agent()
+    event = self._make_text_event(text="message reply")
+    event.node_info.path = self._NODE_PATH
+
+    assert agent._promote_response_to_output(event, self._NODE_PATH) is True
+    assert event.output == "message reply"
+
+  @pytest.mark.asyncio
+  async def test_run_impl_promotes_only_first_terminal_event(self):
+    """Guards against ``ValueError: Output already set``.
+
+    When the v2 converter path emits a ``working`` text event followed
+    by a ``completed`` text event, the first must be passed through
+    untouched and only the terminal event promoted. After that, any
+    further promotable event must also be left alone.
+    """
+
+    working = self._make_text_event(
+        text="thinking out loud", task_state="working"
+    )
+    completed = self._make_text_event(
+        text="final answer", task_state="completed"
+    )
+    trailing = self._make_text_event(
+        text="ignored trailing artifact", task_state="completed"
+    )
+
+    class _StubRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield working
+        yield completed
+        yield trailing
+
+    agent = _StubRemoteAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+
+    from google.adk.apps.app import App
+    from google.adk.workflow._join_node import JoinNode
+    from google.adk.workflow._workflow import Workflow
+
+    from tests.unittests import testing_utils
+
+    workflow = Workflow(
+        name="wf",
+        edges=[("START", agent, JoinNode(name="join"))],
+    )
+    app_instance = App(name="t", root_agent=workflow)
+    runner = testing_utils.InMemoryRunner(app=app_instance)
+
+    events = await runner.run_async(testing_utils.get_user_content("start"))
+
+    # No "Output already set" raised, and the JoinNode aggregates the
+    # terminal event's text — not the working intermediate, not the
+    # trailing artifact.
+    join_outputs = [
+        e
+        for e in events
+        if isinstance(e, Event)
+        and e.output is not None
+        and "join" in (e.node_info.path or "")
+    ]
+    assert join_outputs
+    assert join_outputs[0].output == {"remote_agent": "final answer"}
+
+    assert working.output is None
+    assert completed.output == "final answer"
+    assert trailing.output is None
+
+  @pytest.mark.asyncio
+  async def test_run_impl_promotes_output_for_each_event(self):
+    """``_run_impl`` calls ``_promote_response_to_output`` per event.
+
+    Uses a subclass that overrides ``_run_async_impl`` to yield a
+    deterministic event, then drives ``_run_impl`` through the public
+    workflow node entry point.
+    """
+
+    yielded_event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="agent reply")],
+        ),
+    )
+
+    class _StubRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield yielded_event
+
+    agent = _StubRemoteAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+    )
+
+    from google.adk.apps.app import App
+    from google.adk.workflow._join_node import JoinNode
+    from google.adk.workflow._workflow import Workflow
+
+    from tests.unittests import testing_utils
+
+    workflow = Workflow(
+        name="wf",
+        edges=[("START", agent, JoinNode(name="join"))],
+    )
+    app_instance = App(name="t", root_agent=workflow)
+    runner = testing_utils.InMemoryRunner(app=app_instance)
+    events = await runner.run_async(testing_utils.get_user_content("start"))
+
+    join_outputs = [
+        e
+        for e in events
+        if isinstance(e, Event)
+        and e.output is not None
+        and "join" in (e.node_info.path or "")
+    ]
+    assert join_outputs, "JoinNode should emit an aggregated output event"
+    assert join_outputs[0].output == {"remote_agent": "agent reply"}

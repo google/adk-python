@@ -28,6 +28,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import Client
 from google.genai import types
+import pytest
 
 
 class TestGeminiContextCacheManager:
@@ -269,8 +270,6 @@ class TestGeminiContextCacheManager:
 
   async def test_create_cache_gates_on_prefix_not_full_prompt(self):
     """Cache creation is gated on the cacheable prefix, not the full prompt.
-
-    Regression test for https://github.com/google/adk-python/issues/5847.
 
     On a long conversation the previous-prompt token count
     (``cacheable_contents_token_count``) can be well above Gemini's 4096-token
@@ -652,6 +651,104 @@ class TestGeminiContextCacheManager:
 
     assert fingerprint_auto != fingerprint_none
 
+  def test_generate_cache_fingerprint_tool_order_independent(self):
+    """Reordered tools and function declarations hash identically."""
+    decl_alpha = types.FunctionDeclaration(name="alpha", description="a")
+    decl_beta = types.FunctionDeclaration(name="beta", description="b")
+    content = types.Content(role="user", parts=[types.Part(text="Test")])
+    cache_contents_count = 1
+
+    # Two tools (one declaration each) in opposite order.
+    request_ab = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=[content],
+        config=types.GenerateContentConfig(
+            system_instruction="Test instruction",
+            tools=[
+                types.Tool(function_declarations=[decl_alpha]),
+                types.Tool(function_declarations=[decl_beta]),
+            ],
+        ),
+        cache_config=self.cache_config,
+    )
+    request_ba = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=[content],
+        config=types.GenerateContentConfig(
+            system_instruction="Test instruction",
+            tools=[
+                types.Tool(function_declarations=[decl_beta]),
+                types.Tool(function_declarations=[decl_alpha]),
+            ],
+        ),
+        cache_config=self.cache_config,
+    )
+    assert self.manager._generate_cache_fingerprint(
+        request_ab, cache_contents_count
+    ) == self.manager._generate_cache_fingerprint(
+        request_ba, cache_contents_count
+    )
+
+    # One tool with two declarations in opposite order.
+    request_decls_ab = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=[content],
+        config=types.GenerateContentConfig(
+            system_instruction="Test instruction",
+            tools=[types.Tool(function_declarations=[decl_alpha, decl_beta])],
+        ),
+        cache_config=self.cache_config,
+    )
+    request_decls_ba = LlmRequest(
+        model="gemini-2.5-flash",
+        contents=[content],
+        config=types.GenerateContentConfig(
+            system_instruction="Test instruction",
+            tools=[types.Tool(function_declarations=[decl_beta, decl_alpha])],
+        ),
+        cache_config=self.cache_config,
+    )
+    assert self.manager._generate_cache_fingerprint(
+        request_decls_ab, cache_contents_count
+    ) == self.manager._generate_cache_fingerprint(
+        request_decls_ba, cache_contents_count
+    )
+
+  def test_generate_cache_fingerprint_trailing_content_ignored(self):
+    """Appending a trailing content leaves a fixed-prefix fingerprint stable."""
+    llm_request = self.create_llm_request(contents_count=3)
+    prefix_count = 2
+
+    fingerprint_before = self.manager._generate_cache_fingerprint(
+        llm_request, prefix_count
+    )
+
+    # A new turn arrives; the cached prefix is unchanged.
+    llm_request.contents.append(
+        types.Content(role="user", parts=[types.Part(text="A new turn")])
+    )
+    fingerprint_after = self.manager._generate_cache_fingerprint(
+        llm_request, prefix_count
+    )
+
+    assert fingerprint_before == fingerprint_after
+
+  def test_generate_cache_fingerprint_system_instruction_change(self):
+    """Changing system_instruction changes the fingerprint."""
+    llm_request = self.create_llm_request()
+    cache_contents_count = 2
+
+    fingerprint_original = self.manager._generate_cache_fingerprint(
+        llm_request, cache_contents_count
+    )
+
+    llm_request.config.system_instruction = "A different instruction"
+    fingerprint_changed = self.manager._generate_cache_fingerprint(
+        llm_request, cache_contents_count
+    )
+
+    assert fingerprint_original != fingerprint_changed
+
   async def test_populate_cache_metadata_in_response_no_invocations_increment(
       self,
   ):
@@ -769,6 +866,20 @@ class TestGeminiContextCacheManager:
         llm_request_empty, empty_cache_contents_count
     )
     assert isinstance(fingerprint, str)
+
+  async def test_handle_context_caching_requires_configuration(self):
+    llm_request = self.create_llm_request()
+    llm_request.cache_config = None
+
+    with pytest.raises(ValueError, match="cache configuration"):
+      await self.manager.handle_context_caching(llm_request)
+
+  async def test_handle_context_caching_requires_model(self):
+    llm_request = self.create_llm_request()
+    llm_request.model = None
+
+    with pytest.raises(ValueError, match="model name"):
+      await self.manager.handle_context_caching(llm_request)
 
   def test_parameter_types_enforcement(self):
     """Test that method calls with correct parameter types work properly."""

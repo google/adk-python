@@ -145,8 +145,8 @@ def _convert_a2a_parts_to_adk_parts(
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
 ) -> tuple[List[genai_types.Part], set[str]]:
   """Converts a list of A2A parts to a list of ADK parts."""
-  output_parts = []
-  long_running_function_ids = set()
+  output_parts: list[genai_types.Part] = []
+  long_running_function_ids: set[str] = set()
 
   for a2a_part in a2a_parts:
     try:
@@ -167,7 +167,7 @@ def _convert_a2a_parts_to_adk_parts(
           is True
       ):
         for part in parts:
-          if part.function_call:
+          if part.function_call and part.function_call.id is not None:
             long_running_function_ids.add(part.function_call.id)
 
       output_parts.extend(parts)
@@ -258,6 +258,8 @@ def _extract_genai_metadata(
   if raw is None:
     return None
   parsed = _parse_adk_metadata_value(raw)
+  if model_class is dict:
+    return parsed if isinstance(parsed, dict) else None
   if not isinstance(parsed, dict) and model_class:
     return None
   if not model_class:
@@ -273,12 +275,30 @@ def _extract_genai_metadata(
     return None
 
 
+_PEER_SETTABLE_ACTION_FIELDS = frozenset({
+    "escalate",
+    "skip_summarization",
+    "skipSummarization",
+})
+"""EventActions fields a remote A2A peer may set on the event we emit for it.
+
+Every other field either mutates the caller's own session (state and artifact
+deltas, requested auth configs and tool confirmations) or drives the caller's
+control flow and persistence (agent transfer, agent state, compaction, rewind),
+so it must never be rebuilt from metadata the peer controls. Serialized
+metadata uses the camelCase aliases, so both spellings are listed.
+"""
+
+
 def _extract_event_actions(metadata: Any) -> EventActions:
   """Extracts ADK event actions from A2A metadata.
 
   ``metadata`` is the A2A object's raw metadata: a plain ``dict`` on 0.3.x or a
   ``google.protobuf.Struct`` on 1.x. ``_compat.meta_to_dict`` normalizes both to
   a plain ``dict`` (empty when there is nothing to extract).
+
+  The metadata is supplied by the remote peer, so only the inert fields in
+  ``_PEER_SETTABLE_ACTION_FIELDS`` are honored; anything else is dropped.
   """
   metadata = _compat.meta_to_dict(metadata)
   if not metadata:
@@ -296,8 +316,19 @@ def _extract_event_actions(metadata: Any) -> EventActions:
     )
     return EventActions()
 
+  peer_actions = {
+      key: value
+      for key, value in parsed_actions.items()
+      if key in _PEER_SETTABLE_ACTION_FIELDS
+  }
+  if len(peer_actions) != len(parsed_actions):
+    logger.debug(
+        "Dropping ADK actions metadata fields that a peer may not set: %s",
+        sorted(set(parsed_actions) - set(peer_actions)),
+    )
+
   try:
-    return EventActions.model_validate(parsed_actions)
+    return EventActions.model_validate(peer_actions)
   except ValidationError as error:
     logger.warning("Ignoring invalid ADK actions metadata: %s", error)
     return EventActions()
@@ -396,13 +427,14 @@ def _create_mock_function_call_for_required_user_input(
   for i in range(len(output_parts) - 1, -1, -1):
     prompt = _extract_user_input_prompt(output_parts[i])
     if prompt:
+      function_call_id = str(uuid.uuid4())
       function_call = genai_types.FunctionCall(
-          id=str(uuid.uuid4()),
+          id=function_call_id,
           name=function_name,
           args={args_key: prompt},
       )
       long_running_function_ids = set()
-      long_running_function_ids.add(function_call.id)
+      long_running_function_ids.add(function_call_id)
       output_parts[i] = genai_types.Part(function_call=function_call)
       break
   return output_parts, long_running_function_ids
@@ -418,7 +450,7 @@ def _extract_all_metadata_fields(metadata: Any) -> dict[str, Any]:
           metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
       ),
       "custom_metadata": _extract_genai_metadata(
-          metadata_dict, "custom_metadata", None
+          metadata_dict, "custom_metadata", dict
       ),
       "usage_metadata": _extract_genai_metadata(
           metadata_dict,
@@ -461,8 +493,8 @@ def convert_a2a_task_to_event(
 
   try:
     event_actions = EventActions()
-    output_parts = []
-    long_running_function_ids = set()
+    output_parts: list[genai_types.Part] = []
+    long_running_function_ids: set[str] = set()
     metadata_fields: dict[str, Any] = {}
     status_message = _compat.normalize_message(a2a_task.status.message)
     if a2a_task.artifacts:

@@ -112,7 +112,7 @@ async def test_add_session_to_memory():
   memory_service = InMemoryMemoryService()
   await memory_service.add_session_to_memory(MOCK_SESSION_1)
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   assert user_key in memory_service._session_events
   session_memory = memory_service._session_events[user_key]
   assert MOCK_SESSION_1.id in session_memory
@@ -133,7 +133,7 @@ async def test_add_events_to_memory_with_explicit_events():
       events=[MOCK_SESSION_1.events[0]],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert len(session_memory[MOCK_SESSION_1.id]) == 1
   assert session_memory[MOCK_SESSION_1.id][0].id == 'event-1a'
@@ -149,7 +149,7 @@ async def test_add_events_to_memory_without_session_id_uses_default_bucket():
       events=[MOCK_SESSION_1.events[0]],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert len(session_memory) == 1
   unknown_session_events = next(iter(session_memory.values()))
@@ -168,7 +168,7 @@ async def test_add_events_to_memory_alias_is_supported():
       events=[MOCK_SESSION_1.events[0]],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
       'event-1a'
@@ -195,7 +195,7 @@ async def test_add_events_to_memory_appends_without_replacing():
       events=[new_event],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
       'event-1a',
@@ -224,7 +224,7 @@ async def test_add_events_to_memory_deduplicates_event_ids():
       events=[duplicate_event],
   )
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   session_memory = memory_service._session_events[user_key]
   assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
       'event-1a',
@@ -238,7 +238,7 @@ async def test_add_session_with_no_events_to_memory():
   memory_service = InMemoryMemoryService()
   await memory_service.add_session_to_memory(MOCK_SESSION_WITH_NO_EVENTS)
 
-  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
   assert user_key in memory_service._session_events
   session_memory = memory_service._session_events[user_key]
   assert MOCK_SESSION_WITH_NO_EVENTS.id in session_memory
@@ -331,6 +331,37 @@ async def test_search_memory_is_scoped_by_user():
   assert (
       result_other_user.memories[0].content.parts[0].text == 'This is a secret.'
   )
+
+
+@pytest.mark.asyncio
+async def test_search_memory_does_not_collide_on_slash_in_identifiers():
+  """Tests that a slash in app_name cannot alias another app/user pair."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name='app/other-user',
+          user_id='user',
+          id='session-slashed-app',
+          last_update_time=1000,
+          events=[
+              Event(
+                  id='event-slashed-app',
+                  invocation_id='inv-slashed-app',
+                  author='user',
+                  timestamp=12345,
+                  content=types.Content(
+                      parts=[types.Part(text='This is a secret.')]
+                  ),
+              ),
+          ],
+      )
+  )
+
+  result = await memory_service.search_memory(
+      app_name='app', user_id='other-user/user', query='secret'
+  )
+
+  assert not result.memories
 
 
 @pytest.mark.asyncio

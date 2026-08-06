@@ -164,7 +164,7 @@ class BaseSessionService(abc.ABC):
     session.events.append(event)
     return event
 
-  async def flush(self):
+  async def flush(self) -> None:
     """Flushes any buffered events.
 
     For non-buffering implementations, this can be a no-op.
