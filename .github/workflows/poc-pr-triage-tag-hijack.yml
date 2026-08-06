@@ -1,0 +1,45 @@
+# ============================================================
+# PoC ONLY — structural reproduction of the real pr-triage.yml
+# trust configuration, for demonstrating CVE-2025-30066/30154-class
+# reachability. Lives only on the researcher's own fork.
+#
+# Differences from the real .github/workflows/pr-triage.yml:
+#   - Uses <researcher-fork>/poc-simulated-compromised-checkout@main
+#     instead of actions/checkout@v6, to stand in for "the tag now
+#     points somewhere else" without touching the real action.
+#   - Uses a placeholder POC_FAKE_ADK_TRIAGE_AGENT repo secret
+#     (a harmless string set by the researcher), never a live token.
+# Everything else — trigger type, permissions block, job structure —
+# is copied verbatim from the real workflow to keep the reproduction
+# honest.
+# ============================================================
+name: "PoC: ADK Pull Request Triaging Agent (tag-hijack reachability)"
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  poc-agent-triage-pull-request:
+    runs-on: ubuntu-latest
+    steps:
+      # Real workflow: uses: actions/checkout@v6   (mutable tag)
+      # PoC stand-in for "that tag now resolves to attacker code":
+      - name: "Checkout step (PoC stand-in for actions/checkout@v6)"
+       uses: mabrukhany-beep/poc-simulated-compromised-checkout@main
+        env:
+          POC_FAKE_ADK_TRIAGE_AGENT: ${{ secrets.POC_FAKE_ADK_TRIAGE_AGENT }}
+
+      - name: "Explain result"
+        run: |
+          echo "If the log above shows POC_FAKE_ADK_TRIAGE_AGENT being read,"
+          echo "this proves: any external, unauthenticated PR against this"
+          echo "repo reaches a step whose action reference is a mutable tag,"
+          echo "in a pull_request_target context that already carries"
+          echo "secrets.ADK_TRIAGE_AGENT and secrets.GOOGLE_API_KEY in the"
+          echo "real workflow — with zero maintainer action required beyond"
+          echo "the PR being opened."
