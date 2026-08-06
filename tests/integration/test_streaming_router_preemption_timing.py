@@ -12,22 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Real-LLM: an ADK graph reads N whole documents in parallel and answers a
-question, comparing plain SSE streaming against SSE + mid-stream preemption.
+"""Real-LLM: fan out over N whole documents, keep the summaries you asked for,
+and skip the ones you were going to throw away.
 
-NO chunking. Each document is handed to Gemini whole, in a single streaming
-API call. The only difference between the two strategies is what we do with the
-SSE token stream:
+NO chunking. Each document is handed to Gemini whole, in a single streaming API
+call. Each reader must FIRST emit a ``VERDICT:`` line (RELEVANT / IRRELEVANT),
+THEN write a long (>=300 word) summary of the paper.
 
-  A. read + answer                -- stream the model's answer to completion.
-  B. read + answer + preemption   -- the StreamingRouterNode monitor watches the
-                                     SSE tokens and cancels the stream the moment
-                                     the verdict has streamed in, so we never
-                                     generate the long summary that follows.
+Honest framing (no "just emit the verdict" escape)
+--------------------------------------------------
+The summary of a **RELEVANT** paper is a *required deliverable* -- the caller
+consumes it -- so both strategies must produce it in full. The only legitimate
+saving is refusing to summarize the papers you have already judged IRRELEVANT and
+are about to discard. So the two strategies differ only in that:
+
+  A. read + answer               -- every reader streams its full summary, even
+                                    the four papers that turn out to be
+                                    irrelevant (4 summaries with no consumer).
+  B. read + answer + preemption  -- the monitor cancels a reader the instant it
+                                    declares itself IRRELEVANT, but lets a
+                                    RELEVANT reader stream its summary to
+                                    completion.
+
+Both classify all five papers correctly AND both return the full summary of the
+one relevant paper (asserted). B is faster/cheaper purely because it does not pay
+to summarize the four documents it is discarding -- not because A was rigged to
+manufacture output nobody wanted.
 
 Five real arXiv papers are read in parallel; only "Attention Is All You Need" is
-a CS AI/ML paper. Both strategies must classify all five correctly; B must be
-faster because it stops generating once the answer is known.
+a CS AI/ML paper.
 
     ADK_TEST_MODEL=gemini-3.5-flash-lite \\
       uv run pytest -s -p no:cacheprovider \\
@@ -158,16 +171,37 @@ def _verdict_after_marker(text: str) -> Optional[str]:
   return line.strip()
 
 
+def _summary_body(text: str) -> str:
+  """The summary the reader wrote *after* its ``VERDICT:`` line (or '')."""
+  idx = text.upper().find(_VERDICT_MARKER)
+  if idx == -1:
+    return text.strip()  # no verdict line; treat the whole thing as body
+  after = text[idx + len(_VERDICT_MARKER) :]
+  _, sep, rest = after.partition('\n')
+  return rest.strip() if sep else ''
+
+
+def _word_count(text: str) -> int:
+  return len(text.split())
+
+
 def _decide(view: StreamView) -> Optional[StreamDecision]:
-  """Preemption verdict: fires once the VERDICT line has streamed in."""
+  """Preemption decision: cut ONLY the papers we don't want summarized.
+
+  This is the honest crux. The summary is a *required deliverable for a RELEVANT
+  paper*, so we must NOT preempt those -- we let the relevant reader stream its
+  full summary to completion. We only cut a reader once it has declared itself
+  IRRELEVANT, because for those papers the summary is genuinely unwanted: we have
+  everything we need (the verdict) and refuse to pay to summarize a document we
+  are about to discard.
+  """
   verdict = _verdict_after_marker(view.text)
   if verdict is None:
     return None
-  upper = verdict.upper()
-  if upper.startswith('IRRELEVANT'):
+  if verdict.upper().startswith('IRRELEVANT'):
     return StreamDecision(output={'relevant': False, 'verdict': 'IRRELEVANT'})
-  if upper.startswith('RELEVANT'):
-    return StreamDecision(output={'relevant': True, 'verdict': verdict})
+  # RELEVANT (or anything else): do NOT preempt -- keep generating the summary,
+  # which is a deliverable the caller actually consumes.
   return None
 
 
@@ -360,6 +394,18 @@ async def test_sse_preemption_beats_full_generation(llm_backend):
   _print_qa('A: read + answer (stream to completion)', a_sink['fan_in'], a_out)
   _print_qa('B: read + answer + SSE preemption', b_sink['fan_in'], b_out)
 
+  # The RELEVANT paper's summary is a required deliverable -- in BOTH strategies
+  # the reader must have streamed a full (>=300 word) summary, not just a verdict.
+  # This is what kills the weasel: B cannot win by skipping wanted output, only by
+  # skipping the summaries of papers it judged irrelevant.
+  a_rel_summary = _summary_body(_generated_text(0, a_sink['fan_in'], a_gen))
+  b_rel_summary = _summary_body(_generated_text(0, b_sink['fan_in'], b_gen))
+  print(
+      '  relevant-paper summary kept (a required deliverable):\n'
+      f'     A {_word_count(a_rel_summary):4d} words   '
+      f'B {_word_count(b_rel_summary):4d} words\n'
+  )
+
   # Both strategies must classify all five papers correctly.
   for fan_in in (a_sink['fan_in'], b_sink['fan_in']):
     assert _status_and_verdict(_value_for_index(fan_in, 0))[0] == 'RELEVANT'
@@ -368,7 +414,14 @@ async def test_sse_preemption_beats_full_generation(llm_backend):
           'IRRELEVANT'
       )
 
-  # Preemption stops generating the long summaries -> fewer output tokens...
+  # Both must actually deliver the relevant paper's full summary (>=250 words --
+  # a small margin under the requested 300 for LLM variance). B is NOT allowed to
+  # drop the deliverable the caller wanted.
+  assert _word_count(a_rel_summary) >= 250, 'A must summarize the relevant paper'
+  assert _word_count(b_rel_summary) >= 250, 'B must keep the relevant summary'
+
+  # Preemption only skips the FOUR irrelevant summaries the caller discards -> B
+  # generates meaningfully fewer output tokens...
   assert b_out_total < a_out_total
   # ...and it is faster.
   assert b_time < a_time

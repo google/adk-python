@@ -145,6 +145,40 @@ def _model_text(event: Event, *, include_thoughts: bool) -> str:
   )
 
 
+def build_sse_invocation_context(agent: LlmAgent, ctx: Context, node_input: Any):
+  """Prepares an InvocationContext that streams ``agent`` via SSE.
+
+  Shared by the streaming nodes (:class:`StreamingRouterNode` and the
+  speculative variant) so mid-stream monitoring always sees progressive
+  partial events regardless of the caller's default streaming mode.
+  """
+  from ._llm_agent_wrapper import prepare_llm_agent_context
+  from ._llm_agent_wrapper import prepare_llm_agent_input
+
+  if agent.mode is None:
+    agent.mode = 'single_turn'
+  # As a single-turn node, default to not replaying prior turns unless the
+  # author opted in — matching run_llm_agent_as_node.
+  if (
+      agent.mode == 'single_turn'
+      and 'include_contents' not in agent.model_fields_set
+  ):
+    agent.include_contents = 'none'
+
+  agent_ctx = prepare_llm_agent_context(agent, ctx)
+  prepare_llm_agent_input(agent, agent_ctx, node_input)
+
+  ic = agent_ctx.get_invocation_context()
+  run_config = (ic.run_config or RunConfig()).model_copy(
+      update={'streaming_mode': StreamingMode.SSE}
+  )
+  update: dict[str, Any] = {'agent': agent, 'run_config': run_config}
+  iso = getattr(agent_ctx, 'isolation_scope', None)
+  if agent.mode in ('task', 'single_turn') and iso:
+    update['isolation_scope'] = iso
+  return ic.model_copy(update=update)
+
+
 class StreamingRouterNode(BaseNode):
   """Advances the workflow graph mid-stream based on the model's own output.
 
@@ -211,32 +245,7 @@ class StreamingRouterNode(BaseNode):
 
   def _build_streaming_ic(self, ctx: Context, node_input: Any) -> Any:
     """Prepares an InvocationContext that streams the wrapped agent via SSE."""
-    from ._llm_agent_wrapper import prepare_llm_agent_context
-    from ._llm_agent_wrapper import prepare_llm_agent_input
-
-    agent = self.agent
-    if agent.mode is None:
-      agent.mode = 'single_turn'
-    # As a single-turn node, default to not replaying prior turns unless the
-    # author opted in — matching run_llm_agent_as_node.
-    if (
-        agent.mode == 'single_turn'
-        and 'include_contents' not in agent.model_fields_set
-    ):
-      agent.include_contents = 'none'
-
-    agent_ctx = prepare_llm_agent_context(agent, ctx)
-    prepare_llm_agent_input(agent, agent_ctx, node_input)
-
-    ic = agent_ctx.get_invocation_context()
-    run_config = (ic.run_config or RunConfig()).model_copy(
-        update={'streaming_mode': StreamingMode.SSE}
-    )
-    update: dict[str, Any] = {'agent': agent, 'run_config': run_config}
-    iso = getattr(agent_ctx, 'isolation_scope', None)
-    if agent.mode in ('task', 'single_turn') and iso:
-      update['isolation_scope'] = iso
-    return ic.model_copy(update=update)
+    return build_sse_invocation_context(self.agent, ctx, node_input)
 
   @override
   async def _run_impl(
