@@ -380,18 +380,26 @@ class GeminiLlmConnection(BaseLlmConnection):
                 llm_response.grounding_metadata = (
                     message.server_content.grounding_metadata
                 )
-            if content.parts[0].text:
-              current_is_thought = getattr(content.parts[0], 'thought', False)
+            # Collect all text parts from the message chunk.
+            # Previously only content.parts[0].text was examined, which
+            # silently dropped text from any part beyond the first when a
+            # single streaming chunk contained multiple text parts (e.g. a
+            # multimodal response with several text segments).
+            _text_parts = [p for p in content.parts if p.text]
+            _has_inline_data = any(p.inline_data for p in content.parts)
+            if _text_parts:
+              current_is_thought = getattr(_text_parts[0], 'thought', False)
               if text and current_is_thought != is_thought:
                 yield self.__build_full_text_response(text, is_thought)
                 text = ''
                 is_thought = False
 
-              text += content.parts[0].text
+              for _tp in _text_parts:
+                text += _tp.text
               is_thought = current_is_thought
               llm_response.partial = True
             # don't yield the merged text event when receiving audio data
-            elif text and not content.parts[0].inline_data:
+            elif text and not _has_inline_data:
               yield self.__build_full_text_response(
                   text, is_thought, last_grounding_metadata
               )
@@ -499,6 +507,26 @@ class GeminiLlmConnection(BaseLlmConnection):
               )
               self._output_transcription_text = ''
           if message.server_content.turn_complete:
+            # Process any tool_call co-delivered in the same server message as
+            # turn_complete. Without this, the `break` below exits the receive
+            # loop before the `if message.tool_call:` block lower in the loop
+            # body is reached, silently discarding the tool call.
+            if message.tool_call:
+              logger.debug(
+                  'Processing tool_call co-delivered with turn_complete'
+              )
+              if text:
+                yield self.__build_full_text_response(
+                    text, is_thought, last_grounding_metadata
+                )
+                text = ''
+                is_thought = False
+                last_grounding_metadata = None
+              tool_call_parts.extend([
+                  types.Part(function_call=function_call)
+                  for function_call in message.tool_call.function_calls or []
+              ])
+
             # Capture final grounding metadata before last_grounding_metadata is cleared in the next block.
             final_grounding_metadata = (
                 grounding_metadata
