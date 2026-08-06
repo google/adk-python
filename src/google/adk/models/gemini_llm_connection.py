@@ -124,7 +124,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         complete the model turn.
     """
     assert content.parts
-    if content.parts[0].function_response:
+    if any(p.function_response for p in content.parts):
       # All parts have to be function responses.
       function_responses = [
           function_response
@@ -380,24 +380,25 @@ class GeminiLlmConnection(BaseLlmConnection):
                 llm_response.grounding_metadata = (
                     message.server_content.grounding_metadata
                 )
-            if content.parts[0].text:
-              current_is_thought = getattr(content.parts[0], 'thought', False)
-              if text and current_is_thought != is_thought:
-                yield self.__build_full_text_response(text, is_thought)
+            for part in content.parts:
+              if part.text:
+                current_is_thought = getattr(part, 'thought', False)
+                if text and current_is_thought != is_thought:
+                  yield self.__build_full_text_response(text, is_thought)
+                  text = ''
+                  is_thought = False
+
+                text += part.text
+                is_thought = current_is_thought
+                llm_response.partial = True
+              # don't yield the merged text event when receiving audio data
+              elif text and not part.inline_data:
+                yield self.__build_full_text_response(
+                    text, is_thought, last_grounding_metadata
+                )
                 text = ''
                 is_thought = False
-
-              text += content.parts[0].text
-              is_thought = current_is_thought
-              llm_response.partial = True
-            # don't yield the merged text event when receiving audio data
-            elif text and not content.parts[0].inline_data:
-              yield self.__build_full_text_response(
-                  text, is_thought, last_grounding_metadata
-              )
-              text = ''
-              is_thought = False
-              last_grounding_metadata = None
+                last_grounding_metadata = None
             yield llm_response
           # Note: in some cases, tool_call may arrive before
           # generation_complete, causing transcription to appear after
