@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import abc
 from abc import ABC
+from typing import Any
+from typing import Dict
 from typing import List
 from typing import Optional
 
@@ -66,3 +68,31 @@ class BasePlanner(ABC):
         The processed response parts, or None if no processing is needed.
     """
     pass
+
+  def to_content_blocks(
+      self,
+      response_parts: List[types.Part],
+  ) -> List[Dict[str, Any]]:
+    """Converts planner response parts to standardized content blocks.
+
+    Produces a representation compatible with the standard content block format
+    (similar to LangChain 1.0), where thought/reasoning parts are emitted as
+    ``{'type': 'reasoning', 'reasoning': '...'}`` blocks and regular text parts
+    as ``{'type': 'text', 'text': '...'}`` blocks.  Parts that are neither text
+    nor thought are skipped.
+
+    Args:
+        response_parts: The planner response parts to convert.
+
+    Returns:
+        A list of standardized content block dicts.
+    """
+    blocks: List[Dict[str, Any]] = []
+    for part in response_parts:
+      if part.text is None:
+        continue
+      if part.thought:
+        blocks.append({'type': 'reasoning', 'reasoning': part.text})
+      else:
+        blocks.append({'type': 'text', 'text': part.text})
+    return blocks
