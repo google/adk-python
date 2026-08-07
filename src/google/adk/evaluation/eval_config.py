@@ -269,27 +269,31 @@ def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
         custom_function_path = config.code_config.name
 
       if isinstance(criterion, float):
-        eval_metric_list.append(
-            EvalMetric(
-                metric_name=metric_name,
-                threshold=criterion,
-                criterion=BaseCriterion(threshold=criterion),
-                custom_function_path=custom_function_path,
-            )
+        eval_metric = EvalMetric(
+            metric_name=metric_name,
+            threshold=criterion,
+            criterion=BaseCriterion(threshold=criterion),
+            custom_function_path=custom_function_path,
         )
       elif isinstance(criterion, BaseCriterion):
-        eval_metric_list.append(
-            EvalMetric(
-                metric_name=metric_name,
-                threshold=criterion.threshold,
-                criterion=criterion,
-                custom_function_path=custom_function_path,
-            )
+        eval_metric = EvalMetric(
+            metric_name=metric_name,
+            threshold=criterion.threshold,
+            criterion=criterion,
+            custom_function_path=custom_function_path,
         )
       else:
         raise ValueError(
             f"Unexpected criterion type. {type(criterion).__name__} not"
             " supported."
         )
+
+      # The config is written by the developer running the eval, so the path it
+      # declares is the one honoured when the metric runs. It travels with the
+      # metric rather than in a registry keyed by metric name, so two apps in
+      # one process can declare the same metric name and each still gets its
+      # own function.
+      eval_metric._config_custom_function_path = custom_function_path  # pylint: disable=protected-access
+      eval_metric_list.append(eval_metric)
 
   return eval_metric_list

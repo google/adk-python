@@ -1076,7 +1076,7 @@ class TestA2AToEventConverters:
 
 
 class TestRoleMappingRegression:
-  """Regression tests for issue #5186: role mapping in A2A→ADK conversion."""
+  """Regression tests for role mapping in A2A→ADK conversion."""
 
   def setup_method(self):
     """Set up test fixtures."""

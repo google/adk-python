@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from abc import ABC
+from collections.abc import Awaitable
 from typing import ClassVar
 from typing import Optional
 
@@ -75,7 +76,7 @@ class Evaluator(ABC):
       actual_invocations: list[Invocation],
       expected_invocations: Optional[list[Invocation]] = None,
       conversation_scenario: Optional[ConversationScenario] = None,
-  ) -> EvaluationResult:
+  ) -> EvaluationResult | Awaitable[EvaluationResult]:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 
     Args:

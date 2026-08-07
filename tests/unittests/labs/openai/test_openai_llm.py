@@ -30,10 +30,9 @@ import pytest
 
 def test_supported_models():
   models = OpenAILlm.supported_models()
-  assert len(models) == 3
+  assert len(models) == 2
   assert models[0] == r"gpt-.*"
-  assert models[1] == r"o1-.*"
-  assert models[2] == r"o3-.*"
+  assert models[1] == r"o\d+-.*"
 
 
 def test_update_type_string():

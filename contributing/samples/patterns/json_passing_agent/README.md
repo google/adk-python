@@ -7,7 +7,7 @@ This sample demonstrates how to pass structured JSON data between agents. The ex
 1. Run the agent:
 
 ```bash
-adk run .
+adk run contributing/samples/patterns/json_passing_agent
 ```
 
 2. Talk to the agent:

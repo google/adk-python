@@ -491,7 +491,7 @@ def test_evaluate_invocations_invocation_events_format_exact_match(
 ):
   """InvocationEvents intermediate_data format should score 1.0 on exact match.
 
-  Regression test for #5410: tool_trajectory_avg_score returned 0.0 even when
+  Regression test: tool_trajectory_avg_score returned 0.0 even when
   tool name and args were identical because function-call events with
   skip_summarization=True were incorrectly excluded from invocation_events.
   """

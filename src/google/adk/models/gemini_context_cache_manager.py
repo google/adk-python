@@ -22,11 +22,13 @@ import json
 import logging
 import time
 from typing import Any
+from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
 
+from ..agents.context_cache_config import ContextCacheConfig
 from ..utils.feature_decorator import experimental
 from .cache_metadata import CacheMetadata
 from .llm_request import LlmRequest
@@ -51,6 +53,31 @@ def _minimum_cache_tokens(model: Optional[str]) -> Optional[int]:
   if model_name.startswith("gemini-3"):
     return _GEMINI_3_MIN_CACHE_TOKENS
   return None
+
+
+def _require_cache_config(llm_request: LlmRequest) -> ContextCacheConfig:
+  cache_config = llm_request.cache_config
+  if cache_config is None:
+    raise ValueError("Context caching requires a cache configuration.")
+  return cache_config
+
+
+def _require_model(llm_request: LlmRequest) -> str:
+  model = llm_request.model
+  if model is None:
+    raise ValueError("Context caching requires a model name.")
+  return model
+
+
+def _content_union_character_count(value: types.ContentUnion) -> int:
+  """Returns a stable rough size for a system-instruction value."""
+  if isinstance(value, str):
+    return len(value)
+  if isinstance(value, list):
+    return sum(
+        len(item) if isinstance(item, str) else len(str(item)) for item in value
+    )
+  return len(str(value))
 
 
 @experimental
@@ -86,6 +113,9 @@ class GeminiContextCacheManager:
     Returns:
         Cache metadata to be included in response, or None if caching failed
     """
+    _require_model(llm_request)
+    _require_cache_config(llm_request)
+
     # Check if we have existing cache metadata and if it's valid
     if llm_request.cache_metadata:
       logger.debug(
@@ -99,6 +129,8 @@ class GeminiContextCacheManager:
             llm_request.cache_metadata.cache_name,
         )
         cache_name = llm_request.cache_metadata.cache_name
+        if cache_name is None:
+          raise RuntimeError("A valid cache must have active metadata.")
         cache_contents_count = llm_request.cache_metadata.contents_count
         self._apply_cache_to_request(
             llm_request, cache_name, cache_contents_count
@@ -141,8 +173,11 @@ class GeminiContextCacheManager:
               llm_request, cache_contents_count
           )
           if cache_metadata:
+            cache_name = cache_metadata.cache_name
+            if cache_name is None:
+              raise RuntimeError("A newly created cache must be active.")
             self._apply_cache_to_request(
-                llm_request, cache_metadata.cache_name, cache_contents_count
+                llm_request, cache_name, cache_contents_count
             )
             return cache_metadata
 
@@ -239,25 +274,26 @@ class GeminiContextCacheManager:
     if not cache_metadata:
       return False
 
-    # Fingerprint-only metadata is not a valid active cache
-    if cache_metadata.cache_name is None:
+    # Fingerprint-only metadata is not a valid active cache.
+    cache_name = cache_metadata.cache_name
+    expire_time = cache_metadata.expire_time
+    invocations_used = cache_metadata.invocations_used
+    if cache_name is None or expire_time is None or invocations_used is None:
       return False
+    cache_config = _require_cache_config(llm_request)
 
     # Check if cache has expired
-    if time.time() >= cache_metadata.expire_time:
-      logger.info("Cache expired: %s", cache_metadata.cache_name)
+    if time.time() >= expire_time:
+      logger.info("Cache expired: %s", cache_name)
       return False
 
     # Check if cache has been used for too many invocations
-    if (
-        cache_metadata.invocations_used
-        > llm_request.cache_config.cache_intervals
-    ):
+    if invocations_used > cache_config.cache_intervals:
       logger.info(
           "Cache exceeded cache intervals: %s (%d > %d intervals)",
-          cache_metadata.cache_name,
-          cache_metadata.invocations_used,
-          llm_request.cache_config.cache_intervals,
+          cache_name,
+          invocations_used,
+          cache_config.cache_intervals,
       )
       return False
 
@@ -359,6 +395,8 @@ class GeminiContextCacheManager:
     Returns:
         Cache metadata if successful, None otherwise
     """
+    cache_config = _require_cache_config(llm_request)
+
     # Check if we have token count from previous response for cache size validation
     if llm_request.cacheable_contents_token_count is None:
       logger.info(
@@ -367,14 +405,11 @@ class GeminiContextCacheManager:
       )
       return None
 
-    if (
-        llm_request.cacheable_contents_token_count
-        < llm_request.cache_config.min_tokens
-    ):
+    if llm_request.cacheable_contents_token_count < cache_config.min_tokens:
       logger.info(
           "Previous request too small for caching (%d < %d tokens)",
           llm_request.cacheable_contents_token_count,
-          llm_request.cache_config.min_tokens,
+          cache_config.min_tokens,
       )
       return None
 
@@ -447,7 +482,9 @@ class GeminiContextCacheManager:
 
     # System instruction
     if llm_request.config and llm_request.config.system_instruction:
-      total_chars += len(llm_request.config.system_instruction)
+      total_chars += _content_union_character_count(
+          llm_request.config.system_instruction
+      )
 
     # Tools
     if llm_request.config and llm_request.config.tools:
@@ -461,7 +498,7 @@ class GeminiContextCacheManager:
     if cache_contents_count is not None:
       contents = contents[:cache_contents_count]
     for content in contents:
-      for part in content.parts:
+      for part in content.parts or []:
         if part.text:
           total_chars += len(part.text)
 
@@ -519,12 +556,15 @@ class GeminiContextCacheManager:
     from ..telemetry.tracing import tracer
 
     with tracer.start_as_current_span("create_cache") as span:
+      cache_request_config = _require_cache_config(llm_request)
+      model = _require_model(llm_request)
+
       # Prepare cache contents (first N contents + system instruction + tools)
       cache_contents = llm_request.contents[:cache_contents_count] or None
 
       cache_config = types.CreateCachedContentConfig(
           contents=cache_contents,
-          ttl=llm_request.cache_config.ttl_string,
+          ttl=cache_request_config.ttl_string,
           display_name=(
               f"adk-cache-{int(time.time())}-{cache_contents_count}contents"
           ),
@@ -535,35 +575,34 @@ class GeminiContextCacheManager:
         cache_config.system_instruction = llm_request.config.system_instruction
         logger.debug(
             "Added system instruction to cache config (length=%d)",
-            len(llm_request.config.system_instruction),
+            _content_union_character_count(
+                llm_request.config.system_instruction
+            ),
         )
 
       # Add tools if present
       if llm_request.config and llm_request.config.tools:
-        cache_config.tools = llm_request.config.tools
+        cache_config.tools = cast(list[types.Tool], llm_request.config.tools)
 
       # Add tool config if present
       if llm_request.config and llm_request.config.tool_config:
         cache_config.tool_config = llm_request.config.tool_config
 
       # Pass through HTTP options (e.g. timeout) from cache config
-      if (
-          llm_request.cache_config
-          and llm_request.cache_config.create_http_options
-      ):
-        cache_config.http_options = llm_request.cache_config.create_http_options
+      if cache_request_config.create_http_options:
+        cache_config.http_options = cache_request_config.create_http_options
 
       span.set_attribute("cache_contents_count", cache_contents_count)
-      span.set_attribute("model", llm_request.model)
-      span.set_attribute("ttl_seconds", llm_request.cache_config.ttl_seconds)
+      span.set_attribute("model", model)
+      span.set_attribute("ttl_seconds", cache_request_config.ttl_seconds)
 
       logger.debug(
           "Creating cache with model %s and config: %s",
-          llm_request.model,
+          model,
           cache_config,
       )
       cached_content = await self.genai_client.aio.caches.create(
-          model=llm_request.model,
+          model=model,
           config=cache_config,
       )
       # Set precise creation timestamp right after cache creation
@@ -572,15 +611,18 @@ class GeminiContextCacheManager:
       expire_time = (
           server_expire_time.timestamp()
           if isinstance(server_expire_time, datetime)
-          else created_at + llm_request.cache_config.ttl_seconds
+          else created_at + cache_request_config.ttl_seconds
       )
-      logger.info("Cache created successfully: %s", cached_content.name)
+      cache_name = cached_content.name
+      if not cache_name:
+        raise RuntimeError("The cache service returned no cache name.")
+      logger.info("Cache created successfully: %s", cache_name)
 
-      span.set_attribute("cache_name", cached_content.name)
+      span.set_attribute("cache_name", cache_name)
 
       # Return complete cache metadata with precise timing
       return CacheMetadata(
-          cache_name=cached_content.name,
+          cache_name=cache_name,
           expire_time=expire_time,
           fingerprint=self._generate_cache_fingerprint(
               llm_request, cache_contents_count

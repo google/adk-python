@@ -1,6 +1,6 @@
 fastapi
-google-adk[agent-engine,agent-identity]
+google-adk[agent-engine,agent-identity,mcp]
 google-auth
-google-cloud-aiplatform
+google-cloud-aiplatform[agent-engines]>=1.148.1
 httpx
 uvicorn

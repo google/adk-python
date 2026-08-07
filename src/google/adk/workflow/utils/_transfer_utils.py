@@ -76,7 +76,7 @@ def resolve_and_derive_transfer_context(
       and current_agent.parent_agent.name == target_agent.name
   ):
     # Walk up the context chain to find the target parent agent's context
-    curr = curr_ctx
+    curr: Context | None = curr_ctx
     while curr is not None and curr.node is not None:
       if curr.node.name == target_name:
         return target_agent, curr.parent_ctx

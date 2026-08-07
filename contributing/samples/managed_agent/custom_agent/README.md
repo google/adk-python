@@ -82,6 +82,7 @@ graph LR
   `ManagedAgent` already holds; its `agents.create` / `agents.delete` cover the
   control plane.
 - **Provision a sandbox**: `ManagedAgent(environment={'type': 'remote'})` gives
-  each interaction a remote sandbox (required to run the agent).
+  each interaction a remote sandbox — optional, and omitted by samples whose
+  tools do not need one (see [`remote_mcp`](../remote_mcp)).
 - **Run it**: `--create` provisions, `--delete` removes; in between, `root_agent`
   is a normal `BaseAgent`, so `adk web` / `adk run` (or a `Runner`) drive it.

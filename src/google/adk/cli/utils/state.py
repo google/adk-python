@@ -17,14 +17,30 @@ from __future__ import annotations
 import re
 from typing import Any
 from typing import Optional
+from typing import TYPE_CHECKING
 
-from ...agents.base_agent import BaseAgent
 from ...agents.llm_agent import LlmAgent
 
+if TYPE_CHECKING:
+  from ...agents.base_agent import BaseAgent
+  from ...workflow import BaseNode
 
-def _create_empty_state(agent: BaseAgent, all_state: dict[str, Any]) -> None:
-  for sub_agent in agent.sub_agents:
-    _create_empty_state(sub_agent, all_state)
+
+def _create_empty_state(
+    agent: BaseNode, all_state: dict[str, Any], visited: set[int]
+) -> None:
+  agent_id = id(agent)
+  if agent_id in visited:
+    return
+  visited.add(agent_id)
+
+  for sub_agent in getattr(agent, 'sub_agents', []) or []:
+    _create_empty_state(sub_agent, all_state, visited)
+
+  graph = getattr(agent, 'graph', None)
+  if graph is not None:
+    for graph_node in graph.nodes:
+      _create_empty_state(graph_node, all_state, visited)
 
   if (
       isinstance(agent, LlmAgent)
@@ -35,12 +51,17 @@ def _create_empty_state(agent: BaseAgent, all_state: dict[str, Any]) -> None:
       all_state[key] = ''
 
 
+# `agent` is typed `BaseAgent | BaseNode` rather than just `BaseNode` (which
+# would suffice, since BaseAgent subclasses BaseNode) so the public-API
+# breaking-change detector sees a backward-compatible widening of the previous
+# `BaseAgent` annotation instead of an incompatible type change.
 def create_empty_state(
-    agent: BaseAgent, initialized_states: Optional[dict[str, Any]] = None
+    agent: BaseAgent | BaseNode,
+    initialized_states: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
   """Creates empty str for non-initialized states."""
   non_initialized_states: dict[str, Any] = {}
-  _create_empty_state(agent, non_initialized_states)
+  _create_empty_state(agent, non_initialized_states, set())
   for key in initialized_states or {}:
     if key in non_initialized_states:
       del non_initialized_states[key]

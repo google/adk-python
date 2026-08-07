@@ -282,9 +282,8 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     self.create_effective_rubrics_list(actual_invocation.rubrics)
     user_input = get_text_from_content(actual_invocation.user_content)
 
-    criterion = self._eval_metric.criterion
-    include_intermediate = getattr(
-        criterion, "include_intermediate_responses_in_final", False
+    include_intermediate = (
+        self._criterion.include_intermediate_responses_in_final
     )
     final_response = (
         get_text_from_content(

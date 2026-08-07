@@ -28,7 +28,6 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
-from pydantic import ValidationError
 import pytest
 
 
@@ -111,6 +110,33 @@ def test_get_declaration():
   assert declaration.description is not None
 
 
+def test_get_declaration_marks_only_schema_required_fields_required():
+  """Fields carrying a default must not be advertised as required."""
+  tool = SetModelResponseTool(ComplexSchema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  schema = declaration.model_dump(exclude_none=True)['parameters_json_schema']
+  assert schema['required'] == ComplexSchema.model_json_schema()['required']
+  assert sorted(schema['required']) == ['id', 'title']
+
+
+def test_get_declaration_preserves_field_defaults():
+  """Defaults declared on the output schema reach the generated declaration."""
+  tool = SetModelResponseTool(ComplexSchema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  properties = declaration.model_dump(exclude_none=True)[
+      'parameters_json_schema'
+  ]['properties']
+  assert properties['tags']['default'] == []
+  assert properties['metadata']['default'] == {}
+  assert properties['is_active']['default'] is True
+
+
 @pytest.mark.asyncio
 async def test_run_async_valid_data():
   """Test tool execution with valid data."""
@@ -161,11 +187,12 @@ async def test_run_async_complex_schema():
   assert result['tags'] == ['tag1', 'tag2']
   assert result['metadata'] == {'key': 'value'}
   assert result['is_active'] is False
+  assert tool_context.actions.set_model_response == result
 
 
 @pytest.mark.asyncio
 async def test_run_async_validation_error():
-  """Test tool execution with invalid data raises validation error."""
+  """Test tool execution with invalid data returns validation feedback."""
   tool = SetModelResponseTool(PersonSchema)
 
   agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
@@ -173,16 +200,22 @@ async def test_run_async_validation_error():
   tool_context = ToolContext(invocation_context)
 
   # Execute with invalid data (wrong type for age)
-  with pytest.raises(ValidationError):
-    await tool.run_async(
-        args={'name': 'Bob', 'age': 'not_a_number', 'city': 'Portland'},
-        tool_context=tool_context,
-    )
+  result = await tool.run_async(
+      args={'name': 'Bob', 'age': 'not_a_number', 'city': 'Portland'},
+      tool_context=tool_context,
+  )
+
+  assert result is not None
+  assert 'error' in result
+  assert 'Validation Error found' in result['error']
+  assert 'age' in result['error']
+  assert 'int_parsing' in result['error']
+  assert tool_context.actions.set_model_response is None
 
 
 @pytest.mark.asyncio
 async def test_run_async_missing_required_field():
-  """Test tool execution with missing required field."""
+  """Test tool execution with missing required field returns feedback."""
   tool = SetModelResponseTool(PersonSchema)
 
   agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
@@ -190,11 +223,17 @@ async def test_run_async_missing_required_field():
   tool_context = ToolContext(invocation_context)
 
   # Execute with missing required field
-  with pytest.raises(ValidationError):
-    await tool.run_async(
-        args={'name': 'Charlie', 'city': 'Denver'},  # Missing age
-        tool_context=tool_context,
-    )
+  result = await tool.run_async(
+      args={'name': 'Charlie', 'city': 'Denver'},  # Missing age
+      tool_context=tool_context,
+  )
+
+  assert result is not None
+  assert 'error' in result
+  assert 'Validation Error found' in result['error']
+  assert 'age' in result['error']
+  assert 'Field required' in result['error']
+  assert tool_context.actions.set_model_response is None
 
 
 @pytest.mark.asyncio
@@ -216,6 +255,7 @@ async def test_session_state_storage_key():
   assert result['name'] == 'Diana'
   assert result['age'] == 35
   assert result['city'] == 'Miami'
+  assert tool_context.actions.set_model_response == result
 
 
 @pytest.mark.asyncio
@@ -357,11 +397,12 @@ async def test_run_async_list_schema_empty_list():
   assert result is not None
   assert isinstance(result, list)
   assert len(result) == 0
+  assert tool_context.actions.set_model_response == result
 
 
 @pytest.mark.asyncio
 async def test_run_async_list_schema_validation_error():
-  """Test tool execution with invalid list data raises validation error."""
+  """Test tool execution with invalid list data returns validation feedback."""
   tool = SetModelResponseTool(list[ItemSchema])
 
   agent = LlmAgent(name='test_agent', model='gemini-2.5-flash')
@@ -369,15 +410,21 @@ async def test_run_async_list_schema_validation_error():
   tool_context = ToolContext(invocation_context)
 
   # Execute with invalid data (wrong type for id)
-  with pytest.raises(ValidationError):
-    await tool.run_async(
-        args={
-            'items': [
-                {'id': 'not_a_number', 'name': 'Item 1'},
-            ]
-        },
-        tool_context=tool_context,
-    )
+  result = await tool.run_async(
+      args={
+          'items': [
+              {'id': 'not_a_number', 'name': 'Item 1'},
+          ]
+      },
+      tool_context=tool_context,
+  )
+
+  assert result is not None
+  assert 'error' in result
+  assert 'Validation Error found' in result['error']
+  assert '0.id' in result['error']
+  assert 'int_parsing' in result['error']
+  assert tool_context.actions.set_model_response is None
 
 
 # Tests for other schema types (list[str], dict, etc.)

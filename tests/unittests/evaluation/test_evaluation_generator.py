@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.apps.app import App
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.conversation_scenarios import ConversationScenario
@@ -35,7 +37,9 @@ from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.models.llm_request import LlmRequest
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 
@@ -1338,7 +1342,7 @@ class TestLiveSessionCallbacks:
 
 
 def test_convert_events_preserves_tool_calls_when_skip_summarization():
-  """Regression test for #5410.
+  """Regression test for tool calls dropped from invocation_events.
 
   When an event has skip_summarization=True, is_final_response() returns True
   even if the event contains function calls.  Previously such an event was
@@ -1380,3 +1384,236 @@ def test_convert_events_preserves_tool_calls_when_skip_summarization():
   assert len(tool_calls) == 1
   assert tool_calls[0].name == "execute_sql"
   assert tool_calls[0].args == {"project_id": "my-proj", "query": "SELECT 1"}
+
+
+class _SpyPlugin(BasePlugin):
+  """A user-defined plugin used to assert merge behavior."""
+
+  pass
+
+
+class TestGenerateInferencesFromRootAgentWithApp:
+  """Tests that App.plugins / configs are honored when an App is provided."""
+
+  @pytest.fixture
+  def runner_cls(self, mocker):
+    """Patches Runner and returns the patched class for kwargs inspection."""
+    mock_runner_cls = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.Runner"
+    )
+    mock_runner_instance = mocker.AsyncMock()
+    mock_runner_instance.__aenter__.return_value = mock_runner_instance
+    mock_runner_cls.return_value = mock_runner_instance
+    yield mock_runner_cls
+
+  @pytest.fixture
+  def stop_immediately_simulator(self, mocker):
+    """Returns a UserSimulator that stops on first call (no inference work)."""
+    sim = mocker.MagicMock(spec=UserSimulator)
+    sim.get_next_user_message = mocker.AsyncMock(
+        return_value=NextUserMessage(
+            status=UserSimulatorStatus.STOP_SIGNAL_DETECTED
+        )
+    )
+    return sim
+
+  @pytest.mark.asyncio
+  async def test_runner_built_from_app_when_provided(
+      self, runner_cls, mock_session_service, stop_immediately_simulator
+  ):
+    """When `app` is passed, Runner is built with `app=` (merged) instead of `agent=`."""
+    root_agent = BaseAgent(name="root_agent")
+    user_plugin = _SpyPlugin(name="user_plugin")
+    app = App(name="my_app", root_agent=root_agent, plugins=[user_plugin])
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=root_agent,
+        user_simulator=stop_immediately_simulator,
+        app=app,
+    )
+
+    runner_cls.assert_called_once()
+    kwargs = runner_cls.call_args.kwargs
+    assert "agent" not in kwargs, (
+        "Runner must not receive `agent=` when `app=` is provided "
+        "(would raise ValueError)."
+    )
+    assert "plugins" not in kwargs, (
+        "Runner must not receive `plugins=` when `app=` is provided "
+        "(would raise ValueError)."
+    )
+    runner_app = kwargs["app"]
+    assert isinstance(runner_app, App)
+    plugin_names = [p.name for p in runner_app.plugins]
+    assert (
+        "user_plugin" in plugin_names
+    ), "User plugin must be preserved in the merged App passed to Runner."
+    assert "request_intercepter_plugin" in plugin_names
+    assert "ensure_retry_options" in plugin_names
+
+  @pytest.mark.asyncio
+  async def test_user_app_is_not_mutated(
+      self, runner_cls, mock_session_service, stop_immediately_simulator
+  ):
+    """The user's App instance must not be mutated across eval runs."""
+    root_agent = BaseAgent(name="root_agent")
+    user_plugin = _SpyPlugin(name="user_plugin")
+    app = App(name="my_app", root_agent=root_agent, plugins=[user_plugin])
+    original_plugins_id = id(app.plugins)
+
+    for _ in range(3):
+      await EvaluationGenerator._generate_inferences_from_root_agent(
+          root_agent=root_agent,
+          user_simulator=stop_immediately_simulator,
+          app=app,
+      )
+
+    # The user's App instance must still hold exactly its original plugin set,
+    # regardless of how many eval runs reused it.
+    assert app.plugins == [user_plugin]
+    assert id(app.plugins) == original_plugins_id
+
+  @pytest.mark.asyncio
+  async def test_runner_falls_back_to_bare_agent_when_no_app(
+      self, runner_cls, mock_session_service, stop_immediately_simulator
+  ):
+    """When `app` is None, Runner is built with the legacy `agent=`/`plugins=` shape."""
+    root_agent = BaseAgent(name="root_agent")
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=root_agent,
+        user_simulator=stop_immediately_simulator,
+    )
+
+    runner_cls.assert_called_once()
+    kwargs = runner_cls.call_args.kwargs
+    assert "app" not in kwargs
+    assert kwargs["agent"] is root_agent
+    plugin_names = [p.name for p in kwargs["plugins"]]
+    assert plugin_names == [
+        "request_intercepter_plugin",
+        "ensure_retry_options",
+    ]
+
+  @pytest.mark.asyncio
+  async def test_root_agent_override_propagates_to_merged_app(
+      self, runner_cls, mock_session_service, stop_immediately_simulator
+  ):
+    """If a sub-agent is passed as root_agent, the merged App reflects that."""
+    full_root = BaseAgent(name="full_root")
+    sub_agent = BaseAgent(name="sub_agent")
+    app = App(name="my_app", root_agent=full_root)
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=sub_agent,
+        user_simulator=stop_immediately_simulator,
+        app=app,
+    )
+
+    runner_app = runner_cls.call_args.kwargs["app"]
+    assert runner_app.root_agent is sub_agent
+    # User's App must be untouched.
+    assert app.root_agent is full_root
+
+
+# -----------------------------------------------------------------------------
+# `generate_responses_from_session` -- replays a recorded session file instead of
+# invoking an agent, annotating each eval row with what the session actually did.
+# -----------------------------------------------------------------------------
+
+
+def _write_session_file(tmp_path, events: list[Event]) -> str:
+  session = Session(
+      id="recorded_session",
+      app_name="test_app",
+      user_id="test_user",
+      events=events,
+  )
+  session_file = tmp_path / "session.json"
+  session_file.write_text(session.model_dump_json())
+  return str(session_file)
+
+
+def _recorded_events() -> list[Event]:
+  return [
+      _build_event("user", [types.Part(text="Roll a 6 sided dice")], "inv1"),
+      _build_event(
+          "agent",
+          [
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="roll_die", args={"sides": 6}
+                  )
+              )
+          ],
+          "inv1",
+      ),
+      _build_event("agent", [types.Part(text="I rolled a 4.")], "inv1"),
+      _build_event("user", [types.Part(text="Thanks")], "inv2"),
+      _build_event("agent", [types.Part(text="You are welcome.")], "inv2"),
+  ]
+
+
+def test_generate_responses_from_session_annotates_rows_from_session(tmp_path):
+  """Each eval row gains the tool calls and final text of its invocation."""
+  session_path = _write_session_file(tmp_path, _recorded_events())
+  eval_dataset = [[
+      {"query": "Roll a 6 sided dice"},
+      {"query": "Thanks"},
+  ]]
+
+  results = EvaluationGenerator.generate_responses_from_session(
+      session_path, eval_dataset
+  )
+
+  # One result per entry in the eval dataset.
+  assert len(results) == 1
+  first, second = results[0]
+  assert first["actual_tool_use"] == [
+      {"tool_name": "roll_die", "tool_input": {"sides": 6}}
+  ]
+  assert first["response"] == "I rolled a 4."
+  # The second invocation used no tools.
+  assert second["actual_tool_use"] == []
+  assert second["response"] == "You are welcome."
+
+
+def test_generate_responses_from_session_query_absent_from_session(tmp_path):
+  """A query the session never saw yields no tool calls and no response."""
+  session_path = _write_session_file(tmp_path, _recorded_events())
+
+  results = EvaluationGenerator.generate_responses_from_session(
+      session_path, [[{"query": "Roll a 20 sided dice"}]]
+  )
+
+  assert results[0][0]["actual_tool_use"] == []
+  assert results[0][0]["response"] is None
+
+
+def test_generate_responses_from_session_scopes_by_invocation_id(tmp_path):
+  """Only events sharing the matched user event's invocation id are used."""
+  events = [
+      _build_event("user", [types.Part(text="Roll a 6 sided dice")], "inv1"),
+      _build_event("agent", [types.Part(text="I rolled a 4.")], "inv1"),
+      # A different invocation whose tool call must not leak into inv1.
+      _build_event("user", [types.Part(text="Book a flight")], "inv2"),
+      _build_event(
+          "agent",
+          [
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="book_flight", args={"to": "LAX"}
+                  )
+              )
+          ],
+          "inv2",
+      ),
+  ]
+  session_path = _write_session_file(tmp_path, events)
+
+  results = EvaluationGenerator.generate_responses_from_session(
+      session_path, [[{"query": "Roll a 6 sided dice"}]]
+  )
+
+  assert results[0][0]["actual_tool_use"] == []
+  assert results[0][0]["response"] == "I rolled a 4."

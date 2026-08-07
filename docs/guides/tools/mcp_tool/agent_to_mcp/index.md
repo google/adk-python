@@ -136,4 +136,4 @@ that the caller runs on a transport of their choice.
 
 ## Related samples
 
-*   [MCP: serve an ADK agent](../../../../../contributing/samples/mcp/mcp_serve_agent)
+*   [MCP: serve an ADK agent](../../../../../contributing/samples/mcp)

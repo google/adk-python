@@ -18,7 +18,7 @@ import asyncio
 import contextvars
 import logging
 from typing import Any
-from typing import Optional
+from typing import TYPE_CHECKING
 
 from google.genai import types as genai_types
 from pydantic import BaseModel
@@ -26,16 +26,20 @@ from pydantic import Field
 
 from ..agents.llm_agent import Agent
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
-from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
-from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._gepa_utils import generate_reflection_response
+from ._gepa_utils import GEPAPrompt
+from ._gepa_utils import require_static_instruction
 from .agent_optimizer import AgentOptimizer
 from .data_types import AgentWithScores
 from .data_types import OptimizerResult
 from .data_types import UnstructuredSamplingResult
+from .sampler import _ExampleSet
 from .sampler import Sampler
+
+if TYPE_CHECKING:
+  from gepa.core.result import GEPAResult
 
 _logger = logging.getLogger("google_adk." + __name__)
 
@@ -72,7 +76,7 @@ class GEPARootAgentPromptOptimizerConfig(BaseModel):
       description="The number of examples to use for reflection.",
   )
 
-  run_dir: Optional[str] = Field(
+  run_dir: str | None = Field(
       default=None,
       description=(
           "The directory to save the intermediate/final optimization results."
@@ -83,18 +87,20 @@ class GEPARootAgentPromptOptimizerConfig(BaseModel):
 class GEPARootAgentPromptOptimizerResult(OptimizerResult[AgentWithScores]):
   """The final result of the GEPARootAgentPromptOptimizer."""
 
-  gepa_result: Optional[dict[str, Any]] = Field(
+  gepa_result: dict[str, Any] | None = Field(
       default=None,
       description="The raw result dictionary from the GEPA optimizer.",
   )
 
 
-def _create_agent_gepa_adapter_class():
+def _create_agent_gepa_adapter_class() -> type[Any]:
   """Creates the _AgentGEPAAdapter class dynamically to avoid top-level gepa imports."""
   from gepa.core.adapter import EvaluationBatch
   from gepa.core.adapter import GEPAAdapter
 
-  class _AgentGEPAAdapter(GEPAAdapter[str, dict[str, Any], dict[str, Any]]):
+  class _AgentGEPAAdapter(  # type: ignore[misc]
+      GEPAAdapter[str, dict[str, Any], dict[str, Any]]
+  ):
     """A GEPA adapter for ADK agents."""
 
     def __init__(
@@ -124,7 +130,7 @@ def _create_agent_gepa_adapter_class():
       new_agent = self._initial_agent.clone(update={"instruction": prompt})
 
       if set(batch) <= self._train_example_ids:
-        example_set = "train"
+        example_set: _ExampleSet = "train"
       elif set(batch) <= self._validation_example_ids:
         example_set = "validation"
       else:
@@ -164,11 +170,17 @@ def _create_agent_gepa_adapter_class():
         eval_batch: EvaluationBatch[dict[str, Any], dict[str, Any]],
         components_to_update: list[str],
     ) -> dict[str, list[dict[str, Any]]]:
+      trajectories = eval_batch.trajectories
+      if trajectories is None:
+        raise ValueError(
+            "GEPA cannot build a reflective dataset without captured"
+            " trajectories."
+        )
       dataset: list[dict[str, Any]] = []
       trace_instances: list[tuple[float, dict[str, Any]]] = list(
           zip(
               eval_batch.scores,
-              eval_batch.trajectories,
+              trajectories,
               strict=True,
           )
       )
@@ -231,13 +243,13 @@ class GEPARootAgentPromptOptimizer(
     try:
       import gepa  # lazy import as gepa is not in core ADK package
 
-      _AgentGEPAAdapter = _create_agent_gepa_adapter_class()
+      adapter_class = _create_agent_gepa_adapter_class()
     except ImportError as e:
       raise ImportError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
 
     loop = asyncio.get_running_loop()
 
-    adapter = _AgentGEPAAdapter(
+    adapter = adapter_class(
         initial_agent=initial_agent,
         sampler=sampler,
         main_loop=loop,
@@ -245,34 +257,16 @@ class GEPARootAgentPromptOptimizer(
 
     llm = self._llm_class(model=self._config.optimizer_model)
 
-    def reflection_lm(prompt: str) -> str:
-      llm_request = LlmRequest(
-          model=self._config.optimizer_model,
-          config=self._config.model_configuration,
-          contents=[
-              genai_types.Content(
-                  parts=[genai_types.Part(text=prompt)],
-                  role="user",
-              )
-          ],
+    def reflection_lm(prompt: GEPAPrompt) -> str:
+      future = asyncio.run_coroutine_threadsafe(
+          generate_reflection_response(
+              llm=llm,
+              model=self._config.optimizer_model,
+              config=self._config.model_configuration,
+              prompt=prompt,
+          ),
+          loop,
       )
-
-      async def _generate():
-        response_text = ""
-        async with Aclosing(llm.generate_content_async(llm_request)) as agen:
-          async for llm_response in agen:
-            llm_response: LlmResponse
-            generated_content: genai_types.Content = llm_response.content
-            if not generated_content.parts:
-              continue
-            response_text = "".join(
-                part.text
-                for part in generated_content.parts
-                if part.text and not part.thought
-            )
-        return response_text
-
-      future = asyncio.run_coroutine_threadsafe(_generate(), loop)
       return future.result()
 
     train_ids = sampler.get_train_example_ids()
@@ -285,9 +279,11 @@ class GEPARootAgentPromptOptimizer(
           " in both sets."
       )
 
-    def run_gepa():
+    initial_instruction = require_static_instruction(initial_agent)
+
+    def run_gepa() -> GEPAResult[dict[str, Any], int]:
       return gepa.optimize(
-          seed_candidate={_AGENT_PROMPT_NAME: initial_agent.instruction},
+          seed_candidate={_AGENT_PROMPT_NAME: initial_instruction},
           trainset=train_ids,
           valset=val_ids,
           adapter=adapter,
@@ -316,7 +312,9 @@ class GEPARootAgentPromptOptimizer(
             ),
             overall_score=score,
         )
-        for optimized_prompt, score in zip(optimized_prompts, scores)
+        for optimized_prompt, score in zip(
+            optimized_prompts, scores, strict=True
+        )
     ]
 
     return GEPARootAgentPromptOptimizerResult(

@@ -20,6 +20,8 @@ import logging
 import re
 from typing import Any
 from typing import AsyncGenerator
+from typing import cast
+from typing import TYPE_CHECKING
 
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -220,7 +222,8 @@ class Gemma(GemmaFunctionCallingMixin, Gemini):
     if system_instruction := llm_request.config.system_instruction:
       contents = llm_request.contents
       instruction_content = Content(
-          role='user', parts=[Part.from_text(text=system_instruction)]
+          role='user',
+          parts=[Part.from_text(text=cast(str, system_instruction))],
       )
 
       # NOTE: if history is preserved, we must include the system instructions ONLY once at the beginning
@@ -248,8 +251,9 @@ class Gemma(GemmaFunctionCallingMixin, Gemini):
       LlmResponse: The model response.
     """
     # print(f'{llm_request=}')
-    assert llm_request.model.startswith('gemma-'), (
-        f'Requesting a non-Gemma model ({llm_request.model}) with the Gemma LLM'
+    model = llm_request.model
+    assert model is not None and model.startswith('gemma-'), (
+        f'Requesting a non-Gemma model ({model}) with the Gemma LLM'
         ' is not supported.'
     )
 
@@ -276,7 +280,7 @@ def _convert_content_parts_for_gemma(
   has_function_response_part = False
   has_function_call_part = False
 
-  for part in content_item.parts:
+  for part in content_item.parts or []:
     if func_response := part.function_response:
       has_function_response_part = True
       response_text = (
@@ -355,11 +359,16 @@ def _get_last_valid_json_substring(text: str) -> tuple[bool, str | None]:
   return False, None
 
 
-try:
-  from google.adk.models.lite_llm import LiteLlm  # noqa: F401
-except ImportError as e:
-  logger.debug('LiteLlm not available; Gemma3Ollama will not be defined: %s', e)
-  LiteLlm = None
+if TYPE_CHECKING:
+  from google.adk.models.lite_llm import LiteLlm
+else:
+  try:
+    from google.adk.models.lite_llm import LiteLlm  # noqa: F401
+  except ImportError as e:
+    logger.debug(
+        'LiteLlm not available; Gemma3Ollama will not be defined: %s', e
+    )
+    LiteLlm = None
 
 if LiteLlm is not None:
 

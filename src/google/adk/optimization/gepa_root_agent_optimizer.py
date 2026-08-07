@@ -18,25 +18,31 @@ import asyncio
 import contextvars
 import logging
 from typing import Any
-from typing import Callable
+from typing import TYPE_CHECKING
 
 from google.genai import types as genai_types
 from pydantic import BaseModel
 from pydantic import Field
 
 from ..agents.llm_agent import Agent
+from ..agents.llm_agent import ToolUnion
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
-from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..tools.skill_toolset import SkillToolset
-from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._gepa_utils import generate_reflection_response
+from ._gepa_utils import GEPAPrompt
+from ._gepa_utils import require_static_instruction
 from .agent_optimizer import AgentOptimizer
 from .data_types import AgentWithScores
 from .data_types import OptimizerResult
 from .data_types import UnstructuredSamplingResult
+from .sampler import _ExampleSet
 from .sampler import Sampler
+
+if TYPE_CHECKING:
+  from gepa.core.result import GEPAResult
+  from gepa.proposer.reflective_mutation.base import LanguageModel
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -167,10 +173,12 @@ def _create_agent_from_candidate(
     initial_agent: Agent, candidate: dict[str, str]
 ) -> Agent:
   """Reconstructs the agent using the provided candidate."""
-  prompt = candidate.get(_AGENT_PROMPT_KEY, initial_agent.instruction)
+  prompt = candidate.get(
+      _AGENT_PROMPT_KEY, require_static_instruction(initial_agent)
+  )
   new_agent = initial_agent.clone(update={"instruction": prompt})
 
-  new_tools = []
+  new_tools: list[ToolUnion] = []
   for tool in initial_agent.tools:
     if isinstance(tool, SkillToolset):
       new_tools.append(_update_skill_toolset(tool, candidate))
@@ -181,13 +189,15 @@ def _create_agent_from_candidate(
   return new_agent
 
 
-def _create_agent_gepa_adapter_class():
+def _create_agent_gepa_adapter_class() -> type[Any]:
   """Creates the _AgentGEPAAdapter class dynamically to avoid top-level gepa imports."""
   from gepa.core.adapter import EvaluationBatch
   from gepa.core.adapter import GEPAAdapter
   from gepa.strategies.instruction_proposal import InstructionProposalSignature
 
-  class _AgentGEPAAdapter(GEPAAdapter[str, dict[str, Any], dict[str, Any]]):
+  class _AgentGEPAAdapter(  # type: ignore[misc]
+      GEPAAdapter[str, dict[str, Any], dict[str, Any]]
+  ):
     """A GEPA adapter for ADK agents."""
 
     def __init__(
@@ -195,7 +205,7 @@ def _create_agent_gepa_adapter_class():
         initial_agent: Agent,
         sampler: Sampler[UnstructuredSamplingResult],
         main_loop: asyncio.AbstractEventLoop,
-        reflection_lm: Callable[[str], str],
+        reflection_lm: LanguageModel,
     ):
       self._initial_agent = initial_agent
       self._sampler = sampler
@@ -215,7 +225,7 @@ def _create_agent_gepa_adapter_class():
       new_agent = _create_agent_from_candidate(self._initial_agent, candidate)
 
       if set(batch) <= self._train_example_ids:
-        example_set = "train"
+        example_set: _ExampleSet = "train"
       elif set(batch) <= self._validation_example_ids:
         example_set = "validation"
       else:
@@ -256,18 +266,26 @@ def _create_agent_gepa_adapter_class():
         components_to_update: list[str],
     ) -> dict[str, list[dict[str, Any]]]:
       """Selects the relevant parts of the eval data for reflection."""
+      trajectories = eval_batch.trajectories
+      if trajectories is None:
+        raise ValueError(
+            "GEPA cannot build a reflective dataset without captured"
+            " trajectories."
+        )
       trace_instances: list[tuple[float, dict[str, Any]]] = list(
           zip(
               eval_batch.scores,
-              eval_batch.trajectories,
+              trajectories,
               strict=True,
           )
       )
 
-      result = {comp: [] for comp in components_to_update}
+      result: dict[str, list[dict[str, Any]]] = {
+          comp: [] for comp in components_to_update
+      }
 
       for score, eval_data in trace_instances:
-        entry = {"score": score, "eval_data": eval_data}
+        entry: dict[str, Any] = {"score": score, "eval_data": eval_data}
 
         eval_data_str = str(eval_data)  # to check for skill name presence
 
@@ -288,7 +306,7 @@ def _create_agent_gepa_adapter_class():
         reflective_dataset: dict[str, list[dict[str, Any]]],
         components_to_update: list[str],
     ) -> dict[str, str]:
-      new_texts = {}
+      new_texts: dict[str, str] = {}
       for component in components_to_update:
         if component == _AGENT_PROMPT_KEY:
           prompt_template = _AGENT_PROMPT_UPDATOR_INST_TEMPLATE
@@ -356,7 +374,7 @@ class GEPARootAgentOptimizer(
     try:
       import gepa  # lazy import as gepa is not in core ADK package
 
-      _AgentGEPAAdapter = _create_agent_gepa_adapter_class()
+      adapter_class = _create_agent_gepa_adapter_class()
     except ImportError as e:
       raise ImportError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
 
@@ -364,35 +382,19 @@ class GEPARootAgentOptimizer(
 
     llm = self._llm_class(model=self._config.optimizer_model)
 
-    def reflection_lm(prompt: str) -> str:
-      llm_request = LlmRequest(
-          model=self._config.optimizer_model,
-          config=self._config.model_configuration,
-          contents=[
-              genai_types.Content(
-                  parts=[genai_types.Part(text=prompt)],
-                  role="user",
-              )
-          ],
+    def reflection_lm(prompt: GEPAPrompt) -> str:
+      future = asyncio.run_coroutine_threadsafe(
+          generate_reflection_response(
+              llm=llm,
+              model=self._config.optimizer_model,
+              config=self._config.model_configuration,
+              prompt=prompt,
+          ),
+          loop,
       )
-
-      async def _generate() -> str:
-        async with Aclosing(llm.generate_content_async(llm_request)) as agen:
-          # only one yield expected so no need to loop
-          llm_response: LlmResponse = await agen.__anext__()
-          generated_content = llm_response.content
-          if not generated_content or not generated_content.parts:
-            return ""
-          return "".join(
-              part.text
-              for part in generated_content.parts
-              if part.text and not part.thought
-          )
-
-      future = asyncio.run_coroutine_threadsafe(_generate(), loop)
       return future.result()
 
-    adapter = _AgentGEPAAdapter(
+    adapter = adapter_class(
         initial_agent=initial_agent,
         sampler=sampler,
         main_loop=loop,
@@ -409,8 +411,10 @@ class GEPARootAgentOptimizer(
           " in both sets."
       )
 
-    def run_gepa():
-      seed_candidate = {}
+    initial_instruction = require_static_instruction(initial_agent)
+
+    def run_gepa() -> GEPAResult[dict[str, Any], int]:
+      seed_candidate: dict[str, str] = {}
       for tool in initial_agent.tools:
         if isinstance(tool, SkillToolset):
           for skill in tool.skills:
@@ -419,7 +423,7 @@ class GEPARootAgentOptimizer(
             ] = skill.instructions
       # added last so skills will be optimized first when components are
       # selected by for loops (due to dict ordering)
-      seed_candidate[_AGENT_PROMPT_KEY] = initial_agent.instruction
+      seed_candidate[_AGENT_PROMPT_KEY] = initial_instruction
 
       return gepa.optimize(
           seed_candidate=seed_candidate,
@@ -448,7 +452,9 @@ class GEPARootAgentOptimizer(
             ),
             overall_score=score,
         )
-        for candidate, score in zip(gepa_results.candidates, scores)
+        for candidate, score in zip(
+            gepa_results.candidates, scores, strict=True
+        )
     ]
 
     return GEPARootAgentOptimizerResult(

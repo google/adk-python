@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 from typing import Union
 
@@ -27,6 +28,7 @@ from ...tools import _automatic_function_calling_util
 from ...tools.function_tool import FunctionTool
 from ...tools.tool_configs import BaseToolConfig
 from ...tools.tool_configs import ToolArgsConfig
+from ...tools.tool_context import ToolContext
 
 
 class LangchainTool(FunctionTool):
@@ -54,6 +56,9 @@ class LangchainTool(FunctionTool):
 
   _langchain_tool: Union[LangchainBaseTool, object]
   """The wrapped langchain tool."""
+
+  _return_direct: bool
+  """Whether the wrapped tool's result should be returned without summarization."""
 
   def __init__(
       self,
@@ -89,6 +94,7 @@ class LangchainTool(FunctionTool):
     # run_manager is a special parameter for langchain tool
     self._ignore_params.append('run_manager')
     self._langchain_tool = tool
+    self._return_direct = getattr(tool, 'return_direct', False)
 
     # Set name: priority is 1) explicitly provided name, 2) tool's name, 3) default
     if name is not None:
@@ -103,6 +109,19 @@ class LangchainTool(FunctionTool):
     elif hasattr(tool, 'description') and tool.description:
       self.description = tool.description
     # else: keep default from FunctionTool
+
+  @override
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    result = await super().run_async(args=args, tool_context=tool_context)
+    # An error result means the tool never ran (e.g. missing mandatory args);
+    # it has to stay summarizable so the model sees it and can retry.
+    if self._return_direct and not (
+        isinstance(result, dict) and result.get('error')
+    ):
+      tool_context.actions.skip_summarization = True
+    return result
 
   @override
   def _get_declaration(self) -> types.FunctionDeclaration:

@@ -21,9 +21,12 @@ sub-agent tool calls.
 
 import copy
 
+from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events.event import Event
+from google.genai import types
 from google.genai.types import Part
 import pytest
 
@@ -262,3 +265,49 @@ async def test_resume_subagent_after_transfer_and_tool_call():
       ("sub_agent_1", "second response from sub_agent_1"),
       ("sub_agent_1", END_OF_AGENT),
   ]
+
+
+@pytest.mark.asyncio
+async def test_resume_path_does_not_end_parent_when_subagent_pauses(
+    monkeypatch,
+):
+  """The sub-agent resume path must honor pause, like the LLM-flow path.
+
+  When `_run_async_impl` resumes a sub-agent that pauses on a long-running
+  tool, the parent must not record `end_of_agent`. Otherwise the runner
+  short-circuits later resumes and silently drops tool responses.
+
+  This exercises the resume branch directly: reaching it through the public
+  runner is impractical because the runner resumes the active leaf agent
+  rather than re-entering the parent.
+  """
+  sub_agent_1 = LlmAgent(name="sub_agent_1")
+  root_agent = LlmAgent(name="root_agent", sub_agents=[sub_agent_1])
+  ctx = await testing_utils.create_invocation_context(root_agent)
+  # Make `_load_agent_state` return a state so the resume branch is taken.
+  ctx.agent_states = {root_agent.name: {}}
+
+  paused_event = Event(
+      invocation_id=ctx.invocation_id,
+      author=sub_agent_1.name,
+      content=types.Content(
+          role="model",
+          parts=[
+              Part(function_call=types.FunctionCall(id="lro-1", name="lro"))
+          ],
+      ),
+      long_running_tool_ids={"lro-1"},
+  )
+
+  async def _paused_subagent_run(self, ctx, **kwargs):
+    yield paused_event
+
+  monkeypatch.setattr(
+      LlmAgent, "_get_subagent_to_resume", lambda self, ctx: sub_agent_1
+  )
+  monkeypatch.setattr(LlmAgent, "run_async", _paused_subagent_run)
+
+  events = [event async for event in root_agent._run_async_impl(ctx)]
+
+  assert any(e.long_running_tool_ids for e in events)
+  assert not any(e.actions.end_of_agent for e in events)

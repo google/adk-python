@@ -426,7 +426,7 @@ def _validate_single_config(
       }
 
     # Step 3: Additional structural validation
-    # TODO: b/455645705 - Remove once the frontend performs these validations before calling
+    # TODO: Remove once the frontend performs these validations before calling
     # this tool.
     name_warning = _normalize_agent_name_field(config_dict, path)
     structural_validation = _validate_structure(config_dict, path)

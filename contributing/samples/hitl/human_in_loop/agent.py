@@ -20,7 +20,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 
-def reimburse(purpose: str, amount: float) -> str:
+def reimburse(purpose: str, amount: float) -> dict[str, str]:
   """Reimburse the amount of money to the employee."""
   return {
       'status': 'ok',

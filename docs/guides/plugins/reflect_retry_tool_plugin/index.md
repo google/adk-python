@@ -136,5 +136,5 @@ retry_plugin = ReflectAndRetryToolPlugin(
 
 ## Related samples
 
-- [Basic Usage](../../../../contributing/samples/plugin/plugin_reflect_tool_retry/basic/agent.py) - Retrying both raised exceptions and soft `{"status": "error"}` results via a `CustomRetryPlugin`.
-- [Hallucinating Tool Names](../../../../contributing/samples/plugin/plugin_reflect_tool_retry/hallucinating_func_name/agent.py) - Recovering when the model calls a tool that does not exist.
+- [Basic Usage](../../../../contributing/samples/plugins/plugin_reflect_tool_retry/basic/agent.py) - Retrying both raised exceptions and soft `{"status": "error"}` results via a `CustomRetryPlugin`.
+- [Hallucinating Tool Names](../../../../contributing/samples/plugins/plugin_reflect_tool_retry/hallucinating_func_name/agent.py) - Recovering when the model calls a tool that does not exist.

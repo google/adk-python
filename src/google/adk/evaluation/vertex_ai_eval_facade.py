@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import abc
+from collections.abc import Sequence
 import logging
 import math
 import os
@@ -30,6 +31,7 @@ from .app_details import AgentDetails
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
+from .eval_case import InvocationEvents
 from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -116,14 +118,17 @@ class _VertexAiEvalFacade(Evaluator):
 
     return ""
 
-  def _get_score(self, eval_result) -> Optional[float]:
+  def _get_score(self, eval_result: object) -> Optional[float]:
+    summary_metrics: object = getattr(eval_result, "summary_metrics", None)
+    if not isinstance(summary_metrics, Sequence) or not summary_metrics:
+      return None
+    mean_score: object = getattr(summary_metrics[0], "mean_score", None)
     if (
-        eval_result
-        and eval_result.summary_metrics
-        and isinstance(eval_result.summary_metrics[0].mean_score, float)
-        and not math.isnan(eval_result.summary_metrics[0].mean_score)
+        isinstance(mean_score, (int, float))
+        and not isinstance(mean_score, bool)
+        and not math.isnan(mean_score)
     ):
-      return eval_result.summary_metrics[0].mean_score
+      return float(mean_score)
 
     return None
 
@@ -135,15 +140,16 @@ class _VertexAiEvalFacade(Evaluator):
 
     return EvalStatus.NOT_EVALUATED
 
-  def _perform_eval(self, dataset, metrics):
+  def _perform_eval(self, dataset: object, metrics: Sequence[object]) -> object:
     """This method hides away the call to external service.
 
     Primarily helps with unit testing.
     """
-    return self._client.evals.evaluate(
+    result: object = self._client.evals.evaluate(
         dataset=dataset,
         metrics=metrics,
     )
+    return result
 
 
 class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
@@ -317,12 +323,13 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
         )
     )
 
-    for invocation_event in invocation.intermediate_data.invocation_events:
-      agent_events.append(
-          _MultiTurnVertexiAiEvalFacade._map_inovcation_event_to_agent_event(
-              invocation_event
-          )
-      )
+    if isinstance(invocation.intermediate_data, InvocationEvents):
+      for invocation_event in invocation.intermediate_data.invocation_events:
+        agent_events.append(
+            _MultiTurnVertexiAiEvalFacade._map_inovcation_event_to_agent_event(
+                invocation_event
+            )
+        )
 
     agent_events.append(
         vertexai.types.evals.AgentEvent(

@@ -13,6 +13,8 @@
 # limitations under the License.
 
 
+from typing import Any
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.remote_a2a_agent import AGENT_CARD_WELL_KNOWN_PATH
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
@@ -21,7 +23,7 @@ from google.adk.apps import ResumabilityConfig
 from google.genai import types
 
 
-def reimburse(purpose: str, amount: float) -> str:
+def reimburse(purpose: str, amount: float) -> dict[str, Any]:
   """Reimburse the amount of money to the employee."""
   return {
       'status': 'ok',
@@ -58,7 +60,7 @@ root_agent = Agent(
 # the next turn to be routed back to the (remote) approval_agent so it can
 # resume the paused tool instead of restarting at the root reimbursement_agent,
 # the app must be resumable. Without this, the confirmation is delivered to the
-# root agent, which has no pending call, and nothing happens (see issue #5871).
+# root agent, which has no pending call, and nothing happens.
 app = App(
     name='a2a_human_in_loop',
     root_agent=root_agent,

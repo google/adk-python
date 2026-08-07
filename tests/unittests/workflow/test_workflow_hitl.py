@@ -2139,7 +2139,7 @@ async def test_request_input_resume_after_earlier_invocation_completed(
 ):
   """A completed earlier invocation must not block a later HITL resume.
 
-  Regression test for #6497. The first invocation finishes on the `finish`
+  Regression test. The first invocation finishes on the `finish`
   branch. The second invocation takes the `clarify` branch and pauses for
   input. When the replay sequence was built from every event in the session,
   the terminal `finish` event of the first invocation entered the sequence

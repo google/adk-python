@@ -17,6 +17,7 @@
 from google.adk.utils._schema_utils import get_list_inner_type
 from google.adk.utils._schema_utils import is_basemodel_schema
 from google.adk.utils._schema_utils import is_list_of_basemodel
+from google.adk.utils._schema_utils import schema_to_json_schema
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
 from google.genai import types
@@ -256,3 +257,31 @@ class TestValidateNodeData:
     """Bypasses JSON parsing if schema is str."""
     result = validate_node_data(str, 'hello')
     assert result == 'hello'
+
+
+class TestSchemaToJsonSchema:
+  """Tests for schema_to_json_schema function."""
+
+  def test_dict_schema_is_returned_unchanged(self):
+    """A raw dict is already JSON Schema, so it must not be re-derived."""
+    raw = {'type': 'object', 'properties': {'name': {'type': 'string'}}}
+    assert schema_to_json_schema(raw) is raw
+
+  def test_basemodel_schema_describes_its_fields(self):
+    result = schema_to_json_schema(SampleModel)
+    assert result['type'] == 'object'
+    assert result['properties']['name']['type'] == 'string'
+    assert result['properties']['value']['type'] == 'integer'
+    # Neither field has a default, so both are required.
+    assert sorted(result['required']) == ['name', 'value']
+
+  def test_builtin_generic_schema_becomes_an_array(self):
+    result = schema_to_json_schema(list[str])
+    assert result == {'type': 'array', 'items': {'type': 'string'}}
+
+  def test_list_of_basemodel_schema_becomes_an_array_of_objects(self):
+    result = schema_to_json_schema(list[SampleModel])
+    assert result['type'] == 'array'
+    # The item schema is emitted by reference into $defs rather than inline.
+    ref = result['items']['$ref'].rsplit('/', 1)[-1]
+    assert result['$defs'][ref]['properties']['name']['type'] == 'string'

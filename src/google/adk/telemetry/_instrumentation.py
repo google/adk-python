@@ -209,6 +209,7 @@ async def record_tool_execution(
   """Unified context manager for consolidated tool execution telemetry."""
   start_time = time.monotonic()
   caught_error: Exception | None = None
+  detected_error_type: str | None = None
   span: trace.Span | None = None
   span_name = f"execute_tool {tool.name}"
   try:
@@ -221,6 +222,7 @@ async def record_tool_execution(
         caught_error = e
         raise
       finally:
+        detected_error_type = tel_ctx.error_type
         response_event = (
             tel_ctx.function_response_event if caught_error is None else None
         )
@@ -241,6 +243,7 @@ async def record_tool_execution(
           agent_name=agent.name,
           elapsed_s=_metrics.get_elapsed_s(span, start_time),
           error=caught_error,
+          error_type=detected_error_type,
       )
     except Exception:  # pylint: disable=broad-exception-caught
       logger.exception(
