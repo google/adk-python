@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.38.0](https://github.com/google/adk-python/compare/v1.37.0...v1.38.0) (2026-08-07)
+
+
+### Features
+
+* **live:** forward safety_settings from generate_content_config to the Live API ([#6641](https://github.com/google/adk-python/issues/6641)) ([99c1aa3](https://github.com/google/adk-python/commit/99c1aa325e448f2ff7a4ffd037f98fd5b20fb4c5))
+
+
+### Bug Fixes
+
+* avoid shell execution in ReadFileTool ranged reads and keep local environment file access in workspace ([#6597](https://github.com/google/adk-python/issues/6597)) ([c680728](https://github.com/google/adk-python/commit/c68072840131199e93ba6cff76b20ca758ef1161))
+* **deps:** exclude nltk 3.10.1, which breaks venvs living inside the working directory (v1) ([#6607](https://github.com/google/adk-python/issues/6607)) ([f25bb90](https://github.com/google/adk-python/commit/f25bb900557587657e90d9293c09a2e3e172a3fd))
+* **eval:** handle failed inference results without invocations (cherry-pick) ([#6565](https://github.com/google/adk-python/issues/6565)) ([4555273](https://github.com/google/adk-python/commit/4555273b5b4e7d510db1c9edba02980386f58c7b))
+* **live:** transfer to the target agent regardless of function response order ([#6608](https://github.com/google/adk-python/issues/6608)) ([302885b](https://github.com/google/adk-python/commit/302885bda3b85fe65a0980530723adb635407bbb))
+* Port tool confirmation security and re-validation fixes to v1 ([#6575](https://github.com/google/adk-python/issues/6575)) ([4783364](https://github.com/google/adk-python/commit/47833640c7be84f238d6a046f3bd3e2aa9ce3ef3))
+
 ## [1.37.0](https://github.com/google/adk-python/compare/v1.36.2...v1.37.0) (2026-07-30)
 
 
