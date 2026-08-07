@@ -33,6 +33,10 @@ logger = logging.getLogger("google_adk." + __name__)
 # capabilities.
 _MODEL_ACCESSIBLE_URI_SCHEMES = {"gs", "https", "http"}
 
+# Maximum file size for inline_data (20MB as per Gemini API documentation)
+# https://ai.google.dev/gemini-api/docs/files
+_MAX_INLINE_DATA_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+
 
 class SaveFilesAsArtifactsPlugin(BasePlugin):
   """A plugin that saves files embedded in user messages as artifacts.
@@ -94,8 +98,11 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         continue
 
       try:
-        # Use display_name if available, otherwise generate a filename
+        # Check file size before processing
         inline_data = part.inline_data
+        file_size = len(inline_data.data or b"")
+
+        # Use display_name if available, otherwise generate a filename
         file_name = inline_data.display_name
         if not file_name:
           file_name = f"artifact_{invocation_context.invocation_id}_{i}"
@@ -103,9 +110,24 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
               f"No display_name found, using generated filename: {file_name}"
           )
 
-        # Store original filename for display to user/ placeholder
+        # Store original filename for display to user/placeholder
         display_name = file_name
 
+        # Check if file exceeds inline_data limit (20MB)
+        if file_size > _MAX_INLINE_DATA_SIZE_BYTES:
+          file_size_mb = file_size / (1024 * 1024)
+          limit_mb = _MAX_INLINE_DATA_SIZE_BYTES / (1024 * 1024)
+          error_message = (
+              f"File {display_name} ({file_size_mb:.2f} MB) exceeds the"
+              f" maximum supported size of {limit_mb:.0f}MB. Please"
+              " upload a smaller file."
+          )
+          logger.warning(error_message)
+          new_parts.append(types.Part(text=f"[Upload Error: {error_message}]"))
+          modified = True
+          continue
+
+        # For files <= 20MB, use inline_data (existing behavior)
         # Create a copy to stop mutation of the saved artifact if the original part is modified
         version = await invocation_context.artifact_service.save_artifact(
             app_name=invocation_context.app_name,

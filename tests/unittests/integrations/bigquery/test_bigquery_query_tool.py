@@ -30,6 +30,7 @@ from google.adk.integrations.bigquery import client as bq_client_lib
 from google.adk.integrations.bigquery import query_tool
 from google.adk.integrations.bigquery.config import BigQueryToolConfig
 from google.adk.integrations.bigquery.config import WriteMode
+from google.adk.tools import function_tool
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 import google.auth
@@ -2278,3 +2279,149 @@ def test_tool_call_doesnt_mutate_job_labels(tool_call):
     # Test job_labels remain unchanged after tool call
     assert settings.job_labels == original_labels
     assert "adk-bigquery-tool" not in settings.job_labels
+
+
+def test_get_execute_sql_blocked_mode_returns_the_read_only_tool():
+  """Read-only mode needs no customization, so the original tool is reused."""
+  settings = BigQueryToolConfig(write_mode=WriteMode.BLOCKED)
+  assert query_tool.get_execute_sql(settings) is query_tool.execute_sql
+
+
+def test_get_execute_sql_without_settings_returns_the_read_only_tool():
+  assert query_tool.get_execute_sql(None) is query_tool.execute_sql
+
+
+def test_get_execute_sql_protected_mode_swaps_in_the_protected_docstring():
+  # The docstring is what the model is shown as the tool contract, so each
+  # write mode has to advertise its own.
+  tool = query_tool.get_execute_sql(
+      BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  )
+  assert tool.__doc__ == query_tool._execute_sql_protected_write_mode.__doc__
+  assert tool.__name__ == "execute_sql"
+
+
+def test_get_execute_sql_allowed_mode_swaps_in_the_write_docstring():
+  tool = query_tool.get_execute_sql(
+      BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
+  )
+  assert tool.__doc__ == query_tool._execute_sql_write_mode.__doc__
+  assert tool.__name__ == "execute_sql"
+
+
+def test_get_execute_sql_does_not_mutate_the_shared_read_only_tool():
+  """Customizing one toolset must not rewrite the module-level function."""
+  query_tool.get_execute_sql(BigQueryToolConfig(write_mode=WriteMode.ALLOWED))
+
+  # The shared read-only tool must keep advertising read-only semantics to
+  # every other toolset that uses it.
+  assert (
+      query_tool.execute_sql.__doc__
+      != query_tool._execute_sql_write_mode.__doc__
+  )
+  assert (
+      query_tool.execute_sql.__doc__
+      != query_tool._execute_sql_protected_write_mode.__doc__
+  )
+
+
+def test_get_execute_sql_write_modes_get_distinct_docstrings():
+  protected = query_tool.get_execute_sql(
+      BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  )
+  allowed = query_tool.get_execute_sql(
+      BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
+  )
+  assert protected.__doc__ != allowed.__doc__
+
+
+@pytest.mark.parametrize(
+    ("write_mode",),
+    [
+        pytest.param(WriteMode.BLOCKED, id="blocked"),
+        pytest.param(WriteMode.PROTECTED, id="protected"),
+        pytest.param(WriteMode.ALLOWED, id="allowed"),
+    ],
+)
+def test_get_execute_sql_returns_same_function_object(write_mode):
+  """Test the execute_sql tool function is reused across calls.
+
+  A fresh function object would miss the declaration and context-parameter
+  caches, which are keyed on the function object, on every LLM request.
+  """
+  settings = BigQueryToolConfig(write_mode=write_mode)
+
+  assert query_tool.get_execute_sql(settings) is query_tool.get_execute_sql(
+      settings
+  )
+  # An equivalent but distinct settings object must map to the same function.
+  assert query_tool.get_execute_sql(settings) is query_tool.get_execute_sql(
+      BigQueryToolConfig(write_mode=write_mode)
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_tools_reuses_execute_sql_declaration():
+  """Test repeated get_tools() calls hit the shared declaration cache."""
+  toolset = BigQueryToolset(
+      credentials_config=BigQueryCredentialsConfig(
+          client_id="abc", client_secret="def"
+      ),
+      tool_filter=["execute_sql"],
+      bigquery_tool_config=BigQueryToolConfig(write_mode=WriteMode.ALLOWED),
+  )
+
+  first = (await toolset.get_tools())[0]
+  first._get_declaration()
+  misses_before = function_tool._build_declaration_cached.cache_info().misses
+
+  second = (await toolset.get_tools())[0]
+  assert second.func is first.func
+  assert second._get_declaration() == first._get_declaration()
+  assert (
+      function_tool._build_declaration_cached.cache_info().misses
+      == misses_before
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_tools_binds_distinct_settings_per_toolset():
+  """Test toolsets with different configs still get correctly bound tools."""
+  protected_settings = BigQueryToolConfig(
+      write_mode=WriteMode.PROTECTED, max_query_result_rows=11
+  )
+  allowed_settings = BigQueryToolConfig(
+      write_mode=WriteMode.ALLOWED, max_query_result_rows=22
+  )
+
+  protected_tool = await get_tool("execute_sql", protected_settings)
+  allowed_tool = await get_tool("execute_sql", allowed_settings)
+  blocked_tool = await get_tool(
+      "execute_sql", BigQueryToolConfig(write_mode=WriteMode.BLOCKED)
+  )
+
+  assert protected_tool._tool_settings is protected_settings
+  assert allowed_tool._tool_settings is allowed_settings
+
+  # The model-visible declaration still differs per write mode.
+  assert protected_tool.func is not allowed_tool.func
+  assert protected_tool.func is not blocked_tool.func
+  assert allowed_tool.func is not blocked_tool.func
+  descriptions = {
+      protected_tool.description,
+      allowed_tool.description,
+      blocked_tool.description,
+  }
+  assert len(descriptions) == 3
+  declarations = [
+      tool._get_declaration()
+      for tool in (protected_tool, allowed_tool, blocked_tool)
+  ]
+  for declaration in declarations:
+    assert declaration.name == "execute_sql"
+    # The parameter schema the model sees is the same for every write mode.
+    assert declaration.parameters == declarations[0].parameters
+    assert (
+        declaration.parameters_json_schema
+        == declarations[0].parameters_json_schema
+    )

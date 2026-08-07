@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from collections.abc import Mapping
 import importlib
 import json
@@ -26,6 +27,7 @@ from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Protocol
 from typing import Union
 import uuid
 
@@ -45,6 +47,7 @@ from .eval_config import EvalConfig
 from .eval_config import get_eval_metrics_from_config
 from .eval_config import get_evaluation_criteria_or_default
 from .eval_config import LiveModelConfig
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
@@ -69,6 +72,13 @@ TOOL_TRAJECTORY_SCORE_KEY = PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value
 RESPONSE_EVALUATION_SCORE_KEY = PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
 RESPONSE_MATCH_SCORE_KEY = PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
 SAFETY_V1_KEY = PrebuiltMetrics.SAFETY_V1.value
+
+
+class _AsyncAgentFactory(Protocol):
+
+  def __call__(self) -> Awaitable[tuple[BaseAgent, object]]:
+    """Loads a root agent and optional cleanup metadata."""
+
 
 ALLOWED_CRITERIA = [
     TOOL_TRAJECTORY_SCORE_KEY,
@@ -119,6 +129,7 @@ class AgentEvaluator:
       agent_name: Optional[str] = None,
       print_detailed_results: bool = True,
       artifact_service: Optional[BaseArtifactService] = None,
+      output_file: Optional[str] = None,
   ) -> None:
     """Evaluates an agent using the given EvalSet.
 
@@ -140,6 +151,10 @@ class AgentEvaluator:
         Pre-load artifacts here and pin each eval case to a session id (via
         `SessionInput.session_id`) to make them reachable. Defaults to an
         in-memory service.
+      output_file: If provided, per-invocation evaluation results (for both
+        passing and failing metrics) are written to this path as a CSV file.
+        Disabled by default. The parent directory is created if it does not
+        already exist.
     """
     if criteria:
       logger.warning(
@@ -183,7 +198,11 @@ class AgentEvaluator:
     # test failures. We track them and then report them towards the end.
     failures: list[str] = []
 
-    for _, eval_results_per_eval_id in eval_results_by_eval_id.items():
+    # Optionally, we collect per-invocation results across all eval cases and
+    # metrics so that they can be written out to a CSV file at the end.
+    csv_rows: list[dict[str, Any]] = []
+
+    for eval_id, eval_results_per_eval_id in eval_results_by_eval_id.items():
       eval_metric_results = (
           AgentEvaluator._get_eval_metric_results_with_invocation(
               eval_results_per_eval_id
@@ -192,10 +211,24 @@ class AgentEvaluator:
       failures_per_eval_case = AgentEvaluator._process_metrics_and_get_failures(
           eval_metric_results=eval_metric_results,
           print_detailed_results=print_detailed_results,
-          agent_module=agent_name,
+          agent_module=agent_module,
       )
 
       failures.extend(failures_per_eval_case)
+
+      if output_file:
+        csv_rows.extend(
+            AgentEvaluator._get_results_as_rows(
+                eval_set_id=eval_set.eval_set_id,
+                eval_id=eval_id,
+                eval_metric_results=eval_metric_results,
+            )
+        )
+
+    if output_file:
+      AgentEvaluator._write_results_to_csv(
+          rows=csv_rows, output_file=output_file
+      )
 
     failure_message = "Following are all the test failures."
     if not print_detailed_results:
@@ -215,6 +248,7 @@ class AgentEvaluator:
       initial_session_file: Optional[str] = None,
       print_detailed_results: bool = True,
       artifact_service: Optional[BaseArtifactService] = None,
+      output_file: Optional[str] = None,
   ) -> None:
     """Evaluates an Agent given eval data.
 
@@ -237,6 +271,10 @@ class AgentEvaluator:
         Pre-load artifacts here and pin each eval case to a session id (via
         `SessionInput.session_id`) to make them reachable. Defaults to an
         in-memory service.
+      output_file: If provided, per-invocation evaluation results are written to
+        this path as a CSV file. Disabled by default. When the eval data spans
+        multiple test files, results from all of them are appended to the same
+        file.
     """
     test_files = []
     if isinstance(eval_dataset_file_path_or_dir, str) and os.path.isdir(
@@ -265,6 +303,7 @@ class AgentEvaluator:
           agent_name=agent_name,
           print_detailed_results=print_detailed_results,
           artifact_service=artifact_service,
+          output_file=output_file,
       )
 
   @staticmethod
@@ -536,18 +575,25 @@ class AgentEvaluator:
           " name should endwith `.agent`."
       )
 
-    agent_module_with_agent = (
-        agent_module.agent if hasattr(agent_module, "agent") else agent_module
+    agent_module_with_agent: object = getattr(
+        agent_module, "agent", agent_module
     )
-    if hasattr(agent_module_with_agent, "root_agent"):
-      root_agent = agent_module_with_agent.root_agent
-    elif hasattr(agent_module_with_agent, "get_agent_async"):
-      root_agent, _ = await agent_module_with_agent.get_agent_async()
-    else:
-      raise ValueError(
-          f"Module {module_name} does not have a root_agent or"
-          " get_agent_async method."
+    root_candidate: object = getattr(
+        agent_module_with_agent, "root_agent", None
+    )
+    if root_candidate is None:
+      factory_candidate: object = getattr(
+          agent_module_with_agent, "get_agent_async", None
       )
+      if not callable(factory_candidate):
+        raise ValueError(
+            f"Module {module_name} does not have a root_agent or"
+            " get_agent_async method."
+        )
+      factory = cast(_AsyncAgentFactory, factory_candidate)
+      root_candidate, _ = await factory()
+
+    root_agent = cast(BaseAgent, root_candidate)
 
     app = getattr(agent_module_with_agent, "app", None)
     if not isinstance(app, App):
@@ -555,8 +601,10 @@ class AgentEvaluator:
 
     agent_for_eval = root_agent
     if agent_name:
-      agent_for_eval = root_agent.find_agent(agent_name)
-      assert agent_for_eval, f"Sub-Agent `{agent_name}` not found."
+      selected_agent = root_agent.find_agent(agent_name)
+      if selected_agent is None:
+        raise ValueError(f"Sub-Agent {agent_name!r} not found.")
+      agent_for_eval = selected_agent
 
     return agent_for_eval, app
 
@@ -718,9 +766,11 @@ class AgentEvaluator:
         metric_name,
         eval_metric_results_with_invocations,
     ) in eval_metric_results.items():
-      threshold = eval_metric_results_with_invocations[
-          0
-      ].eval_metric_result.threshold
+      if not eval_metric_results_with_invocations:
+        continue
+      threshold = _get_metric_threshold(
+          eval_metric_results_with_invocations[0].eval_metric_result
+      )
       scores = [
           m.eval_metric_result.score
           for m in eval_metric_results_with_invocations
@@ -754,3 +804,76 @@ class AgentEvaluator:
         )
 
     return failures
+
+  @staticmethod
+  def _get_results_as_rows(
+      eval_set_id: str,
+      eval_id: str,
+      eval_metric_results: dict[str, list[_EvalMetricResultWithInvocation]],
+  ) -> list[dict[str, Any]]:
+    """Flattens eval results into one row per metric per invocation.
+
+    The columns mirror the ones used in `_print_details`, with additional
+    identifier columns so that rows from different eval cases and metrics can be
+    distinguished within a single CSV file.
+    """
+    rows: list[dict[str, Any]] = []
+    for metric_name, results_with_invocations in eval_metric_results.items():
+      for result_with_invocation in results_with_invocations:
+        eval_metric_result = result_with_invocation.eval_metric_result
+        expected_invocation = result_with_invocation.expected_invocation
+        actual_invocation = result_with_invocation.actual_invocation
+        rows.append({
+            "eval_set_id": eval_set_id,
+            "eval_id": eval_id,
+            "metric_name": metric_name,
+            "threshold": eval_metric_result.threshold,
+            "score": eval_metric_result.score,
+            "eval_status": eval_metric_result.eval_status.name,
+            "prompt": AgentEvaluator._convert_content_to_text(
+                expected_invocation.user_content
+                if expected_invocation
+                else actual_invocation.user_content
+            ),
+            "expected_response": AgentEvaluator._convert_content_to_text(
+                expected_invocation.final_response
+                if expected_invocation
+                else None
+            ),
+            "actual_response": AgentEvaluator._convert_content_to_text(
+                actual_invocation.final_response
+            ),
+            "expected_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
+                expected_invocation.intermediate_data
+                if expected_invocation
+                else None
+            ),
+            "actual_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
+                actual_invocation.intermediate_data
+            ),
+        })
+    return rows
+
+  @staticmethod
+  def _write_results_to_csv(
+      rows: list[dict[str, Any]], output_file: str
+  ) -> None:
+    """Writes eval results to a CSV file.
+
+    Appends rows to the file if it already exists, writing the header only once.
+    Creates parent directories if necessary.
+    """
+    try:
+      import pandas as pd
+    except ModuleNotFoundError as e:
+      raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
+
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
+      os.makedirs(output_dir, exist_ok=True)
+
+    file_exists = os.path.isfile(output_file)
+    pd.DataFrame(rows).to_csv(
+        output_file, mode="a", header=not file_exists, index=False
+    )
+    logger.info("Saved eval results to %s", output_file)

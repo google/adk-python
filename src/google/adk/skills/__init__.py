@@ -18,10 +18,15 @@ from typing import Any
 import warnings
 
 from ._utils import _list_skills_in_dir as list_skills_in_dir
+from ._utils import _list_skills_in_dir_async as list_skills_in_dir_async
 from ._utils import _list_skills_in_gcs_dir as list_skills_in_gcs_dir
+from ._utils import _list_skills_in_gcs_dir_async as list_skills_in_gcs_dir_async
 from ._utils import _load_skill_from_dir as load_skill_from_dir
+from ._utils import _load_skill_from_dir_async as load_skill_from_dir_async
 from ._utils import _load_skill_from_gcs_dir as load_skill_from_gcs_dir
+from ._utils import _load_skill_from_gcs_dir_async as load_skill_from_gcs_dir_async
 from ._utils import _load_skills_from_dir as load_skills_from_dir
+from ._utils import _load_skills_from_dir_async as load_skills_from_dir_async
 from .models import Frontmatter
 from .models import Resources
 from .models import Script
@@ -36,10 +41,15 @@ __all__ = [
     "Skill",
     "SkillRegistry",
     "list_skills_in_dir",
+    "list_skills_in_dir_async",
     "list_skills_in_gcs_dir",
+    "list_skills_in_gcs_dir_async",
     "load_skill_from_dir",
+    "load_skill_from_dir_async",
     "load_skill_from_gcs_dir",
+    "load_skill_from_gcs_dir_async",
     "load_skills_from_dir",
+    "load_skills_from_dir_async",
 ]
 
 

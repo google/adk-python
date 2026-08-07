@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from typing import Literal
 from typing import Optional
 
 from pydantic import BaseModel
@@ -42,16 +41,16 @@ from ..evaluation.metric_evaluator_registry import register_custom_metrics_from_
 from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
 from ..utils.context_utils import Aclosing
 from .data_types import UnstructuredSamplingResult
+from .sampler import _ExampleSet
 from .sampler import Sampler
 
 logger = logging.getLogger("google_adk." + __name__)
 
 
-def _log_eval_summary(eval_results: list[EvalCaseResult]):
+def _log_eval_summary(eval_results: list[EvalCaseResult]) -> None:
   """Logs a summary of eval results."""
   num_pass, num_fail, num_other = 0, 0, 0
   for eval_result in eval_results:
-    eval_result: EvalCaseResult
     if eval_result.final_eval_status == EvalStatus.PASSED:
       num_pass += 1
     elif eval_result.final_eval_status == EvalStatus.FAILED:
@@ -84,15 +83,18 @@ def extract_single_invocation_info(
 ) -> dict[str, Any]:
   """Extracts useful information from a single invocation."""
   user_prompt = ""
-  for part in invocation.user_content.parts:
+  for part in invocation.user_content.parts or []:
     if part.text and not part.thought:
       user_prompt += part.text
   agent_response = ""
   if invocation.final_response:
-    for part in invocation.final_response.parts:
+    for part in invocation.final_response.parts or []:
       if part.text and not part.thought:
         agent_response += part.text
-  result = {"user_prompt": user_prompt, "agent_response": agent_response}
+  result: dict[str, Any] = {
+      "user_prompt": user_prompt,
+      "agent_response": agent_response,
+  }
   if invocation.intermediate_data:
     tool_call_data = extract_tool_call_data(invocation.intermediate_data)
     result["tool_calls"] = tool_call_data
@@ -177,18 +179,14 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
     else:
       self._validation_eval_case_ids = self._train_eval_case_ids
 
-  def _get_selected_example_set_id(
-      self, example_set: Literal[Sampler.TRAIN_SET, Sampler.VALIDATION_SET]
-  ) -> str:
+  def _get_selected_example_set_id(self, example_set: _ExampleSet) -> str:
     """Returns the ID of the selected example set."""
     return {
         Sampler.TRAIN_SET: self._train_eval_set,
         Sampler.VALIDATION_SET: self._validation_eval_set,
     }[example_set]
 
-  def _get_all_example_ids(
-      self, example_set: Literal[Sampler.TRAIN_SET, Sampler.VALIDATION_SET]
-  ) -> list[str]:
+  def _get_all_example_ids(self, example_set: _ExampleSet) -> list[str]:
     """Returns the IDs of all examples in the selected example set."""
     return {
         Sampler.TRAIN_SET: self._train_eval_case_ids,
@@ -273,9 +271,9 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
       eval_results: list[EvalCaseResult],
   ) -> dict[str, dict[str, Any]]:
     """Extracts evaluation data from the eval results."""
-    eval_data = {}
+    eval_data: dict[str, dict[str, Any]] = {}
     for eval_result in eval_results:
-      eval_result_dict = {}
+      eval_result_dict: dict[str, Any] = {}
       eval_case = self._eval_sets_manager.get_eval_case(
           app_name=self._config.app_name,
           eval_set_id=eval_set_id,
@@ -286,18 +284,19 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
             eval_case.conversation_scenario
         )
 
-      per_invocation_results = []
+      per_invocation_results: list[dict[str, Any]] = []
       for (
           per_invocation_result
       ) in eval_result.eval_metric_result_per_invocation:
-        eval_metric_results = []
+        eval_metric_results: list[dict[str, Any]] = []
         for eval_metric_result in per_invocation_result.eval_metric_results:
+          score = eval_metric_result.score
           eval_metric_results.append({
               "metric_name": eval_metric_result.metric_name,
-              "score": round(eval_metric_result.score, 2),  # accurate enough
+              "score": round(score, 2) if score is not None else None,
               "eval_status": eval_metric_result.eval_status.name,
           })
-        per_invocation_result_dict = {
+        per_invocation_result_dict: dict[str, Any] = {
             "actual_invocation": extract_single_invocation_info(
                 per_invocation_result.actual_invocation
             ),
@@ -326,9 +325,7 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
   async def sample_and_score(
       self,
       candidate: Agent,
-      example_set: Literal[
-          Sampler.TRAIN_SET, Sampler.VALIDATION_SET
-      ] = Sampler.VALIDATION_SET,
+      example_set: _ExampleSet = Sampler.VALIDATION_SET,
       batch: Optional[list[str]] = None,
       capture_full_eval_data: bool = False,
   ) -> UnstructuredSamplingResult:

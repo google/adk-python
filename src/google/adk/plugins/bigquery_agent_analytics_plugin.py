@@ -374,11 +374,6 @@ def _extract_tool_declarations(
     # The parameter schema lives on the tool's FunctionDeclaration, which some
     # tools (e.g. built-in tools) do not provide. Resolve defensively so a
     # single failing tool does not discard the whole tools list.
-    #
-    # Note: FunctionTool._get_declaration() rebuilds the declaration from the
-    # function signature on each call (no caching), so this repeats work the
-    # framework already did when assembling the request. Acceptable for typical
-    # toolsets; revisit with a cache if it shows up on the hot path.
     declaration = None
     try:
       get_declaration = getattr(tool, "_get_declaration", None)
@@ -1754,6 +1749,10 @@ class BigQueryLoggerConfig:
         emit the final answer via a dedicated tool (e.g.
         ``submit_final_response``) rather than a plain-text final event. Empty
         (the default) preserves today's behavior.
+      flush_on_run_end: Whether to flush queued rows synchronously at the end of
+        each run. When False, rows are left to the background batch writer,
+        which removes the flush from the response path at the cost of a small
+        delay before rows land.
   """
 
   enabled: bool = True
@@ -1828,6 +1827,7 @@ class BigQueryLoggerConfig:
   # ``AGENT_RESPONSE`` event.  Empty (the default) preserves today's
   # behavior.
   final_response_tool_names: frozenset[str] = frozenset()
+  flush_on_run_end: bool = True
 
 
 # ==============================================================================
@@ -6587,8 +6587,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       TraceManager.clear_stack()
       _active_invocation_id_ctx.set(None)
       _root_agent_name_ctx.set(None)
-      # Ensure all logs are flushed before the agent returns.
-      await self.flush()
+      # Flush before returning if configured; otherwise the background batch
+      # writer drains the queue.
+      if self.config.flush_on_run_end:
+        await self.flush()
 
   @_safe_callback
   async def before_agent_callback(
@@ -7071,4 +7073,5 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       TraceManager.clear_stack()
       _active_invocation_id_ctx.set(None)
       _root_agent_name_ctx.set(None)
-      await self.flush()
+      if self.config.flush_on_run_end:
+        await self.flush()

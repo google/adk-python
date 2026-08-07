@@ -76,10 +76,18 @@ class SetModelResponseTool(BaseTool):
       schema_fields = output_schema.model_fields
       params = []
       for field_name, field_info in schema_fields.items():
+        # Carry the field's default across. Without it every parameter looks
+        # required, so the model is told it must supply fields the caller
+        # declared optional.
         param = inspect.Parameter(
             field_name,
             inspect.Parameter.KEYWORD_ONLY,
             annotation=field_info.annotation,
+            default=(
+                inspect.Parameter.empty
+                if field_info.is_required()
+                else field_info.get_default(call_default_factory=True)
+            ),
         )
         params.append(param)
     elif self._is_list_of_basemodel:

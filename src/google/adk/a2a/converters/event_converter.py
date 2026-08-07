@@ -18,7 +18,6 @@ from collections.abc import Callable
 import json
 import logging
 from typing import Any
-from typing import Dict
 from typing import List
 from typing import Optional
 
@@ -81,7 +80,7 @@ Returns:
 """
 
 
-def _serialize_metadata_value(value: Any) -> str:
+def _serialize_metadata_value(value: object) -> object:
   """Safely serializes metadata values to string format.
 
   Args:
@@ -109,7 +108,7 @@ def _serialize_metadata_value(value: Any) -> str:
 
 def _get_context_metadata(
     event: Event, invocation_context: InvocationContext
-) -> Dict[str, str]:
+) -> dict[str, object]:
   """Gets the context metadata for the event.
 
   Args:
@@ -128,7 +127,7 @@ def _get_context_metadata(
     raise ValueError("Invocation context cannot be None")
 
   try:
-    metadata = {
+    metadata: dict[str, object] = {
         _get_adk_metadata_key("app_name"): invocation_context.app_name,
         _get_adk_metadata_key("user_id"): invocation_context.user_id,
         _get_adk_metadata_key("session_id"): invocation_context.session.id,

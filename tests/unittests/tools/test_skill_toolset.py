@@ -2364,6 +2364,103 @@ async def test_skill_toolset_resolution_error_handling(mock_skill1, caplog):
   assert len(tools) == 4
 
 
+@pytest.mark.asyncio
+async def test_skill_toolset_resolution_isolates_failing_toolset(
+    mock_skill1, caplog
+):
+  """A provided toolset that raises while listing its tools (e.g. an
+
+  unreachable MCP server) must not abort resolution of the other additional
+  tools.
+  """
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": [
+          "good_tool",
+          "good_tool_from_set",
+          "from_failing_toolset",
+      ]
+  }
+  mock_skill1.name = "skill1"
+
+  # Healthy individual tool that must still resolve.
+  good_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  good_tool.name = "good_tool"
+
+  # Healthy toolset that must still resolve.
+  good_toolset = mock.create_autospec(skill_toolset.BaseToolset, instance=True)
+  good_tool_from_set = mock.create_autospec(
+      skill_toolset.BaseTool, instance=True
+  )
+  good_tool_from_set.name = "good_tool_from_set"
+  good_toolset.get_tools_with_prefix.return_value = [good_tool_from_set]
+
+  # Toolset whose listing fails (simulates a down / unreachable MCP server).
+  failing_toolset = mock.create_autospec(
+      skill_toolset.BaseToolset, instance=True
+  )
+  failing_toolset.get_tools_with_prefix.side_effect = RuntimeError(
+      "MCP server unreachable"
+  )
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      additional_tools=[good_tool, good_toolset, failing_toolset],
+  )
+  ctx = _make_tool_context_with_agent()
+
+  # Activate skill
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  await load_tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+
+  with caplog.at_level(logging.WARNING):
+    tools = await toolset.get_tools(readonly_context=ctx)
+
+  tool_names = {t.name for t in tools}
+  # Healthy individual tool, healthy toolset tools and core skill tools still resolve.
+  assert "good_tool" in tool_names
+  assert "good_tool_from_set" in tool_names
+  assert "list_skills" in tool_names
+  # The failing toolset contributes nothing instead of breaking everything.
+  assert "from_failing_toolset" not in tool_names
+  # And the failure is surfaced via a warning, not silently swallowed.
+  assert "Skipping toolset" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_resolution_propagates_system_exceptions(
+    mock_skill1,
+):
+  """A provided toolset that raises a BaseException must propagate it."""
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["good_tool", "from_failing_toolset"]
+  }
+  mock_skill1.name = "skill1"
+
+  # Healthy individual tool.
+  good_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  good_tool.name = "good_tool"
+
+  # Toolset whose listing fails with BaseException.
+  failing_toolset = mock.create_autospec(
+      skill_toolset.BaseToolset, instance=True
+  )
+  failing_toolset.get_tools_with_prefix.side_effect = BaseException(
+      "system failure"
+  )
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], additional_tools=[good_tool, failing_toolset]
+  )
+  ctx = _make_tool_context_with_agent()
+
+  # Activate skill
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  await load_tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+
+  with pytest.raises(BaseException, match="system failure"):
+    await toolset.get_tools(readonly_context=ctx)
+
+
 @pytest.fixture(name="mock_registry")
 def _mock_registry():
   """Fixture for mock SkillRegistry."""

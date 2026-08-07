@@ -284,6 +284,86 @@ async def test_inject_session_state_with_optional_missing_state_returns_empty():
   assert populated_instruction == "Optional value: "
 
 
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_basic_variable():
+  instruction_template = (
+      "Hello {{ user_name }}, you are in {{ app_state }} state."
+  )
+  invocation_context = await _create_test_readonly_context(
+      state={"user_name": "Foo", "app_state": "active"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context, use_jinja2=True
+  )
+  assert populated_instruction == "Hello Foo, you are in active state."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_conditional():
+  instruction_template = "{% if show_hint %}Hint: read the docs.{% endif %}"
+  invocation_context = await _create_test_readonly_context(
+      state={"show_hint": True}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context, use_jinja2=True
+  )
+  assert populated_instruction == "Hint: read the docs."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_for_loop():
+  instruction_template = "{% for item in items %}{{ item }} {% endfor %}"
+  invocation_context = await _create_test_readonly_context(
+      state={"items": ["a", "b", "c"]}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context, use_jinja2=True
+  )
+  assert populated_instruction == "a b c "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_artifact():
+  instruction_template = "Content: {{ artifact('my_file') }}"
+  mock_artifact_service = MockArtifactService({"my_file": "artifact data"})
+  invocation_context = await _create_test_readonly_context(
+      artifact_service=mock_artifact_service
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context, use_jinja2=True
+  )
+  assert populated_instruction == "Content: artifact data"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_undefined_variable_raises():
+  instruction_template = "Hello {{ missing_var }}!"
+  invocation_context = await _create_test_readonly_context()
+
+  with pytest.raises(Exception):
+    await instructions_utils.inject_session_state(
+        instruction_template, invocation_context, use_jinja2=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_artifact_with_filter():
+  instruction_template = "Content: {{ artifact('my_file') | upper }}"
+  mock_artifact_service = MockArtifactService({"my_file": "artifact data"})
+  invocation_context = await _create_test_readonly_context(
+      artifact_service=mock_artifact_service
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context, use_jinja2=True
+  )
+  assert populated_instruction == "Content: ARTIFACT DATA"
+
+
 def test_module_exposes_instruction_provider_alias():
   assert instructions_utils.InstructionProvider is InstructionProvider
 

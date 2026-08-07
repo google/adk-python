@@ -155,6 +155,7 @@ class MetricsCollector:
         "language": "python",
         "language_version": platform.python_version(),
         "adk_version": google.adk.version.__version__,
+        "is_tty": sys.stdout.isatty() if sys.stdout else False,
     }
     logger.debug(
         "Initialized ADK metrics collector with session %s (seq %d)",

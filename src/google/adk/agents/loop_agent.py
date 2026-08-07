@@ -171,10 +171,12 @@ class LoopAgent(BaseAgent):
   @experimental(FeatureName.AGENT_CONFIG)
   def _parse_config(
       cls: type[LoopAgent],
-      config: LoopAgentConfig,
+      config: BaseAgentConfig,
       config_abs_path: str,
       kwargs: Dict[str, Any],
   ) -> Dict[str, Any]:
+    if not isinstance(config, LoopAgentConfig):
+      raise TypeError('LoopAgent requires a LoopAgentConfig.')
     if config.max_iterations:
       kwargs['max_iterations'] = config.max_iterations
     return kwargs

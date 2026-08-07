@@ -324,6 +324,9 @@ def from_function_with_options(
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
 ) -> 'types.FunctionDeclaration':
 
+  # Same derivation the JSON-schema builder and FunctionTool use, so a callable
+  # object is declared under the name it is registered under instead of raising.
+  func_name = _function_tool_declarations.get_callable_name(func)
   parameters_properties = {}
   parameters_json_schema = {}
   try:
@@ -343,7 +346,7 @@ def from_function_with_options(
         )
 
         schema = _function_parameter_parse_util._parse_schema_from_parameter(
-            variant, param, func.__name__
+            variant, param, func_name
         )
         parameters_properties[name] = schema
   except ValueError:
@@ -385,11 +388,11 @@ def from_function_with_options(
               parameters_json_schema[name].nullable = True
         except Exception as e:
           _function_parameter_parse_util._raise_for_unsupported_param(
-              param, func.__name__, e
+              param, func_name, e
           )
 
   declaration = types.FunctionDeclaration(
-      name=func.__name__,
+      name=func_name,
       description=func.__doc__,
   )
   if parameters_properties:
@@ -444,7 +447,7 @@ def from_function_with_options(
         _function_parameter_parse_util._parse_schema_from_parameter(
             variant,
             return_value,
-            func.__name__,
+            func_name,
         )
     )
     return declaration
@@ -465,7 +468,7 @@ def from_function_with_options(
         _function_parameter_parse_util._parse_schema_from_parameter(
             variant,
             return_value,
-            func.__name__,
+            func_name,
         )
     )
     return declaration
@@ -487,7 +490,7 @@ def from_function_with_options(
         _function_parameter_parse_util._parse_schema_from_parameter(
             variant,
             return_value,
-            func.__name__,
+            func_name,
         )
     )
   # Intentionally broad: schema derivation can raise non-ValueError types
@@ -506,7 +509,7 @@ def from_function_with_options(
       logger.warning(
           'Could not generate a response schema for the return type of %s;'
           ' omitting it. Fallback error: %s. Original error: %s',
-          func.__name__,
+          func_name,
           e,
           primary_error,
       )

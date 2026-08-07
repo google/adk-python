@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import cast
 from typing import Literal
 
 from ...tools.base_tool import BaseTool
@@ -115,10 +114,10 @@ def build_node(
 
         agent.parallel_worker = False
         return _ParallelWorker(node=agent)
-      return cast(BaseNode, agent)
+      return agent
     else:
       if kwargs:
-        return cast(BaseNode, node_like.model_copy(update=kwargs))
+        return node_like.model_copy(update=kwargs)
       return node_like
   elif isinstance(node_like, BaseTool):
     return _ToolNode(

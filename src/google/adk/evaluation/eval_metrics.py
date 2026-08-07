@@ -307,6 +307,17 @@ class EvalMetric(EvalBaseModel):
   _config_custom_function_path: Optional[str] = PrivateAttr(default=None)
 
 
+def _get_metric_threshold(eval_metric: EvalMetric) -> float:
+  """Returns the configured threshold or rejects an incomplete metric."""
+  if eval_metric.criterion is not None:
+    return eval_metric.criterion.threshold
+  if eval_metric.threshold is not None:
+    return eval_metric.threshold
+  raise ValueError(
+      f"Evaluation metric {eval_metric.metric_name!r} requires a threshold."
+  )
+
+
 class EvalMetricResultDetails(EvalBaseModel):
   rubric_scores: Optional[list[RubricScore]] = Field(
       default=None,
@@ -395,7 +406,7 @@ class MetricInfo(EvalBaseModel):
 
   metric_name: str = Field(description="The name of the metric.")
 
-  description: str = Field(
+  description: Optional[str] = Field(
       default=None, description="A 2 to 3 line description of the metric."
   )
 

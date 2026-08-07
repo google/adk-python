@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
+from pydantic import PrivateAttr
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
@@ -54,6 +55,7 @@ from ..planners.base_planner import BasePlanner
 from ..tools.base_tool import BaseTool
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
+from ..tools.tool_configs import ToolArgsConfig
 from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
 from ..utils._schema_utils import SchemaType
@@ -103,7 +105,7 @@ OnModelErrorCallback: TypeAlias = Union[
 
 _SingleBeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
-    Union[Awaitable[Optional[dict]], Optional[dict]],
+    Union[Awaitable[Optional[dict[str, Any]]], Optional[dict[str, Any]]],
 ]
 
 BeforeToolCallback: TypeAlias = Union[
@@ -112,8 +114,8 @@ BeforeToolCallback: TypeAlias = Union[
 ]
 
 _SingleAfterToolCallback: TypeAlias = Callable[
-    [BaseTool, dict[str, Any], ToolContext, dict],
-    Union[Awaitable[Optional[dict]], Optional[dict]],
+    [BaseTool, dict[str, Any], ToolContext, dict[str, Any]],
+    Union[Awaitable[Optional[dict[str, Any]]], Optional[dict[str, Any]]],
 ]
 
 AfterToolCallback: TypeAlias = Union[
@@ -123,7 +125,7 @@ AfterToolCallback: TypeAlias = Union[
 
 _SingleOnToolErrorCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext, Exception],
-    Union[Awaitable[Optional[dict]], Optional[dict]],
+    Union[Awaitable[Optional[dict[str, Any]]], Optional[dict[str, Any]]],
 ]
 
 OnToolErrorCallback: TypeAlias = Union[
@@ -131,7 +133,7 @@ OnToolErrorCallback: TypeAlias = Union[
     list[_SingleOnToolErrorCallback],
 ]
 
-ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]
+ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]  # type: ignore[type-arg]
 
 
 async def _convert_tool_union_to_tools(
@@ -240,6 +242,14 @@ class LlmAgent(BaseAgent, abc.ABC):
   ancestor provides a model, the agent uses the default model configured via
   LlmAgent.set_default_model. The built-in default is gemini-3.5-flash.
   """
+
+  _resolved_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(default=None)
+  """The model name last resolved by canonical_model, with its BaseLlm."""
+
+  _resolved_live_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(
+      default=None
+  )
+  """The model name last resolved by canonical_live_model, with its BaseLlm."""
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent.
@@ -534,9 +544,14 @@ class LlmAgent(BaseAgent, abc.ABC):
     if agent_state is not None and (
         agent_to_transfer := self._get_subagent_to_resume(ctx)
     ):
+      should_pause = False
       async with Aclosing(agent_to_transfer.run_async(ctx)) as agen:
         async for event in agen:
           yield event
+          if ctx.should_pause_invocation(event):
+            should_pause = True
+      if should_pause:
+        return
 
       ctx.set_agent_state(self.name, end_of_agent=True)
       yield self._create_agent_state_event(ctx)
@@ -612,7 +627,11 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      return LLMRegistry.new_llm(self.model)
+      resolved = self._resolved_model
+      if resolved is None or resolved[0] != self.model:
+        resolved = (self.model, LLMRegistry.new_llm(self.model))
+        self._resolved_model = resolved
+      return resolved[1]
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
@@ -630,7 +649,11 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      return LLMRegistry.new_llm(self.model)
+      resolved = self._resolved_live_model
+      if resolved is None or resolved[0] != self.model:
+        resolved = (self.model, LLMRegistry.new_llm(self.model))
+        self._resolved_live_model = resolved
+      return resolved[1]
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
@@ -798,7 +821,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   @property
   def canonical_before_tool_callbacks(
       self,
-  ) -> list[BeforeToolCallback]:
+  ) -> list[_SingleBeforeToolCallback]:
     """The resolved self.before_tool_callback field as a list of BeforeToolCallback.
 
     This method is only for use by Agent Development Kit.
@@ -812,7 +835,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   @property
   def canonical_after_tool_callbacks(
       self,
-  ) -> list[AfterToolCallback]:
+  ) -> list[_SingleAfterToolCallback]:
     """The resolved self.after_tool_callback field as a list of AfterToolCallback.
 
     This method is only for use by Agent Development Kit.
@@ -826,7 +849,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   @property
   def canonical_on_tool_error_callbacks(
       self,
-  ) -> list[OnToolErrorCallback]:
+  ) -> list[_SingleOnToolErrorCallback]:
     """The resolved self.on_tool_error_callback field as a list of OnToolErrorCallback.
 
     This method is only for use by Agent Development Kit.
@@ -942,12 +965,14 @@ class LlmAgent(BaseAgent, abc.ABC):
     if not function_responses:
       return None
     for function_response in function_responses:
+      target_agent = event.actions.transfer_to_agent
       if (
           function_response.name == 'transfer_to_agent'
           and event.author == from_agent
-          and event.actions.transfer_to_agent != from_agent
+          and target_agent is not None
+          and target_agent != from_agent
       ):
-        return self.__get_agent_to_run(event.actions.transfer_to_agent)
+        return self.__get_agent_to_run(target_agent)
     return None
 
   def __maybe_save_output_to_state(self, event: Event) -> None:
@@ -1186,9 +1211,8 @@ class LlmAgent(BaseAgent, abc.ABC):
         logger.debug(
             'Tool %s is a sub-class of BaseTool/BaseToolset.', tool_config.name
         )
-        resolved_tools.append(
-            obj.from_config(tool_config.args, config_abs_path)
-        )
+        tool_args = tool_config.args or ToolArgsConfig()
+        resolved_tools.append(obj.from_config(tool_args, config_abs_path))
       elif callable(obj):
         if tool_config.args:
           logger.debug(
@@ -1211,12 +1235,15 @@ class LlmAgent(BaseAgent, abc.ABC):
   @experimental(FeatureName.AGENT_CONFIG)
   def _parse_config(
       cls: Type[LlmAgent],
-      config: LlmAgentConfig,
+      config: BaseAgentConfig,
       config_abs_path: str,
       kwargs: Dict[str, Any],
   ) -> Dict[str, Any]:
     from .config_agent_utils import resolve_callbacks
     from .config_agent_utils import resolve_code_reference
+
+    if not isinstance(config, LlmAgentConfig):
+      raise TypeError('LlmAgent requires an LlmAgentConfig.')
 
     if config.model_code:
       kwargs['model'] = resolve_code_reference(config.model_code)

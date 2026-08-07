@@ -281,7 +281,7 @@ def main() -> int:
   )
   parser.add_argument(
       "--model",
-      default=os.environ.get("CHANGELOG_CURATION_MODEL", "gemini-2.5-flash"),
+      default=os.environ.get("CHANGELOG_CURATION_MODEL", "gemini-3.5-flash"),
       help="Gemini model used to draft the Highlights.",
   )
   parser.add_argument(

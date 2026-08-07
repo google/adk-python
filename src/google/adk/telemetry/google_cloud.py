@@ -35,6 +35,7 @@ from opentelemetry.sdk.resources import OTELResourceDetector
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.util.types import AttributeValue
 
 from ._agent_engine import _get_agent_engine_metrics_setup
 from ._agent_engine import telemetry_user_agent_headers
@@ -48,12 +49,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("google_adk." + __name__)
 
-try:
-  from opentelemetry.semconv._incubating.attributes.cloud_attributes import CLOUD_RESOURCE_ID
-except ImportError:
-  # cloud.resource_id only lives in the private _incubating package; fall back
-  # to the literal key the Agent Engine dashboard filters on if that path moves.
-  CLOUD_RESOURCE_ID = "cloud.resource_id"
+# cloud.resource_id is only defined in the private _incubating semconv package
+# today; switch to the stable opentelemetry.semconv.attributes definition once
+# the dependency floor is bumped past its promotion.
+CLOUD_RESOURCE_ID = "cloud.resource_id"
 
 _GCP_LOG_NAME_ENV_VARIABLE_NAME = "GOOGLE_CLOUD_DEFAULT_LOG_NAME"
 _DEFAULT_LOG_NAME = "adk-otel"
@@ -124,8 +123,8 @@ def get_gcp_exporters(
 
   span_processors: list[SpanProcessor] = []
   if enable_cloud_tracing:
-    exporter = _get_gcp_span_exporter(credentials)
-    span_processors.append(exporter)
+    span_processor = _get_gcp_span_exporter(credentials)
+    span_processors.append(span_processor)
 
   metric_readers: list[MetricReader] = []
   if enable_cloud_metrics:
@@ -282,7 +281,7 @@ def _get_gcp_logs_exporter(
   )
 
 
-def _detect_cloud_resource_id(project_id: str) -> Optional[str]:
+def _detect_cloud_resource_id(project_id: str | None) -> Optional[str]:
   """Detects the cloud resource ID."""
   location = os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION") or os.getenv(
       "GOOGLE_CLOUD_LOCATION"
@@ -308,9 +307,7 @@ def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
   """
   agent_engine_id = os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "")
   cloud_resource_id = _detect_cloud_resource_id(project_id=project_id)
-  resource_attributes = {
-      "gcp.project_id": project_id,
-      "cloud.account.id": project_id,
+  resource_attributes: dict[str, AttributeValue] = {
       "cloud.provider": "gcp",
       "cloud.platform": "gcp.agent_engine",
       "service.name": agent_engine_id,
@@ -323,6 +320,9 @@ def get_gcp_resource(project_id: Optional[str] = None) -> Resource:
           or os.getenv("GOOGLE_CLOUD_LOCATION", "")
       ),
   }
+  if project_id is not None:
+    resource_attributes["gcp.project_id"] = project_id
+    resource_attributes["cloud.account.id"] = project_id
   if cloud_resource_id is not None:
     resource_attributes[CLOUD_RESOURCE_ID] = cloud_resource_id
 

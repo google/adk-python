@@ -20,6 +20,8 @@ states.
 
 from __future__ import annotations
 
+import json
+
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from pydantic import ValidationError
 import pytest
@@ -91,3 +93,44 @@ class TestToolConfirmation:
     validated = ToolConfirmation.model_validate(dumped)
 
     assert validated == original
+
+
+class TestFromResponseDict:
+  """Tests for ToolConfirmation.from_response_dict."""
+
+  def test_plain_dict_is_validated_directly(self):
+    confirmation = ToolConfirmation.from_response_dict(
+        {"hint": "confirm transfer", "confirmed": True, "payload": {"to": "b"}}
+    )
+
+    assert confirmation.hint == "confirm transfer"
+    assert confirmation.confirmed is True
+    assert confirmation.payload == {"to": "b"}
+
+  def test_single_response_key_is_unwrapped_and_json_decoded(self):
+    """The client wraps the confirmation in a JSON string under 'response'."""
+    confirmation = ToolConfirmation.from_response_dict(
+        {"response": json.dumps({"hint": "h", "confirmed": True})}
+    )
+
+    assert confirmation.hint == "h"
+    assert confirmation.confirmed is True
+
+  def test_response_key_alongside_other_keys_is_not_unwrapped(self):
+    """Only a lone 'response' key is the wrapper format, so this is direct."""
+    with pytest.raises(ValidationError):
+      ToolConfirmation.from_response_dict(
+          {"response": json.dumps({"confirmed": True}), "hint": "h"}
+      )
+
+  def test_empty_dict_yields_defaults(self):
+    confirmation = ToolConfirmation.from_response_dict({})
+
+    assert confirmation.hint == ""
+    assert confirmation.confirmed is False
+    assert confirmation.payload is None
+
+  def test_malformed_wrapper_json_is_not_swallowed(self):
+    """A wrapper whose payload is not JSON is a caller error, not a default."""
+    with pytest.raises(json.JSONDecodeError):
+      ToolConfirmation.from_response_dict({"response": "not json"})

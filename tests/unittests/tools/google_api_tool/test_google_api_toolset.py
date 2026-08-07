@@ -22,6 +22,12 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import ToolPredicate
 from google.adk.tools.google_api_tool.google_api_tool import GoogleApiTool
 from google.adk.tools.google_api_tool.google_api_toolset import GoogleApiToolset
+from google.adk.tools.google_api_tool.google_api_toolsets import CalendarToolset
+from google.adk.tools.google_api_tool.google_api_toolsets import DocsToolset
+from google.adk.tools.google_api_tool.google_api_toolsets import GmailToolset
+from google.adk.tools.google_api_tool.google_api_toolsets import SheetsToolset
+from google.adk.tools.google_api_tool.google_api_toolsets import SlidesToolset
+from google.adk.tools.google_api_tool.google_api_toolsets import YoutubeToolset
 from google.adk.tools.google_api_tool.googleapi_to_openapi_converter import GoogleApiToOpenApiConverter
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_toolset import OpenAPIToolset
 from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
@@ -608,3 +614,91 @@ class TestGoogleApiToolset:
     client = tool_set._httpx_client_factory()
     assert client is not None
     mock_async_client_class.assert_called_once_with(cert=("cert", "key"))
+
+
+# The (api_name, api_version) pair each prebuilt toolset is documented to
+# target. The pair decides which discovery document gets fetched, so a
+# copy-paste slip between these near-identical subclasses points the toolset at
+# the wrong API.
+PREBUILT_TOOLSETS = [
+    (CalendarToolset, "calendar", "v3"),
+    (GmailToolset, "gmail", "v1"),
+    (YoutubeToolset, "youtube", "v3"),
+    (SlidesToolset, "slides", "v1"),
+    (SheetsToolset, "sheets", "v4"),
+    (DocsToolset, "docs", "v1"),
+]
+
+
+class TestPrebuiltGoogleApiToolsets:
+  """Test suite for the prebuilt per-API GoogleApiToolset subclasses."""
+
+  @pytest.mark.parametrize(
+      "toolset_class, api_name, api_version", PREBUILT_TOOLSETS
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  def test_prebuilt_toolset_targets_its_documented_api_and_version(
+      self,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      toolset_class,
+      api_name,
+      api_version,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    tool_set = toolset_class()
+
+    assert tool_set.api_name == api_name
+    assert tool_set.api_version == api_version
+    mock_converter_class.assert_called_once_with(
+        api_name, api_version, discovery_url=None
+    )
+
+  @pytest.mark.parametrize(
+      "toolset_class, api_name, api_version", PREBUILT_TOOLSETS
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.OpenAPIToolset"
+  )
+  @mock.patch(
+      "google.adk.tools.google_api_tool.google_api_toolset.GoogleApiToOpenApiConverter"
+  )
+  def test_prebuilt_toolset_forwards_constructor_arguments(
+      self,
+      mock_converter_class,
+      mock_openapi_toolset_class,
+      toolset_class,
+      api_name,
+      api_version,
+      mock_converter_instance,
+      mock_openapi_toolset_instance,
+  ):
+    # The subclasses forward these positionally, so an argument in the wrong
+    # slot would silently swap, say, the client id and the client secret.
+    mock_converter_class.return_value = mock_converter_instance
+    mock_openapi_toolset_class.return_value = mock_openapi_toolset_instance
+
+    service_account = ServiceAccount(use_default_credential=True)
+
+    tool_set = toolset_class(
+        client_id="test_client_id",
+        client_secret="test_client_secret",
+        tool_filter=["only_this_tool"],
+        service_account=service_account,
+        tool_name_prefix="test_prefix",
+    )
+
+    assert tool_set._client_id == "test_client_id"
+    assert tool_set._client_secret == "test_client_secret"
+    assert tool_set.tool_filter == ["only_this_tool"]
+    assert tool_set._service_account is service_account
+    assert tool_set.tool_name_prefix == "test_prefix"
