@@ -24,12 +24,12 @@ def noop_tool(x: str) -> str:
   return x
 
 
-def test_vertex_rag_retrieval_for_gemini_1_x():
+def test_vertex_rag_retrieval_for_non_gemini():
   responses = [
       'response1',
   ]
   mockModel = testing_utils.MockModel.create(responses=responses)
-  mockModel.model = 'gemini-1.5-pro'
+  mockModel.model = 'claude-3-sonnet'
 
   # Calls the first time.
   agent = Agent(
@@ -61,12 +61,12 @@ def test_vertex_rag_retrieval_for_gemini_1_x():
   assert mockModel.requests[0].tools_dict['rag_retrieval'] is not None
 
 
-def test_vertex_rag_retrieval_for_gemini_1_x_with_another_function_tool():
+def test_vertex_rag_retrieval_for_non_gemini_with_another_function_tool():
   responses = [
       'response1',
   ]
   mockModel = testing_utils.MockModel.create(responses=responses)
-  mockModel.model = 'gemini-1.5-pro'
+  mockModel.model = 'claude-3-sonnet'
 
   # Calls the first time.
   agent = Agent(

@@ -34,6 +34,7 @@ from google.adk.code_executors.code_executor_context import CodeExecutorContext
 from google.adk.flows.llm_flows._code_execution import _DATA_FILE_HELPER_LIB
 from google.adk.flows.llm_flows._code_execution import _extract_and_replace_inline_files
 from google.adk.flows.llm_flows._code_execution import _get_data_file_preprocessing_code
+from google.adk.flows.llm_flows._code_execution import get_content_as_bytes
 from google.adk.flows.llm_flows._code_execution import request_processor
 from google.adk.flows.llm_flows._code_execution import response_processor
 from google.adk.models.llm_request import LlmRequest
@@ -361,3 +362,16 @@ async def test_pre_processor_runs_execute_code_off_the_loop():
   ]
 
   assert record.thread is not threading.main_thread()
+
+
+def test_get_content_as_bytes_returns_bytes_unchanged():
+  """Binary output files are already bytes and must not be decoded again."""
+  # PNG magic: valid bytes, but not decodable as base64.
+  raw = b'\x89PNG\r\n\x1a\n'
+
+  assert get_content_as_bytes(raw) is raw
+
+
+def test_get_content_as_bytes_base64_decodes_str():
+  """Text output files arrive base64-encoded and are decoded to raw bytes."""
+  assert get_content_as_bytes('aGVsbG8gd29ybGQ=') == b'hello world'

@@ -78,6 +78,14 @@ _MessageBlockParam: TypeAlias = Union[
     anthropic_types.ToolResultBlockParam,
 ]
 
+# Attributes an Anthropic client exposes once it has resolved a credential,
+# whichever source it came from: a static API key, a static bearer token, or a
+# credential provider discovered from the environment or from the on-disk
+# Anthropic configuration. Only these three carry a credential - the client's
+# own "could not resolve authentication method" error names the same three.
+# `credentials` is absent on older supported SDK versions, so the lookup below
+# tolerates a missing attribute.
+_ANTHROPIC_CREDENTIAL_ATTRS = ("api_key", "auth_token", "credentials")
 
 _RATE_LIMIT_POSSIBLE_FIX_MESSAGE = (
     "On how to mitigate this issue, please refer to:\n\n"
@@ -735,7 +743,7 @@ class AnthropicLlm(BaseLlm):
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
-    return [r"claude-3-.*", r"claude-.*-4.*"]
+    return [r"claude-3-.*", r"claude-.*-4.*", r"claude-.*-5.*"]
 
   def _resolve_model_name(self, model: Optional[str]) -> str:
     if not model:
@@ -1045,7 +1053,21 @@ class AnthropicLlm(BaseLlm):
 
   @cached_property
   def _anthropic_client(self) -> AsyncAnthropic | AsyncAnthropicVertex:
-    return AsyncAnthropic()
+    client = AsyncAnthropic()
+    # Let the SDK run its own credential resolution first, then ask the client
+    # what it found. Enumerating credential sources here would reject setups
+    # the SDK handles perfectly well, such as a signed-in on-disk profile with
+    # no credential environment variable set at all.
+    if not any(
+        getattr(client, attr, None) for attr in _ANTHROPIC_CREDENTIAL_ATTRS
+    ):
+      raise ValueError(
+          "No Anthropic credential was found for calling Claude through the"
+          " Anthropic API. Set ANTHROPIC_API_KEY to a key from the Anthropic"
+          " Console, e.g. `export ANTHROPIC_API_KEY=<your-key>`, or configure"
+          " any other credential the Anthropic SDK can discover."
+      )
+    return client
 
 
 class Claude(AnthropicLlm):
@@ -1084,8 +1106,11 @@ class Claude(AnthropicLlm):
 
     if not project_id or not location:
       raise ValueError(
-          "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set for using"
-          " Anthropic on Vertex."
+          f"Model {self.model!r} resolves to Claude served from Vertex AI, so"
+          " GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set to the"
+          " project and region serving the model. To call the Anthropic API"
+          " directly with an ANTHROPIC_API_KEY instead, pass a model instance"
+          " configured for the Anthropic API rather than a bare model name."
       )
 
     return AsyncAnthropicVertex(

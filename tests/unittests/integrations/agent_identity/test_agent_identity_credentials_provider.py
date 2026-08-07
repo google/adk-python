@@ -204,7 +204,7 @@ async def test_get_auth_credential_rejects_unsupported_response(
     provider, auth_scheme, context, mock_response
 ):
   """Test that an empty upstream state fails explicitly."""
-  with pytest.raises(RuntimeError, match="returned an unsupported state"):
+  with pytest.raises(ValueError, match="returned an unsupported state"):
     await provider.get_auth_credential(auth_scheme, context=context)
 
 

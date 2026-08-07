@@ -104,7 +104,9 @@ class SessionContext:
     Args:
       client: An MCP client context manager (e.g., from streamablehttp_client,
         sse_client, or stdio_client).
-      timeout: Timeout in seconds for connection and initialization.
+      timeout: Timeout in seconds for connection and initialization. This is the
+        budget for the whole bring-up -- entering the client's context and
+        running ``initialize()`` -- not a separate allowance for each step.
       sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
         server.
       is_stdio: Whether this is a stdio connection (affects read timeout).
@@ -144,6 +146,10 @@ class SessionContext:
   async def start(self) -> ClientSession:
     """Start the runner and wait for the session to be ready.
 
+    The wait is bounded by ``timeout``, which covers connecting and
+    initializing together. A connect that eats most of the budget therefore
+    leaves ``initialize()`` less of it.
+
     Returns:
         The initialized ClientSession.
 
@@ -171,7 +177,25 @@ class SessionContext:
 
         self._task.add_done_callback(_retrieve_exception)
 
-    await self._ready_event.wait()
+    if (
+        is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)  # pylint: disable=protected-access
+        and self._timeout is not None
+    ):
+      # `_ready_event` is a plain asyncio.Event, so bounding this wait only
+      # cancels a bare future waiter and never crosses an AnyIO cancel
+      # scope. The scopes live inside `self._task` and are unwound there,
+      # in the task that entered them -- the same thing `close()` does for
+      # an abandoned start.
+      try:
+        await asyncio.wait_for(self._ready_event.wait(), timeout=self._timeout)
+      except asyncio.TimeoutError as e:
+        self._task.cancel()
+        raise ConnectionError(
+            'Failed to create MCP session: timed out after'
+            f' {self._timeout}s waiting for the session to become ready'
+        ) from e
+    else:
+      await self._ready_event.wait()
 
     if self._task.cancelled():
       raise ConnectionError('Failed to create MCP session: task cancelled')
@@ -299,9 +323,10 @@ class SessionContext:
           # in a nested task and can cancel from a different task on
           # timeout, producing "Attempted to exit cancel scope in a
           # different task" errors. The connection-establishment timeout
-          # is still enforced by MCPSessionManager.create_session via its
-          # outer asyncio.wait_for around
-          # exit_stack.enter_async_context(SessionContext(...)).
+          # is enforced by `start()`, which bounds its wait on
+          # `_ready_event` -- an asyncio.Event, so bounding it never
+          # cancels across a cancel scope. (create_session's outer
+          # asyncio.wait_for only exists on the flag-off path.)
           transports = await exit_stack.enter_async_context(self._client)
         else:
           # Pre-fix behavior: wrap with asyncio.wait_for so the inner

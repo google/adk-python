@@ -14,16 +14,20 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import contextvars
 import functools
 import inspect
 import logging
 from types import UnionType
 from typing import Any
+from typing import Awaitable
 from typing import Callable
 from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import get_type_hints
+from typing import Iterator
 from typing import Optional
 from typing import Union
 
@@ -44,6 +48,29 @@ from .base_tool import BaseTool
 from .tool_context import ToolContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_SyncCallableRunner = Callable[
+    [Callable[..., Any], dict[str, Any]], Awaitable[Any]
+]
+_SYNC_CALLABLE_RUNNER: contextvars.ContextVar[_SyncCallableRunner | None] = (
+    contextvars.ContextVar('adk_sync_callable_runner', default=None)
+)
+
+
+@contextmanager
+def _use_sync_callable_runner(
+    runner: _SyncCallableRunner | None = None,
+) -> Iterator[None]:
+  """Binds the runner used for synchronous callables.
+
+  Passing ``None`` clears the binding, which stops a worker-owned nested call
+  from reusing the caller's runner.
+  """
+  token = _SYNC_CALLABLE_RUNNER.set(runner)
+  try:
+    yield
+  finally:
+    _SYNC_CALLABLE_RUNNER.reset(token)
 
 
 @functools.lru_cache(maxsize=1024)
@@ -333,8 +360,10 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
     )
     if is_async:
       return await target(**args_to_call)
-    else:
-      return target(**args_to_call)
+    runner = _SYNC_CALLABLE_RUNNER.get()
+    if runner is not None:
+      return await runner(target, args_to_call)
+    return target(**args_to_call)
 
   # TODO: fix call live for function stream.
   async def _call_live(

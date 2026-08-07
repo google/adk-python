@@ -16,13 +16,33 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.google_search_agent_tool import create_google_search_agent
 from google.adk.tools.google_search_agent_tool import GoogleSearchAgentTool
+from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from google.genai.types import Part
 from pytest import mark
 
 from .. import testing_utils
+
+
+def test_create_google_search_agent_only_carries_the_search_tool():
+  """The whole point of the workaround is a sub-agent isolated to search."""
+  agent = create_google_search_agent('gemini-2.0-flash')
+
+  assert agent.name == 'google_search_agent'
+  assert agent.tools == [google_search]
+
+
+def test_create_google_search_agent_uses_the_given_model():
+  """The caller's model must reach the sub-agent, not a hard-coded one."""
+  model = testing_utils.MockModel.create(responses=['ignored'])
+
+  agent = create_google_search_agent(model)
+
+  assert agent.canonical_model is model
+
 
 function_call_no_schema = Part.from_function_call(
     name='tool_agent', args={'request': 'test1'}

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
+from typing import Any
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
@@ -108,6 +109,85 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.name == 'simple_function'
     assert function_decl.parameters.type == 'OBJECT'
     assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties[
+            'input_str'
+        ].additional_properties.type
+        == 'STRING'
+    )
+
+  def test_dict_input_with_int_values(self):
+    def simple_function(input_str: dict[str, int]) -> str:
+      return {'result': input_str}
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.name == 'simple_function'
+    assert function_decl.parameters.type == 'OBJECT'
+    assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties[
+            'input_str'
+        ].additional_properties.type
+        == 'INTEGER'
+    )
+
+  def test_dict_input_with_any_values(self):
+    def simple_function(input_str: dict[str, Any]) -> str:
+      return {'result': input_str}
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.name == 'simple_function'
+    assert function_decl.parameters.type == 'OBJECT'
+    assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties[
+            'input_str'
+        ].additional_properties.type
+        is None
+    )
+
+  def test_untyped_dict_input(self):
+    def simple_function(input_str: dict) -> str:
+      return {'result': input_str}
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.name == 'simple_function'
+    assert function_decl.parameters.type == 'OBJECT'
+    assert function_decl.parameters.properties['input_str'].type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties['input_str'].additional_properties
+        is None
+    )
+
+  def test_list_of_dict_input(self):
+    """Test list[dict[str, str]] emits proper schema with additional_properties."""
+
+    def simple_function(fruits: list[dict[str, str]]) -> str:
+      return str(fruits)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function
+    )
+
+    assert function_decl.name == 'simple_function'
+    assert function_decl.parameters.type == 'OBJECT'
+    assert function_decl.parameters.properties['fruits'].type == 'ARRAY'
+    assert function_decl.parameters.properties['fruits'].items.type == 'OBJECT'
+    assert (
+        function_decl.parameters.properties[
+            'fruits'
+        ].items.additional_properties.type
+        == 'STRING'
+    )
 
   def test_basemodel_input(self):
     class CustomInput(BaseModel):
@@ -321,6 +401,12 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.parameters.properties['input_dir'].type == 'ARRAY'
     assert (
         function_decl.parameters.properties['input_dir'].items.type == 'OBJECT'
+    )
+    assert (
+        function_decl.parameters.properties[
+            'input_dir'
+        ].items.additional_properties.type
+        == 'STRING'
     )
 
   def test_enums(self):
@@ -647,6 +733,42 @@ class TestBuildFunctionDeclarationWithJsonSchema:
         'type': 'object',
     }
 
+  def test_dict_parameter_with_any(self):
+    """Test dict[str, Any] parameter with feature flag enabled."""
+
+    def process_data(data: dict[str, Any]) -> str:
+      """Process a dictionary."""
+      return str(data)
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        process_data
+    )
+
+    schema = decl.parameters_json_schema
+    assert schema['properties']['data'] == {
+        'additionalProperties': True,
+        'title': 'Data',
+        'type': 'object',
+    }
+
+  def test_untyped_dict_parameter(self):
+    """Test untyped dict parameter with feature flag enabled."""
+
+    def process_data(data: dict) -> str:
+      """Process a dictionary."""
+      return str(data)
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        process_data
+    )
+
+    schema = decl.parameters_json_schema
+    assert schema['properties']['data'] == {
+        'additionalProperties': True,
+        'title': 'Data',
+        'type': 'object',
+    }
+
   def test_optional_parameter(self):
     """Test optional parameter with feature flag enabled."""
 
@@ -795,3 +917,179 @@ class TestBuildFunctionDeclarationWithJsonSchema:
     schema = decl.parameters_json_schema
     assert schema['properties']['name']['default'] == 'World'
     assert 'name' not in schema.get('required', [])
+
+
+class TestBuildFunctionDeclarationFromSchemaDict:
+  """Tests for the declaration builders that take a JSON schema dict.
+
+  These are the entry points used by tool wrappers that already own a schema
+  for their arguments instead of a Python signature to introspect.
+  """
+
+  def test_util_maps_schema_type_names_to_gemini_types(self):
+    def tool_func(city: str) -> str:
+      return city
+
+    schema = {
+        'properties': {
+            'city': {'type': 'str'},
+            'scores': {'type': 'tuple', 'items': {'type': 'float'}},
+            'meta': {'type': 'Dict'},
+            'anything': {'type': 'Any'},
+        }
+    }
+
+    decl = _automatic_function_calling_util.build_function_declaration_util(
+        False, 'lookup', 'Look a city up.', tool_func, schema
+    )
+
+    assert decl.name == 'lookup'
+    assert decl.description == 'Look a city up.'
+    assert decl.parameters.type == 'OBJECT'
+    properties = decl.parameters.properties
+    assert properties['city'].type == 'STRING'
+    # Array element types are mapped too, not just the container.
+    assert properties['scores'].type == 'ARRAY'
+    assert properties['scores'].items.type == 'NUMBER'
+    assert properties['meta'].type == 'OBJECT'
+    assert properties['anything'].type == 'TYPE_UNSPECIFIED'
+
+  def test_util_maps_unrecognized_type_name_to_type_unspecified(self):
+    def tool_func(value: str) -> str:
+      return value
+
+    decl = _automatic_function_calling_util.build_function_declaration_util(
+        False,
+        'lookup',
+        'Look something up.',
+        tool_func,
+        {'properties': {'value': {'type': 'complex128'}}},
+    )
+
+    assert decl.parameters.properties['value'].type == 'TYPE_UNSPECIFIED'
+
+  def test_util_omits_parameters_when_schema_has_no_properties(self):
+    def tool_func() -> str:
+      return 'pong'
+
+    decl = _automatic_function_calling_util.build_function_declaration_util(
+        False, 'ping', 'Ping the service.', tool_func, {'properties': {}}
+    )
+
+    # A parameterless tool must not advertise an empty OBJECT schema.
+    assert decl.parameters is None
+    assert decl.name == 'ping'
+    assert decl.description == 'Ping the service.'
+
+  def test_util_sets_response_schema_from_return_annotation_for_vertexai(self):
+    def tool_func(count: int) -> str:
+      return str(count)
+
+    decl = _automatic_function_calling_util.build_function_declaration_util(
+        True,
+        'stringify',
+        'Stringify a count.',
+        tool_func,
+        {'properties': {'count': {'type': 'integer'}}},
+    )
+
+    assert decl.response.type == 'STRING'
+
+  def test_util_omits_response_schema_when_not_vertexai(self):
+    def tool_func(count: int) -> str:
+      return str(count)
+
+    decl = _automatic_function_calling_util.build_function_declaration_util(
+        False,
+        'stringify',
+        'Stringify a count.',
+        tool_func,
+        {'properties': {'count': {'type': 'integer'}}},
+    )
+
+    # The Gemini API surface does not accept a response schema.
+    assert decl.response is None
+
+  def test_for_langchain_normalizes_properties_for_the_gemini_api(self):
+    def tool_func(name: str) -> str:
+      return name
+
+    # Langchain hands over the `properties` block of its argument model's JSON
+    # schema, which still carries pydantic's titles, defaults and unions.
+    args = {
+        'name': {'title': 'Name', 'type': 'string'},
+        'nickname': {
+            'anyOf': [{'type': 'string'}, {'type': 'null'}],
+            'default': None,
+            'title': 'Nickname',
+        },
+        'count': {'default': 3, 'title': 'Count', 'type': 'integer'},
+    }
+
+    decl = _automatic_function_calling_util.build_function_declaration_for_langchain(
+        False, 'greet', 'Greet someone.', tool_func, args
+    )
+
+    properties = decl.parameters.properties
+    assert set(properties) == {'name', 'nickname', 'count'}
+    assert properties['name'].type == 'STRING'
+    assert properties['count'].type == 'INTEGER'
+    # An optional parameter collapses to its single non-null member type.
+    assert properties['nickname'].type == 'STRING'
+    # None of the keywords the Gemini API surface rejects may survive.
+    for property_schema in properties.values():
+      assert property_schema.any_of is None
+      assert property_schema.title is None
+      assert property_schema.default is None
+      assert property_schema.nullable is None
+
+  def test_for_crewai_reads_properties_out_of_a_full_model_schema(self):
+    class GreetArgs(BaseModel):
+      name: str
+      nickname: str | None = None
+      count: int = 3
+
+    def tool_func(name: str) -> str:
+      return name
+
+    # CrewAI hands over the whole `model_json_schema()`, not just its
+    # `properties` block, so the schema's own top-level keys must not be
+    # mistaken for parameters.
+    decl = _automatic_function_calling_util.build_function_declaration_for_params_for_crewai(
+        False,
+        'greet',
+        'Greet someone.',
+        tool_func,
+        GreetArgs.model_json_schema(),
+    )
+
+    properties = decl.parameters.properties
+    assert set(properties) == {'name', 'nickname', 'count'}
+    assert properties['name'].type == 'STRING'
+    assert properties['nickname'].type == 'STRING'
+    assert properties['count'].type == 'INTEGER'
+
+  @pytest.mark.xfail(
+      strict=True,
+      reason=(
+          'the required field list is computed but never copied onto the'
+          ' generated parameter schema'
+      ),
+  )
+  def test_for_crewai_marks_parameters_without_a_default_as_required(self):
+    class GreetArgs(BaseModel):
+      name: str
+      count: int = 3
+
+    def tool_func(name: str) -> str:
+      return name
+
+    decl = _automatic_function_calling_util.build_function_declaration_for_params_for_crewai(
+        False,
+        'greet',
+        'Greet someone.',
+        tool_func,
+        GreetArgs.model_json_schema(),
+    )
+
+    assert decl.parameters.required == ['name']

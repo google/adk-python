@@ -21,7 +21,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 
-def reimburse(amount: int, tool_context: ToolContext) -> str:
+def reimburse(amount: int, tool_context: ToolContext) -> dict[str, str]:
   """Reimburse the employee for the given amount."""
   return {'status': 'ok'}
 
@@ -58,8 +58,14 @@ def request_time_off(days: int, tool_context: ToolContext):
     )
     return {'status': 'Manager approval is required.'}
 
-  approved_days = tool_confirmation.payload['approved_days']
-  approved_days = min(approved_days, days)
+  if not tool_confirmation.confirmed:
+    return {'status': 'The time off request is rejected.', 'approved_days': 0}
+
+  # The payload is optional: a client may confirm with just
+  # {'confirmed': true}, which approves the days that were asked for. When the
+  # payload is present it narrows the approval.
+  payload = tool_confirmation.payload or {}
+  approved_days = min(payload.get('approved_days', days), days)
   if approved_days == 0:
     return {'status': 'The time off request is rejected.', 'approved_days': 0}
   return {

@@ -209,8 +209,15 @@ class Runner:
   """The app name of the runner."""
   app: App
   """The normalized application configuration."""
-  agent: BaseNode
-  """The root agent or node to run."""
+  agent: BaseNode = None  # type: ignore[assignment]
+  """The root agent or node to run.
+
+  The None default keeps ``Runner.agent`` a real class attribute. Dropping it
+  removes ``agent`` from ``dir(Runner)``, which breaks ``Mock(spec=Runner)``
+  and ``mock.create_autospec(Runner)`` for callers that touch it.
+
+  Instances are never None, so the declared type stays ``BaseNode``.
+  """
   artifact_service: Optional[BaseArtifactService] = None
   """The artifact service for the runner."""
   plugin_manager: PluginManager

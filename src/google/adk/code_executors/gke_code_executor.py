@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 import uuid
 
 import kubernetes as k8s
@@ -385,14 +386,12 @@ class GkeCodeExecutor(BaseCodeExecutor):
         )
 
       pod_name = pods.items[0].metadata.name
-      logs: object = self._core_v1.read_namespaced_pod_log(
-          name=pod_name, namespace=self.namespace
+      return cast(
+          str,
+          self._core_v1.read_namespaced_pod_log(
+              name=pod_name, namespace=self.namespace
+          ),
       )
-      if isinstance(logs, bytes):
-        return logs.decode("utf-8")
-      if not isinstance(logs, str):
-        raise TypeError("Kubernetes pod logs must be text or bytes.")
-      return logs
     except ApiException as e:
       raise RuntimeError(
           f"API error retrieving logs for job '{job_name}': {e.reason}"

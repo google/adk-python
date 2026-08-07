@@ -812,3 +812,125 @@ class TestFunctionCallIdGeneration:
       assert fc_a.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
       assert fc_b.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
       assert fc_a.id != fc_b.id  # Different IDs for different FCs
+
+
+def _text_chunk(
+    text: str,
+    *,
+    thought: bool = False,
+    signature: bytes | None = None,
+    finish: types.FinishReason | None = None,
+) -> types.GenerateContentResponse:
+  part = types.Part(text=text, thought=thought or None)
+  if signature:
+    part.thought_signature = signature
+  return types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(role="model", parts=[part]),
+              finish_reason=finish,
+          )
+      ]
+  )
+
+
+class TestStreamingThoughtSignature:
+  """Signatures must survive the merge of streamed text chunks.
+
+  Consecutive text chunks are joined into a single part that the aggregator
+  builds from scratch, so anything the source chunks carried is lost unless
+  it is copied across. The model expects its signature back verbatim, and
+  without it the reasoning the signature stood for is redone.
+  """
+
+  @pytest.mark.asyncio
+  async def test_signature_on_merged_text_is_preserved(self):
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    chunks = [
+        _text_chunk("At minute 5 ", signature=b"text-signature"),
+        _text_chunk("the presenter speaks.", finish=types.FinishReason.STOP),
+    ]
+    for chunk in chunks:
+      async for _ in aggregator.process_response(chunk):
+        pass
+
+    closed = aggregator.close()
+    assert closed is not None
+    parts = closed.content.parts
+    assert len(parts) == 1
+    assert parts[0].text == "At minute 5 the presenter speaks."
+    assert parts[0].thought_signature == b"text-signature"
+
+  @pytest.mark.asyncio
+  async def test_signature_on_a_later_chunk_is_preserved(self):
+    """The signature can land on any chunk of the run, not just the first."""
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    chunks = [
+        _text_chunk("At minute 5 "),
+        _text_chunk(
+            "the presenter speaks.",
+            signature=b"late-signature",
+            finish=types.FinishReason.STOP,
+        ),
+    ]
+    for chunk in chunks:
+      async for _ in aggregator.process_response(chunk):
+        pass
+
+    closed = aggregator.close()
+    assert closed is not None
+    assert closed.content.parts[0].thought_signature == b"late-signature"
+
+  @pytest.mark.asyncio
+  async def test_thought_and_answer_keep_their_own_signatures(self):
+    """A thought run and an answer run flush separately and must not swap."""
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    chunks = [
+        _text_chunk("Let me check.", thought=True, signature=b"thought-sig"),
+        _text_chunk(
+            "It is a dog.",
+            signature=b"answer-sig",
+            finish=types.FinishReason.STOP,
+        ),
+    ]
+    for chunk in chunks:
+      async for _ in aggregator.process_response(chunk):
+        pass
+
+    closed = aggregator.close()
+    assert closed is not None
+    parts = closed.content.parts
+    assert len(parts) == 2
+    assert parts[0].thought
+    assert parts[0].thought_signature == b"thought-sig"
+    assert parts[1].thought_signature == b"answer-sig"
+
+  @pytest.mark.asyncio
+  async def test_content_free_signature_parts_are_kept(self):
+    """Server-side media tools return signatures on parts holding nothing."""
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    sig_only = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part(thought_signature=b"call-context")],
+                )
+            )
+        ]
+    )
+    chunks = [
+        _text_chunk("At minute 5 the presenter speaks."),
+        sig_only,
+        _text_chunk("", finish=types.FinishReason.STOP),
+    ]
+    for chunk in chunks:
+      async for _ in aggregator.process_response(chunk):
+        pass
+
+    closed = aggregator.close()
+    assert closed is not None
+    signatures = [
+        p.thought_signature for p in closed.content.parts if p.thought_signature
+    ]
+    assert signatures == [b"call-context"]

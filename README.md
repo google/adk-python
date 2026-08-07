@@ -4,7 +4,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/google-adk.svg)](https://pypi.org/project/google-adk/)
 [![Python versions](https://img.shields.io/pypi/pyversions/google-adk.svg)](https://pypi.org/project/google-adk/)
 [![PyPI downloads](https://static.pepy.tech/badge/google-adk/month)](https://pepy.tech/project/google-adk)
-[![Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
+[![Continuous Integration](https://github.com/google/adk-python/actions/workflows/continuous-integration.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/continuous-integration.yml)
 [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://google.github.io/adk-docs/)
 
 <h2 align="center">
@@ -56,7 +56,7 @@ Choose the constraints file matching your Python version:
 
 ```bash
 # For example, for Python 3.10
-curl -o constraints-3.10.txt https://github.com/google/adk-python/blob/main/constraints-3.10.txt
+curl -o constraints-3.10.txt https://raw.githubusercontent.com/google/adk-python/main/constraints-3.10.txt
 pip install google-adk -c constraints-3.10.txt
 rm constraints-3.10.txt
 ```
@@ -121,8 +121,13 @@ adk web path/to/agents_dir
 ## 📚 Documentation
 
 - **Getting Started**: https://google.github.io/adk-docs/
-- **Samples**: See `contributing/workflow_samples/` and
-  `contributing/task_samples/` for workflow and task API examples.
+- **Guides**: See
+  [`docs/guides/`](https://github.com/google/adk-python/tree/main/docs/guides)
+  for task-oriented walkthroughs of agents, tools, events, plugins, and
+  workflows.
+- **Samples**: See
+  [`contributing/samples/`](https://github.com/google/adk-python/tree/main/contributing/samples)
+  for runnable example agents.
 
 ## 🤝 Contributing
 
