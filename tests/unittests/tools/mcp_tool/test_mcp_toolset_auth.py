@@ -244,8 +244,8 @@ class TestMcpToolsetGetAuthHeaders:
     assert headers is not None
     assert headers["X-API-Key"] == "test-api-key-12345"
 
-  def test_get_auth_headers_api_key_non_header_logs_warning(self, caplog):
-    """Test that non-header API key logs a warning."""
+  def test_get_auth_headers_api_key_non_header_fails_closed(self):
+    """Non-header API keys must not degrade to unauthenticated requests."""
     # Note: fastapi's APIKey model uses 'in' not 'in_'
     auth_scheme = APIKeyScheme(**{
         "in": APIKeyIn.query,  # Query param, not header
@@ -263,10 +263,10 @@ class TestMcpToolsetGetAuthHeaders:
         api_key="test-api-key",
     )
 
-    headers = toolset._get_auth_headers()
-
-    # Should return None for non-header API key
-    assert headers is None
+    with pytest.raises(
+        ValueError, match="only supports header-based API key authentication"
+    ):
+      toolset._get_auth_headers()
 
   def test_get_auth_headers_reads_from_readonly_context(
       self, toolset_with_oauth2

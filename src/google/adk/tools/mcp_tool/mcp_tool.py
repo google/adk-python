@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 from collections.abc import Awaitable
 import inspect
@@ -24,8 +23,10 @@ from typing import Callable
 from typing import cast
 from typing import Protocol
 from typing import runtime_checkable
+from typing import TypeGuard
 import warnings
 
+from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
 from mcp.shared.exceptions import McpError
@@ -58,6 +59,8 @@ from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_ConfirmationPredicate = Callable[..., bool | Awaitable[bool]]
 
 
 @runtime_checkable
@@ -122,6 +125,23 @@ class ProgressCallbackFactory(Protocol):
     ...
 
 
+def _is_async_callable(value: object) -> bool:
+  return callable(value) and (
+      inspect.iscoroutinefunction(value)
+      or inspect.iscoroutinefunction(getattr(value, "__call__", None))
+  )
+
+
+def _is_progress_callback(value: object) -> TypeGuard[ProgressFnT]:
+  return _is_async_callable(value)
+
+
+def _is_progress_callback_factory(
+    value: object,
+) -> TypeGuard[ProgressCallbackFactory]:
+  return callable(value) and not _is_async_callable(value)
+
+
 class McpTool(BaseAuthenticatedTool):
   """Turns an MCP Tool into an ADK Tool.
 
@@ -148,7 +168,7 @@ class McpTool(BaseAuthenticatedTool):
           | None
       ) = None,
       progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
-  ):
+  ) -> None:
     """Initializes an McpTool.
 
     This tool wraps an MCP Tool interface and uses a session manager to
@@ -234,7 +254,9 @@ class McpTool(BaseAuthenticatedTool):
     # Format: meta.ui.visibility
     ui = meta.get("ui", {})
     if isinstance(ui, dict):
-      return ui.get("visibility", [])
+      visibility = ui.get("visibility", [])
+      if isinstance(visibility, list):
+        return [item for item in visibility if isinstance(item, str)]
     return []
 
   @property
@@ -267,8 +289,10 @@ class McpTool(BaseAuthenticatedTool):
     return None
 
   async def _invoke_callable(
-      self, target: Callable[..., Any], args_to_call: dict[str, Any]
-  ) -> Any:
+      self,
+      target: _ConfirmationPredicate,
+      args_to_call: dict[str, Any],
+  ) -> bool:
     """Invokes a callable, handling both sync and async cases."""
 
     # Functions are callable objects, but not all callable objects are functions
@@ -279,9 +303,10 @@ class McpTool(BaseAuthenticatedTool):
         and inspect.iscoroutinefunction(target.__call__)
     )
     if is_async:
-      return await target(**args_to_call)
+      awaitable_result = cast(Awaitable[bool], target(**args_to_call))
+      return await awaitable_result
     else:
-      return target(**args_to_call)
+      return cast(bool, target(**args_to_call))
 
   def _prepare_callable_args(
       self,
@@ -325,9 +350,8 @@ class McpTool(BaseAuthenticatedTool):
       args_to_call = self._prepare_callable_args(
           self._require_confirmation, args, tool_context
       )
-      return cast(
-          bool,
-          await self._invoke_callable(self._require_confirmation, args_to_call),
+      return await self._invoke_callable(
+          self._require_confirmation, args_to_call
       )
     return bool(self._require_confirmation)
 
@@ -395,7 +419,11 @@ class McpTool(BaseAuthenticatedTool):
   @retry_on_errors
   @override
   async def _run_async_impl(
-      self, *, args, tool_context: ToolContext, credential: AuthCredential
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+      credential: AuthCredential,
   ) -> dict[str, Any]:
     """Runs the tool asynchronously.
 
@@ -408,13 +436,16 @@ class McpTool(BaseAuthenticatedTool):
     """
     # Extract headers from credential for session pooling
     auth_headers = await self._get_headers(tool_context, credential)
-    dynamic_headers = None
+    dynamic_headers: dict[str, str] | None = None
     if self._header_provider:
-      dynamic_headers = self._header_provider(
+      provided_headers = self._header_provider(
           ReadonlyContext(tool_context._invocation_context)  # pylint: disable=protected-access
       )
-      if inspect.isawaitable(dynamic_headers):
-        dynamic_headers = await dynamic_headers
+      dynamic_headers = (
+          await provided_headers
+          if inspect.isawaitable(provided_headers)
+          else provided_headers
+      )
 
     headers: dict[str, str] = {}
     if auth_headers:
@@ -513,22 +544,20 @@ class McpTool(BaseAuthenticatedTool):
     ):
       return None
 
-    # Determine if callback is a factory by checking if it's a coroutine
-    # function. ProgressFnT is an async function, while ProgressCallbackFactory
-    # is a sync function that returns an async function.
-    if asyncio.iscoroutinefunction(self._progress_callback):
-      return self._progress_callback
+    progress_callback = self._progress_callback
 
-    # If it's a regular callable (not async), treat it as a factory
-    if callable(self._progress_callback) and not inspect.iscoroutinefunction(
-        self._progress_callback
-    ):
-      return self._progress_callback(self.name, callback_context=tool_context)
+    # ProgressFnT is asynchronous, while ProgressCallbackFactory is a
+    # synchronous function that returns an asynchronous callback.
+    if _is_progress_callback(progress_callback):
+      return progress_callback
 
-    return self._progress_callback
+    if _is_progress_callback_factory(progress_callback):
+      return progress_callback(self.name, callback_context=tool_context)
+
+    raise TypeError("Invalid MCP progress callback")
 
   async def _get_headers(
-      self, tool_context: ToolContext, credential: AuthCredential
+      self, tool_context: ToolContext, credential: AuthCredential | None
   ) -> dict[str, str] | None:
     """Extracts authentication headers from credentials.
 
@@ -580,33 +609,33 @@ class McpTool(BaseAuthenticatedTool):
           headers = headers or {}
           headers.update(credential.http.additional_headers)
       elif credential.api_key:
-        if (
-            not self._credentials_manager
-            or not self._credentials_manager._auth_config
-        ):
+        credentials_manager = self._credentials_manager
+        auth_config = (
+            credentials_manager._auth_config if credentials_manager else None
+        )
+        if auth_config is None:
           error_msg = (
               "Cannot find corresponding auth scheme for API key credential"
               f" {credential}"
           )
           logger.error(error_msg)
           raise ValueError(error_msg)
-        elif (
-            self._credentials_manager._auth_config.auth_scheme.in_
-            != APIKeyIn.header
-        ):
+        auth_scheme = auth_config.auth_scheme
+        if not isinstance(auth_scheme, APIKey):
           error_msg = (
-              "McpTool only supports header-based API key authentication."
-              " Configured location:"
-              f" {self._credentials_manager._auth_config.auth_scheme.in_}"
+              "API key credentials require an APIKey authentication scheme,"
+              f" got {type(auth_scheme).__name__}."
           )
           logger.error(error_msg)
           raise ValueError(error_msg)
-        else:
-          headers = {
-              self._credentials_manager._auth_config.auth_scheme.name: (
-                  credential.api_key
-              )
-          }
+        if auth_scheme.in_ != APIKeyIn.header:
+          error_msg = (
+              "McpTool only supports header-based API key authentication."
+              f" Configured location: {auth_scheme.in_}"
+          )
+          logger.error(error_msg)
+          raise ValueError(error_msg)
+        headers = {auth_scheme.name: credential.api_key}
       elif credential.service_account:
         # Service accounts should be exchanged for access tokens before reaching this point
         logger.warning(
@@ -620,7 +649,7 @@ class McpTool(BaseAuthenticatedTool):
 class MCPTool(McpTool):
   """Deprecated name, use `McpTool` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPTool class is deprecated, use `McpTool` instead.",
         DeprecationWarning,

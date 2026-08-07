@@ -273,6 +273,8 @@ class AgentRegistry:
       data: Dict[str, Any] = response.json()
       return data
     except requests.exceptions.HTTPError as e:
+      if e.response is None:
+        raise RuntimeError(f"API request failed: {e}") from e
       raise RuntimeError(
           f"API request failed with status {e.response.status_code}:"
           f" {e.response.text}"

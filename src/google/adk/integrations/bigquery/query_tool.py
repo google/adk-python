@@ -27,10 +27,22 @@ from google.cloud import bigquery
 
 from . import client
 from ...tools.tool_context import ToolContext
+from .._google_sdk import read_api_repr as _read_api_repr
 from .config import BigQueryToolConfig
 from .config import WriteMode
 
 BIGQUERY_SESSION_INFO_KEY = "bigquery_session_info"
+
+
+def _parse_session_info(value: object) -> tuple[str, str] | None:
+  """Validate persisted BigQuery session state."""
+  if not isinstance(value, (list, tuple)) or len(value) != 2:
+    return None
+  session_id: object = value[0]
+  dataset_id: object = value[1]
+  if not isinstance(session_id, str) or not isinstance(dataset_id, str):
+    return None
+  return session_id, dataset_id
 
 
 def _execute_sql(
@@ -96,8 +108,11 @@ def _execute_sql(
       # allowed. This artifact must have been created in a BigQuery session. In
       # such a scenario, the session info (session id and the anonymous dataset
       # containing the artifact) is persisted in the tool context.
-      bq_session_info = tool_context.state.get(BIGQUERY_SESSION_INFO_KEY, None)
-      if bq_session_info:
+      stored_session_info: object = tool_context.state.get(
+          BIGQUERY_SESSION_INFO_KEY
+      )
+      bq_session_info = _parse_session_info(stored_session_info)
+      if bq_session_info is not None:
         bq_session_id, bq_session_dataset_id = bq_session_info
       else:
         session_creator_job = bq_client.query(
@@ -107,8 +122,18 @@ def _execute_sql(
                 dry_run=True, create_session=True, labels=bq_job_labels
             ),
         )
-        bq_session_id = session_creator_job.session_info.session_id
-        bq_session_dataset_id = session_creator_job.destination.dataset_id
+        session_info = session_creator_job.session_info
+        destination = session_creator_job.destination
+        session_id = (
+            session_info.session_id if session_info is not None else None
+        )
+        if session_id is None or destination is None:
+          raise RuntimeError(
+              "BigQuery did not return session metadata for the protected"
+              " query."
+          )
+        bq_session_id = session_id
+        bq_session_dataset_id = destination.dataset_id
 
         # Remember the BigQuery session info for subsequent queries
         tool_context.state[BIGQUERY_SESSION_INFO_KEY] = (
@@ -155,7 +180,8 @@ def _execute_sql(
               labels=bq_job_labels,
           ),
       )
-      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
+      dry_run_info = _read_api_repr(dry_run_job)
+      return {"status": "SUCCESS", "dry_run_info": dry_run_info}
 
     # Finally execute the query, fetch the result, and return it
     job_config = bigquery.QueryJobConfig(
@@ -792,7 +818,7 @@ def forecast(
     timestamp_col: str,
     data_col: str,
     horizon: int = 10,
-    id_cols: Optional[list[str]] = None,
+    id_cols: list[str] | None = None,
     *,
     credentials: Credentials,
     settings: BigQueryToolConfig,
@@ -1165,10 +1191,10 @@ def detect_anomalies(
     history_data: str,
     times_series_timestamp_col: str,
     times_series_data_col: str,
-    horizon: Optional[int] = 1000,
-    target_data: Optional[str] = None,
-    times_series_id_cols: Optional[list[str]] = None,
-    anomaly_prob_threshold: Optional[float] = 0.95,
+    horizon: int | None = 1000,
+    target_data: str | None = None,
+    times_series_id_cols: list[str] | None = None,
+    anomaly_prob_threshold: float | None = 0.95,
     *,
     credentials: Credentials,
     settings: BigQueryToolConfig,

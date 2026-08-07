@@ -33,10 +33,10 @@ class BigQueryCredentialsConfig(BaseGoogleCredentialsConfig):
 
   def __post_init__(self) -> BigQueryCredentialsConfig:
     """Populate default scope if scopes is None."""
-    super().__post_init__()
+    super().__post_init__()  # type: ignore[misc]
 
     if not self.scopes:
-      self.scopes = BIGQUERY_SCOPES
+      self.scopes = BIGQUERY_SCOPES.copy()
     # Set the token cache key
     self._token_cache_key = BIGQUERY_TOKEN_CACHE_KEY
 

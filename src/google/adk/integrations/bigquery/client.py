@@ -18,7 +18,6 @@ from typing import List
 from typing import Optional
 from typing import Union
 
-import google.api_core.client_info
 from google.api_core.gapic_v1 import client_info as gapic_client_info
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
@@ -26,6 +25,8 @@ from google.cloud import dataplex_v1
 
 from ... import version
 from ...utils._telemetry_context import _is_visual_builder
+from .._google_sdk import create_client_info as _create_client_info
+from .._google_sdk import create_gapic_client_info as _create_gapic_client_info
 
 USER_AGENT_BASE = f"google-adk/{version.__version__}"
 BQ_USER_AGENT = f"adk-bigquery-tool {USER_AGENT_BASE}"
@@ -66,9 +67,7 @@ def get_bigquery_client(
     else:
       user_agents.extend([ua for ua in user_agent if ua])
 
-  client_info = google.api_core.client_info.ClientInfo(
-      user_agent=" ".join(user_agents)
-  )
+  client_info = _create_client_info(user_agent=" ".join(user_agents))
 
   bigquery_client = bigquery.Client(
       project=project,
@@ -106,7 +105,9 @@ def get_dataplex_catalog_client(
     else:
       user_agents.extend([ua for ua in user_agent if ua])
 
-  client_info = gapic_client_info.ClientInfo(user_agent=" ".join(user_agents))
+  client_info: gapic_client_info.ClientInfo = _create_gapic_client_info(
+      user_agent=" ".join(user_agents)
+  )
 
   return dataplex_v1.CatalogServiceClient(
       credentials=credentials,

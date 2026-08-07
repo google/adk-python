@@ -30,6 +30,8 @@ from typing import TypeVar
 from typing import Union
 import warnings
 
+from fastapi.openapi.models import APIKeyIn
+from mcp import ClientSession
 from mcp import SamplingCapability
 from mcp import StdioServerParameters
 from mcp.client.session import ElicitationFnT
@@ -63,6 +65,12 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 T = TypeVar("T")
+_ConnectionParams = Union[
+    StdioServerParameters,
+    StdioConnectionParams,
+    SseConnectionParams,
+    StreamableHTTPConnectionParams,
+]
 
 
 class McpToolset(BaseToolset):
@@ -98,12 +106,7 @@ class McpToolset(BaseToolset):
   def __init__(
       self,
       *,
-      connection_params: (
-          StdioServerParameters
-          | StdioConnectionParams
-          | SseConnectionParams
-          | StreamableHTTPConnectionParams
-      ),
+      connection_params: _ConnectionParams,
       tool_filter: ToolPredicate | list[str] | None = None,
       tool_name_prefix: str | None = None,
       errlog: TextIO = sys.stderr,
@@ -123,7 +126,7 @@ class McpToolset(BaseToolset):
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
       credential_key: str | None = None,
-  ):
+  ) -> None:
     """Initializes the McpToolset.
 
     Args:
@@ -222,7 +225,7 @@ class McpToolset(BaseToolset):
       return None
 
     credential = None
-    if readonly_context:
+    if readonly_context and self._auth_config.credential_key:
       credential = readonly_context.get_credential(
           self._auth_config.credential_key
       )
@@ -274,31 +277,24 @@ class McpToolset(BaseToolset):
         headers.update(credential.http.additional_headers)
     elif credential.api_key:
       # For API key, use the auth scheme to determine header name
-      if self._auth_config.auth_scheme:
-        from fastapi.openapi.models import APIKeyIn
-
-        if hasattr(self._auth_config.auth_scheme, "in_"):
-          if self._auth_config.auth_scheme.in_ == APIKeyIn.header:
-            headers = {self._auth_config.auth_scheme.name: credential.api_key}
+      auth_scheme = self._auth_config.auth_scheme
+      if auth_scheme:
+        if hasattr(auth_scheme, "in_"):
+          if auth_scheme.in_ == APIKeyIn.header:
+            headers = {auth_scheme.name: credential.api_key}
           else:
-            logger.warning(
+            raise ValueError(
                 "McpToolset only supports header-based API key authentication."
-                " Configured location: %s",
-                self._auth_config.auth_scheme.in_,
+                f" Configured location: {auth_scheme.in_}"
             )
         else:
           # Default to using scheme name as header
-          headers = {self._auth_config.auth_scheme.name: credential.api_key}
+          headers = {auth_scheme.name: credential.api_key}
 
     return headers
 
   @property
-  def connection_params(self) -> Union[
-      StdioServerParameters,
-      StdioConnectionParams,
-      SseConnectionParams,
-      StreamableHTTPConnectionParams,
-  ]:
+  def connection_params(self) -> _ConnectionParams:
     return self._connection_params
 
   @property
@@ -329,7 +325,7 @@ class McpToolset(BaseToolset):
 
   async def _execute_with_session(
       self,
-      coroutine_func: Callable[[Any], Awaitable[T]],
+      coroutine_func: Callable[[ClientSession], Awaitable[T]],
       error_message: str,
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> T:
@@ -344,9 +340,12 @@ class McpToolset(BaseToolset):
 
     # Add headers from header_provider if available
     if self._header_provider and readonly_context:
-      provider_headers = self._header_provider(readonly_context)
-      if inspect.isawaitable(provider_headers):
-        provider_headers = await provider_headers
+      provided_headers = self._header_provider(readonly_context)
+      provider_headers = (
+          await provided_headers
+          if inspect.isawaitable(provided_headers)
+          else provided_headers
+      )
       if provider_headers:
         headers.update(provider_headers)
 
@@ -406,7 +405,7 @@ class McpToolset(BaseToolset):
     )
 
     # Apply filtering based on context and tool_filter
-    tools = []
+    tools: List[BaseTool] = []
     for tool in tools_response.tools:
       mcp_tool = MCPTool(
           mcp_tool=tool,
@@ -515,6 +514,7 @@ class McpToolset(BaseToolset):
     """Creates an McpToolset from a configuration object."""
     mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
 
+    connection_params: _ConnectionParams
     if mcp_toolset_config.stdio_server_params:
       connection_params = mcp_toolset_config.stdio_server_params
     elif mcp_toolset_config.stdio_connection_params:
@@ -536,14 +536,14 @@ class McpToolset(BaseToolset):
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
     )
 
-  def __getstate__(self):
+  def __getstate__(self) -> dict[str, Any]:
     """Custom pickling to exclude non-picklable runtime objects."""
     state = self.__dict__.copy()
     # Remove unpicklable file-like objects
     state.pop("_errlog", None)
     return state
 
-  def __setstate__(self, state):
+  def __setstate__(self, state: dict[str, Any]) -> None:
     """Custom unpickling to restore state."""
     self.__dict__.update(state)
     # Default to sys.stderr if _errlog was removed during pickling
@@ -554,7 +554,7 @@ class McpToolset(BaseToolset):
 class MCPToolset(McpToolset):
   """Deprecated name, use `McpToolset` instead."""
 
-  def __init__(self, *args, **kwargs):
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
     warnings.warn(
         "MCPToolset class is deprecated, use `McpToolset` instead.",
         DeprecationWarning,
@@ -589,7 +589,7 @@ class McpToolsetConfig(BaseToolConfig):
   use_mcp_resources: bool = False
 
   @model_validator(mode="after")
-  def _check_only_one_params_field(self):
+  def _check_only_one_params_field(self) -> McpToolsetConfig:
     param_fields = [
         self.stdio_server_params,
         self.stdio_connection_params,

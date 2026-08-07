@@ -67,7 +67,7 @@ if IS_INTERACTIVE:
   )
 
 
-def get_pull_request_details(pr_number: int) -> str:
+def get_pull_request_details(pr_number: int) -> dict[str, Any]:
   """Get the details of the specified pull request.
 
   Args:

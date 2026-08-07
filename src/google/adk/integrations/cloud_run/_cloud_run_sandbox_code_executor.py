@@ -69,7 +69,7 @@ class CloudRunSandboxCodeExecutor(BaseCodeExecutor):
   # Overrides the BaseCodeExecutor attribute: this executor cannot optimize_data_file.
   optimize_data_file: bool = Field(default=False, frozen=True, exclude=True)
 
-  def __init__(self, **data):
+  def __init__(self, **data: object) -> None:
     if 'stateful' in data and data['stateful']:
       raise ValueError(
           'Cannot set `stateful=True` in CloudRunSandboxCodeExecutor.'

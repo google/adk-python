@@ -23,7 +23,7 @@ from unittest.mock import patch
 from google.adk.integrations.vmaas.sandbox_client import SandboxClient
 
 
-def _make_response(data: dict) -> MagicMock:
+def _make_response(data: object) -> MagicMock:
   """Create a mock HttpResponse with a JSON body."""
   response = MagicMock()
   response.body = json.dumps(data)
@@ -55,6 +55,11 @@ class TestSandboxClient(unittest.IsolatedAsyncioTestCase):
     new_token = "new_token_67890"
     self.client.update_access_token(new_token)
     self.assertEqual(self.client._access_token, new_token)
+
+  def test_parse_response_rejects_non_object_json(self):
+    """Test that malformed sandbox response shapes fail explicitly."""
+    with self.assertRaisesRegex(ValueError, "must be a JSON object"):
+      self.client._parse_response(_make_response(["unexpected"]))
 
   @patch("asyncio.to_thread")
   async def test_make_cdp_request(self, mock_to_thread):

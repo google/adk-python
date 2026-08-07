@@ -24,11 +24,13 @@ import asyncio
 import logging
 import time
 from typing import Any
+from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
 
 from ...features import experimental
 from ...features import FeatureName
+from ...sessions.state import State
 from ...tools.computer_use.base_computer import BaseComputer
 from ...tools.computer_use.base_computer import ComputerEnvironment
 from ...tools.computer_use.base_computer import ComputerState
@@ -158,7 +160,7 @@ class AgentEngineSandboxComputer(BaseComputer):
     self._client = vertexai_client
 
     # Session state for sharing sandbox/tokens across invocations
-    self._session_state: dict[str, Any] | None = None
+    self._session_state: State | None = None
 
   async def prepare(self, tool_context: "ToolContext") -> None:
     """Bind session state for sandbox resource sharing."""
@@ -184,8 +186,12 @@ class AgentEngineSandboxComputer(BaseComputer):
     if self._agent_engine_name:
       return self._agent_engine_name
 
+    state = cast(State, self._session_state)
+
     # Check session state
-    agent_engine_name = self._session_state.get(_STATE_KEY_AGENT_ENGINE_NAME)
+    agent_engine_name = cast(
+        "str | None", state.get(_STATE_KEY_AGENT_ENGINE_NAME)
+    )
     if agent_engine_name:
       return agent_engine_name
 
@@ -194,15 +200,15 @@ class AgentEngineSandboxComputer(BaseComputer):
     client = self._get_client()
 
     agent_engine = await asyncio.to_thread(client.agent_engines.create)
-    agent_engine_name = agent_engine.api_resource.name
+    agent_engine_name = cast(str, agent_engine.api_resource.name)
 
     # Store in session state for sharing
-    self._session_state[_STATE_KEY_AGENT_ENGINE_NAME] = agent_engine_name
+    state[_STATE_KEY_AGENT_ENGINE_NAME] = agent_engine_name
     logger.info("Created agent engine: %s", agent_engine_name)
 
     return agent_engine_name
 
-  async def _get_sandbox(self) -> tuple[str, Any]:
+  async def _get_sandbox(self) -> tuple[str, object]:
     """Get the sandbox, creating one if needed.
 
     Returns:
@@ -213,13 +219,14 @@ class AgentEngineSandboxComputer(BaseComputer):
     # Check if provided in constructor (BYOS mode)
     if self._sandbox_name:
       # Get sandbox object from name
-      sandbox = await asyncio.to_thread(
+      sandbox: object = await asyncio.to_thread(
           client.agent_engines.sandboxes.get, name=self._sandbox_name
       )
       return self._sandbox_name, sandbox
 
     # Check session state for existing sandbox
-    sandbox_name = self._session_state.get(_STATE_KEY_SANDBOX_NAME)
+    state = cast(State, self._session_state)
+    sandbox_name = state.get(_STATE_KEY_SANDBOX_NAME)
     if sandbox_name:
       sandbox = await asyncio.to_thread(
           client.agent_engines.sandboxes.get, name=sandbox_name
@@ -262,7 +269,7 @@ class AgentEngineSandboxComputer(BaseComputer):
     sandbox_name = operation.response.name
 
     # Store in session state for sharing
-    self._session_state[_STATE_KEY_SANDBOX_NAME] = sandbox_name
+    state[_STATE_KEY_SANDBOX_NAME] = sandbox_name
     logger.info("Created sandbox: %s", sandbox_name)
 
     return sandbox_name, operation.response
@@ -276,9 +283,11 @@ class AgentEngineSandboxComputer(BaseComputer):
     Returns:
       The access token.
     """
+    state = cast(State, self._session_state)
+
     # Check session state
-    token = self._session_state.get(_STATE_KEY_ACCESS_TOKEN)
-    expiry = self._session_state.get(_STATE_KEY_TOKEN_EXPIRY, 0)
+    token = cast("str | None", state.get(_STATE_KEY_ACCESS_TOKEN))
+    expiry = cast(float, state.get(_STATE_KEY_TOKEN_EXPIRY, 0))
     if token and time.time() < expiry - _TOKEN_REFRESH_BUFFER:
       return token
 
@@ -286,17 +295,18 @@ class AgentEngineSandboxComputer(BaseComputer):
     logger.debug("Generating new access token for sandbox: %s", sandbox_name)
     client = self._get_client()
 
-    token = await asyncio.to_thread(
-        client.agent_engines.sandboxes.generate_access_token,
-        service_account_email=self._service_account_email,
-        timeout=_DEFAULT_TOKEN_TIMEOUT,
+    token = cast(
+        str,
+        await asyncio.to_thread(
+            client.agent_engines.sandboxes.generate_access_token,
+            service_account_email=self._service_account_email,
+            timeout=_DEFAULT_TOKEN_TIMEOUT,
+        ),
     )
 
     # Store in session state
-    self._session_state[_STATE_KEY_ACCESS_TOKEN] = token
-    self._session_state[_STATE_KEY_TOKEN_EXPIRY] = (
-        time.time() + _DEFAULT_TOKEN_TIMEOUT
-    )
+    state[_STATE_KEY_ACCESS_TOKEN] = token
+    state[_STATE_KEY_TOKEN_EXPIRY] = time.time() + _DEFAULT_TOKEN_TIMEOUT
 
     return token
 
@@ -313,8 +323,9 @@ class AgentEngineSandboxComputer(BaseComputer):
     except Exception as e:
       # Token generation failed - clear cached token and retry
       logger.warning("Token generation failed, clearing cache: %s", e)
-      self._session_state[_STATE_KEY_ACCESS_TOKEN] = None
-      self._session_state[_STATE_KEY_TOKEN_EXPIRY] = 0
+      state = cast(State, self._session_state)
+      state[_STATE_KEY_ACCESS_TOKEN] = None
+      state[_STATE_KEY_TOKEN_EXPIRY] = 0
       token = await self._get_access_token(sandbox_name)
 
     return SandboxClient(

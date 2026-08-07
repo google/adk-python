@@ -14,17 +14,16 @@
 
 from __future__ import annotations
 
-import json
 from typing import Optional
 
-from google.api_core.gapic_v1 import client_info
 from google.auth import default as default_service_credential
 from google.cloud import parametermanager_v1
-from google.oauth2 import credentials as user_credentials
-from google.oauth2 import service_account
 
 from ... import version
 from ...utils._mtls_utils import get_api_endpoint
+from .._google_sdk import create_gapic_client_info as _create_gapic_client_info
+from .._google_sdk import create_user_credentials as _create_user_credentials
+from .._google_sdk import load_service_account_credentials as _load_service_account_credentials
 
 USER_AGENT = f"google-adk/{version.__version__}"
 
@@ -80,14 +79,9 @@ class ParameterManagerClient:
       )
 
     if service_account_json:
-      try:
-        credentials = service_account.Credentials.from_service_account_info(
-            json.loads(service_account_json)
-        )
-      except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid service account JSON: {e}") from e
+      credentials = _load_service_account_credentials(service_account_json)
     elif auth_token:
-      credentials = user_credentials.Credentials(token=auth_token)
+      credentials = _create_user_credentials(token=auth_token)
     else:
       try:
         credentials, _ = default_service_credential(
@@ -121,7 +115,7 @@ class ParameterManagerClient:
     self._client = parametermanager_v1.ParameterManagerClient(
         credentials=self._credentials,
         client_options=client_options,
-        client_info=client_info.ClientInfo(user_agent=USER_AGENT),
+        client_info=_create_gapic_client_info(user_agent=USER_AGENT),
     )
 
   def get_parameter(self, resource_name: str) -> str:

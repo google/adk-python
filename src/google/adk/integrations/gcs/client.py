@@ -14,18 +14,19 @@
 
 from __future__ import annotations
 
-import google.api_core.client_info
+from google.api_core.client_info import ClientInfo
 from google.auth.credentials import Credentials
 from google.cloud import storage
 
 from ... import version
+from .._google_sdk import create_client_info as _create_client_info
 
 USER_AGENT = f"adk-gcs-tool google-adk/{version.__version__}"
 
 
-def _get_client_info() -> google.api_core.client_info.ClientInfo:
+def _get_client_info() -> ClientInfo:
   """Get client info."""
-  return google.api_core.client_info.ClientInfo(user_agent=USER_AGENT)
+  return _create_client_info(user_agent=USER_AGENT)
 
 
 _client_cache: dict[tuple[int, str | None], storage.Client] = {}

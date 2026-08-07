@@ -25,7 +25,7 @@ from .config import BigQueryToolConfig
 
 def list_dataset_ids(
     project_id: str, credentials: Credentials, settings: BigQueryToolConfig
-) -> list[str]:
+) -> list[str] | dict[str, str]:
   """List BigQuery dataset ids in a Google Cloud project.
 
   Args:
@@ -143,7 +143,7 @@ def list_table_ids(
     dataset_id: str,
     credentials: Credentials,
     settings: BigQueryToolConfig,
-) -> list[str]:
+) -> list[str] | dict[str, str]:
   """List table ids in a BigQuery dataset.
 
   Args:

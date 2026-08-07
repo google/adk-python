@@ -22,9 +22,9 @@ from __future__ import annotations
 import typing
 
 if typing.TYPE_CHECKING:
-  from .bigquery_credentials import BigQueryCredentialsConfig
-  from .bigquery_skill import get_bigquery_skill
-  from .bigquery_toolset import BigQueryToolset
+  from .bigquery_credentials import BigQueryCredentialsConfig as BigQueryCredentialsConfig
+  from .bigquery_skill import get_bigquery_skill as get_bigquery_skill
+  from .bigquery_toolset import BigQueryToolset as BigQueryToolset
 
 # Map attribute names to relative module paths
 _lazy_imports = {

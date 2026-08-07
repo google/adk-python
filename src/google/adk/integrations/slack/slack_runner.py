@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from typing import cast
+from typing import Protocol
 
 from google.adk.runners import Runner
 from google.genai import types
@@ -30,6 +32,12 @@ except ImportError as e:
   ) from e
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+class _SocketModeHandler(Protocol):
+
+  async def start_async(self) -> None:
+    ...
 
 
 class SlackRunner:
@@ -119,5 +127,8 @@ class SlackRunner:
 
   async def start(self, app_token: str) -> None:
     """Starts the Slack app using Socket Mode."""
-    handler = AsyncSocketModeHandler(self.slack_app, app_token)
+    handler = cast(
+        _SocketModeHandler,
+        AsyncSocketModeHandler(self.slack_app, app_token),
+    )
     await handler.start_async()

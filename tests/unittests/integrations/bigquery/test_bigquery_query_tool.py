@@ -674,6 +674,36 @@ def test_execute_sql_select_stmt(write_mode):
     assert result == {"status": "SUCCESS", "rows": query_result}
 
 
+def test_execute_sql_protected_requires_session_metadata():
+  """Test that protected mode rejects an incomplete session response."""
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.state.get.return_value = None
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+    session_creator_job = mock.create_autospec(bigquery.QueryJob)
+    session_creator_job.session_info = None
+    bq_client.query.return_value = session_creator_job
+
+    result = query_tool.execute_sql(
+        "my_project",
+        "SELECT 1",
+        credentials,
+        tool_settings,
+        tool_context,
+    )
+
+  assert result == {
+      "status": "ERROR",
+      "error_details": (
+          "BigQuery did not return session metadata for the protected query."
+      ),
+  }
+  bq_client.query_and_wait.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("query", "statement_type"),
     [
