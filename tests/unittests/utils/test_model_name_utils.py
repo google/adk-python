@@ -121,6 +121,8 @@ class TestIsGeminiModel:
     assert is_gemini_model('gemini-1.5-flash') is True
     assert is_gemini_model('gemini-1.0-pro') is True
     assert is_gemini_model('gemini-2.5-flash') is True
+    assert is_gemini_model('gemini-early-exp') is True
+    assert is_gemini_model('gemini-flash-early-exp') is True
     assert is_gemini_model('claude-3-sonnet') is False
     assert is_gemini_model('gpt-4') is False
     assert is_gemini_model('llama-2') is False
@@ -231,6 +233,8 @@ class TestIsGemini2Model:
     assert is_gemini_eap_or_2_or_above('gemini-2-pro') is True
     assert is_gemini_eap_or_2_or_above('gemini-2') is True
     assert is_gemini_eap_or_2_or_above('gemini-3.0-pro') is True
+    assert is_gemini_eap_or_2_or_above('gemini-early-exp') is True
+    assert is_gemini_eap_or_2_or_above('gemini-early-exp2') is True
     assert is_gemini_eap_or_2_or_above('gemini-flash-early-exp') is True
     assert is_gemini_eap_or_2_or_above('gemini-flash-early-exp3') is True
     assert is_gemini_eap_or_2_or_above('gemini-flash-lite-early-exp') is True
@@ -284,6 +288,11 @@ class TestIsGemini2Model:
     )  # Missing version number
     assert is_gemini_eap_or_2_or_above('gemini-0.9-test') is False
     assert is_gemini_eap_or_2_or_above('gemini-one') is False
+
+    # The EAP variant is optional, but the 'early-exp' marker is not.
+    assert is_gemini_eap_or_2_or_above('gemini-early') is False
+    assert is_gemini_eap_or_2_or_above('gemini-early-exp-flash') is False
+    assert is_gemini_eap_or_2_or_above('my-gemini-early-exp') is False
 
 
 class TestModelNameUtilsIntegration:

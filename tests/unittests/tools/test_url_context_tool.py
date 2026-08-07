@@ -154,13 +154,13 @@ class TestUrlContextTool:
     assert llm_request.config.tools[0].url_context is not None
 
   @pytest.mark.asyncio
-  async def test_process_llm_request_with_path_based_gemini_model(self):
+  async def test_process_llm_request_with_path_based_gemini_eap_model(self):
     """Test that a path-based Gemini model id is accepted."""
     tool = UrlContextTool()
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash',
+        model='projects/265104255505/locations/global/publishers/google/models/gemini-early-exp',
         config=types.GenerateContentConfig(),
     )
 
