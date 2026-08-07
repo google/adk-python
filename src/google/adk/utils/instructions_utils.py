@@ -20,7 +20,6 @@ from typing import Awaitable
 from typing import Callable
 from typing import Union
 
-import jinja2
 from typing_extensions import TypeAlias
 
 from ..agents.readonly_context import ReadonlyContext
@@ -95,7 +94,8 @@ async def inject_session_state(
     readonly_context: The read-only context.
     use_jinja2: If True, render the template with Jinja2 instead of the
       default regex-based engine.  Defaults to False for backward
-      compatibility.
+      compatibility.  Jinja2 is an optional dependency and must be installed
+      separately to use this.
 
   Returns:
     The instruction template with values populated.
@@ -186,13 +186,27 @@ async def _render_with_jinja2(
   Artifacts can be loaded with the ``artifact(filename)`` async callable
   available inside the template.
 
+  Jinja2 is not a required dependency, so it is imported here rather than at
+  module scope, where it would be pulled in by every import of this package.
+
   Args:
     template: A Jinja2 template string.
     readonly_context: The read-only context.
 
   Returns:
     The rendered string.
+
+  Raises:
+    ImportError: If the optional jinja2 package is not installed.
   """
+  try:
+    import jinja2
+  except ImportError as e:
+    raise ImportError(
+        'Rendering an instruction with Jinja2 requires the optional jinja2'
+        ' package. Install it with: pip install jinja2'
+    ) from e
+
   invocation_context = readonly_context._invocation_context
 
   async def _load_artifact(filename: str) -> str:

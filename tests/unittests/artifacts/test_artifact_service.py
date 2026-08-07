@@ -585,6 +585,38 @@ async def test_delete_artifact_keeps_nested_artifact(
         ArtifactServiceType.FILE,
     ],
 )
+async def test_list_keys_includes_nested_artifact(
+    service_type, artifact_service_factory
+):
+  """An artifact nested under another artifact must still be listed."""
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+
+  for filename in ("doc", "doc/nested"):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=types.Part.from_text(text=filename),
+    )
+
+  assert await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  ) == ["doc", "doc/nested"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
 async def test_list_keys_preserves_user_prefix(
     service_type, artifact_service_factory
 ):

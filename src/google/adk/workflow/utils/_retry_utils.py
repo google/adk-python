@@ -79,10 +79,14 @@ def _get_retry_delay(
   attempt_for_calc = max(0, attempt_count - 1)
 
   delay = initial_delay * (backoff_factor**attempt_for_calc)
-  delay = min(delay, max_delay)
 
   if jitter > 0.0:
+    # Cap the delay before jittering, so that even the widest positive offset
+    # lands on max_delay. Capping the jittered result instead would hold the
+    # bound but collapse every overshooting draw onto exactly max_delay,
+    # firing the retries jitter exists to spread out at the same instant.
+    delay = min(delay, max_delay / (1.0 + jitter))
     random_offset = random.uniform(-jitter * delay, jitter * delay)
     delay = max(0.0, delay + random_offset)
 
-  return delay
+  return min(delay, max_delay)

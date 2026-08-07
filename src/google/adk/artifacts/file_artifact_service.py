@@ -50,7 +50,10 @@ def _iter_artifact_dirs(root: Path) -> list[Path]:
     current = Path(dirpath)
     if (current / "versions").exists():
       artifact_dirs.append(current)
-      dirnames.clear()
+      # An artifact directory doubles as the parent of anything nested under
+      # it ("doc" and "doc/nested"), so keep walking, skipping only the
+      # stored versions of this artifact.
+      dirnames[:] = [name for name in dirnames if name != "versions"]
   return artifact_dirs
 
 

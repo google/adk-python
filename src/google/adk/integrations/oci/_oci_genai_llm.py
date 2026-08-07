@@ -156,7 +156,7 @@ def _media_blocks_for_part(part: types.Part) -> list[Any]:
   ]
 
 
-def _content_to_oci_message(content: types.Content) -> Any:
+def _content_to_oci_message(content: types.Content) -> list[Any]:
   """Convert an ADK Content object to an OCI GenAI message.
 
   OCI GenAI uses:
@@ -197,13 +197,18 @@ def _content_to_oci_message(content: types.Content) -> Any:
   role = _to_oci_role(content.role)
 
   # Tool results map to ToolMessage (one per result)
+  messages = []
   if tool_results:
-    call_id, result_text = tool_results[0]
-    return oci_models.ToolMessage(
-        role=oci_models.ToolMessage.ROLE_TOOL,
-        tool_call_id=call_id,
-        content=[oci_models.TextContent(type="TEXT", text=result_text)],
-    )
+    messages.extend([
+        oci_models.ToolMessage(
+            role=oci_models.ToolMessage.ROLE_TOOL,
+            tool_call_id=call_id,
+            content=[oci_models.TextContent(type="TEXT", text=result_text)],
+        )
+        for call_id, result_text in tool_results
+    ])
+    if not (text_parts or media_blocks or tool_calls):
+      return messages
 
   if role == "ASSISTANT":
     oci_content: list[Any] = []
@@ -211,22 +216,29 @@ def _content_to_oci_message(content: types.Content) -> Any:
       oci_content.append(
           oci_models.TextContent(type="TEXT", text="\n".join(text_parts))
       )
-    return oci_models.AssistantMessage(
-        role=oci_models.AssistantMessage.ROLE_ASSISTANT,
-        content=oci_content,
-        tool_calls=tool_calls or None,
+    messages.append(
+        oci_models.AssistantMessage(
+            role=oci_models.AssistantMessage.ROLE_ASSISTANT,
+            content=oci_content,
+            tool_calls=tool_calls or None,
+        )
     )
+  else:
+    user_content: list[Any] = []
+    if text_parts:
+      user_content.append(
+          oci_models.TextContent(type="TEXT", text="\n".join(text_parts))
+      )
+    user_content.extend(media_blocks)
+    if not messages or user_content:
+      messages.append(
+          oci_models.UserMessage(
+              role=oci_models.UserMessage.ROLE_USER,
+              content=user_content,
+          )
+      )
 
-  user_content: list[Any] = []
-  if text_parts:
-    user_content.append(
-        oci_models.TextContent(type="TEXT", text="\n".join(text_parts))
-    )
-  user_content.extend(media_blocks)
-  return oci_models.UserMessage(
-      role=oci_models.UserMessage.ROLE_USER,
-      content=user_content,
-  )
+  return messages
 
 
 def _oci_response_to_llm_response(response: Any) -> LlmResponse:
@@ -451,7 +463,9 @@ class OCIGenAILlm(BaseLlm):
     """Build OCI ChatDetails from an LlmRequest."""
     import oci.generative_ai_inference.models as oci_models
 
-    messages = [_content_to_oci_message(c) for c in llm_request.contents or []]
+    messages = []
+    for c in llm_request.contents or []:
+      messages.extend(_content_to_oci_message(c))
 
     # Prepend SystemMessage when a system instruction is present
     if llm_request.config and llm_request.config.system_instruction:
