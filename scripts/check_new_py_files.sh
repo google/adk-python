@@ -160,4 +160,3 @@ while read -r file; do
 done < <(get_added_files)
 
 exit $exit_code
-
