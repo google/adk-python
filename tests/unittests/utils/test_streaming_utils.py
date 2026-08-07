@@ -394,6 +394,102 @@ class TestStreamingResponseAggregator:
 
   @pytest.mark.asyncio
   @pytest.mark.parametrize("use_progressive_sse", [False, True])
+  async def test_close_preserves_usage_metadata_from_earlier_chunk(
+      self, use_progressive_sse
+  ):
+    """A later chunk without usage must not erase an earlier chunk's counts.
+
+    Providers typically report token usage on a single chunk; the trailing
+    chunks of the same turn carry none. The aggregated response is the one
+    that gets persisted, so it must retain the counts it already saw.
+    """
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, use_progressive_sse
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      # First chunk carries the token counts.
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="Hello ")]),
+              )
+          ],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10,
+              candidates_token_count=5,
+              total_token_count=15,
+          ),
+      )
+      # Second chunk carries none.
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="World!")]),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ],
+      )
+
+      async for _ in aggregator.process_response(response1):
+        pass
+      async for _ in aggregator.process_response(response2):
+        pass
+
+      closed_response = aggregator.close()
+      assert closed_response is not None
+      assert closed_response.usage_metadata is not None
+      assert closed_response.usage_metadata.prompt_token_count == 10
+      assert closed_response.usage_metadata.candidates_token_count == 5
+      assert closed_response.usage_metadata.total_token_count == 15
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("use_progressive_sse", [False, True])
+  async def test_close_uses_latest_reported_usage_metadata(
+      self, use_progressive_sse
+  ):
+    """When several chunks report usage, the most recent one wins."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, use_progressive_sse
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="Hello ")]),
+              )
+          ],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10,
+              candidates_token_count=5,
+              total_token_count=15,
+          ),
+      )
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="World!")]),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ],
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10,
+              candidates_token_count=9,
+              total_token_count=19,
+          ),
+      )
+
+      async for _ in aggregator.process_response(response1):
+        pass
+      async for _ in aggregator.process_response(response2):
+        pass
+
+      closed_response = aggregator.close()
+      assert closed_response is not None
+      assert closed_response.usage_metadata is not None
+      assert closed_response.usage_metadata.total_token_count == 19
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("use_progressive_sse", [False, True])
   async def test_close_propagates_model_version(self, use_progressive_sse):
     """close() should carry model_version into the aggregated response."""
     aggregator = streaming_utils.StreamingResponseAggregator()
@@ -716,3 +812,125 @@ class TestFunctionCallIdGeneration:
       assert fc_a.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
       assert fc_b.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
       assert fc_a.id != fc_b.id  # Different IDs for different FCs
+
+
+def _text_chunk(
+    text: str,
+    *,
+    thought: bool = False,
+    signature: bytes | None = None,
+    finish: types.FinishReason | None = None,
+) -> types.GenerateContentResponse:
+  part = types.Part(text=text, thought=thought or None)
+  if signature:
+    part.thought_signature = signature
+  return types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(role="model", parts=[part]),
+              finish_reason=finish,
+          )
+      ]
+  )
+
+
+class TestStreamingThoughtSignature:
+  """Signatures must survive the merge of streamed text chunks.
+
+  Consecutive text chunks are joined into a single part that the aggregator
+  builds from scratch, so anything the source chunks carried is lost unless
+  it is copied across. The model expects its signature back verbatim, and
+  without it the reasoning the signature stood for is redone.
+  """
+
+  @pytest.mark.asyncio
+  async def test_signature_on_merged_text_is_preserved(self):
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    chunks = [
+        _text_chunk("At minute 5 ", signature=b"text-signature"),
+        _text_chunk("the presenter speaks.", finish=types.FinishReason.STOP),
+    ]
+    for chunk in chunks:
+      async for _ in aggregator.process_response(chunk):
+        pass
+
+    closed = aggregator.close()
+    assert closed is not None
+    parts = closed.content.parts
+    assert len(parts) == 1
+    assert parts[0].text == "At minute 5 the presenter speaks."
+    assert parts[0].thought_signature == b"text-signature"
+
+  @pytest.mark.asyncio
+  async def test_signature_on_a_later_chunk_is_preserved(self):
+    """The signature can land on any chunk of the run, not just the first."""
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    chunks = [
+        _text_chunk("At minute 5 "),
+        _text_chunk(
+            "the presenter speaks.",
+            signature=b"late-signature",
+            finish=types.FinishReason.STOP,
+        ),
+    ]
+    for chunk in chunks:
+      async for _ in aggregator.process_response(chunk):
+        pass
+
+    closed = aggregator.close()
+    assert closed is not None
+    assert closed.content.parts[0].thought_signature == b"late-signature"
+
+  @pytest.mark.asyncio
+  async def test_thought_and_answer_keep_their_own_signatures(self):
+    """A thought run and an answer run flush separately and must not swap."""
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    chunks = [
+        _text_chunk("Let me check.", thought=True, signature=b"thought-sig"),
+        _text_chunk(
+            "It is a dog.",
+            signature=b"answer-sig",
+            finish=types.FinishReason.STOP,
+        ),
+    ]
+    for chunk in chunks:
+      async for _ in aggregator.process_response(chunk):
+        pass
+
+    closed = aggregator.close()
+    assert closed is not None
+    parts = closed.content.parts
+    assert len(parts) == 2
+    assert parts[0].thought
+    assert parts[0].thought_signature == b"thought-sig"
+    assert parts[1].thought_signature == b"answer-sig"
+
+  @pytest.mark.asyncio
+  async def test_content_free_signature_parts_are_kept(self):
+    """Server-side media tools return signatures on parts holding nothing."""
+    aggregator = streaming_utils.StreamingResponseAggregator()
+    sig_only = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part(thought_signature=b"call-context")],
+                )
+            )
+        ]
+    )
+    chunks = [
+        _text_chunk("At minute 5 the presenter speaks."),
+        sig_only,
+        _text_chunk("", finish=types.FinishReason.STOP),
+    ]
+    for chunk in chunks:
+      async for _ in aggregator.process_response(chunk):
+        pass
+
+    closed = aggregator.close()
+    assert closed is not None
+    signatures = [
+        p.thought_signature for p in closed.content.parts if p.thought_signature
+    ]
+    assert signatures == [b"call-context"]

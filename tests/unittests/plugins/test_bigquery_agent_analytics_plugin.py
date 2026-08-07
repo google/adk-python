@@ -10057,6 +10057,93 @@ async def test_content_parts_denied_disables_gcs_offload(
 
 
 @pytest.mark.asyncio
+async def test_after_run_callback_flush_on_run_end(
+    bq_plugin_inst,
+    invocation_context,
+):
+  """after_run_callback skips flush() when flush_on_run_end is False."""
+  bq_plugin_inst.config.flush_on_run_end = False
+  bigquery_agent_analytics_plugin.TraceManager.push_span(
+      invocation_context, "invocation"
+  )
+
+  with mock.patch.object(
+      bq_plugin_inst, "flush", new_callable=mock.AsyncMock
+  ) as mock_flush:
+    await bq_plugin_inst.after_run_callback(
+        invocation_context=invocation_context
+    )
+    mock_flush.assert_not_called()
+
+  bq_plugin_inst.config.flush_on_run_end = True
+  bigquery_agent_analytics_plugin.TraceManager.push_span(
+      invocation_context, "invocation"
+  )
+  with mock.patch.object(
+      bq_plugin_inst, "flush", new_callable=mock.AsyncMock
+  ) as mock_flush:
+    await bq_plugin_inst.after_run_callback(
+        invocation_context=invocation_context
+    )
+    mock_flush.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_on_run_error_callback_flush_on_run_end(
+    bq_plugin_inst,
+    invocation_context,
+):
+  """on_run_error_callback skips flush() when flush_on_run_end is False."""
+  bq_plugin_inst.config.flush_on_run_end = False
+  bigquery_agent_analytics_plugin.TraceManager.push_span(
+      invocation_context, "invocation"
+  )
+
+  with mock.patch.object(
+      bq_plugin_inst, "flush", new_callable=mock.AsyncMock
+  ) as mock_flush:
+    await bq_plugin_inst.on_run_error_callback(
+        invocation_context=invocation_context, error=ValueError("Test Error")
+    )
+    mock_flush.assert_not_called()
+
+  bq_plugin_inst.config.flush_on_run_end = True
+  bigquery_agent_analytics_plugin.TraceManager.push_span(
+      invocation_context, "invocation"
+  )
+  with mock.patch.object(
+      bq_plugin_inst, "flush", new_callable=mock.AsyncMock
+  ) as mock_flush:
+    await bq_plugin_inst.on_run_error_callback(
+        invocation_context=invocation_context, error=ValueError("Test Error")
+    )
+    mock_flush.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_background_writer_drains_without_flush(
+    bq_plugin_inst,
+    invocation_context,
+    mock_write_client,
+):
+  """Background writer drains without explicit flush when flush_on_run_end is False."""
+  bq_plugin_inst.config.flush_on_run_end = False
+  bq_plugin_inst.config.batch_flush_interval = 0.1
+  bigquery_agent_analytics_plugin.TraceManager.push_span(
+      invocation_context, "invocation"
+  )
+  user_message = types.Content(parts=[types.Part(text="What is up?")])
+  await bq_plugin_inst.on_user_message_callback(
+      invocation_context=invocation_context, user_message=user_message
+  )
+  await bq_plugin_inst.after_run_callback(invocation_context=invocation_context)
+  deadline = time.time() + 2.0
+  while mock_write_client.append_rows.call_count < 1 and time.time() < deadline:
+    await asyncio.sleep(0.05)
+  assert mock_write_client.append_rows.call_count >= 1
+
+
+@pytest.mark.asyncio
 async def test_both_payload_columns_denied_skips_parse_and_offload(
     mock_write_client,
     callback_context,

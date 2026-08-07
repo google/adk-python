@@ -67,7 +67,10 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
     # Gemma 3 only (function-calling workarounds). Gemma 4+ resolves to Gemini.
     'Gemma': ([r'gemma-.*'], 'gemma_llm'),
     'ApigeeLlm': ([r'apigee\/.*'], 'apigee_llm'),
-    'Claude': ([r'claude-3-.*', r'claude-.*-4.*'], 'anthropic_llm'),
+    'Claude': (
+        [r'claude-3-.*', r'claude-.*-4.*', r'claude-.*-5.*'],
+        'anthropic_llm',
+    ),
     'Gemma3Ollama': ([r'ollama/gemma3.*'], 'gemma_llm'),
     'OpenAILlm': (
         [r'gpt-.*', r'o\d+-.*'],

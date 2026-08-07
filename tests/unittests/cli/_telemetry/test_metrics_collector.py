@@ -125,6 +125,34 @@ class CliMetricsTest(unittest.TestCase):
           source["command_run"]["flags"],
           ["--debug", "--project", "-v", "--user"],
       )
+      self.assertIn("is_tty", source["environment"])
+      self.assertIsInstance(source["environment"]["is_tty"], bool)
+
+  def test_record_command_run_is_tty_true(self):
+    """Verify that is_tty is True when sys.stdout.isatty() is True."""
+    with mock.patch("sys.stdout") as mock_stdout:
+      mock_stdout.isatty.return_value = True
+      collector = metrics.MetricsCollector()
+      collector.record_command_run(command="deploy")
+
+    with open(_QUEUE_FILE, "r", encoding="utf-8") as f:
+      lines = f.readlines()
+      event = json.loads(lines[0])
+      source = json.loads(event["source_extension_json"])
+      self.assertTrue(source["environment"]["is_tty"])
+
+  def test_record_command_run_is_tty_false(self):
+    """Verify that is_tty is False when sys.stdout.isatty() is False."""
+    with mock.patch("sys.stdout") as mock_stdout:
+      mock_stdout.isatty.return_value = False
+      collector = metrics.MetricsCollector()
+      collector.record_command_run(command="deploy")
+
+    with open(_QUEUE_FILE, "r", encoding="utf-8") as f:
+      lines = f.readlines()
+      event = json.loads(lines[0])
+      source = json.loads(event["source_extension_json"])
+      self.assertFalse(source["environment"]["is_tty"])
 
   def test_record_command_run_with_click(self):
     """Verify that flags are correctly extracted from Click context."""

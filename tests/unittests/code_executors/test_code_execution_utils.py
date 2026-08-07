@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import multiprocessing
 import time
 import traceback
@@ -220,3 +221,214 @@ def test_extract_code_and_truncate_content_multiple_delimiter_pairs():
   assert len(content.parts) == 2
   assert content.parts[0].text == "Here is python code:\n"
   assert content.parts[1].executable_code.code == "y = 2"
+
+
+def test_get_encoded_file_content_encodes_raw_bytes():
+  """Raw binary must come back base64-encoded, not verbatim."""
+  encoded = code_execution_utils.CodeExecutionUtils.get_encoded_file_content(
+      b"\x00\x01\x02"
+  )
+  # base64 of the three bytes 00 01 02 is "AAEC" (no padding needed).
+  assert encoded == b"AAEC"
+
+
+def test_get_encoded_file_content_encodes_payload_with_invalid_padding():
+  """A payload that is not decodable base64 is encoded, not passed through."""
+  encoded = code_execution_utils.CodeExecutionUtils.get_encoded_file_content(
+      b"hello"
+  )
+  assert encoded == b"aGVsbG8="
+
+
+def test_get_encoded_file_content_leaves_already_encoded_bytes_unchanged():
+  """Double-encoding would corrupt the file for the executor that decodes it."""
+  already_encoded = base64.b64encode(b"file,contents\n1,2\n")
+  encoded = code_execution_utils.CodeExecutionUtils.get_encoded_file_content(
+      already_encoded
+  )
+  assert encoded == already_encoded
+  assert base64.b64decode(encoded) == b"file,contents\n1,2\n"
+
+
+def test_get_encoded_file_content_is_idempotent():
+  once = code_execution_utils.CodeExecutionUtils.get_encoded_file_content(
+      b"\x00\x01\x02"
+  )
+  twice = code_execution_utils.CodeExecutionUtils.get_encoded_file_content(once)
+  assert twice == once
+
+
+def test_build_executable_code_part_carries_code_and_python_language():
+  part = code_execution_utils.CodeExecutionUtils.build_executable_code_part(
+      "print(1)"
+  )
+  assert part.executable_code.code == "print(1)"
+  assert part.executable_code.language == types.Language.PYTHON
+
+
+def test_build_code_execution_result_part_stderr_reports_failure():
+  """stderr wins over stdout: a run that wrote to stderr did not succeed."""
+  result = code_execution_utils.CodeExecutionResult(
+      stdout="partial output", stderr="Traceback: boom"
+  )
+  part = (
+      code_execution_utils.CodeExecutionUtils.build_code_execution_result_part(
+          result
+      )
+  )
+  assert part.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
+  # The failure text is the stderr verbatim, so the model sees the real error.
+  assert part.code_execution_result.output == "Traceback: boom"
+
+
+def test_build_code_execution_result_part_stdout_only():
+  result = code_execution_utils.CodeExecutionResult(stdout="42")
+  part = (
+      code_execution_utils.CodeExecutionUtils.build_code_execution_result_part(
+          result
+      )
+  )
+  assert part.code_execution_result.outcome == types.Outcome.OUTCOME_OK
+  assert part.code_execution_result.output == "Code execution result:\n42\n"
+
+
+def test_build_code_execution_result_part_empty_run_still_reports_result():
+  """A silent successful run still gets a result header, not an empty string."""
+  result = code_execution_utils.CodeExecutionResult()
+  part = (
+      code_execution_utils.CodeExecutionUtils.build_code_execution_result_part(
+          result
+      )
+  )
+  assert part.code_execution_result.outcome == types.Outcome.OUTCOME_OK
+  assert part.code_execution_result.output == "Code execution result:\n\n"
+
+
+def test_build_code_execution_result_part_files_only_omits_result_header():
+  """With no stdout but saved files, only the artifact list is reported."""
+  result = code_execution_utils.CodeExecutionResult(
+      output_files=[
+          code_execution_utils.File(name="a.csv", content=""),
+          code_execution_utils.File(name="b.png", content=""),
+      ]
+  )
+  part = (
+      code_execution_utils.CodeExecutionUtils.build_code_execution_result_part(
+          result
+      )
+  )
+  assert part.code_execution_result.outcome == types.Outcome.OUTCOME_OK
+  assert (
+      part.code_execution_result.output == "Saved artifacts:\n`a.csv`,`b.png`"
+  )
+
+
+def test_build_code_execution_result_part_stdout_and_files():
+  result = code_execution_utils.CodeExecutionResult(
+      stdout="done",
+      output_files=[code_execution_utils.File(name="a.csv", content="")],
+  )
+  part = (
+      code_execution_utils.CodeExecutionUtils.build_code_execution_result_part(
+          result
+      )
+  )
+  assert part.code_execution_result.output == (
+      "Code execution result:\ndone\n\n\nSaved artifacts:\n`a.csv`"
+  )
+
+
+def test_convert_code_execution_parts_rewrites_trailing_executable_code():
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="here goes:"),
+          code_execution_utils.CodeExecutionUtils.build_executable_code_part(
+              "x = 1"
+          ),
+      ],
+  )
+
+  code_execution_utils.CodeExecutionUtils.convert_code_execution_parts(
+      content, ("<code>", "</code>"), ("<out>", "</out>")
+  )
+
+  # The leading text part is left alone; only the trailing code part becomes
+  # text, wrapped in the code delimiters.
+  assert content.parts[0].text == "here goes:"
+  assert content.parts[1].text == "<code>x = 1</code>"
+  assert content.parts[1].executable_code is None
+  assert content.role == "model"
+
+
+def test_convert_code_execution_parts_rewrites_lone_execution_result_as_user():
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part.from_code_execution_result(
+              outcome="OUTCOME_OK", output="42"
+          )
+      ],
+  )
+
+  code_execution_utils.CodeExecutionUtils.convert_code_execution_parts(
+      content, ("<code>", "</code>"), ("<out>", "</out>")
+  )
+
+  assert content.parts[0].text == "<out>42</out>"
+  # The execution result was produced by the executor, not the model, so the
+  # rewritten turn is attributed to the user.
+  assert content.role == "user"
+
+
+def test_convert_code_execution_parts_keeps_multipart_execution_result():
+  """A multi-part content came from the model, so its result is left as-is."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="the answer is"),
+          types.Part.from_code_execution_result(
+              outcome="OUTCOME_OK", output="42"
+          ),
+      ],
+  )
+
+  code_execution_utils.CodeExecutionUtils.convert_code_execution_parts(
+      content, ("<code>", "</code>"), ("<out>", "</out>")
+  )
+
+  assert content.parts[1].text is None
+  assert content.parts[1].code_execution_result.output == "42"
+  assert content.role == "model"
+
+
+def test_convert_code_execution_parts_execution_result_without_output():
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(
+              code_execution_result=types.CodeExecutionResult(
+                  outcome="OUTCOME_OK"
+              )
+          )
+      ],
+  )
+
+  code_execution_utils.CodeExecutionUtils.convert_code_execution_parts(
+      content, ("<code>", "</code>"), ("<out>", "</out>")
+  )
+
+  # No output means no delimiters either - an empty text part, not "<out></out>".
+  assert content.parts[0].text == ""
+  assert content.role == "user"
+
+
+def test_convert_code_execution_parts_empty_parts_is_a_noop():
+  content = types.Content(role="model", parts=[])
+
+  code_execution_utils.CodeExecutionUtils.convert_code_execution_parts(
+      content, ("<code>", "</code>"), ("<out>", "</out>")
+  )
+
+  assert content.parts == []
+  assert content.role == "model"

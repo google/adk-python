@@ -28,6 +28,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import Client
 from google.genai import types
+import pytest
 
 
 class TestGeminiContextCacheManager:
@@ -865,6 +866,20 @@ class TestGeminiContextCacheManager:
         llm_request_empty, empty_cache_contents_count
     )
     assert isinstance(fingerprint, str)
+
+  async def test_handle_context_caching_requires_configuration(self):
+    llm_request = self.create_llm_request()
+    llm_request.cache_config = None
+
+    with pytest.raises(ValueError, match="cache configuration"):
+      await self.manager.handle_context_caching(llm_request)
+
+  async def test_handle_context_caching_requires_model(self):
+    llm_request = self.create_llm_request()
+    llm_request.model = None
+
+    with pytest.raises(ValueError, match="model name"):
+      await self.manager.handle_context_caching(llm_request)
 
   def test_parameter_types_enforcement(self):
     """Test that method calls with correct parameter types work properly."""

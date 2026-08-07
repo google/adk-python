@@ -70,7 +70,7 @@ class State:
       value: dict[str, Any],
       delta: dict[str, Any],
       schema: type[BaseModel] | None = None,
-  ):
+  ) -> None:
     """
     Args:
       value: The current value of the state dict.
@@ -97,7 +97,7 @@ class State:
     self._value[key] = value
     self._delta[key] = value
 
-  def __contains__(self, key: str) -> bool:
+  def __contains__(self, key: object) -> bool:
     """Whether the state dict contains the given key."""
     return key in self._value or key in self._delta
 
@@ -129,7 +129,7 @@ class State:
 
   def to_dict(self) -> dict[str, Any]:
     """Returns the state dict."""
-    result = {}
+    result: dict[str, Any] = {}
     result.update(self._value)
     result.update(self._delta)
     return result

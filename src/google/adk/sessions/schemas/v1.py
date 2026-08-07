@@ -85,7 +85,7 @@ class StorageSession(Base):
   )
 
   state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
+      MutableDict.as_mutable(DynamicJSON), default=dict
   )
 
   create_time: Mapped[datetime] = mapped_column(
@@ -102,7 +102,7 @@ class StorageSession(Base):
       cascade="all, delete-orphan",
   )
 
-  def __repr__(self):
+  def __repr__(self) -> str:
     return f"<StorageSession(id={self.id}, update_time={self.update_time})>"
 
   @property
@@ -191,12 +191,14 @@ class StorageEvent(Base):
   )
 
   invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
-  timestamp: Mapped[PreciseTimestamp] = mapped_column(
+  timestamp: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
   # The event_data uses JSON serialization to store the Event data, replacing
   # various fields previously used.
-  event_data: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
+  event_data: Mapped[dict[str, Any] | None] = mapped_column(
+      DynamicJSON, nullable=True
+  )
 
   storage_session: Mapped[StorageSession] = relationship(
       "StorageSession",
@@ -259,7 +261,7 @@ class StorageAppState(Base):
       String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
+      MutableDict.as_mutable(DynamicJSON), default=dict
   )
   update_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now(), onupdate=func.now()
@@ -278,7 +280,7 @@ class StorageUserState(Base):
       String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
+      MutableDict.as_mutable(DynamicJSON), default=dict
   )
   update_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now(), onupdate=func.now()

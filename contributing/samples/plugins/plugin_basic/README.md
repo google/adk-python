@@ -41,7 +41,7 @@ can achieve a wide range of functionalities.
 Use following command to run the main.py
 
 ```bash
-python3 -m contributing.samples.plugin_basic.main
+python3 -m contributing.samples.plugins.plugin_basic.main
 ```
 
 It should output the following content. Note that the outputs from plugin are

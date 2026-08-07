@@ -138,9 +138,14 @@ class _StreamableHttpClientWrapper:
       await self.http_client.__aenter__()
     try:
       return await self.ctx_mgr.__aenter__()
-    except Exception:
+    except BaseException as e:
+      # BaseException, not Exception: a caller that bounds session creation
+      # cancels this task while the connect is still in flight, and
+      # `CancelledError` is not an `Exception`. Nothing else closes the client
+      # on that path -- an exit stack only registers a context manager once
+      # its `__aenter__` has returned -- so it would stay open forever.
       if hasattr(self.http_client, '__aexit__'):
-        await self.http_client.__aexit__(None, None, None)
+        await self.http_client.__aexit__(type(e), e, e.__traceback__)
       raise
 
   async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:

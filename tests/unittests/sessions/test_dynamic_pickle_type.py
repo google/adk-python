@@ -41,8 +41,11 @@ def test_load_dialect_impl_mysql(pickle_type):
 
   impl = pickle_type.load_dialect_impl(mock_dialect)
 
-  # Verify type_descriptor was called once with mysql.LONGBLOB
-  mock_dialect.type_descriptor.assert_called_once_with(mysql.LONGBLOB)
+  # SQLAlchemy dialect descriptors operate on type instances, not classes.
+  mock_dialect.type_descriptor.assert_called_once()
+  assert isinstance(
+      mock_dialect.type_descriptor.call_args.args[0], mysql.LONGBLOB
+  )
   # Verify the return value is what we expect
   assert impl == mock_longblob_type
 
@@ -57,7 +60,10 @@ def test_load_dialect_impl_spanner(pickle_type):
       "google.cloud.sqlalchemy_spanner.sqlalchemy_spanner.SpannerPickleType"
   ) as mock_spanner_type:
     pickle_type.load_dialect_impl(mock_dialect)
-    mock_dialect.type_descriptor.assert_called_once_with(mock_spanner_type)
+    mock_spanner_type.assert_called_once_with()
+    mock_dialect.type_descriptor.assert_called_once_with(
+        mock_spanner_type.return_value
+    )
 
 
 def test_load_dialect_impl_default(pickle_type):

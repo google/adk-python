@@ -29,6 +29,7 @@ import tempfile
 import textwrap
 import time
 from typing import Any
+from typing import AsyncIterator
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -281,6 +282,7 @@ class TelemetryGroup(click.Group):
 
   def invoke(self, ctx: click.Context) -> Any:
     start_time = time.monotonic()
+    ctx.meta["telemetry_start_time"] = start_time
     exit_code = 0
     exception_type = ""
     try:
@@ -291,8 +293,12 @@ class TelemetryGroup(click.Group):
       )
       raise
     except BaseException as e:
-      exit_code = 1
-      exception_type = type(e).__name__
+      if isinstance(e, KeyboardInterrupt) and ctx.meta.get("server_started"):
+        exit_code = 0
+        exception_type = ""
+      else:
+        exit_code = 1
+        exception_type = type(e).__name__
       raise
     finally:
       # Exclude help requests and telemetry command group itself
@@ -301,6 +307,7 @@ class TelemetryGroup(click.Group):
           ctx.invoked_subcommand is not None
           and ctx.invoked_subcommand != "telemetry"
           and not any(arg in full_args for arg in ("--help", "-h"))
+          and not ctx.meta.get("telemetry_recorded")
       ):
         try:
           resolved = []
@@ -1987,6 +1994,7 @@ def cli_web(
   """
   reload = _check_windows_reload(reload)
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  ctx = click.get_current_context(silent=True)
 
   @asynccontextmanager
   async def _lifespan(app: FastAPI):
@@ -2000,6 +2008,8 @@ def cli_web(
 """,
         fg="green",
     )
+    if ctx:
+      ctx.meta["server_started"] = True
     yield  # Startup is done, now app is running
     click.secho(
         """
@@ -2140,10 +2150,19 @@ def cli_api_server(
     )
 
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  ctx = click.get_current_context(silent=True)
+
+  from contextlib import asynccontextmanager
 
   import uvicorn
 
   from .fast_api import get_fast_api_app
+
+  @asynccontextmanager
+  async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    if ctx:
+      ctx.meta["server_started"] = True
+    yield
 
   config = uvicorn.Config(
       get_fast_api_app(
@@ -2167,6 +2186,7 @@ def cli_api_server(
           trigger_sources=trigger_sources,
           gemini_enterprise_app_name=gemini_enterprise_app_name,
           express_mode=express_mode,
+          lifespan=_lifespan,
       ),
       host=host,
       port=port,
@@ -2295,6 +2315,16 @@ def cli_api_server(
     default=False,
     help="Optional. Whether to enable A2A endpoint.",
 )
+@click.option(
+    "--with_cloud_run_sandbox",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help=(
+        "Optional. Whether to enable the Cloud Run sandbox for code"
+        " execution. Requires the 'gcloud beta run deploy' release track."
+    ),
+)
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
@@ -2339,6 +2369,7 @@ def cli_deploy_cloud_run(
     use_local_storage: bool = False,
     a2a: bool = False,
     trigger_sources: str | None = None,
+    with_cloud_run_sandbox: bool = False,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2363,6 +2394,7 @@ def cli_deploy_cloud_run(
 
     cli_deploy.to_cloud_run(
         agent_folder=agent,
+        with_cloud_run_sandbox=with_cloud_run_sandbox,
         project=project,
         region=region,
         service_name=service_name,

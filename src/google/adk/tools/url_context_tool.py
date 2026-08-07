@@ -20,8 +20,7 @@ from google.genai import types
 from typing_extensions import override
 
 from ..utils.model_name_utils import _is_managed_agent
-from ..utils.model_name_utils import is_gemini_1_model
-from ..utils.model_name_utils import is_gemini_eap_or_2_or_above
+from ..utils.model_name_utils import is_gemini_model
 from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_tool import BaseTool
 from .tool_context import ToolContext
@@ -51,10 +50,8 @@ class UrlContextTool(BaseTool):
     model_check_disabled = is_gemini_model_id_check_disabled()
     llm_request.config = llm_request.config or types.GenerateContentConfig()
     llm_request.config.tools = llm_request.config.tools or []
-    if is_gemini_1_model(llm_request.model):
-      raise ValueError('Url context tool cannot be used in Gemini 1.x.')
-    elif (
-        is_gemini_eap_or_2_or_above(llm_request.model)
+    if (
+        is_gemini_model(llm_request.model)
         or model_check_disabled
         or _is_managed_agent(llm_request)
     ):

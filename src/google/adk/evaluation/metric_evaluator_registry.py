@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 from typing import Optional
+from typing import Protocol
 
 from ..errors.not_found_error import NotFoundError
 from ..utils.feature_decorator import experimental
@@ -53,6 +55,12 @@ from .simulation.per_turn_user_simulator_quality_v1 import PerTurnUserSimulatorQ
 from .trajectory_evaluator import TrajectoryEvaluator
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+class _EvalMetricEvaluatorFactory(Protocol):
+
+  def __call__(self, *, eval_metric: EvalMetric) -> Evaluator:
+    """Creates an evaluator for one metric configuration."""
 
 
 @experimental
@@ -94,7 +102,8 @@ class MetricEvaluatorRegistry:
           eval_metric=eval_metric,
           custom_function_path=custom_function_path,
       )
-    return evaluator_type(eval_metric=eval_metric)
+    evaluator_factory = cast(_EvalMetricEvaluatorFactory, evaluator_type)
+    return evaluator_factory(eval_metric=eval_metric)
 
   def _custom_function_path(self, eval_metric: EvalMetric) -> Optional[str]:
     """Returns the module path to import for a custom metric, if known.

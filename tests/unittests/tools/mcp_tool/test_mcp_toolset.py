@@ -42,6 +42,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
 from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
 from mcp.types import BlobResourceContents
@@ -948,3 +949,71 @@ class TestMcpToolsetHttpDebug:
     assert len(debug_info) == 1
     assert debug_info[0]["url"] == "https://example.com/api"
     assert debug_info[0]["status_code"] == 200
+
+
+class TestMcpToolsetConfig:
+  """Test suite for the McpToolsetConfig connection-params validator."""
+
+  def _stdio_server_params(self):
+    return StdioServerParameters(command="test_command", args=[])
+
+  def test_no_connection_params_is_rejected(self):
+    """A toolset with no transport configured cannot connect to anything."""
+    with pytest.raises(ValueError, match="Exactly one of"):
+      McpToolsetConfig()
+
+  def test_two_connection_params_are_rejected(self):
+    """The transports are mutually exclusive; two of them is ambiguous."""
+    with pytest.raises(ValueError, match="Exactly one of"):
+      McpToolsetConfig(
+          stdio_server_params=self._stdio_server_params(),
+          sse_connection_params=SseConnectionParams(
+              url="https://example.com/mcp"
+          ),
+      )
+
+  def test_stdio_server_params_alone_is_accepted(self):
+    config = McpToolsetConfig(stdio_server_params=self._stdio_server_params())
+
+    assert config.stdio_server_params.command == "test_command"
+    assert config.stdio_connection_params is None
+    assert config.sse_connection_params is None
+    assert config.streamable_http_connection_params is None
+
+  def test_stdio_connection_params_alone_is_accepted(self):
+    config = McpToolsetConfig(
+        stdio_connection_params=StdioConnectionParams(
+            server_params=self._stdio_server_params(), timeout=10.0
+        )
+    )
+
+    assert config.stdio_connection_params.timeout == 10.0
+
+  def test_sse_connection_params_alone_is_accepted(self):
+    config = McpToolsetConfig(
+        sse_connection_params=SseConnectionParams(url="https://example.com/mcp")
+    )
+
+    assert config.sse_connection_params.url == "https://example.com/mcp"
+
+  def test_streamable_http_connection_params_alone_is_accepted(self):
+    config = McpToolsetConfig(
+        streamable_http_connection_params=StreamableHTTPConnectionParams(
+            url="https://example.com/mcp"
+        )
+    )
+
+    assert (
+        config.streamable_http_connection_params.url
+        == "https://example.com/mcp"
+    )
+
+  def test_non_transport_fields_do_not_satisfy_the_validator(self):
+    """Auth/filter fields are not transports and cannot stand in for one."""
+    with pytest.raises(ValueError, match="Exactly one of"):
+      McpToolsetConfig(tool_filter=["tool1"], credential_key="key")
+
+  def test_use_mcp_resources_defaults_to_false(self):
+    config = McpToolsetConfig(stdio_server_params=self._stdio_server_params())
+
+    assert config.use_mcp_resources is False

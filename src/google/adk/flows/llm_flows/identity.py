@@ -24,6 +24,7 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import as_llm_agent
 
 
 class _IdentityLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -33,7 +34,7 @@ class _IdentityLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    agent = invocation_context.agent
+    agent = as_llm_agent(invocation_context)
     if getattr(agent, 'mode', None) != 'single_turn':
       si = f'You are an agent. Your internal name is "{agent.name}".'
       if agent.description:

@@ -2,7 +2,10 @@
 
 ## Overview
 
-This sample demonstrates how to define a workflow with a feedback loop using a YAML configuration file. It mirrors the `workflow_samples/loop` sample, but uses YAML to define the workflow structure instead of Python.
+This sample demonstrates how to define a workflow with a feedback loop using a
+YAML configuration file. It mirrors the
+`contributing/samples/workflows/loop` sample, but uses YAML to define the
+workflow structure instead of Python.
 
 ## Sample Inputs
 

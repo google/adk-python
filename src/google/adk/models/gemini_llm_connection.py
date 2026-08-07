@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import AsyncGenerator
+from typing import cast
 from typing import Union
 
 from google.genai import types
@@ -92,8 +93,9 @@ class GeminiLlmConnection(BaseLlmConnection):
 
     if contents:
       logger.debug('Sending history to live connection: %s', contents)
+      turns: list[types.Content | types.ContentDict] = [*contents]
       await self._gemini_session.send_client_content(
-          turns=contents,
+          turns=turns,
           turn_complete=contents[-1].role == 'user',
       )
     else:
@@ -124,7 +126,16 @@ class GeminiLlmConnection(BaseLlmConnection):
     assert content.parts
     if content.parts[0].function_response:
       # All parts have to be function responses.
-      function_responses = [part.function_response for part in content.parts]
+      function_responses = [
+          function_response
+          for part in content.parts
+          if (function_response := part.function_response) is not None
+      ]
+      if len(function_responses) != len(content.parts):
+        raise ValueError(
+            'Function-response content cannot mix function and non-function'
+            ' parts.'
+        )
       logger.debug('Sending LLM function response: %s', function_responses)
       await self._gemini_session.send_tool_response(
           function_responses=function_responses
@@ -307,7 +318,12 @@ class GeminiLlmConnection(BaseLlmConnection):
     tool_call_parts: list[types.Part] = []
     last_grounding_metadata = None
     tool_call_metadata = None
-    async with Aclosing(self._gemini_session.receive()) as agen:
+    async with Aclosing(
+        cast(
+            AsyncGenerator[types.LiveServerMessage, None],
+            self._gemini_session.receive(),
+        )
+    ) as agen:
       # Pending cleanup: reuse StreamingResponseAggregator to accumulate
       # partial content and emit responses as needed, once that aggregator
       # handles the live-connection message shapes.
@@ -510,7 +526,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                   text,
                   is_thought,
                   last_grounding_metadata,
-                  message.server_content.interrupted,
+                  bool(message.server_content.interrupted),
               )
               text = ''
               is_thought = False
@@ -582,7 +598,7 @@ class GeminiLlmConnection(BaseLlmConnection):
             last_grounding_metadata = None
           tool_call_parts.extend([
               types.Part(function_call=function_call)
-              for function_call in message.tool_call.function_calls
+              for function_call in message.tool_call.function_calls or []
           ])
           if not self._is_gemini_3_x_live:
             if tool_call_metadata is None:

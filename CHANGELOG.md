@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.6.2](https://github.com/google/adk-python/compare/v2.6.1...v2.6.2) (2026-08-03)
+
+### Bug Fixes
+
+* **cli:** update gcloud command to use beta flag ([9630559](https://github.com/google/adk-python/commit/9630559830da28a187ba75ef1c26c64780dd7987))
+
+## [2.6.1](https://github.com/google/adk-python/compare/v2.6.0...v2.6.1) (2026-07-30)
+
+
+### Features
+
+* add parent terminal grouping and TTL pruning to ADK CLI telemetry ([99bbd83](https://github.com/google/adk-python/commit/99bbd83ddac5f1ade93cdde1be98a1e3164e1da7))
+* capture TTY connectivity in CLI environment telemetry ([c12a025](https://github.com/google/adk-python/commit/c12a025184cec7859d829d8ce7178ddbe3e2e302))
+
+
+### Bug Fixes
+
+* **cli:** implement early telemetry recording for long-running web servers and log successful exit code upon routine teardown ([77726c5](https://github.com/google/adk-python/commit/77726c55b33d6da1688a3d6893fe5e474d79116b))
+* Stop re-validating already-consumed tool confirmations ([2b1204d](https://github.com/google/adk-python/commit/2b1204d0a0dd0d97f1e23f1188ea7366bfcb61e1))
+
 ## [2.6.0](https://github.com/google/adk-python/compare/v2.5.0...v2.6.0) (2026-07-29)
 
 

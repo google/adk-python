@@ -215,6 +215,11 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
           override_isolation_scope=override_isolation_scope,
       )
 
+    if child_ctx is None:
+      raise RuntimeError(
+          f'Dynamic node {node_path} completed without a child context.'
+      )
+
     logger.debug('node %s schedule end.', node_path)
 
     # Advance chronological sequence for this parent path and key
@@ -226,7 +231,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
 
   async def _check_existing_run(
       self,
-      curr_parent_ctx: Context | None,
+      curr_parent_ctx: Context,
       curr_node: BaseNode,
       curr_name: str,
       node_path: str,
@@ -304,7 +309,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
 
     else:
       # Rerun!
-      run.state.resume_inputs = result.resume_inputs
+      run.state.resume_inputs = result.resume_inputs or {}
       logger.debug('node %s schedule: Rerunning execution.', node_path)
       return (
           await self._run_node_internal(

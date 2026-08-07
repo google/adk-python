@@ -6135,7 +6135,33 @@ async def test_generate_content_async_passes_http_options_timeout(
   mock_acompletion.assert_called_once()
   _, kwargs = mock_acompletion.call_args
   assert "timeout" in kwargs
-  assert kwargs["timeout"] == 30000
+  # 30000ms in, 30s out.
+  assert kwargs["timeout"] == 30
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_converts_http_options_timeout_to_seconds(
+    mock_acompletion, lite_llm_instance
+):
+  """http_options.timeout is milliseconds; litellm's timeout is seconds."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(timeout=1500)
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["timeout"] == 1.5
 
 
 @pytest.mark.asyncio
@@ -6450,6 +6476,97 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
   assert args_by_name["my_func"] == json.loads(full_args_a)
   assert args_by_name["other_func"] == json.loads(full_args_b)
+
+
+def _text_stream_chunks(text_fragments, finish_reason="stop"):
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content=fragment),
+              )
+          ]
+      )
+      for fragment in text_fragments
+  ]
+  stream.append(
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason=finish_reason, delta=Delta())]
+      )
+  )
+  return stream
+
+
+@pytest.mark.asyncio
+async def test_streaming_text_assembled_from_many_fragments(
+    mock_completion, lite_llm_instance
+):
+  full_text = "".join(f"token-{i} " for i in range(500))
+  fragments = _split_into_chunks(full_text, [7] * (len(full_text) // 7))
+  mock_completion.return_value = iter(_text_stream_chunks(fragments))
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  partials = [r for r in responses if r.partial]
+  aggregated = [r for r in responses if not r.partial]
+  assert [p.content.parts[0].text for p in partials] == fragments
+  assert len(aggregated) == 1
+  assert aggregated[0].content.parts[0].text == full_text
+
+
+@pytest.mark.asyncio
+async def test_streaming_buffers_hold_fragments_instead_of_growing_copies(
+    mock_completion, lite_llm_instance
+):
+  # `+=` onto a closure cell or a dict item does not get CPython's in-place
+  # unicode concat, so it re-copies the whole buffer on every chunk and makes
+  # a stream quadratic in its own length. Both buffers must stay lists of the
+  # raw fragments, so each chunk costs only its own length.
+  arg_fragments = ['{"a": ', "1, ", '"b": 2}']
+  text_fragments = ["alpha ", "beta"]
+  stream = _stream_chunks_from_function_chunks(
+      _function_chunks_for_args(arg_fragments)
+  )[:-1]
+  stream.extend(_text_stream_chunks(text_fragments)[:-1])
+  mock_completion.return_value = iter(stream)
+
+  responses = lite_llm_instance.generate_content_async(
+      LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+  )
+  try:
+    # Suspends on the first partial text response, with both buffers filled.
+    await responses.__anext__()
+    buffers = responses.ag_frame.f_locals
+    assert buffers["text_parts"] == text_fragments[:1]
+    assert buffers["function_calls"][0]["args_parts"] == arg_fragments
+  finally:
+    await responses.aclose()
+
+
+@pytest.mark.asyncio
+async def test_streaming_text_buffer_is_reset_between_aggregated_responses(
+    mock_completion, lite_llm_instance
+):
+  stream = _text_stream_chunks(["first "])
+  stream.extend(_text_stream_chunks(["second"]))
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  aggregated = [r for r in responses if not r.partial]
+  assert len(aggregated) == 1
+  assert aggregated[0].content.parts[0].text == "second"
 
 
 def test_model_dump_json_excludes_llm_client():

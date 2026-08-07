@@ -3805,5 +3805,426 @@ def test_finalize_agent_identity_credentials_api_call_error(test_app):
     assert "Failed to finalize credentials" in response.json()["detail"]
 
 
+#################################################
+# Span Exporter Tests
+#################################################
+
+
+def _readable_span(name, *, trace_id, span_id=1, attributes=None):
+  """Builds a finished span suitable for feeding a SpanExporter."""
+  from opentelemetry.sdk.trace import ReadableSpan
+  from opentelemetry.trace import SpanContext
+
+  return ReadableSpan(
+      name=name,
+      context=SpanContext(trace_id=trace_id, span_id=span_id, is_remote=False),
+      attributes=attributes or {},
+  )
+
+
+def test_api_server_span_exporter_records_only_llm_and_tool_spans():
+  """Only call_llm / send_data / execute_tool* spans are kept, by event id."""
+  from google.adk.cli.api_server import ApiServerSpanExporter
+  from opentelemetry.sdk.trace.export import SpanExportResult
+
+  trace_dict = {}
+  exporter = ApiServerSpanExporter(trace_dict)
+
+  spans = [
+      _readable_span(
+          "call_llm",
+          trace_id=11,
+          span_id=1,
+          attributes={"gcp.vertex.agent.event_id": "llm-event"},
+      ),
+      _readable_span(
+          "send_data",
+          trace_id=12,
+          span_id=2,
+          attributes={"gcp.vertex.agent.event_id": "data-event"},
+      ),
+      _readable_span(
+          "execute_tool my_tool",
+          trace_id=13,
+          span_id=3,
+          attributes={"gcp.vertex.agent.event_id": "tool-event"},
+      ),
+      _readable_span(
+          "invocation",
+          trace_id=14,
+          span_id=4,
+          attributes={"gcp.vertex.agent.event_id": "unrelated-event"},
+      ),
+  ]
+
+  assert exporter.export(spans) == SpanExportResult.SUCCESS
+
+  assert sorted(trace_dict) == ["data-event", "llm-event", "tool-event"]
+  # The exporter augments the span attributes with its trace/span identifiers,
+  # which is what the /debug/trace endpoint hands back to the UI.
+  assert trace_dict["llm-event"]["trace_id"] == 11
+  assert trace_dict["llm-event"]["span_id"] == 1
+  assert trace_dict["tool-event"]["trace_id"] == 13
+
+
+def test_api_server_span_exporter_skips_span_without_event_id():
+  """A traced span carrying no event id cannot be keyed, so it is dropped."""
+  from google.adk.cli.api_server import ApiServerSpanExporter
+
+  trace_dict = {}
+  exporter = ApiServerSpanExporter(trace_dict)
+
+  exporter.export([
+      _readable_span(
+          "call_llm",
+          trace_id=21,
+          attributes={"gcp.vertex.agent.session_id": "session-a"},
+      )
+  ])
+
+  assert trace_dict == {}
+
+
+def test_in_memory_exporter_returns_only_spans_of_requested_session():
+  """Spans are indexed per session id and looked up by trace id."""
+  from google.adk.cli.api_server import InMemoryExporter
+
+  session_trace_dict = {}
+  exporter = InMemoryExporter(session_trace_dict)
+
+  span_a1 = _readable_span(
+      "call_llm",
+      trace_id=101,
+      span_id=1,
+      attributes={"gcp.vertex.agent.session_id": "session-a"},
+  )
+  span_a2 = _readable_span(
+      "execute_tool my_tool",
+      trace_id=101,
+      span_id=2,
+      attributes={"gcp.vertex.agent.session_id": "session-a"},
+  )
+  span_b = _readable_span(
+      "call_llm",
+      trace_id=202,
+      span_id=3,
+      attributes={"gcp.vertex.agent.session_id": "session-b"},
+  )
+
+  exporter.export([span_a1, span_a2, span_b])
+
+  # Both session-a spans share a trace, so the trace id is recorded once.
+  assert session_trace_dict == {"session-a": [101], "session-b": [202]}
+  assert exporter.get_finished_spans("session-a") == [span_a1, span_a2]
+  assert exporter.get_finished_spans("session-b") == [span_b]
+  assert exporter.get_finished_spans("session-never-seen") == []
+
+
+def test_in_memory_exporter_falls_back_to_conversation_id():
+  """A span with no agent session id is indexed by the conversation id."""
+  from google.adk.cli.api_server import InMemoryExporter
+
+  session_trace_dict = {}
+  exporter = InMemoryExporter(session_trace_dict)
+
+  conversation_span = _readable_span(
+      "call_llm",
+      trace_id=303,
+      span_id=1,
+      attributes={"gen_ai.conversation.id": "conversation-1"},
+  )
+  unattributed_span = _readable_span("call_llm", trace_id=404, span_id=2)
+
+  exporter.export([conversation_span, unattributed_span])
+
+  assert session_trace_dict == {"conversation-1": [303]}
+  assert exporter.get_finished_spans("conversation-1") == [conversation_span]
+
+
+def test_in_memory_exporter_clear_drops_spans_but_keeps_session_index():
+  """clear() forgets the spans; the session -> trace id index is untouched."""
+  from google.adk.cli.api_server import InMemoryExporter
+
+  session_trace_dict = {}
+  exporter = InMemoryExporter(session_trace_dict)
+  span = _readable_span(
+      "call_llm",
+      trace_id=505,
+      attributes={"gcp.vertex.agent.session_id": "session-a"},
+  )
+  exporter.export([span])
+  assert exporter.get_finished_spans("session-a") == [span]
+
+  exporter.clear()
+
+  assert exporter.get_finished_spans("session-a") == []
+  assert session_trace_dict == {"session-a": [505]}
+
+
+#################################################
+# Request-body plumbing tests
+#################################################
+
+
+def test_create_session_applies_body_session_id_state_and_events(
+    test_app, test_session_info
+):
+  """CreateSessionRequest drives the id, the state and the seeded events."""
+  base_url = (
+      f"/apps/{test_session_info['app_name']}"
+      f"/users/{test_session_info['user_id']}/sessions"
+  )
+  response = test_app.post(
+      base_url,
+      json={
+          "session_id": "seeded_session",
+          "state": {"greeting": "hello"},
+          "events": [
+              {
+                  "author": "user",
+                  "invocationId": "inv-1",
+                  "content": {"role": "user", "parts": [{"text": "hi there"}]},
+              },
+          ],
+      },
+  )
+
+  assert response.status_code == 200
+  created = response.json()
+  assert created["id"] == "seeded_session"
+  assert created["state"] == {"greeting": "hello"}
+
+  fetched = test_app.get(f"{base_url}/seeded_session")
+  assert fetched.status_code == 200
+  events = fetched.json()["events"]
+  assert [event["content"]["parts"][0]["text"] for event in events] == [
+      "hi there"
+  ]
+
+
+def test_patch_memory_unknown_session_returns_404(
+    test_app, test_session_info, mock_memory_service
+):
+  """A request naming a missing session must not reach the memory service."""
+  url = (
+      f"/apps/{test_session_info['app_name']}"
+      f"/users/{test_session_info['user_id']}/memory"
+  )
+
+  response = test_app.patch(url, json={"session_id": "no_such_session"})
+
+  assert response.status_code == 404
+  assert response.json()["detail"] == "Session not found"
+  mock_memory_service.add_session_to_memory.assert_not_called()
+
+
+#################################################
+# ApiServer vs DevServer endpoint surface
+#################################################
+
+
+def test_dev_only_endpoints_absent_when_web_disabled(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """web=False serves ApiServer only: no eval / debug / graph routes."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      web=False,
+  )
+
+  dev_only_paths = [
+      "/config/telemetry",
+      "/dev/apps/test_app/eval-sets",
+      "/dev/apps/test_app/eval-results",
+      "/dev/apps/test_app/metrics-info",
+      "/dev/apps/test_app/tests",
+      "/dev/apps/test_app/graph",
+      "/dev/apps/test_app/debug/trace/some-event",
+  ]
+  for path in dev_only_paths:
+    assert client.get(path).status_code == 404, path
+
+  # The production endpoints are still there.
+  assert client.get("/health").status_code == 200
+  assert client.get("/list-apps").status_code == 200
+
+
+def test_app_info_rejects_special_agent_only_in_api_server_mode(
+    test_app,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Internal `__` apps reach the dev server, but not the api server."""
+  api_only_client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      web=False,
+  )
+
+  blocked = api_only_client.get("/apps/__internal_assistant/app-info")
+  assert blocked.status_code == 403
+  assert "internal special agents" in blocked.json()["detail"]
+
+  # Same request on the dev server gets past the guard and is answered on the
+  # merits of the loaded agent (which here is not an LlmAgent).
+  allowed = test_app.get("/apps/__internal_assistant/app-info")
+  assert allowed.status_code == 400
+  assert allowed.json()["detail"] == "Root agent is not an LlmAgent"
+
+
+def test_dev_endpoint_rejects_app_name_that_is_not_an_identifier(
+    builder_test_client,
+):
+  """_get_agent_dir only accepts dot-separated Python identifiers."""
+  ok = builder_test_client.get("/dev/apps/test_app/tests")
+  assert ok.status_code == 200
+  assert ok.json() == []
+
+  nested_ok = builder_test_client.get("/dev/apps/pkg.test_app/tests")
+  assert nested_ok.status_code == 200
+
+  for bad_name in ("bad-name", "1app", "app%20name"):
+    rejected = builder_test_client.get(f"/dev/apps/{bad_name}/tests")
+    assert rejected.status_code == 400, bad_name
+    assert "must be valid" in rejected.json()["detail"]
+
+
+#################################################
+# Eval endpoint plumbing
+#################################################
+
+
+def test_add_session_to_eval_set_builds_eval_case_from_session(
+    test_app, test_session_info, mock_eval_sets_manager
+):
+  """AddSessionToEvalSetRequest turns a live session into an eval case."""
+  app_name = test_session_info["app_name"]
+  user_id = test_session_info["user_id"]
+  mock_eval_sets_manager.create_eval_set(
+      app_name=app_name, eval_set_id="my_eval_set"
+  )
+
+  sessions_url = f"/apps/{app_name}/users/{user_id}/sessions"
+  created = test_app.post(
+      sessions_url,
+      json={
+          "session_id": "eval_source_session",
+          "events": [
+              {
+                  "author": "user",
+                  "invocationId": "inv-1",
+                  "content": {
+                      "role": "user",
+                      "parts": [{"text": "what is 2+2?"}],
+                  },
+              },
+              {
+                  "author": "dummy agent",
+                  "invocationId": "inv-1",
+                  "content": {"role": "model", "parts": [{"text": "4"}]},
+              },
+          ],
+      },
+  )
+  assert created.status_code == 200
+
+  response = test_app.post(
+      f"/dev/apps/{app_name}/eval-sets/my_eval_set/add-session",
+      json={
+          "eval_id": "my_eval_case",
+          "session_id": "eval_source_session",
+          "user_id": user_id,
+      },
+  )
+  assert response.status_code == 200
+
+  eval_case = mock_eval_sets_manager.get_eval_case(
+      app_name, "my_eval_set", "my_eval_case"
+  )
+  assert eval_case is not None
+  assert eval_case.session_input.app_name == app_name
+  assert eval_case.session_input.user_id == user_id
+  assert [
+      part.text
+      for invocation in eval_case.conversation
+      for part in invocation.user_content.parts
+  ] == ["what is 2+2?"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="add-session maps ValueError, but the managers raise NotFoundError",
+)
+def test_add_session_to_eval_set_unknown_eval_set_is_a_client_error(
+    test_app, create_test_session
+):
+  """Adding to an eval set that never existed is a client error, not a 500."""
+  info = create_test_session
+
+  response = test_app.post(
+      f"/dev/apps/{info['app_name']}/eval-sets/missing_eval_set/add-session",
+      json={
+          "eval_id": "case-1",
+          "session_id": info["session_id"],
+          "user_id": info["user_id"],
+      },
+  )
+
+  assert 400 <= response.status_code < 500
+
+
+def test_get_eval_result_returns_saved_eval_set_result(
+    test_app, mock_eval_set_results_manager
+):
+  """The eval-results endpoint renames EvalSetResult to EvalResult as-is."""
+  mock_eval_set_results_manager.save_eval_set_result(
+      "test_app", "my_eval_set", []
+  )
+
+  response = test_app.get(
+      "/dev/apps/test_app/eval-results/test_app_my_eval_set_eval_result"
+  )
+
+  assert response.status_code == 200
+  data = response.json()
+  assert data["evalSetResultId"] == "test_app_my_eval_set_eval_result"
+  assert data["evalSetId"] == "my_eval_set"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="legacy create-eval-set route references an undefined name",
+)
+def test_create_eval_set_legacy_route_creates_eval_set(
+    test_app, mock_eval_sets_manager
+):
+  """The deprecated create-eval-set route should create an empty eval set."""
+  response = test_app.post("/dev/apps/test_app/eval_sets/legacy_eval_set")
+
+  assert response.status_code == 200
+  assert (
+      mock_eval_sets_manager.get_eval_set("test_app", "legacy_eval_set")
+      is not None
+  )
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])
