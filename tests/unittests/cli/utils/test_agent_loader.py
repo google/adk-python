@@ -1129,6 +1129,34 @@ class TestAgentLoader:
       assert "builtins.int" in message
       assert "No root_agent found" not in message
 
+  def test_valid_agent_module_wins_over_mistyped_package_root_agent(self):
+    """A bad `root_agent` in __init__.py must not block agent.py's valid one."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "fallthrough_agent"
+      agent_dir.mkdir()
+      (agent_dir / "__init__.py").write_text(dedent("""
+                root_agent = "not an agent"
+            """))
+      (agent_dir / "agent.py").write_text(dedent("""
+                from google.adk.agents.base_agent import BaseAgent
+
+
+                class FallthroughAgent(BaseAgent):
+
+                    def __init__(self):
+                        super().__init__(name="fallthrough_agent")
+
+
+                root_agent = FallthroughAgent()
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      agent = loader.load_agent("fallthrough_agent")
+
+      assert agent.name == "fallthrough_agent"
+
 
 class TestDetermineAgentLanguage:
   """Tests for AgentLoader._determine_agent_language covering all 4 load patterns."""
