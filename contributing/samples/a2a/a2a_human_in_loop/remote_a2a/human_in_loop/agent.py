@@ -19,9 +19,43 @@ from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from .approval_config import get_approval_threshold_usd
+from .approval_config import requires_manager_approval
 
-def reimburse(purpose: str, amount: float) -> str:
-  """Reimburse the amount of money to the employee."""
+
+def reimburse(
+    purpose: str, amount: float, tool_context: ToolContext
+) -> dict[str, Any]:
+  """Reimburse the amount of money to the employee.
+
+  Whether this amount needs manager confirmation is decided by a server-side,
+  config-derived threshold (see approval_config.py) -- not by this function's
+  arguments, and not only by the agent's instruction text. `amount` at or
+  above the threshold cannot be reimbursed by a direct call to this tool: the
+  call is parked pending confirmation, and only executes once
+  `tool_context.tool_confirmation.confirmed` is True.
+  """
+  if requires_manager_approval(amount):
+    if not tool_context.tool_confirmation:
+      tool_context.request_confirmation(
+          hint=(
+              f'Reimbursement of ${amount} for {purpose!r} is at or above'
+              f' the ${get_approval_threshold_usd():.2f} auto-approval'
+              ' threshold and requires manager confirmation.'
+          ),
+      )
+      return {
+          'status': 'pending_confirmation',
+          'error': (
+              'This reimbursement requires manager confirmation before it'
+              ' can be processed.'
+          ),
+      }
+    if not tool_context.tool_confirmation.confirmed:
+      return {
+          'status': 'rejected',
+          'error': 'Reimbursement was not confirmed.',
+      }
   return {
       'status': 'ok',
   }
