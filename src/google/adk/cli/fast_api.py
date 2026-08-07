@@ -427,6 +427,7 @@ def get_fast_api_app(
     logo_image_url: str | None = None,
     auto_create_session: bool = False,
     trigger_sources: list[Literal["pubsub", "eventarc"]] | None = None,
+    trigger_oidc_audience: str | None = None,
     default_llm_model: str | None = None,
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
@@ -478,6 +479,13 @@ def get_fast_api_app(
     trigger_sources: List of trigger sources to enable (e.g. ["pubsub",
       "eventarc"]). When set, registers /trigger/* endpoints for batch and
       event-driven agent invocations. None disables all trigger endpoints.
+    trigger_oidc_audience: When set, every /trigger/* request must carry a
+      Google-signed OIDC bearer token whose audience matches this value.
+      Pub/Sub push subscriptions and Eventarc triggers attach such a token
+      when configured with a service account, so this authenticates the
+      caller as the intended delivery service. When None (the default), the
+      trigger endpoints stay unauthenticated and rely on the deployment
+      platform for access control.
     default_llm_model: Default LLM model to use for the agent.
     gemini_enterprise_app_name: The Gemini Enterprise app name to use for the
       agent.
@@ -586,6 +594,7 @@ def get_fast_api_app(
       url_prefix=url_prefix,
       auto_create_session=auto_create_session,
       trigger_sources=trigger_sources,
+      trigger_oidc_audience=trigger_oidc_audience,
       default_llm_model=default_llm_model,
   )
 

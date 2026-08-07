@@ -42,7 +42,9 @@ import uuid
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request
+from google.auth.transport import requests as google_auth_requests
 from google.genai import types
+from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel
 from pydantic import Field
 
@@ -241,8 +243,17 @@ class TriggerRouter:
       max_retries: int = DEFAULT_MAX_RETRIES,
       retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
       retry_max_delay: float = DEFAULT_RETRY_MAX_DELAY,
+      oidc_audience: Optional[str] = None,
   ):
     self._server = adk_web_server
+    # When set, every /trigger/* request must carry a Google-signed OIDC
+    # bearer token whose audience matches this value. Pub/Sub push
+    # subscriptions and Eventarc triggers attach such a token when configured
+    # with a service account, so verifying it authenticates the caller as the
+    # intended GCP delivery service. When None (the default), the endpoints
+    # stay unauthenticated and rely on the deployment platform for access
+    # control, preserving existing behavior.
+    self._oidc_audience = oidc_audience
     resolved_sources = (
         trigger_sources
         if trigger_sources is not None
@@ -388,6 +399,46 @@ class TriggerRouter:
         f" {last_error}"
     )
 
+  def _verify_oidc_token(self, request: Request) -> None:
+    """Verifies the request's OIDC bearer token when auth is enabled.
+
+    Pub/Sub push subscriptions and Eventarc triggers, when configured with a
+    service account, attach a Google-signed OIDC token in the
+    ``Authorization: Bearer`` header. When ``oidc_audience`` is set, this
+    verifies that token's signature and audience so an unauthenticated caller
+    cannot invoke an agent run.
+
+    Args:
+      request: The incoming request.
+
+    Raises:
+      HTTPException: 401 if the token is missing, malformed, or fails
+        verification.
+    """
+    if not self._oidc_audience:
+      return
+
+    auth_header = request.headers.get("Authorization", "")
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+      raise HTTPException(
+          status_code=401,
+          detail="Missing or malformed Authorization bearer token.",
+      )
+
+    try:
+      google_id_token.verify_oauth2_token(
+          token.strip(),
+          google_auth_requests.Request(),
+          self._oidc_audience,
+      )
+    except Exception as e:
+      logger.warning("OIDC token verification failed: %s", e)
+      raise HTTPException(
+          status_code=401,
+          detail="OIDC token verification failed.",
+      ) from e
+
   def register(self, app: FastAPI) -> None:
     """Register /trigger/* routes on the FastAPI app.
 
@@ -411,6 +462,7 @@ class TriggerRouter:
       async def trigger_pubsub(
           app_name: str, req: PubSubTriggerRequest, request: Request
       ) -> TriggerResponse:
+        self._verify_oidc_token(request)
         subscription = req.subscription or "pubsub-caller"
         user_id = subscription.replace("/", "--")
 
@@ -477,6 +529,7 @@ class TriggerRouter:
       async def trigger_eventarc(
           app_name: str, req: EventarcTriggerRequest, request: Request
       ) -> TriggerResponse:
+        self._verify_oidc_token(request)
 
         source = (
             req.source or request.headers.get("ce-source") or "eventarc-caller"

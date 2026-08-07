@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.cli import fast_api as fast_api_module
+from google.adk.cli import trigger_routes as trigger_routes_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.cli.trigger_routes import _is_transient_error
 from google.adk.cli.trigger_routes import TransientError
@@ -199,6 +200,7 @@ def _make_test_client(
     mock_memory_service,
     mock_agent_loader,
     trigger_sources: Optional[list[str]] = None,
+    trigger_oidc_audience: Optional[str] = None,
 ) -> TestClient:
   """Build a TestClient with the given trigger setting."""
   with (
@@ -248,6 +250,7 @@ def _make_test_client(
         memory_service_uri="",
         allow_origins=["*"],
         trigger_sources=trigger_sources,
+        trigger_oidc_audience=trigger_oidc_audience,
     )
     return TestClient(app)
 
@@ -284,6 +287,107 @@ def client_no_triggers(
       mock_agent_loader,
       trigger_sources=None,
   )
+
+
+@pytest.fixture
+def client_oidc(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+):
+  """TestClient with triggers enabled and OIDC audience verification on."""
+  return _make_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      trigger_sources=["pubsub", "eventarc"],
+      trigger_oidc_audience="https://my-service.example.run.app",
+  )
+
+
+class TestTriggerOidcVerification:
+  """Tests for optional OIDC bearer-token verification on trigger routes."""
+
+  _PUBSUB_PAYLOAD = {
+      "message": {
+          "data": base64.b64encode(b"hi").decode("utf-8"),
+          "messageId": "msg-oidc",
+      },
+      "subscription": "projects/p/subscriptions/s",
+  }
+
+  def test_rejects_missing_token(self, client_oidc):
+    resp = client_oidc.post(
+        "/apps/test_app/trigger/pubsub", json=self._PUBSUB_PAYLOAD
+    )
+    assert resp.status_code == 401
+
+  def test_rejects_non_bearer_scheme(self, client_oidc):
+    resp = client_oidc.post(
+        "/apps/test_app/trigger/pubsub",
+        json=self._PUBSUB_PAYLOAD,
+        headers={"Authorization": "Basic abc"},
+    )
+    assert resp.status_code == 401
+
+  def test_rejects_invalid_token(self, client_oidc, monkeypatch):
+    def _fail(*args, **kwargs):
+      raise ValueError("bad token")
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _fail,
+    )
+    resp = client_oidc.post(
+        "/apps/test_app/trigger/pubsub",
+        json=self._PUBSUB_PAYLOAD,
+        headers={"Authorization": "Bearer forged.jwt.value"},
+    )
+    assert resp.status_code == 401
+
+  def test_accepts_valid_token(self, client_oidc, monkeypatch):
+    captured_audience = []
+
+    def _ok(token, request, audience):
+      captured_audience.append(audience)
+      return {"aud": audience, "email": "svc@project.iam"}
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+
+    async def dummy_run_async(self, user_id, session_id, new_message, **kwargs):
+      yield _model_event("ok")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+
+    resp = client_oidc.post(
+        "/apps/test_app/trigger/pubsub",
+        json=self._PUBSUB_PAYLOAD,
+        headers={"Authorization": "Bearer good.jwt.value"},
+    )
+    assert resp.status_code == 200
+    assert captured_audience == ["https://my-service.example.run.app"]
+
+  def test_unauthenticated_by_default(self, client, monkeypatch):
+    """With no audience configured, no token is required (existing behavior)."""
+
+    async def dummy_run_async(self, user_id, session_id, new_message, **kwargs):
+      yield _model_event("ok")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+
+    resp = client.post(
+        "/apps/test_app/trigger/pubsub", json=self._PUBSUB_PAYLOAD
+    )
+    assert resp.status_code == 200
 
 
 # ===================================================================

@@ -721,6 +721,7 @@ class ApiServer:
       url_prefix: Optional[str] = None,
       auto_create_session: bool = False,
       trigger_sources: Optional[list[str]] = None,
+      trigger_oidc_audience: Optional[str] = None,
       default_llm_model: Optional[str] = None,
   ):
     self.agent_loader = agent_loader
@@ -741,6 +742,7 @@ class ApiServer:
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
+    self.trigger_oidc_audience = trigger_oidc_audience
     self.default_llm_model = default_llm_model
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
 
@@ -1139,7 +1141,11 @@ class ApiServer:
     if self.trigger_sources:
       from .trigger_routes import TriggerRouter
 
-      trigger_router = TriggerRouter(self, trigger_sources=self.trigger_sources)
+      trigger_router = TriggerRouter(
+          self,
+          trigger_sources=self.trigger_sources,
+          oidc_audience=self.trigger_oidc_audience,
+      )
       trigger_router.register(app)
 
     return app
