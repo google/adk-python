@@ -66,7 +66,19 @@ def _extract_task_delegation_fcs(
   """Return task-delegation FCs from this event.
 
   A task-delegation FC is one whose tool is a ``_TaskAgentTool`` instance.
+
+  Partial progressive-SSE chunks are ignored. Under
+  ``PROGRESSIVE_SSE_STREAMING``, intermediate chunks that carry a task FC are
+  marked ``partial=True``; the Runner only persists non-partial events. If we
+  dispatch and ``break`` on a partial chunk, the non-partial aggregate that
+  carries the FC is never yielded, so the session keeps a synthesized task FR
+  with no matching FC. Dispatch must wait for the final aggregate, which also
+  carries complete streamed arguments.
   """
+  # Mirror process_llm_agent_output: never act on partial model chunks.
+  if event.partial:
+    return []
+
   from ..tools.agent_tool import _TaskAgentTool
 
   return [

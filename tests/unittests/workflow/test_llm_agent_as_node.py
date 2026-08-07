@@ -1545,6 +1545,38 @@ async def test_drain_pending_tool_response_events_yields_confirmation_then_fr():
   assert drained[1].get_function_responses()[0].name == 'echo'
 
 
+def test_extract_task_delegation_fcs_skips_partial_events():
+  """Progressive-SSE partial chunks must not trigger task dispatch (#6583)."""
+
+  def _fc(name: str, call_id: str) -> types.Part:
+    return types.Part(
+        function_call=types.FunctionCall(
+            name=name, args={'request': 'x'}, id=call_id
+        )
+    )
+
+  task_agent = LlmAgent(name='specialist', mode='task', model='unused')
+  tools_dict = {'specialist': _TaskAgentTool(task_agent)}
+  partial = Event(
+      author='coordinator',
+      content=types.Content(role='model', parts=[_fc('specialist', '1')]),
+      partial=True,
+  )
+  final = Event(
+      author='coordinator',
+      content=types.Content(role='model', parts=[_fc('specialist', '1')]),
+      partial=False,
+  )
+
+  assert not agent_wrapper._extract_task_delegation_fcs(  # pylint: disable=protected-access
+      partial, tools_dict
+  )
+  extracted = agent_wrapper._extract_task_delegation_fcs(  # pylint: disable=protected-access
+      final, tools_dict
+  )
+  assert [fc.id for fc in extracted] == ['1']
+
+
 # --- process_llm_agent_output ---
 
 

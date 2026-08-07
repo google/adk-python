@@ -28,15 +28,20 @@ nested-delegation path are all exercised:
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 from typing import AsyncGenerator
 
 from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import StreamingMode
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.llm_response import LlmResponse
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
@@ -829,3 +834,145 @@ async def test_chat_root_mixed_turn_with_long_running_tool_and_task_pauses(
   ]
   assert len(model_events) == 1
   assert "fc-lro-001" in model_events[0].long_running_tool_ids
+
+
+# ---------------------------------------------------------------------------
+# Progressive SSE: do not dispatch task FCs from partial=True chunks (#6583)
+# ---------------------------------------------------------------------------
+
+
+class _ProgressiveSseDispatchCoordinatorLlm(BaseLlm):
+  """Emits the progressive-SSE task-FC shape: partial chunk, then aggregate."""
+
+  model: str = "progressive_sse_dispatch_stub"
+  calls: int = 0
+  specialist_name: str = "specialist"
+  full_request: str = "Top landing pages for June 2026"
+
+  @classmethod
+  def supported_models(cls) -> list[str]:
+    return ["progressive_sse_dispatch_stub"]
+
+  async def generate_content_async(  # type: ignore[override]
+      self, llm_request: Any, stream: bool = False
+  ) -> AsyncIterator[LlmResponse]:
+    del llm_request, stream
+    self.calls += 1
+    if self.calls == 1:
+      # Intermediate progressive-SSE chunk: incomplete args, partial=True.
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=self.specialist_name,
+                          args={"request": ""},
+                          id="fc-dispatch-1",
+                      )
+                  )
+              ],
+          ),
+          partial=True,
+      )
+      # Non-partial aggregate: complete args; Runner persists this event.
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=self.specialist_name,
+                          args={"request": self.full_request},
+                          id="fc-dispatch-1",
+                      )
+                  )
+              ],
+          ),
+          partial=False,
+          turn_complete=True,
+      )
+      return
+
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_text(text="Here are your top landing pages.")
+            ],
+        ),
+        partial=False,
+        turn_complete=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_root_dispatches_task_fc_only_from_non_partial_sse_chunk(
+    request: pytest.FixtureRequest,
+):
+  """Task dispatch must wait for the non-partial progressive-SSE aggregate.
+
+  Regression for #6583: extracting from ``partial=True`` closes the generator
+  before the persisted FC event is yielded, leaving an orphaned task FR.
+  """
+  child = _make_task_agent(
+      name="specialist",
+      responses=[_finish_part({"result": "1. /pricing 2. /blog 3. /home"})],
+  )
+  coordinator_llm = _ProgressiveSseDispatchCoordinatorLlm()
+  root = LlmAgent(
+      name="coordinator",
+      model=coordinator_llm,
+      mode="chat",
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+  # Partial chunks are only yielded under SSE streaming; without this the
+  # regression path never reaches the chat wrapper.
+  run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+
+  events = []
+  async for event in runner.runner.run_async(
+      user_id=runner.session.user_id,
+      session_id=runner.session.id,
+      new_message=testing_utils.get_user_content(
+          "Top landing pages June 2026?"
+      ),
+      run_config=run_config,
+  ):
+    events.append(event)
+
+  assert _collect_finish_outputs(events) == [
+      {"result": "1. /pricing 2. /blog 3. /home"}
+  ]
+  assert coordinator_llm.calls == 2
+
+  persisted = list(runner.session.events)
+  task_fc_ids = [
+      fc.id
+      for e in persisted
+      for fc in e.get_function_calls()
+      if fc.name == "specialist"
+  ]
+  task_fr_ids = [
+      fr.id
+      for e in persisted
+      for fr in e.get_function_responses()
+      if fr.name == "specialist"
+  ]
+  assert task_fc_ids == ["fc-dispatch-1"]
+  assert task_fr_ids == ["fc-dispatch-1"]
+
+  task_fc_args = [
+      dict(fc.args or {})
+      for e in persisted
+      for fc in e.get_function_calls()
+      if fc.name == "specialist"
+  ]
+  assert task_fc_args == [{"request": "Top landing pages for June 2026"}]
+  assert any(
+      "Here are your top landing pages." in t
+      for t in _get_text_responses(events)
+  )
