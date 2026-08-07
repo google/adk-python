@@ -1106,3 +1106,105 @@ class TestTriggersDisabled:
     )
     resp = client.post("/apps/test_app/trigger/eventarc", json={"data": {}})
     assert resp.status_code == 404
+
+
+# ===================================================================
+# Request model validation
+# ===================================================================
+
+
+class TestTriggerRequestModels:
+  """Contract tests for the request models behind the trigger endpoints."""
+
+  def test_pubsub_body_without_message_is_rejected_before_the_agent_runs(
+      self, client, monkeypatch
+  ):
+    """`message` is required, so a malformed push is a 422, not a 500 later."""
+    invocations = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      invocations.append(new_message)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    resp = client.post(
+        "/apps/test_app/trigger/pubsub",
+        json={"subscription": "projects/p/subscriptions/s"},
+    )
+
+    assert resp.status_code == 422
+    assert invocations == []
+
+  def test_pubsub_accepts_the_full_push_envelope(self, client, monkeypatch):
+    """Real push bodies carry extra envelope fields we must tolerate."""
+    captured_messages = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      captured_messages.append(new_message.parts[0].text)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    payload = {
+        "message": {
+            "data": base64.b64encode(b"envelope test").decode("utf-8"),
+            "attributes": {"k": "v"},
+            "messageId": "msg-100",
+            "publishTime": "2026-01-01T00:00:00Z",
+            "orderingKey": "order-1",
+        },
+        "subscription": "projects/p/subscriptions/s",
+        "deliveryAttempt": 3,
+    }
+    resp = client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert resp.status_code == 200
+    assert len(captured_messages) == 1
+    assert json.loads(captured_messages[0]) == {
+        "data": "envelope test",
+        "attributes": {"k": "v"},
+    }
+
+  def test_eventarc_fallback_forwards_only_the_fields_the_caller_set(
+      self, client, monkeypatch
+  ):
+    """Unknown body keys are kept; unset CloudEvents fields are dropped."""
+    captured_messages = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      captured_messages.append(new_message.parts[0].text)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    resp = client.post(
+        "/apps/test_app/trigger/eventarc",
+        json={"bucket": "my-bucket", "name": "file.txt"},
+        headers={
+            "ce-source": "//storage.googleapis.com/b",
+            "ce-type": "google.cloud.storage.object.v1.finalized",
+            "ce-id": "evt-9",
+            "ce-specversion": "1.0",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert len(captured_messages) == 1
+    parsed_msg = json.loads(captured_messages[0])
+    assert parsed_msg["data"] == {"bucket": "my-bucket", "name": "file.txt"}
+    assert parsed_msg["attributes"] == {
+        "ce-id": "evt-9",
+        "ce-type": "google.cloud.storage.object.v1.finalized",
+        "ce-source": "//storage.googleapis.com/b",
+        "ce-specversion": "1.0",
+    }

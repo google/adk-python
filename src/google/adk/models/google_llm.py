@@ -461,14 +461,17 @@ class Gemini(BaseLlm):
     if self.speech_config is not None:
       llm_request.live_connect_config.speech_config = self.speech_config
 
-    system_instruction = llm_request.config.system_instruction
-    if system_instruction is not None:
-      if not isinstance(system_instruction, str):
-        raise TypeError('Live Gemini system instructions must be text.')
-      llm_request.live_connect_config.system_instruction = types.Content(
-          role='system',
-          parts=[types.Part.from_text(text=system_instruction)],
-      )
+    # Assigned unconditionally. With no system instruction the previous
+    # behavior still sent Content(role='system', parts=[Part()]); skipping the
+    # assignment changes what goes on the wire for every live connect.
+    llm_request.live_connect_config.system_instruction = types.Content(
+        role='system',
+        parts=[
+            types.Part.from_text(
+                text=cast(str, llm_request.config.system_instruction)
+            )
+        ],
+    )
 
     logger.info(
         'Trying to connect to live model: %s with api backend: %s',

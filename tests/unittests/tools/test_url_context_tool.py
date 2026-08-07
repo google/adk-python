@@ -136,41 +136,41 @@ class TestUrlContextTool:
     assert llm_request.config.tools[1].url_context is not None
 
   @pytest.mark.asyncio
-  async def test_process_llm_request_with_gemini_1_model_raises_error(self):
-    """Test that Gemini 1.x model raises ValueError."""
+  async def test_process_llm_request_with_variant_less_eap_model(self):
+    """Test that a variant-less EAP model id is accepted."""
     tool = UrlContextTool()
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='gemini-1.5-flash', config=types.GenerateContentConfig()
+        model='gemini-early-exp', config=types.GenerateContentConfig()
     )
 
-    with pytest.raises(
-        ValueError, match='Url context tool cannot be used in Gemini 1.x'
-    ):
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    assert llm_request.config.tools[0].url_context is not None
 
   @pytest.mark.asyncio
-  async def test_process_llm_request_with_path_based_gemini_1_model_raises_error(
-      self,
-  ):
-    """Test that path-based Gemini 1.x model raises ValueError."""
+  async def test_process_llm_request_with_path_based_gemini_model(self):
+    """Test that a path-based Gemini model id is accepted."""
     tool = UrlContextTool()
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash',
+        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.5-flash',
         config=types.GenerateContentConfig(),
     )
 
-    with pytest.raises(
-        ValueError, match='Url context tool cannot be used in Gemini 1.x'
-    ):
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    assert llm_request.config.tools[0].url_context is not None
 
   @pytest.mark.asyncio
   async def test_process_llm_request_with_non_gemini_model_raises_error(self):

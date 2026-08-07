@@ -148,4 +148,4 @@ ping_system_tool = toolset.create_publish_tool(
 
 Publishing an event to a Message Bus is only the first half of the journey. To route these events to other agents or microservices, you will need to set up Eventarc Pipelines and Enrollments.
 
-To learn how to connect multiple AI agents together using Eventarc, check out the official codelab: **[Build Event-Driven AI Agents with Eventarc, Cloud Run and ADK](https://codelabs.devsite.corp.google.com/eventarc-ai-agents#0)**.
+To learn how to connect multiple AI agents together using Eventarc, check out the official codelab: **[Build Event-Driven AI Agents with Eventarc, Cloud Run and ADK](https://codelabs.developers.google.com/next26/eventarc-ai-agents)**.

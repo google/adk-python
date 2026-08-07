@@ -43,7 +43,7 @@ I guessed the number 3, and it is valid! I found it!
 You can run the agent with:
 
 ```bash
-$ adk web contributing/samples/plugin_reflect_tool_retry
+$ adk web contributing/samples/plugins/plugin_reflect_tool_retry
 ```
 
 Select "basic" and provide the following prompt to see the agent retrying tool
@@ -64,7 +64,7 @@ wrong name then the agent can retry calling with the right tool name.
 You can run the agent with:
 
 ```bash
-$ adk web contributing/samples/plugin_reflect_tool_retry
+$ adk web contributing/samples/plugins/plugin_reflect_tool_retry
 ```
 
 Select "hallucinating_func_name" and provide the following prompt to see the

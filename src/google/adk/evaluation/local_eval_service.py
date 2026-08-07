@@ -25,7 +25,6 @@ import uuid
 from typing_extensions import override
 
 from ..agents.base_agent import BaseAgent
-from ..agents.llm_agent import LlmAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -539,11 +538,6 @@ class LocalEvalService(BaseEvalService):
     try:
       with client_label_context(EVAL_CLIENT_LABEL):
         if use_live:
-          if not isinstance(root_agent, LlmAgent):
-            raise ValueError(
-                "Live evaluation requires an LlmAgent root agent; got"
-                f" {type(root_agent).__name__}."
-            )
           inferences = await EvaluationGenerator._generate_inferences_from_root_agent_live(
               root_agent=root_agent,
               user_simulator=self._user_simulator_provider.provide(eval_case),

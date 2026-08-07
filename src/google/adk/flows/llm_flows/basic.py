@@ -25,7 +25,6 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...utils import model_name_utils
-from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
 from ._invocation_utils import as_llm_agent
 from ._invocation_utils import require_run_config
@@ -71,14 +70,19 @@ def _build_basic_request(
   agent = as_llm_agent(invocation_context)
   run_config = require_run_config(invocation_context)
   model = agent.canonical_model
-  llm_request.model = model if isinstance(model, str) else model.model
+  llm_request.model = model.model
 
   # Preserved across the agent-config overwrite below, then merged back.
   run_config_http_options = llm_request.config.http_options
 
+  generate_content_config = agent.generate_content_config
   llm_request.config = (
-      agent.generate_content_config.model_copy(deep=True)
-      if agent.generate_content_config
+      generate_content_config.model_copy(
+          update={'labels': dict(generate_content_config.labels)}
+          if generate_content_config.labels
+          else {}
+      )
+      if generate_content_config
       else types.GenerateContentConfig()
   )
 
@@ -100,7 +104,7 @@ def _build_basic_request(
   # the basic flow. Structured output for tasks is collected via the
   # finish_task tool schema instead.
   if getattr(agent, 'mode', None) != 'task' and agent.output_schema:
-    if not agent.tools or can_use_output_schema_with_tools(model):
+    if not agent.tools or model.capabilities.output_schema_and_tools:
       llm_request.set_output_schema(agent.output_schema)
 
   llm_request.live_connect_config.response_modalities = (

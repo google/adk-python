@@ -17,6 +17,7 @@ import datetime
 import json
 from typing import Any
 from typing import Callable
+from typing import cast
 
 from sqlalchemy import Dialect
 from sqlalchemy import Text
@@ -62,12 +63,8 @@ class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
       return None
     decoded: object = value
     if dialect.name != "postgresql":
-      if not isinstance(value, (str, bytes, bytearray)):
-        raise TypeError("Expected serialized JSON text from the database.")
-      decoded = json.loads(value)
-    if not isinstance(decoded, dict):
-      raise TypeError("Expected a JSON object from the database.")
-    return decoded
+      decoded = json.loads(cast("str | bytes | bytearray", value))
+    return cast("dict[str, Any]", decoded)
 
 
 class PreciseTimestamp(TypeDecorator[datetime.datetime]):  # type: ignore[misc]
@@ -93,8 +90,6 @@ class PreciseTimestamp(TypeDecorator[datetime.datetime]):  # type: ignore[misc]
         return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
       if impl_processor:
         value = impl_processor(value)
-      if not isinstance(value, datetime.datetime):
-        raise TypeError("Expected a datetime value from the database.")
-      return value
+      return cast(datetime.datetime, value)
 
     return process

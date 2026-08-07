@@ -35,21 +35,21 @@ SPOTIFY_2LO_AUTH_PROVIDER_ID = os.environ.get("SPOTIFY_2LO_AUTH_PROVIDER_ID")
 SPOTIFY_3LO_AUTH_PROVIDER_ID = os.environ.get("SPOTIFY_3LO_AUTH_PROVIDER_ID")
 
 MAPS_API_AUTH_PROVIDER = (
-    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/"
+    f"projects/{PROJECT_ID}/locations/{LOCATION}/authProviders/"
     f"{MAPS_API_AUTH_PROVIDER_ID}"
 )
 SPOTIFY_2LO_AUTH_PROVIDER = (
-    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/"
+    f"projects/{PROJECT_ID}/locations/{LOCATION}/authProviders/"
     f"{SPOTIFY_2LO_AUTH_PROVIDER_ID}"
 )
 SPOTIFY_3LO_AUTH_PROVIDER = (
-    f"projects/{PROJECT_ID}/locations/{LOCATION}/connectors/"
+    f"projects/{PROJECT_ID}/locations/{LOCATION}/authProviders/"
     f"{SPOTIFY_3LO_AUTH_PROVIDER_ID}"
 )
 
 MAPS_MCP_ENDPOINT = "https://mapstools.googleapis.com/mcp"
 CONTINUE_URI = "http://localhost:8080/commit"
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini/gemini-3.5-flash"
 
 
 async def spotify_search_track(

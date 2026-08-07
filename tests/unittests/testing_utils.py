@@ -29,6 +29,7 @@ from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.models import LlmCapabilities
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.llm_request import LlmRequest
@@ -330,6 +331,28 @@ class InMemoryRunner:
       print('Returning any partial results collected so far.')
 
     return collected_responses
+
+
+class ModelWithCapabilities(BaseLlm):
+  """A model that self-reports fixed capabilities.
+
+  For exercising flows that branch on ``BaseLlm.capabilities``, without
+  depending on which model ids happen to satisfy ADK's detection today.
+  """
+
+  model: str = 'mock'
+  output_schema_and_tools: bool = False
+
+  @property
+  @override
+  def capabilities(self) -> LlmCapabilities:
+    return LlmCapabilities(output_schema_and_tools=self.output_schema_and_tools)
+
+  @override
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    yield LlmResponse()
 
 
 class MockModel(BaseLlm):

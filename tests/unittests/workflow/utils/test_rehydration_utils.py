@@ -24,6 +24,7 @@ from google.adk.workflow.utils._rehydration_utils import _reconstruct_node_state
 from google.adk.workflow.utils._rehydration_utils import _unwrap_response
 from google.adk.workflow.utils._rehydration_utils import _validate_resume_response
 from google.adk.workflow.utils._rehydration_utils import _wrap_response
+from google.adk.workflow.utils._rehydration_utils import is_terminal_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
 from google.genai import types
 from pydantic import BaseModel
@@ -387,3 +388,69 @@ class TestScanNodeEvents:
     assert results["node_a@1"].resolved_responses["interrupt-1"] == {
         "count": 42
     }
+
+
+# --- is_terminal_event ---
+#
+# Terminal events are what the replay sequence barrier is built from, so a
+# misclassification either drops a node out of the recorded order or blocks
+# the barrier on a node that never produced anything.
+
+
+class TestIsTerminalEvent:
+
+  def test_falsy_output_is_still_terminal(self):
+    """A node that returned 0 / "" / False produced an output all the same."""
+    for falsy in (0, "", False, [], {}):
+      assert is_terminal_event(Event(author="node", output=falsy)) is True
+
+  def test_absent_output_alone_is_not_terminal(self):
+    """A bare event carries no outcome, so it must not enter the sequence."""
+    assert is_terminal_event(Event(author="node")) is False
+
+  def test_intermediate_text_is_not_terminal(self):
+    """Streamed model text is not an outcome unless flagged as the output."""
+    event = Event(
+        author="node",
+        content=types.Content(role="model", parts=[types.Part(text="hi")]),
+    )
+    assert is_terminal_event(event) is False
+
+  def test_message_as_output_with_content_is_terminal(self):
+    """message_as_output promotes the content event itself to the outcome."""
+    event = Event(
+        author="node",
+        node_info=NodeInfo(path="wf@1/n@1", message_as_output=True),
+        content=types.Content(role="model", parts=[types.Part(text="hi")]),
+    )
+    assert is_terminal_event(event) is True
+
+  def test_message_as_output_without_content_is_not_terminal(self):
+    """The flag alone promotes nothing — there is no message to be the output."""
+    event = Event(
+        author="node",
+        node_info=NodeInfo(path="wf@1/n@1", message_as_output=True),
+    )
+    assert is_terminal_event(event) is False
+
+  def test_route_only_event_is_terminal(self):
+    """A node may emit a route and no output; it still finished its turn."""
+    assert is_terminal_event(Event(author="node", route="route-a")) is True
+
+  def test_interrupt_event_is_terminal(self):
+    """Pausing for human input ends the node's turn in the recorded order."""
+    event = Event(author="node", long_running_tool_ids=["fc-1"])
+    assert is_terminal_event(event) is True
+
+  def test_request_input_call_without_long_running_ids_is_terminal(self):
+    """Older sessions stored the interrupt only as a function call."""
+    event = create_request_input_event(
+        RequestInput(interrupt_id="fc-1", message="approve?")
+    )
+    event.long_running_tool_ids = None
+    assert is_terminal_event(event) is True
+
+  def test_error_event_is_terminal(self):
+    """A failed node occupies its slot in the sequence rather than vanishing."""
+    event = Event(author="node", error_code="BOOM")
+    assert is_terminal_event(event) is True

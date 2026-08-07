@@ -240,7 +240,7 @@ async def test_get_auth_credential_rejects_missing_completed_response(
     provider, auth_scheme, context, mock_operation
 ):
   """Test that a completed operation without credentials fails explicitly."""
-  with pytest.raises(RuntimeError, match="completed without a response"):
+  with pytest.raises(ValueError, match="completed without a response"):
     await provider.get_auth_credential(auth_scheme, context=context)
 
 

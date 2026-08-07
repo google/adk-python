@@ -42,6 +42,9 @@ from google.adk.evaluation.metric_evaluator_registry import RubricBasedToolUseV1
 from google.adk.evaluation.metric_evaluator_registry import SafetyEvaluatorV1MetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluator
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluatorMetricInfoProvider
+from google.adk.evaluation.metric_info_providers import MultiTurnTaskSuccessV1MetricInfoProvider
+from google.adk.evaluation.metric_info_providers import MultiTurnToolUseQualityV1MetricInfoProvider
+from google.adk.evaluation.metric_info_providers import MultiTurnTrajectoryQualityV1MetricInfoProvider
 from pydantic import ValidationError
 import pytest
 
@@ -556,3 +559,75 @@ class TestMetricInfoProviders:
     )
     assert metric_info.metric_value_info.interval.min_value == 0.0
     assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_multi_turn_task_success_v1_metric_info_provider(self):
+    metric_info = MultiTurnTaskSuccessV1MetricInfoProvider().get_metric_info()
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.MULTI_TURN_TASK_SUCCESS_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_multi_turn_trajectory_quality_v1_metric_info_provider(self):
+    metric_info = (
+        MultiTurnTrajectoryQualityV1MetricInfoProvider().get_metric_info()
+    )
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.MULTI_TURN_TRAJECTORY_QUALITY_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_multi_turn_tool_use_quality_v1_metric_info_provider(self):
+    metric_info = (
+        MultiTurnToolUseQualityV1MetricInfoProvider().get_metric_info()
+    )
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.MULTI_TURN_TOOL_USE_QUALITY_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_providers_cover_every_prebuilt_metric_exactly_once(self):
+    metric_names = [
+        provider.get_metric_info().metric_name
+        for provider in [
+            TrajectoryEvaluatorMetricInfoProvider(),
+            ResponseEvaluatorMetricInfoProvider(
+                PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
+            ),
+            ResponseEvaluatorMetricInfoProvider(
+                PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
+            ),
+            SafetyEvaluatorV1MetricInfoProvider(),
+            MultiTurnTaskSuccessV1MetricInfoProvider(),
+            MultiTurnTrajectoryQualityV1MetricInfoProvider(),
+            MultiTurnToolUseQualityV1MetricInfoProvider(),
+            FinalResponseMatchV2EvaluatorMetricInfoProvider(),
+            RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider(),
+            HallucinationsV1EvaluatorMetricInfoProvider(),
+            RubricBasedToolUseV1EvaluatorMetricInfoProvider(),
+            PerTurnUserSimulatorQualityV1MetricInfoProvider(),
+            RubricBasedMultiTurnTrajectoryMetricInfoProvider(),
+        ]
+    ]
+
+    # Two providers claiming the same name would silently overwrite each
+    # other's evaluator when the default registry is built.
+    assert len(metric_names) == len(set(metric_names))
+    assert set(metric_names) == {metric.value for metric in PrebuiltMetrics}
+
+  def test_every_prebuilt_metric_is_registered_by_default(self):
+    registered_names = {
+        metric_info.metric_name
+        for metric_info in (
+            DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+        )
+    }
+
+    # Other tests may add extra metrics to the registry, but no prebuilt
+    # metric may be missing from it.
+    assert {metric.value for metric in PrebuiltMetrics} <= registered_names

@@ -78,6 +78,14 @@ _MessageBlockParam: TypeAlias = Union[
     anthropic_types.ToolResultBlockParam,
 ]
 
+# Attributes an Anthropic client exposes once it has resolved a credential,
+# whichever source it came from: a static API key, a static bearer token, or a
+# credential provider discovered from the environment or from the on-disk
+# Anthropic configuration. Only these three carry a credential - the client's
+# own "could not resolve authentication method" error names the same three.
+# `credentials` is absent on older supported SDK versions, so the lookup below
+# tolerates a missing attribute.
+_ANTHROPIC_CREDENTIAL_ATTRS = ("api_key", "auth_token", "credentials")
 
 _RATE_LIMIT_POSSIBLE_FIX_MESSAGE = (
     "On how to mitigate this issue, please refer to:\n\n"
@@ -549,6 +557,47 @@ def _extract_cached_token_count(usage: Any) -> int | None:
   return cached if isinstance(cached, int) else None
 
 
+def _extract_prompt_token_count(usage: anthropic_types.Usage) -> int:
+  """Returns every input token billed for the turn.
+
+  Anthropic reports tokens served from the prompt cache and tokens written to
+  it in their own fields, disjoint from ``input_tokens``. The GenAI shape
+  instead expects a single prompt count with the cached portion folded in --
+  ``cached_content_token_count`` is a breakdown of it, not an addition to it.
+  """
+  total = 0
+  for field in (
+      "input_tokens",
+      "cache_read_input_tokens",
+      "cache_creation_input_tokens",
+  ):
+    value = getattr(usage, field, None)
+    if isinstance(value, int):
+      total += value
+  return total
+
+
+def _extract_thinking_token_count(
+    usage: anthropic_types.Usage | anthropic_types.MessageDeltaUsage,
+) -> int | None:
+  """Returns Anthropic thinking tokens, the analog of thoughts tokens.
+
+  Anthropic counts extended-thinking tokens inside ``output_tokens``, whereas
+  the GenAI shape keeps the candidate and thought counts disjoint and sums them
+  downstream. Callers therefore subtract this from ``output_tokens`` to get the
+  candidate count; the value is clamped so that subtraction stays non-negative
+  even if the two counters ever disagree.
+  """
+  details = getattr(usage, "output_tokens_details", None)
+  thinking = getattr(details, "thinking_tokens", None)
+  if not isinstance(thinking, int):
+    return None
+  output_tokens = getattr(usage, "output_tokens", None)
+  if not isinstance(output_tokens, int):
+    return thinking
+  return min(thinking, output_tokens)
+
+
 def message_to_generate_content_response(
     message: anthropic_types.Message,
 ) -> LlmResponse:
@@ -560,18 +609,22 @@ def message_to_generate_content_response(
 
   parts = [content_block_to_part(cb) for cb in message.content]
 
+  prompt_tokens = _extract_prompt_token_count(message.usage)
+  thinking_tokens = _extract_thinking_token_count(message.usage)
+
   return LlmResponse(
       content=types.Content(
           role="model",
           parts=parts,
       ),
       usage_metadata=types.GenerateContentResponseUsageMetadata(
-          prompt_token_count=message.usage.input_tokens,
-          candidates_token_count=message.usage.output_tokens,
-          total_token_count=(
-              message.usage.input_tokens + message.usage.output_tokens
+          prompt_token_count=prompt_tokens,
+          candidates_token_count=(
+              message.usage.output_tokens - (thinking_tokens or 0)
           ),
+          total_token_count=prompt_tokens + message.usage.output_tokens,
           cached_content_token_count=_extract_cached_token_count(message.usage),
+          thoughts_token_count=thinking_tokens,
       ),
       finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
@@ -690,7 +743,7 @@ class AnthropicLlm(BaseLlm):
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
-    return [r"claude-3-.*", r"claude-.*-4.*"]
+    return [r"claude-3-.*", r"claude-.*-4.*", r"claude-.*-5.*"]
 
   def _resolve_model_name(self, model: Optional[str]) -> str:
     if not model:
@@ -866,13 +919,15 @@ class AnthropicLlm(BaseLlm):
     redacted_thinking_blocks: dict[int, str] = {}
     input_tokens = 0
     output_tokens = 0
+    thinking_tokens: int | None = None
     cached_input_tokens: int | None = None
     stop_reason: Optional[anthropic_types.StopReason] = None
 
     async for event in raw_stream:
       if event.type == "message_start":
-        input_tokens = event.message.usage.input_tokens
+        input_tokens = _extract_prompt_token_count(event.message.usage)
         output_tokens = event.message.usage.output_tokens
+        thinking_tokens = _extract_thinking_token_count(event.message.usage)
         cached_input_tokens = _extract_cached_token_count(event.message.usage)
 
       elif event.type == "content_block_start":
@@ -938,7 +993,10 @@ class AnthropicLlm(BaseLlm):
             tool_use_blocks[event.index].args_json += delta.partial_json
 
       elif event.type == "message_delta":
+        # ``message_delta`` carries the authoritative cumulative counts, so the
+        # thinking detail is refreshed alongside the total it is nested in.
         output_tokens = event.usage.output_tokens
+        thinking_tokens = _extract_thinking_token_count(event.usage)
         if event.delta and event.delta.stop_reason:
           stop_reason = event.delta.stop_reason
 
@@ -984,9 +1042,10 @@ class AnthropicLlm(BaseLlm):
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=types.GenerateContentResponseUsageMetadata(
             prompt_token_count=input_tokens,
-            candidates_token_count=output_tokens,
+            candidates_token_count=output_tokens - (thinking_tokens or 0),
             total_token_count=input_tokens + output_tokens,
             cached_content_token_count=cached_input_tokens,
+            thoughts_token_count=thinking_tokens,
         ),
         finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
@@ -994,7 +1053,21 @@ class AnthropicLlm(BaseLlm):
 
   @cached_property
   def _anthropic_client(self) -> AsyncAnthropic | AsyncAnthropicVertex:
-    return AsyncAnthropic()
+    client = AsyncAnthropic()
+    # Let the SDK run its own credential resolution first, then ask the client
+    # what it found. Enumerating credential sources here would reject setups
+    # the SDK handles perfectly well, such as a signed-in on-disk profile with
+    # no credential environment variable set at all.
+    if not any(
+        getattr(client, attr, None) for attr in _ANTHROPIC_CREDENTIAL_ATTRS
+    ):
+      raise ValueError(
+          "No Anthropic credential was found for calling Claude through the"
+          " Anthropic API. Set ANTHROPIC_API_KEY to a key from the Anthropic"
+          " Console, e.g. `export ANTHROPIC_API_KEY=<your-key>`, or configure"
+          " any other credential the Anthropic SDK can discover."
+      )
+    return client
 
 
 class Claude(AnthropicLlm):
@@ -1033,8 +1106,11 @@ class Claude(AnthropicLlm):
 
     if not project_id or not location:
       raise ValueError(
-          "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set for using"
-          " Anthropic on Vertex."
+          f"Model {self.model!r} resolves to Claude served from Vertex AI, so"
+          " GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set to the"
+          " project and region serving the model. To call the Anthropic API"
+          " directly with an ANTHROPIC_API_KEY instead, pass a model instance"
+          " configured for the Anthropic API rather than a bare model name."
       )
 
     return AsyncAnthropicVertex(

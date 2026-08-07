@@ -46,6 +46,42 @@ _GCS_FILE_URI_METADATA_KEY = "adkFileUri"
 _GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
 
 
+def _parse_version(blob_name: str, prefix: str) -> Optional[int]:
+  """Extracts the version of an artifact from one of its blob names.
+
+  GCS has a flat namespace, so listing by prefix is a plain string match with
+  no notion of nesting depth. Because filenames are allowed to contain "/",
+  the prefix of an artifact is also a prefix of every artifact nested under it:
+  scanning "a/" to find versions of "a" also returns "a/b/3", which is version
+  3 of the distinct artifact "a/b".
+
+  A blob only holds a version of the artifact denoted by ``prefix`` when its
+  name is exactly ``{prefix}{version}``, so anything with a further "/" in it
+  belongs to some other artifact and must be skipped.
+
+  Args:
+      blob_name: The full name of the blob, which must start with ``prefix``.
+      prefix: The blob prefix of the artifact, including the trailing "/".
+
+  Returns:
+      The version number, or None if the blob does not hold a version of this
+      artifact.
+  """
+  suffix = blob_name[len(prefix) :]
+  if "/" in suffix:
+    # Belongs to a distinct artifact nested under this one.
+    return None
+  # int() also accepts surrounding whitespace, underscores and non-ASCII
+  # digits, none of which _get_blob_name can produce.
+  if not (suffix.isascii() and suffix.isdigit()):
+    logger.warning(
+        "Skipping blob %s because it does not end with a version number.",
+        blob_name,
+    )
+    return None
+  return int(suffix)
+
+
 class GcsArtifactService(BaseArtifactService):
   """An artifact service implementation using Google Cloud Storage (GCS)."""
 
@@ -451,17 +487,14 @@ class GcsArtifactService(BaseArtifactService):
         artifact, in ascending order.
         Returns an empty list if no versions are found.
     """
-    prefix = self._get_blob_prefix(app_name, user_id, filename, session_id)
-    blobs = self.storage_client.list_blobs(self.bucket, prefix=f"{prefix}/")
+    prefix = (
+        f"{self._get_blob_prefix(app_name, user_id, filename, session_id)}/"
+    )
+    blobs = self.storage_client.list_blobs(self.bucket, prefix=prefix)
     versions = []
     for blob in blobs:
-      try:
-        version = int(blob.name.split("/")[-1])
-      except ValueError:
-        logger.warning(
-            "Skipping blob %s because it does not end with a version number.",
-            blob.name,
-        )
+      version = _parse_version(blob.name, prefix)
+      if version is None:
         continue
 
       versions.append(version)
@@ -514,17 +547,14 @@ class GcsArtifactService(BaseArtifactService):
       filename: str,
   ) -> list[ArtifactVersion]:
     """Lists all versions and their metadata of an artifact."""
-    prefix = self._get_blob_prefix(app_name, user_id, filename, session_id)
-    blobs = self.storage_client.list_blobs(self.bucket, prefix=f"{prefix}/")
+    prefix = (
+        f"{self._get_blob_prefix(app_name, user_id, filename, session_id)}/"
+    )
+    blobs = self.storage_client.list_blobs(self.bucket, prefix=prefix)
     artifact_versions = []
     for blob in blobs:
-      try:
-        version = int(blob.name.split("/")[-1])
-      except ValueError:
-        logger.warning(
-            "Skipping blob %s because it does not end with a version number.",
-            blob.name,
-        )
+      version = _parse_version(blob.name, prefix)
+      if version is None:
         continue
 
       canonical_uri = f"gs://{self.bucket_name}/{blob.name}"

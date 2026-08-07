@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
@@ -108,20 +109,18 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
     def __init__(
         self,
         *,
-        app_name: str,
-        agent: Agent,
+        app,
         artifact_service,
         session_service,
         memory_service,
         credential_service,
-        plugins,
     ):
       del artifact_service, memory_service, credential_service
-      captured['runner_app_name'] = app_name
-      self.agent = agent
+      captured['runner_app_name'] = app.name
+      self.agent = app.root_agent
       self.session_service = session_service
-      self.plugin_manager = PluginManager(plugins=plugins)
-      self.app_name = app_name
+      self.plugin_manager = PluginManager(plugins=app.plugins)
+      self.app_name = app.name
 
     def run_async(
         self,
@@ -187,6 +186,103 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
 
   assert captured['runner_app_name'] == parent_app_name
   assert captured['session_app_name'] == parent_app_name
+
+
+def _stub_runner_class(captured):
+  """A Runner stub that reads the App the way the real Runner does."""
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+    ):
+      del artifact_service, memory_service, credential_service
+      self.app = app
+      self.agent = app.root_agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=app.plugins)
+      self.app_name = app.name
+      self.context_cache_config = app.context_cache_config
+      captured['runner'] = self
+
+    def run_async(
+        self,
+        *,
+        user_id,
+        session_id,
+        invocation_id=None,
+        new_message=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          new_message,
+          state_delta,
+          run_config,
+      )
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  return StubRunner
+
+
+async def _run_agent_tool_with_cache_config(monkeypatch, cache_config):
+  captured: dict[str, Any] = {}
+  monkeypatch.setattr('google.adk.runners.Runner', _stub_runner_class(captured))
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name='parent_app', user_id='user'
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='invocation-id',
+      agent=root_agent,
+      session=parent_session,
+      run_config=RunConfig(),
+      context_cache_config=cache_config,
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args={'request': 'hello'}, tool_context=tool_context
+  )
+  return captured['runner']
+
+
+async def test_agent_tool_propagates_context_cache_config(monkeypatch):
+  cache_config = ContextCacheConfig(
+      cache_intervals=10, ttl_seconds=1800, min_tokens=0
+  )
+  runner = await _run_agent_tool_with_cache_config(monkeypatch, cache_config)
+  assert runner.context_cache_config is cache_config
+
+
+async def test_agent_tool_propagates_none_context_cache_config(monkeypatch):
+  runner = await _run_agent_tool_with_cache_config(monkeypatch, None)
+  assert runner.context_cache_config is None
 
 
 def test_no_schema():
@@ -1138,6 +1234,51 @@ async def test_run_async_extracts_executable_code_only():
   assert result == 'print("hi")'
 
 
+async def _run_agent_tool_with_multiple_contents(
+    contents: list[types.Content],
+) -> Any:
+  """Drives AgentTool with an inner agent that yields multiple event contents."""
+
+  class _MultiContentAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      for content in contents:
+        yield Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=content,
+        )
+
+  inner = _MultiContentAgent(name='inner_agent', description='multi')
+  agent_tool = AgentTool(agent=inner)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=inner,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  return await agent_tool.run_async(
+      args={'request': 'test request'}, tool_context=tool_context
+  )
+
+
+@mark.asyncio
+async def test_run_async_accumulates_text_across_multiple_contents():
+  """Text parts from multiple sequential content events are accumulated and joined."""
+  result = await _run_agent_tool_with_multiple_contents([
+      types.Content(role='model', parts=[types.Part(text='First answer.')]),
+      types.Content(role='model', parts=[types.Part(text='Second answer.')]),
+  ])
+  assert result == 'First answer.\nSecond answer.'
+
+
 @mark.asyncio
 async def test_run_async_skips_thought_parts():
   """Parts marked thought=True are dropped regardless of kind."""
@@ -1204,6 +1345,54 @@ async def test_run_async_preserves_error_when_only_thought_parts():
       Event(author='inner_agent', error_message='A2A request failed: 503'),
   ])
   assert result == 'A2A request failed: 503'
+
+
+@mark.asyncio
+async def test_run_async_skips_partial_events():
+  """Partial events are ignored so that streamed chunks do not duplicate final content."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='Hello')],
+          ),
+          partial=True,
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text=' world')],
+          ),
+          partial=True,
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='Hello world')],
+          ),
+          partial=False,
+      ),
+  ])
+  assert result == 'Hello world'
+
+
+@mark.asyncio
+async def test_run_async_with_only_partial_events_returns_empty():
+  """When only partial events are emitted, no content is accumulated."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='streamed chunk')],
+          ),
+          partial=True,
+      ),
+  ])
+  assert result == ''
 
 
 class TestAgentToolWithCompositeAgents:
@@ -1529,19 +1718,17 @@ async def test_no_schema_args_handling(monkeypatch, args, expected_text):
     def __init__(
         self,
         *,
-        app_name: str,
-        agent,
+        app,
         artifact_service,
         session_service,
         memory_service,
         credential_service,
-        plugins,
     ):
       del artifact_service, memory_service, credential_service
-      self.agent = agent
+      self.agent = app.root_agent
       self.session_service = session_service
-      self.plugin_manager = PluginManager(plugins=plugins)
-      self.app_name = app_name
+      self.plugin_manager = PluginManager(plugins=app.plugins)
+      self.app_name = app.name
 
     def run_async(
         self,
@@ -1723,19 +1910,17 @@ async def _run_agent_tool_and_capture_content(
     def __init__(
         self,
         *,
-        app_name,
-        agent,
+        app,
         artifact_service,
         session_service,
         memory_service,
         credential_service,
-        plugins,
     ):
       del artifact_service, memory_service, credential_service
-      self.agent = agent
+      self.agent = app.root_agent
       self.session_service = session_service
-      self.plugin_manager = PluginManager(plugins=plugins)
-      self.app_name = app_name
+      self.plugin_manager = PluginManager(plugins=app.plugins)
+      self.app_name = app.name
 
     def run_async(
         self,

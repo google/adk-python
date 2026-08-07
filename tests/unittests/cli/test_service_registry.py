@@ -242,3 +242,76 @@ def test_unsupported_scheme(registry, mock_services):
       "agentengine_memory",
   ]:
     mock_services[service].assert_not_called()
+
+
+# Custom scheme registration
+def _recording_factory(return_value):
+  """Returns a (factory, calls) pair; the factory records how it was called."""
+  calls = []
+
+  def factory(uri, **kwargs):
+    calls.append((uri, kwargs))
+    return return_value
+
+  return factory, calls
+
+
+@pytest.mark.parametrize(
+    "register_method,create_method",
+    [
+        ("register_session_service", "create_session_service"),
+        ("register_artifact_service", "create_artifact_service"),
+        ("register_memory_service", "create_memory_service"),
+    ],
+)
+def test_register_service_routes_matching_scheme_with_full_uri(
+    register_method, create_method
+):
+  """A registered factory owns its scheme and receives the URI unmodified.
+
+  Built-in factories re-parse the URI themselves (bucket name, db path, agent
+  engine id), so the registry must hand over the whole string rather than the
+  scheme-stripped remainder.
+  """
+  registry = service_registry.ServiceRegistry()
+  service = object()
+  factory, calls = _recording_factory(service)
+
+  getattr(registry, register_method)("custom", factory)
+  created = getattr(registry, create_method)(
+      "custom://host/path?flag=1", agents_dir="/agents"
+  )
+
+  assert created is service
+  assert calls == [("custom://host/path?flag=1", {"agents_dir": "/agents"})]
+  # A different scheme is not routed to this factory.
+  assert getattr(registry, create_method)("other://host") is None
+  assert len(calls) == 1
+
+
+def test_register_session_service_last_registration_wins():
+  """Re-registering a scheme replaces it: services.py beats services.yaml."""
+  registry = service_registry.ServiceRegistry()
+  yaml_factory, yaml_calls = _recording_factory("from-yaml")
+  python_factory, _ = _recording_factory("from-python")
+
+  registry.register_session_service("dup", yaml_factory)
+  registry.register_session_service("dup", python_factory)
+
+  assert registry.create_session_service("dup://x") == "from-python"
+  assert yaml_calls == []
+
+
+def test_register_service_schemes_are_namespaced_per_service_type():
+  """A scheme registered for one service type is unknown to the others."""
+  registry = service_registry.ServiceRegistry()
+  factory, calls = _recording_factory("session-service")
+
+  registry.register_session_service("shared", factory)
+
+  assert registry.create_artifact_service("shared://x") is None
+  assert registry.create_memory_service("shared://x") is None
+  with pytest.raises(ValueError, match="Unsupported A2A task store URI scheme"):
+    registry._create_task_store_service("shared://x")
+  assert calls == []
+  assert registry.create_session_service("shared://x") == "session-service"

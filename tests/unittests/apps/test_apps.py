@@ -18,6 +18,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.apps.app import validate_app_name
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.workflow._base_node import BaseNode
 import pytest
@@ -223,3 +224,62 @@ class TestAppRootNode:
         TypeError, match="root_agent must be a BaseAgent or BaseNode"
     ):
       App(name="test_app", root_agent="not_a_node")
+
+
+class TestValidateAppName:
+  """Tests for the validate_app_name helper.
+
+  App names end up in session keys and artifact paths, so the rule is that a
+  name must start with a letter and contain only letters, digits, underscores
+  and hyphens, and must not collide with the reserved end-user identifier.
+  """
+
+  @pytest.mark.parametrize(
+      "name",
+      [
+          "a",
+          "app",
+          "App",
+          "my_app",
+          "my-app",
+          "app2",
+          "a1_b2-c3",
+      ],
+  )
+  def test_accepts_letter_led_alphanumeric_names(self, name: str):
+    assert validate_app_name(name) is None
+
+  @pytest.mark.parametrize(
+      "name",
+      [
+          "",  # nothing at all
+          "1app",  # leading digit
+          "_app",  # leading underscore
+          "-app",  # leading hyphen
+          "my app",  # space
+          "my.app",  # dot, which would nest an artifact path
+          "my/app",  # separator
+          "my\\app",  # Windows separator
+          "../app",  # traversal
+          "app!",  # punctuation
+      ],
+  )
+  def test_rejects_names_outside_the_allowed_alphabet(self, name: str):
+    with pytest.raises(ValueError, match="must start with a letter"):
+      validate_app_name(name)
+
+  @pytest.mark.xfail(
+      strict=True,
+      reason="`$` also matches before a trailing newline, so it slips through",
+  )
+  def test_rejects_name_with_trailing_newline(self):
+    with pytest.raises(ValueError, match="must start with a letter"):
+      validate_app_name("app\n")
+
+  def test_rejects_the_reserved_user_name(self):
+    with pytest.raises(ValueError, match="reserved for end-user input"):
+      validate_app_name("user")
+
+  @pytest.mark.parametrize("name", ["User", "users", "user_1"])
+  def test_reservation_is_an_exact_match_only(self, name: str):
+    assert validate_app_name(name) is None

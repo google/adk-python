@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+from google.adk.utils.content_utils import extract_text_from_content
+from google.adk.utils.content_utils import filter_audio_parts
+from google.adk.utils.content_utils import is_audio_part
 from google.adk.utils.content_utils import SKIP_THOUGHT_SIGNATURE_VALIDATOR
 from google.adk.utils.content_utils import to_user_content
 from google.genai import types
@@ -88,3 +91,117 @@ def test_to_user_content_list_input_preserves_non_ascii():
   assert 'שלום' in text
   assert '你好' in text
   assert '\\u' not in text
+
+
+def _audio_blob_part(mime_type: str) -> types.Part:
+  return types.Part(
+      inline_data=types.Blob(mime_type=mime_type, data=b'\x00\x01')
+  )
+
+
+def _audio_file_part(mime_type: str) -> types.Part:
+  return types.Part(
+      file_data=types.FileData(file_uri='files/clip', mime_type=mime_type)
+  )
+
+
+def test_is_audio_part_inline_audio_mime_is_audio():
+  assert is_audio_part(_audio_blob_part('audio/pcm')) is True
+
+
+def test_is_audio_part_file_data_audio_mime_is_audio():
+  assert is_audio_part(_audio_file_part('audio/wav')) is True
+
+
+def test_is_audio_part_non_audio_mime_is_not_audio():
+  # Only the 'audio/' top-level type counts; video and image blobs must
+  # survive so they still reach the model.
+  assert is_audio_part(_audio_blob_part('image/png')) is False
+  assert is_audio_part(_audio_file_part('video/mp4')) is False
+
+
+def test_is_audio_part_mime_containing_audio_but_not_prefixed_is_not_audio():
+  # The check is a prefix match on the top-level type, not a substring
+  # match, so 'application/audio-ish' is not audio.
+  assert is_audio_part(_audio_blob_part('application/audio-ish')) is False
+
+
+def test_is_audio_part_text_part_is_not_audio():
+  assert is_audio_part(types.Part(text='hello')) is False
+
+
+def test_is_audio_part_blob_without_mime_type_is_not_audio():
+  # An unlabelled blob cannot be proven to be audio, so it is kept.
+  part = types.Part(inline_data=types.Blob(data=b'\x00\x01'))
+  assert is_audio_part(part) is False
+
+
+def test_filter_audio_parts_drops_audio_and_keeps_role_and_order():
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(text='before'),
+          _audio_blob_part('audio/pcm'),
+          _audio_file_part('audio/wav'),
+          types.Part(text='after'),
+      ],
+  )
+
+  filtered = filter_audio_parts(content)
+
+  assert filtered is not None
+  assert filtered.role == 'user'
+  assert [p.text for p in filtered.parts] == ['before', 'after']
+
+
+def test_filter_audio_parts_all_audio_returns_none():
+  # A content whose every part is audio has nothing left to send, so the
+  # caller is told to drop the whole content rather than send an empty one.
+  content = types.Content(role='user', parts=[_audio_blob_part('audio/pcm')])
+  assert filter_audio_parts(content) is None
+
+
+def test_filter_audio_parts_empty_parts_returns_none():
+  assert filter_audio_parts(types.Content(role='user', parts=[])) is None
+
+
+def test_filter_audio_parts_does_not_mutate_input():
+  content = types.Content(
+      role='user',
+      parts=[types.Part(text='keep'), _audio_blob_part('audio/pcm')],
+  )
+
+  filter_audio_parts(content)
+
+  assert len(content.parts) == 2
+  assert content.parts[1].inline_data.mime_type == 'audio/pcm'
+
+
+def test_extract_text_from_content_concatenates_text_parts_verbatim():
+  # Parts are joined with no separator: the model emits a single logical
+  # string that is chunked arbitrarily across parts.
+  content = types.Content(
+      role='model',
+      parts=[types.Part(text='hello '), types.Part(text='world')],
+  )
+  assert extract_text_from_content(content) == 'hello world'
+
+
+def test_extract_text_from_content_omits_thought_parts():
+  content = types.Content(
+      role='model',
+      parts=[
+          types.Part(text='reasoning', thought=True),
+          types.Part(text='answer'),
+      ],
+  )
+  assert extract_text_from_content(content) == 'answer'
+
+
+def test_extract_text_from_content_none_returns_empty_string():
+  assert extract_text_from_content(None) == ''
+
+
+def test_extract_text_from_content_without_text_parts_returns_empty_string():
+  content = types.Content(role='user', parts=[_audio_blob_part('audio/pcm')])
+  assert extract_text_from_content(content) == ''

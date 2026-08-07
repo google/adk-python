@@ -105,7 +105,8 @@ def _require_credentials_response(
 ) -> RetrieveCredentialsResponse:
   """Require a credential response from a completed operation."""
   if response is None:
-    raise RuntimeError(
+    # ValueError so BaseLlmFlow._resolve_toolset_auth can degrade gracefully.
+    raise ValueError(
         "IAM Connector Credentials operation completed without a response."
     )
   return response
@@ -287,6 +288,9 @@ class _IamConnectorCredentialsProvider:
           ),
       )
 
-    raise RuntimeError(
+    # ValueError, not RuntimeError: BaseLlmFlow._resolve_toolset_auth catches
+    # ValueError to log and continue without auth. Raising anything else turns
+    # a survivable auth state into an aborted invocation.
+    raise ValueError(
         "IAM Connector Credentials service returned an unsupported state."
     )

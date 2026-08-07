@@ -404,6 +404,187 @@ async def test_list_versions(service_type, artifact_service_factory):
         ArtifactServiceType.FILE,
     ],
 )
+async def test_nested_artifact_does_not_leak_versions_into_parent(
+    service_type, artifact_service_factory
+):
+  """A nested artifact must not contribute versions to its parent.
+
+  Filenames may contain "/", so "doc" and "doc/nested" are two distinct
+  artifacts. On a flat keyspace the records of "doc/nested" live under the
+  prefix used to scan for versions of "doc", and must not be counted as
+  versions of "doc".
+  """
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  parent = types.Part.from_text(text="parent v0")
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="doc",
+      artifact=parent,
+  )
+  # Give the nested artifact more versions than the parent has, so that a leak
+  # would push max(versions) past any version "doc" actually has.
+  for i in range(3):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename="doc/nested",
+        artifact=types.Part.from_text(text=f"nested v{i}"),
+    )
+
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="doc",
+  ) == [0]
+
+  # Loading without an explicit version resolves max(versions). A leaked
+  # version points at a record that does not exist, silently yielding None.
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename="doc",
+      )
+      == parent
+  )
+
+  # The next version of "doc" must be 1, not 3.
+  assert (
+      await artifact_service.save_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename="doc",
+          artifact=types.Part.from_text(text="parent v1"),
+      )
+      == 1
+  )
+
+  # The nested artifact is unaffected.
+  assert await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="doc/nested",
+  ) == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_list_artifact_versions_excludes_nested_artifact(
+    service_type, artifact_service_factory
+):
+  """Version metadata of a nested artifact must not surface under its parent."""
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+
+  for filename in ("doc", "doc/nested"):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=types.Part.from_text(text=filename),
+    )
+
+  versions = await artifact_service.list_artifact_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="doc",
+  )
+
+  assert [v.version for v in versions] == [0]
+  # The returned handle must address "doc", not the nested artifact.
+  if service_type == ArtifactServiceType.GCS:
+    assert versions[0].canonical_uri.endswith("/doc/0")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_delete_artifact_keeps_nested_artifact(
+    service_type, artifact_service_factory
+):
+  """Deleting an artifact must not disturb artifacts nested under it."""
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  nested = types.Part.from_text(text="nested v0")
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="doc",
+      artifact=types.Part.from_text(text="parent v0"),
+  )
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="doc/nested",
+      artifact=nested,
+  )
+
+  await artifact_service.delete_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="doc",
+  )
+
+  assert not await artifact_service.list_versions(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="doc",
+  )
+  assert (
+      await artifact_service.load_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename="doc/nested",
+      )
+      == nested
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
 async def test_list_keys_preserves_user_prefix(
     service_type, artifact_service_factory
 ):
@@ -767,35 +948,41 @@ _UNSCOPED_SCOPE = {
 
 
 @pytest.mark.asyncio
-async def test_file_artifact_reads_fall_back_to_unscoped_layout(
+@pytest.mark.parametrize("app_name", ["app-a", "app-b"])
+async def test_file_artifact_reads_never_serve_the_unscoped_layout(
     tmp_path: Path,
+    app_name: str,
 ):
-  """Artifacts written before app scoping stay readable after the upgrade."""
+  """A root can be shared, so no app may read the pre-app-scoped tree."""
   root = tmp_path / "artifacts"
   _write_unscoped_artifact(root, "older", "legacy")
   service = FileArtifactService(root_dir=root)
 
-  assert await service.load_artifact(
-      app_name="app-a", **_UNSCOPED_SCOPE
-  ) == types.Part(text="legacy")
-  assert await service.list_versions(app_name="app-a", **_UNSCOPED_SCOPE) == [
-      0,
-      1,
-  ]
   assert (
-      await service.get_artifact_version(app_name="app-a", **_UNSCOPED_SCOPE)
-      is not None
+      await service.load_artifact(app_name=app_name, **_UNSCOPED_SCOPE) is None
   )
-  assert await service.list_artifact_keys(
-      app_name="app-a", user_id="user", session_id="session"
-  ) == ["report.txt"]
+  assert await service.list_versions(app_name=app_name, **_UNSCOPED_SCOPE) == []
+  assert (
+      await service.list_artifact_versions(app_name=app_name, **_UNSCOPED_SCOPE)
+      == []
+  )
+  assert (
+      await service.get_artifact_version(app_name=app_name, **_UNSCOPED_SCOPE)
+      is None
+  )
+  assert (
+      await service.list_artifact_keys(
+          app_name=app_name, user_id="user", session_id="session"
+      )
+      == []
+  )
 
 
 @pytest.mark.asyncio
 async def test_file_artifact_saves_never_reuse_unscoped_layout(
     tmp_path: Path,
 ):
-  """Saving after the upgrade writes app-scoped and shadows the older copy."""
+  """Saving after the upgrade writes app-scoped and ignores the older copy."""
   root = tmp_path / "artifacts"
   _write_unscoped_artifact(root, "older", "legacy")
   service = FileArtifactService(root_dir=root)
@@ -828,25 +1015,35 @@ async def test_file_artifact_saves_never_reuse_unscoped_layout(
 
 
 @pytest.mark.asyncio
-async def test_file_artifact_delete_purges_unscoped_copy_for_every_app(
+async def test_file_artifact_delete_only_removes_the_calling_apps_copy(
     tmp_path: Path,
 ):
-  """The pre-app-scoped copy is shared, so any app's delete removes it."""
+  """A delete on a shared root never reaches data outside the calling app."""
   root = tmp_path / "artifacts"
   _write_unscoped_artifact(root, "legacy")
+  unscoped_dir = (
+      root
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / "report.txt"
+  )
   service = FileArtifactService(root_dir=root)
+  await service.save_artifact(
+      app_name="app-a",
+      artifact=types.Part(text="secret-a"),
+      **_UNSCOPED_SCOPE,
+  )
 
   await service.delete_artifact(app_name="app-b", **_UNSCOPED_SCOPE)
 
-  assert (
-      await service.load_artifact(app_name="app-a", **_UNSCOPED_SCOPE) is None
-  )
-  assert (
-      await service.list_artifact_keys(
-          app_name="app-a", user_id="user", session_id="session"
-      )
-      == []
-  )
+  assert unscoped_dir.is_dir()
+  assert await service.load_artifact(
+      app_name="app-a", **_UNSCOPED_SCOPE
+  ) == types.Part(text="secret-a")
+  assert await service.list_versions(app_name="app-a", **_UNSCOPED_SCOPE) == [0]
 
 
 @pytest.mark.asyncio

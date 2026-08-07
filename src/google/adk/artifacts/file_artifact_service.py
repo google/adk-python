@@ -176,6 +176,28 @@ def _canonical_uri(artifact_dir: Path, version: int) -> str:
   return payload_path.resolve().as_uri()
 
 
+def _prune_empty_dirs(leaf: Path, stop_at: Path) -> None:
+  """Removes `leaf` and any parents it leaves empty, stopping at `stop_at`.
+
+  Filenames may contain "/", so the directory of an artifact doubles as the
+  parent directory of every artifact nested under it: "doc" is stored at
+  ``{scope}/doc`` and "doc/nested" at ``{scope}/doc/nested``. A directory may
+  therefore only be removed once it holds nothing, or deleting "doc" would
+  take "doc/nested" with it.
+
+  Args:
+    leaf: Directory to remove, if it is empty.
+    stop_at: Scope root. It and everything above it are never removed.
+  """
+  current = leaf
+  while current != stop_at and current.is_relative_to(stop_at):
+    try:
+      current.rmdir()  # Only succeeds on an empty directory.
+    except OSError:
+      return
+    current = current.parent
+
+
 def _list_versions_on_disk(artifact_dir: Path) -> list[int]:
   """Returns sorted versions discovered under the artifact directory."""
   versions_dir = _versions_dir(artifact_dir)
@@ -231,8 +253,9 @@ class FileArtifactService(BaseArtifactService):
   #                     └── {artifact_path}/...
   #
   # Releases that predate the `apps/{app_name}` level wrote the same tree
-  # directly under `root/users`. Saves never go there; it is only read from,
-  # and deleted from so a delete cannot be undone by the read fallback.
+  # directly under `root/users`, which records no app name. A root can be
+  # shared by several apps, so that tree cannot be attributed to one of them
+  # and is never read from or deleted.
   #
   # Artifact paths are derived from the provided filenames: separators create
   # nested directories, and path traversal is rejected to keep the layout
@@ -248,14 +271,11 @@ class FileArtifactService(BaseArtifactService):
     self.root_dir = Path(root_dir).expanduser().resolve()
     self.root_dir.mkdir(parents=True, exist_ok=True)
 
-  def _base_roots(self, app_name: str, user_id: str) -> tuple[Path, Path]:
-    """Returns the app-scoped root and its pre-app-scoped predecessor."""
+  def _base_root(self, app_name: str, user_id: str) -> Path:
+    """Returns the app-scoped root holding a user's artifacts."""
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
-    return (
-        self.root_dir / "apps" / app_name / "users" / user_id,
-        self.root_dir / "users" / user_id,
-    )
+    return self.root_dir / "apps" / app_name / "users" / user_id
 
   def _scope_root(
       self,
@@ -272,24 +292,6 @@ class FileArtifactService(BaseArtifactService):
       )
     return _session_artifacts_dir(base_root, session_id)
 
-  def _artifact_dirs(
-      self,
-      app_name: str,
-      user_id: str,
-      session_id: Optional[str],
-      filename: str,
-  ) -> tuple[Path, Path]:
-    """Builds the app-scoped artifact directory and its predecessor."""
-    base_root, legacy_root = self._base_roots(app_name, user_id)
-    return (
-        _resolve_scoped_artifact_path(
-            self._scope_root(base_root, session_id, filename), filename
-        )[0],
-        _resolve_scoped_artifact_path(
-            self._scope_root(legacy_root, session_id, filename), filename
-        )[0],
-    )
-
   def _artifact_dir(
       self,
       app_name: str,
@@ -298,30 +300,10 @@ class FileArtifactService(BaseArtifactService):
       filename: str,
   ) -> Path:
     """Builds the directory that stores an artifact for an app."""
-    return self._artifact_dirs(app_name, user_id, session_id, filename)[0]
-
-  def _read_artifact_dir(
-      self,
-      app_name: str,
-      user_id: str,
-      session_id: Optional[str],
-      filename: str,
-  ) -> Path:
-    """Builds the directory an artifact is read from.
-
-    Artifacts written before storage was app-scoped live in a directory shared
-    by every app on this root. They stay readable until they are deleted or
-    replaced; the app-scoped copy always wins and new versions only ever go
-    there.
-    """
-    artifact_dir, legacy_dir = self._artifact_dirs(
-        app_name, user_id, session_id, filename
-    )
-    if not _list_versions_on_disk(artifact_dir) and _list_versions_on_disk(
-        legacy_dir
-    ):
-      return legacy_dir
-    return artifact_dir
+    base_root = self._base_root(app_name, user_id)
+    return _resolve_scoped_artifact_path(
+        self._scope_root(base_root, session_id, filename), filename
+    )[0]
 
   def _build_artifact_version(
       self,
@@ -479,7 +461,7 @@ class FileArtifactService(BaseArtifactService):
       version: Optional[int],
   ) -> Optional[types.Part]:
     """Loads an artifact from disk."""
-    artifact_dir = self._read_artifact_dir(
+    artifact_dir = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -554,26 +536,26 @@ class FileArtifactService(BaseArtifactService):
   ) -> list[str]:
     """Lists artifact filenames for the given session/user."""
     filenames: set[str] = set()
+    base_root = self._base_root(app_name, user_id)
 
-    for base_root in self._base_roots(app_name, user_id):
-      if session_id is not None:
-        session_root = _session_artifacts_dir(base_root, session_id)
-        for artifact_dir in _iter_artifact_dirs(session_root):
-          metadata = self._latest_metadata(artifact_dir)
-          if metadata and metadata.file_name:
-            filenames.add(str(metadata.file_name))
-          else:
-            rel = artifact_dir.relative_to(session_root)
-            filenames.add(rel.as_posix())
-
-      user_root = _user_artifacts_dir(base_root)
-      for artifact_dir in _iter_artifact_dirs(user_root):
+    if session_id is not None:
+      session_root = _session_artifacts_dir(base_root, session_id)
+      for artifact_dir in _iter_artifact_dirs(session_root):
         metadata = self._latest_metadata(artifact_dir)
         if metadata and metadata.file_name:
           filenames.add(str(metadata.file_name))
         else:
-          rel = artifact_dir.relative_to(user_root)
-          filenames.add(f"user:{rel.as_posix()}")
+          rel = artifact_dir.relative_to(session_root)
+          filenames.add(rel.as_posix())
+
+    user_root = _user_artifacts_dir(base_root)
+    for artifact_dir in _iter_artifact_dirs(user_root):
+      metadata = self._latest_metadata(artifact_dir)
+      if metadata and metadata.file_name:
+        filenames.add(str(metadata.file_name))
+      else:
+        rel = artifact_dir.relative_to(user_root)
+        filenames.add(f"user:{rel.as_posix()}")
 
     return sorted(filenames)
 
@@ -610,14 +592,19 @@ class FileArtifactService(BaseArtifactService):
       filename: str,
       session_id: Optional[str],
   ) -> None:
-    # Both copies go, so a deleted artifact cannot reappear via the read of the
-    # pre-app-scoped layout.
-    for artifact_dir in self._artifact_dirs(
-        app_name, user_id, session_id, filename
-    ):
-      if artifact_dir.exists():
-        shutil.rmtree(artifact_dir)
-        logger.debug("Deleted artifact %s at %s", filename, artifact_dir)
+    artifact_dir = self._artifact_dir(app_name, user_id, session_id, filename)
+    versions_dir = _versions_dir(artifact_dir)
+    if not versions_dir.exists():
+      return
+    # Only this artifact's own versions go. Its directory may also be the
+    # parent of a nested artifact ("doc" vs "doc/nested"), so it is pruned
+    # separately and only if nothing is left under it.
+    shutil.rmtree(versions_dir)
+    scope_root = self._scope_root(
+        self._base_root(app_name, user_id), session_id, filename
+    )
+    _prune_empty_dirs(artifact_dir, scope_root)
+    logger.debug("Deleted artifact %s at %s", filename, artifact_dir)
 
   @override
   async def list_versions(
@@ -644,7 +631,7 @@ class FileArtifactService(BaseArtifactService):
       filename: str,
       session_id: Optional[str],
   ) -> list[int]:
-    artifact_dir = self._read_artifact_dir(
+    artifact_dir = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -677,7 +664,7 @@ class FileArtifactService(BaseArtifactService):
       filename: str,
       session_id: Optional[str],
   ) -> list[ArtifactVersion]:
-    artifact_dir = self._read_artifact_dir(
+    artifact_dir = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -725,7 +712,7 @@ class FileArtifactService(BaseArtifactService):
       session_id: Optional[str],
       version: Optional[int],
   ) -> Optional[ArtifactVersion]:
-    artifact_dir = self._read_artifact_dir(
+    artifact_dir = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
