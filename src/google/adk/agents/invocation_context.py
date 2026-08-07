@@ -365,7 +365,12 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      results = [event for event in results if event.branch == self.branch]
+      results = [
+          event
+          for event in results
+          if event.branch == self.branch
+          or (event.branch is None and event.author == "user")
+      ]
     return results
 
   def should_pause_invocation(self, event: Event) -> bool:

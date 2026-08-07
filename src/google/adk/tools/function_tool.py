@@ -18,10 +18,15 @@ import inspect
 import logging
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Union
+
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 
 from google.genai import types
 import pydantic
@@ -156,20 +161,35 @@ class FunctionTool(BaseTool):
 
     return converted_args
 
+  def _prepare_invocation_args(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> dict[str, Any]:
+    """Prepare args for function invocation (preprocesses, injects context and filters)."""
+    args_to_call = self._preprocess_args(args)
+    signature = inspect.signature(self.func)
+    valid_params = set(signature.parameters.keys())
+    if self._context_param_name in valid_params:
+      args_to_call[self._context_param_name] = tool_context
+    return {k: v for k, v in args_to_call.items() if k in valid_params}
+
+  @override
+  async def check_require_confirmation(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> bool:
+    if callable(self._require_confirmation):
+      args_to_call = self._prepare_invocation_args(args, tool_context)
+      return cast(
+          bool,
+          await self._invoke_callable(self._require_confirmation, args_to_call),
+      )
+    return bool(self._require_confirmation)
+
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     # Preprocess arguments (includes Pydantic model conversion)
-    args_to_call = self._preprocess_args(args)
-
-    signature = inspect.signature(self.func)
-    valid_params = {param for param in signature.parameters}
-    if self._context_param_name in valid_params:
-      args_to_call[self._context_param_name] = tool_context
-
-    # Filter args_to_call to only include valid parameters for the function
-    args_to_call = {k: v for k, v in args_to_call.items() if k in valid_params}
+    args_to_call = self._prepare_invocation_args(args, tool_context)
 
     # Before invoking the function, we check for if the list of args passed in
     # has all the mandatory arguments or not.
@@ -188,12 +208,9 @@ class FunctionTool(BaseTool):
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
       return {'error': error_str}
 
-    if isinstance(self._require_confirmation, Callable):
-      require_confirmation = await self._invoke_callable(
-          self._require_confirmation, args_to_call
-      )
-    else:
-      require_confirmation = bool(self._require_confirmation)
+    require_confirmation = await self.check_require_confirmation(
+        args, tool_context
+    )
 
     if require_confirmation:
       if not tool_context.tool_confirmation:
@@ -243,14 +260,15 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       *,
       args: dict[str, Any],
       tool_context: ToolContext,
-      invocation_context,
+      invocation_context: InvocationContext,
   ) -> Any:
     args_to_call = args.copy()
     signature = inspect.signature(self.func)
     # For input-streaming tools, the stream is created during
     # registration in _process_function_live_helper. Pass it here.
     if (
-        self.name in invocation_context.active_streaming_tools
+        invocation_context.active_streaming_tools is not None
+        and self.name in invocation_context.active_streaming_tools
         and invocation_context.active_streaming_tools[self.name].stream
         is not None
     ):

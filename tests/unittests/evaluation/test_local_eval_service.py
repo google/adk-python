@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Optional
 
 from google.adk.agents.llm_agent import LlmAgent
@@ -466,6 +465,39 @@ async def test_evaluate_single_inference_result(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_single_inference_result_failed_without_inferences(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=None,
+      session_id="session1",
+      status=InferenceStatus.FAILURE,
+      error_message="auth failed",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = []
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert result.eval_id == "case1"
+  assert result.session_id == "session1"
+  assert result.final_eval_status == EvalStatus.FAILED
+  assert result.overall_eval_metric_results == []
+  assert result.eval_metric_result_per_invocation == []
+
+
+@pytest.mark.asyncio
 async def test_evaluate_single_inference_result_for_conversation_scenario(
     eval_service, mock_eval_sets_manager, mocker
 ):
@@ -520,7 +552,7 @@ async def test_evaluate_single_inference_result_for_conversation_scenario(
   for i in range(3):
     invocation_result = result.eval_metric_result_per_invocation[i]
     assert invocation_result.actual_invocation == inference_result.inferences[i]
-    assert invocation_result.expected_invocation == None
+    assert invocation_result.expected_invocation is None
     assert len(invocation_result.eval_metric_results) == 1
     metric_result = invocation_result.eval_metric_results[0]
     assert metric_result.metric_name == "fake_single_sided_metric"
