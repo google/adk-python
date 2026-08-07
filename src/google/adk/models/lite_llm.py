@@ -3120,6 +3120,30 @@ class LiteLlm(BaseLlm):
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)
             )
+            if chunk.args:
+              # Surface the raw argument delta as it arrives so callers can
+              # show tool-call progress before the call is fully aggregated.
+              # Partial updates are informational only: base_llm_flow skips
+              # function execution for events with `partial=True`.
+              yield LlmResponse(
+                  content=types.Content(
+                      role="model",
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  id=function_calls[index]["id"],
+                                  name=function_calls[index]["name"] or None,
+                                  partial_args=[
+                                      types.PartialArg(string_value=chunk.args)
+                                  ],
+                                  will_continue=True,
+                              )
+                          )
+                      ],
+                  ),
+                  partial=True,
+                  model_version=part.model,
+              )
           elif isinstance(chunk, TextChunk):
             if chunk.text:
               text_parts.append(chunk.text)
