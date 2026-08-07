@@ -358,7 +358,6 @@ class AgentLoader(BaseAgentLoader):
       )
       return root_agent
 
-    # If no root_agent was found by any pattern
     # A root_agent was found but had an unusable type: surface that
     # diagnosis instead of the generic not-found guidance (#6606).
     if self._root_agent_type_mismatches:
@@ -378,6 +377,7 @@ class AgentLoader(BaseAgentLoader):
           f"{details}\n\nExpose a BaseAgent instance named"
           f" 'root_agent'.{app_hint}"
       )
+    # If no root_agent was found by any pattern
     # Check if user might be in the wrong directory
     hint = ""
     agents_path = Path(agents_dir)
