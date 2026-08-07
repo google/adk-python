@@ -2315,6 +2315,16 @@ def cli_api_server(
     default=False,
     help="Optional. Whether to enable A2A endpoint.",
 )
+@click.option(
+    "--with_cloud_run_sandbox",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help=(
+        "Optional. Whether to enable the Cloud Run sandbox for code"
+        " execution. Requires the 'gcloud beta run deploy' release track."
+    ),
+)
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
@@ -2359,6 +2369,7 @@ def cli_deploy_cloud_run(
     use_local_storage: bool = False,
     a2a: bool = False,
     trigger_sources: str | None = None,
+    with_cloud_run_sandbox: bool = False,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2383,6 +2394,7 @@ def cli_deploy_cloud_run(
 
     cli_deploy.to_cloud_run(
         agent_folder=agent,
+        with_cloud_run_sandbox=with_cloud_run_sandbox,
         project=project,
         region=region,
         service_name=service_name,

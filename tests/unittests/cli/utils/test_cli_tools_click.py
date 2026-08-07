@@ -1090,6 +1090,29 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
   assert extra_args == ()
 
 
+@pytest.mark.parametrize("with_sandbox", [True, False])
+def test_cli_deploy_cloud_run_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_sandbox: bool
+) -> None:
+  """Verify --with_cloud_run_sandbox parameter gets forwarded to to_cloud_run."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_sandbox"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  args = ["deploy", "cloud_run", str(agent_dir)]
+  if with_sandbox:
+    args.append("--with_cloud_run_sandbox")
+  result = runner.invoke(
+      cli_tools_click.main,
+      args,
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls[0][1].get("with_cloud_run_sandbox") == with_sandbox
+
+
 def test_cli_deploy_cloud_run_interspersed_options(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
