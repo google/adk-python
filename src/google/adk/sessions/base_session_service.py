@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from pydantic import Field
 
 from ..events.event import Event
+from . import _session_util
 from .session import Session
 from .state import State
 
@@ -208,5 +209,6 @@ class BaseSessionService(abc.ABC):
     """Updates the session state based on the event."""
     if not event.actions or not event.actions.state_delta:
       return
-    for key, value in event.actions.state_delta.items():
-      session.state.update({key: value})
+    _session_util.apply_state_delta(
+        session.state, event.actions.state_delta
+    )

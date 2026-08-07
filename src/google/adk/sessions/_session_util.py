@@ -56,3 +56,21 @@ def extract_state_delta(
       elif not key.startswith(State.TEMP_PREFIX):
         deltas["session"][key] = state[key]
   return deltas
+
+
+def apply_state_delta(
+    target: dict[str, Any],
+    delta: dict[str, Any],
+) -> None:
+  """Applies a state delta to a target dict in-place.
+
+  A value of ``None`` means "delete the key" (RFC 7396 JSON Merge Patch
+  semantics), consistent with how ``json_patch`` works in the SQLite
+  session service. This keeps InMemory and Database session services
+  aligned with SQLite behavior.
+  """
+  for key, value in delta.items():
+    if value is None:
+      target.pop(key, None)
+    else:
+      target[key] = value

@@ -654,6 +654,55 @@ async def test_session_state_is_not_shared(session_service):
 
 
 @pytest.mark.asyncio
+async def test_state_delta_none_deletes_key(session_service):
+  """A ``None`` value in ``state_delta`` removes the key (RFC 7396 semantics).
+
+  All session service implementations must agree: setting a state_delta entry
+  to ``None`` deletes the key rather than storing ``None``. This matches the
+  JSON Merge Patch behavior already used by the SQLite session service's
+  ``json_patch`` and keeps InMemory / Database backends consistent.
+  """
+  app_name = 'my_app'
+  user_id = 'u1'
+  session = await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      session_id='s1',
+      state={
+          'sk': 'keep',
+          'app:ak': 'keep_app',
+          'user:uk': 'keep_user',
+          'to_delete': 'gone',
+          'app:app_del': 'gone_app',
+          'user:user_del': 'gone_user',
+      },
+  )
+
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(
+          state_delta={
+              'to_delete': None,
+              'app:app_del': None,
+              'user:user_del': None,
+          }
+      ),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  fetched = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='s1'
+  )
+  assert 'to_delete' not in fetched.state
+  assert 'app:app_del' not in fetched.state
+  assert 'user:user_del' not in fetched.state
+  assert fetched.state.get('sk') == 'keep'
+  assert fetched.state.get('app:ak') == 'keep_app'
+  assert fetched.state.get('user:uk') == 'keep_user'
+
+
+@pytest.mark.asyncio
 async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   app_name = 'my_app'
   user_id = 'u1'

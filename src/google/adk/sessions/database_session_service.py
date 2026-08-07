@@ -924,11 +924,17 @@ class DatabaseSessionService(BaseSessionService):
 
         # Merge pre-extracted state deltas into storage.
         if has_app_delta:
-          storage_app_state.state.update(state_deltas["app"])
+          _session_util.apply_state_delta(
+              storage_app_state.state, state_deltas["app"]
+          )
         if has_user_delta:
-          storage_user_state.state.update(state_deltas["user"])
+          _session_util.apply_state_delta(
+              storage_user_state.state, state_deltas["user"]
+          )
         if state_deltas["session"]:
-          storage_session.state.update(state_deltas["session"])
+          _session_util.apply_state_delta(
+              storage_session.state, state_deltas["session"]
+          )
 
         is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
         if is_sqlite or is_postgresql:

@@ -364,12 +364,17 @@ class InMemorySessionService(BaseSessionService):
       user_state_delta = state_deltas['user']
       session_state_delta = state_deltas['session']
       if app_state_delta:
-        self.app_state.setdefault(app_name, {}).update(app_state_delta)
+        _session_util.apply_state_delta(
+            self.app_state.setdefault(app_name, {}), app_state_delta
+        )
       if user_state_delta:
-        self.user_state.setdefault(app_name, {}).setdefault(user_id, {}).update(
-            user_state_delta
+        _session_util.apply_state_delta(
+            self.user_state.setdefault(app_name, {}).setdefault(user_id, {}),
+            user_state_delta,
         )
       if session_state_delta:
-        storage_session.state.update(session_state_delta)
+        _session_util.apply_state_delta(
+            storage_session.state, session_state_delta
+        )
 
     return event
