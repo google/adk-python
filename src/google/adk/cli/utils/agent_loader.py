@@ -195,6 +195,9 @@ class AgentLoader(BaseAgentLoader):
               "Root agent found is not an instance of BaseAgent. But a type %s",
               type(module_candidate.root_agent),
           )
+          self._record_root_agent_type_mismatch(
+              f"{agent_name}.agent", module_candidate.root_agent
+          )
       else:
         logger.debug(
             "Module %s.agent has no root_agent.",

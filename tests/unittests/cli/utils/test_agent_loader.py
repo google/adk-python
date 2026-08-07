@@ -1108,6 +1108,27 @@ class TestAgentLoader:
       assert "google.adk.apps.app.App" in message
       assert "under the name 'app'" in message
 
+  def test_wrong_type_root_agent_in_agent_module_raises_targeted_error(self):
+    """A non-agent `root_agent` in {agent}/agent.py reports the submodule."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "mistyped_pkg"
+      agent_dir.mkdir()
+      (agent_dir / "__init__.py").write_text("")
+      (agent_dir / "agent.py").write_text(dedent("""
+                root_agent = 42
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent("mistyped_pkg")
+
+      message = str(exc_info.value)
+      assert "mistyped_pkg.agent.root_agent" in message
+      assert "builtins.int" in message
+      assert "No root_agent found" not in message
+
 
 class TestDetermineAgentLanguage:
   """Tests for AgentLoader._determine_agent_language covering all 4 load patterns."""
