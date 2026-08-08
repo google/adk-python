@@ -697,6 +697,45 @@ def test_third_party_module_reference_is_not_blocked():
   assert result is BaseModel
 
 
+# yaml is a hard, always-installed dependency of adk-python itself (not an
+# optional integration), and ships exec-capable deserialization entry points
+# that take a single string argument and need no other preconditions. Unlike
+# third-party packages in general, this one is present in every install, so
+# it is blocked outright rather than left to the general third-party gap
+# _validate_module_reference cannot close.
+_YAML_RCE_REFS = [
+    "yaml.unsafe_load",
+    "yaml.load",
+    "yaml.full_load",
+]
+
+
+@pytest.mark.parametrize("blocked_ref", _YAML_RCE_REFS)
+def test_resolve_code_reference_blocks_yaml_deserialization(blocked_ref: str):
+  """yaml's unsafe/full loaders are rejected as code references.
+
+  This is the path a prior reported exploit took for a stdlib module
+  (cProfile.run, see test_resolve_tools_blocks_exec_capable_stdlib above):
+  upload an agent YAML whose only tool is the dangerous reference, then
+  dispatch a functionCall to it with a malicious YAML string as the
+  argument. yaml.unsafe_load is the equivalent primitive for a hard,
+  always-installed third-party dependency rather than the standard
+  library.
+  """
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+
+@pytest.mark.parametrize("blocked_ref", _YAML_RCE_REFS)
+def test_resolve_tools_blocks_yaml_deserialization(blocked_ref: str):
+  """yaml's unsafe/full loaders are rejected as user-defined tools."""
+  from google.adk.tools.tool_configs import ToolConfig
+
+  tool_config = ToolConfig(name=blocked_ref)
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+
+
 def test_denylist_can_be_disabled():
   """Verify _set_enforce_denylist(False) disables module blocking."""
   config_agent_utils._set_enforce_denylist(False)
