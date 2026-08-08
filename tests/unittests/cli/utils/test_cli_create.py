@@ -71,7 +71,9 @@ def test_generate_files_with_api_key(agent_folder: Path) -> None:
   assert "GOOGLE_GENAI_USE_ENTERPRISE=0" in env_content
   assert (agent_folder / ".gitignore").read_text() == ".env\n"
   assert (agent_folder / "agent.py").exists()
-  assert (agent_folder / "__init__.py").exists()
+  assert (
+      agent_folder / "__init__.py"
+  ).read_text() == "from . import agent as agent\n"
 
 
 def test_generate_files_with_gcp(agent_folder: Path) -> None:
