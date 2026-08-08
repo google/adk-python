@@ -631,6 +631,11 @@ class Runner:
           )
           if yield_user_message and user_event:
             yield user_event
+        elif state_delta:
+          # No user message to carry the delta (e.g. resuming by
+          # invocation_id), so append it as a content-less event instead of
+          # dropping it.
+          await self._append_state_delta_event(ic, state_delta)
 
         # Run before_run callbacks
         await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
@@ -899,6 +904,29 @@ class Runner:
       active_scope = _find_active_task_scope(ic.session)
       if active_scope is not None:
         event.isolation_scope, _ = active_scope
+    _apply_run_config_custom_metadata(event, ic.run_config)
+    ic.stamp_event_branch_context(event)
+    return await self.session_service.append_event(
+        session=ic.session, event=event
+    )
+
+  async def _append_state_delta_event(
+      self,
+      ic: InvocationContext,
+      state_delta: dict[str, Any],
+  ) -> Event:
+    """Append a content-less event that only carries `state_delta`.
+
+    Used when a caller supplies `state_delta` without a `new_message` (for
+    example when resuming an invocation by id). Without this, the delta would
+    be silently dropped, because it is otherwise only applied while appending
+    the user message event.
+    """
+    event = Event(
+        invocation_id=ic.invocation_id,
+        author='user',
+        actions=EventActions(state_delta=state_delta),
+    )
     _apply_run_config_custom_metadata(event, ic.run_config)
     ic.stamp_event_branch_context(event)
     return await self.session_service.append_event(
@@ -2147,6 +2175,11 @@ class Runner:
           run_config=run_config,
           state_delta=state_delta,
       )
+    elif state_delta:
+      # Resuming without a new message: there is no user message event to
+      # carry the delta, so append it as a content-less event instead of
+      # dropping it.
+      await self._append_state_delta_event(invocation_context, state_delta)
     # Step 4: Populate agent states for the current invocation.
     invocation_context.populate_invocation_agent_states()
     # Step 5: Set agent to run for the invocation.
