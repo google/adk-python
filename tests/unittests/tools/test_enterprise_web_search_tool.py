@@ -93,4 +93,3 @@ async def test_process_llm_request_non_gemini_with_disabled_check(monkeypatch):
       llm_request.config.tools[0].enterprise_web_search
       == types.EnterpriseWebSearch()
   )
-

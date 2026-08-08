@@ -498,6 +498,17 @@ class Gemini(BaseLlm):
       llm_request.live_connect_config.thinking_config = (
           llm_request.config.thinking_config
       )
+    # Safety settings are configured via LlmAgent.generate_content_config, which
+    # only populates llm_request.config. Forward them so live runs honor the
+    # same safety configuration as non-live runs. An explicitly provided
+    # live_connect_config value takes precedence.
+    if (
+        llm_request.config.safety_settings is not None
+        and llm_request.live_connect_config.safety_settings is None
+    ):
+      llm_request.live_connect_config.safety_settings = (
+          llm_request.config.safety_settings
+      )
     logger.debug('Connecting to live with llm_request:%s', llm_request)
     logger.debug('Live connect config: %s', llm_request.live_connect_config)
     model = llm_request.model

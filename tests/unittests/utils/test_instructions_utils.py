@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
+import sys
+from unittest import mock
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import InstructionProvider as LlmAgentInstructionProvider
 from google.adk.agents.readonly_context import ReadonlyContext
@@ -362,6 +366,28 @@ async def test_inject_session_state_jinja2_artifact_with_filter():
       instruction_template, invocation_context, use_jinja2=True
   )
   assert populated_instruction == "Content: ARTIFACT DATA"
+
+
+def test_module_imports_without_jinja2_installed():
+  # Jinja2 ships only in the eval and test extras, but this module is on the
+  # import path of google.adk.agents, so a module-scope import of it would
+  # break every install that does not pull in those extras.
+  spec = importlib.util.find_spec("google.adk.utils.instructions_utils")
+  module = importlib.util.module_from_spec(spec)
+
+  with mock.patch.dict(sys.modules, {"jinja2": None}):
+    spec.loader.exec_module(module)
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_without_jinja2_installed():
+  invocation_context = await _create_test_readonly_context()
+
+  with mock.patch.dict(sys.modules, {"jinja2": None}):
+    with pytest.raises(ImportError, match="pip install jinja2"):
+      await instructions_utils.inject_session_state(
+          "Hello {{ name }}", invocation_context, use_jinja2=True
+      )
 
 
 def test_module_exposes_instruction_provider_alias():

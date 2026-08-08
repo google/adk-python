@@ -14,8 +14,10 @@
 
 from google.adk import models
 from google.adk.labs.openai._openai_llm import OpenAILlm
+from google.adk.models import registry
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.apigee_llm import ApigeeLlm
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.lite_llm import LiteLlm
 import pytest
@@ -161,6 +163,33 @@ def test_resolve_with_prefix():
   assert models.LLMRegistry.resolve('Claude:claude-3-opus@20240229') is Claude
   assert models.LLMRegistry.resolve('lite:openai/gpt-4o') is LiteLlm
   assert models.LLMRegistry.resolve('LiteLlm:openai/gpt-4o') is LiteLlm
+
+
+def test_register_after_resolve_returns_the_new_class():
+  """Test that registering over an already-resolved name takes effect."""
+  model_name = 'test-registry-override-model'
+
+  class FirstLlm(BaseLlm):
+
+    @classmethod
+    def supported_models(cls):
+      return [model_name]
+
+  class SecondLlm(BaseLlm):
+
+    @classmethod
+    def supported_models(cls):
+      return [model_name]
+
+  try:
+    models.LLMRegistry.register(FirstLlm)
+    assert models.LLMRegistry.resolve(model_name) is FirstLlm
+
+    models.LLMRegistry.register(SecondLlm)
+    assert models.LLMRegistry.resolve(model_name) is SecondLlm
+  finally:
+    registry._llm_registry_dict.pop(model_name, None)
+    models.LLMRegistry.resolve.cache_clear()
 
 
 def test_new_llm_with_prefix(mocker):

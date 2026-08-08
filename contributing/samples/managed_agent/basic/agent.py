@@ -16,8 +16,9 @@
 
 ``ManagedAgent`` calls the Managed Agents API directly from its run loop instead
 of running a local model loop. It currently supports server-side tools only
-(ADK built-in tools and raw ``google.genai.types.Tool`` configs); here we wire
-up ``google_search``, which runs entirely on the server.
+(ADK built-in tools, raw ``google.genai.types.Tool`` configs, and
+``RemoteMcpServer`` specs); here we wire up ``google_search``, which runs
+entirely on the server.
 
 A fresh remote sandbox is provisioned via ``environment={'type': 'remote'}``;
 the environment id is recovered from prior events so multi-turn conversations

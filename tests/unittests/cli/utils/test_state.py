@@ -16,9 +16,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.cli.utils.state import create_empty_state
+from google.adk.workflow import START
+from google.adk.workflow._workflow import Workflow
 
 
 def test_create_empty_state_seeds_every_instruction_placeholder():
@@ -94,3 +98,53 @@ def test_create_empty_state_ignores_callable_instruction_providers():
 
 def test_create_empty_state_returns_empty_dict_when_nothing_to_seed():
   assert create_empty_state(LlmAgent(name='root', instruction='no slots')) == {}
+
+
+def test_create_empty_state_reads_agent_tree():
+  child = LlmAgent(name='child', instruction='Use {child_key}')
+  root = LlmAgent(
+      name='root',
+      instruction='Use {root_key}',
+      sub_agents=[child],
+  )
+
+  assert create_empty_state(root) == {
+      'child_key': '',
+      'root_key': '',
+  }
+
+
+def test_create_empty_state_reads_workflow_graph_nodes():
+  node = LlmAgent(name='node', instruction='Use {workflow_key}')
+  workflow = Workflow(name='workflow', edges=[(START, node)])
+
+  assert create_empty_state(workflow) == {'workflow_key': ''}
+
+
+def test_create_empty_state_reads_nested_workflow():
+  leaf = LlmAgent(name='leaf', instruction='Use {leaf_key}')
+  inner = Workflow(name='inner', edges=[(START, leaf)])
+  outer = Workflow(name='outer', edges=[(START, inner)])
+
+  assert create_empty_state(outer) == {'leaf_key': ''}
+
+
+def test_create_empty_state_handles_cyclic_graph():
+  # A cyclic node graph must terminate rather than recurse forever; the
+  # `visited` guard in `_create_empty_state` is what makes this safe.
+  leaf = LlmAgent(name='cycle_leaf', instruction='Use {cycle_key}')
+  node_a = SimpleNamespace(graph=None)
+  node_b = SimpleNamespace(graph=None)
+  node_a.graph = SimpleNamespace(nodes=[node_b, leaf])
+  node_b.graph = SimpleNamespace(nodes=[node_a])
+
+  assert create_empty_state(node_a) == {'cycle_key': ''}
+
+
+def test_create_empty_state_skips_initialized_workflow_state():
+  node = LlmAgent(name='node', instruction='Use {workflow_key} and {fresh_key}')
+  workflow = Workflow(name='workflow', edges=[(START, node)])
+
+  assert create_empty_state(workflow, {'workflow_key': 'set'}) == {
+      'fresh_key': ''
+  }

@@ -20,7 +20,7 @@ from datetime import datetime
 import enum
 import json
 from pathlib import Path
-from types import SimpleNamespace
+import stat
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -574,6 +574,38 @@ async def test_delete_artifact_keeps_nested_artifact(
       )
       == nested
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_list_keys_includes_nested_artifact(
+    service_type, artifact_service_factory
+):
+  """An artifact nested under another artifact must still be listed."""
+  artifact_service = artifact_service_factory(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+
+  for filename in ("doc", "doc/nested"):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+        artifact=types.Part.from_text(text=filename),
+    )
+
+  assert await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  ) == ["doc", "doc/nested"]
 
 
 @pytest.mark.asyncio
@@ -2289,23 +2321,317 @@ async def test_save_load_empty_text_artifact(
   assert loaded.inline_data is None
 
 
-def test_file_uri_to_path_normalizes_windows_file_uri(monkeypatch):
-  monkeypatch.setattr(file_artifact_service, "os", SimpleNamespace(name="nt"))
-  mocked_url2pathname = mock.Mock(return_value=r"C:\tmp\adk artifacts")
-  monkeypatch.setattr(
-      file_artifact_service, "url2pathname", mocked_url2pathname
+def _write_tampered_metadata(
+    root: Path,
+    *,
+    artifact_name: str,
+    canonical_uri: str,
+) -> None:
+  """Writes a metadata document naming `canonical_uri`, bypassing the service.
+
+  This reproduces the on-disk state an attacker can otherwise reach by saving
+  an artifact that overwrites its own metadata document, so the load path can
+  be exercised against a tampered artifact tree directly.
+
+  Args:
+    root: Artifact service root directory.
+    artifact_name: Name of the artifact to tamper with.
+    canonical_uri: Value to write into the document's `canonicalUri` field.
+  """
+  version_dir = (
+      root
+      / "apps"
+      / "app"
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / artifact_name
+      / "versions"
+      / "0"
+  )
+  version_dir.mkdir(parents=True)
+  (version_dir / "metadata.json").write_text(
+      json.dumps({
+          "fileName": artifact_name,
+          "version": 0,
+          "canonicalUri": canonical_uri,
+          "customMetadata": {},
+      }),
+      encoding="utf-8",
   )
 
-  result = file_artifact_service._file_uri_to_path(
-      "file:///C:/tmp/adk%20artifacts"
+
+@pytest.mark.asyncio
+async def test_load_artifact_ignores_canonical_uri_from_metadata(tmp_path):
+  """A tampered canonicalUri must not be used to locate the payload."""
+  secret = tmp_path / "secret.txt"
+  secret.write_text("TOP-SECRET", encoding="utf-8")
+  root = tmp_path / "artifacts"
+  service = FileArtifactService(root_dir=root)
+  # The payload is deliberately absent. That is the state the delete/load race
+  # produced, and it is what previously fell through to `canonical_uri`.
+  _write_tampered_metadata(
+      root, artifact_name="poisoned.txt", canonical_uri=secret.as_uri()
   )
 
-  mocked_url2pathname.assert_called_once_with("/C:/tmp/adk artifacts")
-  assert result == Path(r"C:\tmp\adk artifacts")
-
-
-def test_file_uri_to_path_returns_none_for_non_file_uri():
-  assert (
-      file_artifact_service._file_uri_to_path("gs://bucket/adk_artifacts")
-      is None
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="poisoned.txt",
   )
+
+  assert loaded is None
+
+
+@pytest.mark.asyncio
+async def test_get_artifact_version_ignores_canonical_uri_from_metadata(
+    tmp_path,
+):
+  """A tampered canonicalUri must not be reflected back to callers."""
+  root = tmp_path / "artifacts"
+  service = FileArtifactService(root_dir=root)
+  _write_tampered_metadata(
+      root, artifact_name="poisoned.txt", canonical_uri="file:///etc/passwd"
+  )
+
+  artifact_version = await service.get_artifact_version(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="poisoned.txt",
+      version=0,
+  )
+
+  assert artifact_version is not None
+  assert artifact_version.canonical_uri != "file:///etc/passwd"
+  assert artifact_version.canonical_uri.startswith(root.as_uri())
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "metadata.json",
+        "nested/metadata.json",
+        "user:metadata.json",
+        # Case variants: on a case-insensitive filesystem these resolve to the
+        # metadata document too, so the name has to be rejected caselessly.
+        "Metadata.json",
+        "METADATA.JSON",
+        "nested/MetaData.Json",
+    ],
+)
+@pytest.mark.asyncio
+async def test_save_artifact_rejects_reserved_metadata_filename(
+    tmp_path, filename
+):
+  """An artifact may not be named so that it overwrites its own metadata."""
+  service = FileArtifactService(root_dir=tmp_path)
+
+  with pytest.raises(InputValidationError):
+    await service.save_artifact(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        filename=filename,
+        artifact=types.Part(text="payload"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_reserved_metadata_filename_stays_deletable(tmp_path):
+  """A name rejected on write must still be removable.
+
+  The rejection deliberately lives on the save path rather than in
+  `_artifact_dir`, which reads and deletes share. An artifact stored under this
+  name before it was reserved would otherwise be stranded -- unreadable and
+  impossible to delete through the API.
+  """
+  service = FileArtifactService(root_dir=tmp_path)
+  version_dir = (
+      tmp_path
+      / "apps"
+      / "app"
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / "metadata.json"
+      / "versions"
+      / "0"
+  )
+  version_dir.mkdir(parents=True)
+  (version_dir / "metadata.json").write_text(
+      json.dumps({"fileName": "metadata.json", "version": 0}), encoding="utf-8"
+  )
+  artifact_dir = version_dir.parent.parent
+
+  # Reading must not raise, and deleting must actually remove it.
+  await service.load_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="metadata.json",
+  )
+  await service.delete_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="metadata.json",
+  )
+
+  assert not artifact_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_metadata_and_payload_share_permissions(tmp_path):
+  """The metadata document must be as readable as the payload beside it.
+
+  The metadata document is written through `tempfile.mkstemp`, which hardcodes
+  0600, while the payload goes through `open()` and picks up the umask. Left
+  alone the two end up readable by different principals, so a group-readable
+  deployment can read an artifact but not its metadata.
+  """
+  service = FileArtifactService(root_dir=tmp_path)
+  await service.save_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="report.txt",
+      artifact=types.Part(text="payload"),
+  )
+  version_dir = (
+      tmp_path
+      / "apps"
+      / "app"
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / "report.txt"
+      / "versions"
+      / "0"
+  )
+
+  payload_mode = stat.S_IMODE((version_dir / "report.txt").stat().st_mode)
+  metadata_mode = stat.S_IMODE((version_dir / "metadata.json").stat().st_mode)
+
+  assert metadata_mode == payload_mode
+
+
+@pytest.mark.asyncio
+async def test_save_artifact_rejects_inline_data_without_data(tmp_path):
+  """`inline_data` with no data is malformed and must not store an empty file."""
+  service = FileArtifactService(root_dir=tmp_path)
+
+  with pytest.raises(InputValidationError):
+    await service.save_artifact(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        filename="img.png",
+        artifact=types.Part(
+            inline_data=types.Blob(mime_type="image/png", data=None)
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_artifact_allows_explicitly_empty_inline_data(tmp_path):
+  """An explicitly empty payload stays valid and round-trips."""
+  service = FileArtifactService(root_dir=tmp_path)
+
+  await service.save_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="empty.png",
+      artifact=types.Part(
+          inline_data=types.Blob(mime_type="image/png", data=b"")
+      ),
+  )
+
+  loaded = await service.load_artifact(
+      app_name="app", user_id="user", session_id="session", filename="empty.png"
+  )
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  # Empty, but present -- distinct from the `data is None` case above.
+  assert loaded.inline_data.data is not None
+  assert not loaded.inline_data.data
+
+
+@pytest.mark.asyncio
+async def test_save_artifact_discards_version_when_metadata_write_fails(
+    tmp_path,
+):
+  """A failed save must not leave a payload behind without valid metadata."""
+  service = FileArtifactService(root_dir=tmp_path)
+  await service.save_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="report.txt",
+      artifact=types.Part(text="v0"),
+  )
+
+  # `custom_metadata` is caller-controlled and can be made unserializable by
+  # nesting it beyond the serializer's depth limit.
+  deeply_nested: Any = {"a": 1}
+  for _ in range(500):
+    deeply_nested = {"a": deeply_nested}
+
+  with pytest.raises(Exception):
+    await service.save_artifact(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        filename="report.txt",
+        artifact=types.Part(text="poison"),
+        custom_metadata=deeply_nested,
+    )
+
+  # The failed version is discarded entirely and the previous one is intact.
+  assert await service.list_versions(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="report.txt",
+  ) == [0]
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="report.txt",
+  )
+  assert loaded is not None
+  assert loaded.text == "v0"
+
+
+@pytest.mark.asyncio
+async def test_list_artifact_keys_survives_metadata_path_shadowed_by_dir(
+    tmp_path,
+):
+  """A directory where a metadata document is expected must not raise."""
+  service = FileArtifactService(root_dir=tmp_path)
+  # Creates `<user scope>/a/versions/0/metadata.json` as a *directory*, which
+  # made every subsequent listing for this user fail with IsADirectoryError.
+  await service.save_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="user:a/versions/0/metadata.json/payload.txt",
+      artifact=types.Part(text="x"),
+  )
+
+  keys = await service.list_artifact_keys(
+      app_name="app", user_id="user", session_id="session"
+  )
+
+  # The shadowed artifact has no readable metadata, so it is listed by its
+  # scope-relative path rather than dropped or raised on.
+  assert keys == ["user:a"]

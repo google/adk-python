@@ -20,12 +20,10 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from pathlib import PureWindowsPath
 import shutil
+import tempfile
 from typing import Any
 from typing import Optional
 from typing import Union
-from urllib.parse import unquote
-from urllib.parse import urlparse
-from urllib.request import url2pathname
 
 from google.genai import types
 from pydantic import alias_generators
@@ -52,22 +50,97 @@ def _iter_artifact_dirs(root: Path) -> list[Path]:
     current = Path(dirpath)
     if (current / "versions").exists():
       artifact_dirs.append(current)
-      dirnames.clear()
+      # An artifact directory doubles as the parent of anything nested under
+      # it ("doc" and "doc/nested"), so keep walking, skipping only the
+      # stored versions of this artifact.
+      dirnames[:] = [name for name in dirnames if name != "versions"]
   return artifact_dirs
 
 
-def _file_uri_to_path(uri: str) -> Optional[Path]:
-  """Converts a file:// URI to a filesystem path."""
-  parsed = urlparse(uri)
-  if parsed.scheme != "file":
-    return None
-  path_str = unquote(parsed.path)
-  if os.name == "nt":
-    path_str = url2pathname(path_str)
-  return Path(path_str)
+def _read_bytes_if_present(path: Path) -> Optional[bytes]:
+  """Reads a binary payload from disk.
 
+  The read is attempted directly instead of being guarded by an `exists()`
+  check so that a concurrent delete cannot be observed as a distinguishable
+  state between the check and the read.
+
+  Args:
+    path: Location of the payload.
+
+  Returns:
+    The file contents, or None if it is not a readable file.
+  """
+  try:
+    return path.read_bytes()
+  except FileNotFoundError:
+    return None
+  except OSError as exc:
+    logger.warning("Unreadable artifact payload at %s: %s", path, exc)
+    return None
+
+
+def _read_text_if_present(path: Path) -> Optional[str]:
+  """Reads a UTF-8 text payload from disk.
+
+  Args:
+    path: Location of the payload.
+
+  Returns:
+    The decoded file contents, or None if it is not a readable file.
+  """
+  try:
+    return path.read_text(encoding="utf-8")
+  except FileNotFoundError:
+    return None
+  except OSError as exc:
+    logger.warning("Unreadable artifact payload at %s: %s", path, exc)
+    return None
+
+
+def _umask_derived_file_mode() -> int:
+  """Returns the mode a normally created file would get from the umask.
+
+  Sampled once at import: reading the umask requires temporarily setting it,
+  which is process-global and would race against concurrent writers if done
+  per-write.
+
+  Returns:
+    The permission bits `open()` would produce for a new file.
+  """
+  umask = os.umask(0)
+  os.umask(umask)
+  return 0o666 & ~umask
+
+
+# Payloads are written through `open()`, which applies the umask, but the
+# metadata document is written through `tempfile.mkstemp`, which hardcodes
+# 0600. Without this the two files in a version directory end up readable by
+# different sets of principals.
+_DEFAULT_FILE_MODE = _umask_derived_file_mode()
 
 _USER_NAMESPACE_PREFIX = "user:"
+
+# Name of the per-version metadata document. A payload is stored alongside it
+# under the artifact directory's own name, so an artifact whose directory is
+# named `metadata.json` would have its payload written over the metadata
+# document. Callers may not use the name for that reason.
+_METADATA_FILENAME = "metadata.json"
+
+
+def _is_reserved_artifact_name(name: str) -> bool:
+  """Checks whether an artifact directory name collides with the metadata doc.
+
+  Compared caselessly because the collision is decided by the filesystem, and
+  the case-insensitive ones ADK supports (APFS, NTFS) resolve `Metadata.json`
+  and `metadata.json` to the same file.
+
+  Args:
+    name: The final path segment of the artifact directory.
+
+  Returns:
+    True if the name is reserved for internal use.
+  """
+  return name.casefold() == _METADATA_FILENAME.casefold()
 
 
 def _file_has_user_namespace(filename: str) -> bool:
@@ -167,7 +240,7 @@ def _versions_dir(artifact_dir: Path) -> Path:
 
 def _metadata_path(artifact_dir: Path, version: int) -> Path:
   """Returns the path to the metadata file for a specific version."""
-  return _versions_dir(artifact_dir) / str(version) / "metadata.json"
+  return _versions_dir(artifact_dir) / str(version) / _METADATA_FILENAME
 
 
 def _canonical_uri(artifact_dir: Path, version: int) -> str:
@@ -313,11 +386,11 @@ class FileArtifactService(BaseArtifactService):
       metadata: Optional[FileArtifactVersion],
   ) -> ArtifactVersion:
     """Creates an ArtifactVersion payload using on-disk metadata."""
-    canonical_uri = (
-        metadata.canonical_uri
-        if metadata and metadata.canonical_uri
-        else _canonical_uri(artifact_dir, version)
-    )
+    # Always recomputed from the storage layout rather than read back from the
+    # metadata document. For this service the two are equivalent for data this
+    # service wrote, and recomputing means a tampered document cannot dictate
+    # the URI handed to callers.
+    canonical_uri = _canonical_uri(artifact_dir, version)
     custom_metadata_val = metadata.custom_metadata if metadata else {}
     mime_type = metadata.mime_type if metadata else None
     return ArtifactVersion(
@@ -382,6 +455,16 @@ class FileArtifactService(BaseArtifactService):
         session_id=session_id,
         filename=filename,
     )
+    # Enforced here rather than in `_artifact_dir`, which reads and deletes
+    # share: an artifact stored under this name before the name was rejected
+    # must stay readable and, above all, deletable.
+    if _is_reserved_artifact_name(artifact_dir.name):
+      raise InputValidationError(
+          f"Artifact filename {filename!r} is reserved: an artifact may not be"
+          f" named {_METADATA_FILENAME!r} (in any casing) because its payload"
+          " is stored under the artifact's own name and would overwrite the"
+          " metadata document."
+      )
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     versions = _list_versions_on_disk(artifact_dir)
@@ -394,36 +477,44 @@ class FileArtifactService(BaseArtifactService):
     stored_filename = artifact_dir.name
     content_path = version_dir / stored_filename
 
-    display_name: Optional[str] = None
-    if artifact.inline_data:
-      data = artifact.inline_data.data
-      if data is None:
-        raise InputValidationError("Artifact inline_data must contain data.")
-      content_path.write_bytes(data)
-      mime_type = (
-          artifact.inline_data.mime_type
-          if artifact.inline_data.mime_type
-          else "application/octet-stream"
-      )
-      display_name = artifact.inline_data.display_name
-    elif artifact.text is not None:
-      content_path.write_text(artifact.text, encoding="utf-8")
-      mime_type = None
-    else:
-      raise InputValidationError(
-          "Artifact must have either inline_data or text content."
-      )
+    # A version directory is only ever observed complete or not at all. A
+    # partially written version -- payload present, metadata missing or
+    # truncated -- is indistinguishable from a valid one on the read path, so
+    # any failure discards the whole directory instead of leaving it behind.
+    try:
+      display_name: Optional[str] = None
+      if artifact.inline_data:
+        data = artifact.inline_data.data
+        if data is None:
+          raise InputValidationError("Artifact inline_data must contain data.")
+        content_path.write_bytes(data)
+        mime_type = (
+            artifact.inline_data.mime_type
+            if artifact.inline_data.mime_type
+            else "application/octet-stream"
+        )
+        display_name = artifact.inline_data.display_name
+      elif artifact.text is not None:
+        content_path.write_text(artifact.text, encoding="utf-8")
+        mime_type = None
+      else:
+        raise InputValidationError(
+            "Artifact must have either inline_data or text content."
+        )
 
-    canonical_uri = _canonical_uri(artifact_dir, next_version)
-    _write_metadata(
-        version_dir / "metadata.json",
-        filename=filename,
-        mime_type=mime_type,
-        version=next_version,
-        canonical_uri=canonical_uri,
-        custom_metadata=custom_metadata,
-        display_name=display_name,
-    )
+      canonical_uri = _canonical_uri(artifact_dir, next_version)
+      _write_metadata(
+          _metadata_path(artifact_dir, next_version),
+          filename=filename,
+          mime_type=mime_type,
+          version=next_version,
+          canonical_uri=canonical_uri,
+          custom_metadata=custom_metadata,
+          display_name=display_name,
+      )
+    except BaseException:
+      shutil.rmtree(version_dir, ignore_errors=True)
+      raise
 
     logger.debug(
         "Saved artifact %s version %d to %s",
@@ -485,19 +576,22 @@ class FileArtifactService(BaseArtifactService):
     metadata = _read_metadata(_metadata_path(artifact_dir, version_to_load))
     mime_type = metadata.mime_type if metadata else None
     stored_filename = artifact_dir.name
+    # The payload location is derived exclusively from the storage layout. It
+    # must never be taken from the metadata document: that document lives in
+    # the artifact tree and is therefore attacker-influenced input, so honoring
+    # a `canonical_uri` from it would turn this into an arbitrary file read.
     content_path = version_dir / stored_filename
-    if metadata and metadata.canonical_uri and not content_path.exists():
-      uri_path = _file_uri_to_path(metadata.canonical_uri)
-      if uri_path and uri_path.exists():
-        content_path = uri_path
 
+    # Read without a preceding `exists()` check. A separate `delete_artifact`
+    # can unlink the payload between the check and the read, and reacting to
+    # that gap is what previously reached the metadata-supplied path.
     if mime_type:
-      if not content_path.exists():
+      data = _read_bytes_if_present(content_path)
+      if data is None:
         logger.warning(
             "Binary artifact %s missing at %s", filename, content_path
         )
         return None
-      data = content_path.read_bytes()
       return types.Part(
           inline_data=types.Blob(
               mime_type=mime_type,
@@ -506,11 +600,10 @@ class FileArtifactService(BaseArtifactService):
           )
       )
 
-    if not content_path.exists():
+    text = _read_text_if_present(content_path)
+    if text is None:
       logger.warning("Text artifact %s missing at %s", filename, content_path)
       return None
-
-    text = content_path.read_text(encoding="utf-8")
     return types.Part(text=text)
 
   @override
@@ -758,20 +851,50 @@ def _write_metadata(
       # artifact services (e.g. GCS).
       custom_metadata=dict(custom_metadata or {}),
   )
-  path.write_text(
-      metadata.model_dump_json(by_alias=True, exclude_none=True),
-      encoding="utf-8",
-  )
+  # Serialize before touching the filesystem: serialization is caller-driven
+  # (`custom_metadata` is arbitrary) and can fail, and it must not be able to
+  # leave a truncated document behind.
+  serialized = metadata.model_dump_json(by_alias=True, exclude_none=True)
+
+  # Write via a uniquely named temporary file in the same directory and rename
+  # it into place, so readers never observe a partial document.
+  fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+  tmp_path = Path(tmp_name)
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+      tmp_file.write(serialized)
+    # `os.replace` carries the temporary file's mode over to the destination,
+    # and mkstemp made it 0600. Restore the mode the payload beside it got.
+    os.chmod(tmp_path, _DEFAULT_FILE_MODE)
+    os.replace(tmp_path, path)
+  except BaseException:
+    tmp_path.unlink(missing_ok=True)
+    raise
 
 
 def _read_metadata(path: Path) -> Optional[FileArtifactVersion]:
-  """Loads a metadata payload from disk."""
-  if not path.exists():
+  """Loads a metadata payload from disk.
+
+  The path is derived from a caller-supplied filename, so it can be made to
+  name a directory rather than a file; that must degrade to "no metadata"
+  instead of raising.
+
+  Args:
+    path: Location of the metadata document.
+
+  Returns:
+    The parsed metadata, or None for anything that is not a readable,
+    well-formed metadata document.
+  """
+  try:
+    raw = path.read_text(encoding="utf-8")
+  except FileNotFoundError:
+    return None
+  except OSError as exc:
+    logger.warning("Unreadable metadata at %s: %s", path, exc)
     return None
   try:
-    return FileArtifactVersion.model_validate_json(
-        path.read_text(encoding="utf-8")
-    )
+    return FileArtifactVersion.model_validate_json(raw)
   except ValidationError as exc:
     logger.warning("Failed to parse metadata at %s: %s", path, exc)
     return None
