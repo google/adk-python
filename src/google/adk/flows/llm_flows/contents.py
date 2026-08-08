@@ -1346,6 +1346,16 @@ async def _add_instructions_to_user_content(
   """
   if not instruction_contents:
     return
+
+  if llm_request._static_instruction_contents:
+    # Non-text static_instruction content must remain a stable request
+    # prefix across turns (for provider-side context caching), so it goes
+    # at the very beginning, followed by the rest of the instruction
+    # contents (e.g. the dynamic instruction), ahead of conversation
+    # history rather than just ahead of the latest user turn.
+    llm_request.contents[0:0] = instruction_contents
+    return
+
   llm_request._insert_transient_user_content(  # pylint: disable=protected-access
       instruction_contents
   )

@@ -113,6 +113,17 @@ class LlmRequest(BaseModel):
   server-side without a Gemini model.
   """
 
+  _static_instruction_contents: list[types.Content] = PrivateAttr(
+      default_factory=list
+  )
+  """User contents extracted from non-text parts of a Content passed to
+  ``append_instructions`` (e.g. ``static_instruction``).
+
+  These must stay a stable request prefix across turns so that provider-side
+  context caching can key off of them, so the contents processor tracks them
+  separately from other instruction-related contents.
+  """
+
   def _append_dynamic_instructions(self, instructions: list[str]) -> None:
     """Appends dynamic instructions to the request."""
     self._dynamic_instructions.extend(instructions)
@@ -232,6 +243,7 @@ class LlmRequest(BaseModel):
       # Add user contents directly to llm_request.contents
       if user_contents:
         self.contents.extend(user_contents)
+        self._static_instruction_contents.extend(user_contents)
 
       return user_contents
 
