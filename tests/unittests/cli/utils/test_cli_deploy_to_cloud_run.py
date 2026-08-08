@@ -175,7 +175,6 @@ def test_to_cloud_run_happy_path(
 
   expected_gcloud_command = [
       cli_deploy._GCLOUD_CMD,
-      "beta",
       "run",
       "deploy",
       "svc",
@@ -189,7 +188,6 @@ def test_to_cloud_run_happy_path(
       "8080",
       "--verbosity",
       "info",
-      "--sandbox-launcher",
       "--labels",
       "created-by=adk",
   ]
@@ -274,6 +272,85 @@ def test_to_cloud_run_cleans_temp_dir_on_failure(
 
   assert rmtree_recorder.calls, "shutil.rmtree should have been called"
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
+
+
+@pytest.mark.parametrize("with_cloud_run_sandbox", [True, False])
+def test_to_cloud_run_with_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+    with_cloud_run_sandbox: bool,
+) -> None:
+  """Verify --sandbox-launcher and beta release track based on with_cloud_run_sandbox."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  run_recorder = _Recorder()
+
+  monkeypatch.setattr(subprocess, "run", run_recorder)
+  monkeypatch.setattr(shutil, "rmtree", lambda _x: None)
+
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="app",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.0.0",
+      with_cloud_run_sandbox=with_cloud_run_sandbox,
+  )
+
+  assert len(run_recorder.calls) == 1
+  gcloud_cmd = run_recorder.get_last_call_args()[0]
+
+  if with_cloud_run_sandbox:
+    # 'beta' is inserted right after the gcloud command
+    assert gcloud_cmd[1] == "beta"
+    assert gcloud_cmd[2] == "run"
+    assert "--sandbox-launcher" in gcloud_cmd
+  else:
+    assert gcloud_cmd[1] == "run"
+    assert "--sandbox-launcher" not in gcloud_cmd
+    assert "beta" not in gcloud_cmd
+
+
+def test_to_cloud_run_sandbox_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """Verify that --sandbox-launcher in extra_gcloud_args raises an error when with_cloud_run_sandbox is True."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  run_recorder = _Recorder()
+
+  monkeypatch.setattr(subprocess, "run", run_recorder)
+  monkeypatch.setattr(shutil, "rmtree", lambda _x: None)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_cloud_run(
+        agent_folder=str(src_dir),
+        project="proj",
+        region="us-central1",
+        service_name="svc",
+        app_name="app",
+        temp_folder=str(tmp_path),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        verbosity="info",
+        adk_version="1.0.0",
+        with_cloud_run_sandbox=True,
+        extra_gcloud_args=("--sandbox-launcher",),
+    )
+
+  assert "conflicts with ADK's automatic configuration" in str(exc_info.value)
 
 
 # Label merging tests

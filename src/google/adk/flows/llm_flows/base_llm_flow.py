@@ -120,10 +120,17 @@ def _finalize_model_response_event(
   Returns:
     The finalized Event with LLM response data merged in.
   """
-  finalized_event = Event.model_validate({
-      **model_response_event.model_dump(exclude_none=True),
-      **llm_response.model_dump(exclude_none=True),
-  })
+  # Shallow copy with non-None LlmResponse fields overridden — avoids the
+  # per-chunk dump+validate while keeping each yielded event a distinct
+  # instance (callers reuse model_response_event across streaming chunks).
+  # Default to None so a response that omits optional fields (e.g. a
+  # duck-typed test double) is tolerated instead of raising AttributeError.
+  updates = {
+      name: value
+      for name in LlmResponse.model_fields
+      if (value := getattr(llm_response, name, None)) is not None
+  }
+  finalized_event = model_response_event.model_copy(update=updates)
 
   if finalized_event.content:
     function_calls = finalized_event.get_function_calls()

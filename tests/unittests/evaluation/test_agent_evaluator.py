@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 
@@ -433,6 +434,159 @@ def test_write_results_to_csv_appends_without_duplicate_header(tmp_path):
   assert len(df) == 2
   assert sorted(df["eval_id"].tolist()) == ["case_1", "case_2"]
   assert "eval_id" not in df["eval_id"].tolist()
+
+
+# -----------------------------------------------------------------------------
+# `find_config_for_test_file` -- resolves `test_config.json` from the *folder of
+# the test file*, falling back to the built-in default criteria.
+# -----------------------------------------------------------------------------
+
+
+def test_find_config_for_test_file_reads_config_from_test_file_folder(tmp_path):
+  """The config is read from `<dir of test file>/test_config.json`."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "test_config.json").write_text(
+      json.dumps({"criteria": {"response_match_score": 0.25}})
+  )
+  # A decoy in the parent folder must be ignored -- resolution is scoped to the
+  # test file's own folder.
+  (tmp_path / "test_config.json").write_text(
+      json.dumps({"criteria": {"response_match_score": 0.99}})
+  )
+
+  eval_config = AgentEvaluator.find_config_for_test_file(
+      str(agent_dir / "simple.test.json")
+  )
+
+  assert eval_config.criteria == {"response_match_score": 0.25}
+
+
+def test_find_config_for_test_file_without_config_returns_defaults(tmp_path):
+  """With no `test_config.json` alongside, the documented defaults apply."""
+  eval_config = AgentEvaluator.find_config_for_test_file(
+      str(tmp_path / "simple.test.json")
+  )
+
+  assert eval_config.criteria == {
+      "tool_trajectory_avg_score": 1.0,
+      "response_match_score": 0.8,
+  }
+
+
+# -----------------------------------------------------------------------------
+# `migrate_eval_data_to_new_schema` -- converts a pre-EvalSet test file into an
+# `EvalSet` json file.
+# -----------------------------------------------------------------------------
+
+
+_OLD_FORMAT_DATA = [{
+    "query": "Roll a 6 sided dice",
+    "expected_tool_use": [
+        {"tool_name": "roll_die", "tool_input": {"sides": 6}}
+    ],
+    "reference": "I rolled a 4.",
+}]
+
+
+def _write_old_format_file(folder, name="simple.test.json"):
+  old_file = folder / name
+  old_file.write_text(json.dumps(_OLD_FORMAT_DATA))
+  return old_file
+
+
+@pytest.mark.parametrize(
+    "old_file, new_file",
+    [("", "new.evalset.json"), ("old.test.json", "")],
+)
+def test_migrate_eval_data_to_new_schema_empty_path_raises(old_file, new_file):
+  """Both file paths are required; an empty one is rejected up front."""
+  with pytest.raises(
+      ValueError, match="One of old_eval_data_file or new_eval_data_file"
+  ):
+    AgentEvaluator.migrate_eval_data_to_new_schema(old_file, new_file)
+
+
+def test_migrate_eval_data_to_new_schema_converts_old_format(tmp_path):
+  """Old-format rows become `Invocation`s on a readable `EvalSet` file."""
+  old_file = _write_old_format_file(tmp_path)
+  new_file = tmp_path / "migrated.evalset.json"
+
+  AgentEvaluator.migrate_eval_data_to_new_schema(str(old_file), str(new_file))
+
+  eval_set = EvalSet.model_validate_json(new_file.read_text())
+  assert len(eval_set.eval_cases) == 1
+  eval_case = eval_set.eval_cases[0]
+  # The old file path is carried through as the eval case id.
+  assert eval_case.eval_id == str(old_file)
+  assert len(eval_case.conversation) == 1
+
+  invocation = eval_case.conversation[0]
+  assert invocation.user_content.parts[0].text == "Roll a 6 sided dice"
+  assert invocation.final_response.parts[0].text == "I rolled a 4."
+  tool_uses = invocation.intermediate_data.tool_uses
+  assert [(t.name, t.args) for t in tool_uses] == [("roll_die", {"sides": 6})]
+  # No initial session file was supplied, so no session is pinned.
+  assert eval_case.session_input is None
+
+
+def test_migrate_eval_data_to_new_schema_carries_initial_session(tmp_path):
+  """`initial_session_file` becomes the eval case's `session_input`."""
+  old_file = _write_old_format_file(tmp_path)
+  session_file = tmp_path / "initial.session.json"
+  session_file.write_text(
+      json.dumps({
+          "app_name": "dice_app",
+          "user_id": "user_1",
+          "state": {"rolls": 2},
+      })
+  )
+  new_file = tmp_path / "migrated.evalset.json"
+
+  AgentEvaluator.migrate_eval_data_to_new_schema(
+      str(old_file), str(new_file), str(session_file)
+  )
+
+  session_input = (
+      EvalSet.model_validate_json(new_file.read_text())
+      .eval_cases[0]
+      .session_input
+  )
+  assert session_input.app_name == "dice_app"
+  assert session_input.user_id == "user_1"
+  assert session_input.state == {"rolls": 2}
+
+
+def test_migrate_eval_data_to_new_schema_validates_against_old_folder_config(
+    tmp_path,
+):
+  """Criteria are validated using the config next to the *old* data file."""
+  old_dir = tmp_path / "old"
+  old_dir.mkdir()
+  old_file = _write_old_format_file(old_dir)
+  # `not_a_metric` is not an allowed criterion, so validation must reject it.
+  # This only happens if the config is resolved from `old_dir`.
+  (old_dir / "test_config.json").write_text(
+      json.dumps({"criteria": {"not_a_metric": 1.0}})
+  )
+
+  with pytest.raises(ValueError, match="Invalid criteria key: not_a_metric"):
+    AgentEvaluator.migrate_eval_data_to_new_schema(
+        str(old_file), str(tmp_path / "migrated.evalset.json")
+    )
+
+
+def test_migrate_eval_data_to_new_schema_missing_reference_rejected(tmp_path):
+  """Default criteria require a `reference` column on every row."""
+  old_file = tmp_path / "simple.test.json"
+  old_file.write_text(
+      json.dumps([{"query": "hi", "expected_tool_use": []}]),
+  )
+
+  with pytest.raises(ValueError, match="response_match_score"):
+    AgentEvaluator.migrate_eval_data_to_new_schema(
+        str(old_file), str(tmp_path / "migrated.evalset.json")
+    )
 
 
 if __name__ == "__main__":

@@ -353,9 +353,10 @@ def _is_part_invisible(
 
   A part is invisible if:
   - It has no meaningful content (text, inline_data, file_data, function_call,
-    function_response, executable_code, or code_execution_result), OR
+    function_response, tool_call, tool_response, executable_code, or
+    code_execution_result), OR
   - It is marked as a thought AND does not contain function_call,
-    function_response or thought_signature
+    function_response, tool_call, tool_response or thought_signature
 
   Function calls and responses are never invisible, even if marked as thought,
   because they represent actions that need to be executed or results that need
@@ -364,6 +365,11 @@ def _is_part_invisible(
   A part carrying a thought signature is never invisible either. The signature
   is opaque state the model expects back verbatim, and it commonly arrives on
   a part that holds nothing else, which would otherwise read as empty.
+
+  Server-side tool calls and their responses are never invisible either. The
+  model runs those tools itself and the caller is required to echo the parts
+  back on the next request; dropping them makes the model redo the work it
+  already did, or fail because a call has no matching response.
 
   Args:
     p: The part to check.
@@ -376,6 +382,10 @@ def _is_part_invisible(
   # verbatim on the next request. It routinely arrives on a part with no other
   # content at all, so it has to be checked before the emptiness test below.
   if p.thought_signature:
+    return False
+
+  # Server-side tool calls/responses must be echoed back to the model.
+  if p.tool_call or p.tool_response:
     return False
 
   return (p.thought and not include_thoughts) or not (
@@ -395,8 +405,9 @@ def _contains_empty_content(
   This can happen to the events that only changed session state.
   When both content and transcriptions are empty, the event will be considered
   as empty. The content is considered empty if none of its parts contain text,
-  inline data, file data, function call, function response, executable code, or
-  code execution result. Parts with only thoughts are also considered empty.
+  inline data, file data, function call, function response, server-side tool
+  call, server-side tool response, executable code, or code execution result.
+  Parts with only thoughts are also considered empty.
 
   Args:
     event: The event to check.
@@ -517,7 +528,9 @@ def _should_include_event_in_context(
   )
 
 
-def _process_compaction_events(events: list[Event]) -> list[Event]:
+def _process_compaction_events(
+    events: list[Event], agent_name: str = ''
+) -> list[Event]:
   """Processes events by applying compaction.
 
   Identifies compacted ranges and filters out events that are covered by
@@ -525,6 +538,9 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
 
   Args:
     events: A list of events to process.
+    agent_name: The name of the agent the history is being assembled for. The
+      materialized summary is attributed to it so the agent reads its own
+      compacted history as its own prior turns.
 
   Returns:
     A list of events with compaction applied.
@@ -587,7 +603,7 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
           i,
           Event(
               timestamp=compaction.end_timestamp,
-              author='model',
+              author=agent_name or 'model',
               content=compaction.compacted_content,
               branch=event.branch,
               invocation_id=event.invocation_id,
@@ -818,7 +834,9 @@ def _get_contents(
   )
 
   if has_compaction_events:
-    events_to_process = _process_compaction_events(raw_filtered_events)
+    events_to_process = _process_compaction_events(
+        raw_filtered_events, agent_name
+    )
     # Compaction may have removed a function_call whose response survives
     # (e.g. a long-running call resumed after it was compacted); restore it so
     # the call/response pairing is intact.

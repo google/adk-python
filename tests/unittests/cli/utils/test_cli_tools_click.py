@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 import builtins
+import hashlib
 import json
 import logging
+import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import Any
 from typing import Dict
@@ -31,6 +34,7 @@ from unittest import mock
 import click
 from click.testing import CliRunner
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
@@ -1181,6 +1185,29 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
   assert extra_args == ()
 
 
+@pytest.mark.parametrize("with_sandbox", [True, False])
+def test_cli_deploy_cloud_run_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_sandbox: bool
+) -> None:
+  """Verify --with_cloud_run_sandbox parameter gets forwarded to to_cloud_run."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_sandbox"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  args = ["deploy", "cloud_run", str(agent_dir)]
+  if with_sandbox:
+    args.append("--with_cloud_run_sandbox")
+  result = runner.invoke(
+      cli_tools_click.main,
+      args,
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls[0][1].get("with_cloud_run_sandbox") == with_sandbox
+
+
 def test_cli_deploy_cloud_run_interspersed_options(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2231,3 +2258,654 @@ def test_telemetry_commands_write_error(
   result = runner.invoke(cli_tools_click.main, ["telemetry", "disable"])
   assert result.exit_code == 1
   assert "Error: Failed to disable telemetry" in result.output
+
+
+# HelpfulCommand
+@pytest.mark.unmute_click
+def test_helpful_command_missing_argument_prints_full_help_and_exits_2() -> (
+    None
+):
+  """A missing argument yields the whole help text, then the error, exit 2."""
+
+  @click.command(cls=cli_tools_click.HelpfulCommand)
+  @click.option("--flavour", help="Which flavour of widget to build.")
+  @click.argument("target_path")
+  def build(target_path: str, flavour: str) -> None:
+    """Builds a widget."""
+
+  result = CliRunner().invoke(build, [])
+
+  assert result.exit_code == 2
+  # Plain click prints only the usage line and a "try --help" hint. The whole
+  # point of HelpfulCommand is that the full help body is shown instead.
+  assert "Usage:" in result.output
+  assert "Builds a widget." in result.output
+  assert "Which flavour of widget to build." in result.output
+  assert "Error: Missing required argument: TARGET_PATH" in result.output
+
+
+@pytest.mark.unmute_click
+def test_helpful_command_missing_option_error_names_uppercased_param() -> None:
+  """The error names the parameter, upper-cased, not the '--dashed' option."""
+
+  @click.command(cls=cli_tools_click.HelpfulCommand)
+  @click.option("--out_file", required=True, help="Where results are written.")
+  def build(out_file: str) -> None:
+    """Builds a widget."""
+
+  result = CliRunner().invoke(build, [])
+
+  assert result.exit_code == 2
+  assert "Error: Missing required argument: OUT_FILE" in result.output
+  # click's own wording for this would be: Missing option '--out_file'.
+  assert "Missing option" not in result.output
+
+
+def test_helpful_command_parse_args_defers_to_click_when_complete() -> None:
+  """With every required parameter supplied, parse_args behaves like click."""
+
+  @click.command(cls=cli_tools_click.HelpfulCommand)
+  @click.argument("target_path")
+  def build(target_path: str) -> None:
+    """Builds a widget."""
+
+  ctx = click.Context(build)
+  leftover = build.parse_args(ctx, ["some/path"])
+
+  assert leftover == []
+  assert ctx.params == {"target_path": "some/path"}
+
+
+# adk_services_options
+def _services_command(*, default_use_local_storage: bool = True):
+  """Builds a throwaway command wired up with adk_services_options."""
+  captured: Dict[str, Any] = {}
+
+  @click.command()
+  @cli_tools_click.adk_services_options(
+      default_use_local_storage=default_use_local_storage
+  )
+  def _cmd(**kwargs: Any) -> None:
+    captured.update(kwargs)
+
+  return _cmd, captured
+
+
+def test_adk_services_options_rejects_local_storage_with_session_uri() -> None:
+  """An explicit storage flag plus a session URI is a usage error."""
+  command, captured = _services_command()
+
+  result = CliRunner().invoke(
+      command, ["--use_local_storage", "--session_service_uri", "memory://"]
+  )
+
+  assert result.exit_code == 2
+  assert (
+      "--use_local_storage/--no_use_local_storage cannot be used with"
+      in result.output
+  )
+  assert not captured
+
+
+def test_adk_services_options_rejects_no_local_storage_with_artifact_uri() -> (
+    None
+):
+  """The negative form of the flag conflicts with an artifact URI too."""
+  command, captured = _services_command()
+
+  result = CliRunner().invoke(
+      command,
+      ["--no_use_local_storage", "--artifact_service_uri", "gs://a-bucket"],
+  )
+
+  assert result.exit_code == 2
+  assert "cannot be used with" in result.output
+  assert not captured
+
+
+def test_adk_services_options_allows_memory_uri_with_local_storage() -> None:
+  """Only the session and artifact URIs conflict; memory is unaffected."""
+  command, captured = _services_command()
+
+  result = CliRunner().invoke(
+      command, ["--use_local_storage", "--memory_service_uri", "memory://"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["memory_service_uri"] == "memory://"
+  assert captured["use_local_storage"] is True
+
+
+def test_adk_services_options_allows_service_uri_when_flag_defaulted() -> None:
+  """An unset storage flag is not a conflict, even though it has a value."""
+  command, captured = _services_command()
+
+  result = CliRunner().invoke(
+      command, ["--session_service_uri", "sqlite:///sessions.db"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["session_service_uri"] == "sqlite:///sessions.db"
+  assert captured["use_local_storage"] is True
+
+
+def test_adk_services_options_honours_default_use_local_storage_false() -> None:
+  """The decorator argument picks the default the command sees."""
+  command, captured = _services_command(default_use_local_storage=False)
+
+  result = CliRunner().invoke(command, [])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["use_local_storage"] is False
+  assert captured["session_service_uri"] is None
+  assert captured["artifact_service_uri"] is None
+
+
+# fast_api_common_options
+def _fast_api_command():
+  """Builds a throwaway command wired up with fast_api_common_options."""
+  captured: Dict[str, Any] = {}
+
+  @click.command()
+  @cli_tools_click.fast_api_common_options()
+  def _cmd(**kwargs: Any) -> None:
+    captured.update(kwargs)
+
+  return _cmd, captured
+
+
+def test_fast_api_common_options_splits_trigger_sources_into_list() -> None:
+  """Trigger sources arrive as a stripped list; blank entries are dropped."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(
+      command, ["--trigger_sources", " pubsub , eventarc ,"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_sources"] == ["pubsub", "eventarc"]
+
+
+def test_fast_api_common_options_leaves_trigger_sources_none_when_unset() -> (
+    None
+):
+  """Unset stays None: an empty list would mean "triggers on, none enabled"."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, [])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_sources"] is None
+
+
+def test_fast_api_common_options_verbose_only_overrides_default_log_level() -> (
+    None
+):
+  """-v implies DEBUG, but an explicitly passed --log_level still wins."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, ["-v"])
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["log_level"] == "DEBUG"
+
+  captured.clear()
+  result = CliRunner().invoke(command, ["-v", "--log_level", "ERROR"])
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["log_level"] == "ERROR"
+
+
+def test_fast_api_common_options_documented_defaults() -> None:
+  """The server defaults to loopback:8000 with reload on and A2A off."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, [])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["host"] == "127.0.0.1"
+  assert captured["port"] == 8000
+  assert captured["reload"] is True
+  assert captured["a2a"] is False
+  assert captured["allow_origins"] == ()
+  assert captured["log_level"] == "INFO"
+  # --verbose is consumed while folding it into log_level.
+  assert "verbose" not in captured
+
+
+# adk test
+@pytest.fixture
+def fake_pytest_run(monkeypatch: pytest.MonkeyPatch):
+  """Captures the argv that `adk test` hands to its pytest subprocess."""
+  runs: List[List[str]] = []
+  returncode = {"value": 0}
+
+  def _fake_run(cmd, *args: Any, **kwargs: Any):
+    runs.append(list(cmd))
+    return SimpleNamespace(returncode=returncode["value"])
+
+  monkeypatch.setattr("subprocess.run", _fake_run)
+  return SimpleNamespace(runs=runs, returncode=returncode)
+
+
+def test_cli_test_forwards_extra_args_to_the_pytest_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pytest_run
+) -> None:
+  """Unrecognised args are appended to the pytest command line verbatim."""
+  monkeypatch.setenv("ADK_TEST_FOLDER", "not-yet-set")
+
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["test", str(tmp_path), "-k", "smoke"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert len(fake_pytest_run.runs) == 1
+  command = fake_pytest_run.runs[0]
+  assert command[:3] == [sys.executable, "-m", "pytest"]
+  assert command[3].endswith(os.path.join("cli", "agent_test_runner.py"))
+  assert command[4:] == ["-v", "-s", "-k", "smoke"]
+  # The runner discovers the folder through the environment, not argv.
+  assert os.environ["ADK_TEST_FOLDER"] == os.path.realpath(tmp_path)
+
+
+def test_cli_test_defaults_the_folder_to_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pytest_run
+) -> None:
+  """Omitting FOLDER means "." -- the directory the command was run from."""
+  monkeypatch.setenv("ADK_TEST_FOLDER", "not-yet-set")
+  monkeypatch.chdir(tmp_path)
+
+  result = CliRunner().invoke(cli_tools_click.main, ["test"])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert os.environ["ADK_TEST_FOLDER"] == os.path.realpath(tmp_path)
+
+
+def test_cli_test_exits_with_the_pytest_return_code(
+    tmp_path: Path, fake_pytest_run
+) -> None:
+  """A failing pytest run must not be reported to the shell as success."""
+  fake_pytest_run.returncode["value"] = 3
+
+  result = CliRunner().invoke(cli_tools_click.main, ["test", str(tmp_path)])
+
+  assert result.exit_code == 3
+
+
+def test_cli_test_rebuild_skips_the_pytest_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pytest_run
+) -> None:
+  """--rebuild regenerates the fixtures and stops; it does not run tests."""
+  rebuilt: List[str] = []
+  monkeypatch.setattr(
+      "google.adk.cli.agent_test_runner.rebuild_tests", rebuilt.append
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["test", str(tmp_path), "--rebuild"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert rebuilt == [os.path.realpath(tmp_path)]
+  assert fake_pytest_run.runs == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="click consumes '--' before the guard sees it, so it never fires",
+)
+def test_cli_test_rejects_args_between_folder_and_double_dash(
+    tmp_path: Path, fake_pytest_run
+) -> None:
+  """Args before '--' are meant to be rejected rather than sent to pytest."""
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["test", str(tmp_path), "stray", "--", "-k", "smoke"],
+  )
+
+  assert result.exit_code == 2
+  assert "Only arguments after '--' are passed" in result.output
+  assert fake_pytest_run.runs == []
+
+
+# adk conformance
+@pytest.fixture
+def fake_conformance_record(monkeypatch: pytest.MonkeyPatch):
+  """Captures the (paths, streaming_mode) the record command dispatches."""
+  calls: List[Tuple[Any, Any]] = []
+
+  async def _fake_record(paths, streaming_mode):
+    calls.append((paths, streaming_mode))
+
+  monkeypatch.setattr(
+      "google.adk.cli.conformance.cli_record.run_conformance_record",
+      _fake_record,
+  )
+  return calls
+
+
+@pytest.fixture
+def fake_conformance_test(monkeypatch: pytest.MonkeyPatch):
+  """Captures the kwargs the conformance test command dispatches."""
+  calls: List[Dict[str, Any]] = []
+
+  async def _fake_test(**kwargs: Any):
+    calls.append(kwargs)
+
+  monkeypatch.setattr(
+      "google.adk.cli.conformance.cli_test.run_conformance_test", _fake_test
+  )
+  return calls
+
+
+def test_cli_conformance_record_defaults_to_the_tests_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_conformance_record
+) -> None:
+  """With no PATHS, record resolves ./tests against the working directory."""
+  monkeypatch.chdir(tmp_path)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["conformance", "record", "sse"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_record == [
+      ([Path(os.path.realpath(tmp_path)) / "tests"], StreamingMode.SSE)
+  ]
+
+
+@pytest.mark.parametrize(
+    "argument,expected",
+    [
+        ("sse", StreamingMode.SSE),
+        ("BIDI", StreamingMode.BIDI),
+        ("None", StreamingMode.NONE),
+    ],
+)
+def test_cli_conformance_record_converts_streaming_mode_to_enum(
+    tmp_path: Path,
+    fake_conformance_record,
+    argument: str,
+    expected: StreamingMode,
+) -> None:
+  """The positional mode is matched case-insensitively and passed as an enum."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["conformance", "record", str(case_dir), argument]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  paths, streaming_mode = fake_conformance_record[0]
+  assert streaming_mode is expected
+  assert paths == [Path(os.path.realpath(case_dir))]
+
+
+def test_cli_conformance_test_documented_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_conformance_test
+) -> None:
+  """Bare `conformance test` replays ./tests with no report and no override."""
+  monkeypatch.chdir(tmp_path)
+
+  result = CliRunner().invoke(cli_tools_click.main, ["conformance", "test"])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [Path(os.path.realpath(tmp_path)) / "tests"],
+      "mode": "replay",
+      "generate_report": False,
+      "report_dir": None,
+      "streaming_mode": None,
+  }]
+
+
+def test_cli_conformance_test_forwards_mode_and_report_options(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """Every option reaches the runner, with paths and report dir resolved."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+  report_dir = tmp_path / "reports"
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "conformance",
+          "test",
+          str(case_dir),
+          "--mode",
+          "REPLAY",
+          "--generate_report",
+          "--report_dir",
+          str(report_dir),
+          "--streaming-mode",
+          "sse",
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [Path(os.path.realpath(case_dir))],
+      "mode": "replay",
+      "generate_report": True,
+      "report_dir": os.path.realpath(report_dir),
+      "streaming_mode": StreamingMode.SSE,
+  }]
+
+
+# adk eval_set create
+def test_cli_create_eval_set_surfaces_duplicate_id_as_click_exception(
+    tmp_path: Path,
+) -> None:
+  """Re-creating an eval set reports the manager's complaint, exit code 1."""
+  agent_path = tmp_path / "dup_app"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  runner = CliRunner()
+  first = runner.invoke(
+      cli_tools_click.main, ["eval_set", "create", str(agent_path), "dup_set"]
+  )
+  assert first.exit_code == 0, (first.output, repr(first.exception))
+
+  second = runner.invoke(
+      cli_tools_click.main, ["eval_set", "create", str(agent_path), "dup_set"]
+  )
+
+  assert second.exit_code == 1
+  assert "dup_set" in second.output
+  assert "already exists" in second.output
+
+
+# adk eval_set generate_eval_cases
+def _write_generation_config(path: Path) -> None:
+  path.write_text(json.dumps({"count": 1, "model_name": "a-model"}))
+
+
+def test_cli_generate_eval_cases_creates_eval_set_and_skips_duplicates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_get_root_agent
+) -> None:
+  """The eval set is created on demand, and identical scenarios collapse."""
+  from google.adk.evaluation.conversation_scenarios import ConversationScenario
+
+  agent_path = tmp_path / "gen_app"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  config_file = tmp_path / "simulation.json"
+  _write_generation_config(config_file)
+
+  scenario = ConversationScenario(
+      starting_prompt="hello", conversation_plan="say hello back"
+  )
+
+  class _FakeScenarioGenerator:
+
+    def generate_scenarios(self, root_agent, config):
+      return [scenario, scenario]
+
+  monkeypatch.setattr(
+      "google.adk.evaluation._vertex_ai_scenario_generation_facade"
+      ".ScenarioGenerator",
+      _FakeScenarioGenerator,
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval_set",
+          "generate_eval_cases",
+          str(agent_path),
+          "gen_set",
+          "--user_simulation_config_file",
+          str(config_file),
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  eval_set_data = json.loads((agent_path / "gen_set.evalset.json").read_text())
+  # The eval id is the first 8 hex digits of the scenario's canonical digest,
+  # so the same scenario twice must yield one case, not two.
+  expected_id = hashlib.sha256(
+      json.dumps(scenario.model_dump(), sort_keys=True).encode("utf-8")
+  ).hexdigest()[:8]
+  assert [case["eval_id"] for case in eval_set_data["eval_cases"]] == [
+      expected_id
+  ]
+  session_input = eval_set_data["eval_cases"][0]["session_input"]
+  assert session_input["app_name"] == "gen_app"
+  assert session_input["user_id"] == "test_user_id"
+
+
+@pytest.mark.unmute_click
+def test_cli_generate_eval_cases_wraps_generator_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_get_root_agent
+) -> None:
+  """A generator blow-up becomes a ClickException naming the cause."""
+  agent_path = tmp_path / "gen_fail_app"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  config_file = tmp_path / "simulation.json"
+  _write_generation_config(config_file)
+
+  class _ExplodingScenarioGenerator:
+
+    def generate_scenarios(self, root_agent, config):
+      raise RuntimeError("scenario quota exhausted")
+
+  monkeypatch.setattr(
+      "google.adk.evaluation._vertex_ai_scenario_generation_facade"
+      ".ScenarioGenerator",
+      _ExplodingScenarioGenerator,
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval_set",
+          "generate_eval_cases",
+          str(agent_path),
+          "gen_fail_set",
+          "--user_simulation_config_file",
+          str(config_file),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert (
+      "Failed to generate eval case(s): scenario quota exhausted"
+      in result.output
+  )
+
+
+# adk optimize
+def test_cli_optimize_rejects_sampler_config_for_a_different_app(
+    tmp_path: Path, mock_get_root_agent
+) -> None:
+  """The agent folder name must match the sampler config's app_name."""
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  sampler_config_file = tmp_path / "sampler.json"
+  sampler_config_file.write_text(
+      json.dumps({
+          "eval_config": {"criteria": {}},
+          "app_name": "some_other_agent",
+          "train_eval_set": "train_set",
+      })
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "optimize",
+          str(agent_path),
+          "--sampler_config_file_path",
+          str(sampler_config_file),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "my_agent" in result.output
+  assert "some_other_agent" in result.output
+
+
+# adk migrate session
+def test_cli_migrate_session_defaults_to_safe_unpickling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Unsafe pickle loading must be opt-in, never the default."""
+  seen: List[bool] = []
+
+  def fake_upgrade(
+      source_db_url: str,
+      dest_db_url: str,
+      *,
+      allow_unsafe_unpickling: bool = True,
+  ) -> None:
+    seen.append(allow_unsafe_unpickling)
+
+  monkeypatch.setattr(
+      "google.adk.sessions.migration.migration_runner.upgrade", fake_upgrade
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "migrate",
+          "session",
+          "--source_db_url",
+          "sqlite:///source.db",
+          "--dest_db_url",
+          "sqlite:///dest.db",
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert seen == [False]
+
+
+@pytest.mark.unmute_click
+def test_cli_migrate_session_reports_the_underlying_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A failed migration is reported to the user rather than raised."""
+
+  def explode(*args: Any, **kwargs: Any) -> None:
+    raise RuntimeError("destination schema is newer")
+
+  monkeypatch.setattr(
+      "google.adk.sessions.migration.migration_runner.upgrade", explode
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "migrate",
+          "session",
+          "--source_db_url",
+          "sqlite:///source.db",
+          "--dest_db_url",
+          "sqlite:///dest.db",
+      ],
+  )
+
+  assert "Migration failed: destination schema is newer" in result.output

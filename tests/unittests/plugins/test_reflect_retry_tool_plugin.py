@@ -666,3 +666,48 @@ class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
     # Assert that the third event is a function call with the correct name
     assert events[2].content.parts[0].function_call.name == "increase"
     self.assertEqual(function_called, 1)
+
+  async def test_negative_max_retries_rejected(self):
+    """Test that a negative retry budget is rejected at construction."""
+    with self.assertRaises(ValueError) as cm:
+      ReflectAndRetryToolPlugin(max_retries=-1)
+
+    self.assertIn("non-negative", str(cm.exception))
+
+  async def test_reflection_response_does_not_reset_the_retry_count(self):
+    """Test that feeding a reflection response back does not clear failures.
+
+    The plugin's own reflection guidance is delivered to the model as the
+    tool result, so it comes back through after_tool_callback. Treating it
+    as a success would reset the counter and make the retry budget
+    unenforceable.
+    """
+    mock_tool = self.get_mock_tool()
+    mock_tool_context = self.get_mock_tool_context()
+    sample_tool_args = self.get_sample_tool_args()
+    plugin = ReflectAndRetryToolPlugin(max_retries=3)
+    error = ValueError("Test error")
+
+    reflection = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(reflection["retry_count"], 1)
+
+    passthrough = await plugin.after_tool_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        result=reflection,
+    )
+    self.assertIsNone(passthrough)
+
+    next_failure = await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args=sample_tool_args,
+        tool_context=mock_tool_context,
+        error=error,
+    )
+    self.assertEqual(next_failure["retry_count"], 2)

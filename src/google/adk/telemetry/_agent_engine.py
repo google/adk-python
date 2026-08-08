@@ -89,13 +89,12 @@ class TopSpanProcessor(trace.SpanProcessor):
 
   def on_start(
       self, span: trace.Span, parent_context: Optional[context.Context] = None
-  ):
+  ) -> None:
     """Adds support ID to the top span."""
     baggage_items = baggage.get_all(context=parent_context)
-    if self._is_top_span(span, baggage_items) and (
-        baggage_trace_header := baggage_items.get(
-            _GOOGLE_TRACEPARENT_BAGGAGE_KEY
-        )
+    baggage_trace_header = baggage_items.get(_GOOGLE_TRACEPARENT_BAGGAGE_KEY)
+    if self._is_top_span(span, baggage_items) and isinstance(
+        baggage_trace_header, str
     ):
       span.set_attribute(
           _GOOGLE_TRACEPARENT_SUPPORT_ATTRIBUTE_KEY, baggage_trace_header
@@ -209,7 +208,9 @@ def telemetry_user_agent_headers() -> dict[str, str] | None:
 
   otlp_http_version: ModuleType | None
   try:
-    from opentelemetry.exporter.otlp.proto.http import version as otlp_http_version
+    from opentelemetry.exporter.otlp.proto.http import version as _otlp_version
+
+    otlp_http_version = _otlp_version
   except (ImportError, AttributeError):
     otlp_http_version = None
 

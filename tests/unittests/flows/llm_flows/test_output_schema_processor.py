@@ -14,8 +14,6 @@
 
 """Tests for output schema processor functionality."""
 
-from unittest import mock
-
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
@@ -32,6 +30,8 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 import pytest
+
+from ... import testing_utils
 
 
 class PersonSchema(BaseModel):
@@ -151,21 +151,21 @@ async def test_basic_processor_sets_output_schema_without_tools():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'output_schema_with_tools_allowed',
+    'output_schema_and_tools',
     [
         False,
         True,
     ],
 )
-async def test_output_schema_request_processor(
-    output_schema_with_tools_allowed, mocker
-):
+async def test_output_schema_request_processor(output_schema_and_tools):
   """Test that output schema processor adds set_model_response tool."""
   from google.adk.flows.llm_flows._output_schema_processor import _OutputSchemaRequestProcessor
 
   agent = LlmAgent(
       name='test_agent',
-      model='gemini-2.5-flash',
+      model=testing_utils.ModelWithCapabilities(
+          output_schema_and_tools=output_schema_and_tools
+      ),
       output_schema=PersonSchema,
       tools=[FunctionTool(func=dummy_tool)],
   )
@@ -175,19 +175,14 @@ async def test_output_schema_request_processor(
   llm_request = LlmRequest()
   processor = _OutputSchemaRequestProcessor()
 
-  can_use_output_schema_with_tools = mocker.patch(
-      'google.adk.flows.llm_flows._output_schema_processor.can_use_output_schema_with_tools',
-      mock.MagicMock(return_value=output_schema_with_tools_allowed),
-  )
-
   # Process the request
   events = []
   async for event in processor.run_async(invocation_context, llm_request):
     events.append(event)
 
-  if not output_schema_with_tools_allowed:
-    # Should have added set_model_response tool if output schema with tools is
-    # allowed
+  if not output_schema_and_tools:
+    # The model cannot pair an output schema with tools, so the prompt-based
+    # workaround is installed instead.
     assert 'set_model_response' in llm_request.tools_dict
     # Should have added instruction about using set_model_response
     assert 'set_model_response' in llm_request.config.system_instruction
@@ -195,11 +190,6 @@ async def test_output_schema_request_processor(
     # Should skip modifying LlmRequest
     assert not llm_request.tools_dict
     assert not llm_request.config.system_instruction
-
-  # Should have checked if output schema can be used with tools
-  can_use_output_schema_with_tools.assert_called_once_with(
-      agent.canonical_model
-  )
 
 
 @pytest.mark.asyncio

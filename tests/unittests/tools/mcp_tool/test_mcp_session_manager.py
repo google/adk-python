@@ -16,17 +16,21 @@ import asyncio
 import hashlib
 import json
 import sys
+import time
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.platform import thread as platform_thread
 from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFactory
 from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
 from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
 from google.adk.tools.mcp_tool.mcp_session_manager import _SharedAsyncTransport
+from google.adk.tools.mcp_tool.mcp_session_manager import _StreamableHttpClientWrapper
 from google.adk.tools.mcp_tool.mcp_session_manager import create_mcp_http_client
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
@@ -95,6 +99,16 @@ class MockSessionContext:
   async def __aexit__(self, exc_type, exc_val, exc_tb):
     """Exit the async context manager."""
     return await self._aexit_mock(exc_type, exc_val, exc_tb)
+
+
+class HangingClient:
+  """Mock MCP client whose connection never completes."""
+
+  async def __aenter__(self):
+    await asyncio.sleep(3600)
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    return False
 
 
 class TestMCPSessionManager:
@@ -504,6 +518,122 @@ class TestMCPSessionManager:
     assert not manager._sessions
     # Verify cleanup was called
     mock_exit_stack.aclose.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_create_session_bounds_hung_connect(self):
+    """A transport that never connects must fail at the configured timeout."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(
+            url="http://example.com/mcp", timeout=0.2
+        )
+    )
+
+    with patch.object(
+        manager, "_get_mtls_transport", AsyncMock(return_value=None)
+    ):
+      with patch.object(
+          manager, "_create_client", side_effect=lambda *a, **k: HangingClient()
+      ):
+        with temporary_feature_override(
+            FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+        ):
+          started = time.monotonic()
+          with pytest.raises(ConnectionError, match="Failed to create MCP"):
+            # The outer bound turns a regression into a failure rather than
+            # a hang: without a timeout, create_session never returns.
+            await asyncio.wait_for(manager.create_session(), timeout=5.0)
+          elapsed = time.monotonic() - started
+
+    assert (
+        elapsed < 2.0
+    ), f"create_session took {elapsed:.1f}s; timeout was 0.2s"
+    assert not manager._sessions
+
+  @pytest.mark.asyncio
+  async def test_hung_connect_fails_queued_callers_bounded(self):
+    """A caller queued behind a hung connect must fail too, not hang.
+
+    `_session_lock` is manager-wide rather than per session key, so the
+    second caller is serialized behind the first; what this pins down is
+    that both fail within the bound instead of blocking forever.
+    """
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(
+            url="http://example.com/mcp", timeout=0.2
+        )
+    )
+
+    with patch.object(
+        manager, "_get_mtls_transport", AsyncMock(return_value=None)
+    ):
+      with patch.object(
+          manager, "_create_client", side_effect=lambda *a, **k: HangingClient()
+      ):
+        with temporary_feature_override(
+            FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+        ):
+          hung = asyncio.ensure_future(
+              manager.create_session(headers={"Authorization": "Bearer a"})
+          )
+          # Let the first caller take the lock before the second queues up.
+          await asyncio.sleep(0)
+          blocked = asyncio.ensure_future(
+              manager.create_session(headers={"Authorization": "Bearer b"})
+          )
+          results = await asyncio.wait_for(
+              asyncio.gather(hung, blocked, return_exceptions=True),
+              timeout=5.0,
+          )
+
+    assert all(isinstance(result, ConnectionError) for result in results)
+    assert not manager._sessions
+
+  @pytest.mark.asyncio
+  async def test_bounded_connect_closes_the_http_client(self):
+    """Cancelling a hung connect must close the HTTP client it opened."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(
+            url="http://example.com/mcp", timeout=0.2
+        )
+    )
+
+    wrappers = []
+
+    def _spy(*args, **kwargs):
+      wrapper = _StreamableHttpClientWrapper(*args, **kwargs)
+      wrappers.append(wrapper)
+      return wrapper
+
+    with patch.object(
+        manager, "_get_mtls_transport", AsyncMock(return_value=None)
+    ):
+      with patch(
+          "google.adk.tools.mcp_tool.mcp_session_manager.streamable_http_client",
+          return_value=HangingClient(),
+      ):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager._StreamableHttpClientWrapper",
+            _spy,
+        ):
+          with temporary_feature_override(
+              FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+          ):
+            with pytest.raises(ConnectionError, match="Failed to create MCP"):
+              await asyncio.wait_for(manager.create_session(), timeout=5.0)
+
+            assert wrappers, "expected the streamable HTTP client to be built"
+            # The connect task is cancelled, not awaited, by the caller that
+            # timed out, so give it a generous window to unwind.
+            for _ in range(300):
+              if wrappers[0].http_client.is_closed:
+                break
+              await asyncio.sleep(0.01)
+
+    assert wrappers[
+        0
+    ].http_client.is_closed, (
+        "the HTTP client opened for a cancelled connect was never closed"
+    )
 
   @pytest.mark.asyncio
   async def test_close_success(self):

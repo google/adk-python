@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import os
+import sys
 from typing import Any
 from typing import List
 
@@ -135,11 +136,17 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
 
 _ENFORCE_DENYLIST = True
 
-# Modules that must never be imported via YAML agent configuration.
-# These provide direct access to the operating system, process execution,
-# or dynamic code evaluation and could be abused to achieve arbitrary
-# code execution when referenced in callback, tool, schema, or model
-# code-reference fields.
+# Agent configs never need the standard library: they name the agent's own
+# package, google.adk, or a third-party integration. So block all of it. Listing
+# only the scary modules does not work, because cProfile.run, timeit.timeit and
+# trace.Trace.run all execute a string you hand them, and each Python release
+# can add more.
+_STDLIB_MODULES = frozenset(sys.stdlib_module_names) | frozenset(
+    sys.builtin_module_names  # Redundant on stock CPython, not custom builds.
+)
+
+# Extra names to block. Everything above the LOAD-BEARING line below is already
+# covered by _STDLIB_MODULES and is kept only to spell out the threat model.
 _BLOCKED_MODULES = frozenset({
     # Process / OS execution
     "os",
@@ -170,8 +177,6 @@ _BLOCKED_MODULES = frozenset({
     "smtplib",
     "poplib",
     "imaplib",
-    "nntplib",
-    "telnetlib",
     "xmlrpc",
     "asyncio",
     # Filesystem / serialisation
@@ -184,9 +189,33 @@ _BLOCKED_MODULES = frozenset({
     "webbrowser",
     "antigravity",
     "pty",
-    "commands",
     "pdb",
     "profile",
+    # LOAD-BEARING, keep these. They are not in sys.stdlib_module_names on
+    # every Python we support, so this set is all that blocks them.
+    #
+    # Modules dropped from the standard library that you can still import:
+    # distutils comes back through setuptools' shim and its spawn() runs a
+    # subprocess, and the rest have "standard-*" packages on PyPI. commands is
+    # a Python 2 leftover.
+    "asynchat",
+    "asyncore",
+    "cgi",
+    "commands",
+    "crypt",
+    "distutils",
+    "imp",
+    "mailcap",
+    "nntplib",
+    "pipes",
+    "smtpd",
+    "telnetlib",
+    "uu",
+    # CPython's own test packages, which most installs ship. They can start a
+    # subprocess (test.support.script_helper) and execute source (_testcapi).
+    "_testcapi",
+    "_testinternalcapi",
+    "test",
 })
 
 
@@ -194,21 +223,24 @@ def _validate_module_reference(fully_qualified_name: str) -> None:
   """Validate that a module reference does not target a blocked module.
 
   Args:
-    fully_qualified_name: The fully-qualified Python name to validate
-        (e.g. ``"my_package.my_module.my_func"``).
+    fully_qualified_name: The fully-qualified Python name to validate (e.g.
+      ``"my_package.my_module.my_func"``).
 
   Raises:
-    ValueError: If the top-level module is in ``_BLOCKED_MODULES``.
+    ValueError: If the top-level module is part of the Python standard library
+      or is in ``_BLOCKED_MODULES``.
   """
   if not _ENFORCE_DENYLIST:
     return
   # Extract the top-level package from the fully-qualified name.
   top_module = fully_qualified_name.split(".")[0]
-  if top_module in _BLOCKED_MODULES:
+  if top_module in _BLOCKED_MODULES or top_module in _STDLIB_MODULES:
     raise ValueError(
-        f"Blocked module reference: {fully_qualified_name!r}. "
-        f"Importing from the '{top_module}' module is not allowed in "
-        "agent configurations because it can execute arbitrary code."
+        f"Blocked module reference: {fully_qualified_name!r}. Agent "
+        f"configurations cannot import from '{top_module}'. The Python "
+        "standard library is blocked in full because too much of it can "
+        "execute arbitrary code. Reference your own agent package, "
+        "'google.adk', or a third-party package instead."
     )
 
 

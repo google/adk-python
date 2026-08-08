@@ -39,6 +39,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 
@@ -1513,3 +1514,106 @@ class TestGenerateInferencesFromRootAgentWithApp:
     assert runner_app.root_agent is sub_agent
     # User's App must be untouched.
     assert app.root_agent is full_root
+
+
+# -----------------------------------------------------------------------------
+# `generate_responses_from_session` -- replays a recorded session file instead of
+# invoking an agent, annotating each eval row with what the session actually did.
+# -----------------------------------------------------------------------------
+
+
+def _write_session_file(tmp_path, events: list[Event]) -> str:
+  session = Session(
+      id="recorded_session",
+      app_name="test_app",
+      user_id="test_user",
+      events=events,
+  )
+  session_file = tmp_path / "session.json"
+  session_file.write_text(session.model_dump_json())
+  return str(session_file)
+
+
+def _recorded_events() -> list[Event]:
+  return [
+      _build_event("user", [types.Part(text="Roll a 6 sided dice")], "inv1"),
+      _build_event(
+          "agent",
+          [
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="roll_die", args={"sides": 6}
+                  )
+              )
+          ],
+          "inv1",
+      ),
+      _build_event("agent", [types.Part(text="I rolled a 4.")], "inv1"),
+      _build_event("user", [types.Part(text="Thanks")], "inv2"),
+      _build_event("agent", [types.Part(text="You are welcome.")], "inv2"),
+  ]
+
+
+def test_generate_responses_from_session_annotates_rows_from_session(tmp_path):
+  """Each eval row gains the tool calls and final text of its invocation."""
+  session_path = _write_session_file(tmp_path, _recorded_events())
+  eval_dataset = [[
+      {"query": "Roll a 6 sided dice"},
+      {"query": "Thanks"},
+  ]]
+
+  results = EvaluationGenerator.generate_responses_from_session(
+      session_path, eval_dataset
+  )
+
+  # One result per entry in the eval dataset.
+  assert len(results) == 1
+  first, second = results[0]
+  assert first["actual_tool_use"] == [
+      {"tool_name": "roll_die", "tool_input": {"sides": 6}}
+  ]
+  assert first["response"] == "I rolled a 4."
+  # The second invocation used no tools.
+  assert second["actual_tool_use"] == []
+  assert second["response"] == "You are welcome."
+
+
+def test_generate_responses_from_session_query_absent_from_session(tmp_path):
+  """A query the session never saw yields no tool calls and no response."""
+  session_path = _write_session_file(tmp_path, _recorded_events())
+
+  results = EvaluationGenerator.generate_responses_from_session(
+      session_path, [[{"query": "Roll a 20 sided dice"}]]
+  )
+
+  assert results[0][0]["actual_tool_use"] == []
+  assert results[0][0]["response"] is None
+
+
+def test_generate_responses_from_session_scopes_by_invocation_id(tmp_path):
+  """Only events sharing the matched user event's invocation id are used."""
+  events = [
+      _build_event("user", [types.Part(text="Roll a 6 sided dice")], "inv1"),
+      _build_event("agent", [types.Part(text="I rolled a 4.")], "inv1"),
+      # A different invocation whose tool call must not leak into inv1.
+      _build_event("user", [types.Part(text="Book a flight")], "inv2"),
+      _build_event(
+          "agent",
+          [
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="book_flight", args={"to": "LAX"}
+                  )
+              )
+          ],
+          "inv2",
+      ),
+  ]
+  session_path = _write_session_file(tmp_path, events)
+
+  results = EvaluationGenerator.generate_responses_from_session(
+      session_path, [[{"query": "Roll a 6 sided dice"}]]
+  )
+
+  assert results[0][0]["actual_tool_use"] == []
+  assert results[0][0]["response"] == "I rolled a 4."

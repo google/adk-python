@@ -1749,6 +1749,10 @@ class BigQueryLoggerConfig:
         emit the final answer via a dedicated tool (e.g.
         ``submit_final_response``) rather than a plain-text final event. Empty
         (the default) preserves today's behavior.
+      flush_on_run_end: Whether to flush queued rows synchronously at the end of
+        each run. When False, rows are left to the background batch writer,
+        which removes the flush from the response path at the cost of a small
+        delay before rows land.
   """
 
   enabled: bool = True
@@ -1823,6 +1827,7 @@ class BigQueryLoggerConfig:
   # ``AGENT_RESPONSE`` event.  Empty (the default) preserves today's
   # behavior.
   final_response_tool_names: frozenset[str] = frozenset()
+  flush_on_run_end: bool = True
 
 
 # ==============================================================================
@@ -6582,8 +6587,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       TraceManager.clear_stack()
       _active_invocation_id_ctx.set(None)
       _root_agent_name_ctx.set(None)
-      # Ensure all logs are flushed before the agent returns.
-      await self.flush()
+      # Flush before returning if configured; otherwise the background batch
+      # writer drains the queue.
+      if self.config.flush_on_run_end:
+        await self.flush()
 
   @_safe_callback
   async def before_agent_callback(
@@ -7066,4 +7073,5 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       TraceManager.clear_stack()
       _active_invocation_id_ctx.set(None)
       _root_agent_name_ctx.set(None)
-      await self.flush()
+      if self.config.flush_on_run_end:
+        await self.flush()

@@ -352,16 +352,17 @@ class DatabaseSessionService(BaseSessionService):
           event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
 
       except Exception as e:
+        redacted_url = _schema_check_utils._redact_db_url(db_url)
         if isinstance(e, ArgumentError):
           raise ValueError(
-              f"Invalid database URL format or argument '{db_url}'."
+              f"Invalid database URL format or argument '{redacted_url}'."
           ) from e
         if isinstance(e, ImportError):
           raise ValueError(
-              f"Database related module not found for URL '{db_url}'."
+              f"Database related module not found for URL '{redacted_url}'."
           ) from e
         raise ValueError(
-            f"Failed to create database engine for URL '{db_url}'"
+            f"Failed to create database engine for URL '{redacted_url}'"
         ) from e
     else:
       self._owns_db_engine = False

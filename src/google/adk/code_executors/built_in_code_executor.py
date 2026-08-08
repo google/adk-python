@@ -19,7 +19,7 @@ from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
 from ..models.llm_request import LlmRequest
-from ..utils.model_name_utils import is_gemini_eap_or_2_or_above
+from ..utils.model_name_utils import is_gemini_model
 from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
@@ -29,7 +29,7 @@ from .code_execution_utils import CodeExecutionResult
 class BuiltInCodeExecutor(BaseCodeExecutor):
   """A code executor that uses the Model's built-in code executor.
 
-  Currently only supports Gemini 2.0+ models, but will be expanded to
+  Currently only supports Gemini models, but will be expanded to
   other models.
   """
 
@@ -44,9 +44,9 @@ class BuiltInCodeExecutor(BaseCodeExecutor):
     pass
 
   def process_llm_request(self, llm_request: LlmRequest) -> None:
-    """Pre-process the LLM request for Gemini 2.0+ models to use the code execution tool."""
+    """Pre-process the LLM request for Gemini models to use the code execution tool."""
     model_check_disabled = is_gemini_model_id_check_disabled()
-    if is_gemini_eap_or_2_or_above(llm_request.model) or model_check_disabled:
+    if is_gemini_model(llm_request.model) or model_check_disabled:
       llm_request.config = llm_request.config or types.GenerateContentConfig()
       llm_request.config.tools = llm_request.config.tools or []
       llm_request.config.tools.append(

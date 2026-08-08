@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 from datetime import timedelta
+import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -266,10 +267,13 @@ class TestSessionContext:
         mock_client, timeout=0.1, sse_read_timeout=None
     )
 
+    started = time.monotonic()
     with pytest.raises(ConnectionError) as exc_info:
       await session_context.start()
+    elapsed = time.monotonic() - started
 
     assert 'Failed to create MCP session' in str(exc_info.value)
+    assert elapsed < 1.0, f'start() took {elapsed:.1f}s; timeout was 0.1s'
 
   @pytest.mark.asyncio
   async def test_timeout_during_initialization(self):

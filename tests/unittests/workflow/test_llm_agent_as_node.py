@@ -26,10 +26,17 @@ from typing import Any
 from google.adk.agents.context import Context
 from google.adk.agents.llm.task._task_models import TaskResult
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features import override_feature_enabled
+from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.tools.agent_tool import _TaskAgentTool
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.workflow import _llm_agent_wrapper as agent_wrapper
 from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_graph_utils import build_node
@@ -158,8 +165,6 @@ def _mock_leaf_run(agent, content_text=None):
 
 def _new_workflow_runner(wf, test_name):
   """Creates an InMemoryRunner for the new Workflow (root_agent path)."""
-  from google.adk.apps.app import App
-
   from . import testing_utils
 
   app = App(name=test_name, root_agent=wf)
@@ -290,8 +295,6 @@ class TestBuildNode:
     """Single-turn workflow nodes preserve explicit content inclusion."""
     from unittest.mock import MagicMock
 
-    from google.adk.workflow import _llm_agent_wrapper
-
     agent = LlmAgent(
         name='test_agent',
         model='gemini-2.5-flash',
@@ -311,12 +314,12 @@ class TestBuildNode:
 
     object.__setattr__(wrapper, 'run_async', mock_run_async)
     monkeypatch.setattr(
-        _llm_agent_wrapper,
+        agent_wrapper,
         'prepare_llm_agent_context',
         lambda agent, ctx: ctx,
     )
     monkeypatch.setattr(
-        _llm_agent_wrapper,
+        agent_wrapper,
         'prepare_llm_agent_input',
         lambda agent, ctx, node_input: None,
     )
@@ -805,7 +808,6 @@ async def test_long_running_tool_interrupts_workflow(
     request: pytest.FixtureRequest,
 ):
   """Long-running tool stops the workflow after one LLM call."""
-  from google.adk.tools.long_running_tool import LongRunningFunctionTool
   from google.adk.workflow._workflow import Workflow as NewWorkflow
 
   from . import testing_utils
@@ -841,9 +843,6 @@ async def test_resume_after_interrupt_completes_workflow(
     request: pytest.FixtureRequest,
 ):
   """Resuming after interrupt calls the LLM once more to complete."""
-  from google.adk.apps.app import App
-  from google.adk.apps.app import ResumabilityConfig
-  from google.adk.tools.long_running_tool import LongRunningFunctionTool
   from google.adk.workflow._workflow import Workflow as NewWorkflow
 
   from . import testing_utils
@@ -923,9 +922,6 @@ async def test_multiple_sequential_interrupts_in_workflow(
     request: pytest.FixtureRequest,
 ):
   """Two interrupts in sequence each resume and complete in a workflow."""
-  from google.adk.apps.app import App
-  from google.adk.apps.app import ResumabilityConfig
-  from google.adk.tools.long_running_tool import LongRunningFunctionTool
   from google.adk.workflow._workflow import Workflow as NewWorkflow
 
   from . import testing_utils
@@ -1209,9 +1205,6 @@ async def test_three_layer_llm_agent_transfer_round_trip(
     request: pytest.FixtureRequest,
 ):
   """Verify 3-layer LlmAgent transfers end-to-end (Root -> Child -> Grandchild -> Child -> Root)."""
-  from google.adk.apps.app import App
-  from google.adk.apps.app import ResumabilityConfig
-
   from . import testing_utils
 
   # Prepare the transfer function call parts
@@ -1382,3 +1375,275 @@ async def test_workflow_node_with_invalid_input_schema_raises_validation_error(
   with _mock_agent_run(agent_clone, content_text='hi'):
     with pytest.raises(ValidationError):
       await runner.run_async('{"wrong_field": "hello"}')
+
+
+# --- Tests for chat-wrapper mixed-turn FR draining helpers ---
+
+
+def _model_event(*parts: types.Part) -> Event:
+  return Event(
+      author='coordinator',
+      content=types.Content(role='model', parts=list(parts)),
+  )
+
+
+def test_event_has_eager_tool_calls_true_for_regular_plus_task():
+  """A mixed turn with a FunctionTool and task tool reports eager calls."""
+
+  def _echo(value: str) -> dict[str, str]:
+    return {'value': value}
+
+  def _fc(name: str, call_id: str) -> types.Part:
+    return types.Part(
+        function_call=types.FunctionCall(name=name, args={}, id=call_id)
+    )
+
+  task_agent = LlmAgent(name='specialist', mode='task', model='unused')
+  tools_dict = {
+      'echo': FunctionTool(_echo),
+      'specialist': _TaskAgentTool(task_agent),
+  }
+  event = _model_event(_fc('echo', '1'), _fc('specialist', '2'))
+
+  assert agent_wrapper._event_has_eager_tool_calls(event, tools_dict)  # pylint: disable=protected-access
+
+
+def test_event_has_eager_tool_calls_false_for_task_only():
+  """Task-only turns should not drain (no FR is produced by the flow)."""
+
+  def _fc(name: str, call_id: str) -> types.Part:
+    return types.Part(
+        function_call=types.FunctionCall(name=name, args={}, id=call_id)
+    )
+
+  task_agent = LlmAgent(name='specialist', mode='task', model='unused')
+  tools_dict = {'specialist': _TaskAgentTool(task_agent)}
+  event = _model_event(_fc('specialist', '1'))
+
+  assert not agent_wrapper._event_has_eager_tool_calls(event, tools_dict)  # pylint: disable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_drain_pending_tool_response_events_yields_fr_then_stops():
+  """Drain yields the FR event and stops before a following model event."""
+
+  def _fr(name: str, call_id: str) -> types.Part:
+    return types.Part(
+        function_response=types.FunctionResponse(
+            name=name, response={'ok': True}, id=call_id
+        )
+    )
+
+  async def _gen():
+    yield Event(
+        author='coordinator',
+        content=types.Content(role='user', parts=[_fr('echo', '1')]),
+    )
+    yield _model_event(types.Part.from_text(text='should not be drained'))
+
+  drained = [
+      event
+      async for event in agent_wrapper._drain_pending_tool_response_events(  # pylint: disable=protected-access
+          _gen()
+      )
+  ]
+
+  assert len(drained) == 1
+  assert drained[0].get_function_responses()[0].name == 'echo'
+
+
+@pytest.mark.asyncio
+async def test_drain_pending_tool_response_events_stops_on_model_role():
+  """Drain stops immediately when the next event is already a model turn."""
+
+  def _fr(name: str, call_id: str) -> types.Part:
+    return types.Part(
+        function_response=types.FunctionResponse(
+            name=name, response={'ok': True}, id=call_id
+        )
+    )
+
+  async def _gen():
+    yield _model_event(types.Part.from_text(text='next round'))
+    yield Event(
+        author='coordinator',
+        content=types.Content(role='user', parts=[_fr('echo', '1')]),
+    )
+
+  drained = [
+      event
+      async for event in agent_wrapper._drain_pending_tool_response_events(  # pylint: disable=protected-access
+          _gen()
+      )
+  ]
+
+  assert not drained
+
+
+def test_event_has_eager_tool_calls_true_for_long_running_tool():
+  """A mixed turn with a LongRunningFunctionTool and task tool reports eager calls."""
+
+  def _long_run(value: str) -> None:
+    del value
+
+  def _fc(name: str, call_id: str) -> types.Part:
+    return types.Part(
+        function_call=types.FunctionCall(name=name, args={}, id=call_id)
+    )
+
+  task_agent = LlmAgent(name='specialist', mode='task', model='unused')
+  tools_dict = {
+      'long_run': LongRunningFunctionTool(_long_run),
+      'specialist': _TaskAgentTool(task_agent),
+  }
+  event = _model_event(_fc('long_run', '1'), _fc('specialist', '2'))
+
+  assert agent_wrapper._event_has_eager_tool_calls(event, tools_dict)  # pylint: disable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_drain_pending_tool_response_events_yields_confirmation_then_fr():
+  """Drain yields confirmation event (role model) AND following FR, then stops."""
+
+  def _fr(name: str, call_id: str) -> types.Part:
+    return types.Part(
+        function_response=types.FunctionResponse(
+            name=name, response={'ok': True}, id=call_id
+        )
+    )
+
+  def _confirmation_fc(call_id: str) -> types.Part:
+    return types.Part(
+        function_call=types.FunctionCall(
+            name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME, args={}, id=call_id
+        )
+    )
+
+  async def _gen():
+    yield Event(
+        author='coordinator',
+        content=types.Content(role='model', parts=[_confirmation_fc('conf-1')]),
+    )
+    yield Event(
+        author='coordinator',
+        content=types.Content(role='user', parts=[_fr('echo', '1')]),
+    )
+    yield _model_event(types.Part.from_text(text='should not be drained'))
+
+  drained = [
+      event
+      async for event in agent_wrapper._drain_pending_tool_response_events(  # pylint: disable=protected-access
+          _gen()
+      )
+  ]
+
+  assert len(drained) == 2
+  assert (
+      drained[0].get_function_calls()[0].name
+      == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  assert drained[1].get_function_responses()[0].name == 'echo'
+
+
+# --- process_llm_agent_output ---
+
+
+def _output_model_event(*parts: types.Part, **kwargs: Any) -> Event:
+  return Event(
+      invocation_id='inv',
+      author='test_agent',
+      content=types.Content(role='model', parts=list(parts)),
+      **kwargs,
+  )
+
+
+def _bare_ctx() -> Context:
+  """A Context that only needs to carry actions for output processing."""
+  from unittest.mock import MagicMock
+
+  ctx = MagicMock(spec=Context)
+  ctx.actions = EventActions()
+  return ctx
+
+
+def test_process_llm_agent_output_drops_thought_parts_from_the_output():
+  """Thought parts are model reasoning, not part of the node's answer."""
+  from google.adk.workflow._llm_agent_wrapper import process_llm_agent_output
+
+  agent = _make_agent(output_key='answer')
+  ctx = _bare_ctx()
+  event = _output_model_event(
+      types.Part(text='thinking out loud', thought=True),
+      types.Part(text='the '),
+      types.Part(text='answer'),
+  )
+
+  process_llm_agent_output(agent, ctx, event)
+
+  assert event.output == 'the answer'
+  assert event.node_info.message_as_output is True
+  assert ctx.actions.state_delta == {'answer': 'the answer'}
+
+
+def test_process_llm_agent_output_skips_events_carrying_function_calls():
+  """A tool call is mid-turn work, not the agent's output."""
+  from google.adk.workflow._llm_agent_wrapper import process_llm_agent_output
+
+  agent = _make_agent(output_key='answer')
+  ctx = _bare_ctx()
+  event = _output_model_event(
+      types.Part(
+          function_call=types.FunctionCall(name='some_tool', args={}, id='fc-1')
+      )
+  )
+
+  process_llm_agent_output(agent, ctx, event)
+
+  assert event.output is None
+  assert not event.node_info.message_as_output
+  assert ctx.actions.state_delta == {}
+
+
+def test_process_llm_agent_output_skips_partial_events():
+  """Streaming chunks must not each be treated as the finished output."""
+  from google.adk.workflow._llm_agent_wrapper import process_llm_agent_output
+
+  agent = _make_agent(output_key='answer')
+  ctx = _bare_ctx()
+  event = _output_model_event(types.Part(text='half of an ans'), partial=True)
+
+  process_llm_agent_output(agent, ctx, event)
+
+  assert event.output is None
+  assert not event.node_info.message_as_output
+  assert ctx.actions.state_delta == {}
+
+
+def test_process_llm_agent_output_parses_text_against_the_output_schema():
+  """With an output_schema the text is parsed, not stored as a raw string."""
+  from google.adk.workflow._llm_agent_wrapper import process_llm_agent_output
+
+  agent = _make_agent(output_schema=StoryOutput, output_key='story')
+  ctx = _bare_ctx()
+  event = _output_model_event(
+      types.Part(text='{"title": "T", "content": "C"}'),
+  )
+
+  process_llm_agent_output(agent, ctx, event)
+
+  assert event.output == {'title': 'T', 'content': 'C'}
+  assert ctx.actions.state_delta == {'story': {'title': 'T', 'content': 'C'}}
+
+
+def test_process_llm_agent_output_blank_schema_response_writes_no_state():
+  """An empty response cannot satisfy the schema, so nothing is stored."""
+  from google.adk.workflow._llm_agent_wrapper import process_llm_agent_output
+
+  agent = _make_agent(output_schema=StoryOutput, output_key='story')
+  ctx = _bare_ctx()
+  event = _output_model_event(types.Part(text='   '))
+
+  process_llm_agent_output(agent, ctx, event)
+
+  assert event.output is None
+  assert ctx.actions.state_delta == {}

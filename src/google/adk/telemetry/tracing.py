@@ -198,10 +198,13 @@ def trace_tool_call(
     invocation_context: Optional invocation context. Forwarded so its
       ``run_config.telemetry`` overrides the env-var content toggle.
   """
+  span = span or trace.get_current_span()
+  if not span.is_recording():
+    return
+
   telemetry_config = _telemetry_config_from_invocation_context(
       invocation_context
   )
-  span = span or trace.get_current_span()
 
   span.set_attribute(GEN_AI_OPERATION_NAME, "execute_tool")
 
@@ -299,10 +302,13 @@ def trace_merged_tool_calls(
     invocation_context: Optional invocation context. Forwarded so its
       ``run_config.telemetry`` overrides the env-var content toggle.
   """
+  span = trace.get_current_span()
+  if not span.is_recording():
+    return
+
   telemetry_config = _telemetry_config_from_invocation_context(
       invocation_context
   )
-  span = trace.get_current_span()
 
   span.set_attribute(GEN_AI_OPERATION_NAME, "execute_tool")
   span.set_attribute(GEN_AI_TOOL_NAME, "(merged tools)")
@@ -313,14 +319,14 @@ def trace_merged_tool_calls(
   # consumer reads them.
   span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
-  try:
-    function_response_event_json = function_response_event.model_dumps_json(
-        exclude_none=True
-    )
-  except Exception:  # pylint: disable=broad-exception-caught
-    function_response_event_json = "<not serializable>"
-
   if telemetry_config.should_add_content_to_legacy_spans:
+    try:
+      function_response_event_json = function_response_event.model_dump_json(
+          exclude_none=True
+      )
+    except Exception:  # pylint: disable=broad-exception-caught
+      function_response_event_json = "<not serializable>"
+
     span.set_attribute(
         "gcp.vertex.agent.tool_response",
         function_response_event_json,

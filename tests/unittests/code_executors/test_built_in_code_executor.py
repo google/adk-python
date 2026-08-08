@@ -84,15 +84,15 @@ def test_process_llm_request_gemini_2_model_with_existing_tools(
   )
 
 
-def test_process_llm_request_non_gemini_2_model(
+def test_process_llm_request_non_gemini_model(
     built_in_executor: BuiltInCodeExecutor,
 ):
-  """Tests that a ValueError is raised for non-Gemini 2 models."""
-  llm_request = LlmRequest(model="gemini-1.5-flash")
+  """Tests that a ValueError is raised for non-Gemini models."""
+  llm_request = LlmRequest(model="claude-3-sonnet")
   with pytest.raises(ValueError) as excinfo:
     built_in_executor.process_llm_request(llm_request)
   assert (
-      "Gemini code execution tool is not supported for model gemini-1.5-flash"
+      "Gemini code execution tool is not supported for model claude-3-sonnet"
       in str(excinfo.value)
   )
 

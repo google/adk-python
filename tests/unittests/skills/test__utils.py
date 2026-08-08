@@ -14,18 +14,31 @@
 
 """Unit tests for skill utilities."""
 
+import asyncio
 import builtins
 import io
+import struct
 import sys
+import threading
+import tracemalloc
 from unittest import mock
 import zipfile
+import zlib
 
+from google.adk.skills import _utils
 from google.adk.skills import list_skills_in_dir
+from google.adk.skills import list_skills_in_dir_async as _list_skills_in_dir_async
 from google.adk.skills import list_skills_in_gcs_dir as _list_skills_in_gcs_dir
+from google.adk.skills import list_skills_in_gcs_dir_async as _list_skills_in_gcs_dir_async
 from google.adk.skills import load_skill_from_dir as _load_skill_from_dir
+from google.adk.skills import load_skill_from_dir_async as _load_skill_from_dir_async
 from google.adk.skills import load_skill_from_gcs_dir as _load_skill_from_gcs_dir
+from google.adk.skills import load_skill_from_gcs_dir_async as _load_skill_from_gcs_dir_async
 from google.adk.skills import load_skills_from_dir as _load_skills_from_dir
+from google.adk.skills import load_skills_from_dir_async as _load_skills_from_dir_async
 from google.adk.skills._utils import _load_skill_from_zip_bytes
+from google.adk.skills._utils import _MAX_ZIP_ENTRIES
+from google.adk.skills._utils import _MAX_ZIP_UNCOMPRESSED_BYTES
 from google.adk.skills._utils import _read_skill_properties
 from google.adk.skills._utils import _validate_skill_dir
 import pytest
@@ -368,6 +381,143 @@ def test__load_skill_from_zip_bytes():
   assert skill.resources.get_script("script1.sh").src == "echo hello"
 
 
+def test__load_skill_from_zip_bytes_rejects_oversized_archive():
+  """Tests that an archive declaring too much decompressed data is refused."""
+
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    # Stream the payload so the test never holds the whole thing in memory.
+    chunk = b"a" * (1024 * 1024)
+    chunks = _MAX_ZIP_UNCOMPRESSED_BYTES // len(chunk) + 1
+    with z.open("references/big.md", "w") as f:
+      for _ in range(chunks):
+        f.write(chunk)
+
+  with pytest.raises(ValueError, match="decompressed"):
+    _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+
+def test__load_skill_from_zip_bytes_rejects_too_many_entries():
+  """Tests that an archive with too many entries is refused."""
+
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    for i in range(_MAX_ZIP_ENTRIES):
+      z.writestr(f"references/ref{i}.md", "x")
+
+  with pytest.raises(ValueError, match="too many entries"):
+    _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+
+def test__load_skill_from_zip_bytes_accepts_archive_at_the_limits():
+  """Tests that an archive exactly at both ceilings is still accepted."""
+
+  skill_md = "---\nname: my-skill\ndescription: A skill\n---\nBody"
+  padding = "x" * 64
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("SKILL.md", skill_md)
+    z.writestr("references/pad.md", padding)
+
+  # Two entries, and exactly as many bytes as the ceiling allows.
+  with (
+      mock.patch("google.adk.skills._utils._MAX_ZIP_ENTRIES", 2),
+      mock.patch(
+          "google.adk.skills._utils._MAX_ZIP_UNCOMPRESSED_BYTES",
+          len(skill_md) + len(padding),
+      ),
+  ):
+    skill = _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+  assert skill.resources.get_reference("pad.md") == padding
+
+
+_UNDERSTATED_REAL_BYTES = 64 * 1024 * 1024
+
+
+def _zip_understating_big_member(
+    real_size: int, declared_size: int, *, matching_crc: bool
+) -> bytes:
+  """Builds an archive whose central directory under-reports a member's size.
+
+  ``references/big.md`` really expands to ``real_size`` bytes while the
+  directory claims ``declared_size``, the way a hostile archive would. With
+  ``matching_crc`` the checksum is rewritten to cover only the declared
+  prefix, so the archive is internally consistent about the lie.
+  """
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    # Stream the payload so the test never holds the whole thing in memory.
+    chunk = b"a" * (1024 * 1024)
+    with z.open("references/big.md", "w") as f:
+      for _ in range(real_size // len(chunk)):
+        f.write(chunk)
+  raw = bytearray(zip_buffer.getvalue())
+
+  # Walk the central directory and rewrite the big member's declared size.
+  eocd = raw.rfind(b"PK\x05\x06")
+  entry_count = struct.unpack("<H", raw[eocd + 10 : eocd + 12])[0]
+  offset = struct.unpack("<I", raw[eocd + 16 : eocd + 20])[0]
+  for _ in range(entry_count):
+    name_len, extra_len, comment_len = struct.unpack(
+        "<HHH", raw[offset + 28 : offset + 34]
+    )
+    if bytes(raw[offset + 46 : offset + 46 + name_len]) == b"references/big.md":
+      raw[offset + 24 : offset + 28] = struct.pack("<I", declared_size)
+      if matching_crc:
+        raw[offset + 16 : offset + 20] = struct.pack(
+            "<I", zlib.crc32(b"a" * declared_size)
+        )
+    offset += 46 + name_len + extra_len + comment_len
+  return bytes(raw)
+
+
+def test__load_skill_from_zip_bytes_rejects_member_understating_its_size():
+  """Tests that a member expanding past the size it declares is refused."""
+
+  zip_bytes = _zip_understating_big_member(
+      _UNDERSTATED_REAL_BYTES, 100, matching_crc=False
+  )
+
+  with pytest.raises(ValueError, match="malformed"):
+    _load_skill_from_zip_bytes(zip_bytes)
+
+
+def test__load_skill_from_zip_bytes_bounds_bytes_read_from_a_lying_member():
+  """Tests that reading costs what a member holds, not what it hides."""
+
+  # Nothing in this archive gives the lie away: the declared sizes are small
+  # enough to pass every up-front check and the checksum matches the declared
+  # prefix, so the read itself has to stay bounded.
+  zip_bytes = _zip_understating_big_member(
+      _UNDERSTATED_REAL_BYTES, 100, matching_crc=True
+  )
+
+  tracemalloc.start()
+  try:
+    skill = _load_skill_from_zip_bytes(zip_bytes)
+    peak = tracemalloc.get_traced_memory()[1]
+  finally:
+    tracemalloc.stop()
+
+  assert skill.resources.get_reference("big.md") == "a" * 100
+  # Decompressing the member in one call peaks at roughly the 64 MB it really
+  # holds; decompressing it in steps peaks near the size of the archive.
+  assert peak < _UNDERSTATED_REAL_BYTES // 4
+
+
 def test__list_skills_in_gcs_dir_import_error():
   """Tests list_skills_in_gcs_dir raises ImportError when storage missing."""
   real_import = builtins.__import__
@@ -434,3 +584,261 @@ def test__load_skills_from_dir_errors(tmp_path):
   file_path.write_text("hello")
   with pytest.raises(ValueError, match="not a directory"):
     _load_skills_from_dir(file_path)
+
+
+# --- Async wrappers --------------------------------------------------------
+
+# Guards the deadlock-style test below: with a correct (off-thread)
+# implementation the handshake completes in milliseconds, so this only ever
+# elapses when the event loop is genuinely blocked.
+_BLOCKED_LOOP_TIMEOUT_SEC = 10
+
+# Each async wrapper and the blocking function it must offload, plus the
+# minimal positional args needed to call it.
+_ASYNC_WRAPPERS = [
+    ("_load_skill_from_dir_async", "_load_skill_from_dir", ("skill-dir",)),
+    ("_load_skills_from_dir_async", "_load_skills_from_dir", ("skills-dir",)),
+    ("_list_skills_in_dir_async", "_list_skills_in_dir", ("skills-dir",)),
+    (
+        "_load_skill_from_gcs_dir_async",
+        "_load_skill_from_gcs_dir",
+        ("my-bucket", "my-skill"),
+    ),
+    (
+        "_list_skills_in_gcs_dir_async",
+        "_list_skills_in_gcs_dir",
+        ("my-bucket",),
+    ),
+]
+
+
+@pytest.mark.parametrize("async_name, sync_name, args", _ASYNC_WRAPPERS)
+async def test_async_wrapper_runs_blocking_call_off_event_loop(
+    monkeypatch, async_name, sync_name, args
+):
+  """Each async wrapper must run its blocking counterpart in a worker thread.
+
+  This is the property that distinguishes these wrappers from a plain
+  ``async def f(): return _sync_f(...)``, which would satisfy every other test
+  in this file while still stalling the caller's event loop.
+  """
+  calls = []
+
+  def _record_thread(*call_args, **call_kwargs):
+    calls.append((threading.get_ident(), call_args, call_kwargs))
+    return "sentinel-result"
+
+  monkeypatch.setattr(_utils, sync_name, _record_thread)
+
+  result = await getattr(_utils, async_name)(*args)
+
+  assert len(calls) == 1
+  thread_id, call_args, _ = calls[0]
+  assert thread_id != threading.get_ident(), (
+      f"{sync_name} ran on the event loop thread; {async_name} must offload it"
+      " to a worker thread"
+  )
+  # The wrapper must forward its arguments through unchanged.
+  assert call_args[: len(args)] == args
+  assert result == "sentinel-result"
+
+
+async def test_async_wrapper_keeps_event_loop_responsive(monkeypatch):
+  """The event loop must keep scheduling tasks while a wrapper is in flight.
+
+  The blocking stand-in can only be released by a coroutine running on the
+  event loop, so an implementation that blocks the loop deadlocks here and
+  fails on the timeout instead of passing silently.
+  """
+  entered = threading.Event()
+  release = threading.Event()
+
+  def _blocking_loader(*args, **kwargs):
+    entered.set()
+    if not release.wait(timeout=_BLOCKED_LOOP_TIMEOUT_SEC):
+      raise AssertionError(
+          "event loop never resumed while the blocking call was in flight"
+      )
+    return "loaded"
+
+  monkeypatch.setattr(_utils, "_load_skill_from_dir", _blocking_loader)
+
+  async def _release_once_entered():
+    # Only makes progress if the event loop was not blocked by the wrapper.
+    while not entered.is_set():
+      await asyncio.sleep(0.001)
+    release.set()
+
+  results = await asyncio.wait_for(
+      asyncio.gather(
+          _load_skill_from_dir_async("skill-dir"), _release_once_entered()
+      ),
+      timeout=_BLOCKED_LOOP_TIMEOUT_SEC,
+  )
+
+  assert results[0] == "loaded"
+
+
+async def test_async_wrappers_run_concurrently(monkeypatch):
+  """Independent loads must overlap rather than serialize on the event loop."""
+  barrier = threading.Barrier(3, timeout=_BLOCKED_LOOP_TIMEOUT_SEC)
+
+  def _rendezvous(skill_dir):
+    # Each call blocks until all three are running at once. A serialized
+    # implementation can never reach the barrier count and times out.
+    barrier.wait()
+    return skill_dir
+
+  monkeypatch.setattr(_utils, "_load_skill_from_dir", _rendezvous)
+
+  results = await asyncio.wait_for(
+      asyncio.gather(*(_load_skill_from_dir_async(f"s{i}") for i in range(3))),
+      timeout=_BLOCKED_LOOP_TIMEOUT_SEC,
+  )
+
+  assert results == ["s0", "s1", "s2"]
+
+
+async def test_load_skill_from_dir_async(tmp_path):
+  """Tests loading a skill from a directory asynchronously."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+
+  skill_md_content = """---
+name: test-skill
+description: Test description
+---
+Test instructions
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md_content)
+
+  # Create references
+  ref_dir = skill_dir / "references"
+  ref_dir.mkdir()
+  (ref_dir / "ref1.md").write_text("ref1 content")
+
+  skill = await _load_skill_from_dir_async(skill_dir)
+
+  assert skill.name == "test-skill"
+  assert skill.description == "Test description"
+  assert skill.instructions == "Test instructions"
+  assert skill.resources.get_reference("ref1.md") == "ref1 content"
+
+
+async def test_load_skill_from_dir_async_propagates_errors(tmp_path):
+  """Errors raised in the worker thread must surface to the caller."""
+  with pytest.raises(FileNotFoundError):
+    await _load_skill_from_dir_async(tmp_path / "nonexistent")
+
+
+async def test_load_skills_from_dir_async(tmp_path):
+  """Tests loading every skill in a directory asynchronously."""
+  skills_dir = tmp_path / "skills"
+  skills_dir.mkdir()
+
+  for name in ("skill-a", "skill-b"):
+    skill_dir = skills_dir / name
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: desc {name}\n---\nbody {name}"
+    )
+  # Directories without a SKILL.md are skipped, matching the sync version.
+  (skills_dir / "not-a-skill").mkdir()
+
+  skills = await _load_skills_from_dir_async(skills_dir)
+
+  assert [skill.name for skill in skills] == ["skill-a", "skill-b"]
+  assert skills[0].instructions == "body skill-a"
+
+
+async def test_load_skills_from_dir_async_propagates_errors(tmp_path):
+  """Errors raised in the worker thread must surface to the caller."""
+  with pytest.raises(FileNotFoundError, match="does not exist"):
+    await _load_skills_from_dir_async(tmp_path / "nonexistent")
+
+
+async def test_list_skills_in_dir_async(tmp_path):
+  """Tests listing skills in a directory asynchronously."""
+  skills_dir = tmp_path / "skills"
+  skills_dir.mkdir()
+
+  # Valid skill 1
+  skill1_dir = skills_dir / "skill1"
+  skill1_dir.mkdir()
+  (skill1_dir / "SKILL.md").write_text(
+      "---\nname: skill1\ndescription: desc1\n---\nbody"
+  )
+
+  skills = await _list_skills_in_dir_async(skills_dir)
+
+  assert len(skills) == 1
+  assert "skill1" in skills
+  assert skills["skill1"].name == "skill1"
+
+
+@mock.patch("google.cloud.storage.Client")
+async def test_load_skill_from_gcs_dir_async(mock_client_class):
+  """Tests loading a skill from GCS asynchronously."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test description\n---\nTest"
+          " instructions"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  # For resources
+  def list_blobs_side_effect(prefix=None):
+    if prefix.endswith("references/"):
+      m = mock.MagicMock()
+      m.name = prefix + "ref1.md"
+      m.download_as_text.return_value = "ref1 content"
+      return [m]
+    return []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  skill = await _load_skill_from_gcs_dir_async(
+      "my-bucket", "my-skill", "skills"
+  )
+
+  assert skill.name == "my-skill"
+  assert skill.description == "Test description"
+  assert skill.instructions == "Test instructions"
+  assert skill.resources.get_reference("ref1.md") == "ref1 content"
+  mock_bucket.blob.assert_any_call("skills/my-skill/SKILL.md")
+
+
+@mock.patch("google.cloud.storage.Client")
+async def test_list_skills_in_gcs_dir_async(mock_client_class):
+  """Tests listing skills in GCS asynchronously."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  mock_iterator = mock.MagicMock()
+  mock_iterator.prefixes = ["skills/my-skill/"]
+  mock_bucket.list_blobs.return_value = mock_iterator
+
+  mock_blob = mock.MagicMock()
+  mock_blob.exists.return_value = True
+  mock_blob.download_as_text.return_value = (
+      "---\nname: my-skill\ndescription: A skill\n---\nBody"
+  )
+  mock_bucket.blob.return_value = mock_blob
+
+  skills = await _list_skills_in_gcs_dir_async("my-bucket", "skills/")
+  assert "my-skill" in skills
+  assert skills["my-skill"].name == "my-skill"

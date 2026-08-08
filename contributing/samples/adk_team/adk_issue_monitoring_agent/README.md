@@ -35,7 +35,7 @@ These variables control the scanning behavior, thresholds, and model selection.
 | `BOT_NAME`             | The GitHub username of your official bot to ensure its comments are ignored.                                       | `adk-bot`               |
 | `CONCURRENCY_LIMIT`    | The number of issues to process concurrently.                                                                      | `3`                     |
 | `SLEEP_BETWEEN_CHUNKS` | Time in seconds to sleep between batches to respect GitHub API rate limits.                                        | `1.5`                   |
-| `LLM_MODEL_NAME`       | The specific Gemini model version to use.                                                                          | `gemini-2.5-flash`      |
+| `LLM_MODEL_NAME`       | The specific Gemini model version to use.                                                                          | `gemini-3.5-flash`      |
 | `OWNER`                | Repository owner (auto-detected in Actions).                                                                       | (Environment dependent) |
 | `REPO`                 | Repository name (auto-detected in Actions).                                                                        | (Environment dependent) |
 
@@ -60,6 +60,6 @@ Because this agent resides within the `adk-python` package structure, the workfl
           REPO: ${{ github.event.repository.name }}
           # Mapped to the manual trigger checkbox in the GitHub UI
           INITIAL_FULL_SCAN: ${{ github.event.inputs.full_scan == 'true' }}
-          PYTHONPATH: contributing/samples
+          PYTHONPATH: contributing/samples/adk_team
         run: python -m adk_issue_monitoring_agent.main
 ```

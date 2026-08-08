@@ -25,7 +25,6 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...tools.set_model_response_tool import SetModelResponseTool
-from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
 from ._invocation_utils import as_llm_agent
 from ._invocation_utils import require_agent_name
@@ -46,7 +45,7 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
     if (
         not agent.output_schema
         or not agent.tools
-        or can_use_output_schema_with_tools(agent.canonical_model)
+        or agent.canonical_model.capabilities.output_schema_and_tools
         or getattr(agent, 'mode', None) == 'task'
     ):
       return
