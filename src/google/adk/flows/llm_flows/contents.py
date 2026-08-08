@@ -1349,11 +1349,20 @@ async def _add_instructions_to_user_content(
 
   if llm_request._static_instruction_contents:
     # Non-text static_instruction content must remain a stable request
-    # prefix across turns (for provider-side context caching), so it goes
-    # at the very beginning, followed by the rest of the instruction
-    # contents (e.g. the dynamic instruction), ahead of conversation
-    # history rather than just ahead of the latest user turn.
-    llm_request.contents[0:0] = instruction_contents
+    # prefix across turns (for provider-side context caching). The first
+    # call for this request places it at the very beginning, followed by
+    # the rest of the instruction contents (e.g. the dynamic instruction),
+    # ahead of conversation history rather than just ahead of the latest
+    # user turn. Later calls (e.g. tool-triggered dynamic instructions
+    # routed through `_finalize_dynamic_instructions`) insert right after
+    # that tracked prefix instead of at index 0, so they don't displace it.
+    insert_index = llm_request._static_instruction_prefix_end_index
+    if insert_index is None:
+      insert_index = 0
+    llm_request.contents[insert_index:insert_index] = instruction_contents
+    llm_request._static_instruction_prefix_end_index = insert_index + len(
+        instruction_contents
+    )
     return
 
   llm_request._insert_transient_user_content(  # pylint: disable=protected-access

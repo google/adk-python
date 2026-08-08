@@ -124,6 +124,21 @@ class LlmRequest(BaseModel):
   separately from other instruction-related contents.
   """
 
+  _static_instruction_prefix_end_index: Optional[int] = PrivateAttr(
+      default=None
+  )
+  """Index in ``contents`` immediately after the static-instruction prefix,
+  once it has been placed at the front of the request.
+
+  ``_add_instructions_to_user_content`` (contents.py) is called once per
+  turn for the main instruction/dynamic-instruction bundle, and again by
+  ``_finalize_dynamic_instructions`` (base_llm_flow.py) whenever a tool
+  contributes a dynamic instruction. Only the first call should insert at
+  index 0; later calls must insert right after the tracked prefix instead,
+  or they would push tool-triggered content in front of it and break the
+  stable-prefix guarantee.
+  """
+
   def _append_dynamic_instructions(self, instructions: list[str]) -> None:
     """Appends dynamic instructions to the request."""
     self._dynamic_instructions.extend(instructions)
