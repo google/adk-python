@@ -170,6 +170,110 @@ def test_get_events_for_rehydration_lazily_builds_event_index():
   assert events == [e_a]
 
 
+def _duplicate_user_response_event():
+  """A user function-response event with fixed `id`/`timestamp`.
+
+  Two of these are distinct objects that nonetheless compare equal, which is how
+  a value-based membership test can confuse one for the other.
+  """
+  from google.genai import types
+
+  return Event(
+      author="user",
+      invocation_id="inv-1",
+      id="duplicate-event-id",
+      timestamp=1000.0,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="RequestInput", id="fc-1", response={"result": "ok"}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def test_get_events_for_rehydration_merges_user_prompts_by_identity():
+  """A user prompt is not dropped just because an equal-valued event is indexed.
+
+  `e_user_root` is indexed under root because it arrives before the interrupt id
+  that would route it, while `e_user_routed` arrives after and is indexed under
+  the node path. The two compare equal, so testing membership with `in` treats
+  the root prompt as already present and silently drops it from rehydration.
+  """
+  mgr = ReplayManager()
+  e_user_root = _duplicate_user_response_event()
+  e_node = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/child_a@1"),
+      invocation_id="inv-1",
+      long_running_tool_ids=["fc-1"],
+  )
+  e_user_routed = _duplicate_user_response_event()
+  assert e_user_root == e_user_routed
+  assert e_user_root is not e_user_routed
+
+  session_events = [e_user_root, e_node, e_user_routed]
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = session_events
+
+  events = mgr.get_events_for_rehydration(ctx, "wf@1/child_a@1")
+
+  # Every event is preserved, in session order.
+  assert [id(e) for e in events] == [id(e) for e in session_events]
+
+
+def test_get_events_for_rehydration_does_not_deep_compare_events():
+  """Merging user prompts must not invoke `Event.__eq__`.
+
+  `Event.__eq__` is a recursive deep comparison, so using it for a membership
+  test over a list makes this path quadratic in the number of session events.
+  """
+  eq_calls = 0
+
+  class CountingEvent(Event):
+
+    def __eq__(self, other):
+      nonlocal eq_calls
+      eq_calls += 1
+      return super().__eq__(other)
+
+    __hash__ = None
+
+  mgr = ReplayManager()
+  # A root-indexed user prompt is required for the merge path to run at all.
+  e_user = CountingEvent(**_duplicate_user_response_event().model_dump())
+  session_events = [
+      e_user,
+      *[
+          CountingEvent(
+              author="node",
+              node_info=NodeInfo(path="wf@1/child_a@1"),
+              invocation_id="inv-1",
+          )
+          for _ in range(20)
+      ],
+  ]
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = session_events
+
+  events = mgr.get_events_for_rehydration(ctx, "wf@1/child_a@1")
+
+  # Sanity-check that the merge path actually ran, so `eq_calls == 0` below
+  # means "no deep comparison" rather than "nothing was compared".
+  assert len(events) == len(session_events)
+  assert eq_calls == 0
+
+
 def test_scan_workflow_events_recovers_children_from_transitive_descendant_events():
   """Scanning workflow events recovers child nodes when events are emitted deep in child subtrees."""
   mgr = ReplayManager()
