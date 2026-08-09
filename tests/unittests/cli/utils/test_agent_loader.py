@@ -370,6 +370,69 @@ class TestAgentLoader:
 
       assert "No root_agent found for 'broken_agent'" in str(exc_info.value)
 
+  def test_agent_with_wrong_root_agent_type_error(self):
+    """A module-level root_agent of the wrong type must not be reported as
+    missing."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      # root_agent is an App, which is only valid when exported as `app`.
+      agent_file = temp_path / "judge_agent.py"
+      agent_file.write_text(dedent("""
+                from google.adk.agents.base_agent import BaseAgent
+                from google.adk.apps.app import App
+
+                class JudgeAgent(BaseAgent):
+                    def __init__(self):
+                        super().__init__(name="judge")
+
+                root_agent = App(name="judge", root_agent=JudgeAgent())
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent("judge_agent")
+
+      message = str(exc_info.value)
+      assert "judge_agent.root_agent" in message
+      assert "App" in message
+      assert "not a BaseAgent" in message
+      assert "`app` instead of `root_agent`" in message
+      # The generic not-found error would be misleading here: root_agent
+      # exists, the directory structure is correct, and the cwd is correct.
+      assert "No root_agent found" not in message
+
+  def test_agent_submodule_wrong_root_agent_type_error(self):
+    """The same precise diagnosis applies to the {agent}/agent.py path."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "submodule_agent"
+      agent_dir.mkdir()
+      (agent_dir / "__init__.py").write_text("")
+      agent_file = agent_dir / "agent.py"
+      agent_file.write_text(dedent("""
+                from google.adk.agents.base_agent import BaseAgent
+                from google.adk.apps.app import App
+
+                class JudgeAgent(BaseAgent):
+                    def __init__(self):
+                        super().__init__(name="judge")
+
+                root_agent = App(name="judge", root_agent=JudgeAgent())
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent("submodule_agent")
+
+      message = str(exc_info.value)
+      assert "submodule_agent.agent.root_agent" in message
+      assert "App" in message
+      assert "not a BaseAgent" in message
+      assert "`app` instead of `root_agent`" in message
+
   def test_agent_internal_module_not_found_error(self):
     """Test error when an agent tries to import a nonexistent module."""
     with tempfile.TemporaryDirectory() as temp_dir:

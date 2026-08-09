@@ -79,6 +79,7 @@ class AgentLoader(BaseAgentLoader):
     self._init_agent_mode(agents_path)
     self._original_sys_path = None
     self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
+    self._mismatched_root_agent: Optional[tuple[str, type]] = None
 
   def _init_agent_mode(self, agents_path: Path) -> None:
     if is_single_agent_directory(agents_path):
@@ -129,6 +130,10 @@ class AgentLoader(BaseAgentLoader):
         if isinstance(module_candidate.root_agent, (BaseAgent, BaseNode)):
           return module_candidate.root_agent
         else:
+          self._mismatched_root_agent = (
+              f"{agent_name}.root_agent",
+              type(module_candidate.root_agent),
+          )
           logger.warning(
               "Root agent found is not an instance of BaseAgent. But a type %s",
               type(module_candidate.root_agent),
@@ -178,6 +183,10 @@ class AgentLoader(BaseAgentLoader):
         if isinstance(module_candidate.root_agent, (BaseAgent, BaseNode)):
           return module_candidate.root_agent
         else:
+          self._mismatched_root_agent = (
+              f"{agent_name}.agent.root_agent",
+              type(module_candidate.root_agent),
+          )
           logger.warning(
               "Root agent found is not an instance of BaseAgent. But a type %s",
               type(module_candidate.root_agent),
@@ -276,6 +285,7 @@ class AgentLoader(BaseAgentLoader):
   def _perform_load(self, agent_name: str) -> Union[BaseAgent, App]:
     """Internal logic to load an agent"""
     self._validate_agent_name(agent_name)
+    self._mismatched_root_agent = None
     # Determine the directory to use for loading
     if agent_name.startswith("__"):
       # Special agent: use special agents directory
@@ -340,6 +350,17 @@ class AgentLoader(BaseAgentLoader):
           agents_dir=agents_dir,
       )
       return root_agent
+
+    # A root_agent was found in a module but with the wrong type. Report the
+    # precise problem instead of the generic not-found error, which would
+    # claim the root_agent is missing and point the user at the wrong fix.
+    if self._mismatched_root_agent is not None:
+      location, wrong_type = self._mismatched_root_agent
+      raise ValueError(
+          f"Found '{location}' in module, but it is a {wrong_type.__name__},"
+          " not a BaseAgent or BaseNode. If you meant to export an App, name"
+          " it `app` instead of `root_agent`."
+      )
 
     # If no root_agent was found by any pattern
     # Check if user might be in the wrong directory
