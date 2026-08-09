@@ -66,7 +66,13 @@ repos:
         exclude: ^scripts/
       - id: update-constraints
         name: update-constraints
-        entry: ./scripts/update_constraints.sh
+        # --check keeps this hook idempotent: it regenerates each constraints
+        # file using the --exclude-newer date already recorded in that file's
+        # header. Update mode instead recomputes "today - 4 days" and rewrites
+        # every header, so `pre-commit run --all-files` always reports "files
+        # were modified by this hook". To refresh the pins, run
+        # ./scripts/update_constraints.sh (no --check) manually and commit.
+        entry: ./scripts/update_constraints.sh --check
         language: system
         files: ^(pyproject\.toml|constraints-.*\.txt)$
         pass_filenames: false
