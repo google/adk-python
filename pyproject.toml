@@ -37,7 +37,7 @@ dependencies = [
   "click>=8.1.8,<9",
   "fastapi>=0.133,<1",
   "google-auth[pyopenssl]>=2.47",
-  "google-genai>=2.9,<3",
+  "google-genai>=2.12.1,<3",
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
@@ -146,7 +146,9 @@ optional-dependencies.e2b = [
 optional-dependencies.eval = [
   "gepa>=0.1",
   "google-cloud-aiplatform[evaluation]>=1.148",
+  "google-cloud-texttospeech>=2.37",
   "jinja2>=3.1.4,<4",                           # For eval template rendering
+  "nltk!=3.10.1",                               # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
@@ -159,11 +161,13 @@ optional-dependencies.extensions = [
   "google-cloud-firestore>=2.11,<3",                                 # For Firestore services
   "k8s-agent-sandbox>=0.1.1.post3",
   "kubernetes>=29",
-  "langgraph>=0.2.60,<0.4.8",
+  "langgraph>=1.0.10,<2",
+  "langgraph-checkpoint>=4.1.1,<5",                                  # LangGraph's own floor still admits unsafe checkpoint deserialization.
   "litellm>=1.84",
   "llama-index-embeddings-google-genai>=0.3",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
+  "nltk!=3.10.1",                                                    # Transitive via llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
   "pypika>=0.50",
   "toolbox-adk>=1,<2",
@@ -194,6 +198,9 @@ optional-dependencies.gcp = [
 optional-dependencies.mcp = [
   "anyio>=4.9,<5",
   "mcp>=1.24,<2",
+]
+optional-dependencies.oci = [
+  "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
 optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
@@ -233,11 +240,13 @@ optional-dependencies.test = [
   "jinja2>=3.1.4,<4",
   "kubernetes>=29",
   "langchain-community>=0.3.17",
-  "langgraph>=0.2.60,<0.4.8",
+  "langgraph>=1.0.10,<2",
+  "langgraph-checkpoint>=4.1.1,<5",                                  # LangGraph's own floor still admits unsafe checkpoint deserialization.
   "litellm>=1.84",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
   "mcp>=1.24,<2",
+  "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
@@ -305,12 +314,13 @@ known_third_party = [ "a2a", "google.adk" ]
 # Real words/identifiers that codespell misreads as typos:
 #   hel/serie/strin -> substrings in test fixtures; te -> local variable;
 #   rouge -> the ROUGE metric; unparseable -> valid spelling variant;
-#   re-use/re-used -> intentional hyphenation; lamda -> Google LaMDA project.
-ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda"
+#   re-use/re-used -> intentional hyphenation; lamda -> Google LaMDA project;
+#   astroid -> AST library used by pylint.
+ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda,astroid"
 # CHANGELOG.md is generated from commit messages; lockfiles, notebooks, JSON
 # fixtures, bundled JS/source maps, and the vendored CLI browser bundle are
 # generated or data files, not prose we own.
-skip = "*CHANGELOG.md,*.lock,*.ipynb,*.json,*.js,*.map,*/cli/browser/*"
+skip = "*CHANGELOG.md,*.lock,*.ipynb,*.json,*.js,*.map,*/cli/browser/*,constraints-*.txt"
 
 [tool.mypy]
 mypy_path = [ "src" ]

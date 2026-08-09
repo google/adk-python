@@ -72,6 +72,36 @@ async def test_send_realtime_default_behavior(
 
 
 @pytest.mark.asyncio
+async def test_send_realtime_audio_stream_end(
+    gemini_connection, mock_gemini_session
+):
+  """Test send_realtime with LiveClientRealtimeInput(audio_stream_end=True)."""
+  input_signal = types.LiveClientRealtimeInput(audio_stream_end=True)
+  await gemini_connection.send_realtime(input_signal)
+
+  # Should call send_realtime_input with audio_stream_end=True
+  mock_gemini_session.send_realtime_input.assert_called_once_with(
+      audio_stream_end=True
+  )
+
+
+@pytest.mark.asyncio
+async def test_send_realtime_unsupported_liveClientRealtimeInput(
+    gemini_connection, mock_gemini_session, caplog
+):
+  """Test send_realtime with unsupported LiveClientRealtimeInput."""
+  input_signal = types.LiveClientRealtimeInput()
+
+  with caplog.at_level('WARNING'):
+    await gemini_connection.send_realtime(input_signal)
+
+  # Should log a warning
+  assert 'Unary LiveClientRealtimeInput not fully supported yet.' in caplog.text
+  # Should not call send_realtime_input or send
+  mock_gemini_session.send_realtime_input.assert_not_called()
+  mock_gemini_session.send.assert_not_called()
+
+
 async def test_send_realtime_audio_uses_audio_channel_for_live_translate(
     mock_gemini_session, test_blob
 ):

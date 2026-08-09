@@ -16,6 +16,7 @@ from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.schemas import v0
 import pytest
+from sqlalchemy import create_engine
 from sqlalchemy import inspect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -249,3 +250,133 @@ async def test_prepare_tables_recreates_missing_v0_events_index(tmp_path):
       == ['app_name', 'user_id', 'session_id', 'timestamp']
       for index in event_indexes
   )
+
+
+def _run_sqlite_ddl(db_path, statements):
+  """Creates a local SQLite file and applies the given DDL statements."""
+  engine = create_engine(f'sqlite:///{db_path}')
+  try:
+    with engine.begin() as conn:
+      for statement in statements:
+        conn.execute(text(statement))
+  finally:
+    engine.dispose()
+
+
+_V0_EVENTS_TABLE_DDL = (
+    'CREATE TABLE events (id VARCHAR(128) PRIMARY KEY, actions BLOB)'
+)
+_V1_EVENTS_TABLE_DDL = (
+    'CREATE TABLE events (id VARCHAR(128) PRIMARY KEY, event_data TEXT)'
+)
+_METADATA_TABLE_DDL = (
+    'CREATE TABLE adk_internal_metadata ("key" VARCHAR(128) PRIMARY KEY,'
+    ' value VARCHAR(128))'
+)
+
+
+def test_get_db_schema_version_empty_db_defaults_to_latest(tmp_path):
+  """A database with neither marker is treated as brand new."""
+  db_path = tmp_path / 'empty.db'
+  _run_sqlite_ddl(db_path, ['CREATE TABLE unrelated (id INTEGER PRIMARY KEY)'])
+
+  assert (
+      _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+      == _schema_check_utils.LATEST_SCHEMA_VERSION
+  )
+
+
+def test_get_db_schema_version_legacy_events_table_detects_v0(tmp_path):
+  """An events table with `actions` and no `event_data` is the pickle schema."""
+  db_path = tmp_path / 'legacy.db'
+  _run_sqlite_ddl(db_path, [_V0_EVENTS_TABLE_DDL])
+
+  assert (
+      _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+      == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+  )
+
+
+@pytest.mark.parametrize(
+    'events_ddl',
+    [
+        _V1_EVENTS_TABLE_DDL,
+        # A table carrying both columns still has the JSON column, so it is
+        # not the pickle-only schema.
+        (
+            'CREATE TABLE events (id VARCHAR(128) PRIMARY KEY, actions BLOB,'
+            ' event_data TEXT)'
+        ),
+    ],
+)
+def test_get_db_schema_version_events_table_with_event_data_is_not_v0(
+    tmp_path, events_ddl
+):
+  """Only the `actions`-without-`event_data` shape counts as the v0 schema."""
+  db_path = tmp_path / 'json_events.db'
+  _run_sqlite_ddl(db_path, [events_ddl])
+
+  assert (
+      _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+      == _schema_check_utils.LATEST_SCHEMA_VERSION
+  )
+
+
+def test_get_db_schema_version_metadata_row_wins_over_table_shape(tmp_path):
+  """The recorded version is authoritative even when the tables disagree."""
+  db_path = tmp_path / 'metadata_wins.db'
+  # v1-shaped events table, but the metadata table still records v0.
+  _run_sqlite_ddl(
+      db_path,
+      [
+          _V1_EVENTS_TABLE_DDL,
+          _METADATA_TABLE_DDL,
+          'INSERT INTO adk_internal_metadata ("key", value) VALUES'
+          f" ('{_schema_check_utils.SCHEMA_VERSION_KEY}',"
+          f" '{_schema_check_utils.SCHEMA_VERSION_0_PICKLE}')",
+      ],
+  )
+
+  assert (
+      _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+      == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+  )
+
+
+def test_get_db_schema_version_metadata_without_version_row_raises(tmp_path):
+  """A metadata table missing the version row means a malformed database."""
+  db_path = tmp_path / 'malformed.db'
+  _run_sqlite_ddl(db_path, [_V0_EVENTS_TABLE_DDL, _METADATA_TABLE_DDL])
+
+  with pytest.raises(ValueError, match='Schema version not found'):
+    _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+
+
+def test_get_db_schema_version_accepts_async_driver_url(tmp_path):
+  """An async driver URL is downgraded to its sync form before connecting."""
+  db_path = tmp_path / 'async_url.db'
+  _run_sqlite_ddl(db_path, [_V0_EVENTS_TABLE_DDL])
+
+  assert (
+      _schema_check_utils.get_db_schema_version(
+          f'sqlite+aiosqlite:///{db_path}'
+      )
+      == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+  )
+
+
+def test_get_db_schema_version_from_connection_uses_open_connection(tmp_path):
+  """The connection variant reports the same version without a new engine."""
+  db_path = tmp_path / 'from_connection.db'
+  _run_sqlite_ddl(db_path, [_V0_EVENTS_TABLE_DDL])
+
+  engine = create_engine(f'sqlite:///{db_path}')
+  try:
+    with engine.connect() as connection:
+      version = _schema_check_utils.get_db_schema_version_from_connection(
+          connection
+      )
+  finally:
+    engine.dispose()
+
+  assert version == _schema_check_utils.SCHEMA_VERSION_0_PICKLE

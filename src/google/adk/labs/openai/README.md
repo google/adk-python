@@ -22,3 +22,5 @@ agent = LlmAgent(
 ```
 
 Requires the `openai` Python package and `OPENAI_API_KEY` environment variable.
+
+> **Tip:** The OpenAI Python client also honors `OPENAI_BASE_URL` for OpenAI-compatible multi-model gateways — for example [DaoXE](https://daoxe.com/?utm_source=github&utm_medium=organic&utm_campaign=adk-python&utm_content=openai-labs) at `https://api.daoxe.com/v1`.

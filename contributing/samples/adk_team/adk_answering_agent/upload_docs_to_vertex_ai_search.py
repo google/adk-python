@@ -89,9 +89,7 @@ def upload_directory_to_gcs(
           content_type = "text/html"
           with open(local_path, "r", encoding="utf-8") as f:
             md_content = f.read()
-          html_content = markdown.markdown(
-              md_content, output_format="html5", encoding="utf-8"
-          )
+          html_content = markdown.markdown(md_content, output_format="html5")
           if not html_content:
             print("  - Skipped empty file: " + local_path)
             continue

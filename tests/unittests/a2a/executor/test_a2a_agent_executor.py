@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -729,22 +730,43 @@ class TestA2aAgentExecutor:
     """Test cancellation with a task ID."""
     self.mock_context.task_id = "test-task-id"
 
-    # The current implementation raises NotImplementedError
-    with pytest.raises(
-        NotImplementedError, match="Cancellation is not supported"
-    ):
-      await self.executor.cancel(self.mock_context, self.mock_event_queue)
+    await self.executor.cancel(self.mock_context, self.mock_event_queue)
+
+    self.mock_event_queue.enqueue_event.assert_awaited_once()
+    canceled_event = self.mock_event_queue.enqueue_event.await_args.args[0]
+    assert canceled_event.task_id == "test-task-id"
+    assert canceled_event.context_id == "test-context-id"
+    assert canceled_event.status.state == _compat.TS_CANCELED
+    _assert_final(canceled_event)
 
   @pytest.mark.asyncio
   async def test_cancel_without_task_id(self):
     """Test cancellation without a task ID."""
     self.mock_context.task_id = None
 
-    # The current implementation raises NotImplementedError regardless of task_id
-    with pytest.raises(
-        NotImplementedError, match="Cancellation is not supported"
-    ):
+    with pytest.raises(ValueError, match="must have a task ID"):
       await self.executor.cancel(self.mock_context, self.mock_event_queue)
+    self.mock_event_queue.enqueue_event.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  async def test_execute_cancelled_does_not_publish_failure(self):
+    """Test that a cancelled execution is not reported as a failure."""
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.current_task = None
+
+    self.mock_request_converter.side_effect = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+      await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    # The cancellation must have been raised inside the guarded region.
+    self.mock_request_converter.assert_called_once()
+    states = [
+        call.args[0].status.state
+        for call in self.mock_event_queue.enqueue_event.call_args_list
+        if hasattr(call.args[0], "status")
+    ]
+    assert _compat.TS_FAILED not in states
 
   @pytest.mark.asyncio
   async def test_execute_with_exception_handling(self):

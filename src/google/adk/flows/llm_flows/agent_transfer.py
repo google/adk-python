@@ -28,6 +28,7 @@ from ...models.llm_request import LlmRequest
 from ...tools.tool_context import ToolContext
 from ...tools.transfer_to_agent_tool import TransferToAgentTool
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import as_llm_agent
 
 if typing.TYPE_CHECKING:
   from ...agents.base_agent import BaseAgent
@@ -41,10 +42,11 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    if not hasattr(invocation_context.agent, 'disallow_transfer_to_parent'):
+    agent = as_llm_agent(invocation_context)
+    if not hasattr(agent, 'disallow_transfer_to_parent'):
       return
 
-    transfer_targets = _get_transfer_targets(invocation_context.agent)
+    transfer_targets = _get_transfer_targets(agent)
     if not transfer_targets:
       return
 
@@ -55,7 +57,7 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
     llm_request.append_instructions([
         _build_transfer_instructions(
             transfer_to_agent_tool.name,
-            invocation_context.agent,
+            agent,
             transfer_targets,
         )
     ])
@@ -94,7 +96,7 @@ def _build_transfer_instruction_body(
   """Build the core transfer instruction text.
 
   This is the agent-tree-agnostic portion of transfer instructions. It
-  works with any BaseAgent implementation.
+  works with any objects exposing agent names and descriptions.
 
   Args:
     tool_name: The name of the transfer tool (e.g. 'transfer_to_agent').

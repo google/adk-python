@@ -573,25 +573,32 @@ async def test_generate_content_async_other_client_error(
 
 @pytest.mark.asyncio
 async def test_connect(gemini_llm, llm_request):
-  # Create a mock connection
-  mock_connection = mock.MagicMock(spec=GeminiLlmConnection)
+  """Test that connect yields a GeminiLlmConnection wrapping the live session."""
+  mock_live_session = mock.AsyncMock()
 
-  # Create a mock context manager
-  class MockContextManager:
+  # Patch the live API client boundary so the real connect() body runs.
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
 
-    async def __aenter__(self):
-      return mock_connection
+    class MockLiveConnect:
 
-    async def __aexit__(self, *args):
-      pass
+      async def __aenter__(self):
+        return mock_live_session
 
-  # Mock the connect method at the class level
-  with mock.patch(
-      "google.adk.models.google_llm.Gemini.connect",
-      return_value=MockContextManager(),
-  ):
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
     async with gemini_llm.connect(llm_request) as connection:
-      assert connection is mock_connection
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      assert call_args.kwargs["model"] == llm_request.model
+      assert call_args.kwargs["config"] is llm_request.live_connect_config
+
+      assert isinstance(connection, GeminiLlmConnection)
+      assert connection._gemini_session is mock_live_session
+      assert connection._api_backend == gemini_llm._api_backend
+      assert connection._model_version == llm_request.model
 
 
 @pytest.mark.asyncio
@@ -969,6 +976,150 @@ async def test_connect_forwards_thinking_config(gemini_llm, llm_request):
 
       assert config_arg.thinking_config == thinking_config
       assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_connect_forwards_safety_settings(gemini_llm, llm_request):
+  """Live sessions receive safety_settings from generate_content_config."""
+  safety_settings = [
+      types.SafetySetting(
+          category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+          threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+      ),
+      types.SafetySetting(
+          category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+          threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+      ),
+  ]
+  llm_request.config.safety_settings = safety_settings
+  llm_request.live_connect_config = types.LiveConnectConfig()
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    async with gemini_llm.connect(llm_request) as connection:
+      mock_live_client.aio.live.connect.assert_called_once()
+      config_arg = mock_live_client.aio.live.connect.call_args.kwargs["config"]
+
+      assert config_arg.safety_settings == safety_settings
+      assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_connect_keeps_existing_live_safety_settings(
+    gemini_llm, llm_request
+):
+  """An explicit live_connect_config.safety_settings is not overwritten."""
+  live_safety_settings = [
+      types.SafetySetting(
+          category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+          threshold=types.HarmBlockThreshold.BLOCK_NONE,
+      ),
+  ]
+  llm_request.config.safety_settings = [
+      types.SafetySetting(
+          category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+          threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+      ),
+  ]
+  llm_request.live_connect_config = types.LiveConnectConfig(
+      safety_settings=live_safety_settings
+  )
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    async with gemini_llm.connect(llm_request):
+      config_arg = mock_live_client.aio.live.connect.call_args.kwargs["config"]
+
+      assert config_arg.safety_settings == live_safety_settings
+
+
+@pytest.mark.asyncio
+async def test_connect_keeps_empty_live_safety_settings(
+    gemini_llm, llm_request
+):
+  """An explicit empty live_connect_config.safety_settings is not overwritten.
+
+  An empty list means "send no safety settings" and is distinct from None,
+  which means "not configured here".
+  """
+  llm_request.config.safety_settings = [
+      types.SafetySetting(
+          category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+          threshold=types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+      ),
+  ]
+  llm_request.live_connect_config = types.LiveConnectConfig(safety_settings=[])
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    async with gemini_llm.connect(llm_request):
+      config_arg = mock_live_client.aio.live.connect.call_args.kwargs["config"]
+
+      assert config_arg.safety_settings is not None
+      assert len(config_arg.safety_settings) == 0
+
+
+@pytest.mark.asyncio
+async def test_connect_safety_settings_remain_none_when_unset(
+    gemini_llm, llm_request
+):
+  """No safety_settings anywhere leaves the live config untouched."""
+  llm_request.live_connect_config = types.LiveConnectConfig()
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    async with gemini_llm.connect(llm_request):
+      config_arg = mock_live_client.aio.live.connect.call_args.kwargs["config"]
+
+      assert config_arg.safety_settings is None
 
 
 @pytest.mark.parametrize(

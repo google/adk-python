@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -322,6 +323,27 @@ class TestA2aAgentExecutor:
     assert runner == self.mock_runner
 
   @pytest.mark.asyncio
+  async def test_resolve_runner_future(self):
+    """Test runner factories may return any Awaitable, not just a coroutine."""
+    future = asyncio.get_running_loop().create_future()
+    future.set_result(self.mock_runner)
+    executor = A2aAgentExecutor(runner=lambda: future, config=self.mock_config)
+
+    runner = await executor._resolve_runner()
+
+    assert runner == self.mock_runner
+
+  @pytest.mark.asyncio
+  async def test_resolve_runner_rejects_invalid_factory_result(self):
+    """Test invalid factory output fails at the runner boundary."""
+    executor = A2aAgentExecutor(
+        runner=lambda: object(), config=self.mock_config
+    )
+
+    with pytest.raises(TypeError, match="factory must return a Runner"):
+      await executor._resolve_runner()
+
+  @pytest.mark.asyncio
   async def test_resolve_runner_invalid_type(self):
     """Test _resolve_runner with invalid runner type."""
     executor = A2aAgentExecutor(runner="invalid", config=self.mock_config)
@@ -424,10 +446,43 @@ class TestA2aAgentExecutor:
     """Test cancellation with a task ID."""
     self.mock_context.task_id = "test-task-id"
 
-    with pytest.raises(
-        NotImplementedError, match="Cancellation is not supported"
-    ):
+    await self.executor.cancel(self.mock_context, self.mock_event_queue)
+
+    self.mock_event_queue.enqueue_event.assert_awaited_once()
+    canceled_event = self.mock_event_queue.enqueue_event.await_args.args[0]
+    assert canceled_event.task_id == "test-task-id"
+    assert canceled_event.context_id == "test-context-id"
+    assert canceled_event.status.state == _compat.TS_CANCELED
+    _assert_final(canceled_event)
+
+  @pytest.mark.asyncio
+  async def test_cancel_without_task_id(self):
+    """Test cancellation without a task ID."""
+    self.mock_context.task_id = None
+
+    with pytest.raises(ValueError, match="must have a task ID"):
       await self.executor.cancel(self.mock_context, self.mock_event_queue)
+    self.mock_event_queue.enqueue_event.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  async def test_execute_cancelled_does_not_publish_failure(self):
+    """Test that a cancelled execution is not reported as a failure."""
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.current_task = None
+
+    self.mock_request_converter.side_effect = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+      await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    # The cancellation must have been raised inside the guarded region.
+    self.mock_request_converter.assert_called_once()
+    states = [
+        call.args[0].status.state
+        for call in self.mock_event_queue.enqueue_event.call_args_list
+        if hasattr(call.args[0], "status")
+    ]
+    assert _compat.TS_FAILED not in states
 
   @pytest.mark.asyncio
   async def test_execute_with_exception_handling(self):
@@ -701,6 +756,35 @@ class TestA2aAgentExecutor:
         session_id="old-session-id",
     )
     assert run_request.session_id == "new-session-id"
+
+  @pytest.mark.asyncio
+  async def test_resolve_session_without_requested_id(self):
+    """Test a converter may request creation without a session ID."""
+    new_session = Mock(id="generated-session-id")
+    self.mock_runner.session_service.get_session = AsyncMock()
+    self.mock_runner.session_service.create_session = AsyncMock(
+        return_value=new_session
+    )
+    run_request = AgentRunRequest(
+        user_id="test-user",
+        session_id=None,
+        new_message=Mock(spec=Content),
+        run_config=Mock(spec=RunConfig),
+    )
+
+    session_id = await self.executor._resolve_session(
+        run_request, self.mock_runner
+    )
+
+    self.mock_runner.session_service.get_session.assert_not_awaited()
+    self.mock_runner.session_service.create_session.assert_awaited_once_with(
+        app_name=self.mock_runner.app_name,
+        user_id="test-user",
+        state={},
+        session_id=None,
+    )
+    assert session_id == "generated-session-id"
+    assert run_request.session_id == "generated-session-id"
 
   @pytest.mark.asyncio
   async def test_execute_enqueue_error_in_exception_handler(self):

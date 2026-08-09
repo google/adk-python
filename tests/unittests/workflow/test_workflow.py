@@ -31,6 +31,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
 from google.adk.workflow._join_node import JoinNode
+from google.adk.workflow._workflow import get_common_branch_prefix
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.genai import types
@@ -2179,3 +2180,34 @@ async def test_route_and_output_triggers_downstream_on_resume():
 
   outputs = [e.output for e in events2 if e.output is not None]
   assert 'done' in outputs
+
+
+# ---------------------------------------------------------------------------
+# get_common_branch_prefix
+# ---------------------------------------------------------------------------
+
+
+def test_get_common_branch_prefix_stops_at_a_differing_segment():
+  """Branches are compared segment by segment, never character by character.
+
+  'root.loop_a@1' and 'root.loop_b@1' share the text 'root.loop_' but only
+  the 'root' branch; treating the shared text as a prefix would name a
+  branch that does not exist.
+  """
+  assert get_common_branch_prefix(['root.loop_a@1', 'root.loop_b@1']) == 'root'
+
+
+def test_get_common_branch_prefix_keeps_every_shared_segment():
+  """All leading segments common to every branch are retained."""
+  branches = ['root.wf@1.a@1', 'root.wf@1.b@1', 'root.wf@1.b@1.deep@1']
+  assert get_common_branch_prefix(branches) == 'root.wf@1'
+
+
+def test_get_common_branch_prefix_is_empty_when_roots_differ():
+  """Branches with nothing in common have no shared prefix."""
+  assert get_common_branch_prefix(['a@1.x@1', 'b@1.x@1']) == ''
+
+
+def test_get_common_branch_prefix_of_no_branches_is_empty():
+  """No branches means no prefix rather than an error."""
+  assert get_common_branch_prefix([]) == ''

@@ -33,17 +33,20 @@ class StreamingResponseAggregator:
   """
 
   def __init__(self) -> None:
-    self._text = ''
-    self._thought_text = ''
-    self._usage_metadata = None
+    self._text: list[str] = []
+    self._thought_text: list[str] = []
+    self._usage_metadata: Optional[
+        types.GenerateContentResponseUsageMetadata
+    ] = None
     self._grounding_metadata: Optional[types.GroundingMetadata] = None
     self._citation_metadata: Optional[types.CitationMetadata] = None
     self._response = None
 
     # For progressive SSE streaming mode: accumulate parts in order
     self._parts_sequence: list[types.Part] = []
-    self._current_text_buffer: str = ''
+    self._current_text_buffer: list[str] = []
     self._current_text_is_thought: Optional[bool] = None
+    self._current_text_thought_signature: Optional[bytes] = None
     self._finish_reason: Optional[types.FinishReason] = None
 
     # For streaming function call arguments
@@ -57,18 +60,24 @@ class StreamingResponseAggregator:
 
     This helper is used in progressive SSE mode to maintain part ordering.
     It only merges consecutive text parts of the same type (thought or regular).
+
+    The merged part is built from scratch, so any thought signature seen on the
+    chunks that fed the buffer has to be carried over explicitly. The model
+    expects that signature back verbatim on the next request, and dropping it
+    makes it redo the reasoning the signature stood for.
     """
     if self._current_text_buffer:
+      buffered_text = ''.join(self._current_text_buffer)
       if self._current_text_is_thought:
-        self._parts_sequence.append(
-            types.Part(text=self._current_text_buffer, thought=True)
-        )
+        merged_part = types.Part(text=buffered_text, thought=True)
       else:
-        self._parts_sequence.append(
-            types.Part.from_text(text=self._current_text_buffer)
-        )
-      self._current_text_buffer = ''
+        merged_part = types.Part.from_text(text=buffered_text)
+      if self._current_text_thought_signature:
+        merged_part.thought_signature = self._current_text_thought_signature
+      self._parts_sequence.append(merged_part)
+      self._current_text_buffer = []
       self._current_text_is_thought = None
+      self._current_text_thought_signature = None
 
   def _get_value_from_partial_arg(
       self, partial_arg: types.PartialArg, json_path: str
@@ -265,7 +274,10 @@ class StreamingResponseAggregator:
     # results = []
     self._response = response
     llm_response = LlmResponse.create(response)
-    self._usage_metadata = llm_response.usage_metadata
+    # Usage is typically reported on a single chunk; keep the last reported
+    # value rather than letting a usage-less trailing chunk erase it.
+    if llm_response.usage_metadata:
+      self._usage_metadata = llm_response.usage_metadata
     if llm_response.grounding_metadata:
       self._grounding_metadata = llm_response.grounding_metadata
     if llm_response.citation_metadata:
@@ -293,7 +305,14 @@ class StreamingResponseAggregator:
             # Accumulate text to buffer
             if not self._current_text_buffer:
               self._current_text_is_thought = part.thought
-            self._current_text_buffer += part.text
+            self._current_text_buffer.append(part.text)
+            # Carry the signature over to whatever part this buffer becomes.
+            # It can land on any chunk of the run, so keep the first one seen.
+            if (
+                part.thought_signature
+                and not self._current_text_thought_signature
+            ):
+              self._current_text_thought_signature = part.thought_signature
           elif part.function_call:
             # Process function call (handles both streaming Args and
             # non-streaming Args)
@@ -318,9 +337,9 @@ class StreamingResponseAggregator:
       part0 = llm_response.content.parts[0]
       part_text = part0.text or ''
       if part0.thought:
-        self._thought_text += part_text
+        self._thought_text.append(part_text)
       else:
-        self._text += part_text
+        self._text.append(part_text)
       llm_response.partial = True
     elif (self._thought_text or self._text) and (
         not llm_response.content
@@ -330,9 +349,9 @@ class StreamingResponseAggregator:
     ):
       parts = []
       if self._thought_text:
-        parts.append(types.Part(text=self._thought_text, thought=True))
+        parts.append(types.Part(text=''.join(self._thought_text), thought=True))
       if self._text:
-        parts.append(types.Part.from_text(text=self._text))
+        parts.append(types.Part.from_text(text=''.join(self._text)))
       yield LlmResponse(
           content=types.ModelContent(parts=parts),
           usage_metadata=llm_response.usage_metadata,
@@ -341,8 +360,8 @@ class StreamingResponseAggregator:
           finish_reason=llm_response.finish_reason,
           model_version=llm_response.model_version,
       )
-      self._thought_text = ''
-      self._text = ''
+      self._thought_text = []
+      self._text = []
     yield llm_response
 
   def close(self) -> Optional[LlmResponse]:
@@ -396,9 +415,9 @@ class StreamingResponseAggregator:
     # ========== Non-Progressive SSE Streaming (old behavior) ==========
     parts = []
     if self._thought_text:
-      parts.append(types.Part(text=self._thought_text, thought=True))
+      parts.append(types.Part(text=''.join(self._thought_text), thought=True))
     if self._text:
-      parts.append(types.Part.from_text(text=self._text))
+      parts.append(types.Part.from_text(text=''.join(self._text)))
     content = types.ModelContent(parts=parts) if parts else None
 
     return LlmResponse(

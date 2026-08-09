@@ -27,7 +27,7 @@ if not GITHUB_TOKEN:
 
 OWNER = os.getenv("OWNER", "google")
 REPO = os.getenv("REPO", "adk-python")
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-2.5-flash")
+LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-3.5-flash")
 
 STALE_LABEL_NAME = "stale"
 REQUEST_CLARIFICATION_LABEL = "request clarification"

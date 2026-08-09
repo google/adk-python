@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Annotated
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -25,9 +26,11 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import model_validator
+from pydantic import SerializeAsAny
 
 from ..agents.common_configs import CodeConfig
 from ..evaluation.eval_metrics import EvalMetric
+from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
 from .eval_metrics import BaseCriterion
 from .eval_metrics import MetricInfo
 from .eval_metrics import Threshold
@@ -39,8 +42,9 @@ logger = logging.getLogger("google_adk." + __name__)
 # The set of user-simulator config subclasses that `EvalConfig` can
 # deserialize into via the `type` discriminator. Add any new subclass to
 # this Union (each with a unique `Literal[...]` for its `type` field).
-_UserSimulatorConfig = Union[
-    LlmBackedUserSimulatorConfig, LlmAudioUserSimulatorConfig
+_UserSimulatorConfig = Annotated[
+    Union[LlmBackedUserSimulatorConfig, LlmAudioUserSimulatorConfig],
+    Field(discriminator="type"),
 ]
 
 # Legacy default preserved for backward compatibility with eval configs authored
@@ -73,6 +77,23 @@ class CustomMetricConfig(BaseModel):
   )
 
 
+class LiveModelConfig(BaseModel):
+  """Configuration for evaluating models in Live (bidirectional streaming) mode."""
+
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+
+  timeout_seconds: int = Field(
+      default=DEFAULT_LIVE_TIMEOUT_SECONDS,
+      description=(
+          "Timeout in seconds for waiting for model turn completion in"
+          " live mode."
+      ),
+  )
+
+
 class EvalConfig(BaseModel):
   """Configurations needed to run an Eval.
 
@@ -84,7 +105,7 @@ class EvalConfig(BaseModel):
       populate_by_name=True,
   )
 
-  criteria: dict[str, Union[Threshold, BaseCriterion]] = Field(
+  criteria: dict[str, Union[Threshold, SerializeAsAny[BaseCriterion]]] = Field(
       default_factory=dict,
       description="""A dictionary that maps criterion to be used for a metric.
 
@@ -158,7 +179,6 @@ Example:
 
   user_simulator_config: Optional[_UserSimulatorConfig] = Field(
       default=None,
-      discriminator="type",
       description=(
           "Config to be used by the user simulator. When authored as JSON,"
           " the concrete subclass is selected via the `type` discriminator"
@@ -166,6 +186,14 @@ Example:
           " predate the `type` field are treated as"
           f' `type="{_LEGACY_DEFAULT_USER_SIMULATOR_TYPE}"` for backward'
           " compatibility."
+      ),
+  )
+
+  live_model_config: Optional[LiveModelConfig] = Field(
+      default=None,
+      description=(
+          "Config for evaluating in live (bidirectional streaming) mode."
+          " Required for Live API models (e.g. `gemini-*-live-*`)."
       ),
   )
 
@@ -241,27 +269,31 @@ def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
         custom_function_path = config.code_config.name
 
       if isinstance(criterion, float):
-        eval_metric_list.append(
-            EvalMetric(
-                metric_name=metric_name,
-                threshold=criterion,
-                criterion=BaseCriterion(threshold=criterion),
-                custom_function_path=custom_function_path,
-            )
+        eval_metric = EvalMetric(
+            metric_name=metric_name,
+            threshold=criterion,
+            criterion=BaseCriterion(threshold=criterion),
+            custom_function_path=custom_function_path,
         )
       elif isinstance(criterion, BaseCriterion):
-        eval_metric_list.append(
-            EvalMetric(
-                metric_name=metric_name,
-                threshold=criterion.threshold,
-                criterion=criterion,
-                custom_function_path=custom_function_path,
-            )
+        eval_metric = EvalMetric(
+            metric_name=metric_name,
+            threshold=criterion.threshold,
+            criterion=criterion,
+            custom_function_path=custom_function_path,
         )
       else:
         raise ValueError(
             f"Unexpected criterion type. {type(criterion).__name__} not"
             " supported."
         )
+
+      # The config is written by the developer running the eval, so the path it
+      # declares is the one honoured when the metric runs. It travels with the
+      # metric rather than in a registry keyed by metric name, so two apps in
+      # one process can declare the same metric name and each still gets its
+      # own function.
+      eval_metric._config_custom_function_path = custom_function_path  # pylint: disable=protected-access
+      eval_metric_list.append(eval_metric)
 
   return eval_metric_list

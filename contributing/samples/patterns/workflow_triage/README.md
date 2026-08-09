@@ -14,7 +14,7 @@ The workflow consists of three main components:
 
 ### Execution Manager Agent (`root_agent`)
 
-- **Model**: gemini-2.5-flash
+- **Model**: the ADK default model (no agent in this sample sets `model=`)
 - **Name**: `execution_manager_agent`
 - **Role**: Analyzes user requests and updates the execution plan
 - **Tools**: `update_execution_plan` - Updates which execution agents should be activated
@@ -42,7 +42,7 @@ The system includes two specialized execution agents that run in parallel:
 
 ### Execution Summary Agent
 
-- **Model**: gemini-2.5-flash
+- **Model**: the ADK default model (no agent in this sample sets `model=`)
 - **Name**: `execution_summary_agent`
 - **Role**: Summarizes outputs from all activated agents
 - **Dynamic Instructions**: Generated based on which agents were activated

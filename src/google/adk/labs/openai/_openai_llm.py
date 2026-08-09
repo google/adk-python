@@ -337,7 +337,7 @@ class OpenAILlm(BaseLlm):
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
-    return [r"gpt-.*", r"o1-.*", r"o3-.*"]
+    return [r"gpt-.*", r"o\d+-.*"]
 
   @override
   async def generate_content_async(

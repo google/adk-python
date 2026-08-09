@@ -34,6 +34,31 @@ _LazyEntry = tuple[str, str]
 _llm_registry_dict: dict[str, Union[type['BaseLlm'], _LazyEntry]] = {}
 
 
+def _resolve_litellm_provider(model: str) -> type[BaseLlm] | None:
+  """Resolves a `provider/model` name that LiteLLM knows about.
+
+  LiteLLM supports well over a hundred providers and adds more over time, so
+  the registry only spells out the common ones and defers the rest to LiteLLM
+  itself.
+
+  Args:
+      model: The model name.
+
+  Returns:
+      The LiteLlm class, or None when LiteLLM is unavailable or does not know
+      the provider.
+  """
+  provider, _, _ = model.partition('/')
+  try:
+    import litellm
+
+    from .lite_llm import LiteLlm
+  except ImportError:
+    return None
+
+  return LiteLlm if provider in litellm.provider_list else None
+
+
 class LLMRegistry:
   """Registry for LLMs."""
 
@@ -95,6 +120,7 @@ class LLMRegistry:
       )
 
     _llm_registry_dict[model_name_regex] = llm_cls
+    LLMRegistry.resolve.cache_clear()
 
   @staticmethod
   def register(llm_cls: type[BaseLlm]) -> None:
@@ -114,6 +140,7 @@ class LLMRegistry:
     """Pre-registers a lazily-imported LLM class."""
     for regex in model_name_regexes:
       _llm_registry_dict[regex] = (module_path, class_name)
+    LLMRegistry.resolve.cache_clear()
 
   @staticmethod
   @lru_cache(maxsize=32)
@@ -157,6 +184,11 @@ class LLMRegistry:
         _llm_registry_dict[regex] = llm_class
         return llm_class
       return entry
+
+    if '/' in model:
+      litellm_class = _resolve_litellm_provider(model)
+      if litellm_class is not None:
+        return litellm_class
 
     # Provide helpful error messages for known patterns
     error_msg = f'Model {model} not found.'

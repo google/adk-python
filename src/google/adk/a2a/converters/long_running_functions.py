@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import List
-from typing import Set
 import uuid
 
 from a2a.server.agent_execution import RequestContext
@@ -31,8 +29,8 @@ from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
-from .part_converter import A2APartToGenAIPartConverter
-from .part_converter import convert_a2a_part_to_genai_part
+from .part_converter import convert_genai_part_to_a2a_part
+from .part_converter import GenAIPartToA2APartConverter
 from .utils import _get_adk_metadata_key
 
 
@@ -40,11 +38,11 @@ class LongRunningFunctions:
   """Keeps track of long running function calls and related responses."""
 
   def __init__(
-      self, part_converter: A2APartToGenAIPartConverter | None = None
+      self, part_converter: GenAIPartToA2APartConverter | None = None
   ) -> None:
-    self._parts: List[genai_types.Part] = []
-    self._long_running_tool_ids: Set[str] = set()
-    self._part_converter = part_converter or convert_a2a_part_to_genai_part
+    self._parts: list[genai_types.Part] = []
+    self._long_running_tool_ids: set[str] = set()
+    self._part_converter = part_converter or convert_genai_part_to_a2a_part
     self._task_state = _compat.TS_INPUT_REQUIRED
 
   def has_long_running_function_calls(self) -> bool:
@@ -93,7 +91,7 @@ class LongRunningFunctions:
       self,
       task_id: str,
       context_id: str,
-  ) -> TaskStatusUpdateEvent:
+  ) -> TaskStatusUpdateEvent | None:
     """Creates a task status update event for the long running function calls."""
     if not self._long_running_tool_ids:
       return None
@@ -114,12 +112,12 @@ class LongRunningFunctions:
         final=True,
     )
 
-  def _return_long_running_parts(self) -> List[A2APart]:
+  def _return_long_running_parts(self) -> list[A2APart]:
     """Converts long-running parts to A2A parts."""
     if not self._long_running_tool_ids:
       return []
 
-    output_parts = []
+    output_parts: list[A2APart] = []
     for part in self._parts:
       a2a_parts = self._part_converter(part)
       if not isinstance(a2a_parts, list):
@@ -175,7 +173,8 @@ def handle_user_input(
   # If the task is in input_required or auth_required state, we expect the user
   # to provide a response for the function call. Check if the user input
   # contains a function response.
-  for a2a_part in context.message.parts:
+  message = context.message
+  for a2a_part in message.parts if message else []:
     meta = _compat.part_metadata(a2a_part)
     if (
         _compat.is_data_part(a2a_part)

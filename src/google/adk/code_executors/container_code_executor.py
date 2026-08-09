@@ -17,12 +17,14 @@ from __future__ import annotations
 import atexit
 import logging
 import os
-from typing import Optional
+from typing import Any
+from typing import cast
 
 import docker
 from docker.client import DockerClient
 from docker.models.containers import Container
 from pydantic import Field
+from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
@@ -32,6 +34,74 @@ from .code_execution_utils import CodeExecutionResult
 
 logger = logging.getLogger('google_adk.' + __name__)
 DEFAULT_IMAGE_TAG = 'adk-code-executor:latest'
+
+# Reported by the supervisor below when it kills a run that hit the bound.
+# Follows the convention of coreutils `timeout`; unlike 128 + SIGALRM it is not
+# something the executed code produces by letting an alarm of its own fire.
+_TIMEOUT_EXIT_CODE = 124
+
+# Runs the code under a supervisor that enforces a hard wall-clock bound inside
+# the container. The code runs in a forked child in its own process group; the
+# supervisor waits for it and, when the bound expires, SIGKILLs the whole group
+# and exits with `_TIMEOUT_EXIT_CODE`. The group is also swept once the code
+# finishes normally, so nothing it started is left running in the shared
+# container (a leftover process would also hold the exec's output open).
+#
+# Two properties matter for code that may be hostile: the deadline lives in a
+# process the code never runs in, so it cannot be disarmed from inside (an
+# alarm armed in the executing process could be cancelled with one call), and
+# SIGKILL to the group reaches what the code spawned, not just its top frame.
+# The code is passed as an argument rather than inlined so that tracebacks keep
+# the original line numbers, and argv is restored to what `python3 -c` would
+# have given so that code parsing arguments still works.
+#
+# Not covered: code that deliberately leaves the group (`os.setsid()`) or
+# double-forks away survives the bound until the container is torn down.
+_TIMEOUT_WRAPPER = """\
+import os, signal, sys
+
+_timeout = int(sys.argv[1])
+_source = sys.argv[2]
+del sys.argv[1:]
+
+_pid = os.fork()
+if _pid == 0:
+  try:
+    os.setpgid(0, 0)
+  except OSError:
+    pass
+  exec(compile(_source, '<adk_code>', 'exec'), {'__name__': '__main__'})
+else:
+
+  def _sweep_group():
+    try:
+      os.killpg(_pid, signal.SIGKILL)
+    except OSError:
+      pass
+
+  def _expire(_signum, _frame):
+    _sweep_group()
+    try:
+      os.kill(_pid, signal.SIGKILL)
+    except OSError:
+      pass
+    os._exit(%d)
+
+  try:
+    os.setpgid(_pid, _pid)
+  except OSError:
+    pass
+  signal.signal(signal.SIGALRM, _expire)
+  signal.alarm(_timeout)
+  _status = os.waitpid(_pid, 0)[1]
+  signal.alarm(0)
+  _sweep_group()
+  os._exit(
+      128 + os.WTERMSIG(_status)
+      if os.WIFSIGNALED(_status)
+      else os.WEXITSTATUS(_status)
+  )
+""" % _TIMEOUT_EXIT_CODE
 
 
 class ContainerCodeExecutor(BaseCodeExecutor):
@@ -58,18 +128,18 @@ class ContainerCodeExecutor(BaseCodeExecutor):
       requests and you trust it.
   """
 
-  base_url: Optional[str] = None
+  base_url: str | None = None
   """
   Optional. The base url of the user hosted Docker client.
   """
 
-  image: str = None
+  image: str = DEFAULT_IMAGE_TAG
   """
   The tag of the predefined image or custom image to run on the container.
   Either docker_path or image must be set.
   """
 
-  docker_path: str = None
+  docker_path: str | None = None
   """
   The path to the directory containing the Dockerfile.
   If set, build the image from the dockerfile path instead of using the
@@ -87,6 +157,23 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   code must make network requests and you trust it.
   """
 
+  # Overrides the BaseCodeExecutor attribute: unlike the base default of None,
+  # the timeout here is always finite and must be positive (0 would mean no
+  # bound at all).
+  timeout_seconds: int = Field(default=300, gt=0)
+  """The wall-clock timeout in seconds for a single code execution.
+
+  Every execution shares one long-lived container, so an unbounded run (e.g. a
+  loop emitted by the model) would keep burning that container's CPU for every
+  later caller. Defaults to 300, matching ``GkeCodeExecutor``. A computation
+  that legitimately runs longer than the timeout is killed, so raise it rather
+  than removing it; ``None`` is rejected, unlike on the base class.
+
+  When the timeout expires the executed code is killed along with the process
+  group it runs in, so what it spawned goes with it. Code that deliberately
+  detaches from that group keeps running until the container is torn down.
+  """
+
   # Overrides the BaseCodeExecutor attribute: this executor cannot be stateful.
   stateful: bool = Field(default=False, frozen=True, exclude=True)
 
@@ -94,16 +181,16 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   # optimize_data_file.
   optimize_data_file: bool = Field(default=False, frozen=True, exclude=True)
 
-  _client: DockerClient = None
-  _container: Container = None
+  _client: DockerClient | None = PrivateAttr(default=None)
+  _container: Container | None = PrivateAttr(default=None)
 
   def __init__(
       self,
-      base_url: Optional[str] = None,
-      image: Optional[str] = None,
-      docker_path: Optional[str] = None,
-      **data,
-  ):
+      base_url: str | None = None,
+      image: str | None = None,
+      docker_path: str | None = None,
+      **data: Any,
+  ) -> None:
     """Initializes the ContainerCodeExecutor.
 
     Args:
@@ -150,8 +237,14 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   ) -> CodeExecutionResult:
     output = ''
     error = ''
-    exec_result = self._container.exec_run(
-        ['python3', '-c', code_execution_input.code],
+    exec_result = cast(Container, self._container).exec_run(
+        [
+            'python3',
+            '-c',
+            _TIMEOUT_WRAPPER,
+            str(self.timeout_seconds),
+            code_execution_input.code,
+        ],
         demux=True,
     )
     logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
@@ -165,6 +258,15 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     ):
       error = exec_result.output[1].decode('utf-8')
 
+    if exec_result.exit_code == _TIMEOUT_EXIT_CODE:
+      # Appended rather than assigned: whatever the code managed to write to
+      # stderr before the alarm fired is still the useful diagnostic, but on
+      # its own it would hide the fact that the run was cut short.
+      timed_out = (
+          f'Code execution timed out after {self.timeout_seconds} seconds.'
+      )
+      error = f'{error}\n{timed_out}' if error else timed_out
+
     # Collect the final result.
     return CodeExecutionResult(
         stdout=output,
@@ -172,7 +274,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
         output_files=[],
     )
 
-  def _build_docker_image(self):
+  def _build_docker_image(self) -> None:
     """Builds the Docker image."""
     if not self.docker_path:
       raise ValueError('Docker path is not set.')
@@ -180,20 +282,22 @@ class ContainerCodeExecutor(BaseCodeExecutor):
       raise FileNotFoundError(f'Invalid Docker path: {self.docker_path}')
 
     logger.info('Building Docker image...')
-    self._client.images.build(
+    cast(DockerClient, self._client).images.build(
         path=self.docker_path,
         tag=self.image,
         rm=True,
     )
     logger.info('Docker image: %s built.', self.image)
 
-  def _verify_python_installation(self):
+  def _verify_python_installation(self) -> None:
     """Verifies the container has python3 installed."""
-    exec_result = self._container.exec_run(['which', 'python3'])
+    exec_result = cast(Container, self._container).exec_run(
+        ['which', 'python3']
+    )
     if exec_result.exit_code != 0:
       raise ValueError('python3 is not installed in the container.')
 
-  def __init_container(self):
+  def __init_container(self) -> None:
     """Initializes the container."""
     if not self._client:
       raise RuntimeError('Docker client is not initialized.')
@@ -219,7 +323,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     # Verify the container is able to run python3.
     self._verify_python_installation()
 
-  def __cleanup_container(self):
+  def __cleanup_container(self) -> None:
     """Closes the container on exit."""
     if not self._container:
       return

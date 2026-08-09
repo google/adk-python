@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import copy
 import datetime
 import json
@@ -189,7 +190,7 @@ class VertexAiSessionService(BaseSessionService):
       )
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
-    config = {'session_state': state} if state else {}
+    config: dict[str, Any] = {'session_state': state} if state else {}
     if session_id:
       session_id = _extract_short_session_id(
           session_id, expected_engine_id=reasoning_engine_id
@@ -290,9 +291,14 @@ class VertexAiSessionService(BaseSessionService):
           session.events.append(_from_api_event(event))
 
     if config:
-      # Filter events based on num_recent_events.
-      if config.num_recent_events:
-        session.events = session.events[-config.num_recent_events :]
+      # Filter events based on num_recent_events. Note `0` must return an empty
+      # list (and `events[-0:]` would wrongly return everything).
+      if config.num_recent_events is not None:
+        session.events = (
+            session.events[-config.num_recent_events :]
+            if config.num_recent_events
+            else []
+        )
 
     return session
 
@@ -323,6 +329,7 @@ class VertexAiSessionService(BaseSessionService):
             )
         )
 
+    sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
     return ListSessionsResponse(sessions=sessions)
 
   async def delete_session(
@@ -390,7 +397,7 @@ class VertexAiSessionService(BaseSessionService):
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
 
     # Build config (Monolithic approach)
-    config = {}
+    config: dict[str, Any] = {}
     if event.content:
       content_dict = event.content.model_dump(exclude_none=True, mode='json')
       _drop_vertex_unsupported_part_fields(content_dict)
@@ -412,7 +419,7 @@ class VertexAiSessionService(BaseSessionService):
     if event.error_message:
       config['error_message'] = event.error_message
 
-    metadata_dict = {
+    metadata_dict: dict[str, Any] = {
         'partial': event.partial,
         'turn_complete': event.turn_complete,
         'interrupted': event.interrupted,
@@ -466,7 +473,7 @@ class VertexAiSessionService(BaseSessionService):
     # versions.
     async with self._get_api_client() as api_client:
 
-      async def _do_append(cfg: dict[str, Any]):
+      async def _do_append(cfg: dict[str, Any]) -> None:
         await api_client.agent_engines.sessions.events.append(
             name=(
                 f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
@@ -488,7 +495,7 @@ class VertexAiSessionService(BaseSessionService):
         await _do_append(config)
     return event
 
-  def _get_reasoning_engine_id(self, app_name: str):
+  def _get_reasoning_engine_id(self, app_name: str) -> str:
     if self._agent_engine_id:
       return self._agent_engine_id
 
@@ -531,15 +538,22 @@ class VertexAiSessionService(BaseSessionService):
     ).aio
 
 
-def _get_raw_event(api_event_obj: Any) -> dict[str, Any] | None:
+def _get_raw_event(api_event_obj: object) -> dict[str, Any] | None:
   """Extracts raw_event dict from SessionEvent object safely."""
-  try:
-    return api_event_obj.raw_event
-  except AttributeError:
-    try:
-      return api_event_obj.rawEvent
-    except AttributeError:
+  for attribute_name in ('raw_event', 'rawEvent'):
+    raw_event: object = getattr(api_event_obj, attribute_name, None)
+    if raw_event is None:
+      continue
+    if not isinstance(raw_event, Mapping):
       return None
+
+    normalized: dict[str, Any] = {}
+    for key, value in raw_event.items():
+      if not isinstance(key, str):
+        return None
+      normalized[key] = value
+    return normalized
+  return None
 
 
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:

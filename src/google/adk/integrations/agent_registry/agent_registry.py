@@ -39,6 +39,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.utils import _mtls_utils
 import google.auth
 from google.auth.transport import mtls
 from google.auth.transport import requests as requests_auth
@@ -222,7 +223,12 @@ class AgentRegistry:
           else None
       )
       self._session.configure_mtls_channel(client_cert_source)
-    self._base_url = _get_agent_registry_base_url(client_cert_source)
+    self._use_mtls = _should_use_mtls_endpoint(client_cert_source)
+    self._base_url = (
+        AGENT_REGISTRY_MTLS_BASE_URL
+        if self._use_mtls
+        else AGENT_REGISTRY_BASE_URL
+    )
 
   def _get_auth_headers(self) -> Dict[str, str]:
     """Refreshes credentials and returns authorization headers."""
@@ -325,6 +331,8 @@ class AgentRegistry:
         if protocol_binding and mapped_binding != protocol_binding:
           continue
         if url := i.get("url"):
+          if self._use_mtls:
+            url = _mtls_utils.effective_googleapis_endpoint(url)
           return url, protocol_version, mapped_binding
 
     return None, None, None
@@ -637,8 +645,16 @@ def _use_client_cert_effective() -> bool:
     return use_client_cert_str == "true"
 
 
-def _get_agent_registry_base_url(client_cert_source: Any | None = None) -> str:
-  """Returns the base URL based on mTLS configuration and cert availability."""
+def _should_use_mtls_endpoint(client_cert_source: Any | None = None) -> bool:
+  """Returns whether the mTLS endpoint should be used."""
+  try:
+    return bool(
+        mtls.should_use_mtls_endpoint(
+            client_cert_available=client_cert_source is not None
+        )
+    )
+  except (ImportError, AttributeError):
+    pass
   use_mtls_endpoint_str = os.getenv(
       "GOOGLE_API_USE_MTLS_ENDPOINT", _MtlsEndpoint.AUTO.value
   ).lower()
@@ -646,8 +662,6 @@ def _get_agent_registry_base_url(client_cert_source: Any | None = None) -> str:
     use_mtls_endpoint = _MtlsEndpoint(use_mtls_endpoint_str)
   except ValueError:
     use_mtls_endpoint = _MtlsEndpoint.AUTO
-  if (use_mtls_endpoint is _MtlsEndpoint.ALWAYS) or (
+  return (use_mtls_endpoint is _MtlsEndpoint.ALWAYS) or (
       use_mtls_endpoint is _MtlsEndpoint.AUTO and client_cert_source is not None
-  ):
-    return AGENT_REGISTRY_MTLS_BASE_URL
-  return AGENT_REGISTRY_BASE_URL
+  )

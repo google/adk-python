@@ -68,12 +68,11 @@ root_agent = LlmAgent(
     model="gemini-2.5-flash",
     name="gcs_agent",
     description=(
-        "Agent to answer questions about Google Cloud Storage (GCS) buckets"
-        " and objects."
+        "Agent to answer questions about Google Cloud Storage (GCS) objects."
     ),
     instruction="""\
-        You are a storage agent with access to several GCS tools.
-        Make use of those tools to answer the user's questions about buckets and objects.
+        You are a storage agent with access to GCS object tools.
+        Make use of those tools to answer the user's questions about objects.
     """,
     tools=[
         gcs_toolset,

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 
 from google.adk.agents.callback_context import CallbackContext
@@ -27,6 +28,8 @@ from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.api_core.client_options import ClientOptions
+from google.api_core.exceptions import GoogleAPIError
+from google.auth.exceptions import GoogleAuthError
 
 try:
   from google.cloud.iamconnectorcredentials_v1alpha import IAMConnectorCredentialsServiceClient as Client
@@ -52,8 +55,6 @@ from .gcp_auth_provider_scheme import GcpAuthProviderScheme
 #    returned or timeout occurs.
 # 4. For 3-legged OAuth flows, the returned Operation contains consent pending
 #    status along with the authorization URI.
-
-# TODO: Catch specific exceptions instead of generic ones.
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -99,22 +100,36 @@ def _construct_auth_credential(
   )
 
 
+def _require_credentials_response(
+    response: RetrieveCredentialsResponse | None,
+) -> RetrieveCredentialsResponse:
+  """Require a credential response from a completed operation."""
+  if response is None:
+    # ValueError so BaseLlmFlow._resolve_toolset_auth can degrade gracefully.
+    raise ValueError(
+        "IAM Connector Credentials operation completed without a response."
+    )
+  return response
+
+
 class _IamConnectorCredentialsProvider:
   """Implementation for auth provider using IAM Connector credentials service."""
 
-  _client: Client | None = None
-
-  def __init__(self, client: Client | None = None):
-    self._client = client
+  def __init__(self, client: Client | None = None) -> None:
+    self._thread_local = threading.local()
+    if client is not None:
+      self._thread_local.client = client
 
   def _get_client(self) -> Client:
-    """Lazy loads the client to avoid unnecessary setup on startup."""
-    if self._client is None:
+    """Returns a thread-local client to ensure thread safety while reusing client instances."""
+    client = getattr(self._thread_local, "client", None)
+    if client is None:
       client_options = None
       if host := os.environ.get("IAM_CONNECTOR_CREDENTIALS_TARGET_HOST"):
         client_options = ClientOptions(api_endpoint=host)
-      self._client = Client(client_options=client_options, transport="rest")
-    return self._client
+      client = Client(client_options=client_options, transport="rest")
+      self._thread_local.client = client
+    return client
 
   async def _retrieve_credentials(
       self,
@@ -131,7 +146,7 @@ class _IamConnectorCredentialsProvider:
     # TODO: Use async client once available. Temporarily using threading to
     # prevent blocking the event loop.
     operation = await asyncio.to_thread(
-        self._get_client().retrieve_credentials, request
+        lambda: self._get_client().retrieve_credentials(request)
     )
     return operation.operation
 
@@ -143,11 +158,11 @@ class _IamConnectorCredentialsProvider:
     """Deserializes the response and metadata from the operation."""
     response = None
     metadata = None
-    if operation.response:
+    if operation.HasField("response"):
       response = RetrieveCredentialsResponse.deserialize(
           operation.response.value
       )
-    if operation.metadata:
+    if operation.HasField("metadata"):
       metadata = RetrieveCredentialsMetadata.deserialize(
           operation.metadata.value
       )
@@ -223,7 +238,7 @@ class _IamConnectorCredentialsProvider:
 
     try:
       operation = await self._retrieve_credentials(user_id, auth_scheme)
-    except Exception as e:
+    except (GoogleAPIError, GoogleAuthError) as e:
       raise RuntimeError(
           f"Failed to retrieve credential for user '{user_id}' on connector"
           f" '{auth_scheme.name}'."
@@ -236,7 +251,7 @@ class _IamConnectorCredentialsProvider:
 
     if operation.done:
       logger.debug("Auth credential obtained immediately.")
-      return _construct_auth_credential(response)
+      return _construct_auth_credential(_require_credentials_response(response))
 
     if metadata is not None and "consent_pending" in metadata:
       # Get 2-legged OAuth token. Allow enough time for token exchange.
@@ -251,8 +266,10 @@ class _IamConnectorCredentialsProvider:
         if operation.done:
           logger.debug("Auth credential obtained after polling.")
           response, _ = self._unpack_operation(operation)
-          return _construct_auth_credential(response)
-      except Exception as e:
+          return _construct_auth_credential(
+              _require_credentials_response(response)
+          )
+      except (GoogleAPIError, GoogleAuthError, TimeoutError) as e:
         raise RuntimeError(
             f"Failed to retrieve credential for user '{user_id}' on connector"
             f" '{auth_scheme.name}'."
@@ -270,3 +287,10 @@ class _IamConnectorCredentialsProvider:
               nonce=metadata.uri_consent_required.consent_nonce,
           ),
       )
+
+    # ValueError, not RuntimeError: BaseLlmFlow._resolve_toolset_auth catches
+    # ValueError to log and continue without auth. Raising anything else turns
+    # a survivable auth state into an aborted invocation.
+    raise ValueError(
+        "IAM Connector Credentials service returned an unsupported state."
+    )

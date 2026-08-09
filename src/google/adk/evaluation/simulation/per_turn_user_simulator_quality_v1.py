@@ -31,7 +31,6 @@ from ...utils.feature_decorator import experimental
 from .._retry_options_utils import add_default_retry_options_if_not_present
 from ..eval_case import ConversationScenario
 from ..eval_case import Invocation
-from ..eval_metrics import BaseCriterion
 from ..eval_metrics import EvalMetric
 from ..eval_metrics import EvalStatus
 from ..eval_metrics import LlmBackedUserSimulatorCriterion
@@ -137,7 +136,9 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     self._stop_signal = self._criterion.stop_signal
     self._llm = self._setup_llm()
 
-  def _deserialize_criterion(self, eval_metric: EvalMetric) -> BaseCriterion:
+  def _deserialize_criterion(
+      self, eval_metric: EvalMetric
+  ) -> LlmBackedUserSimulatorCriterion:
     expected_criterion_type_error = ValueError(
         f"`{eval_metric.metric_name}` metric expects a criterion of type"
         f" `{self.criterion_type}`."
@@ -226,7 +227,9 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     return get_per_turn_user_simulator_quality_prompt(
         conversation_plan=conversation_scenario.conversation_plan,
         conversation_history=_format_conversation_history(previous_invocations),
-        generated_user_response=get_text_from_content(invocation.user_content),
+        generated_user_response=(
+            get_text_from_content(invocation.user_content) or ""
+        ),
         stop_signal=self._stop_signal,
         user_persona=conversation_scenario.user_persona,
     )
@@ -268,10 +271,10 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       self, per_invocation_results: list[PerInvocationResult]
   ) -> EvaluationResult:
     """Computes the fraction of results that resulted in a pass status."""
-    num_valid = 0
+    num_valid = 0.0
     num_evaluated = 0
     for result in per_invocation_results:
-      if result.eval_status == EvalStatus.PASSED:
+      if result.eval_status == EvalStatus.PASSED and result.score is not None:
         num_valid += result.score
 
       num_evaluated += 1
@@ -315,14 +318,14 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     return PerInvocationResult(
         actual_invocation=first_invocation,
         score=score,
-        eval_status=get_eval_status(score, self._eval_metric.threshold),
+        eval_status=get_eval_status(score, self._criterion.threshold),
     )
 
   async def _evaluate_intermediate_turn(
       self,
       invocation_at_step: Invocation,
       invocation_history: list[Invocation],
-      conversation_scenario: Optional[ConversationScenario],
+      conversation_scenario: ConversationScenario,
   ) -> PerInvocationResult:
 
     auto_rater_prompt = self._format_llm_prompt(
@@ -353,7 +356,7 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       samples.append(
           PerInvocationResult(
               eval_status=get_eval_status(
-                  llm_score.score, self._eval_metric.threshold
+                  llm_score.score, self._criterion.threshold
               ),
               score=llm_score.score,
               actual_invocation=invocation_at_step,
@@ -383,3 +386,4 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
       async for llm_response in agen:
         # Non-streaming call, so there is only one response content.
         return self._convert_llm_response_to_score(llm_response)
+    return AutoRaterScore()

@@ -17,6 +17,7 @@ from __future__ import annotations
 """Unit tests for the helper methods on the Event class."""
 
 import copy
+import json
 
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
@@ -445,3 +446,51 @@ class TestMessageSubclassField:
     content = types.Content(parts=[types.Part(text='hi')], role='model')
     event = Event(content=content)
     assert event.message is event.content
+
+
+_TOOL_IDS = frozenset(
+    {'call_1', 'call_2', 'call_3', 'call_4', 'aaa', 'zzz', 'mmm', 'kkk'}
+)
+
+
+class TestLongRunningToolIdsSerialization:
+  """`long_running_tool_ids` must serialize the same way in every process.
+
+  The field is a set, and set iteration order depends on the per-process
+  randomized string hash seed. Without a stable order, the very same unchanged
+  event serializes to different JSON in each process, so a client that diffs
+  serialized events (a debugger UI re-rendering a conversation, a cache keyed
+  on the payload) believes every event changed on every fetch.
+  """
+
+  def test_json_dump_is_sorted(self):
+    event = Event(author='user', long_running_tool_ids=set(_TOOL_IDS))
+
+    dumped = json.loads(event.model_dump_json(exclude_none=True))
+
+    assert dumped['long_running_tool_ids'] == sorted(_TOOL_IDS)
+
+  def test_python_dump_is_sorted(self):
+    event = Event(author='user', long_running_tool_ids=set(_TOOL_IDS))
+
+    dumped = event.model_dump(exclude_none=True)
+
+    assert dumped['long_running_tool_ids'] == sorted(_TOOL_IDS)
+
+  def test_round_trips_back_to_an_equal_set(self):
+    event = Event(author='user', long_running_tool_ids=set(_TOOL_IDS))
+
+    restored = Event.model_validate_json(event.model_dump_json())
+
+    assert restored.long_running_tool_ids == set(_TOOL_IDS)
+
+  def test_unset_value_stays_none(self):
+    event = Event(author='user')
+
+    assert event.model_dump()['long_running_tool_ids'] is None
+    assert 'long_running_tool_ids' not in event.model_dump(exclude_none=True)
+
+  def test_empty_set_stays_empty(self):
+    event = Event(author='user', long_running_tool_ids=set())
+
+    assert event.model_dump(exclude_none=True)['long_running_tool_ids'] == []

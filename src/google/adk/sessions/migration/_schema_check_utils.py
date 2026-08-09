@@ -16,15 +16,24 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 try:
   from sqlalchemy import create_engine as create_sync_engine
   from sqlalchemy import inspect
   from sqlalchemy import text
+  from sqlalchemy.engine import make_url
 except ImportError:
   pass
 
+if TYPE_CHECKING:
+  from sqlalchemy.engine import Connection
+  from sqlalchemy.engine.reflection import Inspector
+
 logger = logging.getLogger("google_adk." + __name__)
+
+_UNPARSEABLE_DB_URL = "<unparseable database URL>"
+_REDACTED_QUERY_VALUE = "REDACTED"
 
 SCHEMA_VERSION_KEY = "schema_version"
 SCHEMA_VERSION_0_PICKLE = "0"
@@ -32,7 +41,9 @@ SCHEMA_VERSION_1_JSON = "1"
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION_1_JSON
 
 
-def _get_schema_version_impl(inspector, connection) -> str:
+def _get_schema_version_impl(
+    inspector: Inspector, connection: Connection
+) -> str:
   """Gets DB schema version using inspector and connection."""
   if inspector.has_table("adk_internal_metadata"):
     try:
@@ -44,7 +55,10 @@ def _get_schema_version_impl(inspector, connection) -> str:
           {"key": SCHEMA_VERSION_KEY},
       ).fetchone()
       if result:
-        return result[0]
+        version = result[0]
+        if not isinstance(version, str):
+          raise ValueError("Schema version must be stored as text.")
+        return version
       else:
         raise ValueError(
             "Schema version not found in adk_internal_metadata. The database"
@@ -79,7 +93,7 @@ def _get_schema_version_impl(inspector, connection) -> str:
   return LATEST_SCHEMA_VERSION
 
 
-def get_db_schema_version_from_connection(connection) -> str:
+def get_db_schema_version_from_connection(connection: Connection) -> str:
   """Gets DB schema version from a DB connection."""
   inspector = inspect(connection)
   return _get_schema_version_impl(inspector, connection)
@@ -115,6 +129,24 @@ def to_sync_url(db_url: str) -> str:
   return db_url
 
 
+def _redact_db_url(db_url: str) -> str:
+  """Returns the URL with its credentials masked, for logs and error messages.
+
+  A database URL carries the password in the userinfo component, and drivers
+  also accept secrets as query parameters, so every query value is masked
+  rather than only the ones with a recognizable name. Redaction happens while
+  an error is being reported, so it never raises: an unparseable URL yields a
+  fixed placeholder rather than the original string.
+  """
+  try:
+    url = make_url(db_url)
+    if url.query:
+      url = url.set(query={key: _REDACTED_QUERY_VALUE for key in url.query})
+    return str(url.render_as_string(hide_password=True))
+  except Exception:  # pylint: disable=broad-except
+    return _UNPARSEABLE_DB_URL
+
+
 def get_db_schema_version(db_url: str) -> str:
   """Reads schema version from DB.
 
@@ -136,7 +168,7 @@ def get_db_schema_version(db_url: str) -> str:
   except Exception:
     logger.warning(
         "Failed to get schema version from database %s.",
-        db_url,
+        _redact_db_url(db_url),
     )
     raise
   finally:

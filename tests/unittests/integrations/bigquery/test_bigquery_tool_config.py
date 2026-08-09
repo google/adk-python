@@ -141,3 +141,17 @@ def test_bigquery_tool_config_invalid_labels(labels, message):
       match=message,
   ):
     BigQueryToolConfig(job_labels=labels)
+
+
+def test_bigquery_tool_config_accepts_exactly_twenty_labels():
+  """Twenty labels is the documented limit, so it must be allowed."""
+  labels = {f"key_{i}": "value" for i in range(20)}
+  config = BigQueryToolConfig(job_labels=labels)
+  assert config.job_labels == labels
+
+
+def test_bigquery_tool_config_allows_reserved_prefix_inside_a_key():
+  """Only a leading "adk-bigquery-" is reserved, not the substring."""
+  labels = {"team-adk-bigquery-owner": "value"}
+  config = BigQueryToolConfig(job_labels=labels)
+  assert config.job_labels == labels

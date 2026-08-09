@@ -152,6 +152,7 @@ async def test_exception_preserves_attributes(
 
   assert dict(tool_span.attributes) == {
       'gen_ai.operation.name': 'execute_tool',
+      'gen_ai.agent.name': 'some_root_agent',
       'gen_ai.tool.name': 'some_tool',
       'gen_ai.tool.description': 'A sample tool.',
       'gen_ai.tool.type': 'FunctionTool',

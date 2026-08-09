@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 from datetime import timedelta
+import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -266,10 +267,13 @@ class TestSessionContext:
         mock_client, timeout=0.1, sse_read_timeout=None
     )
 
+    started = time.monotonic()
     with pytest.raises(ConnectionError) as exc_info:
       await session_context.start()
+    elapsed = time.monotonic() - started
 
     assert 'Failed to create MCP session' in str(exc_info.value)
+    assert elapsed < 1.0, f'start() took {elapsed:.1f}s; timeout was 0.1s'
 
   @pytest.mark.asyncio
   async def test_timeout_during_initialization(self):
@@ -662,6 +666,33 @@ class TestSessionContext:
 
       # Should not raise exception
       assert session_context._close_event.is_set()
+
+  @pytest.mark.asyncio
+  async def test_passes_elicitation_callback_to_client_session(self):
+    """Elicitation callback is forwarded to ClientSession."""
+
+    async def elicitation_callback(context, params):
+      del context, params
+      return {'action': 'decline'}
+
+    mock_client = MockClient()
+    context = SessionContext(
+        client=mock_client,
+        timeout=5.0,
+        sse_read_timeout=None,
+        elicitation_callback=elicitation_callback,
+    )
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession',
+        autospec=True,
+    ) as mock_client_session_class:
+      mock_client_session = mock_client_session_class.return_value
+      mock_client_session.initialize = AsyncMock()
+      mock_client_session.send_ping = AsyncMock()
+      async with context:
+        pass
+      _, kwargs = mock_client_session_class.call_args
+      assert kwargs['elicitation_callback'] is elicitation_callback
 
 
 class TestSessionContextIsTaskAlive:

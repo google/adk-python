@@ -15,6 +15,7 @@
 """Tests for LlmRequest functionality."""
 
 import asyncio
+import logging
 from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -296,6 +297,17 @@ def test_append_instructions_empty_string_list():
 
   assert request.config.system_instruction is None
   assert len(request.contents) == 0
+
+
+def test_append_instructions_content_without_parts_is_noop():
+  """An SDK Content with omitted parts is an empty instruction."""
+  request = LlmRequest()
+
+  user_contents = request.append_instructions(types.Content(role='user'))
+
+  assert user_contents == []
+  assert request.config.system_instruction is None
+  assert request.contents == []
 
 
 def test_append_instructions_invalid_input():
@@ -847,3 +859,83 @@ def test_is_managed_agent_can_be_set_true():
   request = LlmRequest()
   request._is_managed_agent = True
   assert request._is_managed_agent is True
+
+
+def test_append_tools_declared_name_matches_registered_name():
+  """A callable object is advertised under the name it is registered as."""
+
+  class Calc:
+    """Adds two numbers."""
+
+    def __call__(self, a: int, b: int) -> int:
+      return a + b
+
+  request = LlmRequest()
+  request.append_tools([FunctionTool(Calc())])
+
+  declaration = request.config.tools[0].function_declarations[0]
+  assert declaration.name in request.tools_dict
+
+
+def test_append_tools_warns_on_duplicate_tool_name(caplog):
+  """A shadowed duplicate tool name is reported rather than silently dropped."""
+
+  def search(q: str) -> str:
+    """Search."""
+    return q
+
+  request = LlmRequest()
+  with caplog.at_level(logging.WARNING):
+    request.append_tools([FunctionTool(search), FunctionTool(search)])
+
+  assert 'Duplicate tool name' in caplog.text
+  assert len(request.tools_dict) == 1
+
+
+def test_set_output_schema_sets_schema_and_forces_json_mime_type():
+  """Structured output requires both the schema and the JSON mime type."""
+  request = LlmRequest()
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={'answer': types.Schema(type=types.Type.STRING)},
+  )
+
+  request.set_output_schema(schema)
+
+  assert request.config.response_schema is schema
+  assert request.config.response_mime_type == 'application/json'
+
+
+def test_set_output_schema_accepts_deprecated_base_model_alias():
+  """base_model is a deprecated alias and must behave like output_schema."""
+  request = LlmRequest()
+  schema = {'type': 'object', 'properties': {'answer': {'type': 'string'}}}
+
+  request.set_output_schema(base_model=schema)
+
+  assert request.config.response_schema == schema
+  assert request.config.response_mime_type == 'application/json'
+
+
+def test_set_output_schema_prefers_output_schema_over_base_model():
+  """When both are supplied the non-deprecated argument wins."""
+  request = LlmRequest()
+  preferred = types.Schema(type=types.Type.STRING)
+  legacy = types.Schema(type=types.Type.INTEGER)
+
+  request.set_output_schema(preferred, base_model=legacy)
+
+  assert request.config.response_schema is preferred
+
+
+def test_set_output_schema_without_any_schema_raises_value_error():
+  """Calling with neither argument is a caller error, not a silent no-op."""
+  request = LlmRequest()
+
+  with pytest.raises(
+      ValueError, match='Either output_schema or base_model must be provided.'
+  ):
+    request.set_output_schema()
+
+  assert request.config.response_schema is None
+  assert request.config.response_mime_type is None

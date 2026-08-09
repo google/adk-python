@@ -340,12 +340,10 @@ def _parse_schema_from_parameter(
           ),
           func_name,
       )
-      if (
-          schema_in_any_of.model_dump_json(exclude_none=True)
-          not in unique_types
-      ):
+      schema_key = schema_in_any_of.model_dump_json(exclude_none=True)
+      if schema_key not in unique_types:
         schema.any_of.append(schema_in_any_of)
-        unique_types.add(schema_in_any_of.model_dump_json(exclude_none=True))
+        unique_types.add(schema_key)
     if len(schema.any_of) == 1:  # param: list | None -> Array
       collapsed = schema.any_of[0]
       if schema.nullable:
@@ -369,6 +367,19 @@ def _parse_schema_from_parameter(
     args = get_args(param.annotation)
     if origin is dict:
       schema.type = types.Type.OBJECT
+      # args[1] is the value type of dict[K, V]. Untyped dictionaries (where
+      # len(args) == 0) intentionally leave additional_properties unset.
+      if len(args) == 2:
+        value_type = args[1]
+        schema.additional_properties = _parse_schema_from_parameter(
+            variant,
+            inspect.Parameter(
+                'value',
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=value_type,
+            ),
+            func_name,
+        )
       if param.default is not inspect.Parameter.empty:
         if not _is_default_value_compatible(param.default, param.annotation):
           raise ValueError(default_value_error_msg)
@@ -470,12 +481,10 @@ def _parse_schema_from_parameter(
             ):
               # Optional type with list, for example Optional[list[str]]
               schema.items = schema_in_any_of.items
-        if (
-            schema_in_any_of.model_dump_json(exclude_none=True)
-            not in unique_types
-        ):
+        schema_key = schema_in_any_of.model_dump_json(exclude_none=True)
+        if schema_key not in unique_types:
           schema.any_of.append(schema_in_any_of)
-          unique_types.add(schema_in_any_of.model_dump_json(exclude_none=True))
+          unique_types.add(schema_key)
       if len(schema.any_of) == 1:  # param: Union[List, None] -> Array
         collapsed = schema.any_of[0]
         if schema.nullable:
