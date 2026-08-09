@@ -52,7 +52,7 @@ class _NlPlanningRequestProcessor(BaseLlmRequestProcessor):
 
     if isinstance(planner, BuiltInPlanner):
       planner.apply_thinking_config(llm_request)
-    elif isinstance(planner, PlanReActPlanner):
+    else:
       if planning_instruction := planner.build_planning_instruction(
           ReadonlyContext(invocation_context), llm_request
       ):

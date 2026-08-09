@@ -248,6 +248,12 @@ class RemoteA2aAgent(BaseAgent):
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
       self._agent_card = agent_card
+      # Update description if empty. A card supplied directly never goes
+      # through the resolution path, so adopt it here instead; a parent agent
+      # reads the description to build its transfer instruction, which happens
+      # before this agent ever runs.
+      if not self.description and agent_card.description:
+        self.description = agent_card.description
     elif isinstance(agent_card, str):
       if not agent_card.strip():
         raise ValueError("agent_card string cannot be empty")

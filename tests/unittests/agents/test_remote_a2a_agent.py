@@ -215,6 +215,26 @@ class TestRemoteA2aAgentInit:
     assert agent._httpx_client_needs_cleanup is True
     assert agent._is_resolved is False
 
+  def test_init_with_agent_card_object_adopts_card_description(self):
+    """Test description is autopopulated from a directly supplied card."""
+    agent_card = create_test_agent_card(description="Converts currencies")
+
+    agent = RemoteA2aAgent(name="test_agent", agent_card=agent_card)
+
+    assert agent.description == "Converts currencies"
+
+  def test_init_with_agent_card_object_keeps_explicit_description(self):
+    """Test an explicit description wins over the card's."""
+    agent_card = create_test_agent_card(description="Converts currencies")
+
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=agent_card,
+        description="Test description",
+    )
+
+    assert agent.description == "Test description"
+
   def test_init_with_url_string(self):
     """Test initialization with URL string."""
     agent = RemoteA2aAgent(
