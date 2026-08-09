@@ -102,6 +102,20 @@ class PlanReActPlanner(BasePlanner):
       return text, ''
     return text[: index + len(separator)], text[index + len(separator) :]
 
+  def _strip_tag(self, text: str, tag: str) -> str:
+    """Strips the leading tag from the text if present.
+
+    Args:
+      text: The text to strip the tag from.
+      tag: The tag to strip.
+
+    Returns:
+      The text with the leading tag stripped.
+    """
+    if text.startswith(tag):
+      return text[len(tag):]
+    return text
+
   def _handle_non_function_call_parts(
       self, response_part: types.Part, preserved_parts: list[types.Part]
   ) -> None:
@@ -116,6 +130,13 @@ class PlanReActPlanner(BasePlanner):
       reasoning_text, final_answer_text = self._split_by_last_pattern(
           response_part.text, FINAL_ANSWER_TAG
       )
+      # _split_by_last_pattern includes the separator in the left side; strip
+      # it along with any leading structural tag so consumers receive clean
+      # text without needing to parse the markers.
+      if reasoning_text.endswith(FINAL_ANSWER_TAG):
+        reasoning_text = reasoning_text[: -len(FINAL_ANSWER_TAG)]
+      for tag in [PLANNING_TAG, REASONING_TAG, ACTION_TAG, REPLANNING_TAG]:
+        reasoning_text = self._strip_tag(reasoning_text, tag)
       if reasoning_text:
         reasoning_part = types.Part(text=reasoning_text)
         self._mark_as_thought(reasoning_part)
@@ -129,18 +150,23 @@ class PlanReActPlanner(BasePlanner):
     else:
       response_text = response_part.text or ''
       # If the part is a text part with a planning/reasoning/action tag,
-      # label it as reasoning.
-      if response_text and (
-          any(
-              response_text.startswith(tag)
+      # label it as reasoning and strip the leading tag so consumers receive
+      # clean text without needing to parse the structural markers.
+      matched_tag = next(
+          (
+              tag
               for tag in [
                   PLANNING_TAG,
                   REASONING_TAG,
                   ACTION_TAG,
                   REPLANNING_TAG,
               ]
-          )
-      ):
+              if response_text.startswith(tag)
+          ),
+          None,
+      )
+      if response_text and matched_tag:
+        response_part.text = self._strip_tag(response_text, matched_tag)
         self._mark_as_thought(response_part)
       preserved_parts.append(response_part)
 
