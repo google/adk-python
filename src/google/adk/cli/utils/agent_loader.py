@@ -419,6 +419,15 @@ class AgentLoader(BaseAgentLoader):
     self._agent_cache[agent_name] = agent_or_app
     return agent_or_app
 
+  @staticmethod
+  def _looks_like_agent_dir(dir_path: Path) -> bool:
+    """Returns True if the directory holds a loadable agent definition."""
+    return (
+        (dir_path / "agent.py").is_file()
+        or (dir_path / "root_agent.yaml").is_file()
+        or (dir_path / "__init__.py").is_file()
+    )
+
   @override
   def list_agents(self) -> list[str]:
     """Lists all agents available in the agent loader (sorted alphabetically)."""
@@ -431,6 +440,7 @@ class AgentLoader(BaseAgentLoader):
         if os.path.isdir(os.path.join(base_path, x))
         and not x.startswith(".")
         and x != "__pycache__"
+        and self._looks_like_agent_dir(base_path / x)
     ]
     agent_names.sort()
     return agent_names

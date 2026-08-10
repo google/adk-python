@@ -287,6 +287,21 @@ class TestAgentLoader:
       assert agent2 is not agent3
       assert agent1.agent_id != agent2.agent_id != agent3.agent_id
 
+  def test_list_agents_skips_directories_without_a_loadable_agent(self):
+    """Stray non-agent directories under agents_dir must not be listed."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      self.create_agent_structure(temp_path, "real_agent", "package_with_root")
+      # A stray directory with no agent.py, root_agent.yaml, or __init__.py,
+      # e.g. one created as a side effect of local storage keyed by an
+      # unmapped app name.
+      (temp_path / "stray_dir").mkdir()
+
+      loader = AgentLoader(str(temp_path))
+
+      assert loader.list_agents() == ["real_agent"]
+
   def test_error_messages_use_os_sep_consistently(self):
     """Verify error messages use os.sep instead of hardcoded '/'."""
     del self
