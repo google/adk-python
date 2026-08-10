@@ -144,14 +144,32 @@ class PlanReActPlanner(BasePlanner):
         self._mark_as_thought(response_part)
       preserved_parts.append(response_part)
 
+  def _strip_planning_tags(self, text: str) -> str:
+    """Strips leading planning/reasoning/action/replanning tags from text.
+
+    Args:
+      text: The text to strip.
+
+    Returns:
+      The text with the leading tag removed (if present).
+    """
+    for tag in [PLANNING_TAG, REPLANNING_TAG, REASONING_TAG, ACTION_TAG]:
+      if text.startswith(tag):
+        return text[len(tag):]
+    return text
+
   def _mark_as_thought(self, response_part: types.Part) -> None:
-    """Marks the response part as thought.
+    """Marks the response part as thought and strips any leading planning tag.
+
+    The raw tags (e.g. ``/*PLANNING*/``, ``/*REASONING*/``) are removed so
+    that consumers can read the plain reasoning text without further parsing.
 
     Args:
       response_part: The mutable response part to mark as thought.
     """
     if response_part.text:
       response_part.thought = True
+      response_part.text = self._strip_planning_tags(response_part.text)
     return
 
   def _build_nl_planner_instruction(self) -> str:
