@@ -4211,7 +4211,7 @@ async def test_generate_content_async_stream_grounding_metadata(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_stream_with_usage_metadata(
+async def test_generate_content_async_stream_tool_call_omits_aggregated_text(
     mock_completion, lite_llm_instance
 ):
 
@@ -4234,6 +4234,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[2].content.parts[0].text == "two:"
   assert responses[2].model_version == "test_model"
   assert responses[3].content.role == "model"
+  assert len(responses[3].content.parts) == 1
   assert responses[3].content.parts[-1].function_call.name == "test_function"
   assert responses[3].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
