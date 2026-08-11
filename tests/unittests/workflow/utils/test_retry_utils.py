@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import random
 
+from google.adk import platform as adk_platform
 from google.adk.workflow._node_state import NodeState
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow.utils._retry_utils import _get_retry_delay
@@ -72,6 +73,24 @@ class TestGetRetryDelay:
     assert all(5.0 <= d <= 15.0 for d in delays)
     assert len(set(delays)) > 1
 
+  def test_jitter_uses_platform_random_provider(self):
+    """Jitter is drawn via the platform random seam so it is injectable.
+
+    Embedders can install a custom random provider (e.g. a seeded Random);
+    the computed delay must then be reproducible from run to run.
+    """
+    config = RetryConfig(initial_delay=10.0, backoff_factor=1.0, jitter=0.5)
+    state = NodeState(attempt_count=1)
+    adk_platform.set_random_provider(lambda: random.Random(42))
+    try:
+      expected_offset = random.Random(42).uniform(-5.0, 5.0)
+
+      delays = {_get_retry_delay(config, state) for _ in range(5)}
+
+      assert delays == {max(0.0, 10.0 + expected_offset)}
+    finally:
+      adk_platform.reset_random_provider()
+
   def test_jitter_stays_under_max_delay_without_bunching_on_it(self):
     """Keeps jittered delays under max_delay without piling them on the cap.
 
@@ -83,9 +102,15 @@ class TestGetRetryDelay:
         initial_delay=1.0, backoff_factor=2.0, max_delay=5.0, jitter=1.0
     )
     state = NodeState(attempt_count=6)
-    random.seed(20260807)
-
-    delays = [_get_retry_delay(config, state) for _ in range(2000)]
+    # Seed through the platform seam: the jitter draw goes through
+    # platform_random.get_random(), which the stdlib global random.seed()
+    # does not influence.
+    seeded = random.Random(20260807)
+    adk_platform.set_random_provider(lambda: seeded)
+    try:
+      delays = [_get_retry_delay(config, state) for _ in range(2000)]
+    finally:
+      adk_platform.reset_random_provider()
 
     assert max(delays) <= 5.0
     at_cap = sum(1 for d in delays if d > 5.0 - 1e-9)

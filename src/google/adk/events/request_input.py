@@ -15,13 +15,13 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Optional
-import uuid
 
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from ..platform import uuid as platform_uuid
 from ..utils._schema_utils import SchemaType
 
 
@@ -39,7 +39,7 @@ class RequestInput(BaseModel):
           "The ID of the interrupt, usually a function call ID. This is used"
           " to identify the interrupt that the input is for."
       ),
-      default_factory=lambda: str(uuid.uuid4()),
+      default_factory=platform_uuid.new_uuid,
   )
   """The ID of the interrupt, usually a function call ID.
 
