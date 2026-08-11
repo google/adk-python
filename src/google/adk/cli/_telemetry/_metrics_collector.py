@@ -196,6 +196,7 @@ class MetricsCollector:
       exit_code: int = 0,
       duration_ms: int = 0,
       exception_type: str = "",
+      express_mode_action: str = "",
   ) -> None:
     """Records a command execution and safely appends to local disk queue."""
     with self._lock:
@@ -218,6 +219,10 @@ class MetricsCollector:
     if exception_type:
       # Enforce string length limit on exception type name
       command_run["exception_type"] = exception_type[:_MAX_EXCEPTION_LENGTH]
+    if express_mode_action:
+      command_run["express_mode_action"] = express_mode_action[
+          :_MAX_STRING_LENGTH
+      ]
 
     source_extension = {
         "client_session_id": self._session_id,

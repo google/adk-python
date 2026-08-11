@@ -44,10 +44,10 @@ python filesystem_server.py
 
 ### Step 2: Run the ADK Agent (Client)
 
-In a second terminal, navigate to the open-source workspace root and run the client.
+In a second terminal, navigate to the repository root and run the client.
 
 ```bash
-cd third_party/py/google/adk/open_source_workspace
+cd adk-python
 source .venv/bin/activate
 
 # 1. Combine system CAs with our test CA so the client trusts the server cert

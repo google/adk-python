@@ -126,7 +126,6 @@ def test_fallback_grants_a_gemini_named_model_and_warns(
         ('bare-model', '1'),  # Not a Gemini id at all.
         ('gemini-2.5-pro', '0'),  # Not on Vertex AI.
         ('gemini-2.5-pro', None),  # Not on Vertex AI.
-        ('gemini-1.5-pro', '1'),  # Predates Gemini 2.
     ],
 )
 def test_fallback_stays_quiet_when_it_denies(
@@ -186,7 +185,7 @@ def test_subclass_can_override_a_capability():
         ('gemini-2.5-flash', '1', True),
         ('gemini-2.5-pro', '0', False),
         ('gemini-2.5-pro', None, False),
-        ('gemini-1.5-pro', '1', False),
+        ('gemini-early-exp', '1', True),
     ],
 )
 def test_gemini_output_schema_and_tools(
@@ -195,7 +194,7 @@ def test_gemini_output_schema_and_tools(
     enterprise_mode: str | None,
     expected: bool,
 ) -> None:
-  """Gemini pairs schema with tools only on Vertex AI for Gemini 2+.
+  """Gemini pairs schema with tools only on Vertex AI.
 
   Declaring the capability itself, it never reaches the fallback on ``BaseLlm``
   and so is never nagged to migrate.
@@ -227,7 +226,7 @@ def test_gemini_capabilities_follow_model_reassignment(
 ) -> None:
   """BaseLlm is mutable, so a reassigned model must be re-resolved."""
   monkeypatch.setenv('GOOGLE_GENAI_USE_ENTERPRISE', '1')
-  gemini = Gemini(model='gemini-1.5-pro')
+  gemini = Gemini(model='not-a-gemini-model')
   assert not gemini.capabilities.output_schema_and_tools
 
   gemini.model = 'gemini-2.5-pro'

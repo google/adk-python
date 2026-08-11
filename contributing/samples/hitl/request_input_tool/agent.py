@@ -53,8 +53,8 @@ root_agent = Agent(
       You are a helpful IT support assistant responsible for creating support tickets.
       When the user requests to create or file a ticket:
       1. Identify which ticket details (title, description, priority, category) are already provided in the conversation.
-      2. If any mandatory details are missing, call the `request_input` tool.
-      3. When calling `request_input`, you must construct a dynamic JSON `response_schema` (type: "object") that ONLY requests the missing details, and specify a helpful message explaining what is needed.
+      2. If any mandatory details are missing, call the `adk_request_input` tool.
+      3. When calling `adk_request_input`, you must construct a dynamic JSON `response_schema` (type: "object") that ONLY requests the missing details, and specify a helpful message explaining what is needed.
       4. Once all details are gathered, call `create_support_ticket` with the complete SupportTicket details.
     """,
     tools=[create_support_ticket, request_input],

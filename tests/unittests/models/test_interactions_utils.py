@@ -598,6 +598,172 @@ class TestConvertPartToInteractionContent:
     assert result is None
 
 
+@pytest.mark.filterwarnings('ignore::DeprecationWarning')
+class TestDeprecatedConvertPartToInteractionContent:
+  """Tests for the deprecated public convert_part_to_interaction_content.
+
+  Unlike the private converter this one returns a bare content dict (it does
+  not wrap anything in a step) and it keeps the thought signature, so its
+  output shape has to be pinned separately.
+  """
+
+  def test_empty_text_is_kept_as_a_text_content(self):
+    """An empty string is a text part, not an unsupported part."""
+    result = interactions_utils.convert_part_to_interaction_content(
+        types.Part(text='')
+    )
+    assert result == {'type': 'text', 'text': ''}
+
+  def test_whitespace_only_text_is_not_stripped(self):
+    """Whitespace is content; the converter must not normalize it away."""
+    result = interactions_utils.convert_part_to_interaction_content(
+        types.Part(text='   \n')
+    )
+    assert result == {'type': 'text', 'text': '   \n'}
+
+  def test_function_call_defaults_missing_id_and_args(self):
+    """A call with no id/args still needs both keys for the API payload."""
+    part = types.Part(
+        function_call=types.FunctionCall(name='get_weather'),
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result == {
+        'type': 'function_call',
+        'id': '',
+        'name': 'get_weather',
+        'arguments': {},
+    }
+
+  def test_function_call_base64_encodes_thought_signature(self):
+    """Signature bytes have to be base64 to survive a JSON payload."""
+    part = types.Part(
+        function_call=types.FunctionCall(
+            id='call_1', name='get_weather', args={'city': 'London'}
+        ),
+        thought_signature=b'sig',
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result == {
+        'type': 'function_call',
+        'id': 'call_1',
+        'name': 'get_weather',
+        'arguments': {'city': 'London'},
+        # base64 of b'sig'.
+        'thought_signature': 'c2ln',
+    }
+
+  def test_function_response_passes_structured_result_through_unserialized(
+      self,
+  ):
+    """Pre-serializing here would double-escape once the API encodes it."""
+    part = types.Part(
+        function_response=types.FunctionResponse(
+            id='call_1',
+            name='get_weather',
+            response={'temp': 15, 'tags': ['warm', 'dry']},
+        )
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result == {
+        'type': 'function_result',
+        'name': 'get_weather',
+        'call_id': 'call_1',
+        'result': {'temp': 15, 'tags': ['warm', 'dry']},
+    }
+
+  def test_function_response_defaults_missing_name_and_call_id(self):
+    """Both keys are required by the API even when the part omits them."""
+    part = types.Part(
+        function_response=types.FunctionResponse(response={'ok': True})
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result['name'] == ''
+    assert result['call_id'] == ''
+    assert result['result'] == {'ok': True}
+
+  @pytest.mark.parametrize(
+      'mime_type,expected_type',
+      [
+          ('image/png', 'image'),
+          ('audio/mp3', 'audio'),
+          ('video/mp4', 'video'),
+          ('application/pdf', 'document'),
+          ('text/csv', 'document'),
+      ],
+  )
+  def test_inline_data_routes_on_mime_type_prefix(
+      self, mime_type, expected_type
+  ):
+    """Anything that is not image/audio/video falls back to document."""
+    part = types.Part(
+        inline_data=types.Blob(mime_type=mime_type, data=b'\x00\x01')
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result['type'] == expected_type
+    assert result['mime_type'] == mime_type
+
+  @pytest.mark.parametrize(
+      'mime_type,expected_type',
+      [
+          ('image/png', 'image'),
+          ('audio/mp3', 'audio'),
+          ('video/mp4', 'video'),
+          ('application/pdf', 'document'),
+      ],
+  )
+  def test_file_data_routes_on_mime_type_and_carries_uri(
+      self, mime_type, expected_type
+  ):
+    """File parts reference the payload by uri instead of inlining it."""
+    part = types.Part(
+        file_data=types.FileData(
+            mime_type=mime_type, file_uri='https://example.com/a'
+        )
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result == {
+        'type': expected_type,
+        'uri': 'https://example.com/a',
+        'mime_type': mime_type,
+    }
+
+  @pytest.mark.parametrize(
+      'outcome,expected_is_error',
+      [
+          (types.Outcome.OUTCOME_OK, False),
+          (types.Outcome.OUTCOME_FAILED, True),
+          (types.Outcome.OUTCOME_DEADLINE_EXCEEDED, True),
+      ],
+  )
+  def test_code_execution_result_marks_failures_as_errors(
+      self, outcome, expected_is_error
+  ):
+    """Only a successful outcome is reported to the API as a non-error."""
+    part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=outcome, output='7'
+        )
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result['type'] == 'code_execution_result'
+    assert result['result'] == '7'
+    assert result['is_error'] is expected_is_error
+
+  def test_thought_part_only_carries_base64_signature(self):
+    """A thought part has no plaintext; only the signature round-trips."""
+    part = types.Part(thought=True, thought_signature=b'sig')
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    # base64 of b'sig'.
+    assert result == {'type': 'thought', 'signature': 'c2ln'}
+
+  def test_unsupported_part_returns_none(self):
+    """An empty part has nothing to send, so the caller must skip it."""
+    assert (
+        interactions_utils.convert_part_to_interaction_content(types.Part())
+        is None
+    )
+
+
 class TestConvertContentToStep:
   """Tests for _convert_content_to_step."""
 
@@ -2362,3 +2528,199 @@ async def test_generate_content_via_interactions_sends_tracking_headers_without_
   )
 
   assert api_client.create_calls[0]['extra_headers'] == get_tracking_headers()
+
+
+class TestBuildInteractionsRequestLog:
+  """Tests for build_interactions_request_log."""
+
+  def test_echoes_call_parameters_and_marks_absent_sections(self):
+    """With nothing configured every optional section says so explicitly."""
+    log = interactions_utils.build_interactions_request_log(
+        model='gemini-2.5-flash',
+        input_steps=[],
+        system_instruction=None,
+        tools=None,
+        generation_config=None,
+        previous_interaction_id='interaction_prev',
+        stream=True,
+    )
+
+    assert 'Model: gemini-2.5-flash' in log
+    assert 'Stream: True' in log
+    assert 'Previous Interaction ID: interaction_prev' in log
+    assert 'System Instruction:\n(none)' in log
+    assert 'Input Steps:\n(none)' in log
+    assert 'Tools:\n(none)' in log
+
+  def test_renders_system_instruction_and_generation_config(self):
+    """Both are echoed verbatim so a log line reproduces the call."""
+    log = interactions_utils.build_interactions_request_log(
+        model='gemini-2.5-flash',
+        input_steps=[],
+        system_instruction='You are helpful.',
+        tools=None,
+        generation_config={'temperature': 0.5},
+        previous_interaction_id=None,
+        stream=False,
+    )
+
+    assert 'System Instruction:\nYou are helpful.' in log
+    assert json.dumps({'temperature': 0.5}) in log
+
+  def test_short_text_content_is_logged_verbatim(self):
+    """Text under the cap must not be altered."""
+    steps = interactions_utils._convert_contents_to_steps(
+        [types.Content(role='user', parts=[types.Part(text='Hi there')])]
+    )
+
+    log = interactions_utils.build_interactions_request_log(
+        model='m',
+        input_steps=steps,
+        system_instruction=None,
+        tools=None,
+        generation_config=None,
+        previous_interaction_id=None,
+        stream=False,
+    )
+
+    assert 'text: "Hi there"' in log
+
+  def test_long_text_content_is_truncated_to_200_chars(self):
+    """A large prompt must not be dumped into the log in full."""
+    long_text = 'x' * 500
+    steps = interactions_utils._convert_contents_to_steps(
+        [types.Content(role='user', parts=[types.Part(text=long_text)])]
+    )
+
+    log = interactions_utils.build_interactions_request_log(
+        model='m',
+        input_steps=steps,
+        system_instruction=None,
+        tools=None,
+        generation_config=None,
+        previous_interaction_id=None,
+        stream=False,
+    )
+
+    assert 'text: "' + 'x' * 200 + '..."' in log
+    assert 'x' * 201 not in log
+
+  def test_function_tools_are_logged_with_name_params_and_description(self):
+    """A tool line has to identify the tool and its parameter schema."""
+    tools = [{
+        'type': 'function',
+        'name': 'get_weather',
+        'description': 'Looks up the weather.',
+        'parameters': {'type': 'object'},
+    }]
+
+    log = interactions_utils.build_interactions_request_log(
+        model='m',
+        input_steps=[],
+        system_instruction=None,
+        tools=tools,
+        generation_config=None,
+        previous_interaction_id=None,
+        stream=False,
+    )
+
+    assert 'get_weather({"type": "object"}): Looks up the weather.' in log
+
+  def test_non_function_tools_are_logged_by_type(self):
+    """Built-in tools have no name/params, so the type is the whole line."""
+    log = interactions_utils.build_interactions_request_log(
+        model='m',
+        input_steps=[],
+        system_instruction=None,
+        tools=[{'type': 'google_search'}],
+        generation_config=None,
+        previous_interaction_id=None,
+        stream=False,
+    )
+
+    assert 'Tools:\n  google_search\n' in log
+
+
+class TestBuildInteractionsResponseLog:
+  """Tests for build_interactions_response_log."""
+
+  def test_reports_id_status_and_token_usage(self):
+    """These three identify the interaction and what it cost."""
+    interaction = Interaction(
+        id='interaction_1',
+        status='completed',
+        usage=Usage(total_input_tokens=11, total_output_tokens=7),
+    )
+
+    log = interactions_utils.build_interactions_response_log(interaction)
+
+    assert 'Interaction ID: interaction_1' in log
+    assert 'Status: completed' in log
+    assert 'Usage:\ninput_tokens: 11, output_tokens: 7' in log
+
+  def test_missing_usage_and_steps_are_reported_as_none(self):
+    """An empty response still has to produce a readable log."""
+    interaction = Interaction(id='interaction_1', status='queued')
+
+    log = interactions_utils.build_interactions_response_log(interaction)
+
+    assert 'Outputs:\n(none)' in log
+    assert 'Usage:\n(none)' in log
+    assert 'Error:\n(none)' in log
+
+  def test_function_call_step_logs_name_and_arguments(self):
+    """A tool call is the part of a response a reader most needs to see."""
+    interaction = Interaction(
+        id='interaction_1',
+        status='requires_action',
+        steps=[
+            FunctionCallStep(
+                type='function_call',
+                id='call_1',
+                name='get_weather',
+                arguments={'city': 'London'},
+            )
+        ],
+    )
+
+    log = interactions_utils.build_interactions_response_log(interaction)
+
+    assert '  function_call: get_weather({"city": "London"})' in log
+
+
+class TestBuildInteractionsEventLog:
+  """Tests for build_interactions_event_log."""
+
+  def test_text_delta_event_reports_type_and_text(self):
+    """Streaming text deltas are logged with their chunk contents."""
+    event = StepDelta(index=0, delta=interactions.TextDelta(text='Sunny'))
+
+    assert (
+        interactions_utils.build_interactions_event_log(event)
+        == 'Interactions SSE Event: step.delta [text: "Sunny"]'
+    )
+
+  def test_text_delta_event_truncates_long_text_to_100_chars(self):
+    """A single delta must not be able to flood the debug log."""
+    event = StepDelta(index=0, delta=interactions.TextDelta(text='y' * 400))
+
+    log = interactions_utils.build_interactions_event_log(event)
+
+    assert log == (
+        'Interactions SSE Event: step.delta [text: "' + 'y' * 100 + '..."]'
+    )
+
+  def test_non_delta_event_reports_only_its_type(self):
+    """Lifecycle events carry no delta, so the details section is empty."""
+    event = StepStart(
+        index=0,
+        step=ModelOutputStep(
+            type='model_output',
+            content=[TextContent(type='text', text='Sunny')],
+        ),
+    )
+
+    assert (
+        interactions_utils.build_interactions_event_log(event)
+        == 'Interactions SSE Event: step.start []'
+    )

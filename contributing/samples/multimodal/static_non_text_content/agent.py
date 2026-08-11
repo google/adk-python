@@ -82,10 +82,10 @@ def create_static_instruction_with_file_upload():
         types.Part(
             file_data=types.FileData(
                 file_uri=(
-                    "gs://cloud-samples-data/generative-ai/pdf/2403.05530.pdf"
+                    "gs://cloud-samples-data/generative-ai/pdf/2507.06261.pdf"
                 ),
                 mime_type="application/pdf",
-                display_name="Gemma Research Paper",
+                display_name="Gemini Research Paper",
             )
         )
     )
@@ -96,14 +96,14 @@ def create_static_instruction_with_file_upload():
             file_data=types.FileData(
                 file_uri="https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/2403.05530.pdf",
                 mime_type="application/pdf",
-                display_name="AI Research Paper (HTTPS)",
+                display_name="Gemini Research Paper (HTTPS)",
             )
         )
     )
 
     additional_text = (
-        " You also have access to a Gemma research paper from GCS"
-        " and an AI research paper from HTTPS URL."
+        " You also have access to a Gemini research paper from GCS"
+        " and another Gemini research paper from HTTPS URL."
     )
 
   else:
@@ -187,8 +187,8 @@ def create_static_instruction_with_file_upload():
     instruction_text = """
 When users ask questions, you should:
 1. Use the reference chart above to provide context when discussing visual data or charts
-2. Reference the Gemma research paper (from GCS) when discussing AI research, model architectures, or technical details
-3. Reference the AI research paper (from HTTPS) when discussing research topics
+2. Reference the Gemini research paper (from GCS) when discussing AI research, model architectures, or technical details
+3. Reference the other Gemini research paper (from HTTPS) when discussing research topics
 4. Be helpful and informative in your responses
 5. Explain how the provided reference materials relate to their questions"""
   else:

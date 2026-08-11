@@ -21,16 +21,25 @@ from fastapi.openapi.models import HTTPBearer
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.ui_widget import UiWidget
+from google.adk.flows.llm_flows.functions import AF_FUNCTION_CALL_ID_PREFIX
+from google.adk.flows.llm_flows.functions import deep_merge_dicts
+from google.adk.flows.llm_flows.functions import find_event_by_function_call_id
 from google.adk.flows.llm_flows.functions import find_matching_function_call
+from google.adk.flows.llm_flows.functions import generate_auth_event
+from google.adk.flows.llm_flows.functions import get_long_running_function_calls
 from google.adk.flows.llm_flows.functions import handle_function_calls_async
 from google.adk.flows.llm_flows.functions import handle_function_calls_live
 from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
+from google.adk.flows.llm_flows.functions import remove_client_function_call_id
+from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
@@ -1219,6 +1228,95 @@ async def test_computer_use_tool_decoding_behavior(handle_function_calls):
   assert response_part.parts[0].inline_data is not None
 
 
+async def _run_single_tool_call(tool):
+  """Invokes a tool through the flow and returns its function response."""
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[types.Part(function_call=types.FunctionCall(name=tool.name))]
+      ),
+  )
+  result = await handle_function_calls_async(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is not None
+  return result.content.parts[0].function_response
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_a_media_part():
+  """A tool can hand back bytes instead of encoding them into a string."""
+
+  def render_chart() -> types.Part:
+    return types.Part.from_bytes(data=b'chart-bytes', mime_type='image/png')
+
+  response = await _run_single_tool_call(FunctionTool(render_chart))
+
+  assert len(response.parts) == 1
+  assert response.parts[0].inline_data.data == b'chart-bytes'
+  assert response.parts[0].inline_data.mime_type == 'image/png'
+  # The media is not also left behind as an unserializable value.
+  assert not response.response
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_media_alongside_data():
+  """Media is split out while the rest of the result stays in the response."""
+
+  def render_chart() -> dict[str, Any]:
+    return {
+        'chart': types.Part.from_bytes(
+            data=b'chart-bytes', mime_type='image/png'
+        ),
+        'summary': 'up 3%',
+    }
+
+  response = await _run_single_tool_call(FunctionTool(render_chart))
+
+  assert len(response.parts) == 1
+  assert response.parts[0].inline_data.mime_type == 'image/png'
+  assert response.response == {'summary': 'up 3%'}
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_several_media_parts():
+  """Every media entry of a returned list becomes a response part."""
+
+  def render_charts() -> list[Any]:
+    return [
+        types.Part.from_bytes(data=b'one', mime_type='image/png'),
+        types.Part.from_bytes(data=b'two', mime_type='image/jpeg'),
+        'two charts',
+    ]
+
+  response = await _run_single_tool_call(FunctionTool(render_charts))
+
+  assert [p.inline_data.mime_type for p in response.parts] == [
+      'image/png',
+      'image/jpeg',
+  ]
+  assert response.response == {'result': ['two charts']}
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_plain_data_is_unchanged():
+  """A result without media keeps its existing shape."""
+
+  def get_summary() -> dict[str, str]:
+    return {'summary': 'up 3%'}
+
+  response = await _run_single_tool_call(FunctionTool(get_summary))
+
+  assert not response.parts
+  assert response.response == {'summary': 'up 3%'}
+
+
 @pytest.mark.asyncio
 async def test_handle_function_calls_live_preserves_live_session_id():
   """Tests that handle_function_calls_live preserves live_session_id for single call."""
@@ -1864,3 +1962,207 @@ async def test_parallel_non_blocking_tools():
 
   await asyncio.sleep(0)
   assert len(invocation_context.active_non_blocking_tool_tasks) == 0
+
+
+def _model_call_event(invocation_id: str, call_id: str) -> Event:
+  """Builds a model event carrying a single function call with `call_id`."""
+  return Event(
+      invocation_id=invocation_id,
+      author='root_agent',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id, name='do_thing', args={}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def test_find_event_by_function_call_id_returns_the_most_recent_match():
+  """A repeated call id resolves to the latest event, not the earliest."""
+  first = _model_call_event('inv_1', 'call_a')
+  unrelated = _model_call_event('inv_2', 'call_b')
+  latest = _model_call_event('inv_3', 'call_a')
+
+  result = find_event_by_function_call_id([first, unrelated, latest], 'call_a')
+
+  assert result is latest
+
+
+def test_find_event_by_function_call_id_returns_none_when_id_absent():
+  """Content-less events are skipped and a non-matching id yields None."""
+  contentless = Event(invocation_id='inv_1', author='root_agent')
+  other_call = _model_call_event('inv_2', 'call_b')
+
+  result = find_event_by_function_call_id([contentless, other_call], 'call_a')
+
+  assert result is None
+
+
+def test_get_long_running_function_calls_returns_only_long_running_call_ids():
+  """Selection is per call id, skips regular tools and unregistered names."""
+
+  def wait_for_approval() -> dict[str, str]:
+    return {'status': 'pending'}
+
+  def add_one(x: int) -> int:
+    return x + 1
+
+  long_running_tool = LongRunningFunctionTool(func=wait_for_approval)
+  regular_tool = FunctionTool(add_one)
+  tools_dict = {
+      long_running_tool.name: long_running_tool,
+      regular_tool.name: regular_tool,
+  }
+  function_calls = [
+      types.FunctionCall(id='lr_1', name='wait_for_approval', args={}),
+      types.FunctionCall(id='lr_2', name='wait_for_approval', args={}),
+      types.FunctionCall(id='plain_1', name='add_one', args={'x': 1}),
+      types.FunctionCall(id='ghost_1', name='never_registered', args={}),
+  ]
+
+  assert get_long_running_function_calls(function_calls, tools_dict) == {
+      'lr_1',
+      'lr_2',
+  }
+
+
+def test_remove_client_function_call_id_strips_only_adk_generated_ids():
+  """Client-side ids are internal; ids the model supplied must survive."""
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(
+                  id=f'{AF_FUNCTION_CALL_ID_PREFIX}111', name='t1', args={}
+              )
+          ),
+          types.Part(
+              function_call=types.FunctionCall(
+                  id='model-222', name='t2', args={}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=f'{AF_FUNCTION_CALL_ID_PREFIX}333', name='t1', response={}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='model-444', name='t2', response={}
+              )
+          ),
+          types.Part(text='no ids here'),
+      ],
+  )
+
+  remove_client_function_call_id(content)
+
+  assert content.parts[0].function_call.id is None
+  assert content.parts[1].function_call.id == 'model-222'
+  assert content.parts[2].function_response.id is None
+  assert content.parts[3].function_response.id == 'model-444'
+
+
+def test_deep_merge_dicts_merges_nested_dicts_in_place():
+  """Nested dicts merge key-wise; d2 wins conflicts; d1 is the result."""
+  d1 = {'a': {'x': 1, 'y': 2}, 'b': 'keep'}
+  d2 = {'a': {'y': 99, 'z': 3}, 'c': 'new'}
+
+  result = deep_merge_dicts(d1, d2)
+
+  assert result is d1
+  assert result == {'a': {'x': 1, 'y': 99, 'z': 3}, 'b': 'keep', 'c': 'new'}
+
+
+def test_deep_merge_dicts_replaces_when_either_side_is_not_a_dict():
+  """A scalar on either side replaces rather than recursing."""
+  assert deep_merge_dicts({'a': {'x': 1}}, {'a': 5}) == {'a': 5}
+  assert deep_merge_dicts({'a': 5}, {'a': {'x': 1}}) == {'a': {'x': 1}}
+  assert deep_merge_dicts({'a': 1}, {}) == {'a': 1}
+
+
+async def _auth_invocation_context():
+  agent = Agent(
+      name='test_agent', model=testing_utils.MockModel.create(responses=[])
+  )
+  return agent, await testing_utils.create_invocation_context(agent=agent)
+
+
+def _tool_response_event(
+    invocation_context, requested_auth_configs=None
+) -> Event:
+  return Event(
+      invocation_id=invocation_context.invocation_id,
+      author=invocation_context.agent.name,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part.from_function_response(
+                  name='call_external_api', response={'result': None}
+              )
+          ],
+      ),
+      actions=EventActions(requested_auth_configs=requested_auth_configs or {}),
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_auth_event_returns_none_without_requested_credentials():
+  """A tool response that asked for nothing produces no auth event."""
+  _, invocation_context = await _auth_invocation_context()
+  function_response_event = _tool_response_event(invocation_context)
+
+  assert (
+      generate_auth_event(invocation_context, function_response_event) is None
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_auth_event_emits_one_long_running_call_per_request():
+  """Each requested credential becomes a pending client-side EUC call."""
+  _, invocation_context = await _auth_invocation_context()
+  function_response_event = _tool_response_event(
+      invocation_context,
+      {
+          'orig_call_1': AuthConfig(auth_scheme=HTTPBearer()),
+          'orig_call_2': AuthConfig(auth_scheme=HTTPBearer()),
+      },
+  )
+
+  auth_event = generate_auth_event(invocation_context, function_response_event)
+
+  assert auth_event is not None
+  calls = auth_event.get_function_calls()
+  assert [call.name for call in calls] == [REQUEST_EUC_FUNCTION_CALL_NAME] * 2
+  # Fresh client-side ids, all marked long-running so the flow waits for the
+  # user to supply credentials instead of treating the turn as finished.
+  assert all(call.id.startswith(AF_FUNCTION_CALL_ID_PREFIX) for call in calls)
+  assert auth_event.long_running_tool_ids == {call.id for call in calls}
+  # The originating tool call id rides along so the credential can be routed
+  # back to the tool that asked for it.
+  assert [
+      AuthToolArguments.model_validate(call.args).function_call_id
+      for call in calls
+  ] == ['orig_call_1', 'orig_call_2']
+
+
+@pytest.mark.asyncio
+async def test_generate_auth_event_mirrors_the_tool_response_role():
+  """The auth request keeps the role of the tool response it came from."""
+  agent, invocation_context = await _auth_invocation_context()
+  function_response_event = _tool_response_event(
+      invocation_context, {'orig_call': AuthConfig(auth_scheme=HTTPBearer())}
+  )
+
+  auth_event = generate_auth_event(invocation_context, function_response_event)
+
+  assert auth_event is not None
+  assert (
+      auth_event.content.role == function_response_event.content.role == 'user'
+  )
+  assert auth_event.author == agent.name

@@ -153,6 +153,9 @@ XFAIL_LOAD = {
 }
 
 _DUMMY_ENV = {
+    # Samples in this repo are trusted, so they are allowed to declare a stdio
+    # MCP server in their agent config. Loading one does not start the server.
+    "ADK_ALLOW_CONFIG_STDIO_MCP_SERVERS": "1",
     "GOOGLE_API_KEY": "dummy-key",
     "GEMINI_API_KEY": "dummy-key",
     "GOOGLE_CLOUD_PROJECT": "dummy-project",

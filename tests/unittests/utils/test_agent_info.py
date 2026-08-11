@@ -16,8 +16,11 @@ from __future__ import annotations
 
 from typing import Optional
 
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.utils.agent_info import get_agents_dict
 from google.adk.utils.agent_info import get_tools_info
 from google.genai import types
 import pytest
@@ -46,11 +49,26 @@ class _CountingToolset(BaseToolset):
     super().__init__()
     self._tools = tools
 
-  async def get_tools(self, readonly_context=None) -> list[BaseTool]:
+  async def get_tools(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> list[BaseTool]:
     return self._tools
 
   async def close(self) -> None:
     pass
+
+
+def _declaration_names(tools: list[types.Tool]) -> list[str]:
+  return [tool.function_declarations[0].name for tool in tools]
+
+
+def _declared_parameters(
+    declaration: types.FunctionDeclaration,
+) -> dict[str, object]:
+  """Returns the declared parameters whichever schema field is populated."""
+  if declaration.parameters_json_schema is not None:
+    return declaration.parameters_json_schema['properties']
+  return declaration.parameters.properties
 
 
 @pytest.mark.asyncio
@@ -94,5 +112,105 @@ async def test_get_tools_info_wraps_plain_callable():
 
   assert len(tools_info) == 1
   declaration = tools_info[0].function_declarations[0]
+  # The callable is adapted into a FunctionTool, so its name, docstring and
+  # signature become the declaration the model sees.
   assert declaration.name == 'echo'
   assert declaration.description == 'Echoes the text.'
+  assert list(_declared_parameters(declaration)) == ['text']
+
+
+@pytest.mark.asyncio
+async def test_get_tools_info_empty_input_returns_empty_list():
+  assert await get_tools_info([]) == []
+
+
+@pytest.mark.asyncio
+async def test_get_tools_info_wraps_each_declaration_in_its_own_tool():
+  tools_info = await get_tools_info(
+      [_CountingTool('alpha'), _CountingTool('beta')]
+  )
+
+  # One types.Tool per tool, in input order, each holding exactly one
+  # declaration rather than all declarations being merged into one Tool.
+  assert _declaration_names(tools_info) == ['alpha', 'beta']
+  assert [len(t.function_declarations) for t in tools_info] == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_get_tools_info_flattens_toolset_into_its_tools():
+  toolset = _CountingToolset(
+      [_CountingTool('inner_one'), _CountingTool('inner_two')]
+  )
+
+  tools_info = await get_tools_info([_CountingTool('outer'), toolset])
+
+  # The toolset itself is never reported; it is replaced in place by the
+  # tools it resolves to.
+  assert _declaration_names(tools_info) == ['outer', 'inner_one', 'inner_two']
+
+
+@pytest.mark.asyncio
+async def test_get_tools_info_omits_tools_without_a_declaration():
+  tools_info = await get_tools_info(
+      [_CountingTool('hidden', declared=False), _CountingTool('visible')]
+  )
+
+  assert _declaration_names(tools_info) == ['visible']
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_single_agent_has_no_sub_agents():
+  agent = LlmAgent(
+      name='root', description='the root', instruction='be helpful'
+  )
+
+  agents = await get_agents_dict(agent)
+
+  assert list(agents) == ['root']
+  assert agents['root'].description == 'the root'
+  assert agents['root'].instruction == 'be helpful'
+  assert agents['root'].sub_agents == []
+  assert agents['root'].tools == []
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_includes_transitively_nested_agents():
+  grandchild = LlmAgent(name='grandchild')
+  child = LlmAgent(name='child', sub_agents=[grandchild])
+  root = LlmAgent(name='root', sub_agents=[child])
+
+  agents = await get_agents_dict(root)
+
+  # Every agent in the tree is keyed by its own name, not just the direct
+  # children of the root.
+  assert set(agents) == {'root', 'child', 'grandchild'}
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_records_only_direct_children_per_agent():
+  grandchild = LlmAgent(name='grandchild')
+  child = LlmAgent(name='child', sub_agents=[grandchild])
+  sibling = LlmAgent(name='sibling')
+  root = LlmAgent(name='root', sub_agents=[child, sibling])
+
+  agents = await get_agents_dict(root)
+
+  assert agents['root'].sub_agents == ['child', 'sibling']
+  assert agents['child'].sub_agents == ['grandchild']
+  assert agents['grandchild'].sub_agents == []
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_reports_each_agents_own_tools():
+  child = LlmAgent(name='child', tools=[_CountingTool('child_tool')])
+  root = LlmAgent(
+      name='root',
+      tools=[_CountingTool('root_tool')],
+      sub_agents=[child],
+  )
+
+  agents = await get_agents_dict(root)
+
+  # Tools are per-agent; a parent does not inherit its child's tools.
+  assert _declaration_names(agents['root'].tools) == ['root_tool']
+  assert _declaration_names(agents['child'].tools) == ['child_tool']

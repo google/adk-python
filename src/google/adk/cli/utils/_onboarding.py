@@ -155,6 +155,16 @@ def prompt_for_google_api_key(
   return google_api_key
 
 
+def _record_express_action(action_name: str) -> None:
+  """Records the onboarding choice for the CLI telemetry event."""
+  # `Context.meta` is one dict shared by reference with every ancestor context,
+  # so writing it here is enough for the root `TelemetryGroup` context to read
+  # it back when the command finishes.
+  ctx = click.get_current_context(silent=True)
+  if ctx is not None:
+    ctx.meta["express_mode_action"] = action_name
+
+
 def handle_login_with_google() -> VertexAIAuth | ExpressModeAuth:
   """Handles the "Login with Google" flow."""
   if not gcp_utils.check_adc():
@@ -177,6 +187,7 @@ def handle_login_with_google() -> VertexAIAuth | ExpressModeAuth:
     region = express_project.get("region", "us-central1")
     if project_id:
       click.secho(f"Using existing Express project: {project_id}", fg="green")
+      _record_express_action("EXISTING_EXPRESS")
       return ExpressModeAuth(
           api_key=api_key, project_id=project_id, region=region
       )
@@ -199,6 +210,7 @@ def handle_login_with_google() -> VertexAIAuth | ExpressModeAuth:
         type=click.IntRange(0, len(projects)),
     )
     if project_index == 0:
+      _record_express_action("MANUAL_PROJECT")
       selected_project_id = prompt_for_google_cloud(None)
     else:
       selected_project_id = projects[project_index - 1][0]
@@ -220,9 +232,11 @@ def handle_login_with_google() -> VertexAIAuth | ExpressModeAuth:
   )
 
   if action == "3":
+    _record_express_action("ABANDON")
     raise click.Abort()
 
   if action == "1":
+    _record_express_action("MANUAL_PROJECT")
     google_cloud_project = prompt_for_google_cloud(None)
     google_cloud_region = prompt_for_google_cloud_region(None)
     return VertexAIAuth(
@@ -278,10 +292,12 @@ Choose region""",
               click.secho(
                   "Failed to unset project. Please do it manually.", fg="red"
               )
+        _record_express_action("CREATE_EXPRESS")
         return ExpressModeAuth(
             api_key=api_key, project_id=project_id, region=region
         )
 
+    _record_express_action("ABANDON")
     click.secho(_NOT_ELIGIBLE_MSG, fg="red")
     raise click.Abort()
 

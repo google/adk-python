@@ -1138,51 +1138,6 @@ async def test_run_async_extracts_executable_code_only():
   assert result == 'print("hi")'
 
 
-async def _run_agent_tool_with_multiple_contents(
-    contents: list[types.Content],
-) -> Any:
-  """Drives AgentTool with an inner agent that yields multiple event contents."""
-
-  class _MultiContentAgent(BaseAgent):
-
-    async def _run_async_impl(self, ctx):
-      for content in contents:
-        yield Event(
-            invocation_id=ctx.invocation_id,
-            author=self.name,
-            content=content,
-        )
-
-  inner = _MultiContentAgent(name='inner_agent', description='multi')
-  agent_tool = AgentTool(agent=inner)
-
-  session_service = InMemorySessionService()
-  session = await session_service.create_session(
-      app_name='test_app', user_id='test_user'
-  )
-  invocation_context = InvocationContext(
-      invocation_id='invocation_id',
-      agent=inner,
-      session=session,
-      session_service=session_service,
-  )
-  tool_context = ToolContext(invocation_context=invocation_context)
-
-  return await agent_tool.run_async(
-      args={'request': 'test request'}, tool_context=tool_context
-  )
-
-
-@mark.asyncio
-async def test_run_async_accumulates_text_across_multiple_contents():
-  """Text parts from multiple sequential content events are accumulated and joined."""
-  result = await _run_agent_tool_with_multiple_contents([
-      types.Content(role='model', parts=[types.Part(text='First answer.')]),
-      types.Content(role='model', parts=[types.Part(text='Second answer.')]),
-  ])
-  assert result == 'First answer.\nSecond answer.'
-
-
 @mark.asyncio
 async def test_run_async_skips_thought_parts():
   """Parts marked thought=True are dropped regardless of kind."""
@@ -1249,54 +1204,6 @@ async def test_run_async_preserves_error_when_only_thought_parts():
       Event(author='inner_agent', error_message='A2A request failed: 503'),
   ])
   assert result == 'A2A request failed: 503'
-
-
-@mark.asyncio
-async def test_run_async_skips_partial_events():
-  """Partial events are ignored so that streamed chunks do not duplicate final content."""
-  result = await _run_agent_tool_with_events([
-      Event(
-          author='inner_agent',
-          content=types.Content(
-              role='model',
-              parts=[types.Part(text='Hello')],
-          ),
-          partial=True,
-      ),
-      Event(
-          author='inner_agent',
-          content=types.Content(
-              role='model',
-              parts=[types.Part(text=' world')],
-          ),
-          partial=True,
-      ),
-      Event(
-          author='inner_agent',
-          content=types.Content(
-              role='model',
-              parts=[types.Part(text='Hello world')],
-          ),
-          partial=False,
-      ),
-  ])
-  assert result == 'Hello world'
-
-
-@mark.asyncio
-async def test_run_async_with_only_partial_events_returns_empty():
-  """When only partial events are emitted, no content is accumulated."""
-  result = await _run_agent_tool_with_events([
-      Event(
-          author='inner_agent',
-          content=types.Content(
-              role='model',
-              parts=[types.Part(text='streamed chunk')],
-          ),
-          partial=True,
-      ),
-  ])
-  assert result == ''
 
 
 class TestAgentToolWithCompositeAgents:
@@ -1559,6 +1466,64 @@ class TestAgentToolWithCompositeAgents:
       assert 'custom_input' in sequence_tool.parameters.properties
       # Should NOT have the fallback 'request' parameter
       assert 'request' not in sequence_tool.parameters.properties
+
+  @mark.asyncio
+  async def test_sequential_agent_returns_last_sub_agent_output(self):
+    """The tool result is the last sub-agent's output, not the whole pipeline's."""
+
+    class CustomOutput(BaseModel):
+      custom_output: str
+
+    function_call_seq = Part.from_function_call(
+        name='sequence', args={'request': 'test1'}
+    )
+
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            function_call_seq,
+            'a draft from the first step',
+            '{"custom_output": "final_response"}',
+            'root_response',
+        ]
+    )
+
+    first_agent = Agent(name='first_agent', model=mock_model)
+
+    second_agent = Agent(
+        name='second_agent',
+        model=mock_model,
+        output_schema=CustomOutput,
+        output_key='seq_output',
+    )
+
+    sequence = SequentialAgent(
+        name='sequence',
+        description='A sequential pipeline',
+        sub_agents=[first_agent, second_agent],
+    )
+
+    root_agent = Agent(
+        name='root_agent',
+        model=mock_model,
+        tools=[AgentTool(agent=sequence)],
+    )
+
+    runner = testing_utils.InMemoryRunner(root_agent)
+
+    # run_async, not run: run() drains the agent on a worker thread and would
+    # drop a validation error raised inside the tool.
+    events = await runner.run_async('test1')
+
+    assert testing_utils.simplify_events(events) == [
+        ('root_agent', function_call_seq),
+        (
+            'root_agent',
+            Part.from_function_response(
+                name='sequence', response={'custom_output': 'final_response'}
+            ),
+        ),
+        ('root_agent', 'root_response'),
+    ]
 
   def test_empty_sequential_agent_falls_back_to_request(self):
     """Test that AgentTool with empty SequentialAgent falls back to 'request'."""

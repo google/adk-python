@@ -55,61 +55,6 @@ class TestGoogleSearchTool:
     assert google_search.name == 'google_search'
 
   @pytest.mark.asyncio
-  async def test_process_llm_request_with_gemini_1_model(self):
-    """Test processing LLM request with Gemini 1.x model."""
-    tool = GoogleSearchTool()
-    tool_context = await _create_tool_context()
-
-    llm_request = LlmRequest(
-        model='gemini-1.5-flash', config=types.GenerateContentConfig()
-    )
-
-    await tool.process_llm_request(
-        tool_context=tool_context, llm_request=llm_request
-    )
-
-    assert llm_request.config.tools is not None
-    assert len(llm_request.config.tools) == 1
-    assert llm_request.config.tools[0].google_search_retrieval is not None
-
-  @pytest.mark.asyncio
-  async def test_process_llm_request_with_path_based_gemini_1_model(self):
-    """Test processing LLM request with path-based Gemini 1.x model."""
-    tool = GoogleSearchTool()
-    tool_context = await _create_tool_context()
-
-    llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-flash',
-        config=types.GenerateContentConfig(),
-    )
-
-    await tool.process_llm_request(
-        tool_context=tool_context, llm_request=llm_request
-    )
-
-    assert llm_request.config.tools is not None
-    assert len(llm_request.config.tools) == 1
-    assert llm_request.config.tools[0].google_search_retrieval is not None
-
-  @pytest.mark.asyncio
-  async def test_process_llm_request_with_gemini_1_0_model(self):
-    """Test processing LLM request with Gemini 1.0 model."""
-    tool = GoogleSearchTool()
-    tool_context = await _create_tool_context()
-
-    llm_request = LlmRequest(
-        model='gemini-1.0-pro', config=types.GenerateContentConfig()
-    )
-
-    await tool.process_llm_request(
-        tool_context=tool_context, llm_request=llm_request
-    )
-
-    assert llm_request.config.tools is not None
-    assert len(llm_request.config.tools) == 1
-    assert llm_request.config.tools[0].google_search_retrieval is not None
-
-  @pytest.mark.asyncio
   async def test_process_llm_request_with_gemini_2_model(self):
     """Test processing LLM request with Gemini 2.x model."""
     tool = GoogleSearchTool()
@@ -163,64 +108,6 @@ class TestGoogleSearchTool:
     assert llm_request.config.tools is not None
     assert len(llm_request.config.tools) == 1
     assert llm_request.config.tools[0].google_search is not None
-
-  @pytest.mark.asyncio
-  async def test_process_llm_request_with_gemini_1_model_and_existing_tools_raises_error(
-      self,
-  ):
-    """Test that Gemini 1.x model with existing tools raises ValueError."""
-    tool = GoogleSearchTool()
-    tool_context = await _create_tool_context()
-
-    existing_tool = types.Tool(
-        function_declarations=[
-            types.FunctionDeclaration(name='test_function', description='test')
-        ]
-    )
-
-    llm_request = LlmRequest(
-        model='gemini-1.5-flash',
-        config=types.GenerateContentConfig(tools=[existing_tool]),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            'Google search tool cannot be used with other tools in Gemini 1.x'
-        ),
-    ):
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
-
-  @pytest.mark.asyncio
-  async def test_process_llm_request_with_path_based_gemini_1_model_and_existing_tools_raises_error(
-      self,
-  ):
-    """Test that path-based Gemini 1.x model with existing tools raises ValueError."""
-    tool = GoogleSearchTool()
-    tool_context = await _create_tool_context()
-
-    existing_tool = types.Tool(
-        function_declarations=[
-            types.FunctionDeclaration(name='test_function', description='test')
-        ]
-    )
-
-    llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-pro-preview',
-        config=types.GenerateContentConfig(tools=[existing_tool]),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            'Google search tool cannot be used with other tools in Gemini 1.x'
-        ),
-    ):
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
 
   @pytest.mark.asyncio
   async def test_process_llm_request_with_gemini_2_model_and_existing_tools_succeeds(
@@ -430,36 +317,12 @@ class TestGoogleSearchTool:
     tool = GoogleSearchTool()
     tool_context = await _create_tool_context()
 
-    # Test various Gemini versions
-    gemini_1_models = [
-        'gemini-1.0-pro',
-        'gemini-1.5-flash',
-        'gemini-1.5-pro',
-        'gemini-1.9-experimental',
-    ]
-
     gemini_2_models = [
         'gemini-2.0-pro',
         'gemini-2.5-flash',
         'gemini-2.5-pro',
     ]
 
-    # Test Gemini 1.x models use google_search_retrieval
-    for model in gemini_1_models:
-      llm_request = LlmRequest(
-          model=model, config=types.GenerateContentConfig()
-      )
-
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
-
-      assert llm_request.config.tools is not None
-      assert len(llm_request.config.tools) == 1
-      assert llm_request.config.tools[0].google_search_retrieval is not None
-      assert llm_request.config.tools[0].google_search is None
-
-    # Test Gemini 2.x models use google_search
     for model in gemini_2_models:
       llm_request = LlmRequest(
           model=model, config=types.GenerateContentConfig()

@@ -24,6 +24,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
@@ -931,3 +932,129 @@ async def test_workflow_task_mode_plain_text_resume_auto_routing(
   # Verify completion
   # The last event should have output set from finish_task args
   assert any(e.output == {'result': 'Success with code'} for e in events2)
+
+
+@pytest.mark.asyncio
+async def test_workflow_mixed_turn_lro_pause(
+    request: pytest.FixtureRequest,
+):
+  """Tests that in a mixed turn, if an LRO tool pauses, task delegation is executed and the node pauses."""
+
+  # 1. Create a child agent (delegated task)
+  child_agent = LlmAgent(
+      name='child_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='finish_task',
+                  args={'result': 'Child done'},
+              )
+          ]
+      ),
+      mode='task',
+  )
+
+  # 2. Parent agent calls both LRO and delegates to child in the same turn
+  fc_lro = types.Part.from_function_call(name='long_running_tool_func', args={})
+  fc_child = types.Part.from_function_call(
+      name='child_agent',
+      args={'request': 'Start child task'},
+  )
+
+  parent_model = testing_utils.MockModel.create(
+      responses=[
+          [fc_lro, fc_child],  # Mixed turn
+          'Parent all done',  # After resume
+      ]
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=parent_model,
+      tools=[
+          LongRunningFunctionTool(func=long_running_tool_func),
+      ],
+      sub_agents=[child_agent],
+      mode='chat',
+  )
+
+  wf = Workflow(
+      name='test_workflow_mixed_turn_pause',
+      edges=[
+          (START, parent_agent),
+      ],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Run 1: Should pause on LRO, but child_agent should have been executed.
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+
+  # Verify it paused on LRO (it has long_running_tool_ids)
+  assert any(e.long_running_tool_ids for e in events1)
+
+  # Verify that child_agent WAS executed.
+  session_events = runner.session.events
+  child_fr_events = [
+      e
+      for e in session_events
+      if e.content
+      and any(
+          p.function_response and p.function_response.name == 'child_agent'
+          for p in e.content.parts
+      )
+  ]
+  assert child_fr_events, 'Child agent task was not dispatched!'
+
+  # Verify parent did not finish yet (no "Parent all done")
+  parent_finished_events = [
+      e
+      for e in events1
+      if e.content
+      and any(p.text and 'Parent all done' in p.text for p in e.content.parts)
+  ]
+  assert not parent_finished_events, 'Parent finished prematurely!'
+
+  # Get the LRO FC ID and invocation ID to resume
+  lro_fc = None
+  invocation_id = None
+  for event in events1:
+    for fc in event.get_function_calls():
+      if fc.name == 'long_running_tool_func':
+        lro_fc = fc
+        invocation_id = event.invocation_id
+        break
+    if lro_fc:
+      break
+  assert lro_fc is not None
+  assert invocation_id is not None
+
+  # Resume with LRO response
+  tool_response = testing_utils.UserContent(
+      types.Part(
+          function_response=types.FunctionResponse(
+              id=lro_fc.id,
+              name='long_running_tool_func',
+              response={'result': 'LRO done'},
+          )
+      )
+  )
+
+  events2 = await runner.run_async(
+      new_message=tool_response,
+      invocation_id=invocation_id,
+  )
+
+  # Verify completion in Run 2
+  parent_finished_events2 = [
+      e
+      for e in events2
+      if e.content
+      and any(p.text and 'Parent all done' in p.text for p in e.content.parts)
+  ]
+  assert parent_finished_events2, 'Parent did not finish after resume!'

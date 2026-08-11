@@ -726,23 +726,10 @@ def _execute_sql_protected_write_mode(
   return execute_sql(*args, **kwargs)
 
 
-def get_execute_sql(
-    settings: BigQueryToolConfig,
+def _execute_sql_with_docstring(
+    docstring: str | None,
 ) -> Callable[..., dict[str, Any]]:
-  """Get the execute_sql tool customized as per the given tool settings.
-
-  Args:
-      settings: BigQuery tool settings indicating the behavior of the
-        execute_sql tool.
-
-  Returns:
-      callable[..., dict]: A version of the execute_sql tool respecting the tool
-      settings.
-  """
-
-  if not settings or settings.write_mode == WriteMode.BLOCKED:
-    return execute_sql
-
+  """Clone execute_sql, keeping its signature but replacing its docstring."""
   # Create a new function object using the original function's code and globals.
   # We pass the original code, globals, name, defaults, and closure.
   # This creates a raw function object without copying other metadata yet.
@@ -760,13 +747,43 @@ def get_execute_sql(
   # It specifically allows us to then set __doc__ separately.
   functools.update_wrapper(execute_sql_wrapper, execute_sql)
 
-  # Now, set the new docstring
-  if settings.write_mode == WriteMode.PROTECTED:
-    execute_sql_wrapper.__doc__ = _execute_sql_protected_write_mode.__doc__
-  else:
-    execute_sql_wrapper.__doc__ = _execute_sql_write_mode.__doc__
+  execute_sql_wrapper.__doc__ = docstring
 
   return execute_sql_wrapper
+
+
+# The variants differ only by docstring, so they are built once and shared. A
+# fresh function object per call would miss the declaration and context
+# parameter caches, which are keyed on the function object.
+_EXECUTE_SQL_WRITE_MODE = _execute_sql_with_docstring(
+    _execute_sql_write_mode.__doc__
+)
+_EXECUTE_SQL_PROTECTED_WRITE_MODE = _execute_sql_with_docstring(
+    _execute_sql_protected_write_mode.__doc__
+)
+
+
+def get_execute_sql(
+    settings: BigQueryToolConfig,
+) -> Callable[..., dict[str, Any]]:
+  """Get the execute_sql tool customized as per the given tool settings.
+
+  Args:
+      settings: BigQuery tool settings indicating the behavior of the
+        execute_sql tool.
+
+  Returns:
+      callable[..., dict]: A version of the execute_sql tool respecting the tool
+      settings.
+  """
+
+  if not settings or settings.write_mode == WriteMode.BLOCKED:
+    return execute_sql
+
+  if settings.write_mode == WriteMode.PROTECTED:
+    return _EXECUTE_SQL_PROTECTED_WRITE_MODE
+
+  return _EXECUTE_SQL_WRITE_MODE
 
 
 def forecast(

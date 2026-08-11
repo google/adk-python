@@ -19,6 +19,8 @@ The after_model_callback appends confidence information to demonstrate how
 logprobs can be extracted and used.
 """
 
+import math
+
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.llm_response import LlmResponse
@@ -70,7 +72,7 @@ async def append_logprobs_to_response(
 
 * **Average Log Probability**: {llm_response.avg_logprobs:.4f}
 * **Confidence Level**: {confidence_level}
-* **Confidence Score**: {100 * (2 ** llm_response.avg_logprobs):.1f}%"""
+* **Confidence Score**: {100 * math.exp(llm_response.avg_logprobs):.1f}%"""
 
     # Optionally include detailed logprobs_result information
     if (

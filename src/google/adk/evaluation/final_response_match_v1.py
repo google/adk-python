@@ -25,6 +25,7 @@ from ..dependencies.rouge_scorer import rouge_scorer
 from ..dependencies.rouge_scorer import tokenizers
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetric
 from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
@@ -40,7 +41,7 @@ class RougeEvaluator(Evaluator):
   """
 
   def __init__(self, eval_metric: EvalMetric):
-    self._eval_metric = eval_metric
+    self._threshold = _get_metric_threshold(eval_metric)
 
   @override
   def evaluate_invocations(
@@ -54,8 +55,7 @@ class RougeEvaluator(Evaluator):
     _validate_invocation_lengths(actual_invocations, expected_invocations)
     del conversation_scenario  # not used by this metric.
 
-    threshold = self._eval_metric.threshold
-    assert threshold is not None
+    threshold = self._threshold
 
     total_score = 0.0
     num_invocations = 0

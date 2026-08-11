@@ -116,7 +116,7 @@ root_agent = LlmAgent(
     description=(
         "Agent to answer questions about Bigtable database tables and"
         " execute SQL queries."
-    ),  # TODO(b/360128447): Update description
+    ),
     instruction="""\
         You are a data agent with access to several Bigtable tools.
         Make use of those tools to answer the user's questions.

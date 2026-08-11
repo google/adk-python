@@ -67,7 +67,7 @@ def after_model_callback(
 root_agent = LlmAgent(
     name="hello_world",
     description="Helpful agent",
-    instruction="""Use guess_number_tool to guess a number.""",
+    instruction="""Use the roll_die tool to roll a die.""",
     tools=[roll_die],
     after_model_callback=after_model_callback,
 )
