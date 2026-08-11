@@ -1046,9 +1046,30 @@ async def test_streaming_generation_aggregates_function_call_without_completed_e
       async for item in llm.generate_content_async(llm_request, stream=True)
   ]
 
-  assert len(responses) == 1
-  assert responses[0].finish_reason == types.FinishReason.STOP
-  function_call = responses[0].content.parts[0].function_call
+  assert len(responses) == 4
+  partial_responses = responses[:-1]
+  assert all(response.partial is True for response in partial_responses)
+  assert [
+      response.content.parts[0].function_call.partial_args
+      for response in partial_responses
+  ] == [
+      [],
+      [types.PartialArg(string_value='{"location"')],
+      [types.PartialArg(string_value=': "Paris"}')],
+  ]
+  assert [
+      response.content.parts[0].function_call.id
+      for response in partial_responses
+  ] == ['call_123', 'call_123', 'call_123']
+  assert all(
+      response.content.parts[0].function_call.will_continue
+      for response in partial_responses
+  )
+
+  final_response = responses[-1]
+  assert final_response.partial is False
+  assert final_response.finish_reason == types.FinishReason.STOP
+  function_call = final_response.content.parts[0].function_call
   assert function_call.id == 'call_123'
   assert function_call.name == 'get_weather'
   assert function_call.args == {'location': 'Paris'}
@@ -1088,7 +1109,18 @@ async def test_streaming_generation_uses_function_arguments_done_event():
       async for item in llm.generate_content_async(llm_request, stream=True)
   ]
 
-  function_call = responses[0].content.parts[0].function_call
+  assert len(responses) == 3
+  assert responses[0].partial is True
+  assert responses[0].content.parts[0].function_call.partial_args == []
+  assert responses[1].partial is True
+  assert (
+      responses[1].content.parts[0].function_call.partial_args[0].string_value
+      == '{"location": "Paris"}'
+  )
+
+  final_response = responses[-1]
+  assert final_response.partial is False
+  function_call = final_response.content.parts[0].function_call
   assert function_call.id == 'call_123'
   assert function_call.args == {'location': 'Paris'}
 
@@ -1137,6 +1169,57 @@ def test_azure_client_uses_openai_v1_base_url():
       api_key='key',
       base_url='https://example.openai.azure.com/openai/v1/',
   )
+
+
+@pytest.mark.asyncio
+async def test_azure_responses_inherits_partial_function_call_streaming():
+  """Azure Responses uses the shared partial function-call stream handling."""
+  stream = _FakeAsyncStream([
+      {
+          'type': 'response.output_item.added',
+          'output_index': 0,
+          'item': {
+              'type': 'function_call',
+              'call_id': 'call_azure',
+              'name': 'get_weather',
+              'arguments': '',
+          },
+      },
+      {
+          'type': 'response.function_call_arguments.delta',
+          'output_index': 0,
+          'delta': '{"city": "Seattle"}',
+      },
+  ])
+  client = _CaptureClient(stream)
+  llm = AzureOpenAIResponsesLlm(
+      model='deployment', azure_endpoint='https://example.openai.azure.com/'
+  )
+  llm.__dict__['_openai_client'] = client
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user', parts=[types.Part.from_text(text='Weather?')]
+          )
+      ]
+  )
+
+  responses = [
+      item
+      async for item in llm.generate_content_async(llm_request, stream=True)
+  ]
+
+  assert len(responses) == 3
+  assert responses[0].partial is True
+  assert responses[1].partial is True
+  assert (
+      responses[1].content.parts[0].function_call.partial_args[0].string_value
+      == '{"city": "Seattle"}'
+  )
+  assert responses[-1].partial is False
+  assert responses[-1].content.parts[0].function_call.args == {
+      'city': 'Seattle'
+  }
 
 
 def _user_request(**config_kwargs) -> LlmRequest:
@@ -1328,6 +1411,25 @@ def test_loads_json_object_handles_malformed_arguments():
   assert _loads_json_object('[1, 2]') == {}
   assert _loads_json_object('') == {}
   assert _loads_json_object('{"a": 1}') == {'a': 1}
+
+
+def test_response_parsing_drops_malformed_function_call_arguments():
+  """Malformed final arguments must not become an empty executable call."""
+  response = {
+      'id': 'resp_invalid',
+      'model': 'gpt-5',
+      'status': 'completed',
+      'output': [{
+          'type': 'function_call',
+          'call_id': 'call_invalid',
+          'name': 'get_weather',
+          'arguments': '{"city":',
+      }],
+  }
+
+  llm_response = _response_to_llm_response(response)
+
+  assert llm_response.get_function_calls() == []
 
 
 def test_code_parts_handle_missing_inner_fields():
