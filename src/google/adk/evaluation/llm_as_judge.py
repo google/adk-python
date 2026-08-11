@@ -34,6 +34,7 @@ from ._retry_options_utils import add_default_retry_options_if_not_present
 from .common import EvalBaseModel
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetric
 from .eval_metrics import LlmAsAJudgeCriterion
 from .eval_metrics import RubricsBasedCriterion
@@ -81,6 +82,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       expected_invocations_required: bool = False,
   ):
     self._eval_metric = eval_metric
+    self._threshold = _get_metric_threshold(eval_metric)
     self._expected_invocations_required = expected_invocations_required
 
     expected_criterion_type_error = ValueError(
@@ -183,7 +185,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
                     expected_invocation=expected,
                     score=auto_rater_score.score,
                     eval_status=get_eval_status(
-                        auto_rater_score.score, self._eval_metric.threshold
+                        auto_rater_score.score, self._threshold
                     ),
                     rubric_scores=auto_rater_score.rubric_scores,
                 )

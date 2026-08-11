@@ -83,6 +83,28 @@ def mock_llm_as_judge():
   )
 
 
+@pytest.fixture
+def mock_llm_as_judge_criterion_only():
+  """EvalMetric configured via `criterion` only, the documented, non-deprecated
+  way to set a threshold (`EvalMetric.threshold` is deprecated in favor of
+  `EvalMetric.criterion.threshold`).
+  """
+  return MockLlmAsJudge(
+      eval_metric=EvalMetric(
+          metric_name="test_metric",
+          criterion=LlmAsAJudgeCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  judge_model_config=genai_types.GenerateContentConfig(),
+                  num_samples=3,
+              ),
+          ),
+      ),
+      criterion_type=LlmAsAJudgeCriterion,
+  )
+
+
 def test_get_text_from_content():
   content = genai_types.Content(
       parts=[
@@ -237,3 +259,36 @@ async def test_evaluate_invocations_with_mock(
   assert mock_llm_as_judge.format_auto_rater_prompt.call_count == 2
   assert mock_llm_as_judge.convert_auto_rater_response_to_score.call_count == 6
   assert mock_llm_as_judge.aggregate_invocation_results.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_with_criterion_only_threshold(
+    mock_llm_as_judge_criterion_only, mock_judge_model
+):
+  """`EvalMetric.threshold` is deprecated in favor of `criterion.threshold`.
+
+  Configuring the metric via `criterion` only (the documented, non-deprecated
+  path) must not crash with
+  `TypeError: '>=' not supported between instances of 'float' and 'NoneType'`.
+  """
+  mock_llm_as_judge_criterion_only._judge_model = mock_judge_model
+
+  actual_invocations = [
+      Invocation(
+          invocation_id="id1",
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="user content 1")],
+              role="user",
+          ),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="final response 1")],
+              role="model",
+          ),
+      ),
+  ]
+
+  result = await mock_llm_as_judge_criterion_only.evaluate_invocations(
+      actual_invocations
+  )
+
+  assert result.overall_score == 1.0
