@@ -1802,6 +1802,25 @@ class Runner:
         new_message.parts[i] = types.Part(
             text=f'Uploaded file: {file_name}. It is saved into artifacts'
         )
+
+    # A resumed or retried invocation may re-send the same user message — an
+    # at-least-once task queue replaying the request with the same
+    # invocation_id, for example. Appending it again duplicates the user turn in
+    # the session timeline, so skip the append when this invocation already
+    # recorded an identical user event.
+    # See https://github.com/google/adk-python/issues/4506.
+    if self._invocation_has_user_event(
+        session=session,
+        invocation_id=invocation_context.invocation_id,
+        new_message=new_message,
+        state_delta=state_delta,
+    ):
+      logger.info(
+          'Skipping duplicate user event append for invocation_id %s.',
+          invocation_context.invocation_id,
+      )
+      return
+
     # Appends only. We do not yield the event because it's not from the model.
     if state_delta:
       event = Event(
@@ -1821,6 +1840,37 @@ class Runner:
 
     await self.session_service.append_event(
         session=invocation_context.session, event=event
+    )
+
+  def _invocation_has_user_event(
+      self,
+      *,
+      session: Session,
+      invocation_id: str,
+      new_message: types.Content,
+      state_delta: Optional[dict[str, Any]],
+  ) -> bool:
+    """Whether this invocation already recorded this exact user event.
+
+    Both the content and the state delta must match: a retry that carries a
+    different state delta still has an effect left to persist.
+
+    Args:
+      session: The session to inspect.
+      invocation_id: The invocation the user event would belong to.
+      new_message: The user message about to be appended.
+      state_delta: The state changes the append would carry.
+
+    Returns:
+      True if an identical user event is already recorded for the invocation.
+    """
+    expected_state_delta = state_delta or {}
+    return any(
+        event.author == 'user'
+        and event.invocation_id == invocation_id
+        and event.content == new_message
+        and event.actions.state_delta == expected_state_delta
+        for event in session.events
     )
 
   async def run_live(
