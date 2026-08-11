@@ -73,6 +73,16 @@ _DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
 WORKDIR /app
 
+# Optional Agent Gateway TLS interception root CA.
+# Cloud Build may pass AGENT_GATEWAY_ROOT_CERTIFICATES; without consuming it,
+# outbound HTTPS/gRPC through the gateway fails certificate verification.
+ARG AGENT_GATEWAY_ROOT_CERTIFICATES
+RUN if [ -n "$AGENT_GATEWAY_ROOT_CERTIFICATES" ]; then \
+      mkdir -p /usr/local/share/ca-certificates && \
+      echo "$AGENT_GATEWAY_ROOT_CERTIFICATES" > /usr/local/share/ca-certificates/agw-ca.crt && \
+      update-ca-certificates; \
+    fi
+
 # Create a non-root user
 RUN adduser --disabled-password --gecos "" myuser
 

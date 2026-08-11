@@ -146,6 +146,8 @@ def test_to_cloud_run_happy_path(
   expected_command = "api_server --with_ui" if with_ui else "api_server"
   assert f"CMD adk {expected_command} --port=8080" in dockerfile_content
   assert "FROM python:3.11-slim" in dockerfile_content
+  assert "ARG AGENT_GATEWAY_ROOT_CERTIFICATES" in dockerfile_content
+  assert "update-ca-certificates" in dockerfile_content
   assert (
       'RUN adduser --disabled-password --gecos "" myuser' in dockerfile_content
   )
