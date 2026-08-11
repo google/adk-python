@@ -2983,5 +2983,174 @@ async def test_base_agent_run_live_does_not_leak_context():
     otel_context.detach(token)
 
 
+def _user_events_for(session: Session, invocation_id: str) -> list[Event]:
+  return [
+      event
+      for event in session.events
+      if event.author == "user" and event.invocation_id == invocation_id
+  ]
+
+
+async def _drain_events(agen) -> None:
+  async with aclosing(agen) as events:
+    async for _ in events:
+      pass
+
+
+def _user_message(text: str) -> types.Content:
+  """A fresh Content per call: run_async mutates `role` on the object it gets."""
+  return types.Content(role="user", parts=[types.Part(text=text)])
+
+
+@pytest.mark.asyncio
+async def test_resumable_retry_with_same_message_appends_one_user_event():
+  """Resuming an invocation with the same new_message must not duplicate it.
+
+  Regression test for https://github.com/google/adk-python/issues/4506.
+
+  Setup: a resumable app runs one invocation to completion.
+  Act: run_async again with that invocation_id and an identical new_message.
+  Assert: the invocation still holds exactly one user event.
+  """
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app=App(
+          name=TEST_APP_ID,
+          root_agent=MockAgent("root_agent"),
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      ),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+  await _drain_events(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session.id,
+          new_message=_user_message("hello"),
+      )
+  )
+  started = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session.id
+  )
+  invocation_id = next(
+      event for event in started.events if event.author == "user"
+  ).invocation_id
+
+  await _drain_events(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session.id,
+          invocation_id=invocation_id,
+          new_message=_user_message("hello"),
+      )
+  )
+
+  stored = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session.id
+  )
+  assert len(_user_events_for(stored, invocation_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_resumable_retry_with_same_message_appends_one_user_event():
+  """The same guarantee on a non-resumable app given an explicit invocation_id.
+
+  A non-resumable app never enters the resume path: run_async routes an explicit
+  invocation_id straight to _setup_context_for_new_invocation. An at-least-once
+  task queue retrying the same request duplicates the user event there too.
+  """
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("root_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  for _ in range(2):
+    await _drain_events(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=session.id,
+            invocation_id="inv-task-retry",
+            new_message=_user_message("hello"),
+        )
+    )
+
+  stored = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session.id
+  )
+  assert len(_user_events_for(stored, "inv-task-retry")) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_with_a_different_message_still_appends():
+  """The guard must be scoped to identical content, not to the invocation id."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("root_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  for text in ("first", "second"):
+    await _drain_events(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=session.id,
+            invocation_id="inv-distinct",
+            new_message=_user_message(text),
+        )
+    )
+
+  stored = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session.id
+  )
+  assert len(_user_events_for(stored, "inv-distinct")) == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_with_a_different_state_delta_still_appends():
+  """A retry carrying a different state delta still has an effect to persist."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("root_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  for attempt in (1, 2):
+    await _drain_events(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=session.id,
+            invocation_id="inv-state-delta",
+            new_message=_user_message("same text"),
+            state_delta={"attempt": attempt},
+        )
+    )
+
+  stored = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session.id
+  )
+  events = _user_events_for(stored, "inv-state-delta")
+  assert len(events) == 2
+  assert [event.actions.state_delta["attempt"] for event in events] == [1, 2]
+
+
 if __name__ == "__main__":
   pytest.main([__file__])
