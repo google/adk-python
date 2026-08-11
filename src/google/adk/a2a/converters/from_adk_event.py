@@ -184,7 +184,10 @@ def convert_event_to_a2a_events(
 
       artifact_id = agents_artifacts.get(agent_name)
       if artifact_id:
-        append = partial
+        # A prior chunk already created this artifact (append=False), so
+        # every subsequent chunk -- including the final, non-partial one --
+        # must append rather than replace it.
+        append = True
         if not partial:
           del agents_artifacts[agent_name]
       else:
