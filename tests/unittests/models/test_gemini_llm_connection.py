@@ -2377,3 +2377,70 @@ async def test_receive_voice_activity(gemini_connection, mock_gemini_session):
 
   assert len(responses) == 1
   assert responses[0].voice_activity == mock_vad
+
+
+@pytest.mark.asyncio
+async def test_receive_tool_call_and_turn_complete_in_same_message(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive correctly handles tool_call and turn_complete in the same frame."""
+  mock_msg = mock.create_autospec(types.LiveServerMessage, instance=True)
+  mock_msg.usage_metadata = None
+  mock_msg.session_resumption_update = None
+  mock_msg.go_away = None
+  mock_msg.voice_activity = None
+
+  # Set up server_content with text and turn_complete
+  part = types.Part.from_text(text='I will call the tool.')
+  mock_model_turn = mock.create_autospec(types.Content, instance=True)
+  mock_model_turn.parts = [part]
+
+  mock_server_content = mock.create_autospec(
+      types.LiveServerContent, instance=True
+  )
+  mock_server_content.model_turn = mock_model_turn
+  mock_server_content.grounding_metadata = None
+  mock_server_content.turn_complete = True
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.generation_complete = False
+  mock_msg.server_content = mock_server_content
+
+  # Set up tool_call
+  function_call = types.FunctionCall(
+      name='my_tool',
+      args={'arg': 'value1'},
+  )
+  mock_tool_call = mock.create_autospec(types.LiveServerToolCall, instance=True)
+  mock_tool_call.function_calls = [function_call]
+  mock_msg.tool_call = mock_tool_call
+
+  async def mock_receive_generator():
+    yield mock_msg
+
+  mock_gemini_session.receive = mock.Mock(return_value=mock_receive_generator())
+
+  # Disable 3.x live streaming logic to test default turn-complete buffering
+  gemini_connection._is_gemini_3_x_live = False
+
+  received_texts = []
+  received_tools = []
+  turn_complete_seen = False
+
+  async for response in gemini_connection.receive():
+    if response.content:
+      for part in response.content.parts:
+        if getattr(part, 'text', None):
+          received_texts.append(part.text)
+        if getattr(part, 'function_call', None):
+          received_tools.append(part.function_call.name)
+    if getattr(response, 'turn_complete', False):
+      turn_complete_seen = True
+
+  # Ensure the text was received
+  assert 'I will call the tool.' in received_texts
+  # Ensure the tool call was received (not swallowed)
+  assert 'my_tool' in received_tools
+  # Ensure turn complete was registered
+  assert turn_complete_seen is True

@@ -498,6 +498,64 @@ class GeminiLlmConnection(BaseLlmConnection):
                   live_session_id=live_session_id,
               )
               self._output_transcription_text = ''
+          # in case of empty content or parts, we still surface it
+          # in case it's an interrupted message, we merge the previous partial
+          # text. Other we don't merge. because content can be none when model
+          # safety threshold is triggered
+          if message.server_content.interrupted:
+            if text:
+              yield self.__build_full_text_response(
+                  text,
+                  is_thought,
+                  last_grounding_metadata,
+                  interrupted=True,
+              )
+              text = ''
+              is_thought = False
+              last_grounding_metadata = None
+            else:
+              yield LlmResponse(
+                  interrupted=message.server_content.interrupted,
+                  grounding_metadata=last_grounding_metadata,
+                  model_version=self._model_version,
+                  live_session_id=live_session_id,
+              )
+              last_grounding_metadata = None
+        if message.tool_call:
+          logger.debug('Received tool call: %s', message.tool_call)
+          if text:
+            yield self.__build_full_text_response(
+                text, is_thought, last_grounding_metadata
+            )
+            text = ''
+            is_thought = False
+            last_grounding_metadata = None
+          tool_call_parts.extend([
+              types.Part(function_call=function_call)
+              for function_call in message.tool_call.function_calls or []
+          ])
+          if not self._is_gemini_3_x_live:
+            if tool_call_metadata is None:
+              tool_call_metadata = last_grounding_metadata
+          # Gemini 3.x Live does not emit turn_complete until it receives the
+          # tool response, so yield tool calls immediately to avoid
+          # deadlocking the conversation. Other models (e.g. 2.5-pro,
+          # native-audio) send turn_complete after tool calls, so buffer
+          # and merge them into a single response at turn_complete.
+          if self._is_gemini_3_x_live and tool_call_parts:
+            logger.debug(
+                'Yielding tool_call_parts immediately for Gemini 3.x live tool'
+                ' call'
+            )
+            yield LlmResponse(
+                content=types.Content(role='model', parts=tool_call_parts),
+                grounding_metadata=last_grounding_metadata,
+                model_version=self._model_version,
+                live_session_id=live_session_id,
+            )
+            tool_call_parts = []
+            last_grounding_metadata = None
+        if message.server_content:
           if message.server_content.turn_complete:
             # Capture final grounding metadata before last_grounding_metadata is cleared in the next block.
             final_grounding_metadata = (
@@ -564,63 +622,6 @@ class GeminiLlmConnection(BaseLlmConnection):
             )
             last_grounding_metadata = None  # Reset after yielding
             break
-          # in case of empty content or parts, we still surface it
-          # in case it's an interrupted message, we merge the previous partial
-          # text. Other we don't merge. because content can be none when model
-          # safety threshold is triggered
-          if message.server_content.interrupted:
-            if text:
-              yield self.__build_full_text_response(
-                  text,
-                  is_thought,
-                  last_grounding_metadata,
-                  interrupted=True,
-              )
-              text = ''
-              is_thought = False
-              last_grounding_metadata = None
-            else:
-              yield LlmResponse(
-                  interrupted=message.server_content.interrupted,
-                  grounding_metadata=last_grounding_metadata,
-                  model_version=self._model_version,
-                  live_session_id=live_session_id,
-              )
-              last_grounding_metadata = None
-        if message.tool_call:
-          logger.debug('Received tool call: %s', message.tool_call)
-          if text:
-            yield self.__build_full_text_response(
-                text, is_thought, last_grounding_metadata
-            )
-            text = ''
-            is_thought = False
-            last_grounding_metadata = None
-          tool_call_parts.extend([
-              types.Part(function_call=function_call)
-              for function_call in message.tool_call.function_calls or []
-          ])
-          if not self._is_gemini_3_x_live:
-            if tool_call_metadata is None:
-              tool_call_metadata = last_grounding_metadata
-          # Gemini 3.x Live does not emit turn_complete until it receives the
-          # tool response, so yield tool calls immediately to avoid
-          # deadlocking the conversation. Other models (e.g. 2.5-pro,
-          # native-audio) send turn_complete after tool calls, so buffer
-          # and merge them into a single response at turn_complete.
-          if self._is_gemini_3_x_live and tool_call_parts:
-            logger.debug(
-                'Yielding tool_call_parts immediately for Gemini 3.x live tool'
-                ' call'
-            )
-            yield LlmResponse(
-                content=types.Content(role='model', parts=tool_call_parts),
-                grounding_metadata=last_grounding_metadata,
-                model_version=self._model_version,
-                live_session_id=live_session_id,
-            )
-            tool_call_parts = []
-            last_grounding_metadata = None
         if message.session_resumption_update:
           logger.debug('Received session resumption message: %s', message)
           yield (
