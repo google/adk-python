@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Literal
 from typing import Optional
 
 from google.genai import types
@@ -36,13 +37,23 @@ class MultimodalToolResultsPlugin(BasePlugin):
   are supported outside of computer use tool.
   """
 
-  def __init__(self, name: str = "multimodal_tool_results_plugin"):
+  def __init__(
+      self,
+      name: str = "multimodal_tool_results_plugin",
+      retention: Literal["next_model_call", "session"] = "next_model_call",
+  ):
     """Initialize the multimodal tool results plugin.
 
     Args:
       name: The name of the plugin instance.
+      retention: How long tool-returned parts stay attached to model
+        requests. "next_model_call" (default) attaches the saved parts once
+        and then clears them. "session" keeps re-attaching the latest saved
+        parts to every subsequent model request for the rest of the
+        session, so follow-up turns can still reference them.
     """
     super().__init__(name)
+    self._retention = retention
 
   async def after_tool_callback(
       self,
@@ -87,6 +98,7 @@ class MultimodalToolResultsPlugin(BasePlugin):
         PARTS_RETURNED_BY_TOOLS_ID, None
     ):
       llm_request.contents[-1].parts += saved_parts
-      callback_context.state.update({PARTS_RETURNED_BY_TOOLS_ID: []})
+      if self._retention == "next_model_call":
+        callback_context.state.update({PARTS_RETURNED_BY_TOOLS_ID: []})
 
     return None

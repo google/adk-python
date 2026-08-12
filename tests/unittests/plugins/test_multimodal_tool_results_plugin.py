@@ -145,6 +145,39 @@ async def test_empty_contents_leaves_saved_parts_pending(
 
 
 @pytest.mark.asyncio
+async def test_session_retention_reattaches_parts_across_turns(
+    mock_tool: MockTool,
+    tool_context: ToolContext,
+):
+  """Test that retention="session" keeps attaching parts to later turns."""
+  plugin = MultimodalToolResultsPlugin(retention="session")
+  parts = [types.Part(text="part1")]
+
+  await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=parts,
+  )
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+
+  first_request = LlmRequest(contents=[types.Content(parts=[])])
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=first_request
+  )
+  assert first_request.contents[-1].parts == parts
+  assert tool_context.state[PARTS_RETURNED_BY_TOOLS_ID] == parts
+
+  second_request = LlmRequest(contents=[types.Content(parts=[])])
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=second_request
+  )
+  assert second_request.contents[-1].parts == parts
+
+
+@pytest.mark.asyncio
 async def test_multiple_tools_returning_parts_are_accumulated(
     plugin: ToolReturningGenAiPartsPlugin,
     mock_tool: MockTool,
