@@ -294,7 +294,12 @@ def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   )
   agent_ctx.isolation_scope = ctx.isolation_scope
 
-  ic.session = ic.session.model_copy(deep=False)
+  # Do not copy `ic.session`: it stays the same object shared with the
+  # parent context. A shallow copy here duplicates `last_update_time` and
+  # the storage revision marker, so a DatabaseSessionService write made
+  # through this node's session (e.g. mid-invocation compaction) would
+  # never be reflected on the parent's session object, causing the next
+  # node's write through the parent copy to be rejected as stale.
   return agent_ctx
 
 
