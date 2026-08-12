@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,61 +14,39 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from datetime import timezone
 import inspect
 import logging
 from typing import Awaitable
 from typing import Callable
-from typing import Optional
-import uuid
 
 from a2a.server.agent_execution import AgentExecutor
-from a2a.server.agent_execution.context import RequestContext
+from a2a.server.agent_execution import RequestContext
 from a2a.server.events.event_queue import EventQueue
 from a2a.types import Artifact
 from a2a.types import Message
-from a2a.types import Role
 from a2a.types import TaskArtifactUpdateEvent
-from a2a.types import TaskState
-from a2a.types import TaskStatus
-from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
+from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
-from pydantic import BaseModel
+from google.adk.sessions.session import Session
 from typing_extensions import override
 
+from .. import _compat
 from ...utils.context_utils import Aclosing
-from ..converters.event_converter import AdkEventToA2AEventsConverter
-from ..converters.event_converter import convert_event_to_a2a_events
-from ..converters.part_converter import A2APartToGenAIPartConverter
-from ..converters.part_converter import convert_a2a_part_to_genai_part
-from ..converters.part_converter import convert_genai_part_to_a2a_part
-from ..converters.part_converter import GenAIPartToA2APartConverter
-from ..converters.request_converter import A2ARequestToAgentRunRequestConverter
+from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.request_converter import AgentRunRequest
-from ..converters.request_converter import convert_a2a_request_to_agent_run_request
 from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
+from .a2a_agent_executor_impl import _A2aAgentExecutor as ExecutorImpl
+from .config import A2aAgentExecutorConfig
+from .executor_context import ExecutorContext
 from .task_result_aggregator import TaskResultAggregator
+from .utils import _enqueue_canceled_task_event
+from .utils import _require_request_context
+from .utils import execute_after_agent_interceptors
+from .utils import execute_after_event_interceptors
+from .utils import execute_before_agent_interceptors
 
 logger = logging.getLogger('google_adk.' + __name__)
-
-
-@a2a_experimental
-class A2aAgentExecutorConfig(BaseModel):
-  """Configuration for the A2aAgentExecutor."""
-
-  a2a_part_converter: A2APartToGenAIPartConverter = (
-      convert_a2a_part_to_genai_part
-  )
-  gen_ai_part_converter: GenAIPartToA2APartConverter = (
-      convert_genai_part_to_a2a_part
-  )
-  request_converter: A2ARequestToAgentRunRequestConverter = (
-      convert_a2a_request_to_agent_run_request
-  )
-  event_converter: AdkEventToA2AEventsConverter = convert_event_to_a2a_events
 
 
 @a2a_experimental
@@ -76,17 +54,29 @@ class A2aAgentExecutor(AgentExecutor):
   """An AgentExecutor that runs an ADK Agent against an A2A request and
 
   publishes updates to an event queue.
+
+  Args:
+    runner: The runner to use for the agent.
+    config: The config to use for the executor.
+    use_legacy: If true, force the legacy implementation.
+    force_new_version: If true, force the new implementation regardless of the
+      extension.
   """
 
   def __init__(
       self,
       *,
       runner: Runner | Callable[..., Runner | Awaitable[Runner]],
-      config: Optional[A2aAgentExecutorConfig] = None,
+      config: A2aAgentExecutorConfig | None = None,
+      use_legacy: bool = False,
+      force_new_version: bool = False,
   ):
     super().__init__()
     self._runner = runner
     self._config = config or A2aAgentExecutorConfig()
+    self._use_legacy = use_legacy
+    self._force_new_version = force_new_version
+    self._executor_impl: ExecutorImpl | None = None
 
   async def _resolve_runner(self) -> Runner:
     """Resolve the runner, handling cases where it's a callable that returns a Runner."""
@@ -98,14 +88,14 @@ class A2aAgentExecutor(AgentExecutor):
       result = self._runner()
 
       # Handle async callables
-      if inspect.iscoroutine(result):
+      if inspect.isawaitable(result):
         resolved_runner = await result
       else:
         resolved_runner = result
 
       # Cache the resolved runner for future calls
       self._runner = resolved_runner
-      return resolved_runner
+      return self._runner
 
     raise TypeError(
         'Runner must be a Runner instance or a callable that returns a'
@@ -113,18 +103,20 @@ class A2aAgentExecutor(AgentExecutor):
     )
 
   @override
-  async def cancel(self, context: RequestContext, event_queue: EventQueue):
+  async def cancel(
+      self, context: RequestContext, event_queue: EventQueue
+  ) -> None:
     """Cancel the execution."""
-    # TODO: Implement proper cancellation logic if needed
-    raise NotImplementedError('Cancellation is not supported')
+    await _enqueue_canceled_task_event(context, event_queue)
 
   @override
   async def execute(
       self,
       context: RequestContext,
       event_queue: EventQueue,
-  ):
+  ) -> None:
     """Executes an A2A request and publishes updates to the event queue
+
     specified. It runs as following:
     * Takes the input from the A2A request
     * Convert the input to ADK input content, and runs the ADK agent
@@ -132,23 +124,29 @@ class A2aAgentExecutor(AgentExecutor):
     * Converts the ADK output events into A2A task updates
     * Publishes the updates back to A2A server via event queue
     """
+    should_use_new_impl = not self._use_legacy and (
+        self._force_new_version or self._check_new_version_extension(context)
+    )
+
+    if should_use_new_impl:
+      if self._executor_impl is None:
+        self._executor_impl = ExecutorImpl(
+            runner=self._runner,
+            config=self._config,
+        )
+      await self._executor_impl.execute(context, event_queue)
+      return
+
     if not context.message:
       raise ValueError('A2A request must have a message')
 
-    # for new task, create a task submitted event
-    if not context.current_task:
-      await event_queue.enqueue_event(
-          TaskStatusUpdateEvent(
-              task_id=context.task_id,
-              status=TaskStatus(
-                  state=TaskState.submitted,
-                  message=context.message,
-                  timestamp=datetime.now(timezone.utc).isoformat(),
-              ),
-              context_id=context.context_id,
-              final=False,
-          )
-      )
+    context = await execute_before_agent_interceptors(
+        context, self._config.execute_interceptors
+    )
+
+    # For a new task, publish the initial "submitted" signal. The leading-Task
+    # (1.x) vs submitted-event (0.3.x) divergence is handled by ``_compat``.
+    await _compat.enqueue_submitted_signal(event_queue, context=context)
 
     # Handle the request and publish updates to the event queue
     try:
@@ -158,18 +156,17 @@ class A2aAgentExecutor(AgentExecutor):
       # Publish failure event
       try:
         await event_queue.enqueue_event(
-            TaskStatusUpdateEvent(
+            _compat.make_task_status_update_event(
                 task_id=context.task_id,
-                status=TaskStatus(
-                    state=TaskState.failed,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
+                context_id=context.context_id,
+                status=_compat.make_task_status(
+                    _compat.TS_FAILED,
                     message=Message(
-                        message_id=str(uuid.uuid4()),
-                        role=Role.agent,
-                        parts=[TextPart(text=str(e))],
+                        message_id=platform_uuid.new_uuid(),
+                        role=_compat.ROLE_AGENT,
+                        parts=[_compat.make_text_part(str(e))],
                     ),
                 ),
-                context_id=context.context_id,
                 final=True,
             )
         )
@@ -182,7 +179,8 @@ class A2aAgentExecutor(AgentExecutor):
       self,
       context: RequestContext,
       event_queue: EventQueue,
-  ):
+  ) -> None:
+    _, task_id, context_id = _require_request_context(context)
     # Resolve the runner instance
     runner = await self._resolve_runner()
 
@@ -202,15 +200,19 @@ class A2aAgentExecutor(AgentExecutor):
         run_config=run_request.run_config,
     )
 
+    executor_context = ExecutorContext(
+        app_name=runner.app_name,
+        user_id=run_request.user_id,
+        session_id=run_request.session_id,
+        runner=runner,
+    )
+
     # publish the task working event
     await event_queue.enqueue_event(
-        TaskStatusUpdateEvent(
-            task_id=context.task_id,
-            status=TaskStatus(
-                state=TaskState.working,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-            ),
-            context_id=context.context_id,
+        _compat.make_task_status_update_event(
+            task_id=task_id,
+            context_id=context_id,
+            status=_compat.make_task_status(_compat.TS_WORKING),
             final=False,
             metadata={
                 _get_adk_metadata_key('app_name'): runner.app_name,
@@ -221,21 +223,46 @@ class A2aAgentExecutor(AgentExecutor):
     )
 
     task_result_aggregator = TaskResultAggregator()
+    last_adk_event = None
     async with Aclosing(runner.run_async(**vars(run_request))) as agen:
       async for adk_event in agen:
+        last_adk_event = adk_event
         for a2a_event in self._config.event_converter(
             adk_event,
             invocation_context,
-            context.task_id,
-            context.context_id,
+            task_id,
+            context_id,
             self._config.gen_ai_part_converter,
         ):
-          task_result_aggregator.process_event(a2a_event)
-          await event_queue.enqueue_event(a2a_event)
+          a2a_events = await execute_after_event_interceptors(
+              a2a_event,
+              executor_context,
+              adk_event,
+              self._config.execute_interceptors,
+          )
+          for e in a2a_events:
+            task_result_aggregator.process_event(e)
+            await event_queue.enqueue_event(e)
+
+    # Build metadata for final event to preserve invocation_id and event_id.
+    final_metadata = {
+        _get_adk_metadata_key('app_name'): runner.app_name,
+        _get_adk_metadata_key('user_id'): run_request.user_id,
+        _get_adk_metadata_key('session_id'): run_request.session_id,
+    }
+    if last_adk_event:
+      for key, attr in [
+          ('invocation_id', 'invocation_id'),
+          ('author', 'author'),
+          ('event_id', 'id'),
+      ]:
+        val = getattr(last_adk_event, attr, None)
+        if val is not None:
+          final_metadata[_get_adk_metadata_key(key)] = val
 
     # publish the task result event - this is final
     if (
-        task_result_aggregator.task_state == TaskState.working
+        task_result_aggregator.task_state == _compat.TS_WORKING
         and task_result_aggregator.task_status_message is not None
         and task_result_aggregator.task_status_message.parts
     ):
@@ -243,56 +270,60 @@ class A2aAgentExecutor(AgentExecutor):
       # the final result according to a2a protocol.
       await event_queue.enqueue_event(
           TaskArtifactUpdateEvent(
-              task_id=context.task_id,
+              task_id=task_id,
               last_chunk=True,
-              context_id=context.context_id,
+              context_id=context_id,
               artifact=Artifact(
-                  artifact_id=str(uuid.uuid4()),
+                  artifact_id=platform_uuid.new_uuid(),
                   parts=task_result_aggregator.task_status_message.parts,
               ),
+              metadata=final_metadata,
           )
       )
-      # public the final status update event
-      await event_queue.enqueue_event(
-          TaskStatusUpdateEvent(
-              task_id=context.task_id,
-              status=TaskStatus(
-                  state=TaskState.completed,
-                  timestamp=datetime.now(timezone.utc).isoformat(),
-              ),
-              context_id=context.context_id,
-              final=True,
-          )
+      # publish the final status update event
+      final_event = _compat.make_task_status_update_event(
+          task_id=task_id,
+          context_id=context_id,
+          status=_compat.make_task_status(_compat.TS_COMPLETED),
+          final=True,
+          metadata=final_metadata,
       )
     else:
-      await event_queue.enqueue_event(
-          TaskStatusUpdateEvent(
-              task_id=context.task_id,
-              status=TaskStatus(
-                  state=task_result_aggregator.task_state,
-                  timestamp=datetime.now(timezone.utc).isoformat(),
-                  message=task_result_aggregator.task_status_message,
-              ),
-              context_id=context.context_id,
-              final=True,
-          )
+      final_event = _compat.make_task_status_update_event(
+          task_id=task_id,
+          context_id=context_id,
+          status=_compat.make_task_status(
+              task_result_aggregator.task_state,
+              message=task_result_aggregator.task_status_message,
+          ),
+          final=True,
+          metadata=final_metadata,
       )
+
+    final_event = await execute_after_agent_interceptors(
+        executor_context,
+        final_event,
+        self._config.execute_interceptors,
+    )
+    await event_queue.enqueue_event(final_event)
 
   async def _prepare_session(
       self,
       context: RequestContext,
       run_request: AgentRunRequest,
       runner: Runner,
-  ):
+  ) -> Session:
 
     session_id = run_request.session_id
     # create a new session if not exists
     user_id = run_request.user_id
-    session = await runner.session_service.get_session(
-        app_name=runner.app_name,
-        user_id=user_id,
-        session_id=session_id,
-    )
+    session = None
+    if session_id:
+      session = await runner.session_service.get_session(
+          app_name=runner.app_name,
+          user_id=user_id,
+          session_id=session_id,
+      )
     if session is None:
       session = await runner.session_service.create_session(
           app_name=runner.app_name,
@@ -304,3 +335,12 @@ class A2aAgentExecutor(AgentExecutor):
       run_request.session_id = session.id
 
     return session
+
+  def _check_new_version_extension(self, context: RequestContext) -> bool:
+    """Check if the extension for the new version is requested and activate it."""
+    if _NEW_A2A_ADK_INTEGRATION_EXTENSION in context.requested_extensions:
+      _compat.add_activated_extension(
+          context, _NEW_A2A_ADK_INTEGRATION_EXTENSION
+      )
+      return True
+    return False

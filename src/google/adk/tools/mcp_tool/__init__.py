@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 __all__ = []
 
 try:
+  from ._agent_to_mcp import to_mcp_server
   from .conversion_utils import adk_to_mcp_tool_type
   from .conversion_utils import gemini_to_json_schema
   from .mcp_session_manager import SseConnectionParams
@@ -35,6 +36,7 @@ try:
       'SseConnectionParams',
       'StdioConnectionParams',
       'StreamableHTTPConnectionParams',
+      'to_mcp_server',
   ])
 
 except ImportError as e:

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,21 +14,187 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import io
 import json
 import logging
+import re
+import struct
 from typing import Any
 from typing import TYPE_CHECKING
+import zipfile
 
 from google.genai import types
 from typing_extensions import override
 
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from .base_tool import BaseTool
+
+# MIME types Gemini accepts for inline data in requests.
+_GEMINI_SUPPORTED_INLINE_MIME_PREFIXES = (
+    'image/',
+    'audio/',
+    'video/',
+)
+_GEMINI_SUPPORTED_INLINE_MIME_TYPES = frozenset({'application/pdf'})
+# MIME subtypes that match a supported prefix above but that Gemini
+# rejects with 400 INVALID_ARGUMENT when sent as inline data. These
+# must fall through to the text-conversion path in
+# `_as_safe_part_for_llm` instead of being forwarded as inline image
+# data. Verified empirically against gemini-2.5-flash via
+# google-genai 1.69.0 on 2026-05-13.
+_GEMINI_UNSUPPORTED_INLINE_SUBTYPES = frozenset({
+    'image/svg',
+    'image/svg+xml',
+    'image/xml',
+})
+_TEXT_LIKE_MIME_TYPES = frozenset({
+    'application/csv',
+    'application/json',
+    'application/svg+xml',
+    'application/xml',
+    # SVG/XML image variants are XML-based and Gemini rejects them as
+    # inline image data (see _GEMINI_UNSUPPORTED_INLINE_SUBTYPES above), so
+    # they fall through here and are delivered to the model as text.
+    'image/svg',
+    'image/svg+xml',
+    'image/xml',
+})
 
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from .tool_context import ToolContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _normalize_mime_type(mime_type: str | None) -> str | None:
+  """Returns the normalized MIME type, without parameters like charset."""
+  if not mime_type:
+    return None
+  return mime_type.split(';', 1)[0].strip()
+
+
+def _is_inline_mime_type_supported(mime_type: str | None) -> bool:
+  """Returns True if Gemini accepts this MIME type as inline data."""
+  normalized = _normalize_mime_type(mime_type)
+  if not normalized:
+    return False
+  if normalized in _GEMINI_UNSUPPORTED_INLINE_SUBTYPES:
+    return False
+  return normalized.startswith(_GEMINI_SUPPORTED_INLINE_MIME_PREFIXES) or (
+      normalized in _GEMINI_SUPPORTED_INLINE_MIME_TYPES
+  )
+
+
+def _maybe_base64_to_bytes(data: str) -> bytes | None:
+  """Best-effort base64 decode for both std and urlsafe formats."""
+  try:
+    return base64.b64decode(data, validate=True)
+  except (binascii.Error, ValueError):
+    try:
+      return base64.urlsafe_b64decode(data)
+    except (binascii.Error, ValueError):
+      return None
+
+
+def _try_extract_docx_text(data: bytes) -> str | None:
+  """Extracts raw text from a DOCX binary."""
+  # We use regex instead of standard XML parser to avoid XML bomb vulnerabilities,
+  # and cap the zip extraction at 10 MB to prevent zip bombs.
+  try:
+    with zipfile.ZipFile(io.BytesIO(data)) as docx_zip:
+      if 'word/document.xml' not in docx_zip.namelist():
+        return None
+      with docx_zip.open('word/document.xml') as xml_file:
+        xml_content = xml_file.read(10 * 1024 * 1024).decode(
+            'utf-8', errors='ignore'
+        )
+
+      # Find the prefix for the WordprocessingML namespace
+      # xmlns:w="..." or xmlns:something="..."
+      ns_match = re.search(
+          r'xmlns:(\w+)="http://schemas.openxmlformats.org/wordprocessingml/2006/main"',
+          xml_content,
+      )
+      prefix = ns_match.group(1) if ns_match else 'w'
+
+      p_tag = f'{prefix}:p'
+      t_tag = f'{prefix}:t'
+
+      paragraphs = []
+      for p in re.split(rf'<{p_tag}(?:[^>]*)>', xml_content):
+        texts = re.findall(rf'<{t_tag}(?:[^>]*)>([^<]*)</{t_tag}>', p)
+        if texts:
+          paragraphs.append(''.join(texts))
+
+      return '\n'.join(paragraphs)
+  except (zipfile.BadZipFile, KeyError, struct.error) as e:
+    logger.debug('Failed to parse docx layout: %s', e)
+    return None
+
+
+def _as_safe_part_for_llm(
+    artifact: types.Part, artifact_name: str
+) -> types.Part:
+  """Returns a Part that is safe to send to Gemini."""
+  inline_data = artifact.inline_data
+  if inline_data is None:
+    return artifact
+
+  if _is_inline_mime_type_supported(inline_data.mime_type):
+    return artifact
+
+  mime_type = _normalize_mime_type(inline_data.mime_type) or (
+      'application/octet-stream'
+  )
+  data = inline_data.data
+  if data is None:
+    return types.Part.from_text(
+        text=(
+            f'[Artifact: {artifact_name}, type: {mime_type}. '
+            'No inline data was provided.]'
+        )
+    )
+
+  if isinstance(data, str):
+    decoded = _maybe_base64_to_bytes(data)
+    if decoded is None:
+      return types.Part.from_text(text=data)
+    data = decoded
+
+  # Attempt DOCX extraction if file seems to be a docx document.
+  is_docx = mime_type in (
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/octet-stream',
+  ) or artifact_name.lower().endswith('.docx')
+  if is_docx:
+    extracted_text = _try_extract_docx_text(data)
+    if extracted_text is not None:
+      return types.Part.from_text(text=extracted_text)
+
+  # Fallback to general text extraction
+  is_text_like = (
+      mime_type.startswith('text/')
+      or mime_type in _TEXT_LIKE_MIME_TYPES
+      or artifact_name.lower().endswith(('.csv', '.txt', '.json', '.xml'))
+  )
+  if is_text_like:
+    try:
+      return types.Part.from_text(text=data.decode('utf-8'))
+    except UnicodeDecodeError:
+      return types.Part.from_text(text=data.decode('utf-8', errors='replace'))
+
+  size_kb = len(data) / 1024
+  return types.Part.from_text(
+      text=(
+          f'[Binary artifact: {artifact_name}, '
+          f'type: {mime_type}, size: {size_kb:.1f} KB. '
+          'Content cannot be displayed inline.]'
+      )
+  )
 
 
 class LoadArtifactsTool(BaseTool):
@@ -44,6 +210,20 @@ web UI)."""),
     )
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      return types.FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema={
+              'type': 'object',
+              'properties': {
+                  'artifact_names': {
+                      'type': 'array',
+                      'items': {'type': 'string'},
+                  },
+              },
+          },
+      )
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,
@@ -92,8 +272,7 @@ web UI)."""),
     if not artifact_names:
       return
 
-    # Tell the model about the available artifacts.
-    llm_request.append_instructions([f"""You have a list of artifacts:
+    instruction_text = f"""You have a list of artifacts:
   {json.dumps(artifact_names)}
 
   When the user asks questions about any of the artifacts, you should call the
@@ -101,14 +280,16 @@ web UI)."""),
   before answering questions related to the artifacts, regardless of whether the
   artifacts have been loaded before. Do not depend on prior answers about the
   artifacts.
-  """])
+  """
+    llm_request._append_dynamic_instructions([instruction_text])
 
     # Attach the content of the artifacts if the model requests them.
     # This only adds the content to the model request, instead of the session.
     if llm_request.contents and llm_request.contents[-1].parts:
       function_response = llm_request.contents[-1].parts[0].function_response
       if function_response and function_response.name == 'load_artifacts':
-        artifact_names = function_response.response['artifact_names']
+        response = function_response.response or {}
+        artifact_names = response.get('artifact_names', [])
         for artifact_name in artifact_names:
           # Try session-scoped first (default behavior)
           artifact = await tool_context.load_artifact(artifact_name)
@@ -122,6 +303,18 @@ web UI)."""),
           if artifact is None:
             logger.warning('Artifact "%s" not found, skipping', artifact_name)
             continue
+
+          artifact_part = _as_safe_part_for_llm(artifact, artifact_name)
+          if artifact_part is not artifact:
+            mime_type = (
+                artifact.inline_data.mime_type if artifact.inline_data else None
+            )
+            logger.debug(
+                'Converted artifact "%s" (mime_type=%s) to text Part',
+                artifact_name,
+                mime_type,
+            )
+
           llm_request.contents.append(
               types.Content(
                   role='user',
@@ -129,7 +322,7 @@ web UI)."""),
                       types.Part.from_text(
                           text=f'Artifact {artifact_name} is:'
                       ),
-                      artifact,
+                      artifact_part,
                   ],
               )
           )

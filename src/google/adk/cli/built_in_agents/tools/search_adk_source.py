@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """ADK source code search tool for Agent Builder Assistant."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -82,7 +83,7 @@ async def search_adk_source(
 
     adk_src_dir = Path(adk_source_path)
 
-    result = {
+    result: Dict[str, Any] = {
         "success": False,
         "pattern": search_pattern,
         "total_matches": 0,
@@ -108,7 +109,7 @@ async def search_adk_source(
       return result
 
     # Find all Python files to search
-    files_to_search = []
+    files_to_search: List[Any] = []
     for pattern in file_patterns:
       files_to_search.extend(adk_src_dir.rglob(pattern))
 

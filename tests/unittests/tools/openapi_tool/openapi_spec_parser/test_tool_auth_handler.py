@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import Optional
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -29,6 +30,7 @@ from google.adk.sessions.session import Session
 from google.adk.tools.openapi_tool.auth.auth_helpers import openid_dict_to_scheme_credential
 from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_credential
 from google.adk.tools.openapi_tool.auth.credential_exchangers.auto_auth_credential_exchanger import OAuth2CredentialExchanger
+from google.adk.tools.openapi_tool.openapi_spec_parser import tool_auth_handler
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolAuthHandler
 from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolContextCredentialStore
 from google.adk.tools.tool_context import ToolContext
@@ -139,6 +141,23 @@ async def test_openid_connect_no_auth_response(
 
 
 @pytest.mark.asyncio
+async def test_openid_connect_uses_explicit_credential_key(
+    openid_connect_scheme, openid_connect_credential
+):
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+      credential_key='my_tool_tokens',
+  )
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'pending'
+  requested = tool_context.actions.requested_auth_configs['test-fc-id']
+  assert requested.credential_key == 'my_tool_tokens'
+
+
+@pytest.mark.asyncio
 async def test_openid_connect_with_auth_response(
     openid_connect_scheme, openid_connect_credential, monkeypatch
 ):
@@ -155,7 +174,7 @@ async def test_openid_connect_with_auth_response(
       oauth2=OAuth2Auth(auth_response_uri='test_auth_response_uri'),
   )
   mock_auth_handler.get_auth_response.return_value = returned_credential
-  mock_auth_handler_path = 'google.adk.tools.tool_context.AuthHandler'
+  mock_auth_handler_path = 'google.adk.auth.auth_handler.AuthHandler'
   monkeypatch.setattr(
       mock_auth_handler_path, lambda *args, **kwargs: mock_auth_handler
   )
@@ -206,9 +225,7 @@ async def test_openid_connect_existing_token(
   assert result.auth_credential == existing_credential
 
 
-@patch(
-    'google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler.OAuth2CredentialRefresher'
-)
+@patch.object(tool_auth_handler, 'OAuth2CredentialRefresher')
 @pytest.mark.asyncio
 async def test_openid_connect_existing_oauth2_token_refresh(
     mock_oauth2_refresher, openid_connect_scheme, openid_connect_credential
@@ -275,3 +292,126 @@ async def test_openid_connect_existing_oauth2_token_refresh(
   assert result.state == 'done'
   # The result should contain the refreshed credential after exchange
   assert result.auth_credential is not None
+
+
+@patch.object(tool_auth_handler, 'OAuth2CredentialRefresher')
+@pytest.mark.asyncio
+async def test_refreshed_credential_is_persisted_to_store(
+    mock_oauth2_refresher, openid_connect_scheme, openid_connect_credential
+):
+  """Test that refreshed OAuth2 credentials are persisted back to the store."""
+  # Create existing OAuth2 credential with an "old" refresh token.
+  existing_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='test_client_id',
+          client_secret='test_client_secret',
+          access_token='old_access_token',
+          refresh_token='old_refresh_token',
+      ),
+  )
+
+  # The refresher will return a credential with rotated tokens.
+  refreshed_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='test_client_id',
+          client_secret='test_client_secret',
+          access_token='new_access_token',
+          refresh_token='new_refresh_token',
+      ),
+  )
+
+  mock_refresher_instance = MagicMock()
+  mock_refresher_instance.is_refresh_needed = AsyncMock(return_value=True)
+  mock_refresher_instance.refresh = AsyncMock(return_value=refreshed_credential)
+  mock_oauth2_refresher.return_value = mock_refresher_instance
+
+  tool_context = create_mock_tool_context()
+  credential_store = ToolContextCredentialStore(tool_context=tool_context)
+
+  # Store the existing (stale) credential.
+  key = credential_store.get_credential_key(
+      openid_connect_scheme, openid_connect_credential
+  )
+  credential_store.store_credential(key, existing_credential)
+
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+      credential_store=credential_store,
+  )
+
+  await handler.prepare_auth_credentials()
+
+  # The critical assertion: the *refreshed* credential must now be in the
+  # store so that the next invocation reads the new tokens, not the old ones.
+  persisted = credential_store.get_credential(
+      openid_connect_scheme, openid_connect_credential
+  )
+  assert persisted is not None
+  assert persisted.oauth2.access_token == 'new_access_token'
+  assert persisted.oauth2.refresh_token == 'new_refresh_token'
+
+
+def test_credential_key_is_stable_across_redirect_uri():
+  """get_credential_key should be invariant under redirect_uri changes.
+
+  redirect_uri is deployment configuration (which callback URL the auth
+  server should redirect to), not part of the credential identity. Two
+  AuthCredential instances that share the same client_id, client_secret,
+  and scopes but differ only in redirect_uri should produce the same key.
+  """
+  scheme, _ = get_mock_openid_scheme_credential()
+  credential_local = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='client',
+          client_secret='secret',
+          redirect_uri='http://localhost:8001/oauth2callback',
+      ),
+  )
+  credential_deployed = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='client',
+          client_secret='secret',
+          redirect_uri='https://deployed.example.com/oauth2callback',
+      ),
+  )
+  store = ToolContextCredentialStore(tool_context=create_mock_tool_context())
+
+  assert store.get_credential_key(
+      scheme, credential_local
+  ) == store.get_credential_key(scheme, credential_deployed)
+
+
+def test_legacy_credential_key_is_stable_across_redirect_uri():
+  """_get_legacy_credential_key should be invariant under redirect_uri changes.
+
+  The same redirect_uri-strip behavior must apply to the legacy key path so
+  that already-stored credentials remain findable after the fix.
+  """
+  scheme, _ = get_mock_openid_scheme_credential()
+  credential_local = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='client',
+          client_secret='secret',
+          redirect_uri='http://localhost:8001/oauth2callback',
+      ),
+  )
+  credential_deployed = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='client',
+          client_secret='secret',
+          redirect_uri='https://deployed.example.com/oauth2callback',
+      ),
+  )
+  store = ToolContextCredentialStore(tool_context=create_mock_tool_context())
+
+  assert store._get_legacy_credential_key(
+      scheme, credential_local
+  ) == store._get_legacy_credential_key(scheme, credential_deployed)

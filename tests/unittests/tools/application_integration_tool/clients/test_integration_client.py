@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ import json
 import re
 from unittest import mock
 
+from google.adk.tools.application_integration_tool.clients import integration_client
 from google.adk.tools.application_integration_tool.clients.connections_client import ConnectionsClient
 from google.adk.tools.application_integration_tool.clients.integration_client import IntegrationClient
 import google.auth
@@ -110,6 +111,8 @@ class TestIntegrationClient:
       mock_credentials,
       mock_connections_client,
   ):
+    mock_credentials.quota_project_id = "quota-project"
+    mock_credentials.expired = False
     expected_spec = {"openapi": "3.0.0", "info": {"title": "Test Integration"}}
     mock_response = mock.MagicMock()
     mock_response.status_code = 200
@@ -117,11 +120,16 @@ class TestIntegrationClient:
 
     with (
         mock.patch.object(
-            IntegrationClient,
-            "_get_access_token",
-            return_value=mock_credentials.token,
+            integration_client,
+            "default_service_credential",
+            return_value=(mock_credentials, project),
         ),
-        mock.patch("requests.post", return_value=mock_response),
+        mock.patch.object(mock_credentials, "refresh", return_value=None),
+        mock.patch.object(requests, "post", return_value=mock_response),
+        mock.patch(
+            "google.adk.tools.application_integration_tool.clients.integration_client._mtls_utils.get_api_endpoint",
+            return_value=f"{location}-integrations.googleapis.com",
+        ) as mock_get_api_endpoint,
     ):
       client = IntegrationClient(
           project=project,
@@ -135,11 +143,17 @@ class TestIntegrationClient:
       )
       spec = client.get_openapi_spec_for_integration()
       assert spec == expected_spec
+      mock_get_api_endpoint.assert_called_once_with(
+          location,
+          "{location}-integrations.googleapis.com",
+          "{location}-integrations.mtls.googleapis.com",
+      )
       requests.post.assert_called_once_with(
           f"https://{location}-integrations.googleapis.com/v1/projects/{project}/locations/{location}:generateOpenApiSpec",
           headers={
               "Content-Type": "application/json",
               "Authorization": f"Bearer {mock_credentials.token}",
+              "x-goog-user-project": "quota-project",
           },
           json={
               "apiTriggerResources": [{
@@ -148,6 +162,64 @@ class TestIntegrationClient:
               }],
               "fileFormat": "JSON",
           },
+          timeout=30,
+      )
+
+  def test_get_openapi_spec_for_integration_success_mtls(
+      self,
+      project,
+      location,
+      integration_name,
+      triggers,
+      mock_credentials,
+      mock_connections_client,
+  ):
+    mock_credentials.quota_project_id = "quota-project"
+    mock_credentials.expired = False
+    expected_spec = {"openapi": "3.0.0", "info": {"title": "Test Integration"}}
+    mock_response = mock.MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"openApiSpec": json.dumps(expected_spec)}
+
+    with (
+        mock.patch.object(
+            integration_client,
+            "default_service_credential",
+            return_value=(mock_credentials, project),
+        ),
+        mock.patch.object(mock_credentials, "refresh", return_value=None),
+        mock.patch.object(requests, "post", return_value=mock_response),
+        mock.patch(
+            "google.adk.tools.application_integration_tool.clients.integration_client._mtls_utils.get_api_endpoint",
+            return_value=f"{location}-integrations.mtls.googleapis.com",
+        ),
+    ):
+      client = IntegrationClient(
+          project=project,
+          location=location,
+          integration=integration_name,
+          triggers=triggers,
+          connection=None,
+          entity_operations=None,
+          actions=None,
+          service_account_json=None,
+      )
+      client.get_openapi_spec_for_integration()
+      requests.post.assert_called_once_with(
+          f"https://{location}-integrations.mtls.googleapis.com/v1/projects/{project}/locations/{location}:generateOpenApiSpec",
+          headers={
+              "Content-Type": "application/json",
+              "Authorization": f"Bearer {mock_credentials.token}",
+              "x-goog-user-project": "quota-project",
+          },
+          json={
+              "apiTriggerResources": [{
+                  "integrationResource": integration_name,
+                  "triggerId": triggers,
+              }],
+              "fileFormat": "JSON",
+          },
+          timeout=30,
       )
 
   def test_get_openapi_spec_for_integration_credential_error(
@@ -589,6 +661,34 @@ class TestIntegrationClient:
             " to access the connection."
             in str(e)
         )
+
+  def test_get_access_token_default_credentials_error(
+      self, project, location, integration_name, triggers, connection_name
+  ):
+    with mock.patch(
+        "google.adk.tools.application_integration_tool.clients.integration_client.default_service_credential",
+        side_effect=google.auth.exceptions.DefaultCredentialsError(
+            "ADC not found"
+        ),
+    ):
+      client = IntegrationClient(
+          project=project,
+          location=location,
+          integration=integration_name,
+          triggers=triggers,
+          connection=connection_name,
+          entity_operations=None,
+          actions=None,
+          service_account_json=None,
+      )
+      with pytest.raises(
+          ValueError,
+          match=(
+              "Please provide a service account that has the required"
+              " permissions to access the connection."
+          ),
+      ):
+        client._get_access_token()
 
   def test_get_access_token_uses_cached_token(
       self,

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,10 +14,21 @@
 
 from __future__ import annotations
 
+import warnings
+
+from google.adk.features._feature_registry import _WARNED_FEATURES
+from google.adk.tools.spanner.settings import Capabilities
+from google.adk.tools.spanner.settings import QueryResultMode
 from google.adk.tools.spanner.settings import SpannerToolSettings
 from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
 from pydantic import ValidationError
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def reset_warned_features():
+  """Reset warned features before each test."""
+  _WARNED_FEATURES.clear()
 
 
 def common_spanner_vector_store_settings(vector_length=None):
@@ -34,11 +45,10 @@ def common_spanner_vector_store_settings(vector_length=None):
 
 def test_spanner_tool_settings_experimental_warning():
   """Test SpannerToolSettings experimental warning."""
-  with pytest.warns(
-      UserWarning,
-      match="Tool settings defaults may have breaking change in the future.",
-  ):
+  with warnings.catch_warnings(record=True) as w:
     SpannerToolSettings()
+    assert len(w) == 1
+    assert "SPANNER_TOOL_SETTINGS is enabled." in str(w[0].message)
 
 
 def test_spanner_vector_store_settings_all_fields_present():
@@ -70,3 +80,36 @@ def test_spanner_vector_store_settings_invalid_vector_length():
   assert "Invalid vector length in the Spanner vector store settings." in str(
       excinfo.value
   )
+
+
+@pytest.mark.parametrize(
+    "settings_args, expected_rows, expected_mode, expected_role",
+    [
+        ({}, 50, QueryResultMode.DEFAULT, None),
+        (
+            {
+                "capabilities": [Capabilities.DATA_READ],
+                "max_executed_query_result_rows": 100,
+                "query_result_mode": QueryResultMode.DICT_LIST,
+            },
+            100,
+            QueryResultMode.DICT_LIST,
+            None,
+        ),
+        (
+            {"database_role": "test-role"},
+            50,
+            QueryResultMode.DEFAULT,
+            "test-role",
+        ),
+    ],
+)
+def test_spanner_tool_settings(
+    settings_args, expected_rows, expected_mode, expected_role
+):
+  """Test SpannerToolSettings with different values."""
+  settings = SpannerToolSettings(**settings_args)
+  assert settings.capabilities == [Capabilities.DATA_READ]
+  assert settings.max_executed_query_result_rows == expected_rows
+  assert settings.query_result_mode == expected_mode
+  assert settings.database_role == expected_role

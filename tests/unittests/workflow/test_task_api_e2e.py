@@ -1,0 +1,831 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""End-to-end tests for the Task Delegation API matrix.
+
+Covers the complete cross-product of dispatch-shape × hierarchy-depth so
+the chat-coordinator wrapper, the workflow-node task path, and the
+nested-delegation path are all exercised:
+
+* LlmAgent root → single task sub-agent (basic FC delegation).
+* LlmAgent root → multiple task sub-agents (sequential delegation).
+* LlmAgent root → task sub-agent → nested task sub-agent (chained).
+* Workflow with a task-mode node (no FC delegation).
+* Workflow with a task-mode node that itself has a task sub-agent.
+* Dynamic node case (task agent dispatched via ``ctx.run_node``).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from typing import AsyncGenerator
+
+from google.adk.agents.context import Context
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
+from google.adk.events.event import Event
+from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_context import ToolContext
+from google.adk.workflow import node
+from google.adk.workflow import START
+from google.adk.workflow._base_node import BaseNode
+from google.adk.workflow._workflow import Workflow
+from google.genai import types
+from pydantic import BaseModel
+import pytest
+
+from tests.unittests import testing_utils
+
+# ---------------------------------------------------------------------------
+# Fixture helpers
+# ---------------------------------------------------------------------------
+
+
+def _delegate_part(target_name: str, request_text: str) -> types.Part:
+  """LLM response calling a task sub-agent (the _TaskAgentTool FC)."""
+  return types.Part.from_function_call(
+      name=target_name, args={"request": request_text}
+  )
+
+
+def _finish_part(args: dict[str, Any]) -> types.Part:
+  """LLM response calling finish_task with the given args."""
+  return types.Part.from_function_call(name="finish_task", args=args)
+
+
+def _text_part(text: str) -> types.Part:
+  return types.Part.from_text(text=text)
+
+
+def _confirmed_task_step(tool_context: ToolContext) -> dict[str, bool]:
+  """Return whether the resumable task step was confirmed."""
+  return {"confirmed": tool_context.tool_confirmation.confirmed}
+
+
+def _make_task_agent(
+    name: str,
+    responses: list,
+    *,
+    sub_agents: list[LlmAgent] | None = None,
+) -> LlmAgent:
+  return LlmAgent(
+      name=name,
+      model=testing_utils.MockModel.create(responses=responses),
+      mode="task",
+      sub_agents=sub_agents or [],
+  )
+
+
+def _collect_finish_outputs(events: list[Event]) -> list[Any]:
+  """Pull out finish_task FC arg dicts in chronological order."""
+  out = []
+  for e in events:
+    for fc in e.get_function_calls():
+      if fc.name == "finish_task":
+        out.append(dict(fc.args or {}))
+  return out
+
+
+def _get_text_responses(events: list[Event]) -> list[str]:
+  """Concatenate text responses from all model events."""
+  texts = []
+  for e in events:
+    if not e.content or not e.content.parts:
+      continue
+    for p in e.content.parts:
+      if p.text and not p.thought:
+        texts.append(p.text)
+  return texts
+
+
+# ---------------------------------------------------------------------------
+# 1. LlmAgent root → single task sub-agent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_root_with_single_task_sub_agent(
+    request: pytest.FixtureRequest,
+):
+  """Chat coordinator delegates to one task sub-agent and reports its output."""
+  child = _make_task_agent(
+      name="child",
+      responses=[_finish_part({"result": "child output"})],
+  )
+
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              _delegate_part("child", "do the thing"),
+              "All done: child output.",
+          ]
+      ),
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("hi"))
+
+  finish_args = _collect_finish_outputs(events)
+  assert finish_args == [{"result": "child output"}]
+  assert any(
+      "All done: child output." in t for t in _get_text_responses(events)
+  )
+
+
+# ---------------------------------------------------------------------------
+# 2. LlmAgent root → multiple task sub-agents (sequential)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_root_with_two_task_sub_agents_sequential(
+    request: pytest.FixtureRequest,
+):
+  """Chat coordinator delegates to two task sub-agents in one turn."""
+  collector = _make_task_agent(
+      name="collector",
+      responses=[_finish_part({"result": "collected"})],
+  )
+  payer = _make_task_agent(
+      name="payer",
+      responses=[_finish_part({"result": "paid"})],
+  )
+
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              _delegate_part("collector", "collect"),
+              _delegate_part("payer", "pay"),
+              "Order placed.",
+          ]
+      ),
+      sub_agents=[collector, payer],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("place order"))
+
+  finish_args = _collect_finish_outputs(events)
+  assert finish_args == [{"result": "collected"}, {"result": "paid"}]
+  assert any("Order placed." in t for t in _get_text_responses(events))
+
+
+# ---------------------------------------------------------------------------
+# 2b. Mixed turn: regular tool FC + task FC in the same model response
+# ---------------------------------------------------------------------------
+
+
+def _function_call_part(
+    name: str, args: dict[str, Any], *, call_id: str
+) -> types.Part:
+  """Build a function-call Part with a stable id for FC/FR matching."""
+  return types.Part(
+      function_call=types.FunctionCall(name=name, args=args, id=call_id)
+  )
+
+
+def _fr_names(events: list[Event]) -> list[str]:
+  names: list[str] = []
+  for event in events:
+    for fr in event.get_function_responses():
+      if fr.name:
+        names.append(fr.name)
+  return names
+
+
+def _fc_names(events: list[Event], *, author: str) -> list[str]:
+  names: list[str] = []
+  for event in events:
+    if event.author != author:
+      continue
+    for fc in event.get_function_calls():
+      if fc.name:
+        names.append(fc.name)
+  return names
+
+
+@pytest.mark.asyncio
+async def test_chat_root_mixed_regular_tool_and_task_keeps_regular_fr(
+    request: pytest.FixtureRequest,
+):
+  """Regular-tool FR is persisted when emitted with a task FC in one turn.
+
+  Regression for github.com/google/adk-python/issues/6581: the chat wrapper
+  used to break out of ``run_async`` after dispatching task FCs, dropping the
+  pending regular-tool FR and poisoning the session for Gemini.
+  """
+  tool_calls: list[list[str]] = []
+
+  def set_todo_list(items: list[str]) -> dict[str, Any]:
+    """Record a todo list in session-visible tool output."""
+    tool_calls.append(list(items))
+    return {"status": "ok", "items_written": items}
+
+  child = _make_task_agent(
+      name="specialist",
+      responses=[_finish_part({"result": "specialist done"})],
+  )
+  root = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  _function_call_part(
+                      "set_todo_list",
+                      {"items": ["write report"]},
+                      call_id="fc-todo-001",
+                  ),
+                  _function_call_part(
+                      "specialist",
+                      {"request": "analyse"},
+                      call_id="fc-task-001",
+                  ),
+              ],
+              "Todos saved and analysis complete.",
+          ]
+      ),
+      tools=[FunctionTool(set_todo_list)],
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("go"))
+
+  assert tool_calls == [["write report"]]
+  assert "set_todo_list" in _fr_names(events)
+  assert "specialist" in _fr_names(events)
+  assert _collect_finish_outputs(events) == [{"result": "specialist done"}]
+  assert any(
+      "Todos saved and analysis complete." in t
+      for t in _get_text_responses(events)
+  )
+
+  # Persisted session must keep FC/FR pairs balanced for the mixed turn.
+  session_events = runner.session.events
+  assert "set_todo_list" in _fr_names(session_events)
+  assert "specialist" in _fr_names(session_events)
+  coordinator_fcs = _fc_names(session_events, author="coordinator")
+  assert coordinator_fcs.count("set_todo_list") == 1
+  assert coordinator_fcs.count("specialist") == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_root_mixed_turn_with_two_regular_tools_and_task(
+    request: pytest.FixtureRequest,
+):
+  """All regular-tool FRs survive when two tools share a turn with a task FC."""
+  seen: list[str] = []
+
+  def note_a(value: str) -> dict[str, str]:
+    """Record note A."""
+    seen.append(f"a:{value}")
+    return {"note": value}
+
+  def note_b(value: str) -> dict[str, str]:
+    """Record note B."""
+    seen.append(f"b:{value}")
+    return {"note": value}
+
+  child = _make_task_agent(
+      name="worker",
+      responses=[_finish_part({"result": "worked"})],
+  )
+  root = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  _function_call_part(
+                      "note_a", {"value": "one"}, call_id="fc-a"
+                  ),
+                  _function_call_part(
+                      "note_b", {"value": "two"}, call_id="fc-b"
+                  ),
+                  _function_call_part(
+                      "worker", {"request": "run"}, call_id="fc-w"
+                  ),
+              ],
+              "Combined turn complete.",
+          ]
+      ),
+      tools=[FunctionTool(note_a), FunctionTool(note_b)],
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("go"))
+
+  assert sorted(seen) == ["a:one", "b:two"]
+  fr_names = _fr_names(events)
+  assert "note_a" in fr_names
+  assert "note_b" in fr_names
+  assert "worker" in fr_names
+  assert any(
+      "Combined turn complete." in t for t in _get_text_responses(events)
+  )
+
+
+# ---------------------------------------------------------------------------
+# 3. LlmAgent root → task sub-agent → nested task sub-agent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Task-mode wrapper does not dispatch task-delegation FCs (only the "
+        "chat-mode wrapper does), so a task-mode middle agent cannot delegate "
+        "to its task sub-agent.  Documented limitation."
+    ),
+    strict=True,
+)
+@pytest.mark.asyncio
+async def test_chat_root_with_nested_task_delegation(
+    request: pytest.FixtureRequest,
+):
+  """Task agent itself has a task sub-agent and delegates further."""
+  grandchild = _make_task_agent(
+      name="grandchild",
+      responses=[_finish_part({"result": "leaf"})],
+  )
+
+  child = LlmAgent(
+      name="child",
+      model=testing_utils.MockModel.create(
+          responses=[
+              _delegate_part("grandchild", "leaf work"),
+              _finish_part({"result": "middle wraps leaf"}),
+          ]
+      ),
+      mode="task",
+      sub_agents=[grandchild],
+  )
+
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              _delegate_part("child", "do the thing"),
+              "Top-level done.",
+          ]
+      ),
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("hi"))
+
+  finish_args = _collect_finish_outputs(events)
+  # grandchild fires first (deepest), then child.
+  assert finish_args == [
+      {"result": "leaf"},
+      {"result": "middle wraps leaf"},
+  ]
+  assert any("Top-level done." in t for t in _get_text_responses(events))
+
+
+# ---------------------------------------------------------------------------
+# 4. Workflow with a single task-mode node (no FC delegation)
+# ---------------------------------------------------------------------------
+
+
+class _CaptureNode(BaseNode):
+  """Records its node_input for assertion."""
+
+  received: list[Any] = []
+
+  async def _run_impl(self, *, ctx, node_input):
+    type(self).received.append(node_input)
+    yield Event(output=node_input)
+
+
+@pytest.mark.asyncio
+async def test_workflow_accepts_task_mode_graph_node():
+  """A mode='task' LlmAgent can be used as a static workflow graph node."""
+  intake = _make_task_agent(name="intake", responses=[])
+  capture = _CaptureNode(name="capture")
+
+  wf = Workflow(name="wf", edges=[(START, intake), (intake, capture)])
+  assert wf is not None
+
+
+# ---------------------------------------------------------------------------
+# 6. Dynamic node: function node that dispatches a task agent via ctx.run_node
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dynamic_dispatch_of_task_agent(
+    request: pytest.FixtureRequest,
+):
+  """A custom function node can dispatch a task agent and consume its output."""
+  task_agent = _make_task_agent(
+      name="task_agent",
+      responses=[_finish_part({"result": "dynamic output"})],
+  )
+
+  @node(rerun_on_resume=True)
+  async def driver(*, ctx: Context, node_input: Any):
+    output = await ctx.run_node(task_agent, node_input="go")
+    yield Event(output=f"wrapped: {output}")
+
+  wf = Workflow(name="wf", edges=[(START, driver)])
+
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("start"))
+
+  outputs = [e.output for e in events if e.output]
+  assert any(
+      isinstance(o, str) and "dynamic output" in o for o in outputs
+  ), f"expected wrapped dynamic output, got: {outputs}"
+
+
+# ---------------------------------------------------------------------------
+# 7. Validation error -> retry: wrapper yields the error FR and lets the LLM
+#    emit a corrected finish_task on the next round.
+# ---------------------------------------------------------------------------
+
+
+class _StrictOutput(BaseModel):
+  name: str
+  age: int
+
+
+@pytest.mark.asyncio
+async def test_task_validation_error_drives_retry(
+    request: pytest.FixtureRequest,
+):
+  """Bad finish_task args produce an error FR; the LLM gets a retry."""
+  # First finish_task call has wrong types (age as string), second is correct.
+  child_model = testing_utils.MockModel.create(
+      responses=[
+          _finish_part({"name": "Jane", "age": "thirty"}),
+          _finish_part({"name": "Jane", "age": 30}),
+      ]
+  )
+  child = LlmAgent(
+      name="child",
+      model=child_model,
+      mode="task",
+      output_schema=_StrictOutput,
+  )
+
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              _delegate_part("child", "gather identity"),
+              "All set.",
+          ]
+      ),
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("hi"))
+
+  # The mock LLM was called twice for the child (the bad attempt + the
+  # corrected one), proving the wrapper looped instead of terminating
+  # on the first finish_task.
+  assert child_model.response_index == 1
+  finish_args = _collect_finish_outputs(events)
+  assert finish_args == [
+      {"name": "Jane", "age": "thirty"},
+      {"name": "Jane", "age": 30},
+  ]
+  # The validation-error FR should be present in session for the LLM
+  # to see on its retry round.
+  error_frs = [
+      fr.response
+      for e in events
+      for fr in e.get_function_responses()
+      if fr.name == "finish_task"
+      and isinstance(fr.response, dict)
+      and "error" in fr.response
+  ]
+  assert len(error_frs) == 1, f"expected one error FR, got {error_frs}"
+
+
+# ---------------------------------------------------------------------------
+# 8. Cross-turn resumption: an unresolved task FC from a prior turn is
+#    re-dispatched by the chat coordinator on the next user turn, before
+#    the LLM is called.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_coordinator_resumes_unresolved_task_fc(
+    request: pytest.FixtureRequest,
+):
+  """Pending task FC from a prior turn is dispatched before the new LLM call."""
+  child_model = testing_utils.MockModel.create(
+      responses=[_finish_part({"result": "finished after resume"})]
+  )
+  child = LlmAgent(name="child", model=child_model, mode="task")
+
+  root_model = testing_utils.MockModel.create(
+      responses=[
+          # Only response needed: post-resume continuation after the
+          # pre-LLM scan dispatches the pending task and synthesizes its FR.
+          "Resumed and done.",
+      ]
+  )
+  root = LlmAgent(
+      name="root",
+      model=root_model,
+      sub_agents=[child],
+  )
+
+  # Seed the session with an unresolved task delegation FC authored by
+  # root from a "prior turn".  No matching FR exists.
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name=request.function.__name__,
+      user_id="u",
+  )
+  await session_service.append_event(
+      session=session,
+      event=Event(
+          invocation_id="prior-inv",
+          author="root",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="fc-pending",
+                          name="child",
+                          args={"request": "leftover work"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  from google.adk.runners import Runner
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = Runner(app=app, session_service=session_service)
+
+  events = []
+  async for ev in runner.run_async(
+      user_id="u",
+      session_id=session.id,
+      new_message=testing_utils.get_user_content("continue"),
+  ):
+    events.append(ev)
+
+  # The child must have been dispatched once (resuming the pending FC).
+  assert (
+      child_model.response_index == 0
+  ), "child LLM should have been called exactly once for the resumed task"
+  finish_args = _collect_finish_outputs(events)
+  assert {
+      "result": "finished after resume"
+  } in finish_args, f"expected resumed task to finish; got {finish_args}"
+
+
+# ---------------------------------------------------------------------------
+# 9. Resumable task delegation: a task sub-agent that pauses for tool
+#    confirmation resumes without executing its parent's delegation FC.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_task_sub_agent_resumes_without_parent_delegation_fc(
+    request: pytest.FixtureRequest,
+):
+  """A resumed task child does not execute its parent's delegation call."""
+  confirmation_tool = FunctionTool(
+      func=_confirmed_task_step,
+      require_confirmation=True,
+  )
+  child = _make_task_agent(
+      name="child",
+      responses=[
+          types.Part.from_function_call(
+              name=confirmation_tool.name,
+              args={},
+          ),
+          _finish_part({"result": "confirmed"}),
+      ],
+  )
+  child.tools.append(confirmation_tool)
+
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              _delegate_part("child", "perform a confirmed step"),
+              "Task confirmed.",
+          ]
+      ),
+      sub_agents=[child],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=root,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  first_events = await runner.run_async(testing_utils.get_user_content("start"))
+  confirmation_fc = next(
+      fc
+      for event in first_events
+      for fc in event.get_function_calls()
+      if fc.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  invocation_id = next(
+      event.invocation_id
+      for event in first_events
+      if confirmation_fc in event.get_function_calls()
+  )
+
+  resumed_events = await runner.run_async(
+      testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=confirmation_fc.id,
+                  name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                  response={"confirmed": True},
+              )
+          )
+      ),
+      invocation_id=invocation_id,
+  )
+
+  assert {"result": "confirmed"} in _collect_finish_outputs(resumed_events)
+  assert any(
+      "Task confirmed." in text for text in _get_text_responses(resumed_events)
+  )
+
+
+# ---------------------------------------------------------------------------
+# 10. Strict isolation filtering: a stranger event with a foreign
+#    isolation_scope must NOT appear in the task agent's LLM context.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_strict_isolation_filter_excludes_foreign_scope(
+    request: pytest.FixtureRequest,
+):
+  """Garbage-scoped events are excluded from the task agent's view."""
+  child_model = testing_utils.MockModel.create(
+      responses=[_finish_part({"result": "ok"})]
+  )
+  child = LlmAgent(name="child", model=child_model, mode="task")
+
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create(
+          responses=[
+              _delegate_part("child", "do the thing"),
+              "Done.",
+          ]
+      ),
+      sub_agents=[child],
+  )
+
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name=request.function.__name__,
+      user_id="u",
+  )
+  # Seed a stranger event with a different scope.
+  stranger = Event(
+      invocation_id="stranger-inv",
+      author="someone_else",
+      content=types.Content(
+          role="user",
+          parts=[types.Part(text="SECRET-SHOULD-NOT-LEAK")],
+      ),
+  )
+  stranger.isolation_scope = "garbage-scope"
+  session.events.append(stranger)
+
+  from google.adk.runners import Runner
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = Runner(app=app, session_service=session_service)
+
+  async for _ in runner.run_async(
+      user_id="u",
+      session_id=session.id,
+      new_message=testing_utils.get_user_content("go"),
+  ):
+    pass
+
+  # Inspect the child's LLM request: SECRET text must not appear.
+  child_request = child_model.requests[0]
+  parts = []
+  for c in child_request.contents or []:
+    for p in c.parts or []:
+      parts.append(p.text or "")
+  rendered = "\n".join(parts)
+  assert (
+      "SECRET-SHOULD-NOT-LEAK" not in rendered
+  ), "stranger event leaked across isolation_scope filter"
+
+
+@pytest.mark.asyncio
+async def test_chat_root_mixed_turn_with_long_running_tool_and_task_pauses(
+    request: pytest.FixtureRequest,
+):
+  """Mixed turn with a task FC and a long-running tool (which returns None) pauses."""
+
+  long_run_called = []
+
+  def my_long_run(value: str) -> None:
+    long_run_called.append(value)
+    return None
+
+  child = _make_task_agent(
+      name="specialist",
+      responses=[_finish_part({"result": "specialist done"})],
+  )
+  root = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  _function_call_part(
+                      "my_long_run",
+                      {"value": "hello"},
+                      call_id="fc-lro-001",
+                  ),
+                  _function_call_part(
+                      "specialist",
+                      {"request": "analyse"},
+                      call_id="fc-task-001",
+                  ),
+              ],
+              "Resume complete.",
+          ]
+      ),
+      tools=[LongRunningFunctionTool(my_long_run)],
+      sub_agents=[child],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=root,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content("go"))
+
+  assert long_run_called == ["hello"]
+  assert _collect_finish_outputs(events) == [{"result": "specialist done"}]
+
+  fr_names = _fr_names(events)
+  assert "specialist" in fr_names
+  assert "my_long_run" not in fr_names
+
+  assert not any("Resume complete." in t for t in _get_text_responses(events))
+
+  assert runner.session.events
+  model_events = [
+      e
+      for e in runner.session.events
+      if e.author == "coordinator" and e.get_function_calls()
+  ]
+  assert len(model_events) == 1
+  assert "fc-lro-001" in model_events[0].long_running_tool_ids

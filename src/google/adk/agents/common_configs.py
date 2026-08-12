@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,46 +13,31 @@
 # limitations under the License.
 
 """Common configuration classes for agent YAML configs."""
+
 from __future__ import annotations
 
-from typing import Any
-from typing import List
 from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import model_validator
 
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 
 
-@experimental
-class ArgumentConfig(BaseModel):
-  """An argument passed to a function or a class's constructor."""
-
-  model_config = ConfigDict(extra="forbid")
-
-  name: Optional[str] = None
-  """Optional. The argument name.
-
-  When the argument is for a positional argument, this can be omitted.
-  """
-
-  value: Any
-  """The argument value."""
-
-
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 class CodeConfig(BaseModel):
   """Code reference config for a variable, a function, or a class.
 
-  This config is used for configuring callbacks and tools.
+  Only references an object by name. YAML cannot pass constructor args; to
+  use a configured object, build it in Python and reference its FQN here.
   """
 
   model_config = ConfigDict(extra="forbid")
 
   name: str
-  """Required. The name of the variable, function, class, etc. in code.
+  """Required. The fully qualified name of the variable, function, or class.
 
   Examples:
 
@@ -63,24 +48,8 @@ class CodeConfig(BaseModel):
     When used for callbacks, it refers to a function, e.g. `my_library.my_callbacks.my_callback`
   """
 
-  args: Optional[List[ArgumentConfig]] = None
-  """Optional. The arguments for the code when `name` refers to a function or a
-  class's constructor.
 
-  Examples:
-    ```
-    tools
-      - name: AgentTool
-        args:
-          - name: agent
-            value: search_agent.yaml
-          - name: skip_summarization
-            value: True
-    ```
-  """
-
-
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 class AgentRefConfig(BaseModel):
   """The config for the reference to another agent."""
 
@@ -116,7 +85,7 @@ class AgentRefConfig(BaseModel):
     my_custom_agent = LlmAgent(
         name="my_custom_agent",
         instruction="You are a helpful custom agent.",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
     )
     ```
 

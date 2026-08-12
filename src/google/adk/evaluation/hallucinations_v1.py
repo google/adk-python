@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,21 +28,18 @@ from typing_extensions import override
 
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from ._retry_options_utils import add_default_retry_options_if_not_present
 from .app_details import AppDetails
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import HallucinationsCriterion
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -298,28 +295,16 @@ class HallucinationsV1Evaluator(Evaluator):
     self.segmenter_prompt = _HALLUCINATIONS_V1_SEGMENTER_PROMPT
     self.sentence_validator_prompt = _HALLUCINATIONS_V1_VALIDATOR_PROMPT
     self._model = self._judge_model_options.judge_model
-    self._model_config = self._judge_model_options.judge_model_config
+    self._model_config = (
+        self._judge_model_options.judge_model_config
+        or genai_types.GenerateContentConfig()
+    )
 
   def _setup_auto_rater(self) -> BaseLlm:
     model_id = self._judge_model_options.judge_model
     llm_registry = LLMRegistry()
     llm_class = llm_registry.resolve(model_id)
     return llm_class(model=model_id)
-
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.HALLUCINATIONS_V1.value,
-        description=(
-            "This metric assesses whether a model response contains any false,"
-            " contradictory, or unsupported claims using a LLM as judge. Value"
-            " range for this metric is [0,1], with values closer to 1 more"
-            " desirable."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
-    )
 
   def _create_context_for_step(
       self,
@@ -533,9 +518,10 @@ class HallucinationsV1Evaluator(Evaluator):
           self._judge_model.generate_content_async(segmenter_llm_request)
       ) as agen:
         segmenter_response = await agen.__anext__()
-        sentences = _parse_sentences(
-            get_text_from_content(segmenter_response.content)
-        )
+        segmenter_text = get_text_from_content(segmenter_response.content)
+        if segmenter_text is None:
+          return None, "Segmenter returned no text."
+        sentences = _parse_sentences(segmenter_text)
     except Exception as e:
       return None, f"Error during sentence segmentation: {e}"
 
@@ -567,9 +553,10 @@ class HallucinationsV1Evaluator(Evaluator):
           self._judge_model.generate_content_async(validator_llm_request)
       ) as agen:
         validator_response = await agen.__anext__()
-        validation_results = _parse_validation_results(
-            get_text_from_content(validator_response.content)
-        )
+        validator_text = get_text_from_content(validator_response.content)
+        if validator_text is None:
+          return None, "Sentence validator returned no text."
+        validation_results = _parse_validation_results(validator_text)
     except Exception as e:
       return None, f"Error during sentence validation: {e}"
 
@@ -695,19 +682,23 @@ class HallucinationsV1Evaluator(Evaluator):
       per_invocation_results: list[PerInvocationResult],
   ) -> EvaluationResult:
     """Aggregates the per invocation results to get the overall score."""
-    valid_results = [r for r in per_invocation_results if r.score is not None]
-    if not valid_results:
+    valid_scores = [
+        result.score
+        for result in per_invocation_results
+        if result.score is not None
+    ]
+    if not valid_scores:
       return EvaluationResult(
           overall_score=None,
           overall_eval_status=EvalStatus.NOT_EVALUATED,
           per_invocation_results=per_invocation_results,
       )
 
-    overall_fs_score = statistics.mean([r.score for r in valid_results])
+    overall_fs_score = statistics.mean(valid_scores)
     return EvaluationResult(
         overall_score=overall_fs_score,
         overall_eval_status=get_eval_status(
-            overall_fs_score, self._eval_metric.threshold
+            overall_fs_score, self._criterion.threshold
         ),
         per_invocation_results=per_invocation_results,
     )
@@ -716,17 +707,24 @@ class HallucinationsV1Evaluator(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
+    del conversation_scenario  # not used by this metric.
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
+
     # expected_invocations are not required by the metric and if they are not
     # supplied, we provide a list of None to rest of the code.
-    expected_invocations = (
+    expected_by_invocation: list[Optional[Invocation]] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
-        else expected_invocations
+        else list(expected_invocations)
     )
+
     per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, expected_by_invocation, strict=True
+    ):
       step_evaluations = self._get_steps_to_evaluate(actual)
 
       if not step_evaluations:
@@ -759,7 +757,7 @@ class HallucinationsV1Evaluator(Evaluator):
               expected_invocation=expected,
               score=invocation_score,
               eval_status=get_eval_status(
-                  invocation_score, self._eval_metric.threshold
+                  invocation_score, self._criterion.threshold
               ),
               rubric_scores=[],
           )

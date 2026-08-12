@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,14 +23,15 @@ from google.auth.credentials import Credentials
 from pydantic import BaseModel
 from typing_extensions import override
 
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 from ._google_credentials import BaseGoogleCredentialsConfig
 from ._google_credentials import GoogleCredentialsManager
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 
-@experimental
+@experimental(FeatureName.GOOGLE_TOOL)
 class GoogleTool(FunctionTool):
   """GoogleTool class for tools that call Google APIs.
 
@@ -104,6 +105,12 @@ class GoogleTool(FunctionTool):
           "status": "ERROR",
           "error_details": str(ex),
       }
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("status") == "ERROR":
+      return "TOOL_ERROR"
+    return None
 
   async def _run_async_with_credential(
       self,

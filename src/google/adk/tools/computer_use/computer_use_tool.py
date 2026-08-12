@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,11 +19,11 @@ import logging
 from typing import Any
 from typing import Callable
 
-from google.genai import types
 from typing_extensions import override
 
+from ...features import experimental
+from ...features import FeatureName
 from ...models.llm_request import LlmRequest
-from ...utils.feature_decorator import experimental
 from ..function_tool import FunctionTool
 from ..tool_context import ToolContext
 from .base_computer import ComputerState
@@ -31,14 +31,14 @@ from .base_computer import ComputerState
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental
+@experimental(FeatureName.COMPUTER_USE)
 class ComputerUseTool(FunctionTool):
   """A tool that wraps computer control functions for use with LLMs.
 
   This tool automatically normalizes coordinates from a virtual coordinate space
   (by default 1000x1000) to the actual screen size. This allows LLMs to work
-  with a consistent coordinate system regardless of the actual screen dimensions,
-  making their output more predictable and easier to handle.
+  with a consistent coordinate system regardless of the actual screen
+  dimensions, making their output more predictable and easier to handle.
   """
 
   def __init__(
@@ -52,13 +52,14 @@ class ComputerUseTool(FunctionTool):
 
     Args:
       func: The computer control function to wrap.
-      screen_size: The actual screen size as (width, height) in pixels.
-        This represents the real dimensions of the target screen/display.
-      virtual_screen_size: The virtual coordinate space dimensions as (width, height)
-        that the LLM uses to specify coordinates. Coordinates from the LLM are
-        automatically normalized from this virtual space to the actual screen_size.
-        Default is (1000, 1000), meaning the LLM thinks it's working with a
-        1000x1000 pixel screen regardless of the actual screen dimensions.
+      screen_size: The actual screen size as (width, height) in pixels. This
+        represents the real dimensions of the target screen/display.
+      virtual_screen_size: The virtual coordinate space dimensions as (width,
+        height) that the LLM uses to specify coordinates. Coordinates from the
+        LLM are automatically normalized from this virtual space to the actual
+        screen_size. Default is (1000, 1000), meaning the LLM thinks it's
+        working with a 1000x1000 pixel screen regardless of the actual screen
+        dimensions.
 
     Raises:
       ValueError: If screen_size or virtual_screen_size is not a valid tuple
@@ -107,6 +108,29 @@ class ComputerUseTool(FunctionTool):
   ) -> Any:
     """Run the computer control function with normalized coordinates."""
 
+    # Check for safety confirmation if required by the model
+    if not tool_context.tool_confirmation:
+      safety_decision = args.get("safety_decision")
+      if safety_decision:
+        decision = safety_decision.get("decision")
+        explanation = safety_decision.get("explanation")
+
+        if decision == "require_confirmation":
+          hint = (
+              explanation
+              or "This computer use action requires safety confirmation."
+          )
+          tool_context.request_confirmation(hint=hint)
+          tool_context.actions.skip_summarization = True
+          return {
+              "error": (
+                  "This tool call requires confirmation, please approve or"
+                  " reject."
+              )
+          }
+    elif not tool_context.tool_confirmation.confirmed:
+      return {"error": "This tool call is rejected."}
+
     try:
       # Normalize coordinates if present
       if "x" in args:
@@ -142,8 +166,9 @@ class ComputerUseTool(FunctionTool):
       result = await super().run_async(args=args, tool_context=tool_context)
 
       # Process the result if it's an EnvironmentState
+      response = result
       if isinstance(result, ComputerState):
-        return {
+        response = {
             "image": {
                 "mimetype": "image/png",
                 "data": base64.b64encode(result.screenshot).decode("utf-8"),
@@ -151,7 +176,15 @@ class ComputerUseTool(FunctionTool):
             "url": result.url,
         }
 
-      return result
+      if (
+          tool_context.tool_confirmation
+          and tool_context.tool_confirmation.confirmed
+      ):
+        if not isinstance(response, dict):
+          response = {"result": response}
+        response["safety_acknowledgement"] = "true"
+
+      return response
 
     except Exception as e:
       logger.error("Error in ComputerUseTool.run_async: %s", e)
@@ -161,6 +194,5 @@ class ComputerUseTool(FunctionTool):
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
-    """ComputerUseToolset will add this tool to the LLM request and add computer
-    use configuration to the LLM request."""
+    """ComputerUseToolset will add this tool to the LLM request and add computer use configuration to the LLM request."""
     pass

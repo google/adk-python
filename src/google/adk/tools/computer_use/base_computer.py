@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,13 +18,18 @@ import abc
 from enum import Enum
 from typing import Literal
 from typing import Optional
+from typing import TYPE_CHECKING
 
 import pydantic
 
-from ...utils.feature_decorator import experimental
+if TYPE_CHECKING:
+  from ..tool_context import ToolContext
+
+from ...features import experimental
+from ...features import FeatureName
 
 
-@experimental
+@experimental(FeatureName.COMPUTER_USE)
 class ComputerEnvironment(str, Enum):
   """Case insensitive enum for computer environments."""
 
@@ -34,7 +39,7 @@ class ComputerEnvironment(str, Enum):
   """Operates in a web browser."""
 
 
-@experimental
+@experimental(FeatureName.COMPUTER_USE)
 class ComputerState(pydantic.BaseModel):
   """Represents the current state of the computer environment.
 
@@ -51,13 +56,24 @@ class ComputerState(pydantic.BaseModel):
   )
 
 
-@experimental
+@experimental(FeatureName.COMPUTER_USE)
 class BaseComputer(abc.ABC):
   """async defines an interface for computer environments.
 
   This abstract base class async defines the standard interface for controlling
   computer environments, including web browsers and other interactive systems.
   """
+
+  async def prepare(self, tool_context: "ToolContext") -> None:
+    """Called before each tool invocation to prepare resources.
+
+    Override this to set up session-level resources (sandbox, tokens, etc.)
+    using tool_context.state for persistence across invocations.
+
+    Args:
+        tool_context: The tool context with session state access.
+    """
+    pass
 
   @abc.abstractmethod
   async def screen_size(self) -> tuple[int, int]:

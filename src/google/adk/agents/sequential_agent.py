@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,27 +16,58 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import AsyncGenerator
 from typing import ClassVar
 from typing import Type
 
+from typing_extensions import deprecated
 from typing_extensions import override
 
 from ..events.event import Event
+from ..features import experimental
+from ..features import FeatureName
+from ..tools.base_tool import BaseTool
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
+from ..utils.instructions_utils import InstructionProvider
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
+from .llm_agent import ToolUnion
+from .readonly_context import ReadonlyContext
 from .sequential_agent_config import SequentialAgentConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
+def _tool_name(tool: ToolUnion) -> str | None:
+  if isinstance(tool, BaseTool):
+    return tool.name
+  if callable(tool):
+    name = getattr(tool, '__name__', None)
+    return name if isinstance(name, str) else None
+  return None
+
+
+def _append_instruction(
+    instruction: str | InstructionProvider, suffix: str
+) -> str | InstructionProvider:
+  if isinstance(instruction, str):
+    return instruction + suffix
+
+  async def combined(context: ReadonlyContext) -> str:
+    resolved = instruction(context)
+    if inspect.isawaitable(resolved):
+      resolved = await resolved
+    return resolved + suffix
+
+  return combined
+
+
+@experimental(FeatureName.AGENT_STATE)
 class SequentialAgentState(BaseAgentState):
   """State for SequentialAgent."""
 
@@ -44,11 +75,25 @@ class SequentialAgentState(BaseAgentState):
   """The name of the current sub-agent to run."""
 
 
+@deprecated(
+    'SequentialAgent is deprecated in favor of Workflow and will be removed'
+    ' in a future version. Workflow cannot yet be used as an LlmAgent'
+    ' sub-agent.'
+)
 class SequentialAgent(BaseAgent):
-  """A shell agent that runs its sub-agents in sequence."""
+  """A shell agent that runs its sub-agents in sequence.
+
+  .. deprecated::
+    SequentialAgent is deprecated in favor of Workflow and will be removed in
+    a future version. Workflow cannot yet be used as an LlmAgent sub-agent.
+  """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = SequentialAgentConfig
-  """The config type for this agent."""
+  """The config type for this agent.
+
+  DEPRECATED: This attribute is deprecated and will be removed in a future
+  version, along with the AgentConfig YAML loader.
+  """
 
   @override
   async def _run_async_impl(
@@ -92,7 +137,7 @@ class SequentialAgent(BaseAgent):
 
   def _get_start_index(
       self,
-      agent_state: SequentialAgentState,
+      agent_state: SequentialAgentState | None,
   ) -> int:
     """Calculates the start index for the sub-agent loop."""
     if not agent_state:
@@ -136,7 +181,7 @@ class SequentialAgent(BaseAgent):
     # There is no way to know if it's using live during init phase so we have to init it here
     for sub_agent in self.sub_agents:
       # add tool
-      def task_completed():
+      def task_completed() -> str:
         """
         Signals that the agent has successfully completed the user's question
         or task.
@@ -145,12 +190,18 @@ class SequentialAgent(BaseAgent):
 
       if isinstance(sub_agent, LlmAgent):
         # Use function name to dedupe.
-        if task_completed.__name__ not in sub_agent.tools:
+        if not any(
+            _tool_name(tool) == task_completed.__name__
+            for tool in sub_agent.tools
+        ):
           sub_agent.tools.append(task_completed)
-          sub_agent.instruction += f"""If you finished the user's request
+          completion_instruction = f"""If you finished the user's request
           according to its description, call the {task_completed.__name__} function
           to exit so the next agents can take over. When calling this function,
           do not generate any text other than the function call."""
+          sub_agent.instruction = _append_instruction(
+              sub_agent.instruction, completion_instruction
+          )
 
     for sub_agent in self.sub_agents:
       async with Aclosing(sub_agent.run_live(ctx)) as agen:

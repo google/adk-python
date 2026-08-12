@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,6 @@
 
 from __future__ import annotations
 
-import vertexai
-from vertexai.preview import example_stores
-from vertexai.preview import rag
+import vertexai as vertexai
+from vertexai.preview import example_stores as example_stores
+from vertexai.preview import rag as rag

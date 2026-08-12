@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,19 +14,32 @@
 from __future__ import annotations
 
 from abc import ABC
+from collections.abc import Awaitable
 from typing import ClassVar
 from typing import Optional
 
 from pydantic import BaseModel
-from typing_extensions import TypeAlias
 
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
-from .eval_metrics import EvalStatus
+from .eval_metrics import EvalStatus as EvalStatus
 from .eval_rubrics import RubricScore
 
-# Redefining the type here for backward compatibility.
-EvalStatus: TypeAlias = EvalStatus
+
+def _validate_invocation_lengths(
+    actual_invocations: list[Invocation],
+    expected_invocations: Optional[list[Invocation]],
+) -> None:
+  """Rejects invocation lists that cannot be paired without truncation."""
+  if expected_invocations is not None and len(actual_invocations) != len(
+      expected_invocations
+  ):
+    raise ValueError(
+        "actual_invocations and expected_invocations must have the same"
+        f" length; got {len(actual_invocations)} and"
+        f" {len(expected_invocations)}."
+    )
 
 
 class PerInvocationResult(BaseModel):
@@ -61,8 +74,9 @@ class Evaluator(ABC):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-  ) -> EvaluationResult:
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult | Awaitable[EvaluationResult]:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 
     Args:
@@ -72,5 +86,7 @@ class Evaluator(ABC):
         usually act as a benchmark/golden response. If these are specified
         usually the expectation is that the length of this list and actual
         invocation is the same.
+      conversation_scenario: An optional conversation scenario for multi-turn
+        conversations.
     """
     raise NotImplementedError()

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from typing import Optional
 
 from pydantic import BaseModel
@@ -32,7 +33,7 @@ class ActiveStreamingTool(BaseModel):
   )
   """The pydantic model config."""
 
-  task: Optional[asyncio.Task] = None
+  task: Optional[asyncio.Task[Any]] = None
   """The active task of this streaming tool."""
 
   stream: Optional[LiveRequestQueue] = None

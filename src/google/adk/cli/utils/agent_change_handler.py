@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ class AgentChangeEventHandler(FileSystemEventHandler):
     self.current_app_name_ref = current_app_name_ref
 
   def on_modified(self, event):
-    if not (event.src_path.endswith(".py") or event.src_path.endswith(".yaml")):
+    if not event.src_path.endswith((".py", ".yaml", ".yml")):
       return
     logger.info("Change detected in agents directory: %s", event.src_path)
     self.agent_loader.remove_agent_from_cache(self.current_app_name_ref.value)

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ from __future__ import annotations
 class InputValidationError(ValueError):
   """Represents an error raised when user input fails validation."""
 
-  def __init__(self, message="Invalid input."):
+  def __init__(self, message: str = "Invalid input.") -> None:
     """Initializes the InputValidationError exception.
 
     Args:

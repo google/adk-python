@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,6 +28,16 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
 
+from ....utils import _mtls_utils
+
+_DEFAULT_CONNECTORS_ENDPOINT_TEMPLATE = "connectors.googleapis.com"
+_DEFAULT_MTLS_CONNECTORS_ENDPOINT_TEMPLATE = "connectors.mtls.googleapis.com"
+_DEFAULT_INTEGRATIONS_ENDPOINT_TEMPLATE = "integrations.googleapis.com"
+_DEFAULT_MTLS_INTEGRATIONS_ENDPOINT_TEMPLATE = (
+    "integrations.mtls.googleapis.com"
+)
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+
 
 class ConnectionsClient:
   """Utility class for interacting with Google Cloud Connectors API."""
@@ -52,7 +62,11 @@ class ConnectionsClient:
     self.project = project
     self.location = location
     self.connection = connection
-    self.connector_url = "https://connectors.googleapis.com"
+    self.connector_url = "https://" + _mtls_utils.get_api_endpoint(
+        location,
+        _DEFAULT_CONNECTORS_ENDPOINT_TEMPLATE,
+        _DEFAULT_MTLS_CONNECTORS_ENDPOINT_TEMPLATE,
+    )
     self.service_account_json = service_account_json
     self.credential_cache = None
 
@@ -168,7 +182,16 @@ class ConnectionsClient:
             "description": "This tool can execute a query on connection",
             "version": "4",
         },
-        "servers": [{"url": "https://integrations.googleapis.com"}],
+        "servers": [{
+            "url": (
+                "https://"
+                + _mtls_utils.get_api_endpoint(
+                    "",
+                    _DEFAULT_INTEGRATIONS_ENDPOINT_TEMPLATE,
+                    _DEFAULT_MTLS_INTEGRATIONS_ENDPOINT_TEMPLATE,
+                )
+            )
+        }],
         "security": [
             {"google_auth": ["https://www.googleapis.com/auth/cloud-platform"]}
         ],
@@ -225,7 +248,7 @@ class ConnectionsClient:
                 "host": {
                     "type": "string",
                     "default": "",
-                    "description": "Host name incase of tls service directory",
+                    "description": "Host name in case of tls service directory",
                 },
                 "entity": {
                     "type": "string",
@@ -324,7 +347,9 @@ class ConnectionsClient:
                 "content": {
                     "application/json": {
                         "schema": {
-                            "$ref": f"#/components/schemas/{action_display_name}_Request"
+                            "$ref": (
+                                f"#/components/schemas/{action_display_name}_Request"
+                            )
                         }
                     }
                 }
@@ -335,7 +360,9 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": f"#/components/schemas/{action_display_name}_Response",
+                                "$ref": (
+                                    f"#/components/schemas/{action_display_name}_Response"
+                                ),
                             }
                         }
                     },
@@ -354,9 +381,11 @@ class ConnectionsClient:
     return {
         "post": {
             "summary": f"List {entity}",
-            "description": f"""Returns the list of {entity} data. If the page token was available in the response, let users know there are more records available. Ask if the user wants to fetch the next page of results. When passing filter use the
+            "description": (
+                f"""Returns the list of {entity} data. If the page token was available in the response, let users know there are more records available. Ask if the user wants to fetch the next page of results. When passing filter use the
                 following format: `field_name1='value1' AND field_name2='value2'
-                `. {tool_instructions}""",
+                `. {tool_instructions}"""
+            ),
             "x-operation": "LIST_ENTITIES",
             "x-entity": f"{entity}",
             "operationId": f"{tool_name}_list_{entity}",
@@ -381,7 +410,9 @@ class ConnectionsClient:
                                     f"Returns a list of {entity} of json"
                                     f" schema: {schema_as_string}"
                                 ),
-                                "$ref": "#/components/schemas/execute-connector_Response",
+                                "$ref": (
+                                    "#/components/schemas/execute-connector_Response"
+                                ),
                             }
                         }
                     },
@@ -425,7 +456,9 @@ class ConnectionsClient:
                                     f"Returns {entity} of json schema:"
                                     f" {schema_as_string}"
                                 ),
-                                "$ref": "#/components/schemas/execute-connector_Response",
+                                "$ref": (
+                                    "#/components/schemas/execute-connector_Response"
+                                ),
                             }
                         }
                     },
@@ -462,7 +495,9 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": "#/components/schemas/execute-connector_Response"
+                                "$ref": (
+                                    "#/components/schemas/execute-connector_Response"
+                                )
                             }
                         }
                     },
@@ -499,7 +534,9 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": "#/components/schemas/execute-connector_Response"
+                                "$ref": (
+                                    "#/components/schemas/execute-connector_Response"
+                                )
                             }
                         }
                     },
@@ -536,7 +573,9 @@ class ConnectionsClient:
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": "#/components/schemas/execute-connector_Response"
+                                "$ref": (
+                                    "#/components/schemas/execute-connector_Response"
+                                )
                             }
                         }
                     },
@@ -815,7 +854,7 @@ class ConnectionsClient:
         credentials, _ = default_service_credential(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
-      except:
+      except google.auth.exceptions.DefaultCredentialsError:
         credentials = None
 
     if not credentials:
@@ -848,7 +887,9 @@ class ConnectionsClient:
           "Authorization": f"Bearer {self._get_access_token()}",
       }
 
-      response = requests.get(url, headers=headers)
+      response = requests.get(
+          url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
+      )
       response.raise_for_status()
       return response
 

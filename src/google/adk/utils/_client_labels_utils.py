@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 import contextvars
 import os
@@ -32,24 +33,33 @@ EVAL_CLIENT_LABEL = f"google-adk-eval/{version.__version__}"
 """Label used to denote calls emerging to external system as a part of Evals."""
 
 # The ContextVar holds client label collected for the current request.
-_LABEL_CONTEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
+_LABEL_CONTEXT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_LABEL_CONTEXT", default=None
 )
 
 
-def _get_default_labels() -> List[str]:
-  """Returns a list of labels that are always added."""
-  framework_label = f"{_ADK_LABEL}/{version.__version__}"
+def _get_default_labels(framework_label: str | None = None) -> List[str]:
+  """Returns a list of labels that are always added.
 
-  if os.environ.get(_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME):
-    framework_label = f"{framework_label}+{_AGENT_ENGINE_TELEMETRY_TAG}"
+  Args:
+    framework_label: Optional SemVer build-metadata suffix appended to the
+      google-adk framework token (e.g. "managed_agent" ->
+      "google-adk/<version>+managed_agent"). When provided, it takes precedence
+      over the Agent Engine (GOOGLE_CLOUD_AGENT_ENGINE_ID) suffix.
+  """
+  framework_token = f"{_ADK_LABEL}/{version.__version__}"
+
+  if framework_label:
+    framework_token = f"{framework_token}+{framework_label}"
+  elif os.environ.get(_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME):
+    framework_token = f"{framework_token}+{_AGENT_ENGINE_TELEMETRY_TAG}"
 
   language_label = f"{_LANGUAGE_LABEL}/" + sys.version.split()[0]
-  return [framework_label, language_label]
+  return [framework_token, language_label]
 
 
 @contextmanager
-def client_label_context(client_label: str):
+def client_label_context(client_label: str) -> Iterator[None]:
   """Runs the operation within the context of the given client label."""
   current_client_label = _LABEL_CONTEXT.get()
 
@@ -67,9 +77,14 @@ def client_label_context(client_label: str):
     _LABEL_CONTEXT.reset(token)
 
 
-def get_client_labels() -> List[str]:
-  """Returns the current list of client labels that can be added to HTTP Headers."""
-  labels = _get_default_labels()
+def get_client_labels(framework_label: str | None = None) -> List[str]:
+  """Returns the current list of client labels that can be added to HTTP Headers.
+
+  Args:
+    framework_label: Optional SemVer build-metadata suffix for the google-adk
+      framework token (see _get_default_labels).
+  """
+  labels = _get_default_labels(framework_label=framework_label)
   current_client_label = _LABEL_CONTEXT.get()
 
   if current_client_label:

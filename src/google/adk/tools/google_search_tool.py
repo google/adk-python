@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,8 +19,9 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
-from ..utils.model_name_utils import is_gemini_1_model
+from ..utils.model_name_utils import _is_managed_agent
 from ..utils.model_name_utils import is_gemini_model
+from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -29,23 +30,32 @@ if TYPE_CHECKING:
 
 
 class GoogleSearchTool(BaseTool):
-  """A built-in tool that is automatically invoked by Gemini 2 models to retrieve search results from Google Search.
+  """A built-in tool that is automatically invoked by Gemini models to retrieve search results from Google Search.
 
   This tool operates internally within the model and does not require or perform
   local code execution.
   """
 
-  def __init__(self, *, bypass_multi_tools_limit: bool = False):
+  def __init__(
+      self,
+      *,
+      bypass_multi_tools_limit: bool = False,
+      model: str | None = None,
+  ):
     """Initializes the Google search tool.
 
     Args:
       bypass_multi_tools_limit: Whether to bypass the multi tools limitation,
         so that the tool can be used with other tools in the same agent.
+      model: Optional model name to use for processing the LLM request. If
+        provided, this model will be used instead of the model from the
+        incoming llm_request.
     """
 
     # Name and description are not used because this is a model built-in tool.
     super().__init__(name='google_search', description='google_search')
     self.bypass_multi_tools_limit = bypass_multi_tools_limit
+    self.model = model
 
   @override
   async def process_llm_request(
@@ -54,17 +64,18 @@ class GoogleSearchTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
+    # If a custom model is specified, use it instead of the original model
+    if self.model is not None:
+      llm_request.model = self.model
+
+    model_check_disabled = is_gemini_model_id_check_disabled()
     llm_request.config = llm_request.config or types.GenerateContentConfig()
     llm_request.config.tools = llm_request.config.tools or []
-    if is_gemini_1_model(llm_request.model):
-      if llm_request.config.tools:
-        raise ValueError(
-            'Google search tool cannot be used with other tools in Gemini 1.x.'
-        )
-      llm_request.config.tools.append(
-          types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())
-      )
-    elif is_gemini_model(llm_request.model):
+    if (
+        is_gemini_model(llm_request.model)
+        or model_check_disabled
+        or _is_managed_agent(llm_request)
+    ):
       llm_request.config.tools.append(
           types.Tool(google_search=types.GoogleSearch())
       )

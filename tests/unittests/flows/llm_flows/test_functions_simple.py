@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,12 +15,32 @@
 import asyncio
 from typing import Any
 from typing import Callable
+from unittest import mock
 
+from fastapi.openapi.models import HTTPBearer
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
+from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.ui_widget import UiWidget
+from google.adk.flows.llm_flows.functions import AF_FUNCTION_CALL_ID_PREFIX
+from google.adk.flows.llm_flows.functions import deep_merge_dicts
+from google.adk.flows.llm_flows.functions import find_event_by_function_call_id
 from google.adk.flows.llm_flows.functions import find_matching_function_call
+from google.adk.flows.llm_flows.functions import generate_auth_event
+from google.adk.flows.llm_flows.functions import get_long_running_function_calls
+from google.adk.flows.llm_flows.functions import handle_function_calls_async
+from google.adk.flows.llm_flows.functions import handle_function_calls_live
 from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
+from google.adk.flows.llm_flows.functions import remove_client_function_call_id
+from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
@@ -397,8 +417,6 @@ def test_find_function_call_event_multiple_function_responses():
 @pytest.mark.asyncio
 async def test_function_call_args_not_modified():
   """Test that function_call.args is not modified when making a copy."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(**kwargs) -> dict:
     return {'result': 'test'}
@@ -455,8 +473,6 @@ async def test_function_call_args_not_modified():
 @pytest.mark.asyncio
 async def test_function_call_args_none_handling():
   """Test that function_call.args=None is handled correctly."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(**kwargs) -> dict:
     return {'result': 'test'}
@@ -504,8 +520,6 @@ async def test_function_call_args_none_handling():
 @pytest.mark.asyncio
 async def test_function_call_args_copy_behavior():
   """Test that modifying the copied args doesn't affect the original."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(test_param: str, other_param: int) -> dict:
     # Modify the args to test that the copy prevents affecting the original
@@ -565,8 +579,6 @@ async def test_function_call_args_copy_behavior():
 @pytest.mark.asyncio
 async def test_function_call_args_deep_copy_behavior():
   """Test that deep copy behavior works correctly with nested structures."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
-  from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(nested_dict: dict, list_param: list) -> dict:
     # Modify the nested structures to test deep copy
@@ -683,26 +695,17 @@ def test_shallow_vs_deep_copy_demonstration():
 @pytest.mark.asyncio
 async def test_parallel_function_execution_timing():
   """Test that multiple function calls are executed in parallel, not sequentially."""
-  import time
-
   execution_order = []
-  execution_times = {}
 
   async def slow_function_1(delay: float = 0.1) -> dict:
-    start_time = time.time()
     execution_order.append('start_1')
     await asyncio.sleep(delay)
-    end_time = time.time()
-    execution_times['func_1'] = (start_time, end_time)
     execution_order.append('end_1')
     return {'result': 'function_1_result'}
 
   async def slow_function_2(delay: float = 0.1) -> dict:
-    start_time = time.time()
     execution_order.append('start_2')
     await asyncio.sleep(delay)
-    end_time = time.time()
-    execution_times['func_2'] = (start_time, end_time)
     execution_order.append('end_2')
     return {'result': 'function_2_result'}
 
@@ -738,35 +741,19 @@ async def test_parallel_function_execution_timing():
   )
   runner = testing_utils.TestInMemoryRunner(agent)
 
-  # Measure total execution time
-  start_time = time.time()
   events = await runner.run_async_with_new_session('test')
-  total_time = time.time() - start_time
 
-  # Verify parallel execution by checking execution order
-  # In parallel execution, both functions should start before either finishes
-  assert 'start_1' in execution_order
-  assert 'start_2' in execution_order
-  assert 'end_1' in execution_order
-  assert 'end_2' in execution_order
-
-  # Verify both functions started within a reasonable time window
-  func_1_start, func_1_end = execution_times['func_1']
-  func_2_start, func_2_end = execution_times['func_2']
-
-  # Functions should start at approximately the same time (within 10ms)
-  start_time_diff = abs(func_1_start - func_2_start)
-  assert (
-      start_time_diff < 0.01
-  ), f'Functions started too far apart: {start_time_diff}s'
-
-  # Total execution time should be less than the sum of all parallel function delays (0.2s)
-  # This proves parallel execution rather than sequential execution
-  sequential_time = 0.2  # 0.1s + 0.1s if functions ran sequentially
-  assert total_time < sequential_time, (
-      f'Execution took too long: {total_time}s, expected < {sequential_time}s'
-      ' (sequential time)'
+  # Parallel execution means both functions start before either one finishes.
+  assert set(execution_order) == {'start_1', 'start_2', 'end_1', 'end_2'}
+  last_start = max(
+      execution_order.index('start_1'), execution_order.index('start_2')
   )
+  first_end = min(
+      execution_order.index('end_1'), execution_order.index('end_2')
+  )
+  assert (
+      last_start < first_end
+  ), f'Functions did not overlap; execution was sequential: {execution_order}'
 
   # Verify the results are correct
   assert testing_utils.simplify_events(events) == [
@@ -1141,3 +1128,1041 @@ async def test_mixed_function_types_execution_order():
       'yield_E',
       'yield_F',
   ]
+
+
+def test_merge_parallel_function_response_events_merges_ui_widgets():
+  """Test that merge_parallel_function_response_events merges render_ui_widgets."""
+  invocation_id = 'base_invocation_123'
+
+  widget1 = UiWidget(
+      id='widget_1', provider='mcp', payload={'resource_uri': 'ui://widget1'}
+  )
+  widget2 = UiWidget(
+      id='widget_2', provider='mcp', payload={'resource_uri': 'ui://widget2'}
+  )
+  widget3 = UiWidget(
+      id='widget_3', provider='mcp', payload={'resource_uri': 'ui://widget3'}
+  )
+
+  event1 = Event(
+      invocation_id=invocation_id,
+      author='test_agent',
+      actions=EventActions(render_ui_widgets=[widget1]),
+  )
+
+  event2 = Event(
+      invocation_id='different_invocation_456',
+      author='different_agent',
+      actions=EventActions(render_ui_widgets=[widget2, widget3]),
+  )
+
+  # Merge the events
+  merged_event = merge_parallel_function_response_events([event1, event2])
+
+  # Should contain all ui widgets
+  assert merged_event.actions.render_ui_widgets is not None
+  assert len(merged_event.actions.render_ui_widgets) == 3
+
+  widget_ids = {widget.id for widget in merged_event.actions.render_ui_widgets}
+  assert 'widget_1' in widget_ids
+  assert 'widget_2' in widget_ids
+  assert 'widget_3' in widget_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_computer_use_tool_decoding_behavior(handle_function_calls):
+  """Tests that computer use tools automatically decode base64 images."""
+  valid_b64 = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+
+  # make the tool return a dictionary with the image
+  async def mock_run(*args, **kwargs):
+    return {
+        'image': {'data': valid_b64, 'mimetype': 'image/png'},
+        'url': 'https://example.com',
+    }
+
+  # create a ComputerUseTool
+  tool = ComputerUseTool(func=mock_run, screen_size=(1024, 768))
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name='test_agent',
+      model=model,
+      tools=[tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  # Create function call
+  function_call = types.FunctionCall(name=tool.name, args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+
+  result = await handle_function_calls(
+      invocation_context,
+      event,
+      tools_dict,
+  )
+
+  assert result is not None
+  response_part = result.content.parts[0].function_response
+
+  # Verify original image data is removed from the dict response
+  assert 'image' not in response_part.response
+  assert 'url' in response_part.response
+  # Verify the image was converted to a blob
+  assert len(response_part.parts) == 1
+  assert response_part.parts[0].inline_data is not None
+
+
+async def _run_single_tool_call(tool):
+  """Invokes a tool through the flow and returns its function response."""
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[types.Part(function_call=types.FunctionCall(name=tool.name))]
+      ),
+  )
+  result = await handle_function_calls_async(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is not None
+  return result.content.parts[0].function_response
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_a_media_part():
+  """A tool can hand back bytes instead of encoding them into a string."""
+
+  def render_chart() -> types.Part:
+    return types.Part.from_bytes(data=b'chart-bytes', mime_type='image/png')
+
+  response = await _run_single_tool_call(FunctionTool(render_chart))
+
+  assert len(response.parts) == 1
+  assert response.parts[0].inline_data.data == b'chart-bytes'
+  assert response.parts[0].inline_data.mime_type == 'image/png'
+  # The media is not also left behind as an unserializable value.
+  assert not response.response
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_media_alongside_data():
+  """Media is split out while the rest of the result stays in the response."""
+
+  def render_chart() -> dict[str, Any]:
+    return {
+        'chart': types.Part.from_bytes(
+            data=b'chart-bytes', mime_type='image/png'
+        ),
+        'summary': 'up 3%',
+    }
+
+  response = await _run_single_tool_call(FunctionTool(render_chart))
+
+  assert len(response.parts) == 1
+  assert response.parts[0].inline_data.mime_type == 'image/png'
+  assert response.response == {'summary': 'up 3%'}
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_several_media_parts():
+  """Every media entry of a returned list becomes a response part."""
+
+  def render_charts() -> list[Any]:
+    return [
+        types.Part.from_bytes(data=b'one', mime_type='image/png'),
+        types.Part.from_bytes(data=b'two', mime_type='image/jpeg'),
+        'two charts',
+    ]
+
+  response = await _run_single_tool_call(FunctionTool(render_charts))
+
+  assert [p.inline_data.mime_type for p in response.parts] == [
+      'image/png',
+      'image/jpeg',
+  ]
+  assert response.response == {'result': ['two charts']}
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_plain_data_is_unchanged():
+  """A result without media keeps its existing shape."""
+
+  def get_summary() -> dict[str, str]:
+    return {'summary': 'up 3%'}
+
+  response = await _run_single_tool_call(FunctionTool(get_summary))
+
+  assert not response.parts
+  assert response.response == {'summary': 'up 3%'}
+
+
+@pytest.mark.asyncio
+async def test_handle_function_calls_live_preserves_live_session_id():
+  """Tests that handle_function_calls_live preserves live_session_id for single call."""
+
+  def simple_fn() -> dict[str, str]:
+    return {'result': 'test'}
+
+  tool1 = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name='test_agent',
+      model=model,
+      tools=[tool1],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call1 = types.FunctionCall(id='call_1', name=tool1.name, args={})
+  content1 = types.Content(parts=[types.Part(function_call=function_call1)])
+  event1 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content1,
+      live_session_id='test-live-session-id',
+  )
+  tools_dict = {tool1.name: tool1}
+
+  result_single = await handle_function_calls_live(
+      invocation_context,
+      event1,
+      tools_dict,
+  )
+
+  assert result_single is not None
+  assert result_single.live_session_id == 'test-live-session-id'
+
+
+@pytest.mark.asyncio
+async def test_handle_function_calls_live_parallel_preserves_live_session_id():
+  """Tests that handle_function_calls_live preserves live_session_id for parallel calls."""
+
+  def simple_fn() -> dict[str, str]:
+    return {'result': 'test'}
+
+  tool1 = FunctionTool(simple_fn)
+  tool2 = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name='test_agent',
+      model=model,
+      tools=[tool1, tool2],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call1 = types.FunctionCall(id='call_1', name=tool1.name, args={})
+  function_call2 = types.FunctionCall(id='call_2', name=tool2.name, args={})
+  content2 = types.Content(
+      parts=[
+          types.Part(function_call=function_call1),
+          types.Part(function_call=function_call2),
+      ]
+  )
+  event2 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content2,
+      live_session_id='test-live-session-id-parallel',
+  )
+  tools_dict = {tool1.name: tool1, tool2.name: tool2}
+
+  result_parallel = await handle_function_calls_live(
+      invocation_context,
+      event2,
+      tools_dict,
+  )
+
+  assert result_parallel is not None
+  assert result_parallel.live_session_id == 'test-live-session-id-parallel'
+
+
+class _MockControlSignalTool(BaseTool):
+  """A tool that simulates requesting confirmation or OAuth authentication."""
+
+  def __init__(self, name: str, behavior: str):
+    super().__init__(name=name, description='Simulated control tool')
+    self.behavior = behavior
+
+  async def run_async(self, *, args, tool_context):
+    if self.behavior == 'confirm':
+      tool_context.actions.requested_tool_confirmations = {
+          'fc_test_confirm': ToolConfirmation(hint='Authorize execution?')
+      }
+      return {'error': 'This tool requires user approval.'}
+    elif self.behavior == 'auth':
+      tool_context.actions.requested_auth_configs = {
+          'fc_test_auth': AuthConfig(auth_scheme=HTTPBearer())
+      }
+      return {'error': 'Please complete OAuth setup.'}
+
+  def _detect_error_in_response(self, response: Any) -> str | None:
+    if isinstance(response, dict) and 'error' in response:
+      return 'TOOL_ERROR'
+    return None
+
+
+class _ErrorDetectingTool(BaseTool):
+  """A test tool whose _detect_error_in_response raises an exception."""
+
+  async def run_async(self, *, args, tool_context):
+    return {'result': 'result'}
+
+  def _detect_error_in_response(self, response: Any) -> str | None:
+    raise RuntimeError('detection exploded')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+@pytest.mark.parametrize(
+    'mock_response,expected_error_type',
+    [
+        ({'error': 'Internal component timeout'}, 'TOOL_ERROR'),
+        ({'result': 'Execution succeeded'}, None),
+    ],
+    ids=['dict_error_recorded', 'success_dict_ignored'],
+)
+async def test_e2e_telemetry_error_classification(
+    monkeypatch, handle_function_calls, mock_response, expected_error_type
+):
+  """E2E: asserts that tool outputs successfully translate to targeted OTel span error attributes."""
+  recorded_calls = []
+
+  # Intercept trace_tool_call to capture final telemetry state
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = FunctionTool(func=lambda: mock_response)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] == expected_error_type
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_exception_takes_precedence_over_dict_error(
+    monkeypatch, handle_function_calls
+):
+  """End-to-end integration: exception takes strict precedence over manual dict error_type."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  def mock_crashing_func():
+    raise ValueError('Fatal arithmetic error')
+
+  tool = FunctionTool(func=mock_crashing_func)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_test_exception'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  with pytest.raises(ValueError, match='Fatal arithmetic error'):
+    await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert isinstance(recorded_calls[0]['error'], ValueError)
+  assert recorded_calls[0]['error_type'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_detection_skipped_when_confirmation_requested(
+    monkeypatch, handle_function_calls
+):
+  """E2E confirmation verification: control prompt avoids polluting telemetry with TOOL_ERROR."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = _MockControlSignalTool(name='confirm_tool', behavior='confirm')
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_test_confirm'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] is None
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_detection_skipped_when_auth_requested(
+    monkeypatch, handle_function_calls
+):
+  """E2E OAuth verification: authenticate control prompt avoids polluting telemetry with TOOL_ERROR."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = _MockControlSignalTool(name='auth_tool', behavior='auth')
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test_auth')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls(invocation_context, event, {tool.name: tool})
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] is None
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+async def test_detection_exception_does_not_break_tool_call(
+    monkeypatch, handle_function_calls
+):
+  """Safety Verification: telemetry errors during error parsing are caught cleanly, not crashing tool calls."""
+  recorded_calls = []
+  monkeypatch.setattr(
+      'google.adk.telemetry._instrumentation.tracing.trace_tool_call',
+      lambda **kw: recorded_calls.append(kw),
+  )
+
+  tool = _ErrorDetectingTool(
+      name='buggy_telemetry_tool', description='raises on tel'
+  )
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_test_buggy'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  assert result_event.content.parts[0].function_response.response == {
+      'result': 'result'
+  }
+
+  assert len(recorded_calls) == 1
+  assert recorded_calls[0]['error_type'] is None
+  assert recorded_calls[0]['error'] is None
+
+
+@pytest.mark.asyncio
+async def test_response_scheduling_applied_to_function_response():
+  """response_scheduling on a tool is stamped onto the FunctionResponse part."""
+
+  def simple_fn(**kwargs) -> dict:
+    return {'result': 'test'}
+
+  tool = FunctionTool(simple_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls_async(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  function_response = result_event.content.parts[0].function_response
+  assert function_response.scheduling is types.FunctionResponseScheduling.SILENT
+
+
+@pytest.mark.asyncio
+async def test_response_scheduling_unset_by_default():
+  """Without response_scheduling, the FunctionResponse part leaves it unset."""
+
+  def simple_fn(**kwargs) -> dict:
+    return {'result': 'test'}
+
+  tool = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls_async(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  function_response = result_event.content.parts[0].function_response
+  assert function_response.scheduling is None
+
+
+async def _drain_live_function_responses(
+    live_request_queue: LiveRequestQueue,
+    count: int,
+) -> list[types.Content]:
+  """Drains ``count`` contents from a live request queue, ignoring acks."""
+  contents = []
+  while len(contents) < count:
+    request = await asyncio.wait_for(live_request_queue._queue.get(), timeout=5)
+    if request.content is not None:
+      contents.append(request.content)
+  return contents
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_with_scheduling_emits_function_response():
+  """A streaming tool with response_scheduling relays yields as FunctionResponses."""
+
+  async def streaming_fn(**kwargs):
+    yield 'first'
+    yield 'second'
+
+  tool = FunctionTool(streaming_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=2
+  )
+
+  responses = [content.parts[0].function_response for content in contents]
+  assert [r.response for r in responses] == [
+      {'result': 'first'},
+      {'result': 'second'},
+  ]
+  assert all(r.id == 'fc_stream' for r in responses)
+  assert all(
+      r.scheduling is types.FunctionResponseScheduling.SILENT for r in responses
+  )
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_without_scheduling_emits_function_response():
+  """A streaming tool without response_scheduling still relays yields as
+  FunctionResponses, leaving scheduling unset."""
+
+  async def streaming_fn(**kwargs):
+    yield 'hello'
+
+  tool = FunctionTool(streaming_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=1
+  )
+
+  function_response = contents[0].parts[0].function_response
+  assert function_response.response == {'result': 'hello'}
+  assert function_response.id == 'fc_stream'
+  assert function_response.scheduling is None
+
+
+async def test_non_blocking_tool_handled_asynchronously():
+  """Tests that a NON_BLOCKING tool returns None inline and pushes to live request queue."""
+  import asyncio
+
+  async def slow_fn() -> dict[str, str]:
+    await asyncio.sleep(0.1)
+    return {'result': 'done'}
+
+  tool = FunctionTool(slow_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_non_blocking'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  # Inline call should return None, indicating it is handled asynchronously
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is None
+  # Verify strong reference is kept in active_non_blocking_tool_tasks while running
+  assert invocation_context.active_non_blocking_tool_tasks is not None
+  task_key = f'{tool.name}_fc_non_blocking'
+  assert task_key in invocation_context.active_non_blocking_tool_tasks
+
+  # Wait for the background task to complete and push to the queue
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=1
+  )
+
+  function_response = contents[0].parts[0].function_response
+  assert function_response.response == {'result': 'done'}
+  assert function_response.id == 'fc_non_blocking'
+  assert (
+      function_response.scheduling == types.FunctionResponseScheduling.WHEN_IDLE
+  )
+  # Give event loop a tick for finally block to clean up the completed task
+  await asyncio.sleep(0)
+  assert task_key not in invocation_context.active_non_blocking_tool_tasks
+
+
+async def test_non_blocking_tool_exception_handling_and_cleanup():
+  """Tests that an exception in a NON_BLOCKING tool is logged and cleaned up."""
+  import asyncio
+
+  async def failing_fn() -> dict[str, str]:
+    await asyncio.sleep(0.05)
+    raise RuntimeError('Tool execution failed purposely')
+
+  tool = FunctionTool(failing_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={}, id='fc_failing_non_blocking'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is None
+  task_key = f'{tool.name}_fc_failing_non_blocking'
+  assert (
+      invocation_context.active_non_blocking_tool_tasks
+      and task_key in invocation_context.active_non_blocking_tool_tasks
+  )
+
+  # Allow background task to execute and raise its exception
+  await asyncio.sleep(0.1)
+  # Give event loop a tick for finally block to clean up the completed task
+  await asyncio.sleep(0)
+  assert task_key not in invocation_context.active_non_blocking_tool_tasks
+
+
+async def test_parallel_non_blocking_tools():
+  """Tests that multiple NON_BLOCKING tools execute in parallel and clean up independently."""
+  import asyncio
+
+  async def slow_fn_1() -> dict[str, str]:
+    await asyncio.sleep(0.05)
+    return {'result': 'done_1'}
+
+  async def slow_fn_2() -> dict[str, str]:
+    await asyncio.sleep(0.05)
+    return {'result': 'done_2'}
+
+  tool1 = FunctionTool(slow_fn_1)
+  tool1.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  tool2 = FunctionTool(slow_fn_2)
+  tool2.response_scheduling = types.FunctionResponseScheduling.SILENT
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool1, tool2])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  fc1 = types.FunctionCall(name=tool1.name, args={}, id='fc_1')
+  fc2 = types.FunctionCall(name=tool2.name, args={}, id='fc_2')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[
+              types.Part(function_call=fc1),
+              types.Part(function_call=fc2),
+          ]
+      ),
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool1.name: tool1, tool2.name: tool2}
+  )
+  assert result is None
+  assert len(invocation_context.active_non_blocking_tool_tasks) == 2
+  key1 = f'{tool1.name}_fc_1'
+  key2 = f'{tool2.name}_fc_2'
+  assert key1 in invocation_context.active_non_blocking_tool_tasks
+  assert key2 in invocation_context.active_non_blocking_tool_tasks
+
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=2
+  )
+  responses = {
+      c.parts[0].function_response.id: c.parts[0].function_response
+      for c in contents
+  }
+  assert responses['fc_1'].response == {'result': 'done_1'}
+  assert responses['fc_2'].response == {'result': 'done_2'}
+
+  await asyncio.sleep(0)
+  assert len(invocation_context.active_non_blocking_tool_tasks) == 0
+
+
+def _model_call_event(invocation_id: str, call_id: str) -> Event:
+  """Builds a model event carrying a single function call with `call_id`."""
+  return Event(
+      invocation_id=invocation_id,
+      author='root_agent',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id, name='do_thing', args={}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def test_find_event_by_function_call_id_returns_the_most_recent_match():
+  """A repeated call id resolves to the latest event, not the earliest."""
+  first = _model_call_event('inv_1', 'call_a')
+  unrelated = _model_call_event('inv_2', 'call_b')
+  latest = _model_call_event('inv_3', 'call_a')
+
+  result = find_event_by_function_call_id([first, unrelated, latest], 'call_a')
+
+  assert result is latest
+
+
+def test_find_event_by_function_call_id_returns_none_when_id_absent():
+  """Content-less events are skipped and a non-matching id yields None."""
+  contentless = Event(invocation_id='inv_1', author='root_agent')
+  other_call = _model_call_event('inv_2', 'call_b')
+
+  result = find_event_by_function_call_id([contentless, other_call], 'call_a')
+
+  assert result is None
+
+
+def test_get_long_running_function_calls_returns_only_long_running_call_ids():
+  """Selection is per call id, skips regular tools and unregistered names."""
+
+  def wait_for_approval() -> dict[str, str]:
+    return {'status': 'pending'}
+
+  def add_one(x: int) -> int:
+    return x + 1
+
+  long_running_tool = LongRunningFunctionTool(func=wait_for_approval)
+  regular_tool = FunctionTool(add_one)
+  tools_dict = {
+      long_running_tool.name: long_running_tool,
+      regular_tool.name: regular_tool,
+  }
+  function_calls = [
+      types.FunctionCall(id='lr_1', name='wait_for_approval', args={}),
+      types.FunctionCall(id='lr_2', name='wait_for_approval', args={}),
+      types.FunctionCall(id='plain_1', name='add_one', args={'x': 1}),
+      types.FunctionCall(id='ghost_1', name='never_registered', args={}),
+  ]
+
+  assert get_long_running_function_calls(function_calls, tools_dict) == {
+      'lr_1',
+      'lr_2',
+  }
+
+
+def test_remove_client_function_call_id_strips_only_adk_generated_ids():
+  """Client-side ids are internal; ids the model supplied must survive."""
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(
+                  id=f'{AF_FUNCTION_CALL_ID_PREFIX}111', name='t1', args={}
+              )
+          ),
+          types.Part(
+              function_call=types.FunctionCall(
+                  id='model-222', name='t2', args={}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=f'{AF_FUNCTION_CALL_ID_PREFIX}333', name='t1', response={}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='model-444', name='t2', response={}
+              )
+          ),
+          types.Part(text='no ids here'),
+      ],
+  )
+
+  remove_client_function_call_id(content)
+
+  assert content.parts[0].function_call.id is None
+  assert content.parts[1].function_call.id == 'model-222'
+  assert content.parts[2].function_response.id is None
+  assert content.parts[3].function_response.id == 'model-444'
+
+
+def test_deep_merge_dicts_merges_nested_dicts_in_place():
+  """Nested dicts merge key-wise; d2 wins conflicts; d1 is the result."""
+  d1 = {'a': {'x': 1, 'y': 2}, 'b': 'keep'}
+  d2 = {'a': {'y': 99, 'z': 3}, 'c': 'new'}
+
+  result = deep_merge_dicts(d1, d2)
+
+  assert result is d1
+  assert result == {'a': {'x': 1, 'y': 99, 'z': 3}, 'b': 'keep', 'c': 'new'}
+
+
+def test_deep_merge_dicts_replaces_when_either_side_is_not_a_dict():
+  """A scalar on either side replaces rather than recursing."""
+  assert deep_merge_dicts({'a': {'x': 1}}, {'a': 5}) == {'a': 5}
+  assert deep_merge_dicts({'a': 5}, {'a': {'x': 1}}) == {'a': {'x': 1}}
+  assert deep_merge_dicts({'a': 1}, {}) == {'a': 1}
+
+
+async def _auth_invocation_context():
+  agent = Agent(
+      name='test_agent', model=testing_utils.MockModel.create(responses=[])
+  )
+  return agent, await testing_utils.create_invocation_context(agent=agent)
+
+
+def _tool_response_event(
+    invocation_context, requested_auth_configs=None
+) -> Event:
+  return Event(
+      invocation_id=invocation_context.invocation_id,
+      author=invocation_context.agent.name,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part.from_function_response(
+                  name='call_external_api', response={'result': None}
+              )
+          ],
+      ),
+      actions=EventActions(requested_auth_configs=requested_auth_configs or {}),
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_auth_event_returns_none_without_requested_credentials():
+  """A tool response that asked for nothing produces no auth event."""
+  _, invocation_context = await _auth_invocation_context()
+  function_response_event = _tool_response_event(invocation_context)
+
+  assert (
+      generate_auth_event(invocation_context, function_response_event) is None
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_auth_event_emits_one_long_running_call_per_request():
+  """Each requested credential becomes a pending client-side EUC call."""
+  _, invocation_context = await _auth_invocation_context()
+  function_response_event = _tool_response_event(
+      invocation_context,
+      {
+          'orig_call_1': AuthConfig(auth_scheme=HTTPBearer()),
+          'orig_call_2': AuthConfig(auth_scheme=HTTPBearer()),
+      },
+  )
+
+  auth_event = generate_auth_event(invocation_context, function_response_event)
+
+  assert auth_event is not None
+  calls = auth_event.get_function_calls()
+  assert [call.name for call in calls] == [REQUEST_EUC_FUNCTION_CALL_NAME] * 2
+  # Fresh client-side ids, all marked long-running so the flow waits for the
+  # user to supply credentials instead of treating the turn as finished.
+  assert all(call.id.startswith(AF_FUNCTION_CALL_ID_PREFIX) for call in calls)
+  assert auth_event.long_running_tool_ids == {call.id for call in calls}
+  # The originating tool call id rides along so the credential can be routed
+  # back to the tool that asked for it.
+  assert [
+      AuthToolArguments.model_validate(call.args).function_call_id
+      for call in calls
+  ] == ['orig_call_1', 'orig_call_2']
+
+
+@pytest.mark.asyncio
+async def test_generate_auth_event_mirrors_the_tool_response_role():
+  """The auth request keeps the role of the tool response it came from."""
+  agent, invocation_context = await _auth_invocation_context()
+  function_response_event = _tool_response_event(
+      invocation_context, {'orig_call': AuthConfig(auth_scheme=HTTPBearer())}
+  )
+
+  auth_event = generate_auth_event(invocation_context, function_response_event)
+
+  assert auth_event is not None
+  assert (
+      auth_event.content.role == function_response_event.content.role == 'user'
+  )
+  assert auth_event.author == agent.name

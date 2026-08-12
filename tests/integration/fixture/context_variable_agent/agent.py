@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -53,7 +53,7 @@ def build_sub_agent_instruction(invocation_context: InvocationContext) -> str:
 
 
 context_variable_echo_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='context_variable_echo_agent',
     instruction=(
         'Use the echo_info tool to echo {customerId}, {customerInt},'
@@ -64,7 +64,7 @@ context_variable_echo_agent = Agent(
 )
 
 context_variable_with_complicated_format_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='context_variable_echo_agent',
     instruction=(
         'Use the echo_info tool to echo { customerId }, {{customer_int  }, { '
@@ -76,7 +76,7 @@ context_variable_with_complicated_format_agent = Agent(
 )
 
 context_variable_with_nl_planner_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='context_variable_with_nl_planner_agent',
     instruction=(
         'Use the echo_info tool to echo {customerId}. Ask for it if you'
@@ -88,14 +88,14 @@ context_variable_with_nl_planner_agent = Agent(
 )
 
 context_variable_with_function_instruction_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='context_variable_with_function_instruction_agent',
     instruction=build_sub_agent_instruction,
     flow='auto',
 )
 
 context_variable_update_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='context_variable_update_agent',
     instruction='Call tools',
     flow='auto',
@@ -103,7 +103,7 @@ context_variable_update_agent = Agent(
 )
 
 root_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='root_agent',
     description='The root agent.',
     flow='auto',

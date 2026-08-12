@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,14 +18,15 @@ import abc
 import logging
 import re
 from typing import Optional
+import unicodedata
 
 from typing_extensions import override
 
 from ..models.llm_response import LlmResponse
 from ..utils.feature_decorator import experimental
 from .common import EvalBaseModel
-from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
+from .eval_metrics import RubricsBasedCriterion
 from .eval_rubrics import Rubric
 from .eval_rubrics import RubricScore
 from .evaluator import EvaluationResult
@@ -42,6 +43,7 @@ logger = logging.getLogger("google_adk." + __name__)
 class RubricResponse(EvalBaseModel):
   """Internal data model to represent a rubric's response from the auto-rater."""
 
+  rubric_id: Optional[str] = None
   property_text: Optional[str] = None
   rationale: Optional[str] = None
   score: Optional[float] = None
@@ -56,7 +58,8 @@ class AutoRaterResponseParser(abc.ABC):
     raise NotImplementedError
 
 
-_PROPERTY_PATTERN = r"(?<=Property: )(.*)"
+_ID_PATTERN = r"(?m)^\s*ID: (.*)$"
+_PROPERTY_PATTERN = r"(?m)^\s*Property: (.*)$"
 _RATIONALE_PATTERN = r"(?<=Rationale: )(.*)"
 _VERDICT_PATTERN = r"(?<=Verdict: )(.*)"
 
@@ -66,7 +69,8 @@ class DefaultAutoRaterResponseParser(AutoRaterResponseParser):
 
   def parse(self, auto_rater_response: str) -> list[RubricResponse]:
     """Returns a list of RubricResponse parsed from the AutoRater's response."""
-    properties = re.findall(_PROPERTY_PATTERN, auto_rater_response)
+    property_matches = list(re.finditer(_PROPERTY_PATTERN, auto_rater_response))
+    id_matches = list(re.finditer(_ID_PATTERN, auto_rater_response))
     rationales = re.findall(_RATIONALE_PATTERN, auto_rater_response)
     scores = []
 
@@ -80,10 +84,28 @@ class DefaultAutoRaterResponseParser(AutoRaterResponseParser):
 
       scores.append(score)
 
+    # A partial parse can silently omit a failed rubric and inflate the score.
+    if not len(property_matches) == len(rationales) == len(scores):
+      return []
+
     rubric_responses = []
-    for p, r, s in zip(properties, rationales, scores):
+    for i, (property_match, rationale, score) in enumerate(
+        zip(property_matches, rationales, scores, strict=True)
+    ):
+      # Match each id to the property it immediately precedes (not by index) so
+      # an omitted id line can't shift a later id onto an earlier property.
+      previous_start = property_matches[i - 1].start() if i > 0 else -1
+      rubric_id = None
+      for id_match in id_matches:
+        if previous_start < id_match.start() < property_match.start():
+          rubric_id = id_match.group(1).strip() or None
       rubric_responses.append(
-          RubricResponse(property_text=p.strip(), rationale=r.strip(), score=s)
+          RubricResponse(
+              rubric_id=rubric_id,
+              property_text=property_match.group(1).strip(),
+              rationale=rationale.strip(),
+              score=score,
+          )
       )
 
     return rubric_responses
@@ -93,7 +115,7 @@ class PerInvocationResultsAggregator(abc.ABC):
   """An interface for aggregating per invocation samples.
 
   AutoRaters that are backed by an LLM are known to have certain degree of
-  unreliabilty to their responses. In order to counter that we sample the
+  unreliability to their responses. In order to counter that we sample the
   autorater more than once for a single invocation.
 
   The aggregator helps convert those multiple samples into a single result.
@@ -150,7 +172,9 @@ class MajorityVotePerInvocationResultsAggregator(
       This method will use majority vote and combine the results of 5 samples
       into one, and it will report "Yes" as the final verdict.
     """
-    score_category_by_rubric_id = {}
+    score_category_by_rubric_id: dict[
+        str, tuple[list[RubricScore], list[RubricScore], list[RubricScore]]
+    ] = {}
 
     # We go over each rubric for each sample, and categorize the rubric into
     # one of the following buckets:
@@ -233,7 +257,7 @@ class MeanInvocationResultsSummarizer(InvocationResultsSummarizer):
 
     # Collect rubric scores by id, so that we can calculate average score
     # for each rubric id.
-    rubric_scores_by_id = {}
+    rubric_scores_by_id: dict[str, list[RubricScore]] = {}
     for sample in per_invocation_results:
       if not sample.rubric_scores:
         continue
@@ -277,21 +301,38 @@ class MeanInvocationResultsSummarizer(InvocationResultsSummarizer):
     )
 
 
-def _normalize_text(text: str) -> str:
-  """Returns a normalized version of the passed in text."""
+_SMART_CHARS = str.maketrans({
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2013": "-",
+    "\u2014": "-",
+})
+_DECORATION_CHARS = " *_`#>-\u2022\"'"
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+def _normalize_text(text: object) -> str:
+  """Returns a normalized version of the passed in text.
+
+  Judge models routinely wrap the rubric text they echo back in markdown and
+  typographic decoration, which would otherwise defeat the exact-match lookup.
+  """
   if not isinstance(text, str):
     return ""
-  return text.lower().strip()
+  text = unicodedata.normalize("NFKC", text).translate(_SMART_CHARS)
+  return _WHITESPACE_PATTERN.sub(" ", text).strip(_DECORATION_CHARS).lower()
 
 
 @experimental
-class RubricBasedEvaluator(LlmAsJudge):
+class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
   """A base class for rubric based evaluators."""
 
   def __init__(
       self,
       eval_metric: EvalMetric,
-      criterion_type: type[BaseCriterion],
+      criterion_type: type[RubricsBasedCriterion],
       auto_rater_response_parser: AutoRaterResponseParser = (
           DefaultAutoRaterResponseParser()
       ),
@@ -301,6 +342,7 @@ class RubricBasedEvaluator(LlmAsJudge):
       invocation_results_summarizer: InvocationResultsSummarizer = (
           MeanInvocationResultsSummarizer()
       ),
+      rubric_type: Optional[str] = None,
   ):
     """Initializes the RubricBasedEvaluator.
 
@@ -315,41 +357,109 @@ class RubricBasedEvaluator(LlmAsJudge):
         to account for the unreliability of the LLM.
       invocation_results_summarizer: An object that summarizes the results of
         all invocations in an eval case into a single result.
+      rubric_type: Invocation and case level rubrics will be filtered by this
+        type.
     """
     super().__init__(
         eval_metric,
         criterion_type=criterion_type,
     )
+    self._rubric_type = rubric_type
     self._auto_rater_prompt_template = ""
     self._auto_rater_response_parser = auto_rater_response_parser
     self._per_invocation_results_aggregator = per_invocation_results_aggregator
     self._invocation_results_summarizer = invocation_results_summarizer
 
-    assert self._criterion.rubrics, "Rubrics are required."
-
-    self._rubrics: list[Rubric] = self._criterion.rubrics
+    self._rubrics: list[Rubric] = self._criterion.rubrics or []
+    self._effective_rubrics_list: Optional[list[Rubric]] = None
 
     self._normalized_rubric_to_id_map = {
         _normalize_text(r.rubric_content.text_property): r.rubric_id
         for r in self._rubrics
     }
 
+  def create_effective_rubrics_list(
+      self,
+      invocation_rubrics: Optional[list[Rubric]],
+  ) -> None:
+    rubrics_by_id = {}
+
+    def _add_rubrics(rubrics_to_add: list[Rubric], scope_name: str) -> None:
+      for r in rubrics_to_add:
+        if r.rubric_id in rubrics_by_id:
+          raise ValueError(
+              f"Rubric with rubric_id '{r.rubric_id}' already exists. Rubric"
+              f" defined in {scope_name} conflicts with an existing rubric."
+          )
+        rubrics_by_id[r.rubric_id] = r
+
+    _add_rubrics(self._rubrics, "criterion")
+
+    if invocation_rubrics:
+      filtered_invocation_rubrics = invocation_rubrics
+      if self._rubric_type:
+        filtered_invocation_rubrics = [
+            r for r in invocation_rubrics if r.type == self._rubric_type
+        ]
+      _add_rubrics(filtered_invocation_rubrics, "invocation")
+
+    self._effective_rubrics_list = list(rubrics_by_id.values())
+    if not self._effective_rubrics_list:
+      raise ValueError("Rubrics are required.")
+
+  def get_effective_rubrics_list(self) -> list[Rubric]:
+    """Returns the effective rubrics list."""
+    if self._effective_rubrics_list is None:
+      raise ValueError(
+          "Effective rubrics list not initialized. Call"
+          " create_effective_rubrics_list() first."
+      )
+    return self._effective_rubrics_list
+
   @override
   def convert_auto_rater_response_to_score(
-      self, auto_rater_response: LlmResponse
+      self,
+      auto_rater_response: LlmResponse,
   ) -> AutoRaterScore:
     """Returns an AutoRaterScore generated from AutoRater's response."""
     response_text = get_text_from_content(auto_rater_response.content)
-    rubric_responses = self._auto_rater_response_parser.parse(response_text)
+    if not response_text:
+      logger.warning(
+          "Auto-rater returned an empty response; no rubric verdicts could be"
+          " parsed and this sample will not be scored."
+      )
+      rubric_responses = []
+    else:
+      rubric_responses = self._auto_rater_response_parser.parse(response_text)
+      if not rubric_responses:
+        logger.warning(
+            "Auto-rater response did not match the expected"
+            " Property/Rationale/Verdict format; no rubric verdicts were"
+            " parsed. Raw auto-rater response: %s",
+            response_text,
+        )
     rubric_scores = []
 
+    normalized_rubric_to_rubric_map = {}
+    rubric_by_id = {}
+    for r in self.get_effective_rubrics_list():
+      normalized_rubric_to_rubric_map[
+          _normalize_text(r.rubric_content.text_property)
+      ] = r
+      rubric_by_id[r.rubric_id] = r
+
     for rubric_response in rubric_responses:
-      normalized_rubric = _normalize_text(rubric_response.property_text)
-      rubric_id = self._normalized_rubric_to_id_map.get(normalized_rubric, None)
-      if rubric_id:
+      rubric = None
+      if rubric_response.rubric_id:
+        rubric = rubric_by_id.get(rubric_response.rubric_id)
+      if rubric is None:
+        rubric = normalized_rubric_to_rubric_map.get(
+            _normalize_text(rubric_response.property_text)
+        )
+      if rubric:
         rubric_scores.append(
             RubricScore(
-                rubric_id=rubric_id,
+                rubric_id=rubric.rubric_id,
                 rationale=rubric_response.rationale,
                 score=rubric_response.score,
             )
@@ -371,7 +481,7 @@ class RubricBasedEvaluator(LlmAsJudge):
     """Returns a combined result by aggregating multiple samples for the same invocation.
 
     AutoRaters that are backed by an LLM are known to have certain degree of
-    unreliabilty to their responses. In order to counter that we sample the
+    unreliability to their responses. In order to counter that we sample the
     autorater more than once for a single invocation.
 
     The aggregator helps convert those multiple samples into a single result.

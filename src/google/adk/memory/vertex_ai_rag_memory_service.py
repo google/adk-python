@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 from collections import OrderedDict
 import json
 import os
@@ -35,100 +38,220 @@ if TYPE_CHECKING:
   from ..sessions.session import Session
 
 
+_SOURCE_DISPLAY_NAME_PREFIX = "adk-memory-v1."
+
+
+def _encode_source_display_name_part(value: str) -> str:
+  return (
+      base64.urlsafe_b64encode(value.encode("utf-8"))
+      .decode("ascii")
+      .rstrip("=")
+  )
+
+
+def _decode_source_display_name_part(value: str) -> str:
+  padded_value = value + "=" * (-len(value) % 4)
+  return base64.b64decode(
+      padded_value.encode("ascii"), altchars=b"-_", validate=True
+  ).decode("utf-8")
+
+
+def _build_source_display_name(
+    app_name: str, user_id: str, session_id: str
+) -> str:
+  return _SOURCE_DISPLAY_NAME_PREFIX + ".".join([
+      _encode_source_display_name_part(app_name),
+      _encode_source_display_name_part(user_id),
+      _encode_source_display_name_part(session_id),
+  ])
+
+
+def _parse_source_display_name(
+    source_display_name: str,
+) -> tuple[str, str, str] | None:
+  if source_display_name.startswith(_SOURCE_DISPLAY_NAME_PREFIX):
+    parts = source_display_name[len(_SOURCE_DISPLAY_NAME_PREFIX) :].split(".")
+    if len(parts) != 3:
+      return None
+    try:
+      return (
+          _decode_source_display_name_part(parts[0]),
+          _decode_source_display_name_part(parts[1]),
+          _decode_source_display_name_part(parts[2]),
+      )
+    except (binascii.Error, UnicodeDecodeError, UnicodeEncodeError):
+      return None
+
+  # Legacy display names were dot-delimited. Only the exact three-part form is
+  # unambiguous, so dotted app/user/session IDs are intentionally ignored.
+  parts = source_display_name.split(".")
+  if len(parts) != 3:
+    return None
+  return parts[0], parts[1], parts[2]
+
+
 class VertexAiRagMemoryService(BaseMemoryService):
-  """A memory service that uses Vertex AI RAG for storage and retrieval."""
+  """A memory service that uses Agent Platform RAG for storage and retrieval."""
 
   def __init__(
       self,
       rag_corpus: Optional[str] = None,
       similarity_top_k: Optional[int] = None,
       vector_distance_threshold: float = 10,
+      project: Optional[str] = None,
+      location: Optional[str] = None,
   ):
     """Initializes a VertexAiRagMemoryService.
 
     Args:
-        rag_corpus: The name of the Vertex AI RAG corpus to use. Format:
+        rag_corpus: The name of the Agent Platform RAG corpus to use. Format:
           ``projects/{project}/locations/{location}/ragCorpora/{rag_corpus_id}``
           or ``{rag_corpus_id}``
         similarity_top_k: The number of contexts to retrieve.
         vector_distance_threshold: Only returns contexts with vector distance
-          smaller than the threshold..
+          smaller than the threshold.
+        project: The project to use for the Agent Platform RAG corpus. If not
+          set, the value of the GOOGLE_CLOUD_PROJECT environment variable is
+          used.
+        location: The location to use for the Agent Platform RAG corpus. If not
+          set, the value of the GOOGLE_CLOUD_LOCATION environment variable is
+          used.
     """
+    try:
+      import agentplatform  # noqa: F401
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra("google-cloud-aiplatform", "gcp") from e
+
+    self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    self._location = location or os.environ.get("GOOGLE_CLOUD_LOCATION")
+
+    # Fallback: if the fully-qualified corpus name is provided, use it to
+    # determine the project and location, if they are not already set.
+    if (not self._project or not self._location) and (
+        rag_corpus and rag_corpus.startswith("projects/")
+    ):
+      parts = rag_corpus.split("/")
+      if len(parts) >= 4 and parts[0] == "projects" and parts[2] == "locations":
+        self._project = self._project or parts[1]
+        self._location = self._location or parts[3]
+
+    # Top-k belongs on the retrieval query, not on the store: the
+    # retrieveContexts request's VertexRagStore has no such field.
+    self._similarity_top_k = similarity_top_k
     self._vertex_rag_store = types.VertexRagStore(
         rag_resources=[
             types.VertexRagStoreRagResource(rag_corpus=rag_corpus),
         ],
-        similarity_top_k=similarity_top_k,
         vector_distance_threshold=vector_distance_threshold,
     )
 
   @override
-  async def add_session_to_memory(self, session: Session):
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, suffix=".txt"
-    ) as temp_file:
+  async def add_session_to_memory(self, session: Session) -> None:
+    rag_resources = self._vertex_rag_store.rag_resources or ()
+    corpus_names = tuple(
+        resource.rag_corpus for resource in rag_resources if resource.rag_corpus
+    )
+    if not corpus_names or len(corpus_names) != len(rag_resources):
+      raise ValueError("rag_corpus must be set on every RAG resource.")
 
-      output_lines = []
-      for event in session.events:
-        if not event.content or not event.content.parts:
-          continue
-        text_parts = [
-            part.text.replace("\n", " ")
-            for part in event.content.parts
-            if part.text
-        ]
-        if text_parts:
-          output_lines.append(
-              json.dumps({
-                  "author": event.author,
-                  "timestamp": event.timestamp,
-                  "text": ".".join(text_parts),
-              })
+    output_lines = []
+    for event in session.events:
+      if not event.content or not event.content.parts:
+        continue
+      text_parts = [
+          part.text.replace("\n", " ")
+          for part in event.content.parts
+          if part.text
+      ]
+      if text_parts:
+        output_lines.append(
+            json.dumps({
+                "author": event.author,
+                "timestamp": event.timestamp,
+                "text": ".".join(text_parts),
+            })
+        )
+    output_string = "\n".join(output_lines)
+
+    import agentplatform
+
+    temp_file_path: str | None = None
+    try:
+      with tempfile.NamedTemporaryFile(
+          mode="w",
+          delete=False,
+          encoding="utf-8",
+          suffix=".txt",
+      ) as temp_file:
+        temp_file_path = temp_file.name
+        temp_file.write(output_string)
+
+      client = agentplatform.Client(
+          project=self._project, location=self._location
+      ).aio
+      rag = client.rag
+      try:
+        # Fails fast: the RAG API cannot roll back corpora already written.
+        for corpus_name in corpus_names:
+          await rag.upload_file(
+              corpus_name=corpus_name,
+              path=temp_file_path,
+              display_name=_build_source_display_name(
+                  session.app_name, session.user_id, session.id
+              ),
           )
-      output_string = "\n".join(output_lines)
-      temp_file.write(output_string)
-      temp_file_path = temp_file.name
-
-    if not self._vertex_rag_store.rag_resources:
-      raise ValueError("Rag resources must be set.")
-
-    from ..dependencies.vertexai import rag
-
-    for rag_resource in self._vertex_rag_store.rag_resources:
-      rag.upload_file(
-          corpus_name=rag_resource.rag_corpus,
-          path=temp_file_path,
-          # this is the temp workaround as upload file does not support
-          # adding metadata, thus use display_name to store the session info.
-          display_name=f"{session.app_name}.{session.user_id}.{session.id}",
-      )
-
-    os.remove(temp_file_path)
+      finally:
+        # Shielded so a cancellation racing the close cannot leak the
+        # underlying HTTP session.
+        await asyncio.shield(client.aclose())
+    finally:
+      if temp_file_path:
+        try:
+          os.remove(temp_file_path)
+        except FileNotFoundError:
+          pass
 
   @override
   async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query using rag.retrieval_query."""
-    from ..dependencies.vertexai import rag
+    import agentplatform
+    from agentplatform import types as agentplatform_types
+
     from ..events.event import Event
 
-    response = rag.retrieval_query(
-        text=query,
-        rag_resources=self._vertex_rag_store.rag_resources,
-        rag_corpora=self._vertex_rag_store.rag_corpora,
-        similarity_top_k=self._vertex_rag_store.similarity_top_k,
-        vector_distance_threshold=self._vertex_rag_store.vector_distance_threshold,
-    )
-
+    client = agentplatform.Client(
+        project=self._project, location=self._location
+    ).aio
+    try:
+      response = await client.rag.retrieve_contexts(
+          vertex_rag_store=self._vertex_rag_store,
+          query=agentplatform_types.RagQuery(
+              text=query,
+              similarity_top_k=self._similarity_top_k,
+          ),
+      )
+    finally:
+      # Shielded so a cancellation racing the close cannot leak the
+      # underlying HTTP session.
+      await asyncio.shield(client.aclose())
     memory_results = []
-    session_events_map = OrderedDict()
+    session_events_map: OrderedDict[str, list[list[Event]]] = OrderedDict()
     for context in response.contexts.contexts:
       # filter out context that is not related
       # TODO: Add server side filtering by app_name and user_id.
-      if not context.source_display_name.startswith(f"{app_name}.{user_id}."):
+      source_display_name = getattr(context, "source_display_name", "")
+      if not isinstance(source_display_name, str):
         continue
-      session_id = context.source_display_name.split(".")[-1]
+      session_info = _parse_source_display_name(source_display_name)
+      if not session_info:
+        continue
+      source_app_name, source_user_id, session_id = session_info
+      if source_app_name != app_name or source_user_id != user_id:
+        continue
       events = []
       if context.text:
         lines = context.text.split("\n")

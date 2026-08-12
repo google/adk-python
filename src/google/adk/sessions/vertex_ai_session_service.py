@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+import copy
 import datetime
 import json
 import logging
@@ -24,6 +26,8 @@ from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai import types
+from google.genai.errors import ClientError
+import pydantic
 from typing_extensions import override
 
 if TYPE_CHECKING:
@@ -32,6 +36,7 @@ if TYPE_CHECKING:
 from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
+from ..events.event_actions import EventCompaction
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -39,6 +44,78 @@ from .base_session_service import ListSessionsResponse
 from .session import Session
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_COMPACTION_CUSTOM_METADATA_KEY = '_compaction'
+_USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
+
+_SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+
+
+def _extract_short_session_id(
+    session_id: str, expected_engine_id: str | None = None
+) -> str:
+  """Extracts the short session ID if a full resource name is provided."""
+  if isinstance(session_id, str) and '/' in session_id:
+    parts = session_id.split('/')
+    if len(parts) >= 2 and parts[-2] == 'sessions':
+      if (
+          len(parts) >= 4
+          and parts[-4] == 'reasoningEngines'
+          and expected_engine_id
+      ):
+        passed_engine_id = parts[-3]
+        if passed_engine_id != expected_engine_id:
+          raise ValueError(
+              'Session resource name mismatch: session belongs to '
+              f'reasoningEngine {passed_engine_id!r}, but service is '
+              f'configured for {expected_engine_id!r}.'
+          )
+      return parts[-1]
+  return session_id
+
+
+def _validate_session_id(session_id: str) -> None:
+  """Rejects session IDs that could escape the URL path segment."""
+  if not isinstance(session_id, str) or not _SESSION_ID_PATTERN.fullmatch(
+      session_id
+  ):
+    raise ValueError(
+        f'Invalid session_id {session_id!r}: must match'
+        f' {_SESSION_ID_PATTERN.pattern}.'
+    )
+
+
+def _quote_filter_literal(value: str) -> str:
+  """Quotes filter values so embedded metacharacters stay inside the literal."""
+  escaped_value = value.replace('\\', '\\\\').replace('"', '\\"')
+  return f'"{escaped_value}"'
+
+
+def _set_internal_custom_metadata(
+    metadata_dict: dict[str, Any], *, key: str, value: dict[str, Any]
+) -> None:
+  """Stores internal metadata alongside user-provided custom metadata."""
+  existing_custom_metadata = metadata_dict.get('custom_metadata') or {}
+  metadata_dict['custom_metadata'] = {
+      **existing_custom_metadata,
+      key: value,
+  }
+
+
+def _drop_vertex_unsupported_part_fields(content_dict: dict[str, Any]) -> None:
+  """Drops Part fields the Vertex AI Agent Engine Sessions API rejects.
+
+  ``part_metadata`` is a Gemini Developer API-only field (the model path guards
+  it in ``genai`` ``_Part_to_vertex``); the Agent Engine Sessions API does not
+  accept it and fails ``appendEvent`` with ``400 INVALID_ARGUMENT`` ("Unknown
+  name \"part_metadata\" at 'event.content.parts[0]'"). Mutates the serialized
+  content dict in place; tolerant of either field-name or alias serialization.
+  """
+  # TODO: remove once the Agent Engine Sessions API accepts part_metadata.
+  for part in content_dict.get('parts') or []:
+    if isinstance(part, dict):
+      part.pop('part_metadata', None)
+      part.pop('partMetadata', None)
 
 
 class VertexAiSessionService(BaseSessionService):
@@ -63,11 +140,17 @@ class VertexAiSessionService(BaseSessionService):
       agent_engine_id: The resource ID of the agent engine to use.
       express_mode_api_key: The API key to use for Express Mode. If not
         provided, the API key from the GOOGLE_API_KEY environment variable will
-        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
-        Do not use Google AI Studio API key for this field. For more details,
-        visit
+        be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true. Do
+        not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
+    try:
+      import vertexai  # noqa: F401
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra('google-cloud-aiplatform', 'gcp') from e
+
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
@@ -93,22 +176,27 @@ class VertexAiSessionService(BaseSessionService):
       state: The initial state of the session.
       session_id: The ID of the session.
       **kwargs: Additional arguments to pass to the session creation. E.g. set
+        ttl='7200s' to set the session time-to-live or
         expire_time='2025-10-01T00:00:00Z' to set the session expiration time.
         See https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta1/projects.locations.reasoningEngines.sessions
         for more details.
+
     Returns:
       The created session.
     """
-
-    if session_id:
+    if kwargs.get('ttl') is not None and kwargs.get('expire_time') is not None:
       raise ValueError(
-          'User-provided Session id is not supported for'
-          ' VertexAISessionService.'
+          "Cannot specify both 'ttl' and 'expire_time' simultaneously."
       )
-
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
-    config = {'session_state': state} if state else {}
+    config: dict[str, Any] = {'session_state': state} if state else {}
+    if session_id:
+      session_id = _extract_short_session_id(
+          session_id, expected_engine_id=reasoning_engine_id
+      )
+      _validate_session_id(session_id)
+      config['session_id'] = session_id
     config.update(kwargs)
     async with self._get_api_client() as api_client:
       api_response = await api_client.agent_engines.sessions.create(
@@ -139,13 +227,17 @@ class VertexAiSessionService(BaseSessionService):
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    session_id = _extract_short_session_id(
+        session_id, expected_engine_id=reasoning_engine_id
+    )
+    _validate_session_id(session_id)
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
     )
     async with self._get_api_client() as api_client:
       # Get session resource and events in parallel.
       list_events_kwargs = {}
-      if config and not config.num_recent_events and config.after_timestamp:
+      if config and config.after_timestamp:
         # Filter events based on timestamp.
         list_events_kwargs['config'] = {
             'filter': 'timestamp>="{}"'.format(
@@ -155,38 +247,58 @@ class VertexAiSessionService(BaseSessionService):
             )
         }
 
-      get_session_response, events_iterator = await asyncio.gather(
-          api_client.agent_engines.sessions.get(name=session_resource_name),
-          api_client.agent_engines.sessions.events.list(
-              name=session_resource_name,
-              **list_events_kwargs,
-          ),
-      )
+      try:
+        if config and config.num_recent_events == 0:
+          get_session_response = await api_client.agent_engines.sessions.get(
+              name=session_resource_name
+          )
+          events_iterator = None
+        else:
+          get_session_response, events_iterator = await asyncio.gather(
+              api_client.agent_engines.sessions.get(name=session_resource_name),
+              api_client.agent_engines.sessions.events.list(
+                  name=session_resource_name,
+                  **list_events_kwargs,
+              ),
+          )
+      except ClientError as e:
+        if e.code == 404:
+          logger.debug(
+              'Session %s not found in Vertex AI Agent Engine.',
+              session_resource_name,
+          )
+          return None
+        raise
+      if get_session_response.user_id != user_id:
+        raise ValueError(
+            f'Session {session_id} does not belong to user {user_id}.'
+        )
 
-    if get_session_response.user_id != user_id:
-      raise ValueError(
-          f'Session {session_id} does not belong to user {user_id}.'
+      update_timestamp = get_session_response.update_time.timestamp()
+      session = Session(
+          app_name=app_name,
+          user_id=user_id,
+          id=session_id,
+          state=getattr(get_session_response, 'session_state', None) or {},
+          last_update_time=update_timestamp,
       )
-
-    update_timestamp = get_session_response.update_time.timestamp()
-    session = Session(
-        app_name=app_name,
-        user_id=user_id,
-        id=session_id,
-        state=getattr(get_session_response, 'session_state', None) or {},
-        last_update_time=update_timestamp,
-    )
-    # Preserve the entire event stream that Vertex returns rather than trying
-    # to discard events written milliseconds after the session resource was
-    # updated. Clock skew between those writes can otherwise drop tool_result
-    # events and permanently break the replayed conversation.
-    async for event in events_iterator:
-      session.events.append(_from_api_event(event))
+      # Preserve the entire event stream that Vertex returns rather than trying
+      # to discard events written milliseconds after the session resource was
+      # updated. Clock skew between those writes can otherwise drop tool_result
+      # events and permanently break the replayed conversation.
+      if events_iterator is not None:
+        async for event in events_iterator:
+          session.events.append(_from_api_event(event))
 
     if config:
-      # Filter events based on num_recent_events.
-      if config.num_recent_events:
-        session.events = session.events[-config.num_recent_events :]
+      # Filter events based on num_recent_events. Note `0` must return an empty
+      # list (and `events[-0:]` would wrongly return everything).
+      if config.num_recent_events is not None:
+        session.events = (
+            session.events[-config.num_recent_events :]
+            if config.num_recent_events
+            else []
+        )
 
     return session
 
@@ -200,13 +312,13 @@ class VertexAiSessionService(BaseSessionService):
       sessions = []
       config = {}
       if user_id is not None:
-        config['filter'] = f'user_id="{user_id}"'
+        config['filter'] = f'user_id={_quote_filter_literal(user_id)}'
       sessions_iterator = await api_client.agent_engines.sessions.list(
           name=f'reasoningEngines/{reasoning_engine_id}',
           config=config,
       )
 
-      for api_session in sessions_iterator:
+      async for api_session in sessions_iterator:
         sessions.append(
             Session(
                 app_name=app_name,
@@ -217,36 +329,79 @@ class VertexAiSessionService(BaseSessionService):
             )
         )
 
+    sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
     return ListSessionsResponse(sessions=sessions)
 
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    session_id = _extract_short_session_id(
+        session_id, expected_engine_id=reasoning_engine_id
+    )
+    _validate_session_id(session_id)
+    session_resource_name = (
+        f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
+    )
 
     async with self._get_api_client() as api_client:
+      # Enforce ownership: delete_session otherwise ignores user_id entirely.
+      try:
+        existing = await api_client.agent_engines.sessions.get(
+            name=session_resource_name
+        )
+      except ClientError as e:
+        if e.code == 404:
+          return
+        raise
+      if existing.user_id != user_id:
+        raise ValueError(
+            f'Session {session_id} does not belong to user {user_id}.'
+        )
+
       try:
         await api_client.agent_engines.sessions.delete(
-            name=(
-                f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
-            ),
+            name=session_resource_name,
         )
       except Exception as e:
         logger.error('Error deleting session %s: %s', session_id, e)
         raise
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    """Not supported by the Vertex AI Agent Engine backend.
+
+    The Vertex AI Agent Engine API does not expose user state independently of
+    a session.  To read user state, enumerate sessions via ``list_sessions``
+    and call ``get_session`` on each result to access the merged state.
+
+    Raises:
+      NotImplementedError: Always, because the Vertex AI Agent Engine API does
+        not provide a way to query user state without a session.
+    """
+    raise NotImplementedError(
+        'VertexAiSessionService does not support get_user_state. '
+        'The Vertex AI Agent Engine API does not expose user state '
+        'independently of a session. To read user state, enumerate sessions '
+        'via list_sessions and call get_session on each result.'
+    )
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
     await super().append_event(session=session, event=event)
 
+    _validate_session_id(session.id)
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
 
-    config = {}
+    # Build config (Monolithic approach)
+    config: dict[str, Any] = {}
     if event.content:
-      config['content'] = event.content.model_dump(
-          exclude_none=True, mode='json'
-      )
+      content_dict = event.content.model_dump(exclude_none=True, mode='json')
+      _drop_vertex_unsupported_part_fields(content_dict)
+      config['content'] = content_dict
     if event.actions:
       config['actions'] = {
           'skip_summarization': event.actions.skip_summarization,
@@ -258,15 +413,13 @@ class VertexAiSessionService(BaseSessionService):
               k: json.loads(v.model_dump_json(exclude_none=True, by_alias=True))
               for k, v in event.actions.requested_auth_configs.items()
           },
-          # TODO: add requested_tool_confirmations, compaction, agent_state once
-          # they are available in the API.
       }
     if event.error_code:
       config['error_code'] = event.error_code
     if event.error_message:
       config['error_message'] = event.error_message
 
-    metadata_dict = {
+    metadata_dict: dict[str, Any] = {
         'partial': event.partial,
         'turn_complete': event.turn_complete,
         'interrupted': event.interrupted,
@@ -282,21 +435,67 @@ class VertexAiSessionService(BaseSessionService):
       metadata_dict['grounding_metadata'] = event.grounding_metadata.model_dump(
           exclude_none=True, mode='json'
       )
+
+    # ALWAYS write to custom_metadata
+    if event.actions and event.actions.compaction:
+      compaction_dict = event.actions.compaction.model_dump(
+          exclude_none=True, mode='json'
+      )
+      _set_internal_custom_metadata(
+          metadata_dict,
+          key=_COMPACTION_CUSTOM_METADATA_KEY,
+          value=compaction_dict,
+      )
+    if event.usage_metadata:
+      usage_dict = event.usage_metadata.model_dump(
+          exclude_none=True, mode='json'
+      )
+      _set_internal_custom_metadata(
+          metadata_dict,
+          key=_USAGE_METADATA_CUSTOM_METADATA_KEY,
+          value=usage_dict,
+      )
+
     config['event_metadata'] = metadata_dict
 
+    # Persist the full event state using raw_event. If the client-side SDK
+    # does not support this field, it will raise a ValidationError, and we
+    # will fall back to legacy field-based storage.
+    config['raw_event'] = event.model_dump(
+        exclude_none=True,
+        mode='json',
+        by_alias=True,
+    )
+    if isinstance(config['raw_event'].get('content'), dict):
+      _drop_vertex_unsupported_part_fields(config['raw_event']['content'])
+
+    # Retry without raw_event if client side validation fails for older SDK
+    # versions.
     async with self._get_api_client() as api_client:
-      await api_client.agent_engines.sessions.events.append(
-          name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}',
-          author=event.author,
-          invocation_id=event.invocation_id,
-          timestamp=datetime.datetime.fromtimestamp(
-              event.timestamp, tz=datetime.timezone.utc
-          ),
-          config=config,
-      )
+
+      async def _do_append(cfg: dict[str, Any]) -> None:
+        await api_client.agent_engines.sessions.events.append(
+            name=(
+                f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
+            ),
+            author=event.author,
+            invocation_id=event.invocation_id,
+            timestamp=datetime.datetime.fromtimestamp(
+                event.timestamp, tz=datetime.timezone.utc
+            ),
+            config=cfg,
+        )
+
+      try:
+        await _do_append(config)
+      except pydantic.ValidationError:
+        logger.warning('Vertex SDK does not support raw_event, falling back.')
+        if 'raw_event' in config:
+          del config['raw_event']
+        await _do_append(config)
     return event
 
-  def _get_reasoning_engine_id(self, app_name: str):
+  def _get_reasoning_engine_id(self, app_name: str) -> str:
     if self._agent_engine_id:
       return self._agent_engine_id
 
@@ -327,27 +526,54 @@ class VertexAiSessionService(BaseSessionService):
     """
     import vertexai
 
+    if self._express_mode_api_key:
+      return vertexai.Client(
+          http_options=self._api_client_http_options_override(),
+          api_key=self._express_mode_api_key,
+      ).aio
     return vertexai.Client(
         project=self._project,
         location=self._location,
         http_options=self._api_client_http_options_override(),
-        api_key=self._express_mode_api_key,
     ).aio
+
+
+def _get_raw_event(api_event_obj: object) -> dict[str, Any] | None:
+  """Extracts raw_event dict from SessionEvent object safely."""
+  for attribute_name in ('raw_event', 'rawEvent'):
+    raw_event: object = getattr(api_event_obj, attribute_name, None)
+    if raw_event is None:
+      continue
+    if not isinstance(raw_event, Mapping):
+      return None
+
+    normalized: dict[str, Any] = {}
+    for key, value in raw_event.items():
+      if not isinstance(key, str):
+        return None
+      normalized[key] = value
+    return normalized
+  return None
 
 
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
   """Converts an API event object to an Event object."""
-  actions = getattr(api_event_obj, 'actions', None)
-  if actions:
-    actions_dict = actions.model_dump(exclude_none=True, mode='python')
-    rename_map = {'transfer_agent': 'transfer_to_agent'}
-    renamed_actions_dict = {
-        rename_map.get(k, k): v for k, v in actions_dict.items()
-    }
-    event_actions = EventActions.model_validate(renamed_actions_dict)
-  else:
-    event_actions = EventActions()
+  # Prioritize reading from raw_event to restore full state. Fall back to
+  # top-level fields for older data that lacks raw_event.
+  raw_event_dict = _get_raw_event(api_event_obj)
+  if raw_event_dict:
+    event_dict = copy.deepcopy(raw_event_dict)
+    timestamp_obj = getattr(api_event_obj, 'timestamp', None)
+    event_dict.update({
+        'id': api_event_obj.name.split('/')[-1],
+        'invocation_id': getattr(api_event_obj, 'invocation_id', None),
+        'author': getattr(api_event_obj, 'author', None),
+    })
+    if timestamp_obj:
+      event_dict['timestamp'] = timestamp_obj.timestamp()
+    return Event.model_validate(event_dict)
 
+  actions = getattr(api_event_obj, 'actions', None)
   event_metadata = getattr(api_event_obj, 'event_metadata', None)
   if event_metadata:
     long_running_tool_ids_list = getattr(
@@ -361,6 +587,25 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     interrupted = getattr(event_metadata, 'interrupted', None)
     branch = getattr(event_metadata, 'branch', None)
     custom_metadata = getattr(event_metadata, 'custom_metadata', None)
+    # Extract compaction data stored in custom_metadata.
+    # NOTE: This read path must be kept permanently because sessions
+    # written before native compaction support store compaction data
+    # in custom_metadata under the compaction metadata key.
+    compaction_data = None
+    usage_metadata_data = None
+    if custom_metadata and (
+        _COMPACTION_CUSTOM_METADATA_KEY in custom_metadata
+        or _USAGE_METADATA_CUSTOM_METADATA_KEY in custom_metadata
+    ):
+      custom_metadata = dict(custom_metadata)  # avoid mutating the API response
+      compaction_data = custom_metadata.pop(
+          _COMPACTION_CUSTOM_METADATA_KEY, None
+      )
+      usage_metadata_data = custom_metadata.pop(
+          _USAGE_METADATA_CUSTOM_METADATA_KEY, None
+      )
+      if not custom_metadata:
+        custom_metadata = None
     grounding_metadata = _session_util.decode_model(
         getattr(event_metadata, 'grounding_metadata', None),
         types.GroundingMetadata,
@@ -372,7 +617,39 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     interrupted = None
     branch = None
     custom_metadata = None
+    compaction_data = None
+    usage_metadata_data = None
     grounding_metadata = None
+
+  if actions:
+    actions_dict = actions.model_dump(exclude_none=True, mode='python')
+    rename_map = {'transfer_agent': 'transfer_to_agent'}
+    renamed_actions_dict = {
+        rename_map.get(k, k): v for k, v in actions_dict.items()
+    }
+    if compaction_data:
+      renamed_actions_dict['compaction'] = compaction_data
+    event_actions = EventActions.model_validate(renamed_actions_dict)
+  else:
+    if compaction_data:
+      event_actions = EventActions(
+          compaction=EventCompaction.model_validate(compaction_data)
+      )
+    else:
+      event_actions = EventActions()
+
+  usage_metadata = None
+  if usage_metadata_data:
+    usage_metadata = types.GenerateContentResponseUsageMetadata.model_validate(
+        usage_metadata_data
+    )
+
+  timestamp_obj = getattr(api_event_obj, 'timestamp', None)
+  timestamp = (
+      timestamp_obj.timestamp()
+      if timestamp_obj
+      else datetime.datetime.now(datetime.timezone.utc).timestamp()
+  )
 
   return Event(
       id=api_event_obj.name.split('/')[-1],
@@ -382,7 +659,7 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
       content=_session_util.decode_model(
           getattr(api_event_obj, 'content', None), types.Content
       ),
-      timestamp=api_event_obj.timestamp.timestamp(),
+      timestamp=timestamp,
       error_code=getattr(api_event_obj, 'error_code', None),
       error_message=getattr(api_event_obj, 'error_message', None),
       partial=partial,
@@ -392,4 +669,5 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
       custom_metadata=custom_metadata,
       grounding_metadata=grounding_metadata,
       long_running_tool_ids=long_running_tool_ids,
+      usage_metadata=usage_metadata,
   )

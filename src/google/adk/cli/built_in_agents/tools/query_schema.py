@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,11 @@
 # limitations under the License.
 
 """ADK AgentConfig schema query tool for dynamic schema information access."""
+
 from __future__ import annotations
 
 from typing import Any
+from typing import cast
 from typing import Dict
 from typing import Optional
 
@@ -74,7 +76,7 @@ async def query_schema(
       result = await query_schema("field", field_path="model.name")
   """
   try:
-    schema = load_agent_config_schema(raw_format=False)
+    schema = cast(Dict[str, Any], load_agent_config_schema(raw_format=False))
 
     if query_type == "overview":
       return _get_schema_overview(schema)
@@ -181,7 +183,7 @@ def _get_field_details(
   path_parts = field_path.split(".")
   current = schema.get("properties", {})
 
-  result = {"field_path": field_path, "path_traversal": []}
+  result: Dict[str, Any] = {"field_path": field_path, "path_traversal": []}
 
   for i, part in enumerate(path_parts):
     if not isinstance(current, dict) or part not in current:
@@ -220,7 +222,7 @@ def _get_all_properties(schema: Dict[str, Any]) -> Dict[str, Any]:
   """Get a flat list of all properties in the schema."""
   properties = {}
 
-  def extract_properties(obj: Dict[str, Any], prefix: str = ""):
+  def extract_properties(obj: Dict[str, Any], prefix: str = "") -> None:
     if not isinstance(obj, dict):
       return
 

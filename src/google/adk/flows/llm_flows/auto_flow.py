@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,6 +39,6 @@ class AutoFlow(SingleFlow):
   active to handle next user message.)
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     super().__init__()
     self.request_processors += [agent_transfer.request_processor]

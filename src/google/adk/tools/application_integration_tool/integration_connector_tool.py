@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,6 +25,8 @@ from typing_extensions import override
 
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...features import FeatureName
+from ...features import is_feature_enabled
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_tool import BaseTool
 from ..openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
@@ -78,6 +80,7 @@ class IntegrationConnectorTool(BaseTool):
       rest_api_tool: RestApiTool,
       auth_scheme: Optional[Union[AuthScheme, str]] = None,
       auth_credential: Optional[Union[AuthCredential, str]] = None,
+      credential_key: Optional[str] = None,
   ):
     """Initializes the ApplicationIntegrationTool.
 
@@ -113,6 +116,7 @@ class IntegrationConnectorTool(BaseTool):
     self._rest_api_tool = rest_api_tool
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._credential_key = credential_key
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -125,10 +129,17 @@ class IntegrationConnectorTool(BaseTool):
       if field in schema_dict['required']:
         schema_dict['required'].remove(field)
 
-    parameters = _to_gemini_schema(schema_dict)
-    function_decl = FunctionDeclaration(
-        name=self.name, description=self.description, parameters=parameters
-    )
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      function_decl = FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema=schema_dict,
+      )
+    else:
+      parameters = _to_gemini_schema(schema_dict)
+      function_decl = FunctionDeclaration(
+          name=self.name, description=self.description, parameters=parameters
+      )
     return function_decl
 
   def _prepare_dynamic_euc(self, auth_credential: AuthCredential) -> str:
@@ -147,7 +158,10 @@ class IntegrationConnectorTool(BaseTool):
   ) -> Dict[str, Any]:
 
     tool_auth_handler = ToolAuthHandler.from_tool_context(
-        tool_context, self._auth_scheme, self._auth_credential
+        tool_context,
+        self._auth_scheme,
+        self._auth_credential,
+        credential_key=self._credential_key,
     )
     auth_result = await tool_auth_handler.prepare_auth_credentials()
 

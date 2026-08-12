@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from .env_utils import is_env_enabled
+from .env_utils import is_enterprise_mode_enabled
 
 _GOOGLE_LLM_VARIANT_VERTEX_AI = 'VERTEX_AI'
 _GOOGLE_LLM_VARIANT_GEMINI_API = 'GEMINI_API'
@@ -41,8 +41,6 @@ class GoogleLLMVariant(Enum):
 
 
 def get_google_llm_variant() -> GoogleLLMVariant:
-  return (
-      GoogleLLMVariant.VERTEX_AI
-      if is_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
-      else GoogleLLMVariant.GEMINI_API
-  )
+  if is_enterprise_mode_enabled():
+    return GoogleLLMVariant.VERTEX_AI
+  return GoogleLLMVariant.GEMINI_API

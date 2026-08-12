@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ import logging
 import re
 from typing import Any
 from typing import AsyncGenerator
+from typing import cast
+from typing import TYPE_CHECKING
 
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -39,13 +41,16 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 class GemmaFunctionCallingMixin:
-  """Mixin providing function calling support for Gemma models.
+  """Mixin providing function calling support for Gemma 3 models.
 
-  Gemma models don't have native function calling support, so this mixin
+  Gemma 3 models don't have native function calling support, so this mixin
   provides the logic to:
   1. Convert function declarations to system instruction prompts
   2. Convert function call/response parts to text in the conversation
   3. Extract function calls from model text responses
+
+  This mixin is NOT needed for Gemma 4+, which supports function calling
+  natively through the standard Gemini/LiteLLM integrations.
   """
 
   def _move_function_calls_into_system_instruction(
@@ -161,31 +166,29 @@ class GemmaFunctionCallModel(BaseModel):
 
 
 class Gemma(GemmaFunctionCallingMixin, Gemini):
-  """Integration for Gemma models exposed via the Gemini API.
+  """Integration for Gemma 3 models exposed via the Gemini API.
 
-  Only Gemma 3 models are supported at this time. For agentic use cases,
-  use of gemma-3-27b-it and gemma-3-12b-it are strongly recommended.
+  This class is for **Gemma 3 only**. It provides workarounds for Gemma 3's
+  lack of native function calling and system instruction support:
+  - Tools are injected into text prompts (not passed via the API)
+  - Function calls are parsed from model text responses
+  - System instructions are converted to user-role messages
+
+  For Gemma 4 and later, use the standard ``Gemini`` class directly::
+
+      # Gemma 4 - use Gemini (native function calling & system instructions)
+      agent = Agent(model=Gemini(model="gemma-4-<size>"), ...)
+
+      # Gemma 3 - use this class (workarounds applied automatically)
+      agent = Agent(model=Gemma(model="gemma-3-27b-it"), ...)
+
+  For agentic use cases with Gemma 3, ``gemma-3-27b-it`` and ``gemma-3-12b-it``
+  are strongly recommended.
 
   For full documentation, see: https://ai.google.dev/gemma/docs/core/
 
-  NOTE: Gemma does **NOT** support system instructions. Any system instructions
-  will be replaced with an initial *user* prompt in the LLM request. If system
-  instructions change over the course of agent execution, the initial content
-  **SHOULD** be replaced. Special care is warranted here.
-  See:
-  https://ai.google.dev/gemma/docs/core/prompt-structure#system-instructions
-
-  NOTE: Gemma's function calling support is limited. It does not have full
-  access to the
-  same built-in tools as Gemini. It also does not have special API support for
-  tools and
-  functions. Rather, tools must be passed in via a `user` prompt, and extracted
-  from model
-  responses based on approximate shape.
-
-  NOTE: Vertex AI API support for Gemma is not currently included. This **ONLY**
-  supports
-  usage via the Gemini API.
+  NOTE: This class only supports the Gemini API (Google AI Studio).
+  Vertex AI API support is not included.
   """
 
   model: str = (
@@ -205,7 +208,7 @@ class Gemma(GemmaFunctionCallingMixin, Gemini):
     """
 
     return [
-        r'gemma-3.*',
+        r'gemma-.*',
     ]
 
   @cached_property
@@ -219,7 +222,8 @@ class Gemma(GemmaFunctionCallingMixin, Gemini):
     if system_instruction := llm_request.config.system_instruction:
       contents = llm_request.contents
       instruction_content = Content(
-          role='user', parts=[Part.from_text(text=system_instruction)]
+          role='user',
+          parts=[Part.from_text(text=cast(str, system_instruction))],
       )
 
       # NOTE: if history is preserved, we must include the system instructions ONLY once at the beginning
@@ -247,8 +251,9 @@ class Gemma(GemmaFunctionCallingMixin, Gemini):
       LlmResponse: The model response.
     """
     # print(f'{llm_request=}')
-    assert llm_request.model.startswith('gemma-'), (
-        f'Requesting a non-Gemma model ({llm_request.model}) with the Gemma LLM'
+    model = llm_request.model
+    assert model is not None and model.startswith('gemma-'), (
+        f'Requesting a non-Gemma model ({model}) with the Gemma LLM'
         ' is not supported.'
     )
 
@@ -275,7 +280,7 @@ def _convert_content_parts_for_gemma(
   has_function_response_part = False
   has_function_call_part = False
 
-  for part in content_item.parts:
+  for part in content_item.parts or []:
     if func_response := part.function_response:
       has_function_response_part = True
       response_text = (
@@ -323,7 +328,7 @@ def _get_last_valid_json_substring(text: str) -> tuple[bool, str | None]:
   """Attempts to find and return the last valid JSON object in a string.
 
   This function is designed to extract JSON that might be embedded in a larger
-  text, potentially with introductory or concluding remarks. It will always chose
+  text, potentially with introductory or concluding remarks. It will always choose
   the last block of valid json found within the supplied text (if it exists).
 
   Args:
@@ -354,26 +359,39 @@ def _get_last_valid_json_substring(text: str) -> tuple[bool, str | None]:
   return False, None
 
 
-try:
-  from google.adk.models.lite_llm import LiteLlm  # noqa: F401
-except Exception:
-  # LiteLLM not available, Gemma3Ollama will not be defined
-  LiteLlm = None
+if TYPE_CHECKING:
+  from google.adk.models.lite_llm import LiteLlm
+else:
+  try:
+    from google.adk.models.lite_llm import LiteLlm  # noqa: F401
+  except ImportError as e:
+    logger.debug(
+        'LiteLlm not available; Gemma3Ollama will not be defined: %s', e
+    )
+    LiteLlm = None
 
 if LiteLlm is not None:
 
   class Gemma3Ollama(GemmaFunctionCallingMixin, LiteLlm):
     """Integration for Gemma 3 models running locally via Ollama.
 
-    This enables fully local agent workflows using Gemma 3 models.
-    Requires Ollama to be running with a Gemma 3 model pulled.
+    This class is for **Gemma 3 only**. It provides the same function calling
+    workarounds as the ``Gemma`` class, but routes through Ollama via LiteLLM.
 
-    Example:
-      ollama pull gemma3:12b
-      model = Gemma3Ollama(model="ollama/gemma3:12b")
+    For Gemma 4 and later on Ollama, use the standard ``LiteLlm`` class::
+
+        # Gemma 4 on Ollama - use LiteLlm directly
+        agent = Agent(model=LiteLlm(model="ollama_chat/gemma4:<size>"), ...)
+
+        # Gemma 3 on Ollama - use this class
+        agent = Agent(model=Gemma3Ollama(), ...)
+
+    Requires Ollama to be running with a Gemma 3 model pulled::
+
+        ollama pull gemma3:12b
     """
 
-    def __init__(self, model: str = 'ollama/gemma3:12b', **kwargs):
+    def __init__(self, model: str = 'ollama/gemma3:12b', **kwargs: Any) -> None:
       super().__init__(model=model, **kwargs)
 
     def __repr__(self) -> str:

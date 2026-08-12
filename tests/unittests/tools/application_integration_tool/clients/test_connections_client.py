@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -54,15 +54,37 @@ class TestConnectionsClient:
 
   def test_initialization(self, project, location, connection_name):
     credentials = {"email": "test@example.com"}
-    client = ConnectionsClient(
-        project, location, connection_name, json.dumps(credentials)
-    )
-    assert client.project == project
-    assert client.location == location
-    assert client.connection == connection_name
-    assert client.connector_url == "https://connectors.googleapis.com"
-    assert client.service_account_json == json.dumps(credentials)
-    assert client.credential_cache is None
+    with mock.patch(
+        "google.adk.tools.application_integration_tool.clients.connections_client._mtls_utils.get_api_endpoint",
+        return_value="connectors.googleapis.com",
+    ) as mock_get_api_endpoint:
+      client = ConnectionsClient(
+          project, location, connection_name, json.dumps(credentials)
+      )
+      assert client.project == project
+      assert client.location == location
+      assert client.connection == connection_name
+      assert client.connector_url == "https://connectors.googleapis.com"
+      assert client.service_account_json == json.dumps(credentials)
+      assert client.credential_cache is None
+      mock_get_api_endpoint.assert_called_once_with(
+          location,
+          "connectors.googleapis.com",
+          "connectors.mtls.googleapis.com",
+      )
+
+  def test_initialization_mtls_endpoint(
+      self, project, location, connection_name
+  ):
+    credentials = {"email": "test@example.com"}
+    with mock.patch(
+        "google.adk.tools.application_integration_tool.clients.connections_client._mtls_utils.get_api_endpoint",
+        return_value="connectors.mtls.googleapis.com",
+    ):
+      client = ConnectionsClient(
+          project, location, connection_name, json.dumps(credentials)
+      )
+      assert client.connector_url == "https://connectors.mtls.googleapis.com"
 
   def test_execute_api_call_success(
       self, project, location, connection_name, mock_credentials
@@ -88,6 +110,7 @@ class TestConnectionsClient:
               "Content-Type": "application/json",
               "Authorization": f"Bearer {mock_credentials.token}",
           },
+          timeout=30,
       )
 
   def test_execute_api_call_credential_error(
@@ -261,7 +284,13 @@ class TestConnectionsClient:
       self, project, location, connection_name, mock_credentials
   ):
     credentials = {"email": "test@example.com"}
-    client = ConnectionsClient(project, location, connection_name, credentials)
+    with mock.patch(
+        "google.adk.tools.application_integration_tool.clients.connections_client._mtls_utils.get_api_endpoint",
+        return_value="connectors.googleapis.com",
+    ):
+      client = ConnectionsClient(
+          project, location, connection_name, credentials
+      )
     mock_execute_response_initial = mock.MagicMock()
     mock_execute_response_initial.status_code = 200
     mock_execute_response_initial.json.return_value = {
@@ -335,7 +364,13 @@ class TestConnectionsClient:
       self, project, location, connection_name, mock_credentials
   ):
     credentials = {"email": "test@example.com"}
-    client = ConnectionsClient(project, location, connection_name, credentials)
+    with mock.patch(
+        "google.adk.tools.application_integration_tool.clients.connections_client._mtls_utils.get_api_endpoint",
+        return_value="connectors.googleapis.com",
+    ):
+      client = ConnectionsClient(
+          project, location, connection_name, credentials
+      )
     mock_execute_response_initial = mock.MagicMock()
     mock_execute_response_initial.status_code = 200
     mock_execute_response_initial.json.return_value = {
@@ -621,6 +656,25 @@ class TestConnectionsClient:
     with mock.patch(
         "google.adk.tools.application_integration_tool.clients.connections_client.default_service_credential",
         return_value=(None, None),
+    ):
+      with pytest.raises(
+          ValueError,
+          match=(
+              "Please provide a service account that has the required"
+              " permissions"
+          ),
+      ):
+        client._get_access_token()
+
+  def test_get_access_token_default_credentials_error(
+      self, project, location, connection_name
+  ):
+    client = ConnectionsClient(project, location, connection_name, None)
+    with mock.patch(
+        "google.adk.tools.application_integration_tool.clients.connections_client.default_service_credential",
+        side_effect=google.auth.exceptions.DefaultCredentialsError(
+            "ADC not found"
+        ),
     ):
       with pytest.raises(
           ValueError,

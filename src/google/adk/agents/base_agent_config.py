@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,23 +17,28 @@ from __future__ import annotations
 from typing import List
 from typing import Literal
 from typing import Optional
-from typing import Type
-from typing import TYPE_CHECKING
 from typing import TypeVar
 from typing import Union
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from typing_extensions import deprecated
 
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
 TBaseAgentConfig = TypeVar('TBaseAgentConfig', bound='BaseAgentConfig')
 
 
-@experimental
+@deprecated(
+    'BaseAgentConfig is deprecated and will be removed in future versions. '
+    'Config is now loaded via reflection so the separate config class is no '
+    'longer needed.'
+)
+@experimental(FeatureName.AGENT_CONFIG)
 class BaseAgentConfig(BaseModel):
   """The config for the YAML schema of a BaseAgent.
 

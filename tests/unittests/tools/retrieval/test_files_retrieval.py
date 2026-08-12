@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -122,7 +122,8 @@ class TestFilesRetrieval:
       result = _get_default_embedding_model()
 
       mock_module.GoogleGenAIEmbedding.assert_called_once_with(
-          model_name="text-embedding-004"
+          model_name="gemini-embedding-2-preview",
+          embed_batch_size=1,
       )
       assert result == mock_embedding_instance
 

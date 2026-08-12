@@ -1,0 +1,156 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Configuration for A2A agents."""
+
+from __future__ import annotations
+
+import copy
+from typing import Any
+from typing import Awaitable
+from typing import Callable
+from typing import cast
+
+from a2a.server.events import Event as A2AEvent
+from a2a.types import Message as A2AMessage
+from pydantic import BaseModel
+from typing_extensions import Self
+
+from .. import _compat
+from ...a2a.converters.part_converter import A2APartToGenAIPartConverter
+from ...a2a.converters.part_converter import convert_a2a_part_to_genai_part
+from ...a2a.converters.to_adk_event import A2AArtifactUpdateToEventConverter
+from ...a2a.converters.to_adk_event import A2AMessageToEventConverter
+from ...a2a.converters.to_adk_event import A2AStatusUpdateToEventConverter
+from ...a2a.converters.to_adk_event import A2ATaskToEventConverter
+from ...a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
+from ...a2a.converters.to_adk_event import convert_a2a_message_to_event
+from ...a2a.converters.to_adk_event import convert_a2a_status_update_to_event
+from ...a2a.converters.to_adk_event import convert_a2a_task_to_event
+from ...agents.invocation_context import InvocationContext
+from ...events.event import Event
+from .._compat import A2AClientEvent
+
+
+class ParametersConfig(BaseModel):
+  """Configuration for the parameters passed to the A2A send_message request."""
+
+  request_metadata: dict[str, Any] | None = None
+  client_call_context: _compat.ClientCallContext | None = None
+  # TODO: Add support for requested_extension and
+  # message_send_configuration once they are supported by the A2A client.
+  #
+  # requested_extension: Optional[list[str]] = None
+  # message_send_configuration: Optional[MessageSendConfiguration] = None
+
+
+class RequestInterceptor(BaseModel):
+  """Interceptor for A2A requests."""
+
+  before_request: (
+      Callable[
+          [InvocationContext, A2AMessage, ParametersConfig],
+          Awaitable[tuple[A2AMessage | Event, ParametersConfig]],
+      ]
+      | None
+  ) = None
+  """Hook executed before the agent starts processing the request.
+
+    Returns an Event if the request should be aborted and the Event
+    returned to the caller.
+  """
+
+  after_request: (
+      Callable[
+          [InvocationContext, A2AEvent | A2AClientEvent, Event],
+          Awaitable[Event | None],
+      ]
+      | None
+  ) = None
+  """Hook executed after the agent has processed the request.
+
+    Returns None if the event should not be sent to the caller.
+  """
+
+
+class A2aCardRequestConfig(BaseModel):
+  """Configuration for the HTTP request that fetches a remote agent card."""
+
+  headers: dict[str, str] | None = None
+  """Extra HTTP headers to include in the request."""
+
+
+class CardRequestInterceptor(BaseModel):
+  """Interceptor for the remote agent card fetch request."""
+
+  before_request: (
+      Callable[[InvocationContext], Awaitable[A2aCardRequestConfig]] | None
+  ) = None
+  """Async hook returning per-invocation config for the agent card request.
+
+  Called before fetching the card from an ``http(s)`` URL; its headers
+  (e.g. an auth token from session state) are sent with the request.
+  Ignored for static ``AgentCard`` or file-path sources.
+  """
+
+
+class A2aRemoteAgentConfig(BaseModel):
+  """Configuration for A2A remote agents."""
+
+  # Converts standard A2A Messages into ADK Event.
+  a2a_message_converter: A2AMessageToEventConverter = (
+      convert_a2a_message_to_event
+  )
+
+  # Converts an A2A Task into an ADK Event.
+  a2a_task_converter: A2ATaskToEventConverter = convert_a2a_task_to_event
+
+  # Converts A2A TaskStatusUpdateEvents into ADK Event.
+  a2a_status_update_converter: A2AStatusUpdateToEventConverter = (
+      convert_a2a_status_update_to_event
+  )
+
+  # Converts A2A TaskArtifactUpdateEvents into ADK Event.
+  a2a_artifact_update_converter: A2AArtifactUpdateToEventConverter = (
+      convert_a2a_artifact_update_to_event
+  )
+
+  # A low-level hook that converts individual A2A Message Parts
+  # into native ADK/GenAI Part objects.
+  # This is utilized internally by the other converters.
+  a2a_part_converter: A2APartToGenAIPartConverter = (
+      convert_a2a_part_to_genai_part
+  )
+
+  request_interceptors: list[RequestInterceptor] | None = None
+
+  card_request_interceptors: list[CardRequestInterceptor] | None = None
+  """Interceptors that inject headers into the remote agent card fetch."""
+
+  def __deepcopy__(
+      self, memo: dict[int, Any] | None = None
+  ) -> A2aRemoteAgentConfig:
+    if memo is None:
+      memo = {}
+    cls = self.__class__
+    copied_values: dict[str, Any] = {}
+    for k, v in self.__dict__.items():
+      if not k.startswith('_'):
+        if callable(v):
+          copied_values[k] = v
+        else:
+          copied_values[k] = copy.deepcopy(v, memo)
+    result = cls.model_construct(**copied_values)
+    memo[id(self)] = result
+    return cast(Self, result)

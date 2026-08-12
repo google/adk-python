@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,10 +15,10 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Optional
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import EvaluateRequest
@@ -26,13 +26,17 @@ from google.adk.evaluation.base_eval_service import InferenceConfig
 from google.adk.evaluation.base_eval_service import InferenceRequest
 from google.adk.evaluation.base_eval_service import InferenceResult
 from google.adk.evaluation.base_eval_service import InferenceStatus
+from google.adk.evaluation.conversation_scenarios import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_case import SessionInput
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
 from google.adk.evaluation.eval_metrics import Interval
 from google.adk.evaluation.eval_metrics import MetricInfo
 from google.adk.evaluation.eval_metrics import MetricValueInfo
 from google.adk.evaluation.eval_result import EvalCaseResult
+from google.adk.evaluation.eval_rubrics import Rubric
+from google.adk.evaluation.eval_rubrics import RubricContent
 from google.adk.evaluation.eval_set import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.eval_set_results_manager import EvalSetResultsManager
@@ -41,11 +45,17 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import Evaluator
 from google.adk.evaluation.evaluator import PerInvocationResult
+from google.adk.evaluation.local_eval_service import _add_rubrics_to_invocation
+from google.adk.evaluation.local_eval_service import _copy_eval_case_rubrics_to_actual_invocations
+from google.adk.evaluation.local_eval_service import _copy_invocation_rubrics_to_actual_invocations
 from google.adk.evaluation.local_eval_service import LocalEvalService
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
+from google.adk.evaluation.simulation.user_simulator import NextUserMessage
+from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
 from google.adk.models.registry import LLMRegistry
 from google.genai import types as genai_types
 import pytest
+from typing_extensions import override
 
 
 @pytest.fixture
@@ -97,11 +107,13 @@ class FakeEvaluator(Evaluator):
         ),
     )
 
+  @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-  ):
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult:
     if expected_invocations is None:
       raise ValueError("expected_invocations is required for this metric.")
     per_invocation_results = []
@@ -136,11 +148,13 @@ class FakeSingleSidedEvaluator(Evaluator):
         ),
     )
 
+  @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-  ):
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult:
     per_invocation_results = []
     for actual in actual_invocations:
       per_invocation_results.append(
@@ -236,12 +250,59 @@ async def test_perform_inference_with_case_ids(
       eval_set_id="test_eval_set",
       eval_case=eval_set.eval_cases[0],
       root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
   )
   eval_service._perform_inference_single_eval_item.assert_any_call(
       app_name="test_app",
       eval_set_id="test_eval_set",
       eval_case=eval_set.eval_cases[2],
       root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
+  )
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_with_use_live(
+    eval_service,
+    dummy_agent,
+    mock_eval_sets_manager,
+    mocker,
+):
+  eval_set = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None),
+      ],
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = eval_set
+
+  mock_inference_result = mocker.MagicMock()
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
+      return_value=mock_inference_result
+  )
+
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(
+          parallelism=1, use_live=True, live_timeout_seconds=600
+      ),
+  )
+
+  results = []
+  async for result in eval_service.perform_inference(inference_request):
+    results.append(result)
+
+  assert len(results) == 1
+  eval_service._perform_inference_single_eval_item.assert_called_once_with(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_set.eval_cases[0],
+      root_agent=dummy_agent,
+      use_live=True,
+      live_timeout_seconds=600,
   )
 
 
@@ -311,7 +372,7 @@ async def test_evaluate_success(
   assert isinstance(results[0], EvalCaseResult)
   assert isinstance(results[1], EvalCaseResult)
   assert mock_eval_sets_manager.get_eval_case.call_count == 2
-  assert mock_eval_set_results_manager.save_eval_set_result.call_count == 2
+  assert mock_eval_set_results_manager.save_eval_set_result.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -408,6 +469,39 @@ async def test_evaluate_single_inference_result(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_single_inference_result_failed_without_inferences(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=None,
+      session_id="session1",
+      status=InferenceStatus.FAILURE,
+      error_message="auth failed",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = []
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert result.eval_id == "case1"
+  assert result.session_id == "session1"
+  assert result.final_eval_status == EvalStatus.FAILED
+  assert result.overall_eval_metric_results == []
+  assert result.eval_metric_result_per_invocation == []
+
+
+@pytest.mark.asyncio
 async def test_evaluate_single_inference_result_for_conversation_scenario(
     eval_service, mock_eval_sets_manager, mocker
 ):
@@ -462,7 +556,7 @@ async def test_evaluate_single_inference_result_for_conversation_scenario(
   for i in range(3):
     invocation_result = result.eval_metric_result_per_invocation[i]
     assert invocation_result.actual_invocation == inference_result.inferences[i]
-    assert invocation_result.expected_invocation == None
+    assert invocation_result.expected_invocation is None
     assert len(invocation_result.eval_metric_results) == 1
     metric_result = invocation_result.eval_metric_results[0]
     assert metric_result.metric_name == "fake_single_sided_metric"
@@ -539,7 +633,7 @@ def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
 async def test_mcp_stdio_agent_no_runtime_error(mocker):
   """Test that LocalEvalService can handle MCP stdio agents without RuntimeError.
 
-  This is a regression test for GitHub issue #2196:
+  This is a regression test for the reported failure:
   "RuntimeError: Attempted to exit cancel scope in a different task than it was
   entered in"
 
@@ -672,3 +766,417 @@ async def test_mcp_stdio_agent_no_runtime_error(mocker):
     import shutil
 
     shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def test_add_rubrics_to_invocation_initializes_rubrics_list():
+  invocation = Invocation(user_content=genai_types.Content())
+  rubric = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  _add_rubrics_to_invocation(invocation, [rubric])
+  assert invocation.rubrics == [rubric]
+
+
+def test_add_rubrics_to_invocation_adds_to_existing_list():
+  rubric1 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  rubric2 = Rubric(
+      rubric_id="r2", rubric_content=RubricContent(text_property="p2")
+  )
+  invocation = Invocation(user_content=genai_types.Content(), rubrics=[rubric1])
+  _add_rubrics_to_invocation(invocation, [rubric2])
+  assert invocation.rubrics == [rubric1, rubric2]
+
+
+def test_add_rubrics_to_invocation_errors_on_duplicate_id():
+  rubric1 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  rubric2 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p2")
+  )
+  invocation = Invocation(user_content=genai_types.Content(), rubrics=[rubric1])
+  with pytest.raises(ValueError):
+    _add_rubrics_to_invocation(invocation, [rubric2])
+
+
+def test_copy_eval_case_rubrics_to_actual_invocations():
+  rubric1 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="expected invocation 1.")]
+              )
+          ),
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="expected invocation 2.")]
+              )
+          ),
+      ],
+      rubrics=[rubric1],
+  )
+  invocations = [
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="actual invocation 1.")]
+          )
+      ),
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="actual invocation 2.")]
+          )
+      ),
+  ]
+  _copy_eval_case_rubrics_to_actual_invocations(eval_case, invocations)
+  assert invocations[0].rubrics == [rubric1]
+  assert invocations[1].rubrics == [rubric1]
+
+
+def test_copy_invocation_rubrics_to_actual_invocations():
+  rubric1 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  rubric2 = Rubric(
+      rubric_id="r2", rubric_content=RubricContent(text_property="p2")
+  )
+  expected = [
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="expected invocation 1.")]
+          ),
+          rubrics=[rubric1],
+      ),
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="expected invocation 2.")]
+          ),
+          rubrics=[rubric2],
+      ),
+  ]
+  actual = [
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="actual invocation 1.")]
+          )
+      ),
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="actual invocation 2.")]
+          )
+      ),
+  ]
+  _copy_invocation_rubrics_to_actual_invocations(expected, actual)
+  assert actual[0].rubrics == [rubric1]
+  assert actual[1].rubrics == [rubric2]
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_single_eval_item_live(
+    eval_service, dummy_agent, mocker
+):
+  eval_case = EvalCase(eval_id="case1", conversation=[], session_input=None)
+  mock_generate_live = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent_live"
+  )
+  mock_generate_live.return_value = []
+
+  eval_service._session_id_supplier = mocker.MagicMock(
+      return_value="test_session_id"
+  )
+  mock_user_sim = mocker.MagicMock()
+  eval_service._user_simulator_provider.provide = mocker.MagicMock(
+      return_value=mock_user_sim
+  )
+
+  await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_case,
+      root_agent=dummy_agent,
+      use_live=True,
+      live_timeout_seconds=600,
+  )
+
+  mock_generate_live.assert_called_once_with(
+      root_agent=dummy_agent,
+      user_simulator=mock_user_sim,
+      initial_session=None,
+      session_id="test_session_id",
+      session_service=eval_service._session_service,
+      artifact_service=eval_service._artifact_service,
+      memory_service=eval_service._memory_service,
+      live_timeout_seconds=600,
+      app=None,
+  )
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_single_eval_item_non_live(
+    eval_service, dummy_agent, mocker
+):
+  eval_case = EvalCase(eval_id="case1", conversation=[], session_input=None)
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent"
+  )
+  mock_generate.return_value = []
+
+  eval_service._session_id_supplier = mocker.MagicMock(
+      return_value="test_session_id"
+  )
+  mock_user_sim = mocker.MagicMock()
+  eval_service._user_simulator_provider.provide = mocker.MagicMock(
+      return_value=mock_user_sim
+  )
+
+  await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_case,
+      root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
+  )
+
+  # The non-live branch forwards `app=self._app` to the underlying
+  # `_generate_inferences_from_root_agent` (see fix in
+  # `local_eval_service.py`). The `eval_service` fixture builds the service
+  # without an `app`, so we expect `app=None`.
+  mock_generate.assert_called_once_with(
+      root_agent=dummy_agent,
+      user_simulator=mock_user_sim,
+      initial_session=None,
+      session_id="test_session_id",
+      session_service=eval_service._session_service,
+      artifact_service=eval_service._artifact_service,
+      memory_service=eval_service._memory_service,
+      app=None,
+  )
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_single_eval_item_uses_session_input_id(
+    eval_service, dummy_agent, mocker
+):
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[],
+      session_input=SessionInput(
+          app_name="test_app", user_id="u", session_id="fixed"
+      ),
+  )
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent"
+  )
+  mock_generate.return_value = []
+
+  eval_service._session_id_supplier = mocker.MagicMock(
+      return_value="test_session_id"
+  )
+  mock_user_sim = mocker.MagicMock()
+  eval_service._user_simulator_provider.provide = mocker.MagicMock(
+      return_value=mock_user_sim
+  )
+
+  inference_result = await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_case,
+      root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
+  )
+
+  eval_service._session_id_supplier.assert_not_called()
+  assert inference_result.session_id == "fixed"
+  # The pinned id travels only inside `initial_session`.
+  mock_generate.assert_called_once_with(
+      root_agent=dummy_agent,
+      user_simulator=mock_user_sim,
+      initial_session=eval_case.session_input,
+      session_id=None,
+      session_service=eval_service._session_service,
+      artifact_service=eval_service._artifact_service,
+      memory_service=eval_service._memory_service,
+      app=None,
+  )
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_pinned_session_id_across_runs(
+    eval_service, mocker
+):
+  """A pinned session_id survives repeated runs and keeps artifacts reachable.
+
+  Reusing one eval service across runs (as num_runs > 1 does) must not collide
+  on the pinned session_id, and an artifact pre-loaded under it stays loadable.
+  """
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[],
+      session_input=SessionInput(
+          app_name="test_app", user_id="u", session_id="fixed"
+      ),
+  )
+  eval_service._eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="es1", eval_cases=[eval_case]
+  )
+
+  await eval_service._artifact_service.save_artifact(
+      app_name="test_app",
+      user_id="u",
+      session_id="fixed",
+      filename="doc.txt",
+      artifact=genai_types.Part(text="hello"),
+  )
+
+  # Stop the user simulator immediately and mock the Runner so no model runs;
+  # this leaves the real session_service create/delete path under test.
+  mock_user_sim = mocker.MagicMock()
+  mock_user_sim.get_next_user_message = mocker.AsyncMock(
+      return_value=NextUserMessage(
+          status=UserSimulatorStatus.STOP_SIGNAL_DETECTED
+      )
+  )
+  eval_service._user_simulator_provider.provide = mocker.MagicMock(
+      return_value=mock_user_sim
+  )
+  mock_runner = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.Runner"
+  ).return_value
+  mock_runner.__aenter__ = mocker.AsyncMock(return_value=mock_runner)
+  mock_runner.__aexit__ = mocker.AsyncMock(return_value=None)
+
+  results = []
+  for _ in range(2):  # Mirrors the default num_runs=2.
+    async for inference_result in eval_service.perform_inference(
+        inference_request=InferenceRequest(
+            app_name="test_app",
+            eval_set_id="es1",
+            inference_config=InferenceConfig(parallelism=1),
+        )
+    ):
+      results.append(inference_result)
+
+  assert len(results) == 2
+  assert all(r.status == InferenceStatus.SUCCESS for r in results)
+  assert all(r.session_id == "fixed" for r in results)
+
+  loaded = await eval_service._artifact_service.load_artifact(
+      app_name="test_app", user_id="u", session_id="fixed", filename="doc.txt"
+  )
+  assert loaded is not None
+  assert loaded.text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_forwards_app_to_evaluation_generator(
+    dummy_agent, mock_eval_sets_manager, mocker
+):
+  """LocalEvalService passes its `app` through to _generate_inferences_from_root_agent."""
+  app = App(name="test_app", root_agent=dummy_agent)
+
+  eval_case = EvalCase(eval_id="case-1", conversation=[])
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent",
+      new=mocker.AsyncMock(return_value=[]),
+  )
+
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      app=app,
+  )
+
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["case-1"],
+      inference_config=InferenceConfig(),
+  )
+  async for _ in service.perform_inference(inference_request=request):
+    pass
+
+  mock_generate.assert_awaited_once()
+  assert mock_generate.await_args.kwargs["app"] is app
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_passes_none_when_no_app(
+    dummy_agent, mock_eval_sets_manager, mocker
+):
+  """When LocalEvalService has no `app`, it forwards None (legacy behavior)."""
+  eval_case = EvalCase(eval_id="case-1", conversation=[])
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+
+  mock_generate = mocker.patch(
+      "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent",
+      new=mocker.AsyncMock(return_value=[]),
+  )
+
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+  )
+
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["case-1"],
+      inference_config=InferenceConfig(),
+  )
+  async for _ in service.perform_inference(inference_request=request):
+    pass
+
+  mock_generate.assert_awaited_once()
+  assert mock_generate.await_args.kwargs["app"] is None
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_live_forwards_app(
+    dummy_agent, mock_eval_sets_manager, mocker
+):
+  """The live branch forwards `app` the same way the non-live branch does."""
+  app = App(name="test_app", root_agent=dummy_agent)
+
+  eval_case = EvalCase(eval_id="case-1", conversation=[])
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+
+  mock_generate_live = mocker.patch(
+      "google.adk.evaluation.local_eval_service.EvaluationGenerator._generate_inferences_from_root_agent_live",
+      new=mocker.AsyncMock(return_value=[]),
+  )
+
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      app=app,
+  )
+
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["case-1"],
+      inference_config=InferenceConfig(use_live=True),
+  )
+  async for _ in service.perform_inference(inference_request=request):
+    pass
+
+  mock_generate_live.assert_awaited_once()
+  assert mock_generate_live.await_args.kwargs["app"] is app

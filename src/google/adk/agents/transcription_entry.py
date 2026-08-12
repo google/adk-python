@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
 
 from typing import Optional
 from typing import Union
@@ -30,7 +32,7 @@ class TranscriptionEntry(BaseModel):
   """The pydantic model config."""
 
   role: Optional[str] = None
-  """The role that created this data, typically "user" or "model". For function 
+  """The role that created this data, typically "user" or "model". For function
   call, this is None."""
 
   data: Union[types.Blob, types.Content]

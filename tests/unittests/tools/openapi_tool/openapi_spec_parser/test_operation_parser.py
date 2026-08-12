@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -103,6 +103,31 @@ def test_process_request_body(sample_operation):
   assert parser._params[0].param_location == 'body'
   assert parser._params[1].original_name == 'prop2'
   assert parser._params[1].param_location == 'body'
+
+
+def test_required_request_body_properties_are_required_parameters():
+  """Required body properties appear in the generated parameter schema."""
+  operation = Operation(
+      operationId='createSpace',
+      requestBody=RequestBody(
+          content={
+              'application/json': MediaType(
+                  schema=Schema(
+                      type='object',
+                      required=['spaceName'],
+                      properties={
+                          'spaceName': Schema(type='string'),
+                          'description': Schema(type='string'),
+                      },
+                  )
+              )
+          }
+      ),
+  )
+
+  parser = OperationParser(operation)
+
+  assert parser.get_json_schema()['required'] == ['space_name']
 
 
 def test_process_request_body_array():

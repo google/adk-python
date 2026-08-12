@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,13 +23,13 @@ import pytest
 
 @pytest.fixture
 def gemini_llm():
-  return Gemini(model="gemini-1.5-flash")
+  return Gemini(model="gemini-2.5-flash")
 
 
 @pytest.fixture
 def llm_request():
   return LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
       config=types.GenerateContentConfig(
           temperature=0.1,

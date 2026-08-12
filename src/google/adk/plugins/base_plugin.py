@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ class BasePlugin(ABC):
   callback in the chain. For example, if a plugin modifies the tool input with
   before_tool_callback, the modified tool input will be passed to the
   before_tool_callback of the next plugin, and further passed to the agent
-  callbacks if not short circuited.
+  callbacks if not short-circuited.
 
   To use a plugin, implement the desired callback methods and pass an instance
   of your custom plugin class to the ADK Runner.
@@ -155,10 +155,10 @@ class BasePlugin(ABC):
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
   ) -> Optional[Event]:
-    """Callback executed after an event is yielded from runner.
+    """Callback executed when the runner produces an event.
 
-    This is the ideal place to make modification to the event before the event
-    is handled by the underlying agent app.
+    This is the ideal place to modify the event before it is persisted to the
+    session service and yielded to the caller.
 
     Args:
       invocation_context: The context for the entire invocation.
@@ -300,7 +300,7 @@ class BasePlugin(ABC):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Callback executed before a tool is called.
 
     This callback is useful for logging tool usage, input validation, or
@@ -324,8 +324,8 @@ class BasePlugin(ABC):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
     """Callback executed after a tool has been called.
 
     This callback allows for inspecting, logging, or modifying the result
@@ -352,7 +352,7 @@ class BasePlugin(ABC):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Callback executed when a tool call encounters an error.
 
     This callback provides an opportunity to handle tool errors gracefully,
@@ -368,5 +368,43 @@ class BasePlugin(ABC):
       An optional dictionary. If a dictionary is returned, it will be used as
       the tool response instead of propagating the error. Returning `None`
       allows the original error to be raised.
+    """
+    pass
+
+  async def on_agent_error_callback(
+      self,
+      *,
+      agent: BaseAgent,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Callback executed when an unhandled exception escapes agent execution.
+
+    This is a notification-only callback. The exception is always re-raised
+    after all registered plugins have been notified. Plugins should NOT
+    suppress the exception.
+
+    Args:
+      agent: The agent instance that encountered the error.
+      callback_context: The callback context for the agent invocation.
+      error: The exception that was raised during agent execution.
+    """
+    pass
+
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Callback executed when an unhandled exception escapes runner execution.
+
+    This is a notification-only callback. The exception is always re-raised
+    after all registered plugins have been notified. Plugins should NOT
+    suppress the exception.
+
+    Args:
+      invocation_context: The context for the entire invocation.
+      error: The exception that was raised during runner execution.
     """
     pass

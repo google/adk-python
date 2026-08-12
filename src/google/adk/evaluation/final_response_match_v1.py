@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,18 +14,20 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
+import unicodedata
 
 from google.genai import types as genai_types
 from typing_extensions import override
 
 from ..dependencies.rouge_scorer import rouge_scorer
+from ..dependencies.rouge_scorer import tokenizers
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetric
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -39,35 +41,28 @@ class RougeEvaluator(Evaluator):
   """
 
   def __init__(self, eval_metric: EvalMetric):
-    self._eval_metric = eval_metric
-
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.RESPONSE_MATCH_SCORE.value,
-        description=(
-            "This metric evaluates if the agent's final response matches a"
-            " golden/expected final response using Rouge_1 metric. Value range"
-            " for this metric is [0,1], with values closer to 1 more desirable."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
-    )
+    self._threshold = _get_metric_threshold(eval_metric)
 
   @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     if expected_invocations is None:
       raise ValueError("expected_invocations is required for this metric.")
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
+    del conversation_scenario  # not used by this metric.
+
+    threshold = self._threshold
 
     total_score = 0.0
     num_invocations = 0
     per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, expected_invocations, strict=True
+    ):
       reference = _get_text_from_content(expected.final_response)
       response = _get_text_from_content(actual.final_response)
       rouge_1_scores = _calculate_rouge_1_scores(response, reference)
@@ -77,7 +72,7 @@ class RougeEvaluator(Evaluator):
               actual_invocation=actual,
               expected_invocation=expected,
               score=score,
-              eval_status=_get_eval_status(score, self._eval_metric.threshold),
+              eval_status=_get_eval_status(score, threshold),
           )
       )
       total_score += score
@@ -87,9 +82,7 @@ class RougeEvaluator(Evaluator):
       overall_score = total_score / num_invocations
       return EvaluationResult(
           overall_score=overall_score,
-          overall_eval_status=_get_eval_status(
-              overall_score, self._eval_metric.threshold
-          ),
+          overall_eval_status=_get_eval_status(overall_score, threshold),
           per_invocation_results=per_invocation_results,
       )
 
@@ -103,11 +96,88 @@ def _get_text_from_content(content: Optional[genai_types.Content]) -> str:
   return ""
 
 
-def _get_eval_status(score: float, threshold: float):
+def _get_eval_status(score: float, threshold: float) -> EvalStatus:
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
-def _calculate_rouge_1_scores(candidate: str, reference: str):
+def _is_cjk(char: str) -> bool:
+  """Checks if a character belongs to CJK (Chinese, Japanese, Korean) scripts."""
+  code = ord(char)
+  return (
+      0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
+      or 0x3040 <= code <= 0x309F  # Hiragana
+      or 0x30A0 <= code <= 0x30FF  # Katakana
+      or 0xAC00 <= code <= 0xD7AF  # Hangul Syllables
+  )
+
+
+def _is_non_spaced_script(char: str) -> bool:
+  """Checks if a character belongs to non-spaced scripts like Thai, Lao, Khmer, Myanmar."""
+  code = ord(char)
+  return (
+      0x0E00 <= code <= 0x0E7F  # Thai
+      or 0x0E80 <= code <= 0x0EFF  # Lao
+      or 0x1780 <= code <= 0x17FF  # Khmer
+      or 0x1000 <= code <= 0x109F  # Myanmar
+  )
+
+
+def _is_word_char(char: str) -> bool:
+  # Combining marks (e.g. Thai vowel signs, Devanagari matras) are not
+  # alphanumeric on their own but must stay attached to their base character.
+  return char.isalnum() or unicodedata.category(char).startswith("M")
+
+
+class _UnicodeAwareTokenizer:
+  """Tokenizer that keeps non-ASCII word characters and splits CJK/non-spaced characters.
+
+  The default rouge_score tokenizer discards any character outside [a-z0-9],
+  so text in non-Latin scripts (e.g. Thai, Chinese, Arabic) tokenizes to
+  nothing and always scores 0. This tokenizer keeps Unicode word characters,
+  normalizes Unicode variants (NFKC), splits non-spaced CJK characters at the
+  character level, bundles non-spaced scripts by grapheme clusters (base
+  consonant + attached combining marks), and delegates ASCII tokens to the
+  default tokenizer.
+
+  Note:
+      Languages written without spaces (e.g. Thai, Chinese, Japanese) are
+      tokenized at the character or grapheme cluster level rather than at true
+      word granularity, since dictionary-based word segmentation requires heavy
+      external NLP dependencies. As a result, ROUGE-1 unigram overlap for these
+      languages operates on character/grapheme cluster units rather than full words.
+  """
+
+  def __init__(self, use_stemmer: bool = False):
+    self._default_tokenizer = tokenizers.DefaultTokenizer(use_stemmer)
+
+  def tokenize(self, text: str) -> list[str]:
+    text = unicodedata.normalize("NFKC", text).lower()
+    processed_chars: list[str] = []
+    for char in text:
+      if _is_cjk(char):
+        processed_chars.extend([" ", char, " "])
+      elif _is_non_spaced_script(char):
+        if unicodedata.category(char).startswith("M"):
+          # Combining mark (vowel/tone mark): attach directly to previous base consonant!
+          processed_chars.append(char)
+        else:
+          # Base consonant: start a new grapheme cluster boundary by prepending a space!
+          processed_chars.extend([" ", char])
+      elif _is_word_char(char):
+        processed_chars.append(char)
+      else:
+        processed_chars.append(" ")
+    words = "".join(processed_chars).split()
+    tokens: list[str] = []
+    for word in words:
+      if word.isascii():
+        tokens.extend(self._default_tokenizer.tokenize(word))
+      else:
+        tokens.append(word)
+    return tokens
+
+
+def _calculate_rouge_1_scores(candidate: str, reference: str) -> Any:
   """Calculates the ROUGE-1 score between a candidate and reference text.
 
   ROUGE-1 measures the overlap of unigrams (single words) between the
@@ -125,7 +195,9 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  scorer = rouge_scorer.RougeScorer(
+      ["rouge1"], tokenizer=_UnicodeAwareTokenizer(use_stemmer=True)
+  )
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.

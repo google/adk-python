@@ -34,7 +34,7 @@ my_adk_project/
     └── my_app/
         ├── agents/
         │   ├── my_agent/
-        │   │   ├── __init__.py   # Must contain: from. import agent \
+        │   │   ├── __init__.py   # Must contain: from . import agent \
         │   │   └── agent.py      # Must contain: root_agent = Agent(...) \
         │   └── another_agent/
         │       ├── __init__.py
@@ -43,7 +43,15 @@ my_adk_project/
 
 agent.py: Must define the agent and assign it to a variable named root_agent. This is how ADK's tools find it.
 
-`__init__.py`: In each agent directory, it must contain from. import agent to make the agent discoverable.
+`__init__.py`: In each agent directory, it must contain `from . import agent` to make the agent discoverable.
+
+### Nested Agent Directories (Dev Mode / `adk web`)
+
+In the local development server (`adk web` / `dev_server`), ADK supports deeply nested agent directories (e.g., sub-packages or structured folders).
+
+- **Recursive Discovery**: The loader recursively walks directories to discover all valid agent applications containing an `agent.py`, `root_agent.yaml`, or `__init__.py` file.
+- **Dot Naming Convention**: Nested agents are represented in the system and referenced inside the Web UI using a standard dot-separated namespace notation (e.g., `agent_samples.empty_agent` or `workflow_samples.fan_out_fan_in`).
+- **Isolation**: Production environments (`adk api_server`) only support flat single-level agent directories for maximum security and isolation.
 
 ## Local Development & Debugging
 
@@ -69,7 +77,7 @@ We expose agents as production APIs using FastAPI.
 
 - Custom Endpoints: We can add our own routes (e.g., /health) to the app object returned by the helper.
 
-Python
+```Python
 
 from google.adk.cli.fast_api import get_fast_api_app
 app = get_fast_api_app(agent_dir="./agents")
@@ -77,7 +85,16 @@ app = get_fast_api_app(agent_dir="./agents")
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+```
 
+### Default Application Resolution (`ADK_DEFAULT_APP_NAME`)
+
+By default, the ADK API server expects an explicit application context in all requests (e.g., via the `/apps/{app_name}/...` path or in the payload body).
+
+However, if the environment variable `ADK_DEFAULT_APP_NAME` is set, or if the server is running in **single agent mode** (when pointing directly to a directory containing an agent instead of a directory of agents), the server will automatically resolve and fall back to that agent as the default application whenever a request lacks an explicit app name. In single agent mode, the local agent takes precedence over the `ADK_DEFAULT_APP_NAME` environment variable.
+
+- **URL Path-Rewriting (Production Endpoints)**: Requests to production endpoints that omit the `/apps/{app_name}` prefix (such as `/users/{user_id}/sessions` or `/app-info`) are automatically rewritten by an internal ASGI middleware to target the default application. (Note: `/dev` and `/builder` endpoints are excluded from rewriting).
+- **Agent Execution & Streaming**: Requests to `/run`, `/run_sse`, or `/run_live` that omit the `app_name` parameter in their payload body or query string will automatically resolve to the default application.
 
 ## Deployment to Production
 

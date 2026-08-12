@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,22 +13,28 @@
 # limitations under the License.
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 import copy
 import json
 import logging
 import os
 import sqlite3
-import time
 from typing import Any
+from typing import cast
 from typing import Optional
-import uuid
+from urllib.parse import unquote
+from urllib.parse import urlparse
 
 import aiosqlite
+from google.adk.platform import time as platform_time
+from google.adk.platform import uuid as platform_uuid
 from typing_extensions import override
 
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -91,6 +97,56 @@ CREATE_SCHEMA_SQL = "\n".join([
 ])
 
 
+def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
+  """Normalizes a SQLite db path from a URL or filesystem path.
+
+  Returns:
+    A tuple of:
+      - filesystem path (for `os.path.exists` and user-facing messages)
+      - value to pass to sqlite/aiosqlite connect
+      - whether to pass `uri=True` to sqlite/aiosqlite connect
+
+  Notes:
+    When a SQLAlchemy-style SQLite URL is provided, this follows SQLAlchemy's
+    conventions:
+      - `sqlite:///relative.db` is a path relative to the current working dir.
+      - `sqlite:////absolute.db` is an absolute filesystem path.
+  """
+  if not db_path.startswith(("sqlite:", "sqlite+aiosqlite:")):
+    return db_path, db_path, False
+
+  parsed = urlparse(db_path)
+  raw_path = unquote(parsed.path)
+  if not raw_path:
+    return db_path, db_path, False
+
+  normalized_path = raw_path
+  if normalized_path.startswith("//"):
+    normalized_path = normalized_path[1:]
+  elif normalized_path.startswith("/"):
+    normalized_path = normalized_path[1:]
+
+  if parsed.query:
+    # sqlite3 only treats the filename as a URI when it starts with `file:`.
+    return normalized_path, f"file:{normalized_path}?{parsed.query}", True
+
+  return normalized_path, normalized_path, False
+
+
+def _decode_state(value: object) -> dict[str, Any]:
+  """Decode a persisted state object and require string JSON keys."""
+  decoded: object = json.loads(cast("str | bytes | bytearray", value))
+  if not isinstance(decoded, dict):
+    raise ValueError("Persisted session state must be a JSON object.")
+
+  state: dict[str, Any] = {}
+  for key, item in decoded.items():
+    if not isinstance(key, str):
+      raise ValueError("Persisted session state keys must be strings.")
+    state[key] = item
+  return state
+
+
 class SqliteSessionService(BaseSessionService):
   """A session service that uses an SQLite database for storage via aiosqlite.
 
@@ -100,17 +156,20 @@ class SqliteSessionService(BaseSessionService):
 
   def __init__(self, db_path: str):
     """Initializes the SQLite session service with a database path."""
-    self._db_path = db_path
+    self._db_path, self._db_connect_path, self._db_connect_uri = _parse_db_path(
+        db_path
+    )
+    self._schema_ready = False
 
     if self._is_migration_needed():
       raise RuntimeError(
-          f"Database {db_path} seems to use an old schema."
+          f"Database {self._db_path} seems to use an old schema."
           " Please run the migration command to"
           " migrate it to the new schema. Example: `python -m"
-          " google.adk.sessions.migrate_from_sqlalchemy_sqlite"
-          f" --source_db_path {db_path} --dest_db_path"
-          f" {db_path}.new` then backup {db_path} and rename"
-          f" {db_path}.new to {db_path}."
+          " google.adk.sessions.migration.migrate_from_sqlalchemy_sqlite"
+          f" --source_db_path {self._db_path} --dest_db_path"
+          f" {self._db_path}.new` then backup {self._db_path} and rename"
+          f" {self._db_path}.new to {self._db_path}."
       )
 
   @override
@@ -125,8 +184,8 @@ class SqliteSessionService(BaseSessionService):
     if session_id:
       session_id = session_id.strip()
     if not session_id:
-      session_id = str(uuid.uuid4())
-    now = time.time()
+      session_id = platform_uuid.new_uuid()
+    now = platform_time.get_time()
 
     async with self._get_db_connection() as db:
       # Check if session_id already exists
@@ -140,7 +199,7 @@ class SqliteSessionService(BaseSessionService):
           )
 
       # Extract state deltas
-      state_deltas = _session_util.extract_state_delta(state)
+      state_deltas = _session_util.extract_state_delta(state or {})
       app_state_delta = state_deltas["app"]
       user_state_delta = state_deltas["user"]
       session_state = state_deltas["session"]
@@ -205,7 +264,7 @@ class SqliteSessionService(BaseSessionService):
         session_row = await cursor.fetchone()
         if session_row is None:
           return None
-        session_state = json.loads(session_row["state"])
+        session_state = _decode_state(session_row["state"])
         last_update_time = session_row["update_time"]
 
       # Build events query
@@ -219,13 +278,19 @@ class SqliteSessionService(BaseSessionService):
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 
-      query_parts.append("ORDER BY timestamp DESC")
+      # Break timestamp ties on id so tied events come back in the same order
+      # on every read; otherwise a replayed conversation shuffles and
+      # `num_recent_events` truncates at an arbitrary point in the tie.
+      query_parts.append("ORDER BY timestamp DESC, id DESC")
 
-      if config and config.num_recent_events:
+      if config and config.num_recent_events is not None:
         query_parts.append("LIMIT ?")
         params.append(config.num_recent_events)
 
-      event_rows = await db.execute_fetchall(" ".join(query_parts), params)
+      if config and config.num_recent_events == 0:
+        event_rows: Iterable[sqlite3.Row] = []
+      else:
+        event_rows = await db.execute_fetchall(" ".join(query_parts), params)
       storage_events_data = [row["event_data"] for row in event_rows]
 
       # Fetch states from storage
@@ -260,13 +325,13 @@ class SqliteSessionService(BaseSessionService):
       if user_id:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=? AND user_id=?",
+            " app_name=? AND user_id=? ORDER BY update_time, user_id, id",
             (app_name, user_id),
         )
       else:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=?",
+            " app_name=? ORDER BY update_time, user_id, id",
             (app_name,),
         )
 
@@ -274,7 +339,7 @@ class SqliteSessionService(BaseSessionService):
       app_state = await self._get_app_state(db, app_name)
 
       # Fetch user states
-      user_states_map = {}
+      user_states_map: dict[str, dict[str, Any]] = {}
       if user_id:
         user_state = await self._get_user_state(db, app_name, user_id)
         if user_state:
@@ -285,7 +350,7 @@ class SqliteSessionService(BaseSessionService):
             (app_name,),
         ) as cursor:
           async for row in cursor:
-            user_states_map[row["user_id"]] = json.loads(row["state"])
+            user_states_map[row["user_id"]] = _decode_state(row["state"])
 
       # Build session list
       for row in session_rows:
@@ -317,10 +382,20 @@ class SqliteSessionService(BaseSessionService):
       await db.commit()
 
   @override
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    async with self._get_db_connection() as db:
+      return await self._get_user_state(db, app_name, user_id)
+
+  @override
   async def append_event(self, session: Session, event: Event) -> Event:
     if event.partial:
       return event
 
+    # Apply temp state to in-memory session before trimming, so that
+    # subsequent agents within the same invocation can read temp values.
+    self._apply_temp_state(session, event)
     # Trim temp state before persisting
     event = self._trim_temp_delta_state(event)
     event_timestamp = event.timestamp
@@ -334,7 +409,7 @@ class SqliteSessionService(BaseSessionService):
       ) as cursor:
         row = await cursor.fetchone()
         if row is None:
-          raise ValueError(f"Session {session.id} not found.")
+          raise SessionNotFoundError(f"Session {session.id} not found.")
         storage_update_time = row["update_time"]
         if storage_update_time > session.last_update_time:
           raise ValueError(
@@ -345,7 +420,7 @@ class SqliteSessionService(BaseSessionService):
 
       # Apply state delta if present
       has_session_state_delta = False
-      if event.actions and event.actions.state_delta:
+      if event.actions.state_delta:
         state_deltas = _session_util.extract_state_delta(
             event.actions.state_delta
         )
@@ -413,21 +488,28 @@ class SqliteSessionService(BaseSessionService):
     return event
 
   @asynccontextmanager
-  async def _get_db_connection(self):
+  async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:
     """Connects to the db and performs initial setup."""
-    async with aiosqlite.connect(self._db_path) as db:
+    async with aiosqlite.connect(
+        self._db_connect_path, uri=self._db_connect_uri
+    ) as db:
       db.row_factory = aiosqlite.Row
       await db.execute(PRAGMA_FOREIGN_KEYS)
-      await db.executescript(CREATE_SCHEMA_SQL)
+      if not self._schema_ready:
+        await db.executescript(CREATE_SCHEMA_SQL)
+        self._schema_ready = True
       yield db
 
   async def _get_state(
-      self, db: aiosqlite.Connection, query: str, params: tuple
+      self,
+      db: aiosqlite.Connection,
+      query: str,
+      params: tuple[object, ...],
   ) -> dict[str, Any]:
     """Fetches and deserializes a JSON state column from a single row."""
     async with db.execute(query, params) as cursor:
       row = await cursor.fetchone()
-      return json.loads(row["state"]) if row else {}
+      return _decode_state(row["state"]) if row else {}
 
   async def _get_app_state(
       self, db: aiosqlite.Connection, app_name: str
@@ -459,7 +541,11 @@ class SqliteSessionService(BaseSessionService):
     )
 
   async def _upsert_app_state(
-      self, db: aiosqlite.Connection, app_name: str, delta: dict, now: float
+      self,
+      db: aiosqlite.Connection,
+      app_name: str,
+      delta: dict[str, Any],
+      now: float,
   ) -> None:
     """Atomically inserts or updates app state using json_patch."""
     await db.execute(
@@ -475,7 +561,7 @@ class SqliteSessionService(BaseSessionService):
       db: aiosqlite.Connection,
       app_name: str,
       user_id: str,
-      delta: dict,
+      delta: dict[str, Any],
       now: float,
   ) -> None:
     """Atomically inserts or updates user state using json_patch."""
@@ -493,7 +579,7 @@ class SqliteSessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      delta: dict,
+      delta: dict[str, Any],
       now: float,
   ) -> None:
     """Atomically updates session state using json_patch."""
@@ -514,7 +600,9 @@ class SqliteSessionService(BaseSessionService):
     if not os.path.exists(self._db_path):
       return False
     try:
-      with sqlite3.connect(self._db_path) as conn:
+      with sqlite3.connect(
+          self._db_connect_path, uri=self._db_connect_uri
+      ) as conn:
         cursor = conn.cursor()
         # Check if events table exists
         cursor.execute(
@@ -538,7 +626,11 @@ class SqliteSessionService(BaseSessionService):
       ) from e
 
 
-def _merge_state(app_state, user_state, session_state):
+def _merge_state(
+    app_state: dict[str, Any],
+    user_state: dict[str, Any],
+    session_state: dict[str, Any],
+) -> dict[str, Any]:
   """Merges app, user, and session states into a single dictionary."""
   merged_state = copy.deepcopy(session_state)
   for key, value in app_state.items():

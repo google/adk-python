@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,10 +13,10 @@
 # limitations under the License.
 
 """File deletion tool for Agent Builder Assistant."""
+
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 import shutil
 from typing import Any
 from typing import Dict
@@ -64,7 +64,7 @@ async def delete_files(
     session_state = tool_context._invocation_context.session.state
     resolved_paths = resolve_file_paths(file_paths, session_state)
 
-    result = {
+    result: Dict[str, Any] = {
         "success": True,
         "files": {},
         "successful_deletions": 0,
@@ -80,7 +80,7 @@ async def delete_files(
 
     for resolved_path in resolved_paths:
       file_path_obj = resolved_path.resolve()
-      file_info = {
+      file_info: Dict[str, Any] = {
           "existed": False,
           "backup_created": False,
           "backup_path": None,

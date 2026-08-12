@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ from fastapi.openapi.models import SecuritySchemeType
 from pydantic import Field
 
 from ..utils.feature_decorator import experimental
+from .auth_credential import BaseModelWithConfig
 
 
 class OpenIdConnectWithConfig(SecurityBase):
@@ -42,8 +43,20 @@ class OpenIdConnectWithConfig(SecurityBase):
   scopes: Optional[List[str]] = None
 
 
-# AuthSchemes contains SecuritySchemes from OpenAPI 3.0 and an extra flattened OpenIdConnectWithConfig.
-AuthScheme = Union[SecurityScheme, OpenIdConnectWithConfig]
+class CustomAuthScheme(BaseModelWithConfig):
+  """A flexible model for custom authentication schemes.
+
+  The subclasses must define a `default` for the `type_` field, if using OAuth2
+  user consent flow, to ensure correct rehydration.
+  """
+
+  type_: str = Field(alias="type")
+
+
+# AuthSchemes contains SecuritySchemes from OpenAPI 3.0, an extra flattened
+# OpenIdConnectWithConfig, and supports external schemes
+# that subclass CustomAuthScheme.
+AuthScheme = Union[SecurityScheme, OpenIdConnectWithConfig, CustomAuthScheme]
 
 
 class OAuthGrantType(str, Enum):
@@ -55,7 +68,7 @@ class OAuthGrantType(str, Enum):
   PASSWORD = "password"
 
   @staticmethod
-  def from_flow(flow: OAuthFlows) -> "OAuthGrantType":
+  def from_flow(flow: OAuthFlows) -> Optional["OAuthGrantType"]:
     """Converts an OAuthFlows object to a OAuthGrantType."""
     if flow.clientCredentials:
       return OAuthGrantType.CLIENT_CREDENTIALS

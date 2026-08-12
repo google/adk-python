@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +23,9 @@ def _resolve_agent_dir(*, agents_root: Path | str, app_name: str) -> Path:
   """Resolves the agent directory with safety checks."""
   agents_root_path = Path(agents_root).resolve()
   agent_dir = (agents_root_path / app_name).resolve()
-  if not str(agent_dir).startswith(str(agents_root_path)):
+  if "." in app_name:
+    agent_dir = (agents_root_path / app_name.replace(".", "/")).resolve()
+  if not agent_dir.is_relative_to(agents_root_path):
     raise ValueError(
         f"Invalid app_name '{app_name}': resolves outside base directory"
     )

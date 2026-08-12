@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,8 +25,9 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...tools.set_model_response_tool import SetModelResponseTool
-from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import as_llm_agent
+from ._invocation_utils import require_agent_name
 
 
 class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
@@ -36,16 +37,16 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
 
-    agent = invocation_context.agent
+    agent = as_llm_agent(invocation_context)
 
     # Check if we need the processor: output_schema + tools + cannot use output
     # schema with tools
     if (
         not agent.output_schema
         or not agent.tools
-        or can_use_output_schema_with_tools(agent.model)
+        or agent.canonical_model.capabilities.output_schema_and_tools
+        or getattr(agent, 'mode', None) == 'task'
     ):
       return
 
@@ -83,7 +84,7 @@ def create_final_model_response_event(
 
   # Create a proper model response event
   final_event = Event(
-      author=invocation_context.agent.name,
+      author=require_agent_name(invocation_context),
       invocation_id=invocation_context.invocation_id,
       branch=invocation_context.branch,
   )
@@ -94,13 +95,13 @@ def create_final_model_response_event(
 
 
 def get_structured_model_response(function_response_event: Event) -> str | None:
-  """Check if function response contains set_model_response and extract JSON.
+  """Check if function response contains a validated set_model_response result.
 
   Args:
     function_response_event: The function response event to check.
 
   Returns:
-    JSON response string if set_model_response was called, None otherwise.
+    JSON response string if set_model_response succeeded, None otherwise.
   """
   if (
       not function_response_event
@@ -110,8 +111,10 @@ def get_structured_model_response(function_response_event: Event) -> str | None:
 
   for func_response in function_response_event.get_function_responses():
     if func_response.name == 'set_model_response':
-      # Convert dict to JSON string
-      return json.dumps(func_response.response, ensure_ascii=False)
+      response = function_response_event.actions.set_model_response
+      if response is None:
+        return None
+      return json.dumps(response, ensure_ascii=False)
 
   return None
 

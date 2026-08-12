@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,12 +18,19 @@ from __future__ import annotations
 
 from pydantic import ConfigDict
 from pydantic import Field
+from typing_extensions import deprecated
 
-from ..agents.base_agent import experimental
 from ..agents.base_agent_config import BaseAgentConfig
+from ..features import experimental
+from ..features import FeatureName
 
 
-@experimental
+@deprecated(
+    "SequentialAgentConfig is deprecated and will be removed in future "
+    "versions. Config is now loaded via reflection so the separate config "
+    "class is no longer needed."
+)
+@experimental(FeatureName.AGENT_CONFIG)
 class SequentialAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a SequentialAgent."""
 

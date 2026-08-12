@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ from .base_credential_refresher import BaseCredentialRefresher
 class CredentialRefresherRegistry:
   """Registry for credential refresher instances."""
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._refreshers: Dict[AuthCredentialTypes, BaseCredentialRefresher] = {}
 
   def register(

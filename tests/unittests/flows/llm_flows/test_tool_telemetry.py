@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -70,7 +70,7 @@ async def test_simple_function_with_mocked_tracer(monkeypatch):
 
   mock_adk_trace_tool_call = mock.Mock()
   monkeypatch.setattr(
-      'google.adk.flows.llm_flows.functions.trace_tool_call',
+      'google.adk.telemetry.tracing.trace_tool_call',
       mock_adk_trace_tool_call,
   )
 

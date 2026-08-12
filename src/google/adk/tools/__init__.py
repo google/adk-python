@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,11 +20,14 @@ from typing import TYPE_CHECKING
 # The TYPE_CHECKING block is needed for autocomplete to work.
 if TYPE_CHECKING:
   from ..auth.auth_tool import AuthToolArguments
+  from ._remote_mcp_server import RemoteMcpServer
+  from ._request_input_tool import request_input
   from .agent_tool import AgentTool
   from .api_registry import ApiRegistry
   from .apihub_tool.apihub_toolset import APIHubToolset
   from .base_tool import BaseTool
   from .discovery_engine_search_tool import DiscoveryEngineSearchTool
+  from .discovery_engine_search_tool import SearchResultMode
   from .enterprise_search_tool import enterprise_web_search_tool as enterprise_web_search
   from .example_tool import ExampleTool
   from .exit_loop_tool import exit_loop
@@ -40,6 +43,7 @@ if TYPE_CHECKING:
   from .transfer_to_agent_tool import transfer_to_agent
   from .transfer_to_agent_tool import TransferToAgentTool
   from .url_context_tool import url_context
+  from .vertex_ai_load_profiles_tool import VertexAiLoadProfilesTool
   from .vertex_ai_search_tool import VertexAiSearchTool
 
 # If you are adding a new tool to this file, please make sure you add it to the
@@ -54,6 +58,10 @@ _LAZY_MAPPING = {
     'DiscoveryEngineSearchTool': (
         '.discovery_engine_search_tool',
         'DiscoveryEngineSearchTool',
+    ),
+    'SearchResultMode': (
+        '.discovery_engine_search_tool',
+        'SearchResultMode',
     ),
     'enterprise_web_search': (
         '.enterprise_search_tool',
@@ -75,6 +83,8 @@ _LAZY_MAPPING = {
         'LongRunningFunctionTool',
     ),
     'preload_memory': ('.preload_memory_tool', 'preload_memory_tool'),
+    'request_input': ('._request_input_tool', 'request_input'),
+    'RemoteMcpServer': ('._remote_mcp_server', 'RemoteMcpServer'),
     'ToolContext': ('.tool_context', 'ToolContext'),
     'transfer_to_agent': ('.transfer_to_agent_tool', 'transfer_to_agent'),
     'TransferToAgentTool': (
@@ -82,6 +92,10 @@ _LAZY_MAPPING = {
         'TransferToAgentTool',
     ),
     'url_context': ('.url_context_tool', 'url_context'),
+    'VertexAiLoadProfilesTool': (
+        '.vertex_ai_load_profiles_tool',
+        'VertexAiLoadProfilesTool',
+    ),
     'VertexAiSearchTool': ('.vertex_ai_search_tool', 'VertexAiSearchTool'),
     'MCPToolset': ('.mcp_tool.mcp_toolset', 'MCPToolset'),
     'McpToolset': ('.mcp_tool.mcp_toolset', 'McpToolset'),

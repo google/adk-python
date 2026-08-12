@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ from __future__ import annotations
 import pickle
 from unittest import mock
 
-from google.adk.sessions.database_session_service import DynamicPickleType
+from google.adk.sessions.schemas.v0 import DynamicPickleType
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import mysql
@@ -41,8 +41,11 @@ def test_load_dialect_impl_mysql(pickle_type):
 
   impl = pickle_type.load_dialect_impl(mock_dialect)
 
-  # Verify type_descriptor was called once with mysql.LONGBLOB
-  mock_dialect.type_descriptor.assert_called_once_with(mysql.LONGBLOB)
+  # SQLAlchemy dialect descriptors operate on type instances, not classes.
+  mock_dialect.type_descriptor.assert_called_once()
+  assert isinstance(
+      mock_dialect.type_descriptor.call_args.args[0], mysql.LONGBLOB
+  )
   # Verify the return value is what we expect
   assert impl == mock_longblob_type
 
@@ -57,7 +60,10 @@ def test_load_dialect_impl_spanner(pickle_type):
       "google.cloud.sqlalchemy_spanner.sqlalchemy_spanner.SpannerPickleType"
   ) as mock_spanner_type:
     pickle_type.load_dialect_impl(mock_dialect)
-    mock_dialect.type_descriptor.assert_called_once_with(mock_spanner_type)
+    mock_spanner_type.assert_called_once_with()
+    mock_dialect.type_descriptor.assert_called_once_with(
+        mock_spanner_type.return_value
+    )
 
 
 def test_load_dialect_impl_default(pickle_type):

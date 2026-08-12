@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,6 +39,12 @@ def test_agent_name(mock_invocation_context):
   assert readonly_context.agent_name == "test-agent-name"
 
 
+def test_agent_name_without_agent(mock_invocation_context):
+  mock_invocation_context.agent = None
+  readonly_context = ReadonlyContext(mock_invocation_context)
+  assert readonly_context.agent_name == "unknown"
+
+
 def test_state_content(mock_invocation_context):
   readonly_context = ReadonlyContext(mock_invocation_context)
   state = readonly_context.state
@@ -51,3 +57,14 @@ def test_state_content(mock_invocation_context):
 def test_user_id(mock_invocation_context):
   readonly_context = ReadonlyContext(mock_invocation_context)
   assert readonly_context.user_id == "test-user-id"
+
+
+def test_custom_metadata(mock_invocation_context):
+  mock_invocation_context._custom_metadata = {"meta_key": "meta_value"}
+  readonly_context = ReadonlyContext(mock_invocation_context)
+  metadata = readonly_context.custom_metadata
+
+  assert isinstance(metadata, MappingProxyType)
+  assert metadata["meta_key"] == "meta_value"
+  with pytest.raises(TypeError):
+    metadata["new_key"] = "new_value"

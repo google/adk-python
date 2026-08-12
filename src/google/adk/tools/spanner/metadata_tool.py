@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from google.auth.credentials import Credentials
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
@@ -29,7 +30,7 @@ def list_table_names(
     database_id: str,
     credentials: Credentials,
     named_schema: str = "",
-) -> dict:
+) -> dict[str, Any]:
   """List tables within the database.
 
   Args:
@@ -80,7 +81,7 @@ def get_table_schema(
     table_name: str,
     credentials: Credentials,
     named_schema: str = "",
-) -> dict:
+) -> dict[str, Any]:
   """Get schema and metadata information about a Spanner table.
 
   Args:
@@ -195,7 +196,7 @@ def get_table_schema(
           AND TABLE_SCHEMA = @named_schema;
   """
 
-  results = {"schema": {}, "metadata": []}
+  results: dict[str, Any] = {"schema": {}, "metadata": []}
   try:
     spanner_client = client.get_spanner_client(
         project=project_id, credentials=credentials
@@ -277,8 +278,8 @@ def get_table_schema(
 
     try:
       json.dumps(results)
-    except:
-      results = str(results)
+    except (TypeError, ValueError, OverflowError):
+      return {"status": "SUCCESS", "results": str(results)}
 
     return {"status": "SUCCESS", "results": results}
   except Exception as ex:
@@ -294,7 +295,7 @@ def list_table_indexes(
     database_id: str,
     table_id: str,
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Get index information about a Spanner table.
 
   Args:
@@ -375,7 +376,7 @@ def list_table_indexes(
 
         try:
           json.dumps(index_info)
-        except:
+        except (TypeError, ValueError, OverflowError):
           index_info = str(index_info)
 
         indexes.append(index_info)
@@ -394,7 +395,7 @@ def list_table_index_columns(
     database_id: str,
     table_id: str,
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Get the columns in each index of a Spanner table.
 
   Args:
@@ -479,7 +480,7 @@ def list_table_index_columns(
 
         try:
           json.dumps(index_column_info)
-        except:
+        except (TypeError, ValueError, OverflowError):
           index_column_info = str(index_column_info)
 
         index_columns.append(index_column_info)
@@ -497,7 +498,7 @@ def list_named_schemas(
     instance_id: str,
     database_id: str,
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Get the named schemas in the Spanner database.
 
   Args:

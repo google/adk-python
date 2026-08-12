@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Sequence
 import re
 import threading
 from typing import TYPE_CHECKING
@@ -28,14 +30,16 @@ if TYPE_CHECKING:
   from ..events.event import Event
   from ..sessions.session import Session
 
+_UNKNOWN_SESSION_ID = '__unknown_session_id__'
 
-def _user_key(app_name: str, user_id: str):
-  return f'{app_name}/{user_id}'
+
+def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
+  return (app_name, user_id)
 
 
 def _extract_words_lower(text: str) -> set[str]:
   """Extracts words from a string and converts them to lowercase."""
-  return set([word.lower() for word in re.findall(r'[A-Za-z]+', text)])
+  return set([word.lower() for word in re.findall(r'\w+', text, re.UNICODE)])
 
 
 class InMemoryMemoryService(BaseMemoryService):
@@ -47,16 +51,16 @@ class InMemoryMemoryService(BaseMemoryService):
   development only.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._lock = threading.Lock()
 
-    self._session_events: dict[str, dict[str, list[Event]]] = {}
-    """Keys are "{app_name}/{user_id}". Values are dicts of session_id to
+    self._session_events: dict[tuple[str, str], dict[str, list[Event]]] = {}
+    """Keys are (app_name, user_id). Values are dicts of session_id to
     session event lists.
     """
 
   @override
-  async def add_session_to_memory(self, session: Session):
+  async def add_session_to_memory(self, session: Session) -> None:
     user_key = _user_key(session.app_name, session.user_id)
 
     with self._lock:
@@ -68,18 +72,54 @@ class InMemoryMemoryService(BaseMemoryService):
       ]
 
   @override
+  async def add_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: str | None = None,
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    _ = custom_metadata
+    user_key = _user_key(app_name, user_id)
+    scoped_session_id = session_id or _UNKNOWN_SESSION_ID
+    events_to_add = [
+        event for event in events if event.content and event.content.parts
+    ]
+
+    with self._lock:
+      self._session_events[user_key] = self._session_events.get(user_key, {})
+      existing_events = self._session_events[user_key].get(
+          scoped_session_id, []
+      )
+      existing_ids = {event.id for event in existing_events}
+      for event in events_to_add:
+        if event.id not in existing_ids:
+          existing_events.append(event)
+          existing_ids.add(event.id)
+      self._session_events[user_key][scoped_session_id] = existing_events
+
+  @override
   async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     user_key = _user_key(app_name, user_id)
 
     with self._lock:
-      session_event_lists = self._session_events.get(user_key, {})
+      # Copy the events into a stable snapshot while holding the lock. Iterating
+      # a live reference outside the lock would race with concurrent writers
+      # (add_session_to_memory / add_events_to_memory) mutating the same dict
+      # and lists, raising "dictionary changed size during iteration".
+      session_event_lists = [
+          list(events)
+          for events in self._session_events.get(user_key, {}).values()
+      ]
 
     words_in_query = _extract_words_lower(query)
     response = SearchMemoryResponse()
 
-    for session_events in session_event_lists.values():
+    for session_events in session_event_lists:
       for event in session_events:
         if not event.content or not event.content.parts:
           continue

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,6 +37,7 @@ class TestRequestIntercepterPlugin:
     )
     mock_invocation_context = mocker.MagicMock()
     mock_invocation_context.session.state = {}
+    mock_invocation_context._state_schema = None
     callback_context = CallbackContext(mock_invocation_context)
     llm_response = LlmResponse()
 

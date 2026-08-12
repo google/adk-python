@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -114,6 +114,34 @@ async def test_tool_returning_non_list_of_parts_is_unchanged(
   )
 
   assert llm_request.contents[-1].parts == original_parts
+
+
+@pytest.mark.asyncio
+async def test_empty_contents_leaves_saved_parts_pending(
+    plugin: MultimodalToolResultsPlugin,
+    mock_tool: MockTool,
+    tool_context: ToolContext,
+):
+  """Test that an empty request is a no-op and the parts stay for later."""
+  parts = [types.Part(text="part1")]
+
+  await plugin.after_tool_callback(
+      tool=mock_tool,
+      tool_args={},
+      tool_context=tool_context,
+      result=parts,
+  )
+
+  callback_context = Mock(spec=CallbackContext)
+  callback_context.state = tool_context.state
+  llm_request = LlmRequest(contents=[])
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert llm_request.contents == []
+  assert tool_context.state[PARTS_RETURNED_BY_TOOLS_ID] == parts
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,9 @@
 # limitations under the License.
 
 """File reading tool for Agent Builder Assistant."""
+
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 from typing import Dict
 from typing import List
@@ -54,7 +54,7 @@ async def read_files(
     session_state = tool_context._invocation_context.session.state
     resolved_paths = resolve_file_paths(file_paths, session_state)
 
-    result = {
+    result: Dict[str, Any] = {
         "success": True,
         "files": {},
         "successful_reads": 0,

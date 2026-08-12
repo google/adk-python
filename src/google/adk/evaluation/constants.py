@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,3 +18,5 @@ MISSING_EVAL_DEPENDENCIES_MESSAGE = (
     'Eval module is not installed, please install via `pip install'
     ' "google-adk[eval]"`.'
 )
+
+DEFAULT_LIVE_TIMEOUT_SECONDS = 300

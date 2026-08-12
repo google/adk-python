@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ _DEFAULT_HTTP_RETRY_OPTIONS = types.HttpRetryOptions(
 )
 
 
-def add_default_retry_options_if_not_present(llm_request: LlmRequest):
+def add_default_retry_options_if_not_present(llm_request: LlmRequest) -> None:
   """Adds default HTTP Retry Options, if they are not present on the llm_request.
 
   NOTE: This implementation is intended for eval systems internal usage. Do not
@@ -73,3 +73,4 @@ class EnsureRetryOptionsPlugin(BasePlugin):
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
   ) -> Optional[LlmResponse]:
     add_default_retry_options_if_not_present(llm_request)
+    return None

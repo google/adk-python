@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -171,7 +171,7 @@ def test_on_model_error_callback_with_plugin(mock_plugin):
 
 
 def test_on_model_error_callback_fallback_to_runner(mock_plugin):
-  """Tests that the model error is not handled and falls back to raise from runner."""
+  """Tests that the model error is not handled and surfaces from the runner."""
   mock_model = testing_utils.MockModel.create(error=mock_error, responses=[])
   mock_plugin.enable_on_model_error_callback = False
   agent = Agent(
@@ -179,10 +179,12 @@ def test_on_model_error_callback_fallback_to_runner(mock_plugin):
       model=mock_model,
   )
 
-  try:
-    testing_utils.InMemoryRunner(agent, plugins=[mock_plugin])
-  except Exception as e:
-    assert e == mock_error
+  runner = testing_utils.InMemoryRunner(agent, plugins=[mock_plugin])
+
+  events = runner.run('test')
+  error_events = [e for e in events if e.error_code]
+  assert len(error_events) == 1
+  assert error_events[0].error_code == 'ClientError'
 
 
 if __name__ == '__main__':

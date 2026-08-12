@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 """Tests for Progressive SSE Streaming Stage 1 implementation."""
 
+import asyncio
 from typing import Any
 from typing import AsyncGenerator
 
@@ -27,13 +28,6 @@ from google.adk.runners import InMemoryRunner
 from google.adk.utils.streaming_utils import StreamingResponseAggregator
 from google.genai import types
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def reset_env(monkeypatch):
-  monkeypatch.setenv("ADK_ENABLE_PROGRESSIVE_SSE_STREAMING", "1")
-  yield
-  monkeypatch.delenv("ADK_ENABLE_PROGRESSIVE_SSE_STREAMING")
 
 
 def get_weather(location: str) -> dict[str, Any]:
@@ -639,3 +633,465 @@ def test_progressive_sse_handles_empty_function_call():
   args = fc_part.function_call.args
   assert args["num"] == 100
   assert args["s"] == "ADK"
+
+
+@pytest.mark.parametrize(
+    "first_chunk_partial_args",
+    [
+        pytest.param(None, id="partial_args_none"),
+        pytest.param([], id="partial_args_empty_list"),
+    ],
+)
+def test_streaming_fc_chunk_with_will_continue_but_no_partial_args(
+    first_chunk_partial_args,
+):
+  """Test streaming function call with will_continue=True but no partial_args."""
+
+  aggregator = StreamingResponseAggregator()
+
+  # Chunk 1: FC name + will_continue=True, but NO partial_args (or empty list)
+  # This is the first chunk that Gemini 3 sends for streaming FC
+  chunk1_fc = types.FunctionCall(
+      name="my_tool",
+      id="fc_gemini3",
+      will_continue=True,
+      partial_args=first_chunk_partial_args,
+  )
+  chunk1_part = types.Part(
+      function_call=chunk1_fc,
+      thought_signature=b"test_sig_123",
+  )
+  chunk1 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(role="model", parts=[chunk1_part])
+          )
+      ]
+  )
+
+  # Chunk 2: Middle chunk with partial_args, name is None
+  chunk2_fc = types.FunctionCall(
+      partial_args=[
+          types.PartialArg(json_path="$.document", string_value="Once upon ")
+      ],
+      will_continue=True,
+  )
+  chunk2 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk2_fc)]
+              )
+          )
+      ]
+  )
+
+  # Chunk 3: Another middle chunk continuing the string argument
+  chunk3_fc = types.FunctionCall(
+      partial_args=[
+          types.PartialArg(json_path="$.document", string_value="a time...")
+      ],
+      will_continue=True,
+  )
+  chunk3 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk3_fc)]
+              )
+          )
+      ]
+  )
+
+  # Chunk 4: Final chunk - no name, no partial_args, will_continue=False
+  # This signals the end of the streaming function call
+  chunk4_fc = types.FunctionCall(
+      will_continue=False,
+  )
+  chunk4 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk4_fc)]
+              ),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  # Process all chunks through aggregator
+  async def process():
+    results = []
+    for chunk in [chunk1, chunk2, chunk3, chunk4]:
+      async for response in aggregator.process_response(chunk):
+        results.append(response)
+    return results
+
+  processed_chunks = asyncio.run(process())
+
+  # All intermediate chunks should be marked as partial
+  assert all(chunk.partial for chunk in processed_chunks)
+
+  # Get final aggregated response
+  final_response = aggregator.close()
+
+  # Verify final aggregated response has the complete FC with accumulated args
+  assert final_response is not None
+  assert len(final_response.content.parts) == 1
+
+  fc_part = final_response.content.parts[0]
+  assert fc_part.function_call is not None
+  assert fc_part.function_call.name == "my_tool"
+  assert fc_part.function_call.id == "fc_gemini3"
+
+  # Verify the document argument was correctly accumulated
+  args = fc_part.function_call.args
+  assert "document" in args
+  assert (
+      args["document"] == "Once upon a time..."
+  )  # Concatenated from chunks 2 + 3
+
+  # Verify thought_signature was preserved from the first chunk
+  assert fc_part.thought_signature == b"test_sig_123"
+
+
+class PartialFunctionCallMockModel(BaseLlm):
+  """A mock model that yields partial function call events followed by final."""
+
+  model: str = "partial-fc-mock"
+  tool_call_count: int = 0
+
+  @classmethod
+  def supported_models(cls) -> list[str]:
+    return ["partial-fc-mock"]
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    """Yield partial FC events then final, simulating streaming behavior."""
+
+    # Check if this is a follow-up call (after function response)
+    has_function_response = False
+    for content in llm_request.contents:
+      for part in content.parts or []:
+        if part.function_response:
+          has_function_response = True
+          break
+
+    if has_function_response:
+      # Final response after function execution
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Function executed once.")],
+          ),
+          partial=False,
+      )
+      return
+
+    # First call: yield partial FC events then final
+    # Partial event 1
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(
+                    name="track_execution", args={"call_id": "partial_1"}
+                )
+            ],
+        ),
+        partial=True,
+    )
+
+    # Partial event 2
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(
+                    name="track_execution", args={"call_id": "partial_2"}
+                )
+            ],
+        ),
+        partial=True,
+    )
+
+    # Final aggregated event (only this should trigger execution)
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(
+                    name="track_execution", args={"call_id": "final"}
+                )
+            ],
+        ),
+        partial=False,
+        finish_reason=types.FinishReason.STOP,
+    )
+
+
+def test_partial_function_calls_not_executed_in_none_streaming_mode():
+  """Test that partial function call events are skipped regardless of mode."""
+  execution_log = []
+
+  def track_execution(call_id: str) -> str:
+    """A tool that logs each execution to verify call count."""
+    execution_log.append(call_id)
+    return f"Executed: {call_id}"
+
+  mock_model = PartialFunctionCallMockModel()
+
+  agent = Agent(
+      name="partial_fc_test_agent",
+      model=mock_model,
+      tools=[track_execution],
+  )
+
+  # Use StreamingMode.NONE to verify partial FCs are still skipped
+  run_config = RunConfig(streaming_mode=StreamingMode.NONE)
+
+  runner = InMemoryRunner(agent=agent)
+
+  session = runner.session_service.create_session_sync(
+      app_name=runner.app_name, user_id="test_user"
+  )
+
+  events = []
+  for event in runner.run(
+      user_id="test_user",
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="Test partial FC handling")],
+      ),
+      run_config=run_config,
+  ):
+    events.append(event)
+
+  # Verify the tool was only executed once (from the final event)
+  assert (
+      len(execution_log) == 1
+  ), f"Expected 1 execution, got {len(execution_log)}: {execution_log}"
+  assert (
+      execution_log[0] == "final"
+  ), f"Expected 'final' execution, got: {execution_log[0]}"
+
+  # Verify partial events were yielded but not executed
+  partial_events = [e for e in events if e.partial]
+  assert (
+      len(partial_events) == 2
+  ), f"Expected 2 partial events, got {len(partial_events)}"
+
+  # Verify there's a function response event (from the final FC execution)
+  function_response_events = [
+      e
+      for e in events
+      if e.content
+      and e.content.parts
+      and any(p.function_response for p in e.content.parts)
+  ]
+  assert (
+      len(function_response_events) == 1
+  ), f"Expected 1 function response event, got {len(function_response_events)}"
+
+
+def test_progressive_sse_partials_share_event_id():
+  """Partial chunks and the final event of one response share one id."""
+
+  response1 = LlmResponse(
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="Checking weather...")]
+      ),
+  )
+  response2 = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part.from_function_call(
+                  name="get_weather", args={"location": "Tokyo"}
+              )
+          ],
+      ),
+  )
+  response3 = LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part.from_function_call(
+                  name="get_weather", args={"location": "New York"}
+              )
+          ],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  mock_model = StreamingMockModel(
+      stream_chunks=[response1, response2, response3]
+  )
+  agent = Agent(name="weather_agent", model=mock_model, tools=[get_weather])
+  run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+  runner = InMemoryRunner(agent=agent)
+  session = runner.session_service.create_session_sync(
+      app_name=runner.app_name, user_id="test_user"
+  )
+
+  events = []
+  for event in runner.run(
+      user_id="test_user",
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="What is the weather?")],
+      ),
+      run_config=run_config,
+  ):
+    events.append(event)
+
+  assert len(events) == 6
+  # events 0-2 are partials and event 3 is the aggregated final of one
+  # streaming response, so they all share the id minted once for that call.
+  assert events[0].id == events[1].id == events[2].id == events[3].id
+  # The function-response event is a separate event with its own id.
+  assert events[4].id != events[0].id
+  # A distinct LLM call mints a fresh id.
+  assert events[5].id != events[0].id
+
+
+def test_progressive_sse_text_stream_shares_event_id():
+  """Every partial and the final of a pure-text stream share one id."""
+
+  response1 = LlmResponse(
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="Hello ")]
+      ),
+  )
+  response2 = LlmResponse(
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="world")]
+      ),
+  )
+  response3 = LlmResponse(
+      content=types.Content(
+          role="model", parts=[types.Part.from_text(text="!")]
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  mock_model = StreamingMockModel(
+      stream_chunks=[response1, response2, response3]
+  )
+  agent = Agent(name="text_stream_agent", model=mock_model)
+  run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+  runner = InMemoryRunner(agent=agent)
+  session = runner.session_service.create_session_sync(
+      app_name=runner.app_name, user_id="test_user"
+  )
+
+  events = []
+  for event in runner.run(
+      user_id="test_user",
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="Say hello.")],
+      ),
+      run_config=run_config,
+  ):
+    events.append(event)
+
+  model_events = [
+      e for e in events if e.author == "text_stream_agent" and e.content
+  ]
+  assert any(e.partial for e in model_events)
+  assert any(not e.partial for e in model_events)
+  assert len({e.id for e in model_events}) == 1
+
+
+class TwoFinalResponsesMockModel(BaseLlm):
+  """Yields two separate non-partial responses (text then a function call)."""
+
+  model: str = "two-finals-mock"
+  call_count: int = 0
+
+  @classmethod
+  def supported_models(cls) -> list[str]:
+    return ["two-finals-mock"]
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    self.call_count += 1
+    if self.call_count == 1:
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Let me check the weather.")],
+          ),
+          partial=False,
+      )
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part.from_function_call(
+                      name="get_weather", args={"location": "Tokyo"}
+                  )
+              ],
+          ),
+          partial=False,
+          finish_reason=types.FinishReason.STOP,
+      )
+      return
+    yield LlmResponse(
+        content=types.Content(
+            role="model", parts=[types.Part.from_text(text="Done.")]
+        ),
+        partial=False,
+        finish_reason=types.FinishReason.STOP,
+    )
+
+
+def test_progressive_sse_saved_events_get_distinct_ids():
+  """Distinct saved (non-partial) events in one turn must get distinct ids.
+
+  A saved text event and a saved function-call event produced in the same
+  streaming turn must not collapse onto a shared id. The id is re-minted after
+  every complete event, so this must hold regardless of future refactors of the
+  id-minting loop.
+  """
+
+  mock_model = TwoFinalResponsesMockModel()
+  agent = Agent(name="distinct_id_agent", model=mock_model, tools=[get_weather])
+  run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+  runner = InMemoryRunner(agent=agent)
+  session = runner.session_service.create_session_sync(
+      app_name=runner.app_name, user_id="test_user"
+  )
+
+  events = []
+  for event in runner.run(
+      user_id="test_user",
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="What is the weather?")],
+      ),
+      run_config=run_config,
+  ):
+    events.append(event)
+
+  # Only non-partial events are saved to the session.
+  saved_events = [e for e in events if not e.partial]
+  text_event = next(
+      e
+      for e in saved_events
+      if e.author == "distinct_id_agent"
+      and e.content
+      and any(p.text for p in e.content.parts)
+  )
+  function_call_event = next(e for e in saved_events if e.get_function_calls())
+  assert text_event.id != function_call_event.id
+  # Every saved event in the turn has a unique id.
+  saved_ids = [e.id for e in saved_events]
+  assert len(saved_ids) == len(set(saved_ids))

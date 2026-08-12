@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,11 @@
 # limitations under the License.
 
 """ADK knowledge search tool."""
+
 from __future__ import annotations
 
 from typing import Any
+from typing import cast
 import uuid
 
 import requests
@@ -83,4 +85,4 @@ def post_request(url: str, payload: dict[str, Any]) -> dict[str, Any]:
   """Executes a POST request."""
   response = requests.post(url, headers=HEADERS, json=payload, timeout=60)
   response.raise_for_status()
-  return response.json()
+  return cast(dict[str, Any], response.json())

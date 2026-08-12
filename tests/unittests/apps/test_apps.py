@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,9 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.apps.app import validate_app_name
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.workflow._base_node import BaseNode
 import pytest
 
 
@@ -183,14 +185,101 @@ class TestApp:
     with pytest.raises(ValueError):
       App(name="windows\\path", root_agent=mock_agent)
 
-  def test_app_name_must_be_identifier(self):
+  def test_app_name_must_be_valid(self):
     mock_agent = Mock(spec=BaseAgent)
 
+    # Hyphens are allowed
+    App(name="valid-name", root_agent=mock_agent)
+
     with pytest.raises(ValueError):
-      App(name="invalid-name", root_agent=mock_agent)
+      App(name="invalid name", root_agent=mock_agent)
+
+    with pytest.raises(ValueError):
+      App(name="invalid@name", root_agent=mock_agent)
 
   def test_app_name_cannot_be_user(self):
     mock_agent = Mock(spec=BaseAgent)
 
     with pytest.raises(ValueError):
       App(name="user", root_agent=mock_agent)
+
+
+class TestAppRootNode:
+  """Tests for App.root_agent accepting BaseNode."""
+
+  def test_app_with_root_node(self):
+    """Test App creation with a BaseNode as root_agent."""
+    node = BaseNode(name="test_node")
+    app = App(name="test_app", root_agent=node)
+    assert app.root_agent is node
+
+  def test_app_rejects_none_root_agent(self):
+    """Test that not providing root_agent raises."""
+    with pytest.raises(ValueError, match="root_agent must be provided"):
+      App(name="test_app")
+
+  def test_app_rejects_invalid_root_agent(self):
+    """Test that root_agent must be a BaseAgent or BaseNode instance."""
+    with pytest.raises(
+        TypeError, match="root_agent must be a BaseAgent or BaseNode"
+    ):
+      App(name="test_app", root_agent="not_a_node")
+
+
+class TestValidateAppName:
+  """Tests for the validate_app_name helper.
+
+  App names end up in session keys and artifact paths, so the rule is that a
+  name must start with a letter and contain only letters, digits, underscores
+  and hyphens, and must not collide with the reserved end-user identifier.
+  """
+
+  @pytest.mark.parametrize(
+      "name",
+      [
+          "a",
+          "app",
+          "App",
+          "my_app",
+          "my-app",
+          "app2",
+          "a1_b2-c3",
+      ],
+  )
+  def test_accepts_letter_led_alphanumeric_names(self, name: str):
+    assert validate_app_name(name) is None
+
+  @pytest.mark.parametrize(
+      "name",
+      [
+          "",  # nothing at all
+          "1app",  # leading digit
+          "_app",  # leading underscore
+          "-app",  # leading hyphen
+          "my app",  # space
+          "my.app",  # dot, which would nest an artifact path
+          "my/app",  # separator
+          "my\\app",  # Windows separator
+          "../app",  # traversal
+          "app!",  # punctuation
+      ],
+  )
+  def test_rejects_names_outside_the_allowed_alphabet(self, name: str):
+    with pytest.raises(ValueError, match="must start with a letter"):
+      validate_app_name(name)
+
+  @pytest.mark.xfail(
+      strict=True,
+      reason="`$` also matches before a trailing newline, so it slips through",
+  )
+  def test_rejects_name_with_trailing_newline(self):
+    with pytest.raises(ValueError, match="must start with a letter"):
+      validate_app_name("app\n")
+
+  def test_rejects_the_reserved_user_name(self):
+    with pytest.raises(ValueError, match="reserved for end-user input"):
+      validate_app_name("user")
+
+  @pytest.mark.parametrize("name", ["User", "users", "user_1"])
+  def test_reservation_is_an_exact_match_only(self, name: str):
+    assert validate_app_name(name) is None

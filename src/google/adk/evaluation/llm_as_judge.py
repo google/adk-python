@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,10 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Sequence
+from typing import Generic
 from typing import Optional
+from typing import TypeVar
 
 from google.genai import types as genai_types
 from pydantic import ValidationError
@@ -29,10 +32,13 @@ from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from ._retry_options_utils import add_default_retry_options_if_not_present
 from .common import EvalBaseModel
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
-from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
+from .eval_metrics import LlmAsAJudgeCriterion
+from .eval_metrics import RubricsBasedCriterion
 from .eval_metrics import RubricScore
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
@@ -44,8 +50,16 @@ class AutoRaterScore(EvalBaseModel):
   rubric_scores: Optional[list[RubricScore]] = None
 
 
+# RubricsBasedCriterion is a sibling of LlmAsAJudgeCriterion, not a subclass,
+# so the two are spelled as a value restriction rather than as a union bound;
+# both declare judge_model_options, which is all this class reads.
+_CriterionT = TypeVar(
+    "_CriterionT", LlmAsAJudgeCriterion, RubricsBasedCriterion
+)
+
+
 @experimental
-class LlmAsJudge(Evaluator):
+class LlmAsJudge(Evaluator, Generic[_CriterionT]):
   """Evaluator based on a LLM.
 
   It is meant to be extended by specific auto-raters for different evaluation
@@ -63,8 +77,8 @@ class LlmAsJudge(Evaluator):
   def __init__(
       self,
       eval_metric: EvalMetric,
-      criterion_type: type[BaseCriterion],
-      expected_invocations_required=False,
+      criterion_type: type[_CriterionT],
+      expected_invocations_required: bool = False,
   ):
     self._eval_metric = eval_metric
     self._expected_invocations_required = expected_invocations_required
@@ -78,7 +92,7 @@ class LlmAsJudge(Evaluator):
       if self._eval_metric.criterion is None:
         raise expected_criterion_type_error
 
-      self._criterion = criterion_type.model_validate(
+      self._criterion: _CriterionT = criterion_type.model_validate(
           self._eval_metric.criterion.model_dump()
       )
     except ValidationError as e:
@@ -117,21 +131,28 @@ class LlmAsJudge(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     if self._expected_invocations_required and expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
+    del conversation_scenario  # not supported for per-invocation evaluation.
 
     # If expected_invocation are not required by the metric and if they are not
     # supplied, we provide a list of None.
-    expected_invocations = (
+    # Sequence rather than list: it is covariant, so the supplied
+    # list[Invocation] is accepted without copying it.
+    resolved_expected: Sequence[Optional[Invocation]] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
         else expected_invocations
     )
 
     per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, resolved_expected, strict=True
+    ):
       auto_rater_prompt = self.format_auto_rater_prompt(actual, expected)
       llm_request = LlmRequest(
           model=self._judge_model_options.judge_model,
@@ -141,7 +162,8 @@ class LlmAsJudge(Evaluator):
                   role="user",
               )
           ],
-          config=self._judge_model_options.judge_model_config,
+          config=self._judge_model_options.judge_model_config
+          or genai_types.GenerateContentConfig(),
       )
       add_default_retry_options_if_not_present(llm_request)
       num_samples = self._judge_model_options.num_samples

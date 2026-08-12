@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,153 +12,244 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
-import gc
-import sys
+from __future__ import annotations
 
-from google.adk.agents import base_agent
-from google.adk.agents.llm_agent import Agent
-from google.adk.models.base_llm import BaseLlm
-from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import tracing
-from google.adk.tools import FunctionTool
-from google.adk.utils.context_utils import Aclosing
-from google.genai.types import Content
-from google.genai.types import Part
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
 
-from ..testing_utils import MockModel
-from ..testing_utils import TestInMemoryRunner
+from .functional_test_cases import ALL_CASES
+from .functional_test_cases import MCP_CASE
+from .functional_test_helpers import aclosing_wrapping_assertions
+from .functional_test_helpers import build_mcp_test_runner
+from .functional_test_helpers import build_test_runner
+from .functional_test_helpers import CAPTURE_CONTENT
+from .functional_test_helpers import EXPERIMENTAL_OPT_IN
+from .functional_test_helpers import FakeMcpSession
+from .functional_test_helpers import FunctionalTestCase
+from .functional_test_helpers import install_telemetry
+from .functional_test_helpers import OTEL_OPT_IN
+from .functional_test_helpers import run_agent_scenario
+from .functional_test_helpers import SpanDigest
+from .functional_test_helpers import TelemetryDigest
 
 
-@pytest.fixture
-def test_model() -> BaseLlm:
-  mock_model = MockModel.create(
-      responses=[
-          Part.from_function_call(name='some_tool', args={}),
-          Part.from_text(text='text response'),
-      ]
-  )
-  return mock_model
+@pytest.mark.parametrize("case", ALL_CASES, ids=lambda c: c.test_id)
+@pytest.mark.asyncio
+async def test_telemetry_schema(
+    case: FunctionalTestCase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Tests creation of spans/logs/metrics in an E2E runner invocation.
 
+  Asserts the entire telemetry schema (spans + attributes + per-span logs +
+  recorded metric points) matches the shape recorded for the given semconv +
+  content-capture configuration in ``functional_goldens/``.
+  """
+  case.apply_env(monkeypatch)
 
-@pytest.fixture
-def test_agent(test_model: BaseLlm) -> Agent:
-  def some_tool():
-    pass
-
-  root_agent = Agent(
-      name='some_root_agent',
-      model=test_model,
-      tools=[
-          FunctionTool(some_tool),
-      ],
-  )
-  return root_agent
-
-
-@pytest.fixture
-async def test_runner(test_agent: Agent) -> TestInMemoryRunner:
-  runner = TestInMemoryRunner(test_agent)
-  return runner
-
-
-@pytest.fixture
-def span_exporter(monkeypatch: pytest.MonkeyPatch) -> InMemorySpanExporter:
-  tracer_provider = TracerProvider()
   span_exporter = InMemorySpanExporter()
-  tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
-  real_tracer = tracer_provider.get_tracer(__name__)
+  log_exporter = InMemoryLogRecordExporter()
+  metric_reader = InMemoryMetricReader()
+  install_telemetry(monkeypatch, span_exporter, log_exporter, metric_reader)
 
-  def do_replace(tracer):
-    monkeypatch.setattr(
-        tracer, 'start_as_current_span', real_tracer.start_as_current_span
-    )
+  if case.model_exception is not None:
+    # The mock raises before responding; the scenario must propagate it.
+    with pytest.raises(Exception):  # noqa: B017 -- exact type varies per case.
+      await run_agent_scenario(
+          build_test_runner(model_exception=case.model_exception)
+      )
+  elif case.tool_fails:
+    # The tool raises while the model is fine; the scenario must propagate it.
+    with pytest.raises(ValueError, match="This tool always fails"):
+      await run_agent_scenario(build_test_runner(failing=True))
+  else:
+    await run_agent_scenario(build_test_runner())
 
-  do_replace(tracing.tracer)
-  do_replace(base_agent.tracer)
-
-  return span_exporter
+  digest = TelemetryDigest.build(
+      span_exporter.get_finished_spans(),
+      log_exporter.get_finished_logs(),
+      metric_reader.get_metrics_data(),
+  )
+  assert digest == case.expected
 
 
 @pytest.mark.asyncio
-async def test_tracer_start_as_current_span(
-    test_runner: TestInMemoryRunner,
-    span_exporter: InMemorySpanExporter,
-):
-  """Test creation of multiple spans in an E2E runner invocation.
+async def test_async_generators_wrapped_in_aclosing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Asserts each async generator iterated by the scenario is wrapped in ``aclosing``.
 
-  Additionally tests if each async generator invoked is wrapped in Aclosing.
-  This is necessary because instrumentation utilizes contextvars, which ran into "ContextVar was created in a different Context" errors,
-  when a given coroutine gets indeterminately suspended.
+  Necessary because instrumentation utilizes contextvars, which run into
+  "ContextVar was created in a different Context" errors when a given
+  coroutine gets indeterminately suspended.
+
+  Kept as a single non-parametrized test because the underlying
+  ``gc.get_referrers`` walk is expensive (~5 seconds per scenario).
   """
-  firstiter, finalizer = sys.get_asyncgen_hooks()
+  install_telemetry(
+      monkeypatch,
+      InMemorySpanExporter(),
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
+  )
 
-  def wrapped_firstiter(coro):
-    nonlocal firstiter
-    assert any(
-        isinstance(referrer, Aclosing)
-        or isinstance(indirect_referrer, Aclosing)
-        for referrer in gc.get_referrers(coro)
-        # Some coroutines have a layer of indirection in Python 3.10
-        for indirect_referrer in gc.get_referrers(referrer)
-    ), f'Coro `{coro.__name__}` is not wrapped with Aclosing'
-    firstiter(coro)
-
-  sys.set_asyncgen_hooks(wrapped_firstiter, finalizer)
-
-  # Act
-  async with Aclosing(test_runner.run_async_with_new_session_agen('')) as agen:
-    async for _ in agen:
-      pass
-
-  # Assert
-  spans = span_exporter.get_finished_spans()
-  assert list(sorted(span.name for span in spans)) == [
-      'call_llm',
-      'call_llm',
-      'execute_tool some_tool',
-      'invocation',
-      'invoke_agent some_root_agent',
-  ]
+  with aclosing_wrapping_assertions():
+    await run_agent_scenario(build_test_runner())
 
 
 @pytest.mark.asyncio
 async def test_exception_preserves_attributes(
-    test_model: BaseLlm, span_exporter: InMemorySpanExporter
-):
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
   """Test when an exception occurs during tool execution, span attributes are still present on spans where they are expected."""
 
-  # Arrange
-  async def some_tool():
-    raise ValueError('This tool always fails')
-
-  test_agent = Agent(
-      name='some_root_agent',
-      model=test_model,
-      tools=[
-          FunctionTool(some_tool),
-      ],
+  span_exporter = InMemorySpanExporter()
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
   )
 
-  test_runner = TestInMemoryRunner(test_agent)
+  with pytest.raises(ValueError, match="This tool always fails"):
+    _ = await run_agent_scenario(build_test_runner(failing=True))
 
-  # Act
-  with pytest.raises(ValueError, match='This tool always fails'):
-    async with Aclosing(
-        test_runner.run_async_with_new_session_agen('')
-    ) as agen:
-      async for _ in agen:
-        pass
-
-  # Assert
   spans = span_exporter.get_finished_spans()
+
   assert len(spans) > 1
   assert all(
       span.attributes is not None and len(span.attributes) > 0
       for span in spans
-      if span.name != 'invocation'  # not expected to have attributes
+      if span.name != "invocation"  # not expected to have attributes
   )
+
+
+@pytest.mark.asyncio
+async def test_no_generate_content_for_gemini_model_when_already_instrumented(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Tests that generate_content span is not created if already instrumented."""
+  span_exporter = InMemorySpanExporter()
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
+  )
+
+  monkeypatch.setattr(
+      tracing,
+      "_instrumented_with_opentelemetry_instrumentation_google_genai",
+      lambda: True,
+  )
+  monkeypatch.setattr(
+      tracing,
+      "_is_gemini_agent",
+      lambda _: True,
+  )
+
+  _ = await run_agent_scenario(build_test_runner())
+
+  spans = span_exporter.get_finished_spans()
+  assert not any(span.name.startswith("generate_content") for span in spans)
+
+
+def test_instrumented_with_opentelemetry_instrumentation_google_genai():
+  instrumentor = GoogleGenAiSdkInstrumentor()
+
+  assert (
+      not tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
+  )
+  try:
+    instrumentor.instrument()
+    assert (
+        tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
+    )
+  finally:
+    instrumentor.uninstrument()
+  assert (
+      not tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
+  )
+
+
+def test_instrumented_detection_normalizes_windows_path_separators(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Backslash-separated instrumentation paths are matched on Windows."""
+  windows_path = r"C:\pkg\opentelemetry\instrumentation\google_genai\patch.py"
+
+  class _FakeCode:
+    co_filename = windows_path
+
+  class _FakeInstrumentedFunction:
+    __code__ = _FakeCode
+    __wrapped__ = object()
+
+  monkeypatch.setattr(
+      tracing.Models, "generate_content", _FakeInstrumentedFunction
+  )
+
+  assert tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
+
+
+# ---------------------------------------------------------------------------
+# MCP integration: telemetry adds zero ``list_tools()`` calls of its own.
+#
+# The standard ADK ↔ MCP integration path is:
+#
+#   Agent(tools=[McpToolset(...)])
+#     → McpToolset.get_tools()  ─ calls list_tools() ONCE, caches MCPTool list
+#     → BaseLlmFlow loop calls each MCPTool.process_llm_request, which
+#       materializes the tool's FunctionDeclaration into
+#       llm_request.config.tools.
+#
+# By the time the experimental semconv builder reads
+# ``llm_request.config.tools``, MCP tools are ALREADY ``types.Tool``
+# entries with ``function_declarations``. Because the builder is fully
+# synchronous (it never calls ``list_tools()`` itself), the MCP server is
+# queried EXACTLY ONCE per agent invocation regardless of which semconv
+# (or capture mode) is active. This test pins that contract; the recorded
+# ``mcp`` golden pins that the resolved tool definitions surface intact in
+# the experimental telemetry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mcp_list_tools_called_once_under_experimental_semconv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Experimental semconv: exactly one ``list_tools()`` call per invocation.
+
+  By the time the experimental semconv builder inspects
+  ``llm_request.config.tools``, ``McpToolset`` has already materialized
+  each MCP tool into a ``FunctionDeclaration`` — so the synchronous
+  builder never has to (and never does) talk to the MCP server. The
+  MCP-resolved tool definition still surfaces in the experimental
+  telemetry intact, sourced from the ``FunctionDeclaration`` rather than
+  from a fresh ``list_tools()`` call.
+  """
+  monkeypatch.setenv(OTEL_OPT_IN, EXPERIMENTAL_OPT_IN)
+  monkeypatch.setenv(CAPTURE_CONTENT, "span_and_event")
+  monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
+
+  span_exporter = InMemorySpanExporter()
+  log_exporter = InMemoryLogRecordExporter()
+  install_telemetry(
+      monkeypatch, span_exporter, log_exporter, InMemoryMetricReader()
+  )
+
+  fake_session = FakeMcpSession()
+
+  await run_agent_scenario(build_mcp_test_runner(monkeypatch, fake_session))
+
+  assert fake_session.list_tools_call_count == 1
+
+  digest = SpanDigest.build(
+      span_exporter.get_finished_spans(),
+      log_exporter.get_finished_logs(),
+  )
+  assert digest == MCP_CASE.expected.root_span

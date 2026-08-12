@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,17 +22,34 @@ from __future__ import annotations
 
 from typing import Union
 
+from typing_extensions import deprecated
+
+from ..models._capabilities import gemini_output_schema_and_tools
 from ..models.base_llm import BaseLlm
-from .model_name_utils import is_gemini_2_or_above
-from .variant_utils import get_google_llm_variant
-from .variant_utils import GoogleLLMVariant
 
 
-def can_use_output_schema_with_tools(model: Union[str, BaseLlm]):
+@deprecated(
+    'Use model.capabilities.output_schema_and_tools instead. This function'
+    ' does not honor capabilities declared by a BaseLlm subclass.'
+)
+def can_use_output_schema_with_tools(model: Union[str, BaseLlm]) -> bool:
   """Returns True if output schema with tools is supported."""
+  # LiteLLM handles tools + response_format compatibility per-provider:
+  # - Providers with native support (OpenAI, Azure): both passed directly
+  # - Providers without (Fireworks): auto-converted to json_tool_call +
+  #   tool_choice enforcement
+  # This is strictly more reliable than the SetModelResponseTool
+  # prompt-based workaround.
+  if not isinstance(model, str):
+    try:
+      from ..models.lite_llm import LiteLlm
+    except ImportError:
+      LiteLlm = None
+    if LiteLlm is not None and isinstance(model, LiteLlm):
+      return True
+
   model_string = model if isinstance(model, str) else model.model
 
-  return (
-      get_google_llm_variant() == GoogleLLMVariant.VERTEX_AI
-      and is_gemini_2_or_above(model_string)
-  )
+  # Delegates so that this function and BaseLlm.capabilities cannot drift while
+  # both are live. Callers should read model.capabilities instead.
+  return gemini_output_schema_and_tools(model_string)

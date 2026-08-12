@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from google.cloud import exceptions as cloud_exceptions
 from google.cloud import storage
@@ -22,6 +23,8 @@ from typing_extensions import override
 
 from ..errors.not_found_error import NotFoundError
 from ._eval_set_results_manager_utils import create_eval_set_result
+from ._eval_set_results_manager_utils import parse_eval_set_result_json
+from ._path_validation import validate_path_segment
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
 from .eval_set_results_manager import EvalSetResultsManager
@@ -35,7 +38,7 @@ _EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
 class GcsEvalSetResultsManager(EvalSetResultsManager):
   """An EvalSetResultsManager that stores eval results in a GCS bucket."""
 
-  def __init__(self, bucket_name: str, **kwargs):
+  def __init__(self, bucket_name: str, **kwargs: Any) -> None:
     """Initializes the GcsEvalSetsManager.
 
     Args:
@@ -53,17 +56,19 @@ class GcsEvalSetResultsManager(EvalSetResultsManager):
       )
 
   def _get_eval_history_dir(self, app_name: str) -> str:
+    validate_path_segment(app_name, "app_name")
     return f"{app_name}/{_EVAL_HISTORY_DIR}"
 
   def _get_eval_set_result_blob_name(
       self, app_name: str, eval_set_result_id: str
   ) -> str:
+    validate_path_segment(eval_set_result_id, "eval_set_result_id")
     eval_history_dir = self._get_eval_history_dir(app_name)
     return f"{eval_history_dir}/{eval_set_result_id}{_EVAL_SET_RESULT_FILE_EXTENSION}"
 
   def _write_eval_set_result(
       self, blob_name: str, eval_set_result: EvalSetResult
-  ):
+  ) -> None:
     """Writes an EvalSetResult to GCS."""
     blob = self.bucket.blob(blob_name)
     blob.upload_from_string(
@@ -79,6 +84,8 @@ class GcsEvalSetResultsManager(EvalSetResultsManager):
       eval_case_results: list[EvalCaseResult],
   ) -> None:
     """Creates and saves a new EvalSetResult given eval_case_results."""
+    validate_path_segment(app_name, "app_name")
+    validate_path_segment(eval_set_id, "eval_set_id")
     eval_set_result = create_eval_set_result(
         app_name, eval_set_id, eval_case_results
     )
@@ -101,7 +108,7 @@ class GcsEvalSetResultsManager(EvalSetResultsManager):
     if not blob.exists():
       raise NotFoundError(f"Eval set result `{eval_set_result_id}` not found.")
     eval_set_result_data = blob.download_as_text()
-    return EvalSetResult.model_validate_json(eval_set_result_data)
+    return parse_eval_set_result_json(eval_set_result_data)
 
   @override
   def list_eval_set_results(self, app_name: str) -> list[str]:

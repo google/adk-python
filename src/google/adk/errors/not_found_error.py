@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,9 @@ from __future__ import annotations
 class NotFoundError(Exception):
   """Represents an error that occurs when an entity is not found."""
 
-  def __init__(self, message="The requested item was not found."):
+  def __init__(
+      self, message: str = "The requested item was not found."
+  ) -> None:
     """Initializes the NotFoundError exception.
 
     Args:

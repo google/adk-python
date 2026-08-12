@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -426,7 +426,7 @@ def _validate_single_config(
       }
 
     # Step 3: Additional structural validation
-    # TODO: b/455645705 - Remove once the frontend performs these validations before calling
+    # TODO: Remove once the frontend performs these validations before calling
     # this tool.
     name_warning = _normalize_agent_name_field(config_dict, path)
     structural_validation = _validate_structure(config_dict, path)
@@ -444,7 +444,9 @@ def _validate_single_config(
         config_dict, project_folder_name, path
     )
     warnings.extend(project_scope_result.get("warnings", []))
-    project_scope_error = project_scope_result.get("error")
+    project_scope_error: dict[str, Any] | None = project_scope_result.get(
+        "error"
+    )
     if project_scope_error is not None:
       return project_scope_error
 

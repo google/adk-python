@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -75,20 +75,20 @@ def agent_runner(request: FixtureRequest) -> TestRunner:
 @fixture(autouse=True)
 def llm_backend(request: FixtureRequest):
   # Set backend environment value.
-  original_val = os.environ.get('GOOGLE_GENAI_USE_VERTEXAI')
+  original_val = os.environ.get('GOOGLE_GENAI_USE_ENTERPRISE')
   backend_type = request.param
   if backend_type == 'GOOGLE_AI':
-    os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = '0'
+    os.environ['GOOGLE_GENAI_USE_ENTERPRISE'] = '0'
   else:
-    os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = '1'
+    os.environ['GOOGLE_GENAI_USE_ENTERPRISE'] = '1'
 
   yield  # Run the test
 
   # Restore the environment
   if original_val is None:
-    os.environ.pop('GOOGLE_GENAI_USE_VERTEXAI', None)
+    os.environ.pop('GOOGLE_GENAI_USE_ENTERPRISE', None)
   else:
-    os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = original_val
+    os.environ['GOOGLE_GENAI_USE_ENTERPRISE'] = original_val
 
 
 @hookimpl(tryfirst=True)
