@@ -111,6 +111,15 @@ class BasePlugin(ABC):
     super().__init__()
     self.name = name
 
+  @property
+  def exclusive_callbacks(self) -> frozenset[str]:
+    """Callbacks this plugin must own without another plugin override.
+
+    Plugin implementations may override this property when sharing a callback
+    could bypass or invalidate the plugin's control decision.
+    """
+    return frozenset()
+
   async def on_user_message_callback(
       self,
       *,
@@ -184,6 +193,20 @@ class BasePlugin(ABC):
 
     Returns:
       None
+    """
+    pass
+
+  async def on_run_complete_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    """Callback executed after all successful run cleanup completes.
+
+    This callback runs only when execution, every ``after_run_callback``, and
+    event compaction have succeeded. Exceptions propagate so terminal audit
+    failures cannot be reported as successful runs.
+
+    Args:
+      invocation_context: The successfully completed invocation context.
     """
     pass
 
@@ -406,5 +429,19 @@ class BasePlugin(ABC):
     Args:
       invocation_context: The context for the entire invocation.
       error: The exception that was raised during runner execution.
+    """
+    pass
+
+  async def on_run_cancelled_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    """Callback executed when runner execution is cancelled.
+
+    This is a notification-only callback. Cancellation is always re-raised
+    after all registered plugins have been notified. Plugins should release
+    invocation-scoped resources without suppressing cancellation.
+
+    Args:
+      invocation_context: The context of the cancelled invocation.
     """
     pass

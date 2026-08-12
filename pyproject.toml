@@ -62,8 +62,10 @@ optional-dependencies.a2a = [
 ]
 optional-dependencies.agent-hooks = [
   # Framework-neutral agent lifecycle governance contract with a compiled
-  # native core; used by google.adk.plugins.AgentHooksPlugin.
-  "agent-hooks-sdk>=0.1.0a4",
+  # native core; used by google.adk.plugins.AgentHooksPlugin. The adapter and
+  # CTK suites cover a4 and a5; bump deliberately after verifying the next
+  # release's API and wheel matrix.
+  "agent-hooks-sdk>=0.1.0a4,<0.1.0a6",
 ]
 optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",

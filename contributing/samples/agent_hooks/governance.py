@@ -14,7 +14,8 @@
 
 """An example agent-hooks interceptor: a small tool-governance policy.
 
-The interceptor implements the ``intercept(AgentContext) -> Verdict`` contract.
+The interceptor implements the async
+``intercept(AgentContext) -> Verdict`` contract.
 It demonstrates the two enforcement primitives that matter most for tool use:
 
 - ``deny``: a destructive tool (``delete_account``) is blocked before it runs.
@@ -81,7 +82,7 @@ class ToolGovernanceInterceptor:
 
   name = "tool_governance"
 
-  def intercept(self, ctx: AgentContext) -> Verdict:
+  async def intercept(self, ctx: AgentContext) -> Verdict:
     point = ctx["interception_point"]
 
     if point == "pre_tool_call":

@@ -43,6 +43,7 @@ PluginCallbackName = Literal[
     "on_user_message_callback",
     "before_run_callback",
     "after_run_callback",
+    "on_run_complete_callback",
     "on_event_callback",
     "before_agent_callback",
     "after_agent_callback",
@@ -54,6 +55,7 @@ PluginCallbackName = Literal[
     "on_model_error_callback",
     "on_agent_error_callback",
     "on_run_error_callback",
+    "on_run_cancelled_callback",
 ]
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -117,8 +119,32 @@ class PluginManager:
     """
     if any(p.name == plugin.name for p in self.plugins):
       raise ValueError(f"Plugin with name '{plugin.name}' already registered.")
+    for registered_plugin in self.plugins:
+      conflicts = {
+          callback_name
+          for callback_name in plugin.exclusive_callbacks
+          if self._overrides_callback(registered_plugin, callback_name)
+      }
+      conflicts.update(
+          callback_name
+          for callback_name in registered_plugin.exclusive_callbacks
+          if self._overrides_callback(plugin, callback_name)
+      )
+      if conflicts:
+        names = ", ".join(sorted(conflicts))
+        raise ValueError(
+            f"Plugins '{registered_plugin.name}' and '{plugin.name}' cannot "
+            f"share exclusive callbacks: {names}."
+        )
     self.plugins.append(plugin)
     logger.info("Plugin '%s' registered.", plugin.name)
+
+  @staticmethod
+  def _overrides_callback(plugin: BasePlugin, callback_name: str) -> bool:
+    """Whether a plugin class implements a callback beyond BasePlugin."""
+    implementation = getattr(type(plugin), callback_name, None)
+    default = getattr(BasePlugin, callback_name, None)
+    return implementation is not None and implementation is not default
 
   def get_plugin(self, plugin_name: str) -> Optional[BasePlugin]:
     """Retrieves a registered plugin by its name.
@@ -130,6 +156,28 @@ class PluginManager:
       The plugin instance if found; otherwise, `None`.
     """
     return next((p for p in self.plugins if p.name == plugin_name), None)
+
+  def validate_agent_callbacks(self, agent: object) -> None:
+    """Reject agent callbacks that overlap an exclusive plugin callback."""
+    exclusive = set().union(
+        *(plugin.exclusive_callbacks for plugin in self.plugins)
+    )
+    if not exclusive:
+      return
+    conflicts = sorted(
+        callback_name
+        for callback_name in exclusive
+        if getattr(agent, callback_name, None)
+    )
+    if conflicts:
+      agent_name = getattr(agent, "name", type(agent).__name__)
+      names = ", ".join(conflicts)
+      raise ValueError(
+          f"Agent '{agent_name}' cannot configure callbacks reserved by an "
+          f"exclusive plugin: {names}."
+      )
+    for sub_agent in getattr(agent, "sub_agents", ()):
+      self.validate_agent_callbacks(sub_agent)
 
   async def run_on_user_message_callback(
       self,
@@ -160,6 +208,14 @@ class PluginManager:
         "after_run_callback", invocation_context=invocation_context
     )
 
+  async def run_on_run_complete_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    """Runs outcome-final completion callbacks for all plugins."""
+    await self._run_callbacks(
+        "on_run_complete_callback", invocation_context=invocation_context
+    )
+
   async def run_on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
   ) -> Optional[Event]:
@@ -174,6 +230,7 @@ class PluginManager:
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> Optional[types.Content]:
     """Runs the `before_agent_callback` for all plugins."""
+    self.validate_agent_callbacks(agent)
     return await self._run_callbacks(
         "before_agent_callback",
         agent=agent,
@@ -349,6 +406,15 @@ class PluginManager:
         "on_run_error_callback",
         invocation_context=invocation_context,
         error=error,
+    )
+
+  async def run_on_run_cancelled_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    """Runs cancellation notifications for all plugins."""
+    await self._run_notification_callbacks(
+        "on_run_cancelled_callback",
+        invocation_context=invocation_context,
     )
 
   async def _run_notification_callbacks(

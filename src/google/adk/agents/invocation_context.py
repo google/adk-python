@@ -49,6 +49,33 @@ from .transcription_entry import TranscriptionEntry
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
 
+class _RunIdentityToken:
+  """Host-owned identity shared by every shallow context copy in one run."""
+
+  __slots__ = ("closed", "nonce", "owner_identity")
+
+  def __init__(self) -> None:
+    self.nonce = "r-" + platform_uuid.new_uuid()
+    self.owner_identity: tuple[str, str, str, str] | None = None
+    self.closed = False
+
+  def bind(self, owner_identity: tuple[str, str, str, str]) -> None:
+    if self.owner_identity is None:
+      self.owner_identity = owner_identity
+    elif self.owner_identity != owner_identity:
+      raise RuntimeError("InvocationContext run owner identity changed")
+
+  def close(self) -> None:
+    self.closed = True
+
+  def __copy__(self) -> _RunIdentityToken:
+    return self
+
+  def __deepcopy__(self, memo: dict[int, Any]) -> _RunIdentityToken:
+    del memo
+    return self
+
+
 class LlmCallsLimitExceededError(Exception):
   """Error thrown when the number of LLM calls exceed the limit."""
 
@@ -269,6 +296,9 @@ class InvocationContext(BaseModel):
   _custom_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
   """Custom metadata for attaching low-level execution telemetry."""
 
+  _run_token: _RunIdentityToken = PrivateAttr(default_factory=_RunIdentityToken)
+  """Shared host identity and closure state for this Runner execution."""
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )
@@ -279,8 +309,27 @@ class InvocationContext(BaseModel):
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
+    self._bind_run_owner_identity()
     if self.run_config and self.run_config.custom_metadata:
       self._custom_metadata.update(self.run_config.custom_metadata)
+
+  def _bind_run_owner_identity(self) -> None:
+    """Snapshot the run owner identity onto the shared run token.
+
+    Binding is skipped when the session identity is not yet available on a
+    partially constructed context (e.g. a unit-test double); the token nonce is
+    unaffected and a trusted adapter that consumes an unbound token fails closed.
+    """
+    try:
+      owner_identity = (
+          self.app_name,
+          self.user_id,
+          self.session.id,
+          self.invocation_id,
+      )
+    except AttributeError:
+      return
+    self._run_token.bind(owner_identity)
 
   @property
   def is_resumable(self) -> bool:
@@ -417,6 +466,16 @@ class InvocationContext(BaseModel):
   @property
   def app_name(self) -> str:
     return self.session.app_name
+
+  @property
+  def run_nonce(self) -> str:
+    """Host-generated identity that cannot be supplied through run_async."""
+    return self._run_token.nonce
+
+  @property
+  def _run_identity_token(self) -> _RunIdentityToken:
+    """Internal shared token used by trusted lifecycle adapters."""
+    return self._run_token
 
   @property
   def user_id(self) -> str:

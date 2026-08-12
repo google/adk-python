@@ -104,6 +104,22 @@ async def _notify_run_error(
     )
 
 
+async def _notify_run_cancelled(
+    plugin_manager: PluginManager,
+    invocation_context: InvocationContext,
+) -> None:
+  """Best-effort cancellation notification; never consumes cancellation."""
+  try:
+    await plugin_manager.run_on_run_cancelled_callback(
+        invocation_context=invocation_context
+    )
+  except Exception:  # pylint: disable=broad-except
+    logger.exception(
+        'on_run_cancelled_callback raised; suppressing so cancellation'
+        ' propagates.'
+    )
+
+
 def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
   """Walk session backwards; find the active paused task agent's scope.
 
@@ -287,6 +303,7 @@ class Runner:
     self.plugin_manager = PluginManager(
         plugins=app.plugins, close_timeout=plugin_close_timeout
     )
+    self.plugin_manager.validate_agent_callbacks(self.agent)
     self.auto_create_session = auto_create_session
     if self.agent is not None:
       (
@@ -584,7 +601,8 @@ class Runner:
           run_config=run_config or RunConfig(),
           invocation_id=invocation_id,
       )
-      ic._event_queue = asyncio.Queue()
+      event_queue: asyncio.Queue[_EventQueueItem] = asyncio.Queue()
+      ic._event_queue = event_queue
 
       # 2. Append user message to session and resolve node_input
       node_input = None
@@ -627,6 +645,12 @@ class Runner:
 
         # Run before_run callbacks
         await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
+      except GeneratorExit:
+        await _notify_run_cancelled(ic.plugin_manager, ic)
+        raise
+      except asyncio.CancelledError:
+        await _notify_run_cancelled(ic.plugin_manager, ic)
+        raise
       except Exception as e:
         await _notify_run_error(ic.plugin_manager, ic, e)
         raise
@@ -676,12 +700,12 @@ class Runner:
           except DynamicNodeFailError as e:
             raise e.error
         finally:
-          await ic._event_queue.put((done_sentinel, None))
+          await event_queue.put((done_sentinel, None))
 
       task = asyncio.create_task(_drive_root_node())
 
       # 4. Main loop: consume events, persist, yield
-      run_error = None
+      run_terminated = False
       try:
         try:
           async with aclosing(
@@ -693,10 +717,18 @@ class Runner:
           # _cleanup_root_task re-raises a root-node Exception (if any) after
           # the event stream has drained.
           await self._cleanup_root_task(task, self.agent.name)
+      except GeneratorExit:
+        run_terminated = True
+        await _notify_run_cancelled(ic.plugin_manager, ic)
+        raise
+      except asyncio.CancelledError:
+        run_terminated = True
+        await _notify_run_cancelled(ic.plugin_manager, ic)
+        raise
       except Exception as e:
         # An unhandled exception escaped runner execution. Notify plugins
         # (notification-only) and re-raise. after_run stays success-only.
-        run_error = e
+        run_terminated = True
         await _notify_run_error(ic.plugin_manager, ic, e)
         raise
       finally:
@@ -708,7 +740,7 @@ class Runner:
         # notify on_run_error_callback once and re-raise. on_run_error is
         # notification-only and never raises, so there is no recursive
         # notification.
-        if run_error is None:
+        if not run_terminated:
           try:
             await ic.plugin_manager.run_after_run_callback(
                 invocation_context=ic
@@ -729,6 +761,18 @@ class Runner:
                   await self.session_service.append_event(
                       session=session, event=compaction_event
                   )
+          except asyncio.CancelledError:
+            await _notify_run_cancelled(ic.plugin_manager, ic)
+            raise
+          except Exception as e:
+            await _notify_run_error(ic.plugin_manager, ic, e)
+            raise
+          try:
+            await ic.plugin_manager.run_on_run_complete_callback(
+                invocation_context=ic
+            )
+          except asyncio.CancelledError:
+            raise
           except Exception as e:
             await _notify_run_error(ic.plugin_manager, ic, e)
             raise
@@ -753,11 +797,44 @@ class Runner:
         live_request_queue=live_request_queue,
         run_config=run_config or RunConfig(),
     )
-    ic._event_queue = asyncio.Queue()
+    event_queue: asyncio.Queue[_EventQueueItem] = asyncio.Queue()
+    ic._event_queue = event_queue
 
     root_ctx = Context(ic)
     root_agent = self.agent
     is_workflow = isinstance(root_agent, Workflow)
+
+    try:
+      early_exit_result = await ic.plugin_manager.run_before_run_callback(
+          invocation_context=ic
+      )
+      if isinstance(early_exit_result, types.Content):
+        yield Event(
+            invocation_id=ic.invocation_id,
+            author='model',
+            content=early_exit_result,
+        )
+        await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
+    except GeneratorExit:
+      await _notify_run_cancelled(ic.plugin_manager, ic)
+      raise
+    except asyncio.CancelledError:
+      await _notify_run_cancelled(ic.plugin_manager, ic)
+      raise
+    except Exception as e:
+      await _notify_run_error(ic.plugin_manager, ic, e)
+      raise
+    if isinstance(early_exit_result, types.Content):
+      try:
+        await ic.plugin_manager.run_on_run_complete_callback(
+            invocation_context=ic
+        )
+      except asyncio.CancelledError:
+        raise
+      except Exception as e:
+        await _notify_run_error(ic.plugin_manager, ic, e)
+        raise
+      return
 
     done_sentinel = object()
 
@@ -777,7 +854,7 @@ class Runner:
         except DynamicNodeFailError as e:
           raise e.error
       finally:
-        await ic._event_queue.put((done_sentinel, None))
+        await event_queue.put((done_sentinel, None))
 
     task = asyncio.create_task(_drive_root_node())
 
@@ -791,9 +868,25 @@ class Runner:
       finally:
         # _cleanup_root_task re-raises a root-node Exception (if any).
         await self._cleanup_root_task(task, self.agent.name)
+      await ic.plugin_manager.run_after_run_callback(invocation_context=ic)
+    except GeneratorExit:
+      await _notify_run_cancelled(ic.plugin_manager, ic)
+      raise
+    except asyncio.CancelledError:
+      await _notify_run_cancelled(ic.plugin_manager, ic)
+      raise
     except Exception as e:
       # An unhandled exception escaped live runner execution. Notify plugins
       # (notification-only) and re-raise.
+      await _notify_run_error(ic.plugin_manager, ic, e)
+      raise
+    try:
+      await ic.plugin_manager.run_on_run_complete_callback(
+          invocation_context=ic
+      )
+    except asyncio.CancelledError:
+      raise
+    except Exception as e:
       await _notify_run_error(ic.plugin_manager, ic, e)
       raise
 
@@ -918,7 +1011,8 @@ class Runner:
   ) -> AsyncGenerator[Event, None]:
     """Consume events from ic._event_queue until done_sentinel."""
     event_queue: asyncio.Queue[_EventQueueItem] | None = ic._event_queue
-    assert event_queue is not None
+    if event_queue is None:
+      raise RuntimeError('Invocation event queue is not initialized')
     while True:
       event_or_done, processed_signal = await event_queue.get()
       if event_or_done is done_sentinel:
@@ -969,7 +1063,8 @@ class Runner:
     early (e.g., break in async for). In that case we must cancel
     to avoid a leaked task.
     """
-    if not task.done():
+    cancelled_for_cleanup = not task.done()
+    if cancelled_for_cleanup:
       logger.debug(
           'Cancelling root node %s (caller stopped early).',
           node_name,
@@ -979,6 +1074,8 @@ class Runner:
       await task
     except asyncio.CancelledError:
       logger.warning('Root node %s was cancelled.', node_name)
+      if not cancelled_for_cleanup:
+        raise
     except Exception:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
@@ -1280,6 +1377,35 @@ class Runner:
             if invocation_context.end_of_agents.get(active_agent.name):
               # Directly return if the current agent in invocation context is
               # already final.
+              try:
+                await invocation_context.plugin_manager.run_after_run_callback(
+                    invocation_context=invocation_context
+                )
+              except asyncio.CancelledError:
+                await _notify_run_cancelled(
+                    invocation_context.plugin_manager, invocation_context
+                )
+                raise
+              except Exception as e:
+                await _notify_run_error(
+                    invocation_context.plugin_manager,
+                    invocation_context,
+                    e,
+                )
+                raise
+              try:
+                await invocation_context.plugin_manager.run_on_run_complete_callback(
+                    invocation_context=invocation_context
+                )
+              except asyncio.CancelledError:
+                raise
+              except Exception as e:
+                await _notify_run_error(
+                    invocation_context.plugin_manager,
+                    invocation_context,
+                    e,
+                )
+                raise
               return
 
         async def execute(
@@ -1302,25 +1428,53 @@ class Runner:
         ) as agen:
           async for event in agen:
             yield event
-        # Run compaction after all events are yielded from the agent.
-        # (We don't compact in the middle of an invocation, we only compact at
-        # the end of an invocation.)
-        if self.app and self.app.events_compaction_config:
-          logger.debug('Running event compactor.')
-          from google.adk.apps.compaction import _run_compaction_for_sliding_window
+        try:
+          # Run compaction after all events are yielded from the agent.
+          # (We don't compact in the middle of an invocation, we only compact at
+          # the end of an invocation.)
+          if self.app and self.app.events_compaction_config:
+            logger.debug('Running event compactor.')
+            from google.adk.apps.compaction import _run_compaction_for_sliding_window
 
-          async with aclosing(
-              _run_compaction_for_sliding_window(
-                  self.app,
-                  invocation_context.session,
-                  self.session_service,
-                  skip_token_compaction=invocation_context.token_compaction_checked,
-              )
-          ) as compaction_events:
-            async for compaction_event in compaction_events:
-              await self.session_service.append_event(
-                  session=invocation_context.session, event=compaction_event
-              )
+            async with aclosing(
+                _run_compaction_for_sliding_window(
+                    self.app,
+                    invocation_context.session,
+                    self.session_service,
+                    skip_token_compaction=invocation_context.token_compaction_checked,
+                )
+            ) as compaction_events:
+              async for compaction_event in compaction_events:
+                await self.session_service.append_event(
+                    session=invocation_context.session,
+                    event=compaction_event,
+                )
+        except GeneratorExit:
+          await _notify_run_cancelled(
+              invocation_context.plugin_manager, invocation_context
+          )
+          raise
+        except asyncio.CancelledError:
+          await _notify_run_cancelled(
+              invocation_context.plugin_manager, invocation_context
+          )
+          raise
+        except Exception as e:
+          await _notify_run_error(
+              invocation_context.plugin_manager, invocation_context, e
+          )
+          raise
+        try:
+          await invocation_context.plugin_manager.run_on_run_complete_callback(
+              invocation_context=invocation_context
+          )
+        except asyncio.CancelledError:
+          raise
+        except Exception as e:
+          await _notify_run_error(
+              invocation_context.plugin_manager, invocation_context, e
+          )
+          raise
 
     async with aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
@@ -1603,6 +1757,12 @@ class Runner:
                 )
 
             yield output_event
+    except GeneratorExit:
+      await _notify_run_cancelled(plugin_manager, invocation_context)
+      raise
+    except asyncio.CancelledError:
+      await _notify_run_cancelled(plugin_manager, invocation_context)
+      raise
     except Exception as e:
       # Notify plugins of the unhandled execution error. Covers failures in
       # before_run_callback, early-exit, and the main execution loop.
@@ -1621,6 +1781,9 @@ class Runner:
       await plugin_manager.run_after_run_callback(
           invocation_context=invocation_context
       )
+    except asyncio.CancelledError:
+      await _notify_run_cancelled(plugin_manager, invocation_context)
+      raise
     except Exception as e:
       await _notify_run_error(plugin_manager, invocation_context, e)
       raise
@@ -1833,6 +1996,17 @@ class Runner:
     ) as agen:
       async for event in agen:
         yield event
+    try:
+      await invocation_context.plugin_manager.run_on_run_complete_callback(
+          invocation_context=invocation_context
+      )
+    except asyncio.CancelledError:
+      raise
+    except Exception as e:
+      await _notify_run_error(
+          invocation_context.plugin_manager, invocation_context, e
+      )
+      raise
 
   def _find_agent_to_run(
       self, session: Session, root_agent: BaseAgent
@@ -2072,21 +2246,37 @@ class Runner:
         run_config=run_config,
         invocation_id=invocation_id,
     )
-    # Step 2: Handle new message, by running callbacks and appending to
-    # session.
-    await self._handle_new_message(
-        session=invocation_context.session,
-        new_message=new_message,
-        invocation_context=invocation_context,
-        run_config=run_config,
-        state_delta=state_delta,
-    )
-    # Step 3: Set agent to run for the invocation.
-    root_agent = self._require_root_agent()
-    invocation_context.agent = self._find_agent_to_run(
-        invocation_context.session, root_agent
-    )
-    return invocation_context
+    try:
+      # Step 2: Handle new message, by running callbacks and appending to
+      # session.
+      await self._handle_new_message(
+          session=invocation_context.session,
+          new_message=new_message,
+          invocation_context=invocation_context,
+          run_config=run_config,
+          state_delta=state_delta,
+      )
+      # Step 3: Set agent to run for the invocation.
+      root_agent = self._require_root_agent()
+      invocation_context.agent = self._find_agent_to_run(
+          invocation_context.session, root_agent
+      )
+      return invocation_context
+    except GeneratorExit:
+      await _notify_run_cancelled(
+          invocation_context.plugin_manager, invocation_context
+      )
+      raise
+    except asyncio.CancelledError:
+      await _notify_run_cancelled(
+          invocation_context.plugin_manager, invocation_context
+      )
+      raise
+    except Exception as e:
+      await _notify_run_error(
+          invocation_context.plugin_manager, invocation_context, e
+      )
+      raise
 
   async def _setup_context_for_resumed_invocation(
       self,
@@ -2131,28 +2321,40 @@ class Runner:
         run_config=run_config,
         invocation_id=invocation_id,
     )
-    # Step 3: Maybe handle new message.
-    if new_message:
-      await self._handle_new_message(
-          session=invocation_context.session,
-          new_message=user_message,
-          invocation_context=invocation_context,
-          run_config=run_config,
-          state_delta=state_delta,
+    try:
+      # Step 3: Maybe handle new message.
+      if new_message:
+        await self._handle_new_message(
+            session=invocation_context.session,
+            new_message=user_message,
+            invocation_context=invocation_context,
+            run_config=run_config,
+            state_delta=state_delta,
+        )
+      # Step 4: Populate agent states for the current invocation.
+      invocation_context.populate_invocation_agent_states()
+      # Step 5: Set agent to run for the invocation.
+      root_agent = self._require_root_agent()
+      if root_agent.name not in invocation_context.end_of_agents:
+        invocation_context.agent = self._find_agent_to_run(
+            invocation_context.session, root_agent
+        )
+      return invocation_context
+    except GeneratorExit:
+      await _notify_run_cancelled(
+          invocation_context.plugin_manager, invocation_context
       )
-    # Step 4: Populate agent states for the current invocation.
-    invocation_context.populate_invocation_agent_states()
-    # Step 5: Set agent to run for the invocation.
-    #
-    # If the root agent is not found in end_of_agents, it means the invocation
-    # started from a sub-agent and paused on a sub-agent.
-    # We should find the appropriate agent to run to continue the invocation.
-    root_agent = self._require_root_agent()
-    if root_agent.name not in invocation_context.end_of_agents:
-      invocation_context.agent = self._find_agent_to_run(
-          invocation_context.session, root_agent
+      raise
+    except asyncio.CancelledError:
+      await _notify_run_cancelled(
+          invocation_context.plugin_manager, invocation_context
       )
-    return invocation_context
+      raise
+    except Exception as e:
+      await _notify_run_error(
+          invocation_context.plugin_manager, invocation_context, e
+      )
+      raise
 
   def _find_user_message_for_invocation(
       self, events: list[Event], invocation_id: str

@@ -110,6 +110,7 @@ class _ErrorTrackingPlugin(BasePlugin):
     super().__init__(name)
     self.agent_errors: list[tuple[str, Exception]] = []
     self.run_errors: list[Exception] = []
+    self.run_cancelled_count = 0
     self.after_agent_called = False
     self.after_run_called = False
 
@@ -129,6 +130,11 @@ class _ErrorTrackingPlugin(BasePlugin):
       error: Exception,
   ) -> None:
     self.run_errors.append(error)
+
+  async def on_run_cancelled_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    self.run_cancelled_count += 1
 
   async def after_agent_callback(
       self,
@@ -312,6 +318,95 @@ class TestRunErrorCallback:
   """Tests for on_run_error_callback in runners.py."""
 
   @pytest.mark.asyncio
+  async def test_run_cancellation_notifies_without_reporting_error(self):
+    """Cancellation has its own notification and remains cancellative."""
+    from google.adk.runners import Runner
+
+    class _CancellingAgent(BaseAgent):
+
+      @override
+      async def _run_async_impl(self, ctx):
+        raise asyncio.CancelledError()
+        yield
+
+      @override
+      async def _run_live_impl(self, ctx):
+        raise asyncio.CancelledError()
+        yield
+
+    plugin = _ErrorTrackingPlugin()
+    runner = Runner(
+        agent=_CancellingAgent(name="cancel_agent"),
+        app_name="test_app",
+        session_service=InMemorySessionService(),
+        plugins=[plugin],
+    )
+    session = await runner.session_service.create_session(
+        app_name="test_app", user_id="test_user"
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+      _ = [
+          event
+          async for event in runner.run_async(
+              user_id="test_user",
+              session_id=session.id,
+              new_message=types.Content(parts=[types.Part(text="hello")]),
+          )
+      ]
+
+    assert plugin.run_cancelled_count == 1
+    assert plugin.run_errors == []
+    assert not plugin.after_run_called
+
+  @pytest.mark.asyncio
+  async def test_cancellation_during_after_run_notifies(self):
+    from google.adk.runners import Runner
+
+    class _BlockingAfterRunPlugin(_ErrorTrackingPlugin):
+
+      def __init__(self) -> None:
+        super().__init__()
+        self.after_run_entered = asyncio.Event()
+
+      async def after_run_callback(
+          self, *, invocation_context: InvocationContext
+      ) -> None:
+        self.after_run_called = True
+        self.after_run_entered.set()
+        await asyncio.Event().wait()
+
+    plugin = _BlockingAfterRunPlugin()
+    runner = Runner(
+        agent=_SuccessAgent(name="success_agent"),
+        app_name="test_app",
+        session_service=InMemorySessionService(),
+        plugins=[plugin],
+    )
+    session = await runner.session_service.create_session(
+        app_name="test_app", user_id="test_user"
+    )
+
+    async def consume() -> list[Event]:
+      return [
+          event
+          async for event in runner.run_async(
+              user_id="test_user",
+              session_id=session.id,
+              new_message=types.Content(parts=[types.Part(text="hello")]),
+          )
+      ]
+
+    run_task = asyncio.create_task(consume())
+    await plugin.after_run_entered.wait()
+    run_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+      await run_task
+    assert plugin.run_cancelled_count == 1
+    assert plugin.run_errors == []
+
+  @pytest.mark.asyncio
   async def test_run_error_callback_fires_on_crash(self):
     """on_run_error_callback fires when execute_fn raises."""
     from google.adk.runners import Runner
@@ -340,6 +435,58 @@ class TestRunErrorCallback:
 
     assert len(plugin.run_errors) == 1
     assert str(plugin.run_errors[0]) == "agent crashed"
+
+  @pytest.mark.asyncio
+  async def test_already_final_resume_completion_failure_notifies_run_error(
+      self, monkeypatch
+  ):
+    from google.adk.runners import Runner
+
+    class _FailCompletionPlugin(BasePlugin):
+
+      def __init__(self) -> None:
+        super().__init__("fail_completion")
+
+      async def on_run_complete_callback(
+          self, *, invocation_context: InvocationContext
+      ) -> None:
+        raise RuntimeError("terminal completion failed")
+
+    failure = _FailCompletionPlugin()
+    tracker = _ErrorTrackingPlugin()
+    agent = _SuccessAgent(name="final_agent")
+    runner = Runner(
+        agent=agent,
+        app_name="test_app",
+        session_service=InMemorySessionService(),
+        plugins=[failure, tracker],
+    )
+    session = await runner.session_service.create_session(
+        app_name="test_app", user_id="test_user"
+    )
+    invocation_context = await _create_ctx(agent, plugins=[failure, tracker])
+    invocation_context.end_of_agents[agent.name] = True
+    runner.resumability_config = Mock(is_resumable=True)
+
+    async def setup_resumed(**kwargs):
+      return invocation_context
+
+    monkeypatch.setattr(
+        runner, "_setup_context_for_resumed_invocation", setup_resumed
+    )
+
+    with pytest.raises(RuntimeError, match="terminal completion failed"):
+      _ = [
+          event
+          async for event in runner.run_async(
+              user_id="test_user",
+              session_id=session.id,
+              invocation_id="resume-id",
+          )
+      ]
+
+    assert len(tracker.run_errors) == 1
+    assert "terminal completion failed" in str(tracker.run_errors[0])
 
   @pytest.mark.asyncio
   async def test_after_run_not_called_on_crash(self):
@@ -723,6 +870,99 @@ class TestNodeRuntimeRunErrorCallback:
   Runner(node=...) with a non-agent BaseNode root routes through
   _run_node_async rather than the legacy _exec_with_plugin path.
   """
+
+  @pytest.mark.asyncio
+  async def test_run_cancellation_callback_fires_via_node_runtime(self):
+    from google.adk.runners import Runner
+
+    class _CancellingNode(BaseNode):
+
+      @override
+      async def _run_impl(self, *, ctx, node_input):
+        raise asyncio.CancelledError()
+        yield
+
+    plugin = _ErrorTrackingPlugin()
+    runner = Runner(
+        app_name="test_app",
+        node=_CancellingNode(name="cancel_node"),
+        session_service=InMemorySessionService(),
+        plugins=[plugin],
+    )
+    session = await runner.session_service.create_session(
+        app_name="test_app", user_id="test_user"
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+      _ = [
+          event
+          async for event in runner.run_async(
+              user_id="test_user",
+              session_id=session.id,
+              new_message=types.Content(parts=[types.Part(text="hello")]),
+          )
+      ]
+
+    assert plugin.run_cancelled_count == 1
+    assert plugin.run_errors == []
+    assert not plugin.after_run_called
+
+  @pytest.mark.asyncio
+  async def test_after_run_cancellation_fires_via_node_runtime(self):
+    from google.adk.runners import Runner
+
+    class _OkNode(BaseNode):
+
+      @override
+      async def _run_impl(self, *, ctx, node_input):
+        yield Event(
+            author=self.name,
+            invocation_id=ctx.get_invocation_context().invocation_id,
+            content=types.Content(parts=[types.Part(text="ok")]),
+        )
+
+    class _BlockingAfterRunPlugin(_ErrorTrackingPlugin):
+
+      def __init__(self) -> None:
+        super().__init__()
+        self.after_run_entered = asyncio.Event()
+
+      async def after_run_callback(
+          self, *, invocation_context: InvocationContext
+      ) -> None:
+        self.after_run_called = True
+        self.after_run_entered.set()
+        await asyncio.Event().wait()
+
+    plugin = _BlockingAfterRunPlugin()
+    runner = Runner(
+        app_name="test_app",
+        node=_OkNode(name="ok_node"),
+        session_service=InMemorySessionService(),
+        plugins=[plugin],
+    )
+    session = await runner.session_service.create_session(
+        app_name="test_app", user_id="test_user"
+    )
+
+    async def consume() -> list[Event]:
+      return [
+          event
+          async for event in runner.run_async(
+              user_id="test_user",
+              session_id=session.id,
+              new_message=types.Content(parts=[types.Part(text="hello")]),
+          )
+      ]
+
+    run_task = asyncio.create_task(consume())
+    await plugin.after_run_entered.wait()
+    run_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+      await run_task
+    assert plugin.run_cancelled_count == 1
+    assert plugin.run_errors == []
 
   @pytest.mark.asyncio
   async def test_run_error_callback_fires_via_node_runtime(self):

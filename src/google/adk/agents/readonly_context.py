@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
   from ..auth.auth_credential import AuthCredential
   from ..sessions.session import Session
+  from .invocation_context import _RunIdentityToken
   from .invocation_context import InvocationContext
   from .run_config import RunConfig
 
@@ -45,6 +46,16 @@ class ReadonlyContext:
   def invocation_id(self) -> str:
     """The current invocation id."""
     return self._invocation_context.invocation_id
+
+  @property
+  def run_nonce(self) -> str:
+    """Host-generated identity for this concrete Runner execution."""
+    return self._invocation_context.run_nonce
+
+  @property
+  def _run_identity_token(self) -> _RunIdentityToken:
+    """Internal shared token used by trusted lifecycle adapters."""
+    return self._invocation_context._run_identity_token
 
   @property
   def agent_name(self) -> str:

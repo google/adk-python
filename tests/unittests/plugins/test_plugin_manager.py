@@ -64,6 +64,9 @@ class TestPlugin(BasePlugin):
   async def after_run_callback(self, **kwargs):
     return await self._handle_callback("after_run_callback")
 
+  async def on_run_complete_callback(self, **kwargs):
+    return await self._handle_callback("on_run_complete_callback")
+
   async def on_event_callback(self, **kwargs):
     return await self._handle_callback("on_event_callback")
 
@@ -96,6 +99,9 @@ class TestPlugin(BasePlugin):
 
   async def on_run_error_callback(self, **kwargs):
     return await self._handle_callback("on_run_error_callback")
+
+  async def on_run_cancelled_callback(self, **kwargs):
+    return await self._handle_callback("on_run_cancelled_callback")
 
 
 @pytest.fixture
@@ -136,6 +142,34 @@ def test_register_duplicate_plugin_name_raises_value_error(
       ValueError, match="Plugin with name 'plugin1' already registered."
   ):
     service.register_plugin(plugin1_duplicate)
+
+
+@pytest.mark.parametrize("exclusive_first", [True, False])
+def test_register_rejects_exclusive_callback_conflict(
+    exclusive_first: bool,
+) -> None:
+  class _ExclusivePlugin(BasePlugin):
+
+    @property
+    def exclusive_callbacks(self) -> frozenset[str]:
+      return frozenset({"before_tool_callback"})
+
+    async def before_tool_callback(self, **kwargs):
+      return None
+
+  class _OverlappingPlugin(BasePlugin):
+
+    async def before_tool_callback(self, **kwargs):
+      return None
+
+  exclusive = _ExclusivePlugin("exclusive")
+  overlapping = _OverlappingPlugin("overlapping")
+  plugins = (
+      [exclusive, overlapping] if exclusive_first else [overlapping, exclusive]
+  )
+
+  with pytest.raises(ValueError, match="before_tool_callback"):
+    PluginManager(plugins=plugins)
 
 
 @pytest.mark.asyncio
@@ -226,6 +260,7 @@ async def test_all_callbacks_are_supported(
   )
   await service.run_before_run_callback(invocation_context=mock_context)
   await service.run_after_run_callback(invocation_context=mock_context)
+  await service.run_on_run_complete_callback(invocation_context=mock_context)
   await service.run_on_event_callback(
       invocation_context=mock_context, event=mock_context
   )
@@ -267,12 +302,16 @@ async def test_all_callbacks_are_supported(
       invocation_context=mock_context,
       error=mock_context,
   )
+  await service.run_on_run_cancelled_callback(
+      invocation_context=mock_context,
+  )
 
   # Verify all callbacks were logged
   expected_callbacks = [
       "on_user_message_callback",
       "before_run_callback",
       "after_run_callback",
+      "on_run_complete_callback",
       "on_event_callback",
       "before_agent_callback",
       "after_agent_callback",
@@ -284,6 +323,7 @@ async def test_all_callbacks_are_supported(
       "on_model_error_callback",
       "on_agent_error_callback",
       "on_run_error_callback",
+      "on_run_cancelled_callback",
   ]
   assert set(plugin1.call_log) == set(expected_callbacks)
 
