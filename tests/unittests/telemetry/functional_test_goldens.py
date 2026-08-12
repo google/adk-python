@@ -31,8 +31,8 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from .functional_test_helpers import Scenario
-from .functional_test_helpers import TelemetryDigest
+from .functional._digests import TelemetryDigest
+from .functional._scenarios import Scenario
 
 GOLDENS_DIR = Path(__file__).parent / "functional_goldens"
 
