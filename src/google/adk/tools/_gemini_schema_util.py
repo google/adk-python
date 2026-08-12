@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from typing import Optional
@@ -99,6 +100,21 @@ def _sanitize_schema_type(
   )
   if is_array:
     schema.setdefault("items", {"type": "string"})
+
+  effective_type = schema_type
+  if isinstance(schema_type, list):
+    non_null = [t for t in schema_type if t != "null"]
+    effective_type = non_null[0] if non_null else None
+  if effective_type == "string" and isinstance(schema.get("enum"), list):
+    # Gemini rejects non-string enum values on a string-typed field; some
+    # servers emit integer enums on string fields, so render them in their
+    # JSON form. A null member is dropped: nullability is carried by the
+    # schema type, not by an enum entry.
+    schema["enum"] = [
+        v if isinstance(v, str) else json.dumps(v)
+        for v in schema["enum"]
+        if v is not None
+    ]
 
   return schema
 

@@ -23,6 +23,7 @@ import time
 from unittest import mock
 import warnings
 
+from google.adk.errors import StaleSessionError
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
@@ -984,7 +985,7 @@ async def test_append_event_to_stale_session():
         timestamp=current_time + 3,
         actions=EventActions(state_delta={'sk3': 'v3'}),
     )
-    with pytest.raises(ValueError, match='modified in storage'):
+    with pytest.raises(StaleSessionError, match='modified in storage'):
       await session_service.append_event(original_session, event3)
 
     # If we fetch session from DB, it should only contain the committed events.
@@ -999,6 +1000,35 @@ async def test_append_event_to_stale_session():
         'inv1',
         'inv2',
     ]
+
+
+@pytest.mark.asyncio
+async def test_sqlite_append_event_uses_typed_stale_session_error(tmp_path):
+  """The legacy SQLite backend exposes the shared stale-writer contract."""
+  service = get_session_service(SessionServiceType.SQLITE, tmp_path)
+  session = await service.create_session(app_name='app', user_id='user')
+  stale_session = session.model_copy(deep=True)
+
+  await service.append_event(
+      session,
+      Event(
+          invocation_id='winner',
+          author='user',
+          timestamp=session.last_update_time + 1,
+      ),
+  )
+
+  with pytest.raises(StaleSessionError) as error:
+    await service.append_event(
+        stale_session,
+        Event(
+            invocation_id='stale',
+            author='user',
+            timestamp=session.last_update_time + 1,
+        ),
+    )
+
+  assert isinstance(error.value, ValueError)
 
 
 @pytest.mark.asyncio
@@ -1101,7 +1131,7 @@ async def test_append_event_concurrent_stale_sessions_reject_stale_writer():
       ]
       assert len(successes) == 1
       assert len(errors) == 1
-      assert isinstance(errors[0], ValueError)
+      assert isinstance(errors[0], StaleSessionError)
       assert 'modified in storage' in str(errors[0])
 
     session_final = await session_service.get_session(

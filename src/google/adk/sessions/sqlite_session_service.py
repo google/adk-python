@@ -33,6 +33,7 @@ from google.adk.platform import uuid as platform_uuid
 from typing_extensions import override
 
 from . import _session_util
+from ..errors._stale_session_error import StaleSessionError
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
@@ -412,7 +413,7 @@ class SqliteSessionService(BaseSessionService):
           raise SessionNotFoundError(f"Session {session.id} not found.")
         storage_update_time = row["update_time"]
         if storage_update_time > session.last_update_time:
-          raise ValueError(
+          raise StaleSessionError(
               "The last_update_time provided in the session object is"
               " earlier than the update_time in storage."
               " Please check if it is a stale session."

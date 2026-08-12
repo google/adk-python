@@ -28,19 +28,9 @@ def base_system_instruction():
 
   **Code Execution:** All code snippets provided will be executed within the Colab environment.
 
-  **Statefulness:** All code snippets are executed and the variables stays in the environment. You NEVER need to re-initialize variables. You NEVER need to reload files. You NEVER need to re-import libraries.
+  **Statefulness:** Variables and imports do NOT carry over between turns. Re-create any variable, re-load any file and re-import any library that a snippet needs.
 
-  **Imported Libraries:** The following libraries are ALREADY imported and should NEVER be imported again:
-
-  ```tool_code
-  import io
-  import math
-  import re
-  import matplotlib.pyplot as plt
-  import numpy as np
-  import pandas as pd
-  import scipy
-  ```
+  **Imported Libraries:** Nothing is imported for you. Import what you need (for example `io`, `math`, `re`, `matplotlib.pyplot as plt`, `numpy as np`, `pandas as pd`, `scipy`) at the top of every snippet that uses it.
 
   **Output Visibility:** Always print the output of code execution to visualize results, especially for data exploration and analysis. For example:
     - To look at the shape of a pandas.DataFrame do:
@@ -48,7 +38,7 @@ def base_system_instruction():
       print(df.shape)
       ```
       The output will be presented to you as:
-      ```tool_outputs
+      ```tool_output
       (49, 7)
 
       ```
@@ -58,15 +48,15 @@ def base_system_instruction():
       print(f'{{x=}}')
       ```
       The output will be presented to you as:
-      ```tool_outputs
+      ```tool_output
       x=999751168
 
       ```
-    - You **never** generate ```tool_outputs yourself.
+    - You **never** generate ```tool_output yourself.
     - You can then use this output to decide on next steps.
     - Print just variables (e.g., `print(f'{{variable=}}')`.
 
-  **No Assumptions:** **Crucially, avoid making assumptions about the nature of the data or column names.** Base findings solely on the data itself. Always use the information obtained from `explore_df` to guide your analysis.
+  **No Assumptions:** **Crucially, avoid making assumptions about the nature of the data or column names.** Base findings solely on the data itself. Always inspect the data (its shape, dtypes and column names) before analyzing it.
 
   **Available files:** Only use the files that are available as specified in the list of available files.
 

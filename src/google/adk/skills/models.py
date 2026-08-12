@@ -226,6 +226,11 @@ class Skill(BaseModel):
   instructions: str
   resources: Resources = Resources()
 
+  _uri: Optional[str] = None
+  """Location the skill was loaded from, used for telemetry.
+  Should be compliant with RFC 3986.
+  """
+
   @property
   def name(self) -> str:
     """Convenience property to access skill name."""

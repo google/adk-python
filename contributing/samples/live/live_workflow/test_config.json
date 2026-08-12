@@ -1,0 +1,109 @@
+{
+  "criteria": {
+    "rubric_based_final_response_quality_v1": {
+      "threshold": 0.7,
+      "judge_model_options": {
+        "judge_model": "gemini-3.5-flash",
+        "num_samples": 1
+      },
+      "rubrics": [
+        {
+          "rubric_id": "no_details_before_verification",
+          "rubric_content": {
+            "text_property": "If the agent shares appointment details in this turn, the caller's name and date of birth must already have been confirmed earlier in the conversation."
+          }
+        },
+        {
+          "rubric_id": "states_appointment_when_asked",
+          "rubric_content": {
+            "text_property": "If the caller asks about their appointment in this turn, the agent states the appointment on Tuesday, June 16th at 3 PM with Dr. Example."
+          }
+        },
+        {
+          "rubric_id": "offers_further_help",
+          "rubric_content": {
+            "text_property": "If the agent gives the caller information they requested in this turn, it also asks whether there is anything else it can help with."
+          }
+        },
+        {
+          "rubric_id": "ends_with_goodbye",
+          "rubric_content": {
+            "text_property": "If the caller indicates they have no further questions, the agent ends the conversation warmly with a goodbye."
+          }
+        }
+      ]
+    },
+    "rubric_based_tool_use_quality_v1": {
+      "threshold": 0.7,
+      "judge_model_options": {
+        "judge_model": "gemini-3.5-flash",
+        "num_samples": 1
+      },
+      "rubrics": [
+        {
+          "rubric_id": "validates_confirmed_dob",
+          "rubric_content": {
+            "text_property": "After the caller confirms the date of birth that was read back to them, the agent calls validate_date_of_birth with the confirmed date in YYYY-MM-DD format."
+          }
+        }
+      ]
+    },
+    "rubric_based_multi_turn_trajectory_quality_v1": {
+      "threshold": 0.7,
+      "judge_model_options": {
+        "judge_model": "gemini-3.5-flash",
+        "num_samples": 1
+      },
+      "rubrics": [
+        {
+          "rubric_id": "verifies_identity_first",
+          "rubric_content": {
+            "text_property": "Across the call, the agent confirms the caller's name and validates their date of birth before disclosing any appointment details."
+          }
+        },
+        {
+          "rubric_id": "staged_handoff_order",
+          "rubric_content": {
+            "text_property": "The conversation proceeds through the intended stages in order: greeting and name confirmation, then date-of-birth verification, then appointment delivery."
+          }
+        },
+        {
+          "rubric_id": "calls_validation_tool",
+          "rubric_content": {
+            "text_property": "The agent calls validate_date_of_birth once, only after the caller confirms the read-back date, using YYYY-MM-DD format."
+          }
+        },
+        {
+          "rubric_id": "delivers_appointment_and_answers",
+          "rubric_content": {
+            "text_property": "After identity is verified, the agent delivers the appointment on Tuesday, June 16th at 3 PM with Dr. Example and answers the caller's follow-up question."
+          }
+        },
+        {
+          "rubric_id": "closes_conversation",
+          "rubric_content": {
+            "text_property": "The agent ends the call warmly with a goodbye once the caller has no further questions."
+          }
+        }
+      ]
+    }
+  },
+  "live_model_config": {
+    "timeout_seconds": 300
+  },
+  "user_simulator_config": {
+    "type": "llm_audio",
+    "model": "gemini-3.5-flash",
+    "max_allowed_invocations": 10,
+    "audio_model": "gemini-3.1-flash-tts-preview",
+    "audio_model_configuration": {
+      "response_modalities": ["AUDIO"],
+      "speech_config": {
+        "voice_config": {
+          "prebuilt_voice_config": { "voice_name": "Kore" }
+        },
+        "language_code": "en-US"
+      }
+    }
+  }
+}

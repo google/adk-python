@@ -36,7 +36,7 @@ def base_system_instruction():
       print(df.shape)
       ```
       The output will be presented to you as:
-      ```tool_outputs
+      ```tool_output
       (49, 7)
 
       ```
@@ -46,15 +46,15 @@ def base_system_instruction():
       print(f'{{x=}}')
       ```
       The output will be presented to you as:
-      ```tool_outputs
+      ```tool_output
       x=999751168
 
       ```
-    - You **never** generate ```tool_outputs yourself.
+    - You **never** generate ```tool_output yourself.
     - You can then use this output to decide on next steps.
     - Print just variables (e.g., `print(f'{{variable=}}')`.
 
-  **No Assumptions:** **Crucially, avoid making assumptions about the nature of the data or column names.** Base findings solely on the data itself. Always use the information obtained from `explore_df` to guide your analysis.
+  **No Assumptions:** **Crucially, avoid making assumptions about the nature of the data or column names.** Base findings solely on the data itself. Always inspect the data (its shape, dtypes and column names) before analyzing it.
 
   **Available files:** Only use the files that are available as specified in the list of available files.
 
@@ -85,7 +85,7 @@ When plotting trends, you should make sure to sort and order the data by the x-a
 """,
     code_executor=AgentEngineSandboxCodeExecutor(
         # Replace with your sandbox resource name if you already have one. Only use it for testing or prototyping purposes, because this will use the same sandbox for all requests.
-        # "projects/vertex-agent-loadtest/locations/us-central1/reasoningEngines/6842889780301135872/sandboxEnvironments/6545148628569161728",
+        # "projects/PROJECT/locations/LOCATION/reasoningEngines/ENGINE_ID/sandboxEnvironments/SANDBOX_ID",
         sandbox_resource_name=None,
         # Replace with agent engine resource name used for creating sandbox environment.
         agent_engine_resource_name=None,

@@ -1205,9 +1205,9 @@ async def test_preprocess_request_handles_backend_specific_fields(
 
 @pytest.mark.asyncio
 async def test_preprocess_request_converts_inline_data_safely():
-  """Tests that _preprocess_request uses _as_safe_part_for_llm to sanitize inline data."""
+  """Tests that _preprocess_request uses as_safe_part_for_llm to sanitize inline data."""
   with mock.patch.object(
-      load_artifacts_tool, "_as_safe_part_for_llm", autospec=True
+      load_artifacts_tool, "as_safe_part_for_llm", autospec=True
   ) as mock_safe_part:
     # Arrange
     mock_safe_part.return_value = Part.from_text(text="safe_text")
