@@ -24,6 +24,7 @@ from typing_extensions import override
 from ..errors.not_found_error import NotFoundError
 from ._eval_set_results_manager_utils import create_eval_set_result
 from ._eval_set_results_manager_utils import parse_eval_set_result_json
+from ._path_validation import validate_path_segment
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
 from .eval_set_results_manager import EvalSetResultsManager
@@ -55,11 +56,13 @@ class GcsEvalSetResultsManager(EvalSetResultsManager):
       )
 
   def _get_eval_history_dir(self, app_name: str) -> str:
+    validate_path_segment(app_name, "app_name")
     return f"{app_name}/{_EVAL_HISTORY_DIR}"
 
   def _get_eval_set_result_blob_name(
       self, app_name: str, eval_set_result_id: str
   ) -> str:
+    validate_path_segment(eval_set_result_id, "eval_set_result_id")
     eval_history_dir = self._get_eval_history_dir(app_name)
     return f"{eval_history_dir}/{eval_set_result_id}{_EVAL_SET_RESULT_FILE_EXTENSION}"
 
@@ -81,6 +84,8 @@ class GcsEvalSetResultsManager(EvalSetResultsManager):
       eval_case_results: list[EvalCaseResult],
   ) -> None:
     """Creates and saves a new EvalSetResult given eval_case_results."""
+    validate_path_segment(app_name, "app_name")
+    validate_path_segment(eval_set_id, "eval_set_id")
     eval_set_result = create_eval_set_result(
         app_name, eval_set_id, eval_case_results
     )

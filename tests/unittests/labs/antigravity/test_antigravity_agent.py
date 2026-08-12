@@ -12,13 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for AntigravityAgent.
-
-Verifies the root-only construction constraint that keeps the agent usable only
-as a standalone root agent while the SDK supports local mode only, and the node
-plumbing ``_run_impl`` adds on top of ``BaseAgent``.
-"""
-
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
@@ -37,6 +30,7 @@ from google.adk.workflow._node_runner import NodeRunner
 from google.antigravity import LocalAgentConfig
 from google.antigravity import types as sdk_types
 from google.genai import types as genai_types
+from pydantic import ValidationError
 import pytest
 
 
@@ -188,19 +182,121 @@ def test_standalone_agent_is_allowed():
 
 
 def test_giving_sub_agents_is_rejected():
-  """Constructing with sub-agents raises a temporary root-only error."""
+  """Constructing with sub-agents raises, naming the sub_agents guard.
+
+  The match string is specific to that guard: matching text shared with the
+  parent guard would pass on the wrong error.
+  """
   child = BaseAgent(name='child')
 
-  with pytest.raises(ValueError, match='standalone root agent'):
+  with pytest.raises(ValueError, match='cannot be given sub_agents'):
     AntigravityAgent(name='agy', config=_make_config(), sub_agents=[child])
 
 
 def test_using_as_sub_agent_is_rejected():
-  """Adopting the agent under a parent raises a temporary root-only error."""
+  """Adopting the agent under a parent without mode='single_turn' raises."""
   agy = AntigravityAgent(name='agy', config=_make_config())
 
-  with pytest.raises(ValueError, match='standalone root agent'):
+  with pytest.raises(ValueError, match='may only be a sub-agent'):
     BaseAgent(name='parent', sub_agents=[agy])
+
+
+def test_single_turn_agent_can_be_a_sub_agent():
+  """mode='single_turn' lifts the root-only restriction on adoption.
+
+  The parent composes an isolated request, so no ADK session history reaches
+  the harness and its conversation does not outlive the call.
+  """
+  agy = AntigravityAgent(name='agy', config=_make_config(), mode='single_turn')
+
+  parent = BaseAgent(name='parent', sub_agents=[agy])
+
+  assert agy.parent_agent is parent
+
+
+def test_single_turn_agent_still_cannot_have_sub_agents():
+  """Children stay blocked in every mode: the SDK runs its own agent loop.
+
+  Unlike adoption, this restriction is independent of how the agent is
+  invoked -- the harness would never dispatch to an ADK child either way.
+  """
+  child = BaseAgent(name='child')
+
+  with pytest.raises(ValueError, match='cannot be given sub_agents'):
+    AntigravityAgent(
+        name='agy',
+        config=_make_config(),
+        mode='single_turn',
+        sub_agents=[child],
+    )
+
+
+def test_single_turn_agent_is_wrapped_as_a_parent_tool():
+  """LlmAgent wraps a non-LlmAgent sub-agent that declares mode='single_turn'.
+
+  The wrapping in LlmAgent.model_post_init is duck-typed on `mode`, so if it
+  breaks, every other test here still passes.
+  """
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.tools.agent_tool import _SingleTurnAgentTool
+
+  coder = AntigravityAgent(
+      name='antigravity_coder',
+      description='Writes code.',
+      config=_make_config(),
+      mode='single_turn',
+  )
+
+  parent = LlmAgent(
+      name='triager', model='gemini-2.5-flash', sub_agents=[coder]
+  )
+
+  assert any(
+      isinstance(t, _SingleTurnAgentTool) and t.agent is coder
+      for t in parent.tools
+  )
+
+
+def test_single_turn_agent_is_not_a_transfer_target():
+  """The parent must never hand the conversation over by LLM transfer.
+
+  Being called as an inline tool is the whole safety argument for allowing a
+  parent. The exclusion is duck-typed on `mode` in
+  flows/llm_flows/agent_transfer.py, which this file knows nothing about.
+  """
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.flows.llm_flows.agent_transfer import _get_transfer_targets
+
+  coder = AntigravityAgent(
+      name='antigravity_coder',
+      description='Writes code.',
+      config=_make_config(),
+      mode='single_turn',
+  )
+
+  parent = LlmAgent(
+      name='triager', model='gemini-2.5-flash', sub_agents=[coder]
+  )
+
+  assert coder not in _get_transfer_targets(parent)
+
+
+def test_mode_cannot_be_reassigned_after_construction():
+  """`mode` is frozen: the adoption guard only gets to run once.
+
+  Clearing `mode` after adoption would leave the agent adopted while
+  _run_async_impl went back to session-keyed resumption.
+  """
+  from google.adk.agents.llm_agent import LlmAgent
+
+  agy = AntigravityAgent(name='agy', config=_make_config(), mode='single_turn')
+  parent = LlmAgent(name='triager', model='gemini-2.5-flash', sub_agents=[agy])
+
+  with pytest.raises(ValidationError, match='frozen'):
+    agy.mode = None
+
+  assert agy.mode == 'single_turn'
+  assert agy.parent_agent is parent
 
 
 @pytest.mark.asyncio
@@ -258,9 +354,31 @@ def _fake_active_agent(receive_steps, conversation_id='conv-1'):
   return active_agent
 
 
+def _mock_run_ctx(session_id='sess_456'):
+  """A minimal InvocationContext stand-in for _run_async_impl.
+
+  Args:
+    session_id: The ADK session id the conversation id is derived from.
+
+  Returns:
+    A MagicMock usable as the ctx argument to _run_async_impl.
+  """
+  ctx = MagicMock()
+  ctx.invocation_id = 'inv_1'
+  ctx.branch = 'main'
+  ctx.session.id = session_id
+  ctx.user_content = None
+  ctx.run_config = None
+  return ctx
+
+
 @pytest.mark.asyncio
 async def test_resumed_replayed_steps_are_skipped(tmp_path):
-  """On resume, steps at or below the resume index are not re-emitted."""
+  """On resume, steps at or below the resume index are not re-emitted.
+
+  Also pins the new resume index being persisted: without that write the next
+  turn would replay everything this turn emitted.
+  """
 
   # The harness replays steps 0-1 (prior turn) then emits step 2 (this turn).
   async def _receive_steps():
@@ -283,18 +401,15 @@ async def test_resumed_replayed_steps_are_skipped(tmp_path):
       name='agy', config=_make_config(save_dir=str(save_dir))
   )
 
-  ctx = MagicMock()
-  ctx.invocation_id = 'inv_1'
-  ctx.branch = 'main'
-  ctx.session.id = 'sess_456'
-  ctx.user_content = None
-  ctx.run_config = None
+  ctx = _mock_run_ctx()
 
   with patch.object(_antigravity_agent, 'Agent', return_value=active_agent):
     events = [event async for event in agent._run_async_impl(ctx)]
 
   texts = [e.content.parts[0].text for e in events]
   assert texts == ['new']
+  # Step 2 was the highest index emitted, so the next turn resumes from it.
+  assert (save_dir / f'traj-{conversation_id}.resume').read_text() == '2'
 
 
 @pytest.mark.asyncio
@@ -310,7 +425,9 @@ async def test_node_input_becomes_the_prompt(tmp_path):
 
   active_agent = _fake_active_agent(_receive_steps)
   agent = AntigravityAgent(
-      name='agy', config=_make_config(save_dir=str(tmp_path))
+      name='agy',
+      config=_make_config(save_dir=str(tmp_path)),
+      mode='single_turn',
   )
   ctx = await _node_ctx(
       user_text='hi, can you help me with bug 42?', agent=agent
@@ -337,7 +454,9 @@ async def test_last_complete_response_becomes_node_output(tmp_path):
 
   active_agent = _fake_active_agent(_receive_steps)
   agent = AntigravityAgent(
-      name='agy', config=_make_config(save_dir=str(tmp_path))
+      name='agy',
+      config=_make_config(save_dir=str(tmp_path)),
+      mode='single_turn',
   )
   ctx = await _node_ctx(agent=agent)
 
@@ -384,7 +503,9 @@ async def test_output_reaches_the_parent_through_node_runner(tmp_path):
 
   active_agent = _fake_active_agent(_receive_steps)
   agent = AntigravityAgent(
-      name='agy', config=_make_config(save_dir=str(tmp_path))
+      name='agy',
+      config=_make_config(save_dir=str(tmp_path)),
+      mode='single_turn',
   )
 
   with patch.object(_antigravity_agent, 'Agent', return_value=active_agent):
@@ -408,13 +529,25 @@ async def test_text_less_run_outputs_empty_string_not_none(tmp_path):
 
   active_agent = _fake_active_agent(_receive_steps)
   agent = AntigravityAgent(
-      name='agy', config=_make_config(save_dir=str(tmp_path))
+      name='agy',
+      config=_make_config(save_dir=str(tmp_path)),
+      mode='single_turn',
   )
 
   with patch.object(_antigravity_agent, 'Agent', return_value=active_agent):
     child_ctx, _ = await _run_via_node_runner(agent, 'go')
 
   assert child_ctx.output == ''
+
+
+def test_chat_mode_is_rejected():
+  """Only 'single_turn' is accepted; the Literal is deliberately narrow.
+
+  AntigravityAgent is not an LlmAgent, so LlmAgent's other modes ('chat',
+  'task') have no meaning here.
+  """
+  with pytest.raises(ValidationError, match='single_turn'):
+    AntigravityAgent(name='agy', config=_make_config(), mode='chat')
 
 
 @pytest.mark.asyncio
@@ -437,3 +570,81 @@ async def test_node_input_none_is_a_no_op(tmp_path):
   active_agent.conversation.send.assert_awaited_once_with(
       'the original message'
   )
+
+
+@pytest.mark.asyncio
+async def test_single_turn_calls_do_not_resume_or_persist(tmp_path):
+  """Single-turn calls are isolated and leave no trajectory behind.
+
+  The planted trajectory is what an earlier call in the same ADK session would
+  have left; picking it up would make call two silently resume call one.
+  """
+
+  async def _receive_steps():
+    yield _text_step(0, 'first')
+    yield _text_step(1, 'second')
+
+  conversation_id = _antigravity_agent._derive_conversation_id(
+      'sess_456', 'agy'
+  )
+  # A harness id distinct from the derived one: if they matched,
+  # rename_trajectory would early-return and a stray rename be invisible.
+  active_agent = _fake_active_agent(
+      _receive_steps, conversation_id='harness-random'
+  )
+
+  # What an earlier single-turn call in this same ADK session would have left.
+  (tmp_path / f'traj-{conversation_id}').write_bytes(b'data')
+  (tmp_path / f'traj-{conversation_id}.resume').write_text('0')
+  # What this call's harness would have written under its own random id.
+  (tmp_path / 'traj-harness-random').write_bytes(b'harness')
+  agent = AntigravityAgent(
+      name='agy',
+      config=_make_config(save_dir=str(tmp_path)),
+      mode='single_turn',
+  )
+
+  ctx = _mock_run_ctx()
+
+  handed_configs = []
+
+  def _capture_config(config):
+    handed_configs.append(config)
+    return active_agent
+
+  with patch.object(_antigravity_agent, 'Agent', _capture_config):
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+  # The harness was handed no id, so it cannot replay the planted trajectory.
+  assert [c.conversation_id for c in handed_configs] == [None]
+  # Nothing was skipped as an already-emitted replay.
+  assert [e.content.parts[0].text for e in events] == ['first', 'second']
+  # The earlier call's resume index was left exactly as it was found.
+  assert (tmp_path / f'traj-{conversation_id}.resume').read_text() == '0'
+  # save_dir as a whole is untouched: no rename onto the derived id, and no
+  # bookkeeping file added.
+  assert {p.name for p in tmp_path.iterdir()} == {
+      f'traj-{conversation_id}',
+      f'traj-{conversation_id}.resume',
+      'traj-harness-random',
+  }
+
+
+@pytest.mark.asyncio
+async def test_single_turn_run_without_save_dir_is_allowed():
+  """save_dir is only needed to resume, and single-turn never resumes."""
+
+  async def _receive_steps():
+    yield _text_step(0, 'done')
+
+  active_agent = _fake_active_agent(_receive_steps)
+  agent = AntigravityAgent(
+      name='agy', config=_make_config(), mode='single_turn'
+  )
+
+  ctx = _mock_run_ctx()
+
+  with patch.object(_antigravity_agent, 'Agent', return_value=active_agent):
+    events = [event async for event in agent._run_async_impl(ctx)]
+
+  assert [e.content.parts[0].text for e in events] == ['done']
