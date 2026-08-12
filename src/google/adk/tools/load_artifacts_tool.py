@@ -286,46 +286,47 @@ web UI)."""),
     # Attach the content of the artifacts if the model requests them.
     # This only adds the content to the model request, instead of the session.
     if llm_request.contents and llm_request.contents[-1].parts:
-      function_response = llm_request.contents[-1].parts[0].function_response
-      if function_response and function_response.name == 'load_artifacts':
-        response = function_response.response or {}
-        artifact_names = response.get('artifact_names', [])
-        for artifact_name in artifact_names:
-          # Try session-scoped first (default behavior)
-          artifact = await tool_context.load_artifact(artifact_name)
+      for part in llm_request.contents[-1].parts:
+        function_response = part.function_response
+        if function_response and function_response.name == 'load_artifacts':
+          response = function_response.response or {}
+          artifact_names = response.get('artifact_names', [])
+          for artifact_name in artifact_names:
+            # Try session-scoped first (default behavior)
+            artifact = await tool_context.load_artifact(artifact_name)
 
-          # If not found and name doesn't already have user: prefix,
-          # try cross-session artifacts with user: prefix
-          if artifact is None and not artifact_name.startswith('user:'):
-            prefixed_name = f'user:{artifact_name}'
-            artifact = await tool_context.load_artifact(prefixed_name)
+            # If not found and name doesn't already have user: prefix,
+            # try cross-session artifacts with user: prefix
+            if artifact is None and not artifact_name.startswith('user:'):
+              prefixed_name = f'user:{artifact_name}'
+              artifact = await tool_context.load_artifact(prefixed_name)
 
-          if artifact is None:
-            logger.warning('Artifact "%s" not found, skipping', artifact_name)
-            continue
+            if artifact is None:
+              logger.warning('Artifact "%s" not found, skipping', artifact_name)
+              continue
 
-          artifact_part = _as_safe_part_for_llm(artifact, artifact_name)
-          if artifact_part is not artifact:
-            mime_type = (
-                artifact.inline_data.mime_type if artifact.inline_data else None
-            )
-            logger.debug(
-                'Converted artifact "%s" (mime_type=%s) to text Part',
-                artifact_name,
-                mime_type,
-            )
-
-          llm_request.contents.append(
-              types.Content(
-                  role='user',
-                  parts=[
-                      types.Part.from_text(
-                          text=f'Artifact {artifact_name} is:'
-                      ),
-                      artifact_part,
-                  ],
+            artifact_part = _as_safe_part_for_llm(artifact, artifact_name)
+            if artifact_part is not artifact:
+              mime_type = (
+                  artifact.inline_data.mime_type if artifact.inline_data else None
               )
-          )
+              logger.debug(
+                  'Converted artifact "%s" (mime_type=%s) to text Part',
+                  artifact_name,
+                  mime_type,
+              )
+
+            llm_request.contents.append(
+                types.Content(
+                    role='user',
+                    parts=[
+                        types.Part.from_text(
+                            text=f'Artifact {artifact_name} is:'
+                        ),
+                        artifact_part,
+                    ],
+                )
+            )
 
 
 load_artifacts_tool = LoadArtifactsTool()

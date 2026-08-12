@@ -142,23 +142,18 @@ class ConformanceTestRunner:
         # long-running tool. Replace the function call ID with the actual
         # function call ID. This is needed because the function call ID is not
         # known when writing the test case.
-        if (
-            user_message.content.parts
-            and user_message.content.parts[0].function_response
-            and user_message.content.parts[0].function_response.name
-        ):
-          if (
-              user_message.content.parts[0].function_response.name
-              not in function_call_name_to_id_map
-          ):
-            raise ValueError(
-                "Function response for"
-                f" {user_message.content.parts[0].function_response.name} does"
-                " not match any pending function call."
-            )
-          content.parts[0].function_response.id = function_call_name_to_id_map[
-              user_message.content.parts[0].function_response.name
-          ]
+        if user_message.content.parts:
+          for part in content.parts:
+            if part.function_response and part.function_response.name:
+              if part.function_response.name not in function_call_name_to_id_map:
+                raise ValueError(
+                    "Function response for"
+                    f" {part.function_response.name} does"
+                    " not match any pending function call."
+                )
+              part.function_response.id = function_call_name_to_id_map[
+                  part.function_response.name
+              ]
       elif user_message.text is not None:
         content = types.UserContent(parts=[types.Part(text=user_message.text)])
       else:
