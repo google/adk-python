@@ -70,6 +70,9 @@ from ..events.event import Event
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.contents import _present_other_agent_message
 from ..flows.llm_flows.functions import find_matching_function_call
+from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 
@@ -88,6 +91,141 @@ DEFAULT_TIMEOUT = 600.0
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+# Function call names whose pause is resolved locally (ADK request-* tools or a
+# workflow HITL node); their response is flattened to text before forwarding.
+_HUMAN_INPUT_FUNCTION_CALL_NAMES = frozenset({
+    MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+    MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
+    REQUEST_INPUT_FUNCTION_CALL_NAME,
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+})
+
+_CREDENTIAL_FUNCTION_CALL_NAMES = frozenset({
+    MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+})
+
+_RESULT_KEY = "result"
+
+# Top-level keys of a serialized AuthConfig, the shape an adk_request_credential
+# response carries (see auth.auth_preprocessor); snake_case and camelCase forms.
+_CREDENTIAL_PAYLOAD_KEYS = frozenset({
+    "auth_scheme",
+    "authScheme",
+    "exchanged_auth_credential",
+    "exchangedAuthCredential",
+    "raw_auth_credential",
+    "rawAuthCredential",
+})
+
+
+def _payload_is_auth_config(payload: Any) -> bool:
+  """Whether a payload looks like a serialized AuthConfig (fail closed)."""
+  candidate = payload
+  if isinstance(payload, dict) and len(payload) == 1 and _RESULT_KEY in payload:
+    candidate = payload[_RESULT_KEY]
+  return isinstance(candidate, dict) and any(
+      key in candidate for key in _CREDENTIAL_PAYLOAD_KEYS
+  )
+
+
+def _is_credential_function_response(
+    function_response: genai_types.FunctionResponse,
+    matched_call_names: Optional[set[str]] = None,
+) -> bool:
+  """Whether a function_response carries credential material (fail closed)."""
+  if matched_call_names and not matched_call_names.isdisjoint(
+      _CREDENTIAL_FUNCTION_CALL_NAMES
+  ):
+    return True
+  if function_response.name in _CREDENTIAL_FUNCTION_CALL_NAMES:
+    return True
+  return _payload_is_auth_config(function_response.response)
+
+
+def _render_user_function_response(
+    response: Optional[dict[str, Any]],
+) -> Optional[str]:
+  """Renders a human-input response payload as text, or None if empty."""
+  # ADK's mock path wraps the answer as {"result": <text>}; workflow producers
+  # send the resolved parameters directly (e.g. {"company_name": "Okta"}).
+  if not response:
+    return None
+  if (
+      isinstance(response, dict)
+      and len(response) == 1
+      and _RESULT_KEY in response
+  ):
+    value = response[_RESULT_KEY]
+    return None if value is None else str(value)
+  return json.dumps(response, default=str)
+
+
+def _sanitize_user_function_response_event(
+    event: Event,
+    trusted_call_names_by_id: dict[Optional[str], set[str]],
+    id_less_call_is_ambiguous: bool,
+) -> Event:
+  """Returns a copy of ``event`` with its parts sanitized for forwarding."""
+  if event.content is None:
+    return event
+  new_event = event.model_copy(deep=True)
+  # ``event.content`` is non-None (checked above) and ``model_copy`` preserves
+  # it; bind a local so the checker keeps it narrowed after ``.parts`` is set.
+  new_content = new_event.content
+  assert new_content is not None
+  parts = new_content.parts or []
+
+  def _is_human_input(fr: genai_types.FunctionResponse) -> bool:
+    names = trusted_call_names_by_id.get(fr.id)
+    if not names or names.isdisjoint(_HUMAN_INPUT_FUNCTION_CALL_NAMES):
+      return False
+    # An id-less response with an unknown name can't be classified by id when a
+    # call the rewrite must not flatten shares the id-less bucket.
+    if (
+        id_less_call_is_ambiguous
+        and fr.id is None
+        and fr.name not in _HUMAN_INPUT_FUNCTION_CALL_NAMES
+    ):
+      return False
+    return True
+
+  def _is_credential(fr: genai_types.FunctionResponse) -> bool:
+    return _is_credential_function_response(
+        fr, trusted_call_names_by_id.get(fr.id)
+    )
+
+  # If any function_response is kept as data, the message must stay a resume: no
+  # text (including a flattened answer) can ride alongside it.
+  preserve_as_resume = any(
+      p.function_response is not None
+      and not _is_credential(p.function_response)
+      and not _is_human_input(p.function_response)
+      for p in parts
+  )
+
+  new_parts: list[genai_types.Part] = []
+  for part in parts:
+    fr = part.function_response
+    if fr is None:
+      if preserve_as_resume and part.text is not None:
+        continue
+      new_parts.append(part)
+      continue
+    if _is_credential(fr):
+      continue
+    if not _is_human_input(fr) or preserve_as_resume:
+      new_parts.append(part)
+      continue
+    text_value = _render_user_function_response(fr.response)
+    if text_value is not None:
+      new_parts.append(genai_types.Part(text=text_value))
+
+  new_content.parts = new_parts
+  return new_event
 
 
 def _is_loopback_host(hostname: Optional[str]) -> bool:
@@ -145,8 +283,8 @@ def _add_mock_function_call(event: Event, state: TaskState) -> None:
   output_parts, long_running_tool_ids = (
       _create_mock_function_call_for_required_user_input(
           state,
-          event.content.parts,
-          event.long_running_tool_ids,
+          event.content.parts or [],
+          event.long_running_tool_ids or set(),
       )
   )
   event.content.parts = output_parts
@@ -248,6 +386,12 @@ class RemoteA2aAgent(BaseAgent):
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
       self._agent_card = agent_card
+      # Update description if empty. A card supplied directly never goes
+      # through the resolution path, so adopt it here instead; a parent agent
+      # reads the description to build its transfer instruction, which happens
+      # before this agent ever runs.
+      if not self.description and agent_card.description:
+        self.description = agent_card.description
     elif isinstance(agent_card, str):
       if not agent_card.strip():
         raise ValueError("agent_card string cannot be empty")
@@ -329,14 +473,15 @@ class RemoteA2aAgent(BaseAgent):
       self, ctx: Optional[InvocationContext] = None
   ) -> AgentCard:
     """Resolve agent card from source."""
+    agent_card_source = self._agent_card_source
+    if agent_card_source is None:
+      raise AgentCardResolutionError("No agent card source was configured.")
 
     # Determine if source is URL or file path
-    if self._agent_card_source.startswith(("http://", "https://")):
-      return await self._resolve_agent_card_from_url(
-          self._agent_card_source, ctx
-      )
+    if agent_card_source.startswith(("http://", "https://")):
+      return await self._resolve_agent_card_from_url(agent_card_source, ctx)
     else:
-      return await self._resolve_agent_card_from_file(self._agent_card_source)
+      return await self._resolve_agent_card_from_file(agent_card_source)
 
   async def _validate_agent_card(self, agent_card: AgentCard) -> None:
     """Validate resolved agent card."""
@@ -488,49 +633,38 @@ class RemoteA2aAgent(BaseAgent):
       return None
 
     event = ctx.session.events[-1]
-    # If the user function_response replies to a function_call for non-ADK
-    # input-required / auth-required events (fc.name in
-    # {MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
-    # MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH}), the function_response part
-    # is replaced with text extracted from the function response.
-    # The implementation is based on the assumption that the user
-    # function_response event will contain a function_response with one of
-    # those names and the response will contain a "result" field with the user
-    # input as a string text.
-    mock_function_call_names = {
-        MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
-        MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
-    }
-    mock_function_call = [
-        fc
-        for fc in function_call_event.get_function_calls()
-        if fc.name in mock_function_call_names
-    ]
-    if mock_function_call:
-      new_parts = []
-      for function_response in event.get_function_responses():
-        if (
-            function_response.name in mock_function_call_names
-            and function_response.response
-            and "result" in function_response.response
-        ):
-          text_value = function_response.response.get("result")
-          new_parts.append(
-              genai_types.Part(
-                  text=str(text_value),
-              )
-          )
-      new_event = event.model_copy(deep=True)
-      new_event.content.parts = new_parts
-      event = new_event
+
+    # Map every pending call to its id by the trusted function CALL name so
+    # credential matching does not depend on the human-input set.
+    trusted_call_names_by_id: dict[Optional[str], set[str]] = {}
+    id_less_call_is_ambiguous = False
+    for fc in function_call_event.get_function_calls():
+      if fc.name is None:
+        continue
+      trusted_call_names_by_id.setdefault(fc.id, set()).add(fc.name)
+      if fc.id is None and fc.name not in _HUMAN_INPUT_FUNCTION_CALL_NAMES:
+        id_less_call_is_ambiguous = True
+
+    event = _sanitize_user_function_response_event(
+        event, trusted_call_names_by_id, id_less_call_is_ambiguous
+    )
 
     a2a_message = convert_event_to_a2a_message(
         event, ctx, _compat.ROLE_USER, self._genai_part_converter
     )
+    # All parts dropped (e.g. a credential-only resume): the caller rebuilds
+    # from history (also dropping credentials); None avoids a task_id crash.
+    if a2a_message is None:
+      return None
+
     if function_call_event.custom_metadata:
       metadata = function_call_event.custom_metadata
-      a2a_message.task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
-      a2a_message.context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
+      task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
+      if isinstance(task_id, str):
+        a2a_message.task_id = task_id
+      context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
+      if isinstance(context_id, str):
+        a2a_message.context_id = context_id
 
     return a2a_message
 
@@ -587,6 +721,16 @@ class RemoteA2aAgent(BaseAgent):
         continue
 
       for part in processed_event.content.parts:
+        if (
+            part.function_response is not None
+            and _is_credential_function_response(part.function_response)
+        ):
+          # Never forward credential material (an AuthConfig envelope with
+          # access tokens / client secrets) to the remote peer, even when
+          # reconstructing the request from raw session history. This closes the
+          # path where a dropped credential resume falls back to here and the
+          # untouched function_response would otherwise be re-serialized.
+          continue
         converted_parts = self._genai_part_converter(part)
         if not isinstance(converted_parts, list):
           converted_parts = [converted_parts] if converted_parts else []
@@ -644,7 +788,7 @@ class RemoteA2aAgent(BaseAgent):
               and event.content is not None
               and event.content.parts
           ):
-            for part in event.content.parts:
+            for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, task.status.state)
         elif isinstance(update, A2ATaskStatusUpdateEvent) and (
@@ -667,7 +811,7 @@ class RemoteA2aAgent(BaseAgent):
               _compat.TS_SUBMITTED,
               _compat.TS_WORKING,
           ):
-            for part in event.content.parts:
+            for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, update.status.state)
         elif isinstance(update, A2ATaskArtifactUpdateEvent):
@@ -853,13 +997,16 @@ class RemoteA2aAgent(BaseAgent):
     logger.debug(build_a2a_request_log(a2a_request))
 
     try:
-      a2a_request, parameters = await execute_before_request_interceptors(
-          self._config.request_interceptors, ctx, a2a_request
+      intercepted_request, parameters = (
+          await execute_before_request_interceptors(
+              self._config.request_interceptors, ctx, a2a_request
+          )
       )
 
-      if isinstance(a2a_request, Event):
-        yield a2a_request
+      if isinstance(intercepted_request, Event):
+        yield intercepted_request
         return
+      a2a_request = intercepted_request
 
       # Backward compatibility
       if self._a2a_request_meta_provider:
@@ -929,6 +1076,7 @@ class RemoteA2aAgent(BaseAgent):
     except _compat.A2A_HTTP_ERRORS as e:
       error_message = f"A2A request failed: {e}"
       logger.error(error_message)
+      status_code: object = getattr(e, "status_code", None)
       yield Event(
           author=self.name,
           error_message=error_message,
@@ -937,7 +1085,7 @@ class RemoteA2aAgent(BaseAgent):
           custom_metadata={
               A2A_METADATA_PREFIX + "request": _compat.a2a_to_dict(a2a_request),
               A2A_METADATA_PREFIX + "error": error_message,
-              A2A_METADATA_PREFIX + "status_code": str(e.status_code),
+              A2A_METADATA_PREFIX + "status_code": str(status_code),
           },
       )
 

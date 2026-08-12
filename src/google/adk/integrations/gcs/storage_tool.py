@@ -16,35 +16,26 @@ from __future__ import annotations
 
 import base64
 from typing import Any
+import warnings
 
 from google.auth.credentials import Credentials
 
+from . import admin_tool
 from . import client
 
 
 def get_bucket(*, bucket_name: str, credentials: Credentials) -> dict[str, Any]:
   """Get metadata information about a GCS bucket.
 
-  Args:
-      bucket_name (str): The name of the GCS bucket.
-      credentials (Credentials): The credentials to use for the request.
-
-  Returns:
-      dict: Dictionary representing the properties of the bucket.
+  Deprecated: Use admin_tool.get_bucket instead.
   """
-  try:
-    gcs_client = client.get_gcs_client(credentials=credentials)
-    bucket = gcs_client.get_bucket(bucket_name)
-    results = getattr(bucket, "_properties", {}).copy()
-    return {
-        "status": "SUCCESS",
-        "results": results,
-    }
-  except Exception as ex:
-    return {
-        "status": "ERROR",
-        "error_details": str(ex),
-    }
+  warnings.warn(
+      "storage_tool.get_bucket is deprecated and will be removed in a future"
+      " version. Use admin_tool.get_bucket instead.",
+      DeprecationWarning,
+      stacklevel=2,
+  )
+  return admin_tool.get_bucket(bucket_name=bucket_name, credentials=credentials)
 
 
 def list_objects(

@@ -23,6 +23,7 @@ import logging
 import re
 from typing import Any
 from typing import AsyncGenerator
+from typing import AsyncIterator
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -198,6 +199,9 @@ class Gemini(BaseLlm):
     """
     await self._preprocess_request(llm_request)
     self._maybe_append_user_content(llm_request)
+    model = llm_request.model
+    if model is None:
+      raise ValueError('Gemini requests require a model name.')
 
     # Handle context caching if configured
     cache_metadata = None
@@ -230,7 +234,7 @@ class Gemini(BaseLlm):
       if not llm_request.config.http_options:
         llm_request.config.http_options = types.HttpOptions()
       llm_request.config.http_options.headers = self._merge_tracking_headers(
-          llm_request.config.http_options.headers
+          llm_request.config.http_options.headers or {}
       )
       _, api_version = self._base_url_and_api_version
       if api_version:
@@ -250,8 +254,8 @@ class Gemini(BaseLlm):
 
       if stream:
         responses = await self.api_client.aio.models.generate_content_stream(
-            model=llm_request.model,
-            contents=llm_request.contents,
+            model=model,
+            contents=cast(list[types.ContentUnion], llm_request.contents),
             config=llm_request.config,
         )
 
@@ -274,7 +278,7 @@ class Gemini(BaseLlm):
         if (close_result := aggregator.close()) is not None:
           # Populate cache metadata in the final aggregated response for
           # streaming
-          if cache_metadata:
+          if cache_metadata and cache_manager is not None:
             cache_manager.populate_cache_metadata_in_response(
                 close_result, cache_metadata
             )
@@ -282,8 +286,8 @@ class Gemini(BaseLlm):
 
       else:
         response = await self.api_client.aio.models.generate_content(
-            model=llm_request.model,
-            contents=llm_request.contents,
+            model=model,
+            contents=cast(list[types.ContentUnion], llm_request.contents),
             config=llm_request.config,
         )
         logger.info('Response received from the model.')
@@ -291,7 +295,7 @@ class Gemini(BaseLlm):
           logger.debug(_build_response_log(response))
 
         llm_response = LlmResponse.create(response)
-        if cache_metadata:
+        if cache_metadata and cache_manager is not None:
           cache_manager.populate_cache_metadata_in_response(
               llm_response, cache_metadata
           )
@@ -425,7 +429,9 @@ class Gemini(BaseLlm):
     return Client(**kwargs)
 
   @contextlib.asynccontextmanager
-  async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
+  async def connect(
+      self, llm_request: LlmRequest
+  ) -> AsyncIterator[BaseLlmConnection]:
     """Connects to the Gemini model and returns an llm connection.
 
     Args:
@@ -455,10 +461,15 @@ class Gemini(BaseLlm):
     if self.speech_config is not None:
       llm_request.live_connect_config.speech_config = self.speech_config
 
+    # Assigned unconditionally. With no system instruction the previous
+    # behavior still sent Content(role='system', parts=[Part()]); skipping the
+    # assignment changes what goes on the wire for every live connect.
     llm_request.live_connect_config.system_instruction = types.Content(
         role='system',
         parts=[
-            types.Part.from_text(text=llm_request.config.system_instruction)
+            types.Part.from_text(
+                text=cast(str, llm_request.config.system_instruction)
+            )
         ],
     )
 
@@ -487,15 +498,42 @@ class Gemini(BaseLlm):
       llm_request.live_connect_config.thinking_config = (
           llm_request.config.thinking_config
       )
-    logger.debug('Connecting to live with llm_request:%s', llm_request)
-    logger.debug('Live connect config: %s', llm_request.live_connect_config)
+    # Safety settings are configured via LlmAgent.generate_content_config, which
+    # only populates llm_request.config. Forward them so live runs honor the
+    # same safety configuration as non-live runs. An explicitly provided
+    # live_connect_config value takes precedence.
+    if (
+        llm_request.config.safety_settings is not None
+        and llm_request.live_connect_config.safety_settings is None
+    ):
+      llm_request.live_connect_config.safety_settings = (
+          llm_request.config.safety_settings
+      )
+    logger.debug(
+        'Connecting to live with model: %s, contents: %d, response modalities:'
+        ' %s',
+        llm_request.model,
+        len(llm_request.contents or []),
+        llm_request.live_connect_config.response_modalities,
+    )
+    # Callers may put credentials in per-request headers, so the transport
+    # options never go to the log.
+    logger.debug(
+        'Live connect config: %s',
+        llm_request.live_connect_config.model_copy(
+            update={'http_options': None}
+        ),
+    )
+    model = llm_request.model
+    if model is None:
+      raise ValueError('Live Gemini requests require a model name.')
     async with self._live_api_client.aio.live.connect(
-        model=llm_request.model, config=llm_request.live_connect_config
+        model=model, config=llm_request.live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(
           live_session,
           api_backend=self._api_backend,
-          model_version=llm_request.model,
+          model_version=model,
       )
 
   async def _adapt_computer_use_tool(self, llm_request: LlmRequest) -> None:
@@ -545,7 +583,7 @@ class Gemini(BaseLlm):
           await self._adapt_computer_use_tool(llm_request)
 
     # Sanitize inputs by ensuring unsupported inline types (e.g. DOCX from UI)
-    # are converted to plain text using load_artifacts_tool._as_safe_part_for_llm.
+    # are converted to plain text using load_artifacts_tool.as_safe_part_for_llm.
     if llm_request.contents:
       for content in llm_request.contents:
         if not content.parts:
@@ -555,8 +593,8 @@ class Gemini(BaseLlm):
           if part.inline_data:
             # GE inline_data does not preserve filenames, so we pass a dummy
             # 'inline-file' name as a placeholder for
-            # _as_safe_part_for_llm's required artifact_name argument.
-            part = load_artifacts_tool._as_safe_part_for_llm(  # pylint: disable=protected-access
+            # as_safe_part_for_llm's required artifact_name argument.
+            part = load_artifacts_tool.as_safe_part_for_llm(  # pylint: disable=protected-access
                 part, 'inline-file'
             )
           new_parts.append(part)
@@ -595,10 +633,10 @@ def _build_request_log(req: LlmRequest) -> str:
 
   if req.config.tools:
     for idx, tool in enumerate(req.config.tools):
+      if not isinstance(tool, types.Tool):
+        continue
       if tool.function_declarations:
-        function_decls = cast(
-            list[types.FunctionDeclaration], tool.function_declarations
-        )
+        function_decls = tool.function_declarations
         function_decl_tool_index = idx
         break
 
@@ -615,7 +653,8 @@ def _build_request_log(req: LlmRequest) -> str:
           exclude_none=True,
           exclude={
               'parts': {
-                  i: _EXCLUDED_PART_FIELD for i in range(len(content.parts))
+                  i: _EXCLUDED_PART_FIELD
+                  for i in range(len(content.parts or []))
               }
           },
       )
@@ -636,11 +675,14 @@ def _build_request_log(req: LlmRequest) -> str:
             exclude={
                 'system_instruction': True,
                 'tools': tools_exclusion if req.config.tools else True,
+                # Callers may put credentials in per-request headers, so the
+                # transport options never go to the log.
+                'http_options': True,
             },
         )
     )
   except Exception:
-    config_log = repr(req.config)
+    config_log = repr(req.config.model_copy(update={'http_options': None}))
 
   return f"""
 LLM Request:

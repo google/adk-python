@@ -44,6 +44,8 @@ import pytest
 from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy import text
+from sqlalchemy import update
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -427,6 +429,86 @@ async def test_create_and_list_sessions(session_service):
   assert {s.id for s in sessions} == set(session_ids)
   for session in sessions:
     assert session.state == {'key': 'value' + session.id}
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_list_sessions_orders_by_update_time_then_id():
+  """Database list_sessions returns least-active sessions first, with stable ties."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    app_name = 'my_app'
+    user_id = 'test_user'
+    session_ids = ['orphan', 'active_b', 'middle', 'active_a']
+    for session_id in session_ids:
+      await service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+      )
+
+    schema = service._get_schema_classes()
+    create_times = {
+        'active_b': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'orphan': datetime(2026, 1, 4, tzinfo=timezone.utc),
+    }
+    update_times = {
+        'orphan': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'active_b': datetime(2026, 1, 3, tzinfo=timezone.utc),
+    }
+    async with service.database_session_factory() as sql_session:
+      for session_id, create_time in create_times.items():
+        await sql_session.execute(
+            update(schema.StorageSession)
+            .where(schema.StorageSession.app_name == app_name)
+            .where(schema.StorageSession.user_id == user_id)
+            .where(schema.StorageSession.id == session_id)
+            .values(
+                create_time=create_time,
+                update_time=update_times[session_id],
+            )
+        )
+      await sql_session.commit()
+
+    response = await service.list_sessions(app_name=app_name, user_id=user_id)
+
+    assert [session.id for session in response.sessions] == [
+        'orphan',
+        'middle',
+        'active_a',
+        'active_b',
+    ]
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_ordered_by_last_update_time(session_service):
+  app_name = 'my_app'
+  user_id = 'test_user'
+
+  for session_id in ('a', 'b', 'c'):
+    await session_service.create_session(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+
+  # Make the oldest session the most recently active one.
+  session_a = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='a'
+  )
+  await asyncio.sleep(0.01)
+  await session_service.append_event(
+      session=session_a,
+      event=Event(invocation_id='invocation', author='user'),
+  )
+
+  list_sessions_response = await session_service.list_sessions(
+      app_name=app_name, user_id=user_id
+  )
+  assert [s.id for s in list_sessions_response.sessions] == ['b', 'c', 'a']
 
 
 @pytest.mark.asyncio
@@ -2155,6 +2237,48 @@ async def test_database_session_service_requires_one_argument():
     )
 
 
+@pytest.mark.parametrize(
+    'raised_error',
+    [
+        RuntimeError('boom'),
+        ArgumentError('bad argument'),
+        ImportError('no driver'),
+    ],
+)
+def test_database_session_service_engine_error_hides_password(raised_error):
+  """Engine creation errors must not put the DB password in the message."""
+  password = 'sup3r-s3cret'
+  db_url = f'postgresql+asyncpg://user:{password}@localhost:5432/db'
+
+  with mock.patch.object(
+      database_session_service,
+      'create_async_engine',
+      side_effect=raised_error,
+  ):
+    with pytest.raises(ValueError) as exc_info:
+      DatabaseSessionService(db_url)
+
+  message = str(exc_info.value)
+  assert password not in message
+  # The redacted URL is still there, so the error stays diagnosable.
+  assert 'postgresql+asyncpg://user:***@localhost:5432/db' in message
+
+
+def test_database_session_service_malformed_url_reports_usable_error():
+  """A URL too malformed to parse still yields a usable, leak-free error."""
+  # make_url() itself rejects this, so redaction cannot parse it either and
+  # must fall back to a placeholder rather than echoing the raw string.
+  db_url = 'definitely not a url sup3r-s3cret'
+
+  with pytest.raises(ValueError) as exc_info:
+    DatabaseSessionService(db_url)
+
+  message = str(exc_info.value)
+  assert 'sup3r-s3cret' not in message
+  assert 'Invalid database URL format or argument' in message
+  assert isinstance(exc_info.value.__cause__, ArgumentError)
+
+
 @pytest.mark.asyncio
 async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
     tmp_path,
@@ -2311,3 +2435,103 @@ async def test_get_session_orders_tied_timestamps_by_id(
       await service.close()
 
   assert [event.id for event in retrieved_session.events] == event_ids
+
+
+def test_delete_session_sync_removes_only_the_targeted_users_session():
+  """Deleting is scoped to one (app, user, session) triple."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  service.create_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+  service.create_session_sync(app_name=app_name, user_id='u2', session_id='s1')
+
+  service.delete_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+
+  assert (
+      service.get_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+      is None
+  )
+  other_user_session = service.get_session_sync(
+      app_name=app_name, user_id='u2', session_id='s1'
+  )
+  assert other_user_session is not None
+  assert other_user_session.id == 's1'
+
+
+def test_delete_session_sync_unknown_session_is_a_noop():
+  """Deleting something that is not stored leaves the store untouched."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  service.create_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+
+  service.delete_session_sync(
+      app_name=app_name, user_id='u1', session_id='unknown_session'
+  )
+  service.delete_session_sync(
+      app_name=app_name, user_id='unknown_user', session_id='s1'
+  )
+  service.delete_session_sync(
+      app_name='unknown_app', user_id='u1', session_id='s1'
+  )
+
+  assert (
+      service.get_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+      is not None
+  )
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_sync_strips_events_and_merges_scoped_state():
+  """Listed sessions carry merged app/user state but never their events."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  session = await service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={
+          'app:a': 'av',
+          'user:u': 'uv',
+          'sk': 'sv',
+          'temp:t': 'tv',
+      },
+  )
+  await service.append_event(
+      session=session,
+      event=Event(
+          invocation_id='inv1',
+          author='user',
+          actions=EventActions(state_delta={'sk2': 'sv2'}),
+      ),
+  )
+
+  response = service.list_sessions_sync(app_name=app_name, user_id='u1')
+
+  assert [s.id for s in response.sessions] == ['s1']
+  listed = response.sessions[0]
+  # Events are deliberately dropped from the listing.
+  assert listed.events == []
+  # app: and user: values are merged back in under their prefixes, session
+  # state is kept as-is, and temp: state is never stored.
+  assert listed.state == {
+      'app:a': 'av',
+      'user:u': 'uv',
+      'sk': 'sv',
+      'sk2': 'sv2',
+  }
+
+
+def test_list_sessions_sync_unknown_app_or_user_returns_empty_response():
+  """Listing an unknown app or user yields a response with no sessions."""
+  service = InMemorySessionService()
+  service.create_session_sync(app_name='my_app', user_id='u1', session_id='s1')
+
+  assert service.list_sessions_sync(app_name='unknown_app').sessions == []
+  assert (
+      service.list_sessions_sync(
+          app_name='my_app', user_id='unknown_user'
+      ).sessions
+      == []
+  )
+  assert [
+      s.id for s in service.list_sessions_sync(app_name='my_app').sessions
+  ] == ['s1']

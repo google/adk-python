@@ -148,7 +148,7 @@ class LlmRequest(BaseModel):
 
       # Process all parts, creating references for non-text parts
       non_text_count = 0
-      for part in instructions.parts:
+      for part in instructions.parts or []:
         if part.text:
           # Text part - add to system instruction
           text_parts.append(part.text)
@@ -273,6 +273,14 @@ class LlmRequest(BaseModel):
       declaration = tool._get_declaration()
       if declaration:
         declarations.append(declaration)
+        if tool.name in self.tools_dict:
+          # Both declarations are still advertised to the model, but only one
+          # tool can hold the name, so calls land on the survivor.
+          logging.warning(
+              "Duplicate tool name %r: the previously registered tool is"
+              " shadowed and can no longer be called.",
+              tool.name,
+          )
         self.tools_dict[tool.name] = tool
     if declarations:
       if self.config.tools is None:

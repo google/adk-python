@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import logging
 import sys
 from typing import Any
 from typing import Dict
@@ -29,7 +28,7 @@ from .llm_agent import InstructionProvider
 from .readonly_context import ReadonlyContext
 
 
-class McpInstructionProvider(InstructionProvider):
+class McpInstructionProvider(InstructionProvider):  # type: ignore[misc]
   """Fetches agent instructions from an MCP server."""
 
   def __init__(
@@ -46,7 +45,7 @@ class McpInstructionProvider(InstructionProvider):
         errlog: TextIO stream for error logging.
     """
     self._connection_params = connection_params
-    self._errlog = errlog or logging.getLogger(__name__)
+    self._errlog = errlog
     self._mcp_session_manager = MCPSessionManager(
         connection_params=self._connection_params,
         errlog=self._errlog,

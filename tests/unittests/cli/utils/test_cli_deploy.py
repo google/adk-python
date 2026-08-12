@@ -393,7 +393,7 @@ def test_to_gke_happy_path(
 
   build_args = run_recorder.calls[0][0][0]
   expected_build_args = [
-      "gcloud",
+      cli_deploy._GCLOUD_CMD,
       "builds",
       "submit",
       "--tag",
@@ -406,7 +406,7 @@ def test_to_gke_happy_path(
 
   creds_args = run_recorder.calls[1][0][0]
   expected_creds_args = [
-      "gcloud",
+      cli_deploy._GCLOUD_CMD,
       "container",
       "clusters",
       "get-credentials",
@@ -441,6 +441,57 @@ def test_to_gke_happy_path(
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+def test_to_gke_uses_gcloud_cmd_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """On Windows, `to_gke` must invoke gcloud via `_GCLOUD_CMD` (gcloud.cmd).
+
+  Regression test: the GKE deploy path spawns gcloud without a shell, so a bare
+  `gcloud` name is not resolved to the `gcloud.cmd` batch script on Windows and
+  the deploy fails. Both gcloud invocations must use `_GCLOUD_CMD`.
+  """
+  src_dir = agent_dir(False, False)
+  run_recorder = _Recorder()
+
+  monkeypatch.setattr(cli_deploy, "_GCLOUD_CMD", "gcloud.cmd")
+
+  def mock_subprocess_run(*args, **kwargs):
+    run_recorder(*args, **kwargs)
+    command_list = args[0]
+    if command_list and command_list[0:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="deployment created\nservice created")
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+  )
+
+  build_args = run_recorder.calls[0][0][0]
+  assert build_args[0] == "gcloud.cmd"
+  assert build_args[1:3] == ["builds", "submit"]
+
+  creds_args = run_recorder.calls[1][0][0]
+  assert creds_args[0] == "gcloud.cmd"
+  assert creds_args[1:4] == ["container", "clusters", "get-credentials"]
 
 
 # _validate_agent_import tests

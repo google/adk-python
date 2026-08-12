@@ -320,3 +320,60 @@ def test_record_client_token_usage(mock_meter_setup):
   assert output_call[1]["attributes"] == base_attributes | {
       "gen_ai.token.type": "output"
   }
+
+
+@pytest.fixture(name="call_count_histograms")
+def _call_count_histograms(monkeypatch):
+  """Redirects the two per-invocation call-count histograms."""
+  inference_calls_hist = mock.MagicMock(spec=metrics.Histogram)
+  tool_calls_hist = mock.MagicMock(spec=metrics.Histogram)
+  inference_calls_hist.name = "invoke_agent_inference_calls"
+  tool_calls_hist.name = "invoke_agent_tool_calls"
+
+  monkeypatch.setattr(
+      _metrics, "_invoke_agent_inference_calls", inference_calls_hist
+  )
+  monkeypatch.setattr(_metrics, "_invoke_agent_tool_calls", tool_calls_hist)
+
+  return {
+      "inference_calls": inference_calls_hist,
+      "tool_calls": tool_calls_hist,
+  }
+
+
+def test_record_invoke_agent_inference_calls(call_count_histograms):
+  """The count is recorded verbatim, dimensioned only by the agent."""
+  _metrics.record_invoke_agent_inference_calls("test_agent", 3)
+
+  inference_calls_hist = call_count_histograms["inference_calls"]
+  inference_calls_hist.record.assert_called_once()
+  args, kwargs = inference_calls_hist.record.call_args
+  assert args[0] == 3
+  assert kwargs["attributes"] == {"gen_ai.agent.name": "test_agent"}
+  # The two counts are separate instruments and must not cross over.
+  call_count_histograms["tool_calls"].record.assert_not_called()
+
+
+def test_record_invoke_agent_tool_calls(call_count_histograms):
+  """The count is recorded verbatim, dimensioned only by the agent."""
+  _metrics.record_invoke_agent_tool_calls("test_agent", 7)
+
+  tool_calls_hist = call_count_histograms["tool_calls"]
+  tool_calls_hist.record.assert_called_once()
+  args, kwargs = tool_calls_hist.record.call_args
+  assert args[0] == 7
+  assert kwargs["attributes"] == {"gen_ai.agent.name": "test_agent"}
+  call_count_histograms["inference_calls"].record.assert_not_called()
+
+
+def test_record_invoke_agent_call_counts_records_zero(call_count_histograms):
+  """Zero is a real observation -- an invocation that called nothing.
+
+  Skipping it would leave the zero bucket empty and bias the distribution
+  upwards.
+  """
+  _metrics.record_invoke_agent_inference_calls("test_agent", 0)
+  _metrics.record_invoke_agent_tool_calls("test_agent", 0)
+
+  assert call_count_histograms["inference_calls"].record.call_args[0][0] == 0
+  assert call_count_histograms["tool_calls"].record.call_args[0][0] == 0

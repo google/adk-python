@@ -237,10 +237,13 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
 
       # FINAL AGENT TURN
       if invocation.final_response and invocation.final_response.parts:
-        try:
-          agent_name = invocation.intermediate_data.invocation_events[0].author
-        except (AttributeError, IndexError):
-          agent_name = "agent"
+        intermediate_data = invocation.intermediate_data
+        agent_name = "agent"
+        if (
+            isinstance(intermediate_data, InvocationEvents)
+            and intermediate_data.invocation_events
+        ):
+          agent_name = intermediate_data.invocation_events[0].author
         role = f"AGENT ({agent_name})"
         text_parts = [p.text for p in invocation.final_response.parts if p.text]
         if text_parts:
@@ -291,16 +294,16 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
     self._assemble_dialogue_history(actual_invocations)
 
     # If expected_invocations are not supplied, provide a list of None.
-    expected_invocations = (
+    expected_by_invocation: list[Optional[Invocation]] = (
         [None] * len(actual_invocations)
         if expected_invocations is None
-        else expected_invocations
+        else list(expected_invocations)
     )
 
     # Mark the first N-1 turns as NOT_EVALUATED.
     per_invocation_results = []
     for actual, expected in zip(
-        actual_invocations[:-1], expected_invocations[:-1], strict=True
+        actual_invocations[:-1], expected_by_invocation[:-1], strict=True
     ):
       per_invocation_results.append(
           PerInvocationResult(
@@ -314,7 +317,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
     # Conversation-level evaluation: run the LLM judge
     # once on the last turn with full dialogue context.
     last_expected = (
-        [expected_invocations[-1]] if expected_invocations[-1] else None
+        [expected_by_invocation[-1]] if expected_by_invocation[-1] else None
     )
     last_turn_result = await super().evaluate_invocations(
         [actual_invocations[-1]],
@@ -329,7 +332,7 @@ class RubricBasedMultiTurnTrajectoryEvaluator(RubricBasedEvaluator):
       per_invocation_results.append(
           PerInvocationResult(
               actual_invocation=actual_invocations[-1],
-              expected_invocation=expected_invocations[-1],
+              expected_invocation=expected_by_invocation[-1],
               score=last_turn_result.overall_score,
               eval_status=last_turn_result.overall_eval_status,
               rubric_scores=last_turn_result.overall_rubric_scores,

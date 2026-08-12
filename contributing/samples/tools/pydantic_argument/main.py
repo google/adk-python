@@ -18,11 +18,11 @@
 import asyncio
 import logging
 
-from google.adk.agents.run_config import RunConfig
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 from google.genai import types
-from pydantic_argument import agent
+
+from . import agent
 
 APP_NAME = "pydantic_test_app"
 USER_ID = "test_user"
@@ -41,10 +41,11 @@ async def call_agent_async(runner, user_id, session_id, prompt):
       user_id=user_id,
       session_id=session_id,
       new_message=content,
-      run_config=RunConfig(save_input_blobs_as_artifacts=False),
   ):
-    if hasattr(event, "content") and event.content:
-      final_response_text += event.content
+    if event.content and event.content.parts:
+      final_response_text += "".join(
+          part.text or "" for part in event.content.parts
+      )
 
   return final_response_text
 
@@ -92,11 +93,8 @@ async def main():
     print(f"\n📝 Test {i}: {prompt}")
     print("-" * 40)
 
-    try:
-      response = await call_agent_async(runner, USER_ID, session.id, prompt)
-      print(f"✅ Response: {response}")
-    except Exception as e:
-      print(f"❌ Error: {e}")
+    response = await call_agent_async(runner, USER_ID, session.id, prompt)
+    print(f"✅ Response: {response}")
 
   print("\n" + "=" * 50)
   print("✨ Testing complete!")

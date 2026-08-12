@@ -682,15 +682,21 @@ def _usage_metadata_from_interaction(
   type carried by ``InteractionCompletedEvent``) also exposes ``usage``, so this
   accepts either interaction type.
   """
-  if not interaction.usage:
+  usage = interaction.usage
+  if not usage:
     return None
+  # Prefer the total the API reports: it also covers thought and tool-use
+  # tokens, which input + output alone undercounts. Fall back to the sum only
+  # when the API omits the total.
+  total_token_count = usage.total_tokens
+  if total_token_count is None:
+    total_token_count = (usage.total_input_tokens or 0) + (
+        usage.total_output_tokens or 0
+    )
   return types.GenerateContentResponseUsageMetadata(
-      prompt_token_count=interaction.usage.total_input_tokens,
-      candidates_token_count=interaction.usage.total_output_tokens,
-      total_token_count=(
-          (interaction.usage.total_input_tokens or 0)
-          + (interaction.usage.total_output_tokens or 0)
-      ),
+      prompt_token_count=usage.total_input_tokens,
+      candidates_token_count=usage.total_output_tokens,
+      total_token_count=total_token_count,
   )
 
 

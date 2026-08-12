@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import pathlib
@@ -29,6 +30,15 @@ import yaml
 
 from . import models
 
+# Bounds on a skill archive, which may come from a remote registry and is
+# untrusted until it has been loaded. They are generous relative to any
+# realistic skill; the toolset already warns about payloads over 16 MB.
+_MAX_ZIP_ENTRIES = 2000
+_MAX_ZIP_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
+# How much of a member is decompressed per step. Reading in steps keeps the
+# transient buffer this size however much the member really expands.
+_ZIP_READ_CHUNK_BYTES = 64 * 1024
+
 _ALLOWED_FRONTMATTER_KEYS = frozenset({
     "name",
     "description",
@@ -40,16 +50,17 @@ _ALLOWED_FRONTMATTER_KEYS = frozenset({
 })
 
 
-def _load_dir(directory: pathlib.Path) -> dict[str, str]:
+def _load_dir(directory: pathlib.Path) -> dict[str, Union[str, bytes]]:
   """Recursively load files from a directory into a dictionary.
 
   Args:
     directory: Path to the directory to load.
 
   Returns:
-    Dictionary mapping relative file paths to their string content.
+    Dictionary mapping relative file paths to their content: `str` for UTF-8
+    text, `bytes` for everything else.
   """
-  files = {}
+  files: dict[str, Union[str, bytes]] = {}
   if directory.exists() and directory.is_dir():
     for file_path in directory.rglob("*"):
       if "__pycache__" in file_path.parts:
@@ -57,11 +68,36 @@ def _load_dir(directory: pathlib.Path) -> dict[str, str]:
       if file_path.is_file():
         relative_path = file_path.relative_to(directory)
         try:
-          files[str(relative_path)] = file_path.read_text(encoding="utf-8")
+          files[relative_path.as_posix()] = file_path.read_text(
+              encoding="utf-8"
+          )
         except UnicodeDecodeError:
-          # Binary files or non-UTF-8 files are skipped for text content.
-          continue
+          files[relative_path.as_posix()] = file_path.read_bytes()
   return files
+
+
+def _build_scripts(
+    raw_scripts: dict[str, Union[str, bytes]],
+) -> dict[str, models.Script]:
+  """Wrap raw script sources in `Script` models.
+
+  Args:
+    raw_scripts: Mapping of relative path to raw script content.
+
+  Returns:
+    Mapping of relative path to `Script`, omitting any script that is not
+    UTF-8 text, since `Script.src` holds source code.
+  """
+  scripts = {}
+  for name, src in raw_scripts.items():
+    if isinstance(src, bytes):
+      try:
+        src = src.decode("utf-8")
+      except UnicodeDecodeError:
+        logging.warning("Skipping non-UTF-8 skill script '%s'.", name)
+        continue
+    scripts[name] = models.Script(src=src)
+  return scripts
 
 
 def _parse_skill_md_content(content: str) -> tuple[dict, str]:
@@ -161,10 +197,7 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
 
   references = _load_dir(skill_dir / "references")
   assets = _load_dir(skill_dir / "assets")
-  raw_scripts = _load_dir(skill_dir / "scripts")
-  scripts = {
-      name: models.Script(src=content) for name, content in raw_scripts.items()
-  }
+  scripts = _build_scripts(_load_dir(skill_dir / "scripts"))
 
   resources = models.Resources(
       references=references,
@@ -215,6 +248,51 @@ def _load_skills_from_dir(
   return skills
 
 
+def _read_zip_member(
+    z: zipfile.ZipFile,
+    member: Union[str, zipfile.ZipInfo],
+    budget: int,
+) -> tuple[bytes, int]:
+  """Read one archive member in fixed steps, against a byte budget.
+
+  A member can expand to far more than its central-directory entry declares,
+  but zipfile truncates the read to the declared size, so the caller's cap on
+  the declared total is what bounds the bytes returned. Reading in fixed steps
+  keeps the decompressor's transient buffer small while that happens; the
+  budget is defense in depth behind the declared-size cap.
+
+  Args:
+    z: The open archive.
+    member: The name or entry to read.
+    budget: How many more bytes may be decompressed from this archive.
+
+  Returns:
+    The member's bytes, and the budget remaining after reading it.
+
+  Raises:
+    KeyError: If the archive has no such member.
+    ValueError: If the member expands past the budget, or the archive is
+      malformed.
+  """
+  chunks = []
+  try:
+    with z.open(member) as f:
+      while True:
+        chunk = f.read(_ZIP_READ_CHUNK_BYTES)
+        if not chunk:
+          break
+        budget -= len(chunk)
+        if budget < 0:
+          raise ValueError(
+              "Skill archive is too large decompressed: it expands past the"
+              f" limit of {_MAX_ZIP_UNCOMPRESSED_BYTES} bytes."
+          )
+        chunks.append(chunk)
+  except zipfile.BadZipFile as e:
+    raise ValueError(f"Skill archive is malformed: {e}") from e
+  return b"".join(chunks), budget
+
+
 def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
   """Load a complete skill directly from in-memory zip file bytes.
 
@@ -226,9 +304,33 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
 
   Raises:
     FileNotFoundError: If SKILL.md is not found in the archive.
-    ValueError: If SKILL.md is invalid or contains dangerous paths.
+    ValueError: If SKILL.md is invalid, the archive contains dangerous paths,
+      the archive is malformed, or it expands past the entry or decompressed
+      size limits.
   """
-  with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+  try:
+    archive = zipfile.ZipFile(io.BytesIO(zip_bytes))
+  except zipfile.BadZipFile as e:
+    raise ValueError(f"Skill archive is malformed: {e}") from e
+
+  with archive as z:
+    # zipfile truncates each member's read to the size its central-directory
+    # entry declares, so capping the declared total is what bounds the bytes
+    # decompressed out of the archive.
+    entry_count = len(z.infolist())
+    if entry_count > _MAX_ZIP_ENTRIES:
+      raise ValueError(
+          f"Skill archive has too many entries: {entry_count} exceeds the"
+          f" limit of {_MAX_ZIP_ENTRIES}."
+      )
+    declared_size = sum(info.file_size for info in z.infolist())
+    if declared_size > _MAX_ZIP_UNCOMPRESSED_BYTES:
+      raise ValueError(
+          f"Skill archive is too large decompressed: {declared_size} bytes"
+          f" exceeds the limit of {_MAX_ZIP_UNCOMPRESSED_BYTES} bytes."
+      )
+    budget = _MAX_ZIP_UNCOMPRESSED_BYTES
+
     # Security check for zip slip
     for member in z.infolist():
       filename = member.filename
@@ -243,10 +345,11 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
     skill_md_content = None
     for name in ("SKILL.md", "skill.md"):
       try:
-        skill_md_content = z.read(name).decode("utf-8")
-        break
+        skill_md_bytes, budget = _read_zip_member(z, name, budget)
       except KeyError:
         continue
+      skill_md_content = skill_md_bytes.decode("utf-8")
+      break
 
     if skill_md_content is None:
       raise FileNotFoundError("SKILL.md not found in zipped filesystem.")
@@ -264,8 +367,9 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
     frontmatter = models.Frontmatter.model_validate(parsed)
 
     # Helper to load files under a directory prefix inside the zip
-    def _load_zip_dir(prefix: str) -> dict[str, str]:
-      result = {}
+    def _load_zip_dir(prefix: str) -> dict[str, Union[str, bytes]]:
+      nonlocal budget
+      result: dict[str, Union[str, bytes]] = {}
       if not prefix.endswith("/"):
         prefix += "/"
       for info in z.infolist():
@@ -278,19 +382,16 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
           relative_path = info.filename[len(prefix) :]
           if not relative_path:
             continue
+          data, budget = _read_zip_member(z, info, budget)
           try:
-            result[relative_path] = z.read(info).decode("utf-8")
+            result[relative_path] = data.decode("utf-8")
           except UnicodeDecodeError:
-            continue
+            result[relative_path] = data
       return result
 
     references = _load_zip_dir("references")
     assets = _load_zip_dir("assets")
-    raw_scripts = _load_zip_dir("scripts")
-    scripts = {
-        name: models.Script(src=content)
-        for name, content in raw_scripts.items()
-    }
+    scripts = _build_scripts(_load_zip_dir("scripts"))
 
     resources = models.Resources(
         references=references,
@@ -564,16 +665,7 @@ def _load_skill_from_gcs_dir(
 
   references = _load_files_in_dir("references")
   assets = _load_files_in_dir("assets")
-  raw_scripts = _load_files_in_dir("scripts")
-
-  scripts = {}
-  for name, src in raw_scripts.items():
-    if isinstance(src, bytes):
-      try:
-        src = src.decode("utf-8")
-      except UnicodeDecodeError:
-        continue  # skip binary scripts if any
-    scripts[name] = models.Script(src=src)
+  scripts = _build_scripts(_load_files_in_dir("scripts"))
 
   resources = models.Resources(
       references=references,
@@ -585,4 +677,139 @@ def _load_skill_from_gcs_dir(
       frontmatter=frontmatter,
       instructions=body,
       resources=resources,
+  )
+
+
+async def _load_skill_from_dir_async(
+    skill_dir: str | pathlib.Path,
+) -> models.Skill:
+  """Load a complete skill from a directory asynchronously.
+
+  Runs the blocking :func:`_load_skill_from_dir` in a worker thread so the
+  calling event loop stays responsive.
+
+  Args:
+    skill_dir: Path to the skill directory.
+
+  Returns:
+    Skill object with all components loaded.
+
+  Raises:
+    FileNotFoundError: If the skill directory or SKILL.md is not found.
+    ValueError: If SKILL.md is invalid or the skill name does not match
+      the directory name.
+  """
+  return await asyncio.to_thread(_load_skill_from_dir, skill_dir)
+
+
+async def _load_skills_from_dir_async(
+    skills_dir: str | pathlib.Path,
+) -> list[models.Skill]:
+  """Load all skills from subdirectories within a directory asynchronously.
+
+  Runs the blocking :func:`_load_skills_from_dir` in a worker thread so the
+  calling event loop stays responsive. The whole directory walk happens in a
+  single worker thread rather than one thread per skill, so ordering and error
+  behavior match the synchronous version exactly.
+
+  Args:
+    skills_dir: Path to the directory containing skill folders.
+
+  Returns:
+    List of Skill objects loaded from valid skill directories.
+
+  Raises:
+    FileNotFoundError: If skills_dir does not exist.
+    ValueError: If skills_dir is not a directory, or if any skill fails
+      validation.
+  """
+  return await asyncio.to_thread(_load_skills_from_dir, skills_dir)
+
+
+async def _load_skill_from_gcs_dir_async(
+    bucket_name: str,
+    skill_id: str,
+    skills_base_path: str = "",
+    project_id: str | None = None,
+    credentials: auth.Credentials | None = None,
+) -> models.Skill:
+  """Load a complete skill from a GCS directory asynchronously.
+
+  Runs the blocking :func:`_load_skill_from_gcs_dir` in a worker thread so the
+  calling event loop stays responsive.
+
+  Args:
+    bucket_name: Name of the GCS bucket.
+    skill_id: The ID of the skill (directory name).
+    skills_base_path: Base directory within the bucket (e.g., 'path/to/skills').
+    project_id: Project ID to use for GCS client.
+    credentials: Credentials to use for GCS client.
+
+  Returns:
+    Skill object with all components loaded.
+
+  Raises:
+    ImportError: If google-cloud-storage is not installed.
+    FileNotFoundError: If the skill directory or SKILL.md is not found.
+    ValueError: If SKILL.md is invalid or the skill name does not match
+      the directory name.
+  """
+  return await asyncio.to_thread(
+      _load_skill_from_gcs_dir,
+      bucket_name,
+      skill_id,
+      skills_base_path,
+      project_id,
+      credentials,
+  )
+
+
+async def _list_skills_in_dir_async(
+    skills_base_path: str | pathlib.Path,
+) -> dict[str, models.Frontmatter]:
+  """List skills in a local directory asynchronously.
+
+  Runs the blocking :func:`_list_skills_in_dir` in a worker thread so the
+  calling event loop stays responsive.
+
+  Args:
+    skills_base_path: Path to the base directory containing skills.
+
+  Returns:
+    Dictionary mapping skill IDs to their frontmatter. Invalid skills are
+    logged and skipped.
+  """
+  return await asyncio.to_thread(_list_skills_in_dir, skills_base_path)
+
+
+async def _list_skills_in_gcs_dir_async(
+    bucket_name: str,
+    skills_base_path: str = "",
+    project_id: str | None = None,
+    credentials: auth.Credentials | None = None,
+) -> dict[str, models.Frontmatter]:
+  """List skills in a GCS directory asynchronously.
+
+  Runs the blocking :func:`_list_skills_in_gcs_dir` in a worker thread so the
+  calling event loop stays responsive.
+
+  Args:
+    bucket_name: Name of the GCS bucket.
+    skills_base_path: Base directory within the bucket (e.g., 'path/to/skills').
+    project_id: Project ID to use for GCS client.
+    credentials: Credentials to use for GCS client.
+
+  Returns:
+    Dictionary mapping skill IDs to their frontmatter. Invalid skills are
+    logged and skipped.
+
+  Raises:
+    ImportError: If google-cloud-storage is not installed.
+  """
+  return await asyncio.to_thread(
+      _list_skills_in_gcs_dir,
+      bucket_name,
+      skills_base_path,
+      project_id,
+      credentials,
   )

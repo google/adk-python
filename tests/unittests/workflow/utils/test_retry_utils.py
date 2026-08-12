@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import random
+
 from google.adk.workflow._node_state import NodeState
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow.utils._retry_utils import _get_retry_delay
@@ -68,6 +70,26 @@ class TestGetRetryDelay:
     delays = [_get_retry_delay(config, state) for _ in range(10)]
 
     assert all(5.0 <= d <= 15.0 for d in delays)
+    assert len(set(delays)) > 1
+
+  def test_jitter_stays_under_max_delay_without_bunching_on_it(self):
+    """Keeps jittered delays under max_delay without piling them on the cap.
+
+    Clamping the jittered delay to max_delay would respect the bound but land
+    every overshooting draw on exactly max_delay, so retriers that reached the
+    cap would all wake at the same instant.
+    """
+    config = RetryConfig(
+        initial_delay=1.0, backoff_factor=2.0, max_delay=5.0, jitter=1.0
+    )
+    state = NodeState(attempt_count=6)
+    random.seed(20260807)
+
+    delays = [_get_retry_delay(config, state) for _ in range(2000)]
+
+    assert max(delays) <= 5.0
+    at_cap = sum(1 for d in delays if d > 5.0 - 1e-9)
+    assert at_cap / len(delays) < 0.01
     assert len(set(delays)) > 1
 
 

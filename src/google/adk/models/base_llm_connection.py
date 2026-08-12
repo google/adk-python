@@ -87,8 +87,8 @@ class BaseLlmConnection:
     Yields:
       LlmResponse: The model response.
     """
-    # We need to yield here to help type checkers infer the correct type.
-    yield
+    # A value-bearing yield keeps this abstract method an async generator.
+    yield LlmResponse()
 
   @abstractmethod
   async def close(self) -> None:

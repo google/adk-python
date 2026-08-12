@@ -1078,3 +1078,91 @@ async def test_create_agent_state_event():
   assert event is not None
   assert event.actions.agent_state is None
   assert not event.actions.end_of_agent
+
+
+_OMITTED = object()
+
+# (field name, name of the canonical property that resolves it)
+_CANONICAL_CALLBACK_PROPERTIES = [
+    ('before_agent_callback', 'canonical_before_agent_callbacks'),
+    ('after_agent_callback', 'canonical_after_agent_callbacks'),
+]
+
+
+@pytest.mark.parametrize(
+    'field_name, property_name', _CANONICAL_CALLBACK_PROPERTIES
+)
+@pytest.mark.parametrize('value', [_OMITTED, None], ids=['omitted', 'none'])
+def test_canonical_agent_callbacks_unset_resolves_to_empty_list(
+    field_name, property_name, value
+):
+  """Callers iterate the canonical list directly, so it is never None."""
+  kwargs = {} if value is _OMITTED else {field_name: value}
+  agent = _TestingAgent(name='test_agent', **kwargs)
+
+  assert getattr(agent, property_name) == []
+
+
+@pytest.mark.parametrize(
+    'field_name, property_name', _CANONICAL_CALLBACK_PROPERTIES
+)
+def test_canonical_agent_callbacks_single_callable_resolves_to_one_element_list(
+    field_name, property_name
+):
+  """A bare callable is wrapped so callers only ever handle the list form."""
+  agent = _TestingAgent(
+      name='test_agent', **{field_name: _before_agent_callback_noop}
+  )
+
+  assert getattr(agent, property_name) == [_before_agent_callback_noop]
+
+
+@pytest.mark.parametrize(
+    'field_name, property_name', _CANONICAL_CALLBACK_PROPERTIES
+)
+def test_canonical_agent_callbacks_list_keeps_declaration_order(
+    field_name, property_name
+):
+  """Order matters: the chain stops at the first callback that answers."""
+  callbacks = [
+      _before_agent_callback_noop,
+      _async_before_agent_callback_noop,
+  ]
+  agent = _TestingAgent(name='test_agent', **{field_name: callbacks})
+
+  assert getattr(agent, property_name) == [
+      _before_agent_callback_noop,
+      _async_before_agent_callback_noop,
+  ]
+
+
+def test_find_agent_prefers_self_over_same_named_descendant(
+    request: pytest.FixtureRequest,
+):
+  """find_agent matches self first; only find_sub_agent skips self."""
+  shared_name = f'{request.function.__name__}_shared_name'
+  descendant = _TestingAgent(name=shared_name)
+  agent = _TestingAgent(name=shared_name, sub_agents=[descendant])
+
+  assert agent.find_agent(shared_name) is agent
+  assert agent.find_sub_agent(shared_name) is descendant
+
+
+def test_find_agent_with_duplicate_sub_agent_names_returns_the_first(
+    request: pytest.FixtureRequest,
+):
+  """Duplicate names only warn; the earlier sub-agent shadows the later."""
+  duplicate_name = f'{request.function.__name__}_duplicate'
+  first = _TestingAgent(name=duplicate_name, description='first')
+  second = _TestingAgent(name=duplicate_name, description='second')
+
+  parent = _TestingAgent(
+      name=f'{request.function.__name__}_parent',
+      sub_agents=[first, second],
+  )
+
+  assert parent.sub_agents[0] is first
+  assert parent.sub_agents[1] is second
+  assert first.parent_agent is parent
+  assert second.parent_agent is parent
+  assert parent.find_agent(duplicate_name) is first

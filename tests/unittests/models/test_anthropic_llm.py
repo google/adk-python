@@ -45,6 +45,17 @@ import httpx
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def placeholder_anthropic_api_key(monkeypatch):
+  """Keeps client construction off whatever credential this machine has.
+
+  Patching `_anthropic_client` evaluates the cached property, which builds a
+  real client, so the tests below need some credential resolvable - and it
+  must be this placeholder rather than a developer's own key.
+  """
+  monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder-not-a-real-key")
+
+
 @pytest.fixture
 def generate_content_response():
   return anthropic_types.Message(
@@ -142,9 +153,10 @@ def test_claude_anthropic_client_creation_with_full_resource_name():
 
 def test_supported_models():
   models = Claude.supported_models()
-  assert len(models) == 2
+  assert len(models) == 3
   assert models[0] == r"claude-3-.*"
   assert models[1] == r"claude-.*-4.*"
+  assert models[2] == r"claude-.*-5.*"
 
 
 function_declaration_test_cases = [
@@ -653,6 +665,48 @@ async def test_anthropic_llm_generate_content_async(
       assert responses[0].content.parts[0].text == "Hello, how can I help you?"
 
 
+@pytest.mark.asyncio
+async def test_generate_content_async_collects_declarations_from_all_tools(
+    generate_content_response,
+):
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  llm_request = LlmRequest(
+      contents=[Content(role="user", parts=[Part.from_text(text="Run both")])],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="first_tool")
+                  ]
+              ),
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="second_tool")
+                  ]
+              ),
+          ]
+      ),
+  )
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=generate_content_response
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  assert [tool["name"] for tool in kwargs["tools"]] == [
+      "first_tool",
+      "second_tool",
+  ]
+
+
 def test_claude_vertex_client_uses_tracking_headers():
   """Tests that Claude vertex client is called with tracking headers."""
   with mock.patch.object(
@@ -814,8 +868,23 @@ def test_part_to_message_block_with_pdf_mime_type_parameters():
   assert isinstance(result, dict)
   assert result["type"] == "document"
   assert result["source"]["type"] == "base64"
-  assert result["source"]["media_type"] == "application/pdf; name=doc.pdf"
+  assert result["source"]["media_type"] == "application/pdf"
   assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
+@pytest.mark.parametrize("mime_type", ["image/png", "application/pdf"])
+def test_part_to_message_block_rejects_media_without_data(mime_type):
+  part = Part(inline_data=types.Blob(mime_type=mime_type))
+
+  with pytest.raises(ValueError, match="require.*data"):
+    part_to_message_block(part)
+
+
+def test_part_to_message_block_rejects_unsupported_image_mime_type():
+  part = Part(inline_data=types.Blob(mime_type="image/bmp", data=b"bitmap"))
+
+  with pytest.raises(ValueError, match="Unsupported Anthropic image MIME"):
+    part_to_message_block(part)
 
 
 content_to_message_param_test_cases = [
@@ -1698,6 +1767,100 @@ def test_message_to_generate_content_response_no_cache_read_tokens():
   assert response.usage_metadata.cached_content_token_count is None
 
 
+def _message_with_usage(
+    usage: anthropic_types.Usage,
+) -> anthropic_types.Message:
+  """Builds a minimal text-only Message carrying the given usage."""
+  return anthropic_types.Message(
+      id="msg_usage",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=usage,
+  )
+
+
+@pytest.mark.parametrize(
+    "output_tokens, thinking_tokens, expected_candidates, expected_thoughts",
+    [
+        (100, 60, 40, 60),
+        (20, 0, 20, 0),
+        (20, None, 20, None),
+        # Defensive: the two counters should never disagree, but a thinking
+        # count above the inclusive total must not make candidates negative.
+        (20, 50, 0, 20),
+    ],
+)
+def test_message_to_generate_content_response_splits_thinking_tokens(
+    output_tokens, thinking_tokens, expected_candidates, expected_thoughts
+):
+  """Thinking tokens move out of the candidate count into the thoughts count."""
+  details = (
+      None
+      if thinking_tokens is None
+      else anthropic_types.OutputTokensDetails(thinking_tokens=thinking_tokens)
+  )
+  message = _message_with_usage(
+      anthropic_types.Usage(
+          input_tokens=10,
+          output_tokens=output_tokens,
+          output_tokens_details=details,
+      )
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert response.usage_metadata.candidates_token_count == expected_candidates
+  assert response.usage_metadata.thoughts_token_count == expected_thoughts
+
+
+def test_message_to_generate_content_response_thinking_tokens_not_double_counted():
+  """Candidate and thought counts stay disjoint, so the summed total holds."""
+  from google.adk.telemetry._token_usage import TokenUsage
+
+  message = _message_with_usage(
+      anthropic_types.Usage(
+          input_tokens=10,
+          output_tokens=100,
+          output_tokens_details=anthropic_types.OutputTokensDetails(
+              thinking_tokens=60
+          ),
+      )
+  )
+
+  usage_metadata = message_to_generate_content_response(message).usage_metadata
+
+  # Anthropic bills 10 in and 100 out, 60 of which are thinking; neither the
+  # total nor the downstream output aggregation may count those 60 twice.
+  assert usage_metadata.thoughts_token_count == 60
+  assert usage_metadata.total_token_count == 110
+  assert TokenUsage(usage_metadata).output_token_count == 100
+  assert TokenUsage(usage_metadata).input_token_count == 10
+
+
+def test_message_to_generate_content_response_prompt_count_includes_cache_tokens():
+  """Cache-read and cache-creation tokens are part of the prompt count."""
+  message = _message_with_usage(
+      anthropic_types.Usage(
+          input_tokens=10,
+          output_tokens=20,
+          cache_read_input_tokens=75,
+          cache_creation_input_tokens=15,
+      )
+  )
+
+  usage_metadata = message_to_generate_content_response(message).usage_metadata
+
+  assert usage_metadata.prompt_token_count == 100
+  assert usage_metadata.cached_content_token_count == 75
+  assert usage_metadata.total_token_count == 120
+
+
 @pytest.mark.parametrize(
     "stop_reason, expected_finish_reason",
     [
@@ -1962,6 +2125,88 @@ async def test_streaming_thinking_yields_partial_and_final():
 
   assert final.usage_metadata.prompt_token_count == 15
   assert final.usage_metadata.candidates_token_count == 10
+
+
+@pytest.mark.asyncio
+async def test_streaming_reports_thinking_tokens_disjoint_from_candidates():
+  """The final streamed usage splits thinking tokens out of the candidates."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              usage=anthropic_types.Usage(
+                  input_tokens=15,
+                  output_tokens=0,
+                  cache_read_input_tokens=5,
+                  cache_creation_input_tokens=0,
+              )
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.ThinkingBlock(
+              thinking="", signature="", type="thinking"
+          ),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.ThinkingDelta(
+              thinking="ponder.", type="thinking_delta"
+          ),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="content_block_start",
+          index=1,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=1,
+          delta=anthropic_types.TextDelta(text="42.", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=1),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=anthropic_types.MessageDeltaUsage(
+              output_tokens=100,
+              output_tokens_details=anthropic_types.OutputTokensDetails(
+                  thinking_tokens=60
+              ),
+          ),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="What?")])],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(thinking_budget=5000),
+      ),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(request, stream=True)
+    ]
+
+  usage_metadata = responses[-1].usage_metadata
+  assert usage_metadata.prompt_token_count == 20
+  assert usage_metadata.cached_content_token_count == 5
+  assert usage_metadata.thoughts_token_count == 60
+  assert usage_metadata.candidates_token_count == 40
+  assert usage_metadata.total_token_count == 120
 
 
 @pytest.mark.asyncio
@@ -2857,3 +3102,157 @@ async def test_streaming_wraps_anthropic_rate_limit_error():
 
   assert "docs.anthropic.com/en/api/errors#http-errors" in str(excinfo.value)
   assert "rate limited" in str(excinfo.value)
+
+
+@pytest.fixture
+def no_anthropic_credentials(
+    placeholder_anthropic_api_key, monkeypatch, tmp_path
+):
+  """An environment where the Anthropic SDK can resolve no credential at all.
+
+  Clears every credential environment variable the SDK reads and points the
+  home directory at an empty one, so a developer who happens to be signed in
+  on this machine does not make these tests pass or fail by accident. Takes
+  the placeholder-key fixture as an argument only to run after it, undoing it.
+  """
+  del placeholder_anthropic_api_key
+  for name in (
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_PROFILE",
+      "ANTHROPIC_CONFIG_DIR",
+      "ANTHROPIC_IDENTITY_TOKEN",
+      "ANTHROPIC_IDENTITY_TOKEN_FILE",
+      "ANTHROPIC_FEDERATION_RULE_ID",
+      "ANTHROPIC_ORGANIZATION_ID",
+  ):
+    monkeypatch.delenv(name, raising=False)
+  for name in ("HOME", "USERPROFILE", "APPDATA"):
+    monkeypatch.setenv(name, str(tmp_path))
+
+
+def test_anthropic_client_raises_when_sdk_resolves_no_credential(
+    no_anthropic_credentials,
+):
+  """A missing credential names the variable instead of failing mid-request."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  with pytest.raises(ValueError) as exc_info:
+    _ = llm._anthropic_client
+
+  message = str(exc_info.value)
+  assert "ANTHROPIC_API_KEY" in message
+  assert "export ANTHROPIC_API_KEY=" in message
+
+
+def test_anthropic_client_created_from_api_key_env_var(
+    no_anthropic_credentials, monkeypatch
+):
+  monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder-not-a-real-key")
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  assert llm._anthropic_client.api_key
+
+
+def test_anthropic_client_created_from_auth_token_env_var(
+    no_anthropic_credentials, monkeypatch
+):
+  """The SDK also authenticates from a bearer token; do not reject it."""
+  monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "placeholder-not-a-real-token")
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  assert llm._anthropic_client.auth_token
+
+
+def test_anthropic_client_created_from_sdk_credential_provider(
+    no_anthropic_credentials, monkeypatch
+):
+  """A provider-backed credential counts even with no API key or token.
+
+  Workload identity is used here because it needs nothing on disk, but the
+  same path is what a developer signed in through the Anthropic command line
+  gets: the SDK hands back a credential provider, not an API key.
+  """
+  monkeypatch.setenv("ANTHROPIC_FEDERATION_RULE_ID", "placeholder-rule")
+  monkeypatch.setenv("ANTHROPIC_ORGANIZATION_ID", "placeholder-org")
+  monkeypatch.setenv("ANTHROPIC_IDENTITY_TOKEN", "placeholder-not-a-real-token")
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  client = llm._anthropic_client
+  assert client.api_key is None
+  assert client.auth_token is None
+  assert client.credentials is not None
+
+
+def test_anthropic_client_accepts_credential_resolved_without_env_vars(
+    no_anthropic_credentials,
+):
+  """Nothing in the environment, yet the SDK resolved a credential anyway.
+
+  This is the on-disk profile case: the client is authenticated, so building
+  it must succeed rather than report a missing key.
+  """
+  resolved_client = mock.Mock(
+      api_key=None, auth_token=None, credentials=mock.Mock()
+  )
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  with mock.patch.object(
+      anthropic_llm, "AsyncAnthropic", return_value=resolved_client
+  ):
+    assert llm._anthropic_client is resolved_client
+
+
+def test_claude_vertex_error_explains_direct_anthropic_alternative(monkeypatch):
+  """The Vertex error says it resolved to Vertex and what to do instead."""
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+  model = Claude(model="claude-3-5-sonnet-v2@20241022")
+
+  with pytest.raises(ValueError) as exc_info:
+    _ = model._anthropic_client
+
+  message = str(exc_info.value)
+  assert "claude-3-5-sonnet-v2@20241022" in message
+  assert "Vertex AI" in message
+  assert "GOOGLE_CLOUD_PROJECT" in message
+  assert "GOOGLE_CLOUD_LOCATION" in message
+  assert "ANTHROPIC_API_KEY" in message
+  # The hint must not send a reader at a symbol the models package does not
+  # export.
+  assert "AnthropicLlm" not in message
+  assert "anthropic_llm" not in message
+
+
+@pytest.mark.parametrize(
+    "adk_role,expected_claude_role",
+    [
+        ("model", "assistant"),
+        ("assistant", "assistant"),
+        ("user", "user"),
+        # Tool results arrive on a non-model role; Claude only accepts them
+        # inside a user turn, so everything that is not the model maps to
+        # "user" rather than being passed through.
+        ("function", "user"),
+        ("tool", "user"),
+        ("", "user"),
+        (None, "user"),
+    ],
+)
+def test_to_claude_role_collapses_roles_to_user_or_assistant(
+    adk_role, expected_claude_role
+):
+  """Claude only has two roles; only the model turn becomes "assistant"."""
+  assert anthropic_llm.to_claude_role(adk_role) == expected_claude_role
+
+
+def test_anthropic_config_allows_thinking_budget_without_thinking_level():
+  """The thinking_level guard must not reject a plain thinking_budget."""
+  config = AnthropicGenerateContentConfig(
+      effort="high",
+      thinking_config=types.ThinkingConfig(thinking_budget=2048),
+  )
+
+  assert config.effort == "high"
+  assert config.thinking_config.thinking_budget == 2048
+  assert config.thinking_config.thinking_level is None

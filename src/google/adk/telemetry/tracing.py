@@ -198,10 +198,13 @@ def trace_tool_call(
     invocation_context: Optional invocation context. Forwarded so its
       ``run_config.telemetry`` overrides the env-var content toggle.
   """
+  span = span or trace.get_current_span()
+  if not span.is_recording():
+    return
+
   telemetry_config = _telemetry_config_from_invocation_context(
       invocation_context
   )
-  span = span or trace.get_current_span()
 
   span.set_attribute(GEN_AI_OPERATION_NAME, "execute_tool")
 
@@ -299,10 +302,13 @@ def trace_merged_tool_calls(
     invocation_context: Optional invocation context. Forwarded so its
       ``run_config.telemetry`` overrides the env-var content toggle.
   """
+  span = trace.get_current_span()
+  if not span.is_recording():
+    return
+
   telemetry_config = _telemetry_config_from_invocation_context(
       invocation_context
   )
-  span = trace.get_current_span()
 
   span.set_attribute(GEN_AI_OPERATION_NAME, "execute_tool")
   span.set_attribute(GEN_AI_TOOL_NAME, "(merged tools)")
@@ -313,14 +319,14 @@ def trace_merged_tool_calls(
   # consumer reads them.
   span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
-  try:
-    function_response_event_json = function_response_event.model_dumps_json(
-        exclude_none=True
-    )
-  except Exception:  # pylint: disable=broad-exception-caught
-    function_response_event_json = "<not serializable>"
-
   if telemetry_config.should_add_content_to_legacy_spans:
+    try:
+      function_response_event_json = function_response_event.model_dump_json(
+          exclude_none=True
+      )
+    except Exception:  # pylint: disable=broad-exception-caught
+      function_response_event_json = "<not serializable>"
+
     span.set_attribute(
         "gcp.vertex.agent.tool_response",
         function_response_event_json,
@@ -417,7 +423,12 @@ def trace_call_llm(
 
   if telemetry_config.should_add_content_to_legacy_spans:
     try:
-      llm_response_json = llm_response.model_dump_json(exclude_none=True)
+      response_for_trace = llm_response
+      if llm_response.content is not None:
+        response_for_trace = llm_response.model_copy(
+            update={"content": _summarize_inline_data(llm_response.content)}
+        )
+      llm_response_json = response_for_trace.model_dump_json(exclude_none=True)
     except Exception:  # pylint: disable=broad-exception-caught
       llm_response_json = "<not serializable>"
 
@@ -438,6 +449,37 @@ def trace_call_llm(
         "gen_ai.response.finish_reasons",
         [finish_reason_str],
     )
+
+
+def _summarize_inline_data(content: types.Content) -> types.Content:
+  """Returns ``content`` with inline binary parts reduced to a description.
+
+  Serializing a part in JSON mode base64-encodes its ``inline_data``, so a
+  live session's audio chunks would otherwise be copied wholesale onto a span
+  attribute. Only the mime type and byte count are kept.
+
+  Args:
+    content: The content to summarize.
+
+  Returns:
+    A copy of ``content`` whose inline binary parts carry a text description
+    instead of the bytes.
+  """
+  parts = []
+  for part in content.parts or []:
+    blob = part.inline_data
+    if blob is None:
+      parts.append(part)
+      continue
+    parts.append(
+        types.Part(
+            text=(
+                f"<inline_data: {blob.mime_type or 'unknown'},"
+                f" {len(blob.data or b'')} bytes>"
+            )
+        )
+    )
+  return types.Content(role=content.role, parts=parts)
 
 
 def trace_send_data(
@@ -469,7 +511,7 @@ def trace_send_data(
     span.set_attribute(
         "gcp.vertex.agent.data",
         safe_json_serialize([
-            types.Content(role=content.role, parts=content.parts).model_dump(
+            _summarize_inline_data(content).model_dump(
                 exclude_none=True, mode="json"
             )
             for content in data

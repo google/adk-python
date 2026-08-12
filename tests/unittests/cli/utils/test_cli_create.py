@@ -558,3 +558,105 @@ def test_get_gcp_region_from_gcloud_fail(
       ),
   )
   assert _onboarding.get_gcp_region_from_gcloud() == ""
+
+
+# express_mode_action telemetry
+def _onboard_and_get_root_meta() -> Dict[str, Any]:
+  """Runs onboarding under a nested context and returns the *root* context meta.
+
+  `TelemetryGroup` reads `express_mode_action` off the root context, so the
+  assertion has to be made there rather than on the subcommand context the
+  onboarding code happens to run under.
+  """
+  root_ctx = click.Context(click.Command("adk"))
+  sub_ctx = click.Context(click.Command("create"), parent=root_ctx)
+  with root_ctx, sub_ctx:
+    try:
+      _onboarding.handle_login_with_google()
+    except click.Abort:
+      pass
+  return root_ctx.meta
+
+
+def test_express_action_recorded_for_existing_express(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Reusing an existing Express project records EXISTING_EXPRESS."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(
+      gcp_utils,
+      "retrieve_express_project",
+      lambda: {"api_key": "key", "project_id": "proj", "region": "us-central1"},
+  )
+
+  meta = _onboard_and_get_root_meta()
+  assert meta.get("express_mode_action") == "EXISTING_EXPRESS"
+
+
+def test_express_action_recorded_for_manual_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Entering a project ID by hand records MANUAL_PROJECT."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  prompts = iter(["1", "test-proj", "us-east1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+
+  meta = _onboard_and_get_root_meta()
+  assert meta.get("express_mode_action") == "MANUAL_PROJECT"
+
+
+def test_express_action_recorded_for_manual_project_from_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Opting out of the project list to type an ID records MANUAL_PROJECT."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(
+      gcp_utils, "list_gcp_projects", lambda limit: [("p1", "Project 1")]
+  )
+  prompts = iter([0, "manual-proj", "us-east1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+
+  meta = _onboard_and_get_root_meta()
+  assert meta.get("express_mode_action") == "MANUAL_PROJECT"
+
+
+def test_express_action_recorded_for_create_express(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Signing up for a new Express project records CREATE_EXPRESS."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  monkeypatch.setattr(gcp_utils, "check_express_eligibility", lambda: True)
+  monkeypatch.setattr(click, "confirm", lambda *a, **k: True)
+  prompts = iter(["2", "1"])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: next(prompts))
+  monkeypatch.setattr(
+      gcp_utils,
+      "sign_up_express",
+      lambda location="us-central1": {
+          "api_key": "new-key",
+          "project_id": "new-proj",
+          "region": location,
+      },
+  )
+  monkeypatch.setattr(_onboarding, "get_gcp_project_from_gcloud", lambda: "")
+
+  meta = _onboard_and_get_root_meta()
+  assert meta.get("express_mode_action") == "CREATE_EXPRESS"
+
+
+def test_express_action_recorded_for_abandon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Choosing to abandon onboarding records ABANDON."""
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(gcp_utils, "retrieve_express_project", lambda: None)
+  monkeypatch.setattr(gcp_utils, "list_gcp_projects", lambda limit: [])
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
+
+  meta = _onboard_and_get_root_meta()
+  assert meta.get("express_mode_action") == "ABANDON"

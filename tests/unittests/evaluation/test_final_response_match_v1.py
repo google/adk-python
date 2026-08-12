@@ -17,6 +17,7 @@ from __future__ import annotations
 import unicodedata
 
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import EvalStatus
@@ -369,3 +370,42 @@ def test_rouge_evaluator_rejects_mismatched_invocation_lengths(
     rouge_evaluator.evaluate_invocations(
         [actual] * actual_count, [expected] * expected_count
     )
+
+
+@pytest.mark.parametrize(
+    "candidate, expected_status",
+    [
+        pytest.param("This is a test.", EvalStatus.PASSED, id="at-or-above"),
+        pytest.param("Nothing in common.", EvalStatus.FAILED, id="below"),
+    ],
+)
+@pytest.mark.parametrize(
+    "eval_metric",
+    [
+        pytest.param(
+            EvalMetric(
+                metric_name="response_match_score",
+                criterion=BaseCriterion(threshold=0.8),
+            ),
+            id="criterion-only",
+        ),
+        pytest.param(
+            EvalMetric(metric_name="response_match_score", threshold=0.8),
+            id="deprecated-threshold-only",
+        ),
+    ],
+)
+def test_rouge_evaluator_grades_with_either_threshold_source(
+    eval_metric: EvalMetric, candidate: str, expected_status: EvalStatus
+):
+  rouge_evaluator = RougeEvaluator(eval_metric)
+  actual, expected = _create_test_invocations(candidate, "This is a test.")
+
+  evaluation_result = rouge_evaluator.evaluate_invocations([actual], [expected])
+
+  assert evaluation_result.overall_eval_status == expected_status
+
+
+def test_rouge_evaluator_rejects_metric_without_a_threshold():
+  with pytest.raises(ValueError, match="requires a threshold"):
+    RougeEvaluator(EvalMetric(metric_name="response_match_score"))

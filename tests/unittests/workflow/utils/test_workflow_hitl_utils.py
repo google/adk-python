@@ -24,9 +24,12 @@ from google.adk.workflow.utils._workflow_hitl_utils import create_auth_request_e
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
 from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
+from google.adk.workflow.utils._workflow_hitl_utils import has_auth_credential
 from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
+from google.adk.workflow.utils._workflow_hitl_utils import process_auth_resume
 from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
 from google.genai import types
+import pytest
 
 # --- create_request_input_event ---
 
@@ -214,6 +217,120 @@ class TestCreateAuthRequestEvent:
     # python-mode dump leaves auth_scheme.type a live enum, breaking json.dumps
     json.dumps(fc.args)
     assert fc.args["authConfig"]["authScheme"]["type"] == "oauth2"
+
+
+# --- process_auth_resume / has_auth_credential ---
+
+
+def _api_key_auth_config(credential_key: str = "node-cred"):
+  """An API-key AuthConfig, the simplest resume shape (no token exchange)."""
+  from fastapi.openapi.models import APIKey
+  from fastapi.openapi.models import APIKeyIn
+  from google.adk.auth.auth_credential import AuthCredential
+  from google.adk.auth.auth_credential import AuthCredentialTypes
+  from google.adk.auth.auth_tool import AuthConfig
+
+  return AuthConfig(
+      auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key="placeholder",
+      ),
+      credential_key=credential_key,
+  )
+
+
+def _empty_state():
+  from google.adk.sessions.state import State
+
+  return State(value={}, delta={})
+
+
+class TestProcessAuthResume:
+
+  @pytest.mark.asyncio
+  async def test_plain_value_becomes_api_key_credential(self):
+    """A bare string resume response is interpreted per the raw credential type."""
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+
+    auth_config = _api_key_auth_config()
+    state = _empty_state()
+    assert has_auth_credential(auth_config, state) is False
+
+    await process_auth_resume("user-supplied-key", auth_config, state)
+
+    stored = state["temp:node-cred"]
+    assert stored.auth_type == AuthCredentialTypes.API_KEY
+    assert stored.api_key == "user-supplied-key"
+    assert has_auth_credential(auth_config, state) is True
+
+  @pytest.mark.asyncio
+  async def test_auth_config_response_stores_exchanged_credential(self):
+    """A full AuthConfig response is accepted and its exchanged credential kept."""
+    from google.adk.auth.auth_credential import AuthCredential
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+
+    auth_config = _api_key_auth_config()
+    state = _empty_state()
+    response = auth_config.model_copy(deep=True)
+    response.exchanged_auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY,
+        api_key="from-web-flow",
+    )
+
+    await process_auth_resume(
+        response.model_dump(mode="json", exclude_none=True, by_alias=True),
+        auth_config,
+        state,
+    )
+
+    assert state["temp:node-cred"].api_key == "from-web-flow"
+
+  @pytest.mark.asyncio
+  async def test_response_cannot_redirect_storage_to_another_credential_key(
+      self,
+  ):
+    """The node's own credential_key wins over one supplied in the response.
+
+    Otherwise a resume payload could park the credential under a key the node
+    never reads, leaving the node permanently unauthenticated.
+    """
+    from google.adk.auth.auth_credential import AuthCredential
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+
+    auth_config = _api_key_auth_config(credential_key="node-cred")
+    state = _empty_state()
+    response = _api_key_auth_config(credential_key="unrelated-cred")
+    response.exchanged_auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY,
+        api_key="k",
+    )
+
+    await process_auth_resume(
+        response.model_dump(mode="json", exclude_none=True, by_alias=True),
+        auth_config,
+        state,
+    )
+
+    assert "temp:node-cred" in state
+    assert "temp:unrelated-cred" not in state
+    assert has_auth_credential(auth_config, state) is True
+
+
+class TestHasAuthCredential:
+
+  @pytest.mark.asyncio
+  async def test_false_for_a_different_credential_key(self):
+    """Credentials are looked up per credential_key, not shared across configs."""
+
+    auth_config = _api_key_auth_config(credential_key="node-cred")
+    other_config = _api_key_auth_config(credential_key="other-cred")
+    state = _empty_state()
+
+    await process_auth_resume("key", auth_config, state)
+
+    assert has_auth_credential(auth_config, state) is True
+    assert has_auth_credential(other_config, state) is False
 
 
 #

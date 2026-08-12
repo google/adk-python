@@ -18,6 +18,8 @@ model: gemini-2.5-flash
 instruction: |
   You are my workspace assistant. Use the provided tools to read, search, comment on, or create
   Notion pages. Ask clarifying questions when unsure.
+# Declaring a stdio MCP server launches `command` as a local process when this
+# config loads, so it requires ADK_ALLOW_CONFIG_STDIO_MCP_SERVERS=1. See README.
 tools:
 - name: MCPToolset
   args:

@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.6.3](https://github.com/google/adk-python/compare/v2.6.2...v2.6.3) (2026-08-07)
+
+
+### Bug Fixes
+
+* gate --sandbox-launcher behind gcloud beta run deploy ([8120292](https://github.com/google/adk-python/commit/8120292dd108704f5ed071b30dab2e8f019078ff))
+
+## [2.6.2](https://github.com/google/adk-python/compare/v2.6.1...v2.6.2) (2026-08-03)
+
+### Bug Fixes
+
+* **cli:** update gcloud command to use beta flag ([9630559](https://github.com/google/adk-python/commit/9630559830da28a187ba75ef1c26c64780dd7987))
+
 ## [2.6.1](https://github.com/google/adk-python/compare/v2.6.0...v2.6.1) (2026-07-30)
 
 

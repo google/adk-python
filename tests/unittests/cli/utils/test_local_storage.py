@@ -295,11 +295,12 @@ async def test_per_agent_artifact_service_reads_legacy_shared_root(
 
 
 @pytest.mark.asyncio
-async def test_per_agent_artifact_service_reads_unscoped_legacy_layout(
+async def test_per_agent_artifact_service_ignores_unscoped_legacy_layout(
     tmp_path: Path,
 ) -> None:
   scope = {"app_name": "agent_a", "user_id": "user", "session_id": "session"}
   # Releases before artifacts were app-scoped wrote straight under `users`.
+  # Every agent shares this root, so that data belongs to no single agent.
   version_dir = (
       tmp_path
       / ".adk"
@@ -327,9 +328,8 @@ async def test_per_agent_artifact_service_reads_unscoped_legacy_layout(
 
   service = PerAgentFileArtifactService(agents_root=tmp_path)
 
-  loaded = await service.load_artifact(filename="legacy.txt", **scope)
-  assert loaded == types.Part(text="old")
-  assert await service.list_artifact_keys(**scope) == ["legacy.txt"]
+  assert await service.load_artifact(filename="legacy.txt", **scope) is None
+  assert await service.list_artifact_keys(**scope) == []
 
 
 @pytest.mark.asyncio

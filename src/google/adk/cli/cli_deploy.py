@@ -665,6 +665,7 @@ def to_cloud_run(
     a2a: bool = False,
     trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
+    with_cloud_run_sandbox: bool = False,
 ) -> None:
   """Deploys an agent to Google Cloud Run.
 
@@ -701,6 +702,8 @@ def to_cloud_run(
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
+    with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
+      execution.
   """
   app_name = app_name or os.path.basename(agent_folder)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
@@ -780,13 +783,18 @@ def to_cloud_run(
     adk_managed_args = {'--source', '--project', '--port', '--verbosity'}
     if region:
       adk_managed_args.add('--region')
+    if with_cloud_run_sandbox:
+      adk_managed_args.add('--sandbox-launcher')
 
     # Validate that extra gcloud args don't conflict with ADK-managed args
     _validate_gcloud_extra_args(extra_gcloud_args, adk_managed_args)
 
     # Build the command with extra gcloud args
-    gcloud_cmd = [
-        _GCLOUD_CMD,
+    gcloud_cmd = [_GCLOUD_CMD]
+    if with_cloud_run_sandbox:
+      # --sandbox-launcher is only supported on the beta release track.
+      gcloud_cmd.append('beta')
+    gcloud_cmd += [
         'run',
         'deploy',
         service_name,
@@ -799,8 +807,9 @@ def to_cloud_run(
         str(port),
         '--verbosity',
         log_level.lower() if log_level else verbosity,
-        '--sandbox-launcher',
     ]
+    if with_cloud_run_sandbox:
+      gcloud_cmd.append('--sandbox-launcher')
 
     # Handle labels specially - merge user labels with ADK label
     user_labels = []
@@ -1447,7 +1456,7 @@ def to_gke(
     image_name = f'gcr.io/{project}/{service_name}'
     subprocess.run(
         [
-            'gcloud',
+            _GCLOUD_CMD,
             'builds',
             'submit',
             '--tag',
@@ -1517,7 +1526,7 @@ spec:
     click.echo('  - Getting cluster credentials...')
     subprocess.run(
         [
-            'gcloud',
+            _GCLOUD_CMD,
             'container',
             'clusters',
             'get-credentials',

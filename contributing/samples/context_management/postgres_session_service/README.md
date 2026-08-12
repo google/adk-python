@@ -43,7 +43,7 @@ pip install google-adk asyncpg greenlet
 
 | Column        | Type         | Description                 |
 | ------------- | ------------ | --------------------------- |
-| id            | VARCHAR(256) | Event UUID (PK)             |
+| id            | VARCHAR(128) | Event UUID (PK)             |
 | app_name      | VARCHAR(128) | Application identifier (PK) |
 | user_id       | VARCHAR(128) | User identifier (PK)        |
 | session_id    | VARCHAR(128) | Session reference (PK, FK)  |

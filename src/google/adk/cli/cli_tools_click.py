@@ -293,8 +293,12 @@ class TelemetryGroup(click.Group):
       )
       raise
     except BaseException as e:
-      exit_code = 1
-      exception_type = type(e).__name__
+      if isinstance(e, KeyboardInterrupt) and ctx.meta.get("server_started"):
+        exit_code = 0
+        exception_type = ""
+      else:
+        exit_code = 1
+        exception_type = type(e).__name__
       raise
     finally:
       # Exclude help requests and telemetry command group itself
@@ -341,6 +345,7 @@ class TelemetryGroup(click.Group):
                   exit_code=exit_code,
                   duration_ms=int((time.monotonic() - start_time) * 1000),
                   exception_type=exception_type,
+                  express_mode_action=ctx.meta.get("express_mode_action", ""),
               )
         except Exception:  # pylint: disable=broad-except
           # Failsafe: telemetry errors must never crash the CLI
@@ -1096,6 +1101,33 @@ def eval_options():
   return decorator
 
 
+def _resolve_eval_config_file_path(
+    config_file_path: Optional[str],
+    eval_set_file_or_id_to_evals: dict[str, list[str]],
+) -> Optional[str]:
+  """Returns config file path for eval command.
+
+  If `config_file_path` is provided, it is used as-is. If omitted and evals are
+  loaded from a single file, this returns
+  `<eval_set_file_dir>/test_config.json`. Otherwise, returns None.
+  """
+  if config_file_path:
+    return config_file_path
+
+  if not eval_set_file_or_id_to_evals:
+    return None
+
+  if len(eval_set_file_or_id_to_evals) != 1:
+    return None
+
+  first_eval_set = next(iter(eval_set_file_or_id_to_evals))
+  if os.path.exists(first_eval_set):
+    eval_set_dir = os.path.dirname(first_eval_set)
+    return os.path.join(eval_set_dir, "test_config.json")
+
+  return None
+
+
 @main.command("eval", cls=HelpfulCommand)
 @feature_options()
 @click.argument(
@@ -1202,20 +1234,6 @@ def cli_eval(
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
-  eval_config = get_evaluation_criteria_or_default(config_file_path)
-  print(f"Using evaluation criteria: {eval_config}")
-  eval_metrics = get_eval_metrics_from_config(eval_config)
-
-  # Live mode is resolved from the eval config, consistent with how
-  # `user_simulator_config` and other eval settings are sourced.
-  if eval_config.live_model_config:
-    inference_config = InferenceConfig(
-        use_live=True,
-        live_timeout_seconds=eval_config.live_model_config.timeout_seconds,
-    )
-  else:
-    inference_config = InferenceConfig(use_live=False)
-
   app, root_agent = asyncio.run(get_app_or_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
@@ -1237,6 +1255,23 @@ def cli_eval(
   eval_set_file_or_id_to_evals = parse_and_get_evals_to_run(
       eval_set_file_path_or_id
   )
+  resolved_config_file_path = _resolve_eval_config_file_path(
+      config_file_path=config_file_path,
+      eval_set_file_or_id_to_evals=eval_set_file_or_id_to_evals,
+  )
+  eval_config = get_evaluation_criteria_or_default(resolved_config_file_path)
+  print(f"Using evaluation criteria: {eval_config}")
+  eval_metrics = get_eval_metrics_from_config(eval_config)
+
+  # Live mode is resolved from the eval config, consistent with how
+  # `user_simulator_config` and other eval settings are sourced.
+  if eval_config.live_model_config:
+    inference_config = InferenceConfig(
+        use_live=True,
+        live_timeout_seconds=eval_config.live_model_config.timeout_seconds,
+    )
+  else:
+    inference_config = InferenceConfig(use_live=False)
 
   # Check if the first entry is a file that exists, if it does then we assume
   # rest of the entries are also files. We enforce this assumption in the if
@@ -2004,24 +2039,8 @@ def cli_web(
 """,
         fg="green",
     )
-    try:
-      if (
-          ctx
-          and read_telemetry_consent() is True
-          and not ctx.meta.get("telemetry_recorded")
-      ):
-        start_time = ctx.meta.get("telemetry_start_time", time.monotonic())
-        collector = MetricsCollector()
-        collector.record_command_run(
-            command="web",
-            exit_code=0,
-            duration_ms=int((time.monotonic() - start_time) * 1000),
-            exception_type="",
-        )
-        ctx.meta["telemetry_recorded"] = True
-    except Exception:  # pylint: disable=broad-except
-      # Failsafe: telemetry errors must never crash the CLI
-      pass
+    if ctx:
+      ctx.meta["server_started"] = True
     yield  # Startup is done, now app is running
     click.secho(
         """
@@ -2172,24 +2191,8 @@ def cli_api_server(
 
   @asynccontextmanager
   async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    try:
-      if (
-          ctx
-          and read_telemetry_consent() is True
-          and not ctx.meta.get("telemetry_recorded")
-      ):
-        start_time = ctx.meta.get("telemetry_start_time", time.monotonic())
-        collector = MetricsCollector()
-        collector.record_command_run(
-            command="api_server",
-            exit_code=0,
-            duration_ms=int((time.monotonic() - start_time) * 1000),
-            exception_type="",
-        )
-        ctx.meta["telemetry_recorded"] = True
-    except Exception:  # pylint: disable=broad-except
-      # Failsafe: telemetry errors must never crash the CLI
-      pass
+    if ctx:
+      ctx.meta["server_started"] = True
     yield
 
   config = uvicorn.Config(
@@ -2343,6 +2346,16 @@ def cli_api_server(
     default=False,
     help="Optional. Whether to enable A2A endpoint.",
 )
+@click.option(
+    "--with_cloud_run_sandbox",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help=(
+        "Optional. Whether to enable the Cloud Run sandbox for code"
+        " execution. Requires the 'gcloud beta run deploy' release track."
+    ),
+)
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
@@ -2387,6 +2400,7 @@ def cli_deploy_cloud_run(
     use_local_storage: bool = False,
     a2a: bool = False,
     trigger_sources: str | None = None,
+    with_cloud_run_sandbox: bool = False,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2411,6 +2425,7 @@ def cli_deploy_cloud_run(
 
     cli_deploy.to_cloud_run(
         agent_folder=agent,
+        with_cloud_run_sandbox=with_cloud_run_sandbox,
         project=project,
         region=region,
         service_name=service_name,

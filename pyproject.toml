@@ -64,18 +64,31 @@ optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
 ]
+# Union of every extra that unlocks a runtime feature. Excludes benchmark,
+# community, dev, docs and test, which exist to build, test or document ADK
+# itself.
 optional-dependencies.all = [
+  "a2a-sdk>=0.3.4,<2",
+  "anthropic>=0.78",
   "anyio>=4.9,<5",
+  "beautifulsoup4>=3.2.2",
+  "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # chromadb/pypika fail on 3.12+
   "daytona>=0.191",
+  "docker>=7",
   "e2b>=2,<3",
+  "gepa>=0.1",
+  "google-antigravity>=0.1,<0.2",
   "google-api-python-client>=2.157,<3",
-  "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
+  "google-cloud-agentidentitycredentials>=0.1,<0.2",
+  "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
   "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
   "google-cloud-eventarc-publishing>=0.10,<1",
+  "google-cloud-firestore>=2.11,<3",
+  "google-cloud-iamconnectorcredentials>=0.1,<0.2",
   "google-cloud-parametermanager>=0.4,<1",
   "google-cloud-pubsub>=2,<3",
   "google-cloud-resource-manager>=1.12,<2",
@@ -83,16 +96,39 @@ optional-dependencies.all = [
   "google-cloud-spanner>=3.56,<4",
   "google-cloud-speech>=2.30,<3",
   "google-cloud-storage>=2.18,<4",
+  "google-cloud-texttospeech>=2.37",
+  "jinja2>=3.1.4,<4",
+  "k8s-agent-sandbox>=0.1.1.post3",
+  "kubernetes>=29",
+  "langgraph>=1.0.10,<2",
+  "langgraph-checkpoint>=4.1.1,<5",
+  "litellm>=1.84",
+  "llama-index-embeddings-google-genai>=0.3",
+  "llama-index-readers-file>=0.4",
+  "lxml>=5.3",
   "mcp>=1.24,<2",
+  "nltk!=3.10.1",
+  "oci>=2.126",
+  "openai>=2.20,<3",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
+  "opentelemetry-instrumentation-grpc>=0.43b0,<1",
+  "opentelemetry-instrumentation-httpx>=0.54b0,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
+  "pandas>=2.2.3",
+  "protobuf>=6",
   "pyarrow>=14",
+  "pypika>=0.50",
   "python-dateutil>=2.9.0.post0,<3",
+  "rouge-score>=0.1.2",
+  "slack-bolt>=1.22",
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
+  "tabulate>=0.9",
+  "toolbox-adk>=1,<2",
 ]
 optional-dependencies.antigravity = [
   "google-antigravity>=0.1,<0.2",
@@ -148,6 +184,7 @@ optional-dependencies.eval = [
   "google-cloud-aiplatform[evaluation]>=1.148",
   "google-cloud-texttospeech>=2.37",
   "jinja2>=3.1.4,<4",                           # For eval template rendering
+  "nltk!=3.10.1",                               # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
@@ -166,6 +203,7 @@ optional-dependencies.extensions = [
   "llama-index-embeddings-google-genai>=0.3",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
+  "nltk!=3.10.1",                                                    # Transitive via llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
   "pypika>=0.50",
   "toolbox-adk>=1,<2",
@@ -235,6 +273,7 @@ optional-dependencies.test = [
   "google-cloud-spanner>=3.56,<4",
   "google-cloud-speech>=2.30,<3",
   "google-cloud-storage>=2.18,<4",
+  "hypothesis>=6",
   "jinja2>=3.1.4,<4",
   "kubernetes>=29",
   "langchain-community>=0.3.17",
@@ -244,6 +283,7 @@ optional-dependencies.test = [
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
   "mcp>=1.24,<2",
+  "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
@@ -311,12 +351,13 @@ known_third_party = [ "a2a", "google.adk" ]
 # Real words/identifiers that codespell misreads as typos:
 #   hel/serie/strin -> substrings in test fixtures; te -> local variable;
 #   rouge -> the ROUGE metric; unparseable -> valid spelling variant;
-#   re-use/re-used -> intentional hyphenation; lamda -> Google LaMDA project.
-ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda"
+#   re-use/re-used -> intentional hyphenation; lamda -> Google LaMDA project;
+#   astroid -> AST library used by pylint.
+ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda,astroid"
 # CHANGELOG.md is generated from commit messages; lockfiles, notebooks, JSON
 # fixtures, bundled JS/source maps, and the vendored CLI browser bundle are
 # generated or data files, not prose we own.
-skip = "*CHANGELOG.md,*.lock,*.ipynb,*.json,*.js,*.map,*/cli/browser/*"
+skip = "*CHANGELOG.md,*.lock,*.ipynb,*.json,*.js,*.map,*/cli/browser/*,constraints-*.txt"
 
 [tool.mypy]
 mypy_path = [ "src" ]

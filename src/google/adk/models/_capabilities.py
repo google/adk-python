@@ -19,7 +19,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
-from ..utils.model_name_utils import is_gemini_eap_or_2_or_above
+from ..utils.model_name_utils import is_gemini_model
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -44,7 +44,7 @@ def gemini_output_schema_and_tools(model_name: str) -> bool:
   """
   return (
       get_google_llm_variant() == GoogleLLMVariant.VERTEX_AI
-      and is_gemini_eap_or_2_or_above(model_name)
+      and is_gemini_model(model_name)
   )
 
 

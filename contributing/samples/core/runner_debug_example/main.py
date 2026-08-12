@@ -170,11 +170,13 @@ async def example_with_run_config():
   runner = InMemoryRunner(agent=agent.root_agent)
 
   # Custom configuration - RunConfig supports:
-  # - support_cfc: Control function calling behavior
+  # - max_llm_calls: Cap on the total number of LLM calls in a run
+  # - support_cfc: Compositional Function Calling (SSE only, routes the run
+  #   through the LIVE API)
   # - response_modalities: Output modalities (for LIVE API)
   # - speech_config: Speech settings (for LIVE API)
   config = RunConfig(
-      support_cfc=False,  # Disable controlled function calling
+      max_llm_calls=10,  # Stop the run after 10 LLM calls
   )
 
   await runner.run_debug(
@@ -200,7 +202,7 @@ async def example_comparison():
   session = await session_service.create_session(
       app_name=APP_NAME, user_id=USER_ID, session_id="default"
   )
-  content = types.Content(role="user", parts=[types.Part.from_text("Hi")])
+  content = types.Content(role="user", parts=[types.Part.from_text(text="Hi")])
   async for event in runner.run_async(
       user_id=USER_ID, session_id=session.id, new_message=content
   ):
