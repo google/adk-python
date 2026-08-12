@@ -20,6 +20,7 @@ from google.adk.models.apigee_llm import ApigeeLlm
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.lite_llm import LiteLlm
+from google.adk.models.orca_router_llm import OrcaRouterLlm
 import pytest
 
 
@@ -57,6 +58,19 @@ def test_match_gemini_family(model_name):
 def test_match_claude_family(model_name):
   """Test that Claude models are resolved correctly."""
   assert models.LLMRegistry.resolve(model_name) is Claude
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'orcarouter/anthropic/claude-haiku-4.5',
+        'orcarouter/anthropic/claude-sonnet-4-20250514',
+        'orcarouter:anthropic/claude-opus-4-20250514',
+    ],
+)
+def test_match_orca_router_family(model_name):
+  """Test that OrcaRouter models are resolved to the named provider."""
+  assert models.LLMRegistry.resolve(model_name) is OrcaRouterLlm
 
 
 @pytest.mark.parametrize(

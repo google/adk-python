@@ -37,6 +37,7 @@ if TYPE_CHECKING:
   from .gemma_llm import Gemma3Ollama
   from .google_llm import Gemini
   from .lite_llm import LiteLlm
+  from .orca_router_llm import OrcaRouterLlm
 
 __all__ = [
     'AnthropicGenerateContentConfig',
@@ -49,6 +50,7 @@ __all__ = [
     'LLMRegistry',
     'LiteLlm',
     'LlmCapabilities',
+    'OrcaRouterLlm',
 ]
 
 _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
@@ -96,6 +98,12 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
             r'ai21/.*',
         ],
         'lite_llm',
+    ),
+    'OrcaRouterLlm': (
+        [
+            r'orcarouter/.*',
+        ],
+        'orca_router_llm',
     ),
     'OCIGenAILlm': (
         [
