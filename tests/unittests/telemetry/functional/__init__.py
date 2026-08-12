@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The cases driving the node scenario: a workflow run end to end."""
+"""The harness the telemetry functional tests are driven by.
 
-from __future__ import annotations
+The tests themselves stay in ``tests/unittests/telemetry``; this package is
+what they are built out of:
 
-from .functional._recording import FunctionalTestCase
-from .functional_test_cases import semconv_matrix
-
-ALL_NODE_CASES: list[FunctionalTestCase] = semconv_matrix("node")
+* ``_scenarios``: the end-to-end runs to record, and the telemetry setup.
+* ``_digests``: the recorded telemetry, as comparable values.
+* ``_recording``: one case, and replaying it.
+* ``_aclosing``: the async-generator assertions.
+"""
