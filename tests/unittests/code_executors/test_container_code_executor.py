@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the ContainerCodeExecutor container hardening defaults."""
+"""Tests for the ContainerCodeExecutor container hardening and lifecycle."""
 
+import gc
 import os
 import signal
 import subprocess
@@ -21,6 +22,7 @@ import sys
 import textwrap
 import time
 from unittest import mock
+import weakref
 
 from google.adk.code_executors import container_code_executor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
@@ -66,6 +68,44 @@ def test_container_network_can_be_explicitly_enabled(mock_docker):
 
   _, kwargs = client.containers.run.call_args
   assert not kwargs['network_disabled']
+
+
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+def test_executor_is_not_retained_by_atexit(mock_docker):
+  """The atexit handler must not keep the executor (or its container) alive.
+
+  The exit handler is registered via a ``weakref.proxy`` so that a discarded
+  executor can be garbage collected instead of surviving (together with its
+  running Docker container) until interpreter exit. Registering a bound method
+  would keep a strong reference in the process-global atexit registry and leak
+  every executor ever created.
+  """
+  client = _mock_docker_client()
+  mock_docker.from_env.return_value = client
+
+  executor = ContainerCodeExecutor(image='test-image')
+  ref = weakref.ref(executor)
+
+  del executor
+  gc.collect()
+
+  assert ref() is None
+
+
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+def test_cleanup_stops_and_removes_container(mock_docker):
+  """The exit handler still stops and removes a live executor's container."""
+  client = _mock_docker_client()
+  container = client.containers.run.return_value
+  mock_docker.from_env.return_value = client
+
+  executor = ContainerCodeExecutor(image='test-image')
+  # Name-mangled staticmethod registered with atexit; invoke it directly to
+  # emulate interpreter exit while the executor is still referenced.
+  ContainerCodeExecutor._ContainerCodeExecutor__cleanup_container(executor)
+
+  container.stop.assert_called_once()
+  container.remove.assert_called_once()
 
 
 def _executed_command(container) -> list[str]:

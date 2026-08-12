@@ -19,6 +19,7 @@ import logging
 import os
 from typing import Any
 from typing import cast
+import weakref
 
 import docker
 from docker.client import DockerClient
@@ -226,8 +227,15 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     # Initialize the container.
     self.__init_container()
 
-    # Close the container when the on exit.
-    atexit.register(self.__cleanup_container)
+    # Close the container on interpreter exit. Register a weakref.proxy so the
+    # process-global atexit registry does not keep a strong reference to this
+    # executor: otherwise every ContainerCodeExecutor ever created (and its
+    # long-lived Docker container) would be retained until interpreter exit,
+    # even after the executor is no longer used. A server that builds executors
+    # per app/agent/session would leak them unboundedly.
+    atexit.register(
+        ContainerCodeExecutor.__cleanup_container, weakref.proxy(self)
+    )
 
   @override
   def execute_code(
@@ -323,12 +331,23 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     # Verify the container is able to run python3.
     self._verify_python_installation()
 
-  def __cleanup_container(self) -> None:
-    """Closes the container on exit."""
-    if not self._container:
+  @staticmethod
+  def __cleanup_container(self: ContainerCodeExecutor) -> None:
+    """Closes the container on exit.
+
+    Registered with ``atexit`` via a ``weakref.proxy`` so it does not keep the
+    executor alive. If the executor has already been garbage collected the
+    proxy is dead and there is nothing left to clean up.
+    """
+    try:
+      container = self._container
+    except ReferenceError:
+      return
+
+    if not container:
       return
 
     logger.info('[Cleanup] Stopping the container...')
-    self._container.stop()
-    self._container.remove()
-    logger.info('Container %s stopped and removed.', self._container.id)
+    container.stop()
+    container.remove()
+    logger.info('Container %s stopped and removed.', container.id)
