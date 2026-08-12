@@ -585,8 +585,7 @@ class McpTool(BaseAuthenticatedTool):
             or not self._credentials_manager._auth_config
         ):
           error_msg = (
-              "Cannot find corresponding auth scheme for API key credential"
-              f" {credential}"
+              "Cannot find corresponding auth scheme for API key credential."
           )
           logger.error(error_msg)
           raise ValueError(error_msg)

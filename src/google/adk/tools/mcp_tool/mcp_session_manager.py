@@ -709,6 +709,22 @@ class MCPSessionManager:
     else:
       return 'session_no_headers'
 
+  def _session_key_for(self, headers: Optional[Dict[str, str]] = None) -> str:
+    """Returns the pool key that ``create_session`` would use for these headers.
+
+    Two calls that produce the same key talk to the same MCP server with the
+    same effective credentials, so callers can use it to key per-connection
+    caches without duplicating the header-merging rules.
+
+    Args:
+        headers: Optional headers to merge with the connection headers, exactly
+          as they would be passed to ``create_session``.
+
+    Returns:
+        The session pool key.
+    """
+    return self._generate_session_key(self._merge_headers(headers))
+
   def _merge_headers(
       self, additional_headers: Optional[Dict[str, str]] = None
   ) -> Optional[Dict[str, str]]:
@@ -765,9 +781,7 @@ class MCPSessionManager:
     Returns:
         The SessionContext if a matching session exists, None otherwise.
     """
-    merged_headers = self._merge_headers(headers)
-    session_key = self._generate_session_key(merged_headers)
-    return self._session_contexts.get(session_key)
+    return self._session_contexts.get(self._session_key_for(headers))
 
   async def _cleanup_session(
       self,

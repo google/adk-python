@@ -66,7 +66,11 @@ repos:
         exclude: ^scripts/
       - id: update-constraints
         name: update-constraints
-        entry: ./scripts/update_constraints.sh
+        # --check reuses the resolution date recorded in each constraints file.
+        # Update mode recomputes it as "today minus 4 days" and rewrites every
+        # header, which trips pre-commit's "files were modified by this hook".
+        # Refresh the pins by running the script without --check.
+        entry: ./scripts/update_constraints.sh --check
         language: system
         files: ^(pyproject\.toml|constraints-.*\.txt)$
         pass_filenames: false

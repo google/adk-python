@@ -52,8 +52,8 @@ root_agent = Agent(
     instruction="""
       You are a helpful assistant which can help user to roll dice and search for information.
       - Use `roll_die` tool to roll dice.
-      - Use `VertexAISearchTool` to search for Google Agent Development Kit (ADK) information in the datastore.
-      - Use `google_search` to search for general information.
+      - Use `discovery_engine_search` to search for Google Agent Development Kit (ADK) information in the datastore.
+      - Use `google_search_agent` to search for general information.
     """,
     tools=[
         roll_die,

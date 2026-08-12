@@ -509,8 +509,21 @@ class Gemini(BaseLlm):
       llm_request.live_connect_config.safety_settings = (
           llm_request.config.safety_settings
       )
-    logger.debug('Connecting to live with llm_request:%s', llm_request)
-    logger.debug('Live connect config: %s', llm_request.live_connect_config)
+    logger.debug(
+        'Connecting to live with model: %s, contents: %d, response modalities:'
+        ' %s',
+        llm_request.model,
+        len(llm_request.contents or []),
+        llm_request.live_connect_config.response_modalities,
+    )
+    # Callers may put credentials in per-request headers, so the transport
+    # options never go to the log.
+    logger.debug(
+        'Live connect config: %s',
+        llm_request.live_connect_config.model_copy(
+            update={'http_options': None}
+        ),
+    )
     model = llm_request.model
     if model is None:
       raise ValueError('Live Gemini requests require a model name.')
@@ -662,11 +675,14 @@ def _build_request_log(req: LlmRequest) -> str:
             exclude={
                 'system_instruction': True,
                 'tools': tools_exclusion if req.config.tools else True,
+                # Callers may put credentials in per-request headers, so the
+                # transport options never go to the log.
+                'http_options': True,
             },
         )
     )
   except Exception:
-    config_log = repr(req.config)
+    config_log = repr(req.config.model_copy(update={'http_options': None}))
 
   return f"""
 LLM Request:

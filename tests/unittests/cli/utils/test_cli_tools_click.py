@@ -36,6 +36,7 @@ from click.testing import CliRunner
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
+from google.adk.cli.utils import gcp_utils
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
@@ -261,6 +262,56 @@ def test_cli_telemetry_captures_subcommand_flags(
     assert "--api_key" in source["command_run"]["flags"]
     # Ensure sanitized positional placeholder is logged
     assert "<app_name>" in source["command_run"]["flags"]
+
+
+def test_cli_telemetry_records_express_mode_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """An onboarding choice must reach the logged command_run.
+
+  This is the only test covering the hand-off as a whole: `_onboarding` writes
+  the action into the Click context and `TelemetryGroup` reads it back out. A
+  typo in the meta key on either side passes every other test in the suite.
+  """
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._metrics_collector"
+      ".MetricsCollector._is_rate_limited",
+      lambda: True,
+  )
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.TELEMETRY_SESSIONS_DIR",
+      str(tmp_path / "telemetry_sessions"),
+  )
+
+  # Drive `create` into the "3. Login with Google" branch, which finds an
+  # existing Express project and records EXISTING_EXPRESS.
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(
+      gcp_utils,
+      "retrieve_express_project",
+      lambda: {"api_key": "key", "project_id": "proj", "region": "us-central1"},
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["create", "--model", "gemini-2.0", str(tmp_path / "new_app")],
+      input="3\n",
+  )
+  assert result.exit_code == 0
+
+  event = json.loads(temp_queue.read_text().splitlines()[0])
+  source = json.loads(event["source_extension_json"])
+  assert source["command_run"]["express_mode_action"] == "EXISTING_EXPRESS"
 
 
 def test_cli_telemetry_skips_when_already_recorded(

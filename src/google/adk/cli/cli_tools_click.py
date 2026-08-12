@@ -345,6 +345,7 @@ class TelemetryGroup(click.Group):
                   exit_code=exit_code,
                   duration_ms=int((time.monotonic() - start_time) * 1000),
                   exception_type=exception_type,
+                  express_mode_action=ctx.meta.get("express_mode_action", ""),
               )
         except Exception:  # pylint: disable=broad-except
           # Failsafe: telemetry errors must never crash the CLI

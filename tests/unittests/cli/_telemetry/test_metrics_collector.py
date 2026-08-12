@@ -106,6 +106,7 @@ class CliMetricsTest(unittest.TestCase):
           exit_code=0,
           duration_ms=450,
           exception_type="",
+          express_mode_action="CREATE_EXPRESS",
       )
 
     # Verify it's written in queue file
@@ -121,6 +122,9 @@ class CliMetricsTest(unittest.TestCase):
       self.assertEqual(source["command_run"]["subcommand"], "create")
       self.assertEqual(source["command_run"]["exit_code"], 0)
       self.assertEqual(source["command_run"]["duration_ms"], 450)
+      self.assertEqual(
+          source["command_run"]["express_mode_action"], "CREATE_EXPRESS"
+      )
       self.assertEqual(
           source["command_run"]["flags"],
           ["--debug", "--project", "-v", "--user"],

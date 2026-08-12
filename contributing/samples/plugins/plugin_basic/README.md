@@ -36,8 +36,6 @@ can achieve a wide range of functionalities.
 
 ### Run the agent
 
-**Note: Plugin is NOT supported in `adk web`yet.**
-
 Use following command to run the main.py
 
 ```bash

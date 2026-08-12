@@ -605,8 +605,10 @@ class TestMCPTool:
     with pytest.raises(
         ValueError,
         match="Cannot find corresponding auth scheme for API key credential",
-    ):
+    ) as exc_info:
       await tool._get_headers(tool_context, credential)
+
+    assert "my_api_key" not in str(exc_info.value)
 
   @pytest.mark.asyncio
   async def test_get_headers_api_key_without_credentials_manager_raises_error(
@@ -629,8 +631,10 @@ class TestMCPTool:
     with pytest.raises(
         ValueError,
         match="Cannot find corresponding auth scheme for API key credential",
-    ):
+    ) as exc_info:
       await tool._get_headers(tool_context, credential)
+
+    assert "my_api_key" not in str(exc_info.value)
 
   @pytest.mark.asyncio
   async def test_get_headers_no_credential(self):

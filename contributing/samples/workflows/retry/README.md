@@ -8,7 +8,7 @@ The ADK framework allows you to easily handle these scenarios by wrapping the un
 
 When a node raises an exception, the framework automatically emits an error event (with `error_code` and `error_message`) so the error is visible in the event stream. If the node has retry configured, it will be retried after the backoff delay.
 
-This sample demonstrates a `get_weather` node that intentionally fails randomly (70% chance) by raising an `HTTPError` representing a 500 Internal Server error. The framework gracefully recovers and eventually succeeds, passing the result to `report_weather`.
+This sample demonstrates a `get_weather` node that intentionally fails randomly (70% chance) by raising an `HTTPError` representing a 500 Internal Server error. The framework gracefully recovers and usually succeeds within the five configured attempts, passing the result to `report_weather`.
 
 ## Graph
 

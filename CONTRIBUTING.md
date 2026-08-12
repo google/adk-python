@@ -263,23 +263,37 @@ has resources that are helpful for contributors.
 ## AI-Assisted Development
 
 This repo includes built-in skills for AI coding agents
-(Antigravity, Gemini CLI, and others) to help with ADK development:
+(Antigravity, Gemini CLI, Claude Code, and others) to help with ADK
+development:
 
-- **`setup-dev-env`** — Set up the local development environment:
-  install dependencies, configure pre-commit hooks, and verify
-  the setup.
-
+- **`adk-setup`** — Set up the local development environment: install
+  dependencies, configure pre-commit hooks, verify the setup.
+- **`adk-agent-builder`** — Build, test, and iterate on ADK agents:
+  function nodes, LLM agent nodes, routing, fan-out, human-in-the-loop,
+  and session state.
+- **`adk-architecture`** — ADK internals: the runner, node contracts,
+  context, resumption, observability.
 - **`adk-debug`** — Debug ADK agents: inspect sessions, trace event
   flows, check LLM requests/responses, diagnose tool call issues.
   Supports both `adk web` (browser UI) and `adk run` (CLI) workflows.
+- **`adk-style`** — Codebase conventions: Python idioms, imports,
+  typing, Pydantic usage.
+- **`adk-review`** — Review local changes for errors, style compliance,
+  and missing tests before opening a pull request.
+- **`adk-git`** — Git operations and the commit message conventions
+  this repo uses.
+- **`adk-sample-creator`** — Author a new sample under
+  `contributing/samples/`.
+- **`adk-unit-design`**, **`adk-unit-guide`** — Write code unit design
+  documents and code unit guides.
+- **`adk-verify-snippets`** — Extract the Python code blocks from a
+  Markdown file and check that they still run.
 
-- **`adk-workflow`** — Build graph-based workflow agents: function
-  nodes, LLM agent nodes, edge patterns, routing, parallel processing
-  (fan-out and ParallelWorker), human-in-the-loop, state management,
-  and best practices. Includes reference docs and tested samples.
-
-These skills are in `.agents/skills/` and are automatically available
-when using compatible AI coding tools in this repo.
+These skills live in `.agents/skills/`. Each one is a directory holding
+a `SKILL.md` file plus its reference Markdown, and nothing installs
+them: a coding agent started from a clone of this repo picks them up
+where they are. To use one outside the repo, copy its directory into
+the skills folder your agent reads (commonly `~/.agents/skills/`).
 
 The `AGENTS.md` file provides additional project context that can
 be used as LLM input.

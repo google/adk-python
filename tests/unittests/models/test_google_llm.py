@@ -2744,3 +2744,84 @@ async def test_generate_content_async_stream_skips_response_log_build_above_debu
       assert mock_build.called is should_call
   finally:
     gemini_logger.setLevel(original_level)
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_does_not_log_request_headers(
+    gemini_llm, llm_request, generate_content_response, caplog
+):
+  """Custom headers can carry credentials, so they must stay out of the log."""
+  sentinel = "sentinel-request-credential"
+  llm_request.config.http_options = types.HttpOptions(
+      headers={"Authorization": f"Bearer {sentinel}"}
+  )
+
+  with caplog.at_level(logging.DEBUG, logger="google_adk"):
+    with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+      async def mock_coro():
+        return generate_content_response
+
+      mock_client.aio.models.generate_content.return_value = mock_coro()
+
+      async for _ in gemini_llm.generate_content_async(
+          llm_request, stream=False
+      ):
+        pass
+
+  assert sentinel not in caplog.text
+  # The header is still forwarded to the model API, only the log omits it.
+  config_arg = mock_client.aio.models.generate_content.call_args.kwargs[
+      "config"
+  ]
+  assert (
+      config_arg.http_options.headers["Authorization"] == f"Bearer {sentinel}"
+  )
+  # The log is still emitted and still useful.
+  assert "LLM Request:" in caplog.text
+  assert "'temperature': 0.1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_log_request_headers(
+    gemini_llm, llm_request, caplog
+):
+  """Custom headers can carry credentials, so they must stay out of the log."""
+  sentinel = "sentinel-live-credential"
+  llm_request.config.http_options = types.HttpOptions(
+      headers={"Authorization": f"Bearer {sentinel}"}
+  )
+  llm_request.live_connect_config = types.LiveConnectConfig(
+      response_modalities=[types.Modality.AUDIO],
+      http_options=types.HttpOptions(
+          headers={"Authorization": f"Bearer {sentinel}"}
+      ),
+  )
+
+  mock_live_session = mock.AsyncMock()
+
+  with caplog.at_level(logging.DEBUG, logger="google_adk"):
+    with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+      class MockLiveConnect:
+
+        async def __aenter__(self):
+          return mock_live_session
+
+        async def __aexit__(self, *args):
+          pass
+
+      mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+      async with gemini_llm.connect(llm_request):
+        pass
+
+  assert sentinel not in caplog.text
+  # The header is still forwarded to the live API, only the log omits it.
+  config_arg = mock_live_client.aio.live.connect.call_args.kwargs["config"]
+  assert (
+      config_arg.http_options.headers["Authorization"] == f"Bearer {sentinel}"
+  )
+  # The log is still emitted and still useful.
+  assert "gemini-2.5-flash" in caplog.text
+  assert "Modality.AUDIO" in caplog.text

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 from typing import MutableMapping
 from typing import Optional
 import weakref
@@ -25,6 +26,7 @@ from google.genai import types
 from mcp import types as mcp_types
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp import FastMCP
+from mcp.server.session import ServerSession
 
 from ...agents.base_agent import BaseAgent
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -83,7 +85,7 @@ def _part_to_content(part: types.Part) -> Optional[mcp_types.ContentBlock]:
 async def _run_agent(
     runner: Runner,
     request: str,
-    ctx: Optional[Context] = None,
+    ctx: Optional[Context[ServerSession, Any]] = None,
     sessions: Optional[MutableMapping[object, str]] = None,
 ) -> list[mcp_types.ContentBlock]:
   """Runs the agent for one request and returns its final response content.
@@ -184,7 +186,7 @@ def to_mcp_server(
   sessions: MutableMapping[object, str] = weakref.WeakKeyDictionary()
 
   async def call_agent(
-      request: str, ctx: Context
+      request: str, ctx: Context[ServerSession, Any]
   ) -> list[mcp_types.ContentBlock]:
     return await _run_agent(agent_runner, request, ctx, sessions)
 

@@ -41,9 +41,11 @@ from typing_extensions import override
 from . import _event_converter
 from . import _trajectory_files
 from ...agents.base_agent import BaseAgent
+from ...agents.context import Context
 from ...agents.invocation_context import InvocationContext
 from ...agents.run_config import StreamingMode
 from ...events.event import Event
+from ...utils.content_utils import to_user_content
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -60,6 +62,32 @@ def _derive_conversation_id(session_id: str, agent_name: str) -> str:
   # Hashing keeps the id stable across turns (so trajectories resume) while
   # always satisfying the Antigravity SDK's length and character constraints.
   return hashlib.sha256(f'{session_id}/{agent_name}'.encode()).hexdigest()
+
+
+def _final_model_text(event: Event, author: str) -> str | None:
+  """Returns an event's user-visible model text, or None if it carries none.
+
+  Partials, other authors, and thought/function parts do not count.
+
+  Args:
+    event: The event to inspect.
+    author: The agent name whose events count as model output.
+
+  Returns:
+    The concatenated user-visible text, or None if the event carries none.
+  """
+  if event.partial or event.author != author or not event.content:
+    return None
+  parts = event.content.parts or []
+  chunks = [
+      part.text
+      for part in parts
+      if part.text
+      and not part.thought
+      and not part.function_call
+      and not part.function_response
+  ]
+  return ''.join(chunks) if chunks else None
 
 
 class AntigravityAgent(BaseAgent):
@@ -171,4 +199,54 @@ class AntigravityAgent(BaseAgent):
       )
     _trajectory_files.save_resume_step_index(
         save_dir, conversation_id, max_step_index
+    )
+
+  @override
+  async def _run_impl(
+      self,
+      *,
+      ctx: Context,
+      node_input: Any,
+  ) -> AsyncGenerator[Event, None]:
+    """Runs the agent as a node, threading node_input in and output out.
+
+    Unlike ``BaseAgent._run_impl``, the parent's composed request is used as
+    the prompt, and the final model text is reported as the node's output.
+
+    Args:
+      ctx: The node context for this run.
+      node_input: The parent's composed request, or None for a classic
+        agent-tree run.
+
+    Yields:
+      The agent's events, followed by a trailing event whose ``output`` is the
+      final model text, or the empty string if there was none.
+    """
+    parent_context = ctx.get_invocation_context()
+    if node_input is not None:
+      parent_context = parent_context.model_copy(
+          update={'user_content': to_user_content(node_input)}
+      )
+
+    last_text: str | None = None
+    # Keep in sync with BaseAgent._run_impl: super() cannot be delegated to,
+    # since it re-derives the invocation context and would drop node_input.
+    async for event in self.run_async(parent_context=parent_context):
+      # Preserve author by setting it in context for NodeRunner.
+      if event.author:
+        ctx.event_author = event.author
+      if not event.node_info.path and event.author == self.name:
+        event.node_info.path = ctx.node_path
+      if (text := _final_model_text(event, self.name)) is not None:
+        last_text = text
+      yield event
+
+    # Both assignments are needed: NodeRunner._enrich_event reads
+    # ctx.event_author, and a direct consumer reads author=.
+    ctx.event_author = self.name
+    yield Event(
+        invocation_id=parent_context.invocation_id,
+        author=self.name,
+        branch=parent_context.branch,
+        output=last_text or '',
     )

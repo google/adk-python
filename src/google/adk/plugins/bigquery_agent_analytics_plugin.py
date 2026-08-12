@@ -68,6 +68,7 @@ import uuid
 import weakref
 
 from google.api_core import client_options
+from google.api_core import exceptions as api_exceptions
 from google.api_core.exceptions import InternalServerError
 from google.api_core.exceptions import ServiceUnavailable
 from google.api_core.exceptions import TooManyRequests
@@ -98,13 +99,10 @@ if TYPE_CHECKING:
   from ..events.event import Event
 
 logger: logging.Logger = logging.getLogger("google_adk." + __name__)
-tracer = trace.get_tracer(
-    "google.adk.plugins.bigquery_agent_analytics", __version__
-)
 
 # Bumped when the schema changes (1 → 2 → 3 …). Used as a table
 # label for governance and to decide whether auto-upgrade should run.
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
 _SCHEMA_VERSION_LABEL_KEY = "adk_schema_version"
 
 # ADK 2.0 envelope version. Stamped onto every ADK-enriched row as
@@ -213,8 +211,17 @@ def _safe_callback(
 
 # gRPC Error Codes
 _GRPC_DEADLINE_EXCEEDED = 4
+_GRPC_NOT_FOUND = 5
+_GRPC_ALREADY_EXISTS = 6
+_GRPC_OUT_OF_RANGE = 11
 _GRPC_INTERNAL = 13
 _GRPC_UNAVAILABLE = 14
+
+_LLM_RESPONSE_ERROR_CODES = frozenset(
+    reason.value
+    for reason_type in (types.FinishReason, types.BlockedReason)
+    for reason in reason_type
+)
 
 
 # --- Helper Formatters ---
@@ -1710,6 +1717,14 @@ class BigQueryLoggerConfig:
       batch_flush_interval: Max time to wait before flushing a batch.
       shutdown_timeout: Max time to wait for shutdown.
       queue_max_size: Max size of the in-memory queue.
+      exactly_once_delivery: Use one committed stream per event loop and
+        explicit offsets to prevent ambiguous retries from producing duplicate
+        rows. Stream rotation can consume additional ``CreateWriteStream``
+        quota. This mode is not lossless: batches are dropped after retry
+        exhaustion, offset conflicts, or replacement-stream failures, and events
+        arriving during the 30-second rotation backoff are also dropped. The
+        unconditional ``event_id`` column remains the deduplication key for
+        default-mode writes.
       content_formatter: Optional custom formatter for content.
       gcs_bucket_name: GCS bucket for offloading large content.
       connection_id: BigQuery connection ID for ObjectRef columns.
@@ -1828,6 +1843,11 @@ class BigQueryLoggerConfig:
   # behavior.
   final_response_tool_names: frozenset[str] = frozenset()
   flush_on_run_end: bool = True
+  # Opt-in duplicate prevention for retries within a live processor. See the
+  # class docstring for stream-quota and data-loss boundaries.  Declared last
+  # so that adding it leaves the positional index of every pre-existing field
+  # unchanged; keep new fields at the end for the same reason.
+  exactly_once_delivery: bool = False
 
 
 # ==============================================================================
@@ -2188,6 +2208,8 @@ class BatchProcessor:
       retry_config: RetryConfig,
       queue_max_size: int,
       shutdown_timeout: float,
+      exactly_once_delivery: bool = False,
+      create_stream: Optional[Callable[[], Coroutine[Any, Any, str]]] = None,
   ):
     """Initializes the instance.
 
@@ -2200,6 +2222,10 @@ class BatchProcessor:
         retry_config: Retry configuration.
         queue_max_size: Max size of the in-memory queue.
         shutdown_timeout: Max time to wait for shutdown.
+        exactly_once_delivery: Whether to use committed-stream offsets to
+          prevent retry duplicates. Replacement streams consume stream-creation
+          quota, and unrecoverable/ambiguous batches may still be dropped.
+        create_stream: Async factory for replacement committed streams.
     """
     self.write_client = write_client
     self.arrow_schema = arrow_schema
@@ -2208,6 +2234,14 @@ class BatchProcessor:
     self.flush_interval = flush_interval
     self.retry_config = retry_config
     self.shutdown_timeout = shutdown_timeout
+    self.exactly_once_delivery = exactly_once_delivery
+    self._create_stream = create_stream
+    self._next_offset = 0
+    self._offset_desynced = False
+    self._rotation_retry_at = 0.0
+    self._stream_finalized = False
+    self._pending_finalize_streams: set[str] = set()
+    self._finalize_lock = asyncio.Lock()
 
     self._visual_builder = _is_visual_builder.get()
 
@@ -2235,6 +2269,7 @@ class BatchProcessor:
         "unexpected_error": 0,
         "shutdown_timeout": 0,
         "shutdown_cancelled": 0,
+        "offset_conflict": 0,
     }
 
   async def flush(self) -> None:
@@ -2279,6 +2314,8 @@ class BatchProcessor:
       ``shutdown_timeout``: rows still queued when shutdown timed out.
       ``shutdown_cancelled``: rows still queued when shutdown was
         cancelled from outside (e.g. a host close timeout).
+      ``offset_conflict``: a committed stream rejected its offset, or a
+        replacement stream could not be created before the next batch.
 
     Returns:
         A copy of the per-reason drop counters.
@@ -2432,14 +2469,120 @@ class BatchProcessor:
         else:
           break
 
+  async def _finalize_stream(self) -> None:
+    """Best-effort, idempotent finalization for the active committed stream."""
+    if not self.exactly_once_delivery:
+      return
+    async with self._finalize_lock:
+      streams = set(self._pending_finalize_streams)
+      if not self._stream_finalized:
+        streams.add(self.write_stream)
+      if not streams:
+        return
+      for stream_name in streams:
+        try:
+          await self.write_client.finalize_write_stream(name=stream_name)
+        except asyncio.CancelledError:
+          raise
+        except Exception as e:
+          # Keep failed names pending so a later shutdown/close can retry.
+          self._pending_finalize_streams.add(stream_name)
+          logger.warning(
+              "Could not finalize BigQuery committed stream %s: %s",
+              stream_name,
+              e,
+          )
+          continue
+        self._pending_finalize_streams.discard(stream_name)
+        if stream_name == self.write_stream:
+          self._stream_finalized = True
+
+  def _desync_stream(self) -> None:
+    """Prevents later batches from guessing the next committed offset."""
+    self._offset_desynced = True
+
+  def _confirm_committed_delivery(
+      self, offset: Optional[int], row_count: int
+  ) -> None:
+    """Advances a committed offset, or poisons an invalid local state."""
+    if offset is None:
+      logger.error(
+          "Committed-stream delivery was confirmed without a batch offset;"
+          " rotating the stream before the next batch."
+      )
+      self._desync_stream()
+      return
+    self._next_offset = offset + row_count
+
+  def _handle_already_exists(
+      self,
+      offset: Optional[int],
+      row_count: int,
+      *,
+      had_ambiguous_send: bool,
+  ) -> None:
+    """Confirms this batch's retry or rejects an occupied foreign offset."""
+    if had_ambiguous_send:
+      self._confirm_committed_delivery(offset, row_count)
+      return
+    logger.warning(
+        "BigQuery committed stream reported an occupied offset %s before"
+        " this batch had an ambiguous append; rotating the stream.",
+        offset,
+    )
+    self._desync_stream()
+    self._dropped["offset_conflict"] += row_count
+
+  async def _ensure_writable_stream(self, row_count: int) -> bool:
+    """Rotates a desynchronized committed stream before another append."""
+    if not self.exactly_once_delivery or not self._offset_desynced:
+      return True
+    now = time.monotonic()
+    if self._create_stream is None or now < self._rotation_retry_at:
+      self._dropped["offset_conflict"] += row_count
+      return False
+
+    old_stream = self.write_stream
+    # Finalization is optional for committed streams and may block on the
+    # network. Preserve the old name for bounded shutdown cleanup, but do not
+    # stall the single batch writer before creating its replacement.
+    self._pending_finalize_streams.add(old_stream)
+    try:
+      new_stream = await self._create_stream()
+    except asyncio.CancelledError:
+      raise
+    except Exception as e:
+      self._rotation_retry_at = now + 30.0
+      self._dropped["offset_conflict"] += row_count
+      logger.error(
+          "Could not replace desynchronized BigQuery stream %s; dropping %d"
+          " row(s): %s",
+          old_stream,
+          row_count,
+          e,
+      )
+      return False
+
+    self.write_stream = new_stream
+    self._next_offset = 0
+    self._offset_desynced = False
+    self._rotation_retry_at = 0.0
+    self._stream_finalized = False
+    return True
+
   async def _write_rows_with_retry(self, rows: list[dict[str, Any]]) -> None:
     """Writes a batch of rows to BigQuery with retry logic.
 
     Args:
         rows: list of row dictionaries to write.
     """
+    if not await self._ensure_writable_stream(len(rows)):
+      return
+
     attempt = 0
     delay = self.retry_config.initial_delay
+    offset_for_batch = self._next_offset if self.exactly_once_delivery else None
+    had_ambiguous_send = False
 
     try:
       arrow_batch = self._prepare_arrow_batch(rows)
@@ -2456,6 +2599,8 @@ class BatchProcessor:
           write_stream=self.write_stream,
           trace_id=f"{trace_id_prefix}/{__version__}",
       )
+      if offset_for_batch is not None:
+        req.offset = offset_for_batch
       req.arrow_rows.writer_schema.serialized_schema = serialized_schema
       req.arrow_rows.rows.serialized_record_batch = serialized_batch
     except Exception as e:
@@ -2470,12 +2615,17 @@ class BatchProcessor:
       return
 
     while attempt <= self.retry_config.max_retries:
+      request_sent = False
+      definitive_rejection = False
       try:
 
         async def requests_iter() -> AsyncIterator[Any]:
+          nonlocal request_sent
+          request_sent = True
           yield req
 
         async def perform_write() -> None:
+          nonlocal definitive_rejection
           # The AppendRows streaming RPC does not auto-populate the
           # request-routing header, so writes to any region other than
           # the US multiregion fail with a "session not found" /
@@ -2501,6 +2651,19 @@ class BatchProcessor:
                   error_code,
                   error_message,
               )
+              definitive_rejection = True
+              if self.exactly_once_delivery:
+                if error_code == _GRPC_ALREADY_EXISTS:
+                  self._handle_already_exists(
+                      offset_for_batch,
+                      len(rows),
+                      had_ambiguous_send=had_ambiguous_send,
+                  )
+                  return
+                if error_code in (_GRPC_NOT_FOUND, _GRPC_OUT_OF_RANGE):
+                  self._desync_stream()
+                  self._dropped["offset_conflict"] += len(rows)
+                  return
               if error_code in [
                   _GRPC_DEADLINE_EXCEEDED,
                   _GRPC_INTERNAL,
@@ -2524,22 +2687,58 @@ class BatchProcessor:
                     "%d row(s) dropped due to a non-retryable BigQuery error.",
                     len(rows),
                 )
+              if self.exactly_once_delivery and had_ambiguous_send:
+                self._desync_stream()
               self._dropped["non_retryable"] += len(rows)
               return
+            if self.exactly_once_delivery:
+              self._confirm_committed_delivery(offset_for_batch, len(rows))
+            return
+          # An empty response stream leaves the append outcome unknown.
+          if self.exactly_once_delivery:
+            raise asyncio.TimeoutError("BigQuery returned no append response")
           return
 
         await asyncio.wait_for(perform_write(), timeout=30.0)
         return
 
+      except api_exceptions.AlreadyExists as e:
+        if self.exactly_once_delivery:
+          self._handle_already_exists(
+              offset_for_batch,
+              len(rows),
+              had_ambiguous_send=had_ambiguous_send,
+          )
+          return
+        self._dropped["unexpected_error"] += len(rows)
+        logger.error("Unexpected BigQuery Write API error: %s", e)
+        return
+      except (api_exceptions.NotFound, api_exceptions.OutOfRange) as e:
+        if self.exactly_once_delivery:
+          self._desync_stream()
+          self._dropped["offset_conflict"] += len(rows)
+          logger.warning(
+              "BigQuery committed stream rejected offset %s: %s",
+              offset_for_batch,
+              e,
+          )
+          return
+        self._dropped["unexpected_error"] += len(rows)
+        logger.error("Unexpected BigQuery Write API error: %s", e)
+        return
       except (
           ServiceUnavailable,
           TooManyRequests,
           InternalServerError,
           asyncio.TimeoutError,
       ) as e:
+        if request_sent and not definitive_rejection:
+          had_ambiguous_send = True
         attempt += 1
         if attempt > self.retry_config.max_retries:
           self._dropped["retry_exhausted"] += len(rows)
+          if self.exactly_once_delivery and had_ambiguous_send:
+            self._desync_stream()
           logger.error(
               "BigQuery Batch Dropped after %s attempts. Last error: %s."
               " Total rows dropped (retry exhausted): %s",
@@ -2563,6 +2762,10 @@ class BatchProcessor:
         delay *= self.retry_config.multiplier
       except Exception as e:
         self._dropped["unexpected_error"] += len(rows)
+        if request_sent and not definitive_rejection:
+          had_ambiguous_send = True
+        if self.exactly_once_delivery and had_ambiguous_send:
+          self._desync_stream()
         logger.error(
             "Unexpected BigQuery Write API error (Dropping batch): %s."
             " Total rows dropped (unexpected error): %s",
@@ -2591,6 +2794,44 @@ class BatchProcessor:
     return drained
 
   async def shutdown(self, timeout: float = 5.0) -> None:
+    """Drains queued rows and finalizes an opt-in committed stream."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    try:
+      await self._shutdown_worker(timeout)
+    finally:
+      await self._finalize_stream_before(deadline)
+
+  async def _finalize_stream_before(self, deadline: float) -> None:
+    """Finalizes without exceeding the caller's remaining close budget."""
+    if not self.exactly_once_delivery:
+      return
+    if self._stream_finalized and not self._pending_finalize_streams:
+      return
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+      logger.warning(
+          "No shutdown budget remained to finalize BigQuery committed stream"
+          " %s.",
+          self.write_stream,
+      )
+      return
+
+    finalize_task = asyncio.create_task(self._finalize_stream())
+    try:
+      await asyncio.wait_for(asyncio.shield(finalize_task), timeout=remaining)
+    except asyncio.TimeoutError:
+      finalize_task.cancel()
+      await asyncio.gather(finalize_task, return_exceptions=True)
+      logger.warning(
+          "Timed out finalizing BigQuery committed stream %s.",
+          self.write_stream,
+      )
+    except asyncio.CancelledError:
+      finalize_task.cancel()
+      await asyncio.gather(finalize_task, return_exceptions=True)
+      raise
+
+  async def _shutdown_worker(self, timeout: float = 5.0) -> None:
     """Shuts down the BatchProcessor, draining the queue.
 
     Args:
@@ -2666,6 +2907,14 @@ class BatchProcessor:
         logger.error("Error during BatchProcessor shutdown: %s", e)
 
   async def close(self) -> None:
+    """Closes queued work and finalizes an opt-in committed stream."""
+    deadline = time.monotonic() + max(0.0, self.shutdown_timeout)
+    try:
+      await self._close_worker()
+    finally:
+      await self._finalize_stream_before(deadline)
+
+  async def _close_worker(self) -> None:
     """Closes the processor and flushes remaining items."""
     if self._shutdown:
       return
@@ -3290,6 +3539,16 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           ),
       ),
       bigquery.SchemaField(
+          "event_id",
+          "STRING",
+          mode="NULLABLE",
+          description=(
+              "A unique identifier assigned before enqueue. Storage Write API"
+              " retries preserve this value so duplicate rows can be"
+              " identified reliably."
+          ),
+      ),
+      bigquery.SchemaField(
           "event_type",
           "STRING",
           mode="NULLABLE",
@@ -3504,7 +3763,10 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           "error_message",
           "STRING",
           mode="NULLABLE",
-          description="Detailed error message if the status is 'ERROR'.",
+          description=(
+              "Diagnostic message for errors and model termination details;"
+              " may be populated on LLM_RESPONSE rows whose status is 'OK'."
+          ),
       ),
       bigquery.SchemaField(
           "is_truncated",
@@ -3588,6 +3850,7 @@ def _parse_custom_metadata_allowlist(
 # Columns included in every per-event-type view.
 _VIEW_COMMON_COLUMNS = (
     "timestamp",
+    "event_id",
     "event_type",
     "agent",
     "session_id",
@@ -3655,6 +3918,10 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "JSON_VALUE(attributes, '$.model_version') AS model_version",
         "JSON_QUERY(attributes, '$.usage_metadata') AS usage_metadata",
         "JSON_QUERY(attributes, '$.cache_metadata') AS cache_metadata",
+        # NULL on partial streaming rows and pre-CL rows; filter to final
+        # responses before aggregating on cache_type.
+        "JSON_VALUE(attributes, '$.cache_type') AS cache_type",
+        "JSON_VALUE(attributes, '$.finish_reason') AS finish_reason",
     ],
     "LLM_ERROR": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
@@ -3788,6 +4055,24 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "JSON_VALUE(attributes, '$.adk.pause_kind') AS pause_kind",
         "JSON_VALUE(attributes, '$.adk.function_call_id') AS function_call_id",
     ],
+    "NODE_OUTPUT": [
+        "JSON_VALUE(attributes, '$.adk.node.path') AS node_path",
+        "JSON_VALUE(attributes, '$.adk.node.run_id') AS node_run_id",
+        (
+            "JSON_VALUE(attributes, '$.adk.node.parent_run_id')"
+            " AS node_parent_run_id"
+        ),
+        "content AS output",
+    ],
+    "NODE_ERROR": [
+        "JSON_VALUE(attributes, '$.adk.node.path') AS node_path",
+        "JSON_VALUE(attributes, '$.adk.node.run_id') AS node_run_id",
+        (
+            "JSON_VALUE(attributes, '$.adk.node.parent_run_id')"
+            " AS node_parent_run_id"
+        ),
+        "JSON_VALUE(content, '$.error_code') AS error_code",
+    ],
 }
 
 _VIEW_SQL_TEMPLATE = """\
@@ -3824,6 +4109,7 @@ class EventData:
   model_version: Optional[str] = None
   usage_metadata: Any = None
   cache_metadata: Any = None
+  finish_reason: Optional[str] = None
   status: str = "OK"
   error_message: Optional[str] = None
   extra_attributes: dict[str, Any] = field(default_factory=dict)
@@ -4114,6 +4400,25 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     except Exception:
       logger.warning("Could not close a detached BigQuery write transport.")
 
+  async def _create_committed_write_stream(
+      self, write_client: BigQueryWriteAsyncClient
+  ) -> str:
+    """Creates one loop-local committed stream for offset-aware appends."""
+    parent = (
+        f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/"
+        f"{self.table_id}"
+    )
+    stream = await write_client.create_write_stream(
+        parent=parent,
+        write_stream=bq_storage_types.WriteStream(
+            type_=bq_storage_types.WriteStream.Type.COMMITTED
+        ),
+    )
+    # ``str(...)`` keeps the declared return type honest: the type checker runs
+    # without the optional BigQuery Storage dependency installed, so the
+    # response and its ``name`` field are untyped there.
+    return str(stream.name)
+
   async def _close_detached_loop_transport(self, state: _LoopState) -> None:
     """Best-effort bounded close for a terminal loop state's transport."""
     await self._close_write_transport(state.write_client)
@@ -4243,19 +4548,33 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           client_options=options,
       )
 
-      if not self._write_stream_name:
-        self._write_stream_name = f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}/_default"
-
       try:
+        if self.config.exactly_once_delivery:
+          write_stream_name = await self._create_committed_write_stream(
+              write_client
+          )
+        else:
+          if not self._write_stream_name:
+            self._write_stream_name = f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}/_default"
+          write_stream_name = self._write_stream_name
+
         batch_processor = BatchProcessor(
             write_client=write_client,
             arrow_schema=self.arrow_schema,
-            write_stream=self._write_stream_name,
+            write_stream=write_stream_name,
             batch_size=self.config.batch_size,
             flush_interval=self.config.batch_flush_interval,
             retry_config=self.config.retry_config,
             queue_max_size=self.config.queue_max_size,
             shutdown_timeout=self.config.shutdown_timeout,
+            exactly_once_delivery=self.config.exactly_once_delivery,
+            create_stream=(
+                functools.partial(
+                    self._create_committed_write_stream, write_client
+                )
+                if self.config.exactly_once_delivery
+                else None
+            ),
         )
       except BaseException:
         # The write client already exists but no _LoopState can own it yet.
@@ -5788,6 +6107,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       else:
         attrs["cache_metadata"] = event_data.cache_metadata
 
+    if event_data.finish_reason is not None:
+      attrs["finish_reason"] = event_data.finish_reason
+
     if self.config.log_session_metadata:
       try:
         session = callback_context._invocation_context.session
@@ -6101,6 +6423,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     row = {
         "timestamp": timestamp,
+        "event_id": uuid.uuid4().hex,
         "event_type": event_type,
         "agent": self._resolve_agent_label(
             callback_context, event_data.source_event
@@ -6273,6 +6596,35 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               extra_attributes={"state_delta": dict(event.actions.state_delta)},
           ),
       )
+
+    node_info = getattr(event, "node_info", None)
+    node_path = getattr(node_info, "path", "")
+    if node_path and event.partial is not True:
+      if event.error_code and event.error_code not in _LLM_RESPONSE_ERROR_CODES:
+        await self._log_event(
+            "NODE_ERROR",
+            callback_ctx,
+            raw_content={"error_code": event.error_code},
+            event_data=EventData(
+                source_event=event,
+                status="ERROR",
+                error_message=event.error_message,
+            ),
+        )
+      if (
+          event.output is not None
+          and getattr(node_info, "message_as_output", None) is not True
+      ):
+        node_output, output_truncated = _recursive_smart_truncate(
+            event.output, self.config.max_content_length
+        )
+        await self._log_event(
+            "NODE_OUTPUT",
+            callback_ctx,
+            raw_content=node_output,
+            is_truncated=output_truncated,
+            event_data=EventData(source_event=event),
+        )
 
     # --- AGENT_TRANSFER ---
     # actions.transfer_to_agent stores the *target* agent only
@@ -6722,11 +7074,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     2. Token usage (if available)
 
     The content is formatted as 'Response: {content} | Usage: {usage}'.
+    Termination metadata is recorded once per non-partial response. Progressive
+    SSE produces one terminal response per model call, while legacy aggregators
+    and mixed LiteLLM streams can emit multiple terminal responses.
 
     Args:
         callback_context: The callback context.
         llm_response: The LLM response object.
     """
+    is_partial = getattr(llm_response, "partial", None) is True
     content_dict = {}
     is_truncated = False
     if llm_response.content:
@@ -6761,8 +7117,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     is_popped = False
     duration = 0
     tfft = None
+    extra_attributes: dict[str, Any] = {}
+    usage_metadata = llm_response.usage_metadata
+    cache_metadata = getattr(llm_response, "cache_metadata", None)
 
-    if hasattr(llm_response, "partial") and llm_response.partial:
+    if is_partial:
       # Streaming chunk - do NOT pop span yet
       if span_id:
         TraceManager.record_first_token(span_id)
@@ -6796,6 +7155,29 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Otherwise log_event will fetch current stack (which is parent).
       span_id = popped_span_id or span_id
 
+      # cache_type classifies the cached-token hit so analytics can separate
+      # ADK-managed explicit caching from Gemini provider-side implicit prefix
+      # caching (the two are indistinguishable from token counts alone).
+      # cache_metadata is attached only when ADK explicit caching is configured,
+      # so its presence means explicit (including the fingerprint-only,
+      # cache_name=None state). No cached tokens -> "none", regardless of
+      # whether a cache is configured. Only derived on the final response.
+      # Token counts carry no source, so when ADK caching is configured the
+      # cache_metadata presence wins the "explicit" label even if some of the
+      # cached tokens came from provider-side implicit caching.
+      cached = bool(
+          usage_metadata
+          and (getattr(usage_metadata, "cached_content_token_count", 0) or 0)
+          > 0
+      )
+      if not cached:
+        cache_type = "none"
+      elif cache_metadata is not None:
+        cache_type = "explicit"
+      else:
+        cache_type = "implicit"
+      extra_attributes["cache_type"] = cache_type
+
     await self._log_event(
         "LLM_RESPONSE",
         callback_context,
@@ -6805,10 +7187,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             latency_ms=duration,
             time_to_first_token_ms=tfft,
             model_version=llm_response.model_version,
-            usage_metadata=llm_response.usage_metadata,
-            cache_metadata=getattr(llm_response, "cache_metadata", None),
+            usage_metadata=usage_metadata,
+            cache_metadata=cache_metadata,
+            finish_reason=(
+                getattr(finish_reason, "name", str(finish_reason))
+                if not is_partial
+                and (
+                    finish_reason := getattr(
+                        llm_response, "finish_reason", None
+                    )
+                )
+                is not None
+                else None
+            ),
+            error_message=(
+                None
+                if is_partial
+                else getattr(llm_response, "error_message", None)
+            ),
             span_id_override=span_id if is_popped else None,
             parent_span_id_override=(parent_span_id if is_popped else None),
+            extra_attributes=extra_attributes,
         ),
     )
 

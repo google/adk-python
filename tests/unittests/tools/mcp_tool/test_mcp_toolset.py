@@ -15,8 +15,10 @@
 import asyncio
 import base64
 from io import StringIO
+import itertools
 import pickle
 import sys
+import time
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
@@ -35,6 +37,7 @@ from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
+from google.adk.tools.mcp_tool import mcp_toolset as mcp_toolset_module
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -85,6 +88,15 @@ class TestMcpToolset:
     self.mock_session_manager.create_session = AsyncMock(
         return_value=self.mock_session
     )
+
+  @pytest.fixture
+  def allow_config_stdio_servers(self):
+    """Opts this process in to stdio MCP servers declared in agent configs."""
+    mcp_toolset_module._set_allow_config_stdio_servers(True)
+    try:
+      yield
+    finally:
+      mcp_toolset_module._set_allow_config_stdio_servers(None)
 
   def test_init_basic(self):
     """Test basic initialization with StdioServerParameters."""
@@ -245,6 +257,7 @@ class TestMcpToolset:
     assert toolset._auth_credential == auth_credential
     assert toolset._auth_config.credential_key == "my_custom_key"
 
+  @pytest.mark.usefixtures("allow_config_stdio_servers")
   def test_from_config_with_credential_key(self):
     """Test that from_config correctly parses credential_key."""
 
@@ -259,6 +272,76 @@ class TestMcpToolset:
 
     assert isinstance(toolset._auth_scheme, OAuth2)
     assert toolset._auth_config.credential_key == "my_custom_key"
+
+  def test_from_config_rejects_stdio_server_params(self):
+    """Config-supplied stdio servers are rejected by default."""
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+
+    with pytest.raises(ValueError, match="not allowed in agent configs"):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_rejects_stdio_connection_params(self):
+    """The stdio_connection_params spelling is rejected the same way."""
+    config = ToolArgsConfig(
+        stdio_connection_params=StdioConnectionParams(
+            server_params=self.mock_stdio_params
+        )
+    )
+
+    with pytest.raises(ValueError, match="not allowed in agent configs"):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_rejection_names_the_env_var(self):
+    """The error tells the operator how to opt in."""
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+
+    with pytest.raises(
+        ValueError, match=mcp_toolset_module.ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR
+    ):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_allows_stdio_when_env_var_set(self, monkeypatch):
+    """The environment variable opts a whole process in."""
+    monkeypatch.setenv(
+        mcp_toolset_module.ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR, "1"
+    )
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+
+    toolset = McpToolset.from_config(config, "")
+
+    assert isinstance(toolset, McpToolset)
+
+  @pytest.mark.usefixtures("allow_config_stdio_servers")
+  def test_from_config_allows_stdio_when_set_programmatically(self):
+    """An embedding application can opt in without touching the environment."""
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+
+    toolset = McpToolset.from_config(config, "")
+
+    assert isinstance(toolset, McpToolset)
+
+  def test_programmatic_setting_overrides_env_var(self, monkeypatch):
+    """An explicit False wins over an environment variable that says yes."""
+    monkeypatch.setenv(
+        mcp_toolset_module.ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR, "1"
+    )
+    monkeypatch.setattr(
+        mcp_toolset_module, "_allow_config_stdio_servers", False
+    )
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+
+    with pytest.raises(ValueError, match="not allowed in agent configs"):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_allows_remote_connection_params(self):
+    """Remote MCP servers are unaffected: they launch no local process."""
+    config = ToolArgsConfig(
+        sse_connection_params=SseConnectionParams(url="https://example.com/sse")
+    )
+
+    toolset = McpToolset.from_config(config, "")
+
+    assert isinstance(toolset, McpToolset)
 
   def test_init_missing_connection_params(self):
     """Test initialization with missing connection params raises error."""
@@ -1017,3 +1100,204 @@ class TestMcpToolsetConfig:
     config = McpToolsetConfig(stdio_server_params=self._stdio_server_params())
 
     assert config.use_mcp_resources is False
+
+
+class TestMcpToolsetToolListCache:
+  """Test suite for reusing the MCP server's tools/list response."""
+
+  # The cache and its session manager are internal state that these tests
+  # substitute and assert on directly.
+  # pylint: disable=protected-access
+
+  def setup_method(self):
+    """Set up a toolset whose session manager keys sessions by headers."""
+    self.mock_stdio_params = StdioServerParameters(
+        command="test_command", args=[]
+    )
+    self.mock_session = AsyncMock()
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(
+            [MockMCPTool("tool1"), MockMCPTool("tool2")]
+        )
+    )
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+    self.mock_session_manager._session_key_for = Mock(
+        side_effect=lambda headers=None: repr(sorted((headers or {}).items()))
+    )
+
+  def _toolset(self, **kwargs) -> McpToolset:
+    toolset = McpToolset(connection_params=self.mock_stdio_params, **kwargs)
+    toolset._mcp_session_manager = self.mock_session_manager
+    return toolset
+
+  @pytest.mark.asyncio
+  async def test_tool_list_is_not_cached_by_default(self):
+    """Without an explicit TTL the server is still listed on every call."""
+    toolset = self._toolset()
+
+    await toolset.get_tools()
+    await toolset.get_tools()
+
+    assert self.mock_session.list_tools.await_count == 2
+    self.mock_session_manager._session_key_for.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_second_call_reuses_the_cached_tool_list(self):
+    """A second call within the TTL serves the same tools without listing."""
+    toolset = self._toolset(tool_list_cache_ttl_seconds=60)
+
+    first = await toolset.get_tools()
+    second = await toolset.get_tools()
+
+    assert self.mock_session.list_tools.await_count == 1
+    assert [tool.name for tool in first] == ["tool1", "tool2"]
+    assert [tool.name for tool in second] == ["tool1", "tool2"]
+
+  @pytest.mark.asyncio
+  async def test_expired_entry_is_refetched(self):
+    """Once the TTL lapses the server is consulted again."""
+    toolset = self._toolset(tool_list_cache_ttl_seconds=60)
+
+    await toolset.get_tools()
+    for entry in toolset._tool_list_cache.values():
+      entry.expires_at = time.monotonic() - 1
+    await toolset.get_tools()
+
+    assert self.mock_session.list_tools.await_count == 2
+
+  @pytest.mark.asyncio
+  async def test_different_identities_do_not_share_a_cache_entry(self):
+    """Tools listed for one tenant are never served to another."""
+    headers = {"X-Tenant-ID": "tenant-a"}
+    toolset = self._toolset(
+        tool_list_cache_ttl_seconds=60,
+        header_provider=lambda _context: dict(headers),
+    )
+    context = Mock(spec=ReadonlyContext)
+
+    await toolset.get_tools(readonly_context=context)
+    headers["X-Tenant-ID"] = "tenant-b"
+    await toolset.get_tools(readonly_context=context)
+    headers["X-Tenant-ID"] = "tenant-a"
+    await toolset.get_tools(readonly_context=context)
+
+    # Two listings for two tenants; the third call reuses tenant-a's entry.
+    assert self.mock_session.list_tools.await_count == 2
+
+  @pytest.mark.asyncio
+  async def test_tool_filter_still_runs_on_a_cache_hit(self):
+    """Caching skips the round trip, not the context-dependent filtering."""
+    allowed = {"tool1"}
+    toolset = self._toolset(
+        tool_list_cache_ttl_seconds=60,
+        tool_filter=lambda tool, _context: tool.name in allowed,
+    )
+
+    first = await toolset.get_tools()
+    allowed.clear()
+    allowed.add("tool2")
+    second = await toolset.get_tools()
+
+    assert self.mock_session.list_tools.await_count == 1
+    assert [tool.name for tool in first] == ["tool1"]
+    assert [tool.name for tool in second] == ["tool2"]
+
+  @pytest.mark.asyncio
+  async def test_close_clears_the_cache(self):
+    """Closing the toolset drops tool lists along with the sessions."""
+    toolset = self._toolset(tool_list_cache_ttl_seconds=60)
+    await toolset.get_tools()
+    assert toolset._tool_list_cache
+
+    await toolset.close()
+
+    assert not toolset._tool_list_cache
+
+  @pytest.mark.asyncio
+  async def test_pickled_state_drops_the_cache(self):
+    """Cache keys name sessions that do not survive pickling."""
+    toolset = self._toolset(tool_list_cache_ttl_seconds=60)
+    await toolset.get_tools()
+    assert toolset._tool_list_cache
+
+    assert not toolset.__getstate__()["_tool_list_cache"]
+
+  @pytest.mark.parametrize("ttl", [0, -1])
+  def test_non_positive_ttl_is_rejected(self, ttl):
+    """A zero or negative TTL is a mistake, not a way to disable caching."""
+    with pytest.raises(ValueError, match="must be positive"):
+      McpToolset(
+          connection_params=self.mock_stdio_params,
+          tool_list_cache_ttl_seconds=ttl,
+      )
+
+  @pytest.mark.asyncio
+  async def test_expired_entries_for_other_keys_are_swept(self):
+    """A key that never comes back is still reclaimed.
+
+    A read only evicts the key it was asked for, so a `header_provider` that
+    mints a fresh value per request would otherwise grow the cache forever.
+    """
+    counter = itertools.count()
+    toolset = self._toolset(
+        tool_list_cache_ttl_seconds=60,
+        header_provider=lambda _context: {"X-Request-ID": str(next(counter))},
+    )
+    context = Mock(spec=ReadonlyContext)
+
+    await toolset.get_tools(readonly_context=context)
+    for entry in toolset._tool_list_cache.values():
+      entry.expires_at = time.monotonic() - 1
+    await toolset.get_tools(readonly_context=context)
+
+    # The first key expired and was swept even though it was never read again.
+    assert len(toolset._tool_list_cache) == 1
+
+  @pytest.mark.asyncio
+  async def test_unexpired_entries_are_capped(self):
+    """The cap holds even when every key is still inside its TTL."""
+    counter = itertools.count()
+    toolset = self._toolset(
+        tool_list_cache_ttl_seconds=3600,
+        header_provider=lambda _context: {"X-Request-ID": str(next(counter))},
+    )
+    context = Mock(spec=ReadonlyContext)
+
+    for _ in range(mcp_toolset_module._MAX_TOOL_LIST_CACHE_ENTRIES + 10):
+      await toolset.get_tools(readonly_context=context)
+
+    assert (
+        len(toolset._tool_list_cache)
+        == mcp_toolset_module._MAX_TOOL_LIST_CACHE_ENTRIES
+    )
+
+  @pytest.mark.asyncio
+  async def test_the_cap_evicts_the_least_recently_used_entry(self):
+    """A key that keeps being read survives a flood of one-shot keys."""
+    headers = {"X-Tenant-ID": "keeper"}
+    toolset = self._toolset(
+        tool_list_cache_ttl_seconds=3600,
+        header_provider=lambda _context: dict(headers),
+    )
+    context = Mock(spec=ReadonlyContext)
+    await toolset.get_tools(readonly_context=context)
+    keeper_key = next(iter(toolset._tool_list_cache))
+
+    for i in range(mcp_toolset_module._MAX_TOOL_LIST_CACHE_ENTRIES - 1):
+      headers["X-Tenant-ID"] = f"one-shot-{i}"
+      await toolset.get_tools(readonly_context=context)
+      # Touch the keeper so it stays the most recently used entry.
+      headers["X-Tenant-ID"] = "keeper"
+      await toolset.get_tools(readonly_context=context)
+
+    headers["X-Tenant-ID"] = "overflow"
+    await toolset.get_tools(readonly_context=context)
+
+    assert keeper_key in toolset._tool_list_cache
+    assert (
+        len(toolset._tool_list_cache)
+        == mcp_toolset_module._MAX_TOOL_LIST_CACHE_ENTRIES
+    )
