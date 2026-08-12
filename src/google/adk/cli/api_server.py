@@ -704,6 +704,11 @@ class ApiServer:
 
   _allow_special_agents: bool = False
 
+  # Only DevServer reads the debug trace data these exporters accumulate
+  # (see _register_dev_endpoints). Registering them here unconditionally
+  # would retain every span for the life of the process with no consumer.
+  _registers_debug_trace_exporters: bool = False
+
   def __init__(
       self,
       *,
@@ -1048,12 +1053,17 @@ class ApiServer:
     memory_exporter = InMemoryExporter(session_trace_dict)
     self._memory_exporter = memory_exporter
 
-    _setup_telemetry(
-        otel_to_cloud=otel_to_cloud,
-        internal_exporters=[
+    debug_trace_exporters = (
+        [
             export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
             export_lib.SimpleSpanProcessor(memory_exporter),
-        ],
+        ]
+        if self._registers_debug_trace_exporters
+        else []
+    )
+    _setup_telemetry(
+        otel_to_cloud=otel_to_cloud,
+        internal_exporters=debug_trace_exporters,
     )
     if web_assets_dir:
       self._setup_runtime_config(web_assets_dir)
