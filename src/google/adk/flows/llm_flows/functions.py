@@ -1260,6 +1260,71 @@ def _try_decode_computer_use_image(
     return None
 
 
+def _as_function_response_part(
+    value: object,
+) -> Optional[types.FunctionResponsePart]:
+  """Converts a tool-returned part into a function response part.
+
+  Returns None when the value is not a part carrying usable inline media.
+  """
+  if not isinstance(value, types.Part):
+    return None
+  blob = value.inline_data
+  if blob is None or blob.data is None or not blob.mime_type:
+    return None
+  return types.FunctionResponsePart.from_bytes(
+      data=blob.data, mime_type=blob.mime_type
+  )
+
+
+def _extract_multimodal_parts(
+    function_result: object,
+) -> tuple[object, Optional[list[types.FunctionResponsePart]]]:
+  """Moves inline media in a tool result into function response parts.
+
+  A tool result is otherwise required to be JSON-serializable, which leaves
+  no way to hand back bytes except by encoding them into a string the model
+  reads as text. A tool that produces an image, audio clip or document
+  returns a part holding the raw bytes instead, either on its own or among
+  the entries of a returned list or dict.
+
+  Returns:
+    The result with the media removed, and the extracted parts. The parts are
+    None when the result carries no media, in which case the result is
+    returned unchanged.
+  """
+  single_part = _as_function_response_part(function_result)
+  if single_part is not None:
+    return {}, [single_part]
+
+  parts: list[types.FunctionResponsePart] = []
+  remaining: object
+  if isinstance(function_result, dict):
+    kept_items = {}
+    for key, value in function_result.items():
+      part = _as_function_response_part(value)
+      if part is None:
+        kept_items[key] = value
+      else:
+        parts.append(part)
+    remaining = kept_items
+  elif isinstance(function_result, (list, tuple)):
+    kept_values = []
+    for value in function_result:
+      part = _as_function_response_part(value)
+      if part is None:
+        kept_values.append(value)
+      else:
+        parts.append(part)
+    remaining = kept_values
+  else:
+    return function_result, None
+
+  if not parts:
+    return function_result, None
+  return remaining or {}, parts
+
+
 async def __call_tool_live(
     tool: FunctionTool,
     args: dict[str, Any],
@@ -1297,11 +1362,16 @@ def __build_response_event(
   # Capture the raw result for display purposes before any normalization.
   display_result = function_result
 
-  # The callback and FunctionResponse contracts require a string-keyed dict.
-  function_result = _normalize_tool_result(function_result)
+  # Media has to come out before the result is coerced to a dict, so that a
+  # media part returned on its own or inside a list is still reachable.
+  remaining_result, function_response_parts = _extract_multimodal_parts(
+      function_result
+  )
 
-  function_response_parts = None
-  if isinstance(tool, ComputerUseTool):
+  # The callback and FunctionResponse contracts require a string-keyed dict.
+  function_result = _normalize_tool_result(remaining_result)
+
+  if function_response_parts is None and isinstance(tool, ComputerUseTool):
     function_response_parts = _try_decode_computer_use_image(
         tool, function_result
     )
@@ -1352,6 +1422,11 @@ def _build_function_response_content(
     function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
 ) -> types.Content:
   """Builds the content carrying a tool result as a FunctionResponse."""
+  if function_response_parts is None:
+    function_result, function_response_parts = _extract_multimodal_parts(
+        function_result
+    )
+
   # Specs requires the result to be a dict.
   if not isinstance(function_result, dict):
     function_result = {'result': function_result}

@@ -1040,6 +1040,127 @@ async def test_thought_signature_survives_in_every_part_shape(part):
 
 
 @pytest.mark.asyncio
+async def test_server_side_tool_call_events_are_not_skipped():
+  """Test that server-side tool call/response events survive history rebuild.
+
+  The model runs these tools itself and requires the caller to echo the parts
+  back on the next request. Dropping them as "empty" makes the model redo the
+  work, or fail because a call has no matching response.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Summarize the linked page."),
+      ),
+      # Model asks the server to run a tool; the part carries nothing else.
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      tool_call=types.ToolCall(
+                          id="tc1",
+                          tool_type=types.ToolType.URL_CONTEXT,
+                          args={"url": "https://example.com"},
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      # The matching server-side result, also alone in its event.
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      tool_response=types.ToolResponse(
+                          id="tc1",
+                          tool_type=types.ToolType.URL_CONTEXT,
+                          response={"content": "page text"},
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert len(llm_request.contents) == 3
+  tool_call = llm_request.contents[1].parts[0].tool_call
+  assert tool_call is not None
+  assert tool_call.id == "tc1"
+  tool_response = llm_request.contents[2].parts[0].tool_response
+  assert tool_response is not None
+  assert tool_response.id == "tc1"
+  assert tool_response.response == {"content": "page text"}
+
+
+@pytest.mark.asyncio
+async def test_server_side_tool_call_with_thought_not_filtered():
+  """Test that a server-side tool call marked as thought is still echoed back.
+
+  The echo-back contract holds regardless of how the model labels the part, so
+  a thought marking must not drop it.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Summarize the linked page."),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      thought=True,
+                      tool_call=types.ToolCall(
+                          id="tc1",
+                          tool_type=types.ToolType.URL_CONTEXT,
+                          args={"url": "https://example.com"},
+                      ),
+                  )
+              ],
+              role="model",
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[1].parts[0].tool_call is not None
+  assert llm_request.contents[1].parts[0].tool_call.id == "tc1"
+
+
+@pytest.mark.asyncio
 async def test_function_call_with_thought_not_filtered():
   """Test that function calls marked as thought are not filtered out.
 

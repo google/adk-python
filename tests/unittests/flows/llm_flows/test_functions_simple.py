@@ -1228,6 +1228,95 @@ async def test_computer_use_tool_decoding_behavior(handle_function_calls):
   assert response_part.parts[0].inline_data is not None
 
 
+async def _run_single_tool_call(tool):
+  """Invokes a tool through the flow and returns its function response."""
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[types.Part(function_call=types.FunctionCall(name=tool.name))]
+      ),
+  )
+  result = await handle_function_calls_async(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is not None
+  return result.content.parts[0].function_response
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_a_media_part():
+  """A tool can hand back bytes instead of encoding them into a string."""
+
+  def render_chart() -> types.Part:
+    return types.Part.from_bytes(data=b'chart-bytes', mime_type='image/png')
+
+  response = await _run_single_tool_call(FunctionTool(render_chart))
+
+  assert len(response.parts) == 1
+  assert response.parts[0].inline_data.data == b'chart-bytes'
+  assert response.parts[0].inline_data.mime_type == 'image/png'
+  # The media is not also left behind as an unserializable value.
+  assert not response.response
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_media_alongside_data():
+  """Media is split out while the rest of the result stays in the response."""
+
+  def render_chart() -> dict[str, Any]:
+    return {
+        'chart': types.Part.from_bytes(
+            data=b'chart-bytes', mime_type='image/png'
+        ),
+        'summary': 'up 3%',
+    }
+
+  response = await _run_single_tool_call(FunctionTool(render_chart))
+
+  assert len(response.parts) == 1
+  assert response.parts[0].inline_data.mime_type == 'image/png'
+  assert response.response == {'summary': 'up 3%'}
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_several_media_parts():
+  """Every media entry of a returned list becomes a response part."""
+
+  def render_charts() -> list[Any]:
+    return [
+        types.Part.from_bytes(data=b'one', mime_type='image/png'),
+        types.Part.from_bytes(data=b'two', mime_type='image/jpeg'),
+        'two charts',
+    ]
+
+  response = await _run_single_tool_call(FunctionTool(render_charts))
+
+  assert [p.inline_data.mime_type for p in response.parts] == [
+      'image/png',
+      'image/jpeg',
+  ]
+  assert response.response == {'result': ['two charts']}
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_plain_data_is_unchanged():
+  """A result without media keeps its existing shape."""
+
+  def get_summary() -> dict[str, str]:
+    return {'summary': 'up 3%'}
+
+  response = await _run_single_tool_call(FunctionTool(get_summary))
+
+  assert not response.parts
+  assert response.response == {'summary': 'up 3%'}
+
+
 @pytest.mark.asyncio
 async def test_handle_function_calls_live_preserves_live_session_id():
   """Tests that handle_function_calls_live preserves live_session_id for single call."""

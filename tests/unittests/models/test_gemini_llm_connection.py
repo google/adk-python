@@ -2454,3 +2454,73 @@ async def test_receive_voice_activity(gemini_connection, mock_gemini_session):
 
   assert len(responses) == 1
   assert responses[0].voice_activity == mock_vad
+
+
+@pytest.mark.asyncio
+async def test_receive_preserves_all_text_parts(
+    gemini_connection, mock_gemini_session
+):
+  """All text parts in one live message are accumulated in order."""
+  content = types.Content(
+      role='model',
+      parts=[
+          types.Part.from_text(text='first '),
+          types.Part.from_text(text='second'),
+      ],
+  )
+  content_message = _create_mock_receive_message(model_turn=content)
+  complete_message = _create_mock_receive_message(turn_complete=True)
+
+  async def mock_receive_generator():
+    yield content_message
+    yield complete_message
+
+  mock_gemini_session.receive = mock.Mock(
+      return_value=mock_receive_generator()
+  )
+
+  responses = [response async for response in gemini_connection.receive()]
+  full_text = [
+      response.content.parts[0].text
+      for response in responses
+      if response.content
+      and response.content.parts
+      and response.content.parts[0].text
+      and not response.partial
+  ]
+
+  assert 'first second' in full_text
+
+
+@pytest.mark.asyncio
+async def test_receive_preserves_tool_call_co_delivered_with_turn_complete(
+    gemini_connection, mock_gemini_session
+):
+  """A tool call on the turn-complete message is yielded before completion."""
+  function_call = types.FunctionCall(
+      name='get_weather', args={'city': 'Amsterdam'}
+  )
+  tool_call = mock.Mock()
+  tool_call.function_calls = [function_call]
+  message = _create_mock_receive_message(
+      turn_complete=True, tool_call=tool_call
+  )
+
+  async def mock_receive_generator():
+    yield message
+
+  mock_gemini_session.receive = mock.Mock(
+      return_value=mock_receive_generator()
+  )
+
+  responses = [response async for response in gemini_connection.receive()]
+  tool_response = next(
+      response
+      for response in responses
+      if response.content
+      and response.content.parts
+      and response.content.parts[0].function_call
+  )
+
+  assert tool_response.content.parts[0].function_call == function_call
+  assert responses[-1].turn_complete is True

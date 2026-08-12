@@ -380,25 +380,31 @@ class GeminiLlmConnection(BaseLlmConnection):
                 llm_response.grounding_metadata = (
                     message.server_content.grounding_metadata
                 )
-            for part in content.parts:
-              if part.text:
-                current_is_thought = getattr(part, 'thought', False)
-                if text and current_is_thought != is_thought:
-                  yield self.__build_full_text_response(text, is_thought)
-                  text = ''
-                  is_thought = False
-
-                text += part.text
-                is_thought = current_is_thought
-                llm_response.partial = True
-              # don't yield the merged text event when receiving audio data
-              elif text and not part.inline_data:
-                yield self.__build_full_text_response(
-                    text, is_thought, last_grounding_metadata
-                )
-                text = ''
-                is_thought = False
-                last_grounding_metadata = None
+            # Collect text parts. We loop through all parts to properly handle
+            # mid-chunk thought boundary transitions.
+            _has_inline_data = any(p.inline_data for p in content.parts)
+            _has_text = any(p.text for p in content.parts)
+            
+            if _has_text:
+              for part in content.parts:
+                if part.text:
+                  current_is_thought = getattr(part, 'thought', False)
+                  if text and current_is_thought != is_thought:
+                    yield self.__build_full_text_response(text, is_thought)
+                    text = ''
+                    is_thought = False
+                  
+                  text += part.text
+                  is_thought = current_is_thought
+                  llm_response.partial = True
+            # don't yield the merged text event when receiving audio data
+            elif text and not _has_inline_data:
+              yield self.__build_full_text_response(
+                  text, is_thought, last_grounding_metadata
+              )
+              text = ''
+              is_thought = False
+              last_grounding_metadata = None
             yield llm_response
           # Note: in some cases, tool_call may arrive before
           # generation_complete, causing transcription to appear after
@@ -500,6 +506,26 @@ class GeminiLlmConnection(BaseLlmConnection):
               )
               self._output_transcription_text = ''
           if message.server_content.turn_complete:
+            # Process any tool_call co-delivered in the same server message as
+            # turn_complete. Without this, the `break` below exits the receive
+            # loop before the `if message.tool_call:` block lower in the loop
+            # body is reached, silently discarding the tool call.
+            if message.tool_call:
+              logger.debug(
+                  'Processing tool_call co-delivered with turn_complete'
+              )
+              if text:
+                yield self.__build_full_text_response(
+                    text, is_thought, last_grounding_metadata
+                )
+                text = ''
+                is_thought = False
+                last_grounding_metadata = None
+              tool_call_parts.extend([
+                  types.Part(function_call=function_call)
+                  for function_call in message.tool_call.function_calls or []
+              ])
+
             # Capture final grounding metadata before last_grounding_metadata is cleared in the next block.
             final_grounding_metadata = (
                 grounding_metadata
