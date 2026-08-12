@@ -44,6 +44,9 @@ from google.adk.skills._utils import _read_skill_properties
 from google.adk.skills._utils import _validate_skill_dir
 import pytest
 
+# The first bytes of a PNG file: valid binary content that is not valid UTF-8.
+_PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+
 
 def test__load_skill_from_dir(tmp_path):
   """Tests loading a skill from a directory."""
@@ -145,6 +148,48 @@ def test__load_skill_from_dir_nested_resources_on_windows_paths(tmp_path):
   assert skill.resources.get_script("runtime/helper.py").src == "helper source"
   assert skill.resources.get_reference("deep/deeper/note.md") == "nested note"
   assert skill.resources.get_asset("templates/tmpl.txt") == "template body"
+
+
+def test__load_skill_from_dir_keeps_binary_resources(tmp_path):
+  """Tests that non-UTF-8 references and assets are loaded as bytes."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: test-skill\ndescription: Test description\n---\nBody"
+  )
+
+  ref_dir = skill_dir / "references"
+  ref_dir.mkdir()
+  (ref_dir / "ref1.md").write_text("ref1 content")
+  (ref_dir / "diagram.png").write_bytes(_PNG_HEADER)
+
+  assets_dir = skill_dir / "assets"
+  assets_dir.mkdir()
+  (assets_dir / "logo.png").write_bytes(_PNG_HEADER)
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.resources.get_reference("ref1.md") == "ref1 content"
+  assert skill.resources.get_reference("diagram.png") == _PNG_HEADER
+  assert skill.resources.get_asset("logo.png") == _PNG_HEADER
+
+
+def test__load_skill_from_dir_skips_binary_scripts(tmp_path):
+  """Tests that non-UTF-8 scripts are skipped, since Script.src is text."""
+  skill_dir = tmp_path / "test-skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: test-skill\ndescription: Test description\n---\nBody"
+  )
+
+  scripts_dir = skill_dir / "scripts"
+  scripts_dir.mkdir()
+  (scripts_dir / "script1.sh").write_text("echo hello")
+  (scripts_dir / "helper").write_bytes(_PNG_HEADER)
+
+  skill = _load_skill_from_dir(skill_dir)
+
+  assert skill.resources.list_scripts() == ["script1.sh"]
 
 
 def test_allowed_tools_yaml_key(tmp_path):
@@ -376,6 +421,50 @@ def test__load_skill_from_gcs_dir(mock_client_class):
   assert skill.resources.get_reference("ref1.md") == "ref1 content"
 
 
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir_binary_resources(mock_client_class):
+  """Tests that non-UTF-8 GCS blobs are loaded as bytes, and scripts skipped."""
+
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    m.exists.return_value = path.endswith("SKILL.md")
+    m.download_as_text.return_value = (
+        "---\nname: my-skill\ndescription: Test description\n---\nTest"
+        " instructions"
+    )
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  def binary_blob(name):
+    m = mock.MagicMock()
+    m.name = name
+    m.download_as_text.side_effect = UnicodeDecodeError(
+        "utf-8", _PNG_HEADER, 0, 1, "invalid start byte"
+    )
+    m.download_as_bytes.return_value = _PNG_HEADER
+    return m
+
+  def list_blobs_side_effect(prefix=None):
+    if prefix.endswith("assets/"):
+      return [binary_blob(prefix + "logo.png")]
+    if prefix.endswith("scripts/"):
+      return [binary_blob(prefix + "helper")]
+    return []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  skill = _load_skill_from_gcs_dir("my-bucket", "skills/my-skill/")
+
+  assert skill.resources.get_asset("logo.png") == _PNG_HEADER
+  assert not skill.resources.list_scripts()
+
+
 def test_list_skills_in_dir(tmp_path):
   """Tests listing skills in a directory."""
   skills_dir = tmp_path / "skills"
@@ -444,6 +533,29 @@ def test__load_skill_from_zip_bytes():
   assert skill.instructions == "Body instructions"
   assert skill.resources.get_reference("ref1.md") == "ref1 content"
   assert skill.resources.get_script("script1.sh").src == "echo hello"
+
+
+def test__load_skill_from_zip_bytes_keeps_binary_resources():
+  """Tests that non-UTF-8 archive members are loaded as bytes."""
+
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        "---\nname: my-skill\ndescription: A skill\n---\nBody instructions",
+    )
+    z.writestr("references/ref1.md", "ref1 content")
+    z.writestr("references/diagram.png", _PNG_HEADER)
+    z.writestr("assets/logo.png", _PNG_HEADER)
+    z.writestr("scripts/script1.sh", "echo hello")
+    z.writestr("scripts/helper", _PNG_HEADER)
+
+  skill = _load_skill_from_zip_bytes(zip_buffer.getvalue())
+
+  assert skill.resources.get_reference("ref1.md") == "ref1 content"
+  assert skill.resources.get_reference("diagram.png") == _PNG_HEADER
+  assert skill.resources.get_asset("logo.png") == _PNG_HEADER
+  assert skill.resources.list_scripts() == ["script1.sh"]
 
 
 def test__load_skill_from_zip_bytes_rejects_oversized_archive():

@@ -1121,6 +1121,10 @@ class TestRemoteA2aAgentMessageHandling:
     # Mock latest event with function response - set proper author
     mock_latest_event = Mock()
     mock_latest_event.author = "user"
+    # The response sanitizer always runs now; a bare Mock content is not
+    # iterable, and there is nothing to sanitize here (no function calls), so
+    # give it None to make the sanitizer a no-op.
+    mock_latest_event.content = None
     self.mock_session.events = [mock_latest_event]
 
     with patch(
@@ -2027,6 +2031,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     # Mock latest event with function response - set proper author
     mock_latest_event = Mock()
     mock_latest_event.author = "user"
+    # The response sanitizer always runs now; a bare Mock content is not
+    # iterable, and there is nothing to sanitize here (no function calls), so
+    # give it None to make the sanitizer a no-op.
+    mock_latest_event.content = None
     self.mock_session.events = [mock_latest_event]
 
     with patch(
@@ -4278,3 +4286,411 @@ class TestRemoteA2aAgentWorkflowOutput:
     ]
     assert join_outputs, "JoinNode should emit an aggregated output event"
     assert join_outputs[0].output == {"remote_agent": "agent reply"}
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for the A2A human-input resume rewrite (b/540026826) and
+# its adversarial follow-ups: credential egress via the caller fallback, and a
+# parallel real-tool + human-input resume re-creating the ValueError.
+# ---------------------------------------------------------------------------
+
+_SECRET = "ya29.super-secret-access-token"
+# An adk_request_credential response payload (a serialized AuthConfig).
+_AUTH_PAYLOAD = {
+    "auth_scheme": {"type": "oauth2"},
+    "exchanged_auth_credential": {
+        "auth_type": "oauth2",
+        "oauth2": {"access_token": _SECRET},
+    },
+}
+
+
+def _resume_events(
+    *,
+    calls,
+    responses,
+    user_text=None,
+    task_id="task-123",
+):
+  """Builds the ``[pause_event, user_response_event]`` sequence seen on resume.
+
+  Args:
+    calls: list of ``(name, id)`` function calls that paused the invocation.
+    responses: list of ``(name, id, response_dict)`` user function responses.
+      Unlike the harness in cl/955528102, this can place more than one
+      function_response on the resume event, which is required to reproduce the
+      parallel real-tool + human-input case.
+    user_text: optional sibling text part appended to the response event.
+    task_id: value stamped into the pausing event's a2a metadata.
+
+  Returns:
+    ``[pause_event, user_response_event]``.
+  """
+  call_parts = [
+      genai_types.Part(
+          function_call=genai_types.FunctionCall(id=cid, name=name, args={})
+      )
+      for name, cid in calls
+  ]
+  call_event = Event(
+      invocation_id="inv-1",
+      author="agent",
+      id="e_call",
+      content=genai_types.Content(role="model", parts=call_parts),
+      long_running_tool_ids={cid for _, cid in calls if cid},
+      custom_metadata={
+          A2A_METADATA_PREFIX + "task_id": task_id,
+          A2A_METADATA_PREFIX + "context_id": "context-123",
+      },
+  )
+  response_parts = [
+      genai_types.Part(
+          function_response=genai_types.FunctionResponse(
+              id=rid, name=name, response=response
+          )
+      )
+      for name, rid, response in responses
+  ]
+  if user_text is not None:
+    response_parts.append(genai_types.Part(text=user_text))
+  response_event = Event(
+      invocation_id="inv-1",
+      author="user",
+      id="e_resp",
+      content=genai_types.Content(role="user", parts=response_parts),
+  )
+  return [call_event, response_event]
+
+
+def _make_agent():
+  return RemoteA2aAgent(
+      name="test_agent", agent_card="http://example.com/agent.json"
+  )
+
+
+def _make_ctx(events):
+  ctx = create_autospec(InvocationContext, instance=True)
+  ctx.session = create_autospec(Session, instance=True)
+  ctx.session.events = events
+  ctx.invocation_id = "inv-1"
+  ctx.branch = None
+  return ctx
+
+
+def _forwarded_parts(agent, events):
+  message = agent._create_a2a_request_for_user_function_response(  # pylint: disable=protected-access
+      _make_ctx(events)
+  )
+  return list(message.parts) if message is not None else []
+
+
+def _kind(part):
+  # a2a 0.3.x vs 1.x differ (part.root vs flat proto); go through _compat.
+  if _compat.is_data_part(part):
+    return "data"
+  if _compat.is_text_part(part):
+    return "text"
+  return "other"
+
+
+def _kinds(parts):
+  return [_kind(part) for part in parts]
+
+
+def _data(part):
+  return _compat.data_part_dict(part)
+
+
+def _text(part):
+  return _compat.part_text(part)
+
+
+def _dump(items):
+  return json.dumps([_compat.a2a_to_dict(item) for item in items], default=str)
+
+
+class TestHitlResumeRewrite:
+  """Regression tests for the A2A human-input resume rewrite.
+
+  A GE workflow that pauses on a RequestInput node and then invokes an A2A
+  reference node used to fail on resume with `ValueError: Message cannot contain
+  both function responses and text`, because the human-input function_response
+  was forwarded verbatim beside the user's text.
+  """
+
+  def test_agentflow_request_input_is_flattened(self):
+    """A workflow RequestInput pause is flattened to text, not sent as data."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("adk_request_input", "fc-1")],
+            responses=[
+                ("flow_request_input", "fc-1", {"company_name": "Okta"})
+            ],
+            user_text="Okta",
+        ),
+    )
+    assert parts
+    assert "data" not in _kinds(parts), (
+        "human-input function_response survived the rewrite; ADK's Runner"
+        " rejects a message mixing function responses and text"
+    )
+
+  def test_mock_input_required_is_flattened(self):
+    """ADK's own mock input-required pause is still flattened, answer preserved."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("mock_function_call_for_required_user_input", "fc-1")],
+            responses=[(
+                "mock_function_call_for_required_user_input",
+                "fc-1",
+                {"result": "Okta"},
+            )],
+        ),
+    )
+    assert "data" not in _kinds(parts)
+    assert any(
+        _kind(part) == "text" and "Okta" in _text(part) for part in parts
+    )
+
+  def test_request_confirmation_is_flattened(self):
+    """A confirmation pause is flattened, not forwarded as a function_response."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("adk_request_confirmation", "fc-1")],
+            responses=[
+                ("adk_request_confirmation", "fc-1", {"confirmed": True})
+            ],
+        ),
+    )
+    assert parts
+    assert "data" not in _kinds(parts)
+
+  def test_real_long_running_tool_response_is_preserved(self):
+    """A real remote long-running tool response is preserved id-for-id."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("ask_for_approval", "fc-1")],
+            responses=[("ask_for_approval", "fc-1", {"status": "approved"})],
+            user_text=None,
+        ),
+    )
+    assert _kinds(parts) == ["data"]
+    assert _data(parts[0]).get("id") == "fc-1"
+
+  def test_real_tool_with_text_and_no_pause_never_mixes(self):
+    """A real tool response plus stray text (no pause) stays an all-data resume."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("ask_for_approval", "fc-1")],
+            responses=[("ask_for_approval", "fc-1", {"status": "approved"})],
+            user_text="also do X",
+        ),
+    )
+    assert "text" not in _kinds(parts)
+    assert any(_kind(part) == "data" for part in parts)
+
+  def test_parallel_real_tool_and_human_input_never_mixes(self):
+    """A real-tool + human-input resume stays all-data, never data beside text."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[
+                ("ask_for_approval", "fc-real"),
+                ("adk_request_input", "fc-1"),
+            ],
+            responses=[
+                ("ask_for_approval", "fc-real", {"status": "approved"}),
+                ("flow_request_input", "fc-1", {"company_name": "Okta"}),
+            ],
+            user_text="Okta",
+        ),
+    )
+    kinds = _kinds(parts)
+    assert not ("data" in kinds and "text" in kinds), (
+        f"forwarded a function_response beside text ({kinds}); ADK's Runner"
+        " rejects that combination"
+    )
+    assert any(
+        _kind(part) == "data" and _data(part).get("id") == "fc-real"
+        for part in parts
+    ), "the real remote tool response must survive so the peer can resume it"
+
+  def test_multiple_real_tools_and_human_inputs_never_mix(self):
+    """N real-tool + N human-input responses in one turn stay all-data."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[
+                ("ask_for_approval_1", "fc-real-1"),
+                ("ask_for_approval_2", "fc-real-2"),
+                ("adk_request_input", "fc-1"),
+                ("adk_request_confirmation", "fc-2"),
+            ],
+            responses=[
+                ("ask_for_approval_1", "fc-real-1", {"status": "approved"}),
+                ("ask_for_approval_2", "fc-real-2", {"status": "rejected"}),
+                ("flow_request_input", "fc-1", {"company_name": "Okta"}),
+                ("adk_request_confirmation", "fc-2", {"confirmed": True}),
+            ],
+            user_text="Okta",
+        ),
+    )
+    assert "text" not in _kinds(parts)
+    ids = {_data(p).get("id") for p in parts if _kind(p) == "data"}
+    assert {"fc-real-1", "fc-real-2", "fc-1", "fc-2"} <= ids
+
+  def test_partial_auth_config_shape_is_dropped(self):
+    """Fail-closed: a partial AuthConfig (auth_scheme only) is still dropped."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("adk_request_input", "fc-1")],
+            responses=[(
+                "flow_request_input",
+                "fc-1",
+                {"auth_scheme": {"type": "oauth2"}},
+            )],
+            user_text="hi",
+        ),
+    )
+    assert _kinds(parts) == ["text"]
+    assert "auth_scheme" not in _text(parts[0])
+
+  def test_credential_only_resume_returns_none_without_crashing(self):
+    """A credential-only resume drops the secret and returns None, no crash."""
+    message = _make_agent()._create_a2a_request_for_user_function_response(  # pylint: disable=protected-access
+        _make_ctx(
+            _resume_events(
+                calls=[("adk_request_credential", "fc-1")],
+                responses=[("adk_request_credential", "fc-1", _AUTH_PAYLOAD)],
+                user_text=None,
+            )
+        )
+    )
+    assert message is None
+
+  def test_credential_is_dropped_even_under_a_non_credential_name(self):
+    """Fail-closed: a credential is dropped by AuthConfig shape, not by name."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("adk_request_input", "fc-1")],  # NOT a credential call name
+            responses=[("flow_request_input", "fc-1", _AUTH_PAYLOAD)],
+            user_text="Okta",
+        ),
+    )
+    assert "data" not in _kinds(parts)
+    assert _SECRET not in _dump(parts)
+
+  def test_credential_under_non_human_input_call_is_dropped(self):
+    """Fail-closed: a credential is dropped even when its call is not a pause."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("some_unknown_tool", "fc-1")],
+            responses=[("some_unknown_tool", "fc-1", _AUTH_PAYLOAD)],
+            user_text=None,
+        ),
+    )
+    assert _SECRET not in _dump(parts)
+
+  def test_id_less_real_tool_survives_alongside_id_less_human_input(self):
+    """An id-less real tool is not flattened by an id-less human-input pause.
+
+    An id-less human-input call (``adk_request_input``) and an id-less real tool
+    call (``ask_for_approval``) share the ambiguous id-less bucket; the real
+    tool's response must survive as data rather than be flattened to text.
+
+    ``find_matching_function_call`` only engages the rewrite when the turn's
+    first function_response has an id, so the turn also carries an id-bearing
+    pause (``adk_request_confirmation``). That pause is a human-input answer, so
+    it does not on its own force the message to stay a resume: only the id-less
+    ambiguity guard keeps the real tool's response as data (without it, both
+    responses would flatten to text and the peer could not resume the tool).
+    """
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            # The two id-less calls share the ambiguous id-less bucket; the
+            # id-bearing confirmation pause lets find_matching_function_call
+            # engage the rewrite.
+            calls=[
+                ("adk_request_input", None),
+                ("ask_for_approval", None),
+                ("adk_request_confirmation", "fc-1"),
+            ],
+            responses=[
+                ("adk_request_confirmation", "fc-1", {"confirmed": True}),
+                ("ask_for_approval", None, {"status": "approved"}),
+            ],
+            user_text=None,
+        ),
+    )
+    assert "text" not in _kinds(parts)
+    assert any(
+        _kind(part) == "data" and _data(part).get("name") == "ask_for_approval"
+        for part in parts
+    )
+
+  def test_construct_message_parts_drops_credential_from_history(self):
+    """The session-reconstruction fallback drops credential responses."""
+    agent = _make_agent()
+    ctx = _make_ctx([
+        Event(
+            invocation_id="inv-1",
+            author="user",
+            id="e_resp",
+            content=genai_types.Content(
+                role="user",
+                parts=[
+                    genai_types.Part(
+                        function_response=genai_types.FunctionResponse(
+                            id="fc-1",
+                            name="adk_request_credential",
+                            response=_AUTH_PAYLOAD,
+                        )
+                    ),
+                    genai_types.Part(text="hello"),
+                ],
+            ),
+        )
+    ])
+    parts, _ = agent._construct_message_parts_from_session(ctx)  # pylint: disable=protected-access
+    assert _SECRET not in _dump(parts)
+    assert any(_kind(part) == "text" for part in parts)
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_never_forwards_credential_to_peer(self):
+    """A credential-only resume never sends the AuthConfig to the peer."""
+    agent = _make_agent()
+    captured = []
+
+    async def _capture_send(request, request_metadata=None, context=None):
+      del request_metadata, context  # unused; captured request is what matters
+      captured.append(request)
+      return
+      yield  # pragma: no cover -- marks this an async generator
+
+    fake_client = Mock()
+    fake_client.send_message = _capture_send
+    agent._a2a_client = fake_client  # pylint: disable=protected-access
+
+    ctx = _make_ctx(
+        _resume_events(
+            calls=[("adk_request_credential", "fc-1")],
+            responses=[("adk_request_credential", "fc-1", _AUTH_PAYLOAD)],
+            user_text=None,
+        )
+    )
+    with patch.object(agent, "_ensure_resolved"):
+      _ = [
+          event
+          async for event in agent._run_async_impl(ctx)  # pylint: disable=protected-access
+      ]
+
+    assert _SECRET not in _dump(captured)

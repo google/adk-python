@@ -604,14 +604,21 @@ def get_fast_api_app(
       output = await _invoke_callable_or_raise(method, parsed.input or {})
 
       if inspect.isgenerator(output):
+        # Sentinel-based exhaustion check. We cannot rely on catching
+        # StopIteration here: when ``next(iterator)`` is called inside the
+        # threadpool worker, the StopIteration propagates out of the
+        # ``run_in_threadpool`` coroutine frame, and Python (PEP 479) converts
+        # it to ``RuntimeError("coroutine raised StopIteration")`` before the
+        # ``except StopIteration`` clause can ever see it. Passing a default to
+        # ``next`` avoids raising at the boundary entirely.
+        _SENTINEL = object()
 
         async def _aiter_from_iter(iterator):
           while True:
-            try:
-              chunk = await run_in_threadpool(next, iterator)
-              yield chunk
-            except StopIteration:
+            chunk = await run_in_threadpool(next, iterator, _SENTINEL)
+            if chunk is _SENTINEL:
               break
+            yield chunk
 
         content_iter = _aiter_from_iter(output)
       else:

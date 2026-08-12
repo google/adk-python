@@ -45,6 +45,8 @@ from google.adk.tools.base_toolset import BaseToolset
 from google.genai import types
 import pytest
 
+from tests.unittests import testing_utils
+
 TEST_APP_ID = "test_app"
 TEST_USER_ID = "test_user"
 TEST_SESSION_ID = "test_session"
@@ -1011,6 +1013,150 @@ async def test_run_config_custom_metadata_stamps_user_event_in_chat_mode():
   )
   user_event = next(event for event in session.events if event.author == "user")
   assert user_event.custom_metadata == {"turn_id": "t-1"}
+
+
+@pytest.mark.asyncio
+async def test_runner_root_task_mode_promotes_finish_task_output():
+  """Root LlmAgent(mode='task') promotes the finish_task output onto an event."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(
+      name="task_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="finish_task", args={"result": "the answer"}
+              )
+          ]
+      ),
+      mode="task",
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(
+          role="user", parts=[types.Part(text="do task")]
+      ),
+  ):
+    events.append(event)
+
+  outputs = [e.output for e in events if e.output is not None]
+  assert outputs, f"no event carried .output; events={events}"
+  assert any(
+      isinstance(o, dict) and o.get("result") == "the answer" for o in outputs
+  ), f"finish_task output not promoted onto event.output; got {outputs}"
+
+
+@pytest.mark.asyncio
+async def test_runner_root_task_mode_unwraps_primitive_output():
+  """Root LlmAgent(mode='task') unwraps primitive output schemas on promotion."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(
+      name="task_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="finish_task", args={"result": 42}
+              )
+          ]
+      ),
+      mode="task",
+      output_schema=int,
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(
+          role="user", parts=[types.Part(text="do task")]
+      ),
+  ):
+    events.append(event)
+
+  outputs = [e.output for e in events if e.output is not None]
+  assert outputs == [42], f"finish_task output was not unwrapped; got {outputs}"
+
+
+@pytest.mark.asyncio
+async def test_runner_root_task_mode_writes_output_key_to_session_state():
+  """Root LlmAgent(mode='task') with output_key writes result to session state."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(
+      name="task_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="finish_task", args={"result": "key_value"}
+              )
+          ]
+      ),
+      mode="task",
+      output_key="my_result_key",
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(
+          role="user", parts=[types.Part(text="do task")]
+      ),
+  ):
+    events.append(event)
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  assert session.state.get("my_result_key") == {"result": "key_value"}
+
+
+@pytest.mark.asyncio
+async def test_runner_raises_on_root_llm_agent_with_single_turn_mode():
+  """Runner raises ValueError if root LlmAgent runs with mode='single_turn'."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(name="single_turn_agent", mode="single_turn")
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          "LlmAgent as root agent must have mode='chat' or 'task', but got"
+          " mode='single_turn'."
+      ),
+  ):
+    async for _ in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="do task")]
+        ),
+    ):
+      pass
 
 
 @pytest.mark.asyncio
