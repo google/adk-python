@@ -1046,6 +1046,63 @@ def test_app_with_gemini_enterprise(
     yield client
 
 
+@pytest.fixture
+def test_app_with_gemini_enterprise_sync_stream(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Like test_app_with_gemini_enterprise but stream_query is a sync generator.
+
+  This exercises the inspect.isgenerator() branch in stream_reasoning_engine,
+  where the sync iterator is adapted to an async iterator via a threadpool.
+  """
+  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  mock_agent_loader.list_agents = MagicMock(
+      return_value=["test_app", "gemini_app"]
+  )
+
+  mock_adk_app_instance = MagicMock()
+  mock_adk_app_instance._tmpl_attrs = {}
+
+  def stream_query_impl(**kwargs):
+    yield {"chunk": 1, "kwargs": kwargs}
+    yield {"chunk": 2, "kwargs": kwargs}
+
+  mock_adk_app_instance.stream_query = stream_query_impl
+
+  with (
+      patch("google.auth.default", return_value=(MagicMock(), "test-project")),
+      patch("vertexai.init", new_callable=MagicMock),
+      patch(
+          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+      ),
+      patch("google.adk.agents.Agent", new_callable=MagicMock),
+      patch(
+          "google.adk.telemetry._agent_engine.TopSpanProcessor",
+          new_callable=MagicMock,
+      ),
+      patch(
+          "google.adk.telemetry._agent_engine.get_propagated_context",
+          new_callable=MagicMock,
+      ),
+  ):
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        gemini_enterprise_app_name="gemini_app",
+    )
+    yield client
+
+
 #################################################
 # Test Cases
 #################################################
@@ -3579,6 +3636,27 @@ def test_gemini_stream_reasoning_engine_missing_class_method(
       json={"input": {"arg1": 1}},
   )
   assert response.status_code == 400
+
+
+def test_gemini_stream_reasoning_engine_sync_generator(
+    test_app_with_gemini_enterprise_sync_stream,
+):
+  """Regression test: a synchronous streaming class_method must not raise.
+
+  A sync generator is adapted to an async iterator via run_in_threadpool. The
+  adapter must not rely on catching StopIteration across the await boundary,
+  since Python (PEP 479) converts an escaping StopIteration into
+  RuntimeError("coroutine raised StopIteration") after the final chunk.
+  """
+  response = test_app_with_gemini_enterprise_sync_stream.post(
+      "/api/stream_reasoning_engine",
+      json={"class_method": "stream_query", "input": {"arg1": 1}},
+  )
+  assert response.status_code == 200
+  lines = response.text.strip().split("\n")
+  assert len(lines) == 2
+  assert json.loads(lines[0]) == {"chunk": 1, "kwargs": {"arg1": 1}}
+  assert json.loads(lines[1]) == {"chunk": 2, "kwargs": {"arg1": 1}}
 
 
 def test_run_eval_request_live_fields_default():
