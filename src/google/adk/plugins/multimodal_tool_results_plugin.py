@@ -28,6 +28,14 @@ from ..tools.tool_context import ToolContext
 from .base_plugin import BasePlugin
 
 PARTS_RETURNED_BY_TOOLS_ID = "temp:PARTS_RETURNED_BY_TOOLS_ID"
+# Deliberately NOT "temp:"-prefixed: the session layer treats "temp:" state
+# as invocation-scoped and strips it before persisting an event (see
+# BaseSessionService._trim_temp_delta_state). retention="session" needs the
+# saved parts to survive into later invocations (i.e. later conversational
+# turns), so it is stored under this session-scoped key instead.
+SESSION_PARTS_RETURNED_BY_TOOLS_ID = (
+    "multimodal_tool_results_plugin:PARTS_RETURNED_BY_TOOLS_ID"
+)
 
 
 class MultimodalToolResultsPlugin(BasePlugin):
@@ -55,6 +63,12 @@ class MultimodalToolResultsPlugin(BasePlugin):
     super().__init__(name)
     self._retention = retention
 
+  def _state_key(self) -> str:
+    """Returns the state key parts are stored under for this retention mode."""
+    if self._retention == "session":
+      return SESSION_PARTS_RETURNED_BY_TOOLS_ID
+    return PARTS_RETURNED_BY_TOOLS_ID
+
   async def after_tool_callback(
       self,
       *,
@@ -78,11 +92,12 @@ class MultimodalToolResultsPlugin(BasePlugin):
       return result
 
     parts = [result] if isinstance(result, types.Part) else result[:]
+    key = self._state_key()
 
-    if PARTS_RETURNED_BY_TOOLS_ID in tool_context.state:
-      tool_context.state[PARTS_RETURNED_BY_TOOLS_ID] += parts
+    if key in tool_context.state:
+      tool_context.state[key] += parts
     else:
-      tool_context.state[PARTS_RETURNED_BY_TOOLS_ID] = parts
+      tool_context.state[key] = parts
 
     return None
 
@@ -94,11 +109,10 @@ class MultimodalToolResultsPlugin(BasePlugin):
     if not llm_request.contents:
       return None
 
-    if saved_parts := callback_context.state.get(
-        PARTS_RETURNED_BY_TOOLS_ID, None
-    ):
+    key = self._state_key()
+    if saved_parts := callback_context.state.get(key, None):
       llm_request.contents[-1].parts += saved_parts
       if self._retention == "next_model_call":
-        callback_context.state.update({PARTS_RETURNED_BY_TOOLS_ID: []})
+        callback_context.state.update({key: []})
 
     return None

@@ -19,6 +19,7 @@ from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.llm_agent import Agent
 from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.multimodal_tool_results_plugin import MultimodalToolResultsPlugin
 from google.adk.plugins.multimodal_tool_results_plugin import PARTS_RETURNED_BY_TOOLS_ID
@@ -145,36 +146,50 @@ async def test_empty_contents_leaves_saved_parts_pending(
 
 
 @pytest.mark.asyncio
-async def test_session_retention_reattaches_parts_across_turns(
-    mock_tool: MockTool,
-    tool_context: ToolContext,
-):
-  """Test that retention="session" keeps attaching parts to later turns."""
-  plugin = MultimodalToolResultsPlugin(retention="session")
-  parts = [types.Part(text="part1")]
+async def test_session_retention_reattaches_parts_across_turns():
+  """Test that retention="session" resurfaces parts in a LATER invocation.
 
-  await plugin.after_tool_callback(
-      tool=mock_tool,
-      tool_args={},
-      tool_context=tool_context,
-      result=parts,
+  Regression test for #6695. This must go through two separate
+  runner.run_async() calls against a real session service: the saved parts
+  are stored under a "temp:"-prefixed key by default, and that prefix is
+  stripped by BaseSessionService before an event is persisted, so a test
+  that only calls before_model_callback twice on the same in-memory State
+  object (without an intervening append_event()) cannot detect whether the
+  parts actually survive a real turn boundary.
+  """
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://bucket/document.pdf", mime_type="application/pdf"
+      )
   )
 
-  callback_context = Mock(spec=CallbackContext)
-  callback_context.state = tool_context.state
+  def get_document() -> types.Part:
+    return file_part
 
-  first_request = LlmRequest(contents=[types.Content(parts=[])])
-  await plugin.before_model_callback(
-      callback_context=callback_context, llm_request=first_request
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name="get_document", args={}),
+          "Here is a summary of the document.",
+          "The document says X.",
+      ]
   )
-  assert first_request.contents[-1].parts == parts
-  assert tool_context.state[PARTS_RETURNED_BY_TOOLS_ID] == parts
+  agent = Agent(name="root_agent", model=mock_model, tools=[get_document])
+  runner = testing_utils.InMemoryRunner(
+      agent, plugins=[MultimodalToolResultsPlugin(retention="session")]
+  )
 
-  second_request = LlmRequest(contents=[types.Content(parts=[])])
-  await plugin.before_model_callback(
-      callback_context=callback_context, llm_request=second_request
-  )
-  assert second_request.contents[-1].parts == parts
+  # Turn 1: triggers the tool call.
+  await runner.run_async("Please fetch the document")
+  # Turn 2: a NEW invocation, sharing the same session as turn 1.
+  await runner.run_async("What does the document say?")
+
+  assert len(mock_model.requests) == 3
+  # Turn 1's first request precedes the tool call: nothing attached yet.
+  assert file_part not in mock_model.requests[0].contents[-1].parts
+  # Turn 1's second request: parts attached within the same invocation.
+  assert file_part in mock_model.requests[1].contents[-1].parts
+  # Turn 2's request is a separate invocation: parts must still be attached.
+  assert file_part in mock_model.requests[2].contents[-1].parts
 
 
 @pytest.mark.asyncio
