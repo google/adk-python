@@ -38,7 +38,7 @@ class GetSessionConfig(BaseModel):
         with timestamp >= the given time.
   """
 
-  num_recent_events: Optional[int] = None
+  num_recent_events: Optional[int] = Field(default=None, ge=0)
   after_timestamp: Optional[float] = None
 
 

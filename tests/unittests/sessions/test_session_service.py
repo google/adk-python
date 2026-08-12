@@ -50,6 +50,12 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
 
+def test_get_session_config_rejects_negative_num_recent_events():
+  """A negative recent-event limit is rejected at configuration time."""
+  with pytest.raises(ValueError, match='greater than or equal to 0'):
+    GetSessionConfig(num_recent_events=-1)
+
+
 class SessionServiceType(enum.Enum):
   IN_MEMORY = 'IN_MEMORY'
   IN_MEMORY_WITH_LIGHT_COPY_ENABLED = 'IN_MEMORY_WITH_LIGHT_COPY_ENABLED'
