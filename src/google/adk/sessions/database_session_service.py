@@ -50,6 +50,7 @@ except ImportError:
 from typing_extensions import override
 
 from . import _session_util
+from ..errors._stale_session_error import StaleSessionError
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
@@ -905,7 +906,7 @@ class DatabaseSessionService(BaseSessionService):
           # revision marker, so stale-writer detection can use that marker
           # instead of relying on rounded timestamps.
           if session._storage_update_marker != storage_update_marker:
-            raise ValueError(_STALE_SESSION_ERROR_MESSAGE)
+            raise StaleSessionError(_STALE_SESSION_ERROR_MESSAGE)
           # Keep the float timestamp synchronized with the exact storage value
           # so tiny round-trip differences do not trigger false stale checks on
           # the next append.
@@ -918,7 +919,7 @@ class DatabaseSessionService(BaseSessionService):
           if not await self._session_matches_storage_revision(
               sql_session=sql_session, schema=schema, session=session
           ):
-            raise ValueError(_STALE_SESSION_ERROR_MESSAGE)
+            raise StaleSessionError(_STALE_SESSION_ERROR_MESSAGE)
           session.last_update_time = storage_update_time
         session._storage_update_marker = storage_update_marker
 

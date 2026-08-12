@@ -24,38 +24,18 @@ from adk_pr_triaging_agent.utils import get_request
 from adk_pr_triaging_agent.utils import is_assignable
 from adk_pr_triaging_agent.utils import post_request
 from adk_pr_triaging_agent.utils import run_graphql_query
+from component_owners import LABEL_TO_OWNER
 from google.adk import Agent
 import requests
 
-ALLOWED_LABELS = [
-    "documentation",
-    "services",
-    "tools",
-    "mcp",
-    "eval",
-    "live",
-    "models",
-    "tracing",
-    "core",
-    "web",
-]
+# LABEL_TO_OWNER (component label -> owner GitHub login; the owner becomes the
+# PR's assignee) is imported from component_owners and shared verbatim with
+# adk_triaging_agent, so the two can't drift. Keep it in sync with OWNERS.
 
-# Component label -> GitHub login of the owner who shepherds that component.
-# The owner becomes the PR's assignee so the contributor can see who is
-# handling their PR. github login != corp ldap, so this is the login form. Keep
-# in sync with the OWNERS file (the authority) and adk_triaging_agent's map.
-LABEL_TO_OWNER = {
-    "documentation": "joefernandez",
-    "services": "DeanChensj",
-    "tools": "xuanyang15",
-    "mcp": "wukath",
-    "eval": "ankursharmas",
-    "live": "wuliang229",
-    "models": "GWeale",
-    "tracing": "jawoszek",
-    "core": "DeanChensj",
-    "web": "wyf7107",
-}
+# Labels the agent may apply, derived from LABEL_TO_OWNER so a newly-owned
+# component is allowed automatically (this was a separate list that silently
+# fell out of sync and blocked applying the newer labels).
+ALLOWED_LABELS = sorted(LABEL_TO_OWNER)
 
 APPROVAL_INSTRUCTION = (
     "Do not ask for user approval for labeling or assigning!"
@@ -329,6 +309,12 @@ root_agent = Agent(
       - If it's about streaming/live, label it with "live".
       - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
+      - If it's about authentication or authorization, label it with "auth".
+      - If it's about BigQuery integration, label it with "bq".
+      - If it's about ADK CLI commands (e.g. create, deploy, eval) or CLI tools, label it with "cli".
+      - If it's about third-party integrations (e.g. CrewAI, LangChain, Slack) excluding BigQuery, label it with "integrations".
+      - If it's about GCP Skills Registry (GCPSkillRegistry), skill prompt models, or dynamic skill toolsets, label it with "skills".
+      - If it's about workflow agents or workflow execution, label it with "workflow".
       - If it's agent orchestration, agent definition, label it with "core".
       - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with "mcp".
       - If you can't find an appropriate labels for the PR, follow the previous instruction that starts with "IMPORTANT:".

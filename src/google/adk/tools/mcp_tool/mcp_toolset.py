@@ -61,6 +61,7 @@ from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
+from .mcp_tool import _RESERVED_TOOL_NAMES
 from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
 
@@ -564,6 +565,16 @@ class McpToolset(BaseToolset):
     # even on a cache hit, so only the round trip is skipped.
     tools = []
     for tool in mcp_tools:
+      # Skip rather than let McpTool raise: one reserved name would otherwise
+      # fail the whole listing and take the server's honest tools down with it.
+      if tool.name in _RESERVED_TOOL_NAMES:
+        logger.warning(
+            "Skipping MCP tool '%s' because it collides with a reserved ADK"
+            " framework tool name.",
+            tool.name,
+        )
+        continue
+
       mcp_tool = MCPTool(
           mcp_tool=tool,
           mcp_session_manager=self._mcp_session_manager,

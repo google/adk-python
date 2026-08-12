@@ -36,8 +36,10 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 from typing import Any
+from typing import Iterator
 from typing import Optional
 
 from fastapi import FastAPI
@@ -187,6 +189,103 @@ class TelemetryConsentRequest(common.BaseModel):
   telemetry: bool
 
 
+# Agent config fields whose value names Python code that the agent loader
+# imports and calls.
+_CODE_REFERENCE_KEYS = frozenset({
+    "after_agent_callbacks",
+    "after_model_callbacks",
+    "after_tool_callbacks",
+    "agent_class",
+    "before_agent_callbacks",
+    "before_model_callbacks",
+    "before_tool_callbacks",
+    "code",
+    "input_schema",
+    "model_code",
+    "output_schema",
+    "tools",
+})
+
+# The namespaces the agent loader searches when a reference has no dots.
+_ADK_BUILT_IN_NAMESPACES = ("google.adk.agents.", "google.adk.tools.")
+
+
+def _iter_code_references(value: Any) -> Iterator[str]:
+  """Yields the names a code-reference field carries, whatever its shape."""
+  if isinstance(value, str):
+    yield value
+  elif isinstance(value, list):
+    for item in value:
+      yield from _iter_code_references(item)
+  elif isinstance(value, dict):
+    name = value.get("name")
+    if isinstance(name, str):
+      yield name
+
+
+def _is_adk_built_in(reference: str) -> bool:
+  """Whether a qualified name reaches what an undotted name would reach.
+
+  One segment after the namespace is a name that namespace exports. A deeper
+  path walks into a submodule and can reach code an undotted reference cannot,
+  so it does not count as a built-in.
+
+  Args:
+    reference: A dotted Python name.
+
+  Returns:
+    Whether the reference names an ADK built-in.
+  """
+  for namespace in _ADK_BUILT_IN_NAMESPACES:
+    if reference.startswith(namespace):
+      return "." not in reference[len(namespace) :]
+  return False
+
+
+def _app_name_shadows_module(app_name: str) -> bool:
+  """Whether the app name collides with a module that can be imported."""
+  # "google" is a namespace package rather than a standard library module, so
+  # it has to be named explicitly.
+  return (
+      app_name in sys.builtin_module_names
+      or app_name in sys.stdlib_module_names
+      or app_name == "google"
+  )
+
+
+def _check_code_reference(
+    reference: str, *, app_name: str, filename: str, field_name: str
+) -> None:
+  """Checks that a code reference stays inside the app being edited.
+
+  Args:
+    reference: The name found in the uploaded document.
+    app_name: The app the document belongs to.
+    filename: The uploaded path, used in the error message.
+    field_name: The config field the reference came from.
+
+  Raises:
+    ValueError: If the reference can reach code outside the app.
+  """
+  if "." not in reference:
+    # The loader resolves an undotted name against ADK's own built-ins.
+    return
+  if _is_adk_built_in(reference):
+    return
+  if not reference.startswith(f"{app_name}."):
+    raise ValueError(
+        f"Blocked code reference {reference!r} in {filename!r}. The"
+        f" '{field_name}' field may only reference code under"
+        f" '{app_name}' or an ADK built-in."
+    )
+  if _app_name_shadows_module(app_name):
+    raise ValueError(
+        f"Blocked code reference {reference!r} in {filename!r}. The app name"
+        f" {app_name!r} shadows an importable Python module, so a reference to"
+        " the app cannot be told apart from one that leaves it."
+    )
+
+
 class DevServer(ApiServer):
   """Development server that extends ApiServer with dev-only endpoints.
 
@@ -291,8 +390,10 @@ class DevServer(ApiServer):
     # --- YAML content security ---
     _BLOCKED_YAML_KEYS = frozenset({"args"})
 
-    def _check_yaml_for_blocked_keys(content: bytes, filename: str) -> None:
-      """Raise if the YAML document contains any blocked keys."""
+    def _check_uploaded_yaml(
+        content: bytes, *, filename: str, app_name: str
+    ) -> None:
+      """Raise if the YAML would let the loader run code outside the app."""
       try:
         docs = list(yaml.safe_load_all(content))
       except yaml.YAMLError as exc:
@@ -307,6 +408,14 @@ class DevServer(ApiServer):
                   f"The '{key}' field is not allowed in builder uploads "
                   "because it can execute arbitrary code."
               )
+            if key in _CODE_REFERENCE_KEYS:
+              for reference in _iter_code_references(value):
+                _check_code_reference(
+                    reference,
+                    app_name=app_name,
+                    filename=filename,
+                    field_name=key,
+                )
             _walk(value)
         elif isinstance(node, list):
           for item in node:
@@ -463,7 +572,11 @@ class DevServer(ApiServer):
           uploads.append((rel_path, content))
 
         for rel_path, content in uploads:
-          _check_yaml_for_blocked_keys(content, f"{app_name}/{rel_path}")
+          _check_uploaded_yaml(
+              content,
+              filename=f"{app_name}/{rel_path}",
+              app_name=app_name,
+          )
 
         if tmp:
           app_root = _get_app_root(app_name)
@@ -690,7 +803,6 @@ class DevServer(ApiServer):
       agent_dir = self._get_agent_dir(app_name)
 
       import subprocess
-      import sys
 
       queue: asyncio.Queue[str | None] = asyncio.Queue()
 

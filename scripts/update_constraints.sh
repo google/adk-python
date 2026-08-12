@@ -18,15 +18,21 @@
 # Usage:
 #   ./scripts/update_constraints.sh          # Updates constraints.txt in-place if out of date
 #   ./scripts/update_constraints.sh --check  # Check only, exits with 1 if out of date (for CI)
+#   ./scripts/update_constraints.sh --force  # Force update even if only header date changes
 
 set -e
 
 # Parse arguments
 CHECK_ONLY=false
+FORCE=false
 for arg in "$@"; do
   case $arg in
     --check)
       CHECK_ONLY=true
+      shift
+      ;;
+    --force)
+      FORCE=true
       shift
       ;;
   esac
@@ -130,19 +136,29 @@ for ver in "${PYTHON_VERSIONS[@]}"; do
   } > "$CLEAN_FILE"
   mv "$CLEAN_FILE" "$NEW_FILE"
 
-  # Compare
-  if diff -u "$TARGET_FILE" "$NEW_FILE"; then
+  # Check if files are completely identical (including header)
+  if [ -f "$TARGET_FILE" ] && diff -u "$TARGET_FILE" "$NEW_FILE" >/dev/null 2>&1; then
+    echo "✅ $TARGET_FILE is up-to-date."
+    rm -f "$STABLE_FILE" "$NEW_FILE"
+  # Check if package versions are identical (ignoring header) when --force is NOT specified
+  elif [ "$FORCE" = false ] && [ -f "$TARGET_FILE" ] && diff -u <(tail -n +3 "$TARGET_FILE") <(tail -n +3 "$NEW_FILE") >/dev/null 2>&1; then
     echo "✅ $TARGET_FILE is up-to-date."
     rm -f "$STABLE_FILE" "$NEW_FILE"
   else
     if [ "$CHECK_ONLY" = true ]; then
+      diff -u "$TARGET_FILE" "$NEW_FILE" || true
       echo "❌ $TARGET_FILE is OUT OF DATE!"
       echo "   Please run the update script locally to update it and commit the changes:"
       echo "   $ ./scripts/update_constraints.sh"
       rm -f "$STABLE_FILE" "$NEW_FILE"
       EXIT_CODE=1
     else
-      echo "🔄 $TARGET_FILE was OUT OF DATE. Updating it automatically..."
+      diff -u "$TARGET_FILE" "$NEW_FILE" || true
+      if [ "$FORCE" = true ] && [ -f "$TARGET_FILE" ] && diff -u <(tail -n +3 "$TARGET_FILE") <(tail -n +3 "$NEW_FILE") >/dev/null 2>&1; then
+        echo "🔄 Force-updating $TARGET_FILE header date..."
+      else
+        echo "🔄 $TARGET_FILE was OUT OF DATE. Updating it automatically..."
+      fi
       cp "$NEW_FILE" "$TARGET_FILE"
       echo "✅ $TARGET_FILE has been updated locally."
       rm -f "$STABLE_FILE" "$NEW_FILE"

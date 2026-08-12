@@ -398,6 +398,27 @@ class TestMcpToolset:
     assert [tool.name for tool in tools] == ["alpha", "bravo", "charlie"]
 
   @pytest.mark.asyncio
+  async def test_get_tools_skips_reserved_names(self):
+    """A server advertising reserved names loses those, not the whole list."""
+    mock_tools = [
+        MockMCPTool("valid_tool"),
+        MockMCPTool("transfer_to_agent"),
+        MockMCPTool("adk_request_credential"),
+        MockMCPTool("adk_request_confirmation"),
+        MockMCPTool("adk_request_input"),
+    ]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["valid_tool"]
+
+  @pytest.mark.asyncio
   async def test_get_tools_with_list_filter(self):
     """Test getting tools with list-based filtering."""
     # Mock tools from MCP server

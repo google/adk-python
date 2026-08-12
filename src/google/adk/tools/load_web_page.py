@@ -158,8 +158,42 @@ def _is_blocked_hostname(hostname: str) -> bool:
   )
 
 
+_NAT64_WELL_KNOWN_PREFIX = ipaddress.ip_network('64:ff9b::/96')
+
+
+def _embedded_ipv4(address: _ResolvedAddress) -> ipaddress.IPv4Address | None:
+  """Returns the IPv4 address embedded in an IPv6 address, if any.
+
+  ``is_global`` on the outer IPv6 address does not reflect the reachability of
+  the embedded IPv4 target for IPv4-mapped (``::ffff:a.b.c.d``), IPv4-compatible
+  (``::a.b.c.d``), 6to4 (``2002::/16``) and NAT64 (``64:ff9b::/96``) addresses.
+  For example ``64:ff9b::169.254.169.254`` is reported as global but, on a
+  network with NAT64, routes to the internal ``169.254.169.254`` metadata
+  endpoint. Returning the embedded IPv4 lets the caller vet it directly.
+  """
+  if not isinstance(address, ipaddress.IPv6Address):
+    return None
+  if address.ipv4_mapped is not None:
+    return address.ipv4_mapped
+  if address.sixtofour is not None:
+    return address.sixtofour
+  if address in _NAT64_WELL_KNOWN_PREFIX:
+    return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+  # IPv4-compatible ``::a.b.c.d`` (deprecated): top 96 bits zero, low 32 bits a
+  # non-trivial IPv4 (excluding ``::`` and ``::1``).
+  packed = int(address)
+  if packed >> 32 == 0 and (packed & 0xFFFFFFFF) not in (0, 1):
+    return ipaddress.IPv4Address(packed & 0xFFFFFFFF)
+  return None
+
+
 def _is_blocked_address(address: _ResolvedAddress) -> bool:
-  return not address.is_global
+  if not address.is_global:
+    return True
+  # Reject IPv6 addresses that embed a non-global IPv4 target (NAT64,
+  # IPv4-compatible, etc.), which `is_global` alone does not catch.
+  embedded = _embedded_ipv4(address)
+  return embedded is not None and not embedded.is_global
 
 
 def _resolve_host_addresses(hostname: str) -> tuple[_ResolvedAddress, ...]:

@@ -243,6 +243,40 @@ class TestMCPTool:
 
     assert tool.description == ""
 
+  @pytest.mark.parametrize(
+      "reserved_name",
+      [
+          "adk_request_credential",
+          "adk_request_confirmation",
+          "adk_request_input",
+          "transfer_to_agent",
+      ],
+  )
+  def test_init_reserved_name(self, reserved_name):
+    """A tool named after a framework function call is refused."""
+    mock_tool = MockMCPTool(name=reserved_name)
+    with pytest.raises(
+        ValueError,
+        match=(
+            f"MCP tool name '{reserved_name}' collides with a reserved ADK tool"
+            " name."
+        ),
+    ):
+      MCPTool(
+          mcp_tool=mock_tool,
+          mcp_session_manager=self.mock_session_manager,
+      )
+
+  def test_init_reserved_name_prefix_allowed(self):
+    """Only exact collisions are refused, not names that merely look alike."""
+    mock_tool = MockMCPTool(name="transfer_to_agent_v2")
+    tool = MCPTool(
+        mcp_tool=mock_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.name == "transfer_to_agent_v2"
+
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):
     """Test running tool without authentication."""
