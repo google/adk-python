@@ -50,16 +50,17 @@ _ALLOWED_FRONTMATTER_KEYS = frozenset({
 })
 
 
-def _load_dir(directory: pathlib.Path) -> dict[str, str]:
+def _load_dir(directory: pathlib.Path) -> dict[str, Union[str, bytes]]:
   """Recursively load files from a directory into a dictionary.
 
   Args:
     directory: Path to the directory to load.
 
   Returns:
-    Dictionary mapping relative file paths to their string content.
+    Dictionary mapping relative file paths to their content: `str` for UTF-8
+    text, `bytes` for everything else.
   """
-  files = {}
+  files: dict[str, Union[str, bytes]] = {}
   if directory.exists() and directory.is_dir():
     for file_path in directory.rglob("*"):
       if "__pycache__" in file_path.parts:
@@ -71,9 +72,32 @@ def _load_dir(directory: pathlib.Path) -> dict[str, str]:
               encoding="utf-8"
           )
         except UnicodeDecodeError:
-          # Binary files or non-UTF-8 files are skipped for text content.
-          continue
+          files[relative_path.as_posix()] = file_path.read_bytes()
   return files
+
+
+def _build_scripts(
+    raw_scripts: dict[str, Union[str, bytes]],
+) -> dict[str, models.Script]:
+  """Wrap raw script sources in `Script` models.
+
+  Args:
+    raw_scripts: Mapping of relative path to raw script content.
+
+  Returns:
+    Mapping of relative path to `Script`, omitting any script that is not
+    UTF-8 text, since `Script.src` holds source code.
+  """
+  scripts = {}
+  for name, src in raw_scripts.items():
+    if isinstance(src, bytes):
+      try:
+        src = src.decode("utf-8")
+      except UnicodeDecodeError:
+        logging.warning("Skipping non-UTF-8 skill script '%s'.", name)
+        continue
+    scripts[name] = models.Script(src=src)
+  return scripts
 
 
 def _parse_skill_md_content(content: str) -> tuple[dict, str]:
@@ -173,10 +197,7 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
 
   references = _load_dir(skill_dir / "references")
   assets = _load_dir(skill_dir / "assets")
-  raw_scripts = _load_dir(skill_dir / "scripts")
-  scripts = {
-      name: models.Script(src=content) for name, content in raw_scripts.items()
-  }
+  scripts = _build_scripts(_load_dir(skill_dir / "scripts"))
 
   resources = models.Resources(
       references=references,
@@ -346,9 +367,9 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
     frontmatter = models.Frontmatter.model_validate(parsed)
 
     # Helper to load files under a directory prefix inside the zip
-    def _load_zip_dir(prefix: str) -> dict[str, str]:
+    def _load_zip_dir(prefix: str) -> dict[str, Union[str, bytes]]:
       nonlocal budget
-      result = {}
+      result: dict[str, Union[str, bytes]] = {}
       if not prefix.endswith("/"):
         prefix += "/"
       for info in z.infolist():
@@ -365,16 +386,12 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
           try:
             result[relative_path] = data.decode("utf-8")
           except UnicodeDecodeError:
-            continue
+            result[relative_path] = data
       return result
 
     references = _load_zip_dir("references")
     assets = _load_zip_dir("assets")
-    raw_scripts = _load_zip_dir("scripts")
-    scripts = {
-        name: models.Script(src=content)
-        for name, content in raw_scripts.items()
-    }
+    scripts = _build_scripts(_load_zip_dir("scripts"))
 
     resources = models.Resources(
         references=references,
@@ -648,16 +665,7 @@ def _load_skill_from_gcs_dir(
 
   references = _load_files_in_dir("references")
   assets = _load_files_in_dir("assets")
-  raw_scripts = _load_files_in_dir("scripts")
-
-  scripts = {}
-  for name, src in raw_scripts.items():
-    if isinstance(src, bytes):
-      try:
-        src = src.decode("utf-8")
-      except UnicodeDecodeError:
-        continue  # skip binary scripts if any
-    scripts[name] = models.Script(src=src)
+  scripts = _build_scripts(_load_files_in_dir("scripts"))
 
   resources = models.Resources(
       references=references,
