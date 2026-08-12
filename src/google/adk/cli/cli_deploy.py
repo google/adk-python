@@ -1456,7 +1456,7 @@ def to_gke(
     image_name = f'gcr.io/{project}/{service_name}'
     subprocess.run(
         [
-            'gcloud',
+            _GCLOUD_CMD,
             'builds',
             'submit',
             '--tag',
@@ -1526,7 +1526,7 @@ spec:
     click.echo('  - Getting cluster credentials...')
     subprocess.run(
         [
-            'gcloud',
+            _GCLOUD_CMD,
             'container',
             'clusters',
             'get-credentials',

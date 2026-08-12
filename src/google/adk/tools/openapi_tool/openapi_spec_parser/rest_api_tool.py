@@ -604,8 +604,7 @@ class RestApiTool(BaseTool):
     return (
         f'RestApiTool(name="{self.name}", description="{self.description}",'
         f' endpoint="{self.endpoint}", operation="{self.operation}",'
-        f' auth_scheme="{self.auth_scheme}",'
-        f' auth_credential="{self.auth_credential}")'
+        f' auth_scheme="{self.auth_scheme}")'
     )
 
 

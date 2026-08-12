@@ -21,60 +21,34 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
 
+from .functional._aclosing import aclosing_wrapping_assertions
+from .functional._digests import SpanDigest
+from .functional._recording import FunctionalTestCase
+from .functional._recording import record_case
+from .functional._scenarios import build_mcp_test_runner
+from .functional._scenarios import build_test_runner
+from .functional._scenarios import CAPTURE_CONTENT
+from .functional._scenarios import EXPERIMENTAL_OPT_IN
+from .functional._scenarios import FakeMcpSession
+from .functional._scenarios import install_telemetry
+from .functional._scenarios import OTEL_OPT_IN
+from .functional._scenarios import run_agent_scenario
 from .functional_test_cases import ALL_CASES
 from .functional_test_cases import MCP_CASE
-from .functional_test_helpers import aclosing_wrapping_assertions
-from .functional_test_helpers import build_mcp_test_runner
-from .functional_test_helpers import build_test_runner
-from .functional_test_helpers import CAPTURE_CONTENT
-from .functional_test_helpers import EXPERIMENTAL_OPT_IN
-from .functional_test_helpers import FakeMcpSession
-from .functional_test_helpers import FunctionalTestCase
-from .functional_test_helpers import install_telemetry
-from .functional_test_helpers import OTEL_OPT_IN
-from .functional_test_helpers import run_agent_scenario
-from .functional_test_helpers import SpanDigest
-from .functional_test_helpers import TelemetryDigest
 
 
 @pytest.mark.parametrize("case", ALL_CASES, ids=lambda c: c.test_id)
 @pytest.mark.asyncio
-async def test_telemetry_schema(
-    case: FunctionalTestCase,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_telemetry_schema(case: FunctionalTestCase) -> None:
   """Tests creation of spans/logs/metrics in an E2E runner invocation.
 
   Asserts the entire telemetry schema (spans + attributes + per-span logs +
   recorded metric points) matches the shape recorded for the given semconv +
   content-capture configuration in ``functional_goldens/``.
   """
-  case.apply_env(monkeypatch)
+  recording = await record_case(case)
 
-  span_exporter = InMemorySpanExporter()
-  log_exporter = InMemoryLogRecordExporter()
-  metric_reader = InMemoryMetricReader()
-  install_telemetry(monkeypatch, span_exporter, log_exporter, metric_reader)
-
-  if case.model_exception is not None:
-    # The mock raises before responding; the scenario must propagate it.
-    with pytest.raises(Exception):  # noqa: B017 -- exact type varies per case.
-      await run_agent_scenario(
-          build_test_runner(model_exception=case.model_exception)
-      )
-  elif case.tool_fails:
-    # The tool raises while the model is fine; the scenario must propagate it.
-    with pytest.raises(ValueError, match="This tool always fails"):
-      await run_agent_scenario(build_test_runner(failing=True))
-  else:
-    await run_agent_scenario(build_test_runner())
-
-  digest = TelemetryDigest.build(
-      span_exporter.get_finished_spans(),
-      log_exporter.get_finished_logs(),
-      metric_reader.get_metrics_data(),
-  )
-  assert digest == case.expected
+  assert recording.digest == case.expected
 
 
 @pytest.mark.asyncio

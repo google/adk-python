@@ -14,6 +14,8 @@
 
 """Tests for basic LLM request processor."""
 
+import ssl
+
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
@@ -380,4 +382,136 @@ class TestBasicLlmRequestProcessor:
     assert llm_request.config.labels == {
         'agent_label': 'val1',
         'goog-originating-logical-product-id': 'prod1',
+    }
+
+  @pytest.mark.asyncio
+  async def test_run_config_http_options_do_not_reach_the_agent(self):
+    """Per-run headers and timeout must not persist on the shared agent."""
+    agent_http_options = types.HttpOptions(
+        timeout=1000, headers={'Agent-Header': 'agent-val'}
+    )
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-1.5-flash',
+        generate_content_config=types.GenerateContentConfig(
+            http_options=agent_http_options
+        ),
+    )
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+    llm_request.config.http_options = types.HttpOptions(
+        timeout=500, headers={'RunConfig-Header': 'run-val'}
+    )
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert agent_http_options.timeout == 1000
+    assert agent_http_options.headers == {'Agent-Header': 'agent-val'}
+
+  @pytest.mark.asyncio
+  async def test_agent_http_options_survive_a_second_invocation(self):
+    """A second run must see the agent's own options, not the first run's."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-1.5-flash',
+        generate_content_config=types.GenerateContentConfig(
+            http_options=types.HttpOptions(
+                timeout=1000, headers={'Agent-Header': 'agent-val'}
+            )
+        ),
+    )
+    processor = _BasicLlmRequestProcessor()
+
+    first_request = LlmRequest()
+    first_request.config.http_options = types.HttpOptions(
+        timeout=500, headers={'RunConfig-Header': 'run-val'}
+    )
+    async for _ in processor.run_async(
+        await _create_invocation_context(agent), first_request
+    ):
+      pass
+
+    second_request = LlmRequest()
+    async for _ in processor.run_async(
+        await _create_invocation_context(agent), second_request
+    ):
+      pass
+
+    assert second_request.config.http_options.timeout == 1000
+    assert 'RunConfig-Header' not in second_request.config.http_options.headers
+
+  @pytest.mark.asyncio
+  async def test_run_config_labels_do_not_reach_an_empty_agent_labels_dict(
+      self,
+  ):
+    """An empty-but-present labels dict was copied only when truthy."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-1.5-flash',
+        generate_content_config=types.GenerateContentConfig(labels={}),
+    )
+
+    invocation_context = await _create_invocation_context(agent)
+    invocation_context.run_config = RunConfig(labels={'run_label': 'val'})
+    llm_request = LlmRequest()
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.config.labels == {'run_label': 'val'}
+    assert agent.generate_content_config.labels == {}
+
+  @pytest.mark.asyncio
+  async def test_run_config_http_options_object_is_not_aliased(self):
+    """The request must not hold the RunConfig's own HttpOptions object."""
+    agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+    run_config_http_options = types.HttpOptions(
+        timeout=500, headers={'RunConfig-Header': 'run-val'}
+    )
+    llm_request.config.http_options = run_config_http_options
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    llm_request.config.http_options.headers['Injected'] = 'x'
+    assert 'Injected' not in run_config_http_options.headers
+
+  @pytest.mark.asyncio
+  async def test_http_options_carrying_an_unpicklable_client_are_copied(self):
+    """http_options can hold a live client, which no deep copy survives."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-1.5-flash',
+        generate_content_config=types.GenerateContentConfig(
+            http_options=types.HttpOptions(
+                headers={'Agent-Header': 'agent-val'},
+                client_args={'verify': ssl.create_default_context()},
+            )
+        ),
+    )
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+    llm_request.config.http_options = types.HttpOptions(
+        headers={'RunConfig-Header': 'run-val'}
+    )
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.config.http_options.headers == {
+        'Agent-Header': 'agent-val',
+        'RunConfig-Header': 'run-val',
+    }
+    assert agent.generate_content_config.http_options.headers == {
+        'Agent-Header': 'agent-val'
     }

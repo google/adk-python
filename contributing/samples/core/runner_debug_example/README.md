@@ -31,7 +31,7 @@ export GOOGLE_API_KEY="your-api-key"
 ### Running the Example
 
 ```bash
-python -m contributing.samples.runner_debug_example.main
+python -m contributing.samples.core.runner_debug_example.main
 ```
 
 ## Features Demonstrated
@@ -81,7 +81,7 @@ runner = Runner(agent=agent, app_name=APP_NAME, session_service=session_service)
 session = await session_service.create_session(
     app_name=APP_NAME, user_id=USER_ID, session_id="default"
 )
-content = types.Content(role="user", parts=[types.Part.from_text("Hi")])
+content = types.Content(role="user", parts=[types.Part.from_text(text="Hi")])
 async for event in runner.run_async(
     user_id=USER_ID, session_id=session.id, new_message=content
 ):
@@ -151,7 +151,7 @@ await runner.run_debug(
 
 # With custom configuration
 from google.adk.agents.run_config import RunConfig
-config = RunConfig(support_cfc=False)
+config = RunConfig(max_llm_calls=10)
 await runner.run_debug("Query", run_config=config)
 ```
 

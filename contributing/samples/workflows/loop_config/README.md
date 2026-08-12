@@ -7,6 +7,13 @@ YAML configuration file. It mirrors the
 `contributing/samples/workflows/loop` sample, but uses YAML to define the
 workflow structure instead of Python.
 
+> **Status**: not runnable yet. The YAML agent loader resolves `agent_class`
+> against `google.adk.agents` and requires a `BaseAgent` subclass with a config
+> type, and no config field binds `edges`. `Workflow` satisfies neither, so
+> `root_agent.yaml` below describes the intended syntax rather than syntax the
+> loader accepts today. The individual agent files
+> (`generate_headline.yaml`, `evaluate_headline.yaml`) do load.
+
 ## Sample Inputs
 
 - `Python programming`
@@ -28,12 +35,12 @@ graph TD
 
 This sample uses some special syntax in `root_agent.yaml` to support dynamic resolution and graph construction:
 
-### 1. `_code` Suffix
+### 1. Code References
 
-Fields ending with `_code` (like `output_schema_code` in `evaluate_headline.yaml`) tell the ADK YAML mapper to resolve the value as a Python code reference rather than treating it as a plain string.
+Fields that hold a Python object (like `output_schema` in `evaluate_headline.yaml`) take a `name` entry holding the fully qualified name of that object, which the loader imports.
 
-- If it starts with `.`, it resolves relative to the current agent directory's Python package path.
-- Example: `output_schema_code: .agent.Feedback` resolves to the `Feedback` Pydantic model in `agent.py` in the same directory.
+- The name is resolved against `sys.path`, which includes the directory holding the agent folders.
+- Example: `name: loop_config.agent.Feedback` resolves to the `Feedback` Pydantic model in `agent.py` in this directory.
 
 ### 2. Function References in Edges
 

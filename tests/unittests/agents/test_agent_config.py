@@ -34,6 +34,7 @@ from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.models.lite_llm import LiteLlm
+from pydantic import BaseModel
 import pytest
 import yaml
 
@@ -606,6 +607,94 @@ def test_newly_blocked_network_modules_are_rejected(blocked_ref: str):
   ) as exc_info:
     config_agent_utils.resolve_fully_qualified_name(blocked_ref)
   assert "Blocked module reference" in str(exc_info.value.__cause__)
+
+
+# Standard library functions that will run whatever code you hand them. The old
+# denylist happened to list profile but not cProfile, and missed all the rest.
+# One entry per module, since the check only looks at the top-level name.
+_EXEC_CAPABLE_STDLIB_REFS = [
+    "cProfile.run",
+    "profile.run",
+    "timeit.timeit",
+    "pydoc.pipepager",
+    "trace.Trace",
+    "doctest.testmod",
+    "bdb.Bdb",
+    "py_compile.compile",
+]
+
+# These are not in sys.stdlib_module_names on every Python we support, so
+# _BLOCKED_MODULES is the only thing rejecting them.
+_LOAD_BEARING_NON_STDLIB_REFS = [
+    "distutils.spawn.spawn",
+    "test.support.script_helper.spawn_python",
+    "_testcapi.run_stringflags",
+    "pipes.quote",
+    "telnetlib.Telnet",
+]
+
+
+@pytest.mark.parametrize("blocked_ref", _EXEC_CAPABLE_STDLIB_REFS)
+def test_resolve_code_reference_blocks_exec_capable_stdlib(blocked_ref: str):
+  """Exec-capable stdlib modules are rejected as code references."""
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+
+@pytest.mark.parametrize("blocked_ref", _EXEC_CAPABLE_STDLIB_REFS)
+def test_resolve_tools_blocks_exec_capable_stdlib(blocked_ref: str):
+  """Exec-capable stdlib modules are rejected as user-defined tools.
+
+  This is the path the reported exploit takes: upload an agent YAML whose only
+  tool is `cProfile.run`, then replay a saved test session, which dispatches a
+  recorded functionCall straight to the resolved tool.
+  """
+  from google.adk.tools.tool_configs import ToolConfig
+
+  tool_config = ToolConfig(name=blocked_ref)
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+
+
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        "json.loads",
+        "base64.b64decode",
+        "string.capwords",
+        "gc.collect",
+        "operator.attrgetter",
+    ],
+)
+def test_harmless_looking_stdlib_modules_are_also_blocked(blocked_ref: str):
+  """The whole standard library is off-limits, not just the scary parts.
+
+  Blocking all of it is what keeps this closed against ways to run code that
+  future Python releases add.
+  """
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+
+@pytest.mark.parametrize("blocked_ref", _LOAD_BEARING_NON_STDLIB_REFS)
+def test_modules_dropped_from_the_stdlib_are_still_blocked(blocked_ref: str):
+  """Covers the modules the standard library rule misses.
+
+  They stay importable from a shim or a PyPI backport, so without the explicit
+  denylist they come back as a way to run code.
+  """
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+
+def test_third_party_module_reference_is_not_blocked():
+  """Non-stdlib packages stay resolvable so integrations keep working.
+
+  A compatibility guarantee for integrations like langchain, not a security
+  assertion: third-party packages are still resolvable by name.
+  """
+  result = config_agent_utils.resolve_fully_qualified_name("pydantic.BaseModel")
+  assert result is BaseModel
 
 
 def test_denylist_can_be_disabled():

@@ -39,9 +39,9 @@ from dataclasses import dataclass
 
 from google.genai import errors as genai_errors
 
-from .functional_test_helpers import EXPERIMENTAL_OPT_IN
-from .functional_test_helpers import FunctionalTestCase
-from .functional_test_helpers import Scenario
+from .functional._recording import FunctionalTestCase
+from .functional._scenarios import EXPERIMENTAL_OPT_IN
+from .functional._scenarios import Scenario
 
 
 @dataclass(frozen=True)

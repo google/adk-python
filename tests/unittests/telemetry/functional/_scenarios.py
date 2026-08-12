@@ -12,35 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared infrastructure for the telemetry functional tests.
+"""The scenarios the functional tests drive, and the telemetry they run under.
 
-This module hosts:
-
-* The ``SpanDigest`` / ``LogDigest`` types used to build a deterministic
-  comparison shape for in-memory spans + log records.
-* ``install_telemetry`` which patches an in-memory tracer + log exporter
-  onto ADK's globals.
-* The canonical agent / workflow / MCP scenarios shared across the
-  ``test_functional.py`` and ``test_node_functional.py`` test suites.
-* The ``FunctionalTestCase`` carrier used to parametrize tests, whose
-  ``expected`` telemetry is the recording loaded by
-  ``functional_test_goldens.py``.
+``install_telemetry`` patches in-memory exporters onto ADK's globals;
+the rest builds the canonical agent / workflow / MCP runs that every
+test case replays.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from collections.abc import Iterator
 from contextlib import aclosing
-from contextlib import contextmanager
-from dataclasses import dataclass
-from dataclasses import field
-from enum import Enum
-import gc
-import inspect
-import json
-import sys
-from types import CodeType
 from typing import Literal
 from typing import NamedTuple
 from typing import TYPE_CHECKING
@@ -68,9 +49,7 @@ from mcp.types import Tool as McpTool
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import HistogramDataPoint
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
-from opentelemetry.sdk.metrics.export import NumberDataPoint
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 import pytest
@@ -78,14 +57,11 @@ from typing_extensions import override
 
 if TYPE_CHECKING:
   from google.adk.events.event import Event
-  from opentelemetry.sdk.trace import ReadableSpan
-  from opentelemetry.sdk._logs import ReadableLogRecord
   from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
-  from opentelemetry.sdk.metrics.export import MetricsData
   from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from ..testing_utils import MockModel
-from ..testing_utils import TestInMemoryRunner
+from ...testing_utils import MockModel
+from ...testing_utils import TestInMemoryRunner
 
 # ---------------------------------------------------------------------------
 # Env var + semconv constants.
@@ -104,196 +80,12 @@ GEN_AI_CHOICE_EVENT = "gen_ai.choice"
 # Experimental semconv event name.
 GEN_AI_COMPLETION_DETAILS_EVENT = "gen_ai.client.inference.operation.details"
 
-# Difficult to extract, non deterministic attribute keys.
-# We check only for their presence, instead of their values.
-NON_DETERMINISTIC_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
-    "gcp.vertex.agent.event_id",
-    "gen_ai.tool.call.id",
-    "gcp.vertex.agent.associated_event_ids",
-    "gen_ai.conversation.id",
-    "gcp.vertex.agent.invocation_id",
-    "gcp.vertex.agent.session_id",
-})
-
-# Span attribute keys whose values are JSON-serialized strings.
-# These are parsed back into Python objects before comparison so that JSON
-# property ordering doesn't drive test stability.
-JSON_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
-    "gen_ai.input.messages",
-    "gen_ai.output.messages",
-    "gen_ai.system_instructions",
-    "gen_ai.tool.definitions",
-})
-
-# Sentinel for a value that cannot be pinned -- a generated id, a wall-clock
-# duration, an elided payload. Substituted on both sides of the comparison, so
-# such a field is only ever asserted to be present.
-PRESENT = "PRESENT"
-
 # Which end-to-end scenario a test case drives.
 Scenario = Literal["agent", "node", "mcp"]
 
-
 # ---------------------------------------------------------------------------
-# Digests.
+# Telemetry plumbing.
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class LogDigest:
-  """A deterministic digest of a ``ReadableLogRecord``.
-
-  ``attributes`` and ``body`` are normalized via ``_normalize`` so test
-  expectations can be written using plain Python literals (lists/dicts).
-  """
-
-  event_name: str
-  body: object = None
-  attributes: dict[str, object] = field(default_factory=dict)
-
-  @classmethod
-  def from_log(cls, log: ReadableLogRecord) -> LogDigest:
-    attrs: dict[str, object] = {}
-    for k, v in (log.log_record.attributes or {}).items():
-      if k in NON_DETERMINISTIC_ATTRIBUTE_KEYS:
-        attrs[k] = PRESENT
-      else:
-        attrs[k] = _normalize(v)
-    return cls(
-        event_name=log.log_record.event_name or "",
-        body=_normalize(log.log_record.body),
-        attributes=attrs,
-    )
-
-
-@dataclass(frozen=True)
-class SpanDigest:
-  """A deterministic digest of a span in the in-memory span tree.
-
-  In addition to the span's own name + attributes + child spans, each
-  digest also carries the ``LogDigest`` records that were emitted while
-  the span was the active span (matched by ``log_record.span_id``).
-
-  ``status`` is the span's ``StatusCode`` name, so a tree that expects a
-  span to be marked failed says so explicitly. It defaults to ``UNSET``,
-  which is what a span that nothing marked carries.
-  """
-
-  name: str
-  attributes: dict[str, object]
-  status: str = "UNSET"
-  children: list[SpanDigest] = field(default_factory=list)
-  logs: list[LogDigest] = field(default_factory=list)
-
-  @classmethod
-  def from_span(cls, span: ReadableSpan) -> SpanDigest:
-    """Builds a single ``SpanDigest`` (no children, no logs) from a span.
-
-    Attribute values are normalized so that:
-    * Non-deterministic keys collapse to the ``PRESENT`` sentinel.
-    * JSON-serialized attribute values are parsed into Python objects.
-    * All other values pass through ``_normalize`` (tuples → lists,
-      enums → ``.value``, ``None`` dict entries dropped).
-    """
-    determinized_attributes: dict[str, object] = {}
-    for attr_key, attr_val in (span.attributes or {}).items():
-      if attr_key in NON_DETERMINISTIC_ATTRIBUTE_KEYS:
-        determinized_attributes[attr_key] = PRESENT
-      elif attr_key in JSON_ATTRIBUTE_KEYS and isinstance(attr_val, str):
-        determinized_attributes[attr_key] = _normalize(json.loads(attr_val))
-      else:
-        determinized_attributes[attr_key] = _normalize(attr_val)
-    return cls(
-        name=span.name,
-        attributes=determinized_attributes,
-        status=span.status.status_code.name,
-    )
-
-  @classmethod
-  def build(
-      cls,
-      spans: tuple[ReadableSpan, ...],
-      logs: tuple[ReadableLogRecord, ...] = (),
-  ) -> SpanDigest:
-    """Builds the in-memory span tree, attaching logs by span id.
-
-    Used for clear diffs with pytest assertions.
-    """
-    digest_by_id: dict[int, SpanDigest] = {}
-    for span in spans:
-      if span.context is None:
-        continue
-      digest_by_id[span.context.span_id] = cls.from_span(span)
-
-    # Attach each log to its enclosing span (matched by span_id).
-    for log in logs:
-      span_id = log.log_record.span_id
-      if span_id is None or span_id == 0:
-        continue
-      digest = digest_by_id.get(span_id)
-      if digest is None:
-        continue
-      digest.logs.append(LogDigest.from_log(log))
-
-    root: SpanDigest | None = None
-    for span in spans:
-      if span.context is None:
-        continue
-      digest = digest_by_id[span.context.span_id]
-      if span.parent and span.parent.span_id in digest_by_id:
-        parent_digest = digest_by_id[span.parent.span_id]
-        parent_digest.children.append(digest)
-      else:
-        if root is not None:
-          raise ValueError("Multiple root spans found.")
-        root = digest
-
-    # Sort for deterministic comparisons.
-    for digest in digest_by_id.values():
-      digest.children.sort(key=lambda s: s.name)
-      digest.logs[:] = sorted_log_digests(digest.logs)
-
-    if root is None:
-      raise ValueError("No root span found in the provided spans.")
-    return root
-
-  def all_logs(self) -> list[LogDigest]:
-    """Returns all log digests in the tree, sorted deterministically."""
-    collected: list[LogDigest] = []
-
-    def _walk(node: SpanDigest) -> None:
-      collected.extend(node.logs)
-      for child in node.children:
-        _walk(child)
-
-    _walk(self)
-    return sorted_log_digests(collected)
-
-
-def sorted_log_digests(logs: list[LogDigest]) -> list[LogDigest]:
-  """Returns ``logs`` sorted in a stable, content-derived order."""
-  return sorted(
-      logs,
-      key=lambda log: (
-          log.event_name,
-          json.dumps(log.body, sort_keys=True, default=str),
-          json.dumps(log.attributes, sort_keys=True, default=str),
-      ),
-  )
-
-
-@dataclass(frozen=True)
-class MetricPoint:
-  """A single recorded metric data point."""
-
-  attributes: dict[str, object]
-  value: object
-
-  def __hash__(self) -> int:
-    return hash((self.sort_key(), self.value))
-
-  def sort_key(self) -> str:
-    return json.dumps(self.attributes, sort_keys=True, default=str)
 
 
 class HistogramSpec(NamedTuple):
@@ -347,94 +139,6 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
         metric_name="gen_ai.invoke_agent.tool_calls",
     ),
 )
-
-
-def _grouped_metric_points(
-    metrics_data: MetricsData,
-) -> dict[str, list[MetricPoint]]:
-  """Groups every recorded point by metric name.
-
-  Both the names and the points within a group are sorted, so the result is
-  independent of recording order and can be compared (and serialized) as
-  plain lists.
-  """
-  grouped: dict[str, set[MetricPoint]] = {}
-  for resource_metric in metrics_data.resource_metrics:
-    for scope_metric in resource_metric.scope_metrics:
-      for metric in scope_metric.metrics:
-        for dp in metric.data.data_points:
-          # Sum histograms expose ``.sum``; gauge / counter points expose
-          # ``.value``. isinstance (not hasattr) keeps the typing precise.
-          if isinstance(dp, HistogramDataPoint):
-            value = dp.sum
-          elif isinstance(dp, NumberDataPoint):
-            value = dp.value
-          else:
-            value = PRESENT
-          # ``*.duration`` histograms record wall-clock timings, which are
-          # non-deterministic; replace them so expectations need not pin a
-          # timing.
-          if metric.name.endswith(".duration"):
-            value = PRESENT
-          grouped.setdefault(metric.name, set()).add(
-              MetricPoint(attributes=dict(dp.attributes), value=value)
-          )
-  return {
-      name: sorted(points, key=MetricPoint.sort_key)
-      for name, points in sorted(grouped.items())
-  }
-
-
-@dataclass(frozen=True)
-class TelemetryDigest:
-  """The full telemetry surface produced by one scenario run.
-
-  Bundles the root span tree (with per-span logs attached) and every recorded
-  metric point grouped by metric name. Everything is sorted as it is built,
-  so a digest is fully deterministic and round-trips through plain JSON:
-  ``build`` produces the actual one; ``functional_test_goldens.load_golden``
-  the recorded one.
-  """
-
-  root_span: SpanDigest
-  metric_points: dict[str, list[MetricPoint]]
-
-  @classmethod
-  def build(
-      cls,
-      spans: tuple[ReadableSpan, ...],
-      logs: tuple[ReadableLogRecord, ...],
-      metrics_data: MetricsData,
-  ) -> TelemetryDigest:
-    """Builds the actual digest from in-memory spans, logs and metrics."""
-    return cls(
-        root_span=SpanDigest.build(spans, logs),
-        metric_points=_grouped_metric_points(metrics_data),
-    )
-
-
-def _normalize(value: object) -> object:
-  """Normalizes a value for stable equality.
-
-  * Tuples become lists (OTel coerces sequences to tuples on attributes).
-  * Enums become their ``.value``.
-  * Dict entries whose value is ``None`` are dropped (these are inserted by
-    pydantic ``model_dump`` for unset fields and would dominate diffs).
-  """
-  if isinstance(value, Enum):
-    return value.value
-  if isinstance(value, tuple):
-    return [_normalize(v) for v in value]
-  if isinstance(value, list):
-    return [_normalize(v) for v in value]
-  if isinstance(value, dict):
-    return {k: _normalize(v) for k, v in value.items() if v is not None}
-  return value
-
-
-# ---------------------------------------------------------------------------
-# Telemetry plumbing.
-# ---------------------------------------------------------------------------
 
 
 def install_telemetry(
@@ -761,16 +465,24 @@ def build_mcp_test_runner(
       )
   )
 
-  async def _create_session(*_args, **_kwargs):  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
+  async def _create_session(
+      *_args, **_kwargs
+  ):  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
     return fake_session
 
-  async def _close(*_args, **_kwargs):  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
+  async def _close(
+      *_args, **_kwargs
+  ):  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
     return None
 
   monkeypatch.setattr(
-      toolset._mcp_session_manager, "create_session", _create_session  # pyright: ignore[reportPrivateUsage, reportUnknownArgumentType]
+      toolset._mcp_session_manager,
+      "create_session",
+      _create_session,  # pyright: ignore[reportPrivateUsage, reportUnknownArgumentType]
   )
-  monkeypatch.setattr(toolset._mcp_session_manager, "close", _close)  # pyright: ignore[reportPrivateUsage, reportUnknownArgumentType]
+  monkeypatch.setattr(
+      toolset._mcp_session_manager, "close", _close
+  )  # pyright: ignore[reportPrivateUsage, reportUnknownArgumentType]
 
   mock_model = MockModel.create(responses=[Part.from_text(text=FINAL_TEXT)])
   return TestInMemoryRunner(
@@ -782,150 +494,3 @@ def build_mcp_test_runner(
           tools=[toolset],
       )
   )
-
-
-# ---------------------------------------------------------------------------
-# Parametrization carrier.
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class FunctionalTestCase:
-  """One row of the (semconv, capture-content, schema-version) matrix."""
-
-  test_id: str
-  scenario: Scenario
-  semconv_opt_in: str | None
-  capture_content: str | None
-  schema_version: Literal[1, 2]
-  # When set, the mock model raises this instead of responding, and the
-  # scenario is expected to propagate it (inference-failure telemetry path).
-  model_exception: Exception | None = None
-  # When true, the tool raises instead of returning, and the scenario is
-  # expected to propagate it (tool-failure telemetry path).
-  tool_fails: bool = False
-
-  @property
-  def expects_failure(self) -> bool:
-    """Whether the scenario is expected to propagate an exception."""
-    return self.model_exception is not None or self.tool_fails
-
-  @property
-  def expected(self) -> TelemetryDigest:
-    """The telemetry recorded for this case under ``functional_goldens/``."""
-    # Imported here: the goldens module needs the digest types defined above.
-    from .functional_test_goldens import load_golden  # pylint: disable=g-import-not-at-top
-
-    return load_golden(self.scenario, self.test_id)
-
-  def apply_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Applies the per-case env vars for semconv + content capture.
-
-    Always pins ``ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false`` so the tool
-    span attributes remain deterministic across all cases.
-    """
-    if self.semconv_opt_in is None:
-      monkeypatch.delenv(OTEL_OPT_IN, raising=False)
-    else:
-      monkeypatch.setenv(OTEL_OPT_IN, self.semconv_opt_in)
-    if self.capture_content is None:
-      monkeypatch.delenv(CAPTURE_CONTENT, raising=False)
-    else:
-      monkeypatch.setenv(CAPTURE_CONTENT, self.capture_content)
-    monkeypatch.setenv(
-        ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN, str(self.schema_version)
-    )
-    monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
-
-
-# ---------------------------------------------------------------------------
-# aclosing wrapping assertions.
-# ---------------------------------------------------------------------------
-
-
-@contextmanager
-def aclosing_wrapping_assertions() -> Iterator[None]:
-  """Context manager that asserts every async generator is wrapped in ``aclosing``.
-
-  The check uses ``gc.get_referrers`` on every async generator first
-  iterated within the block, which is expensive (~5 seconds per
-  scenario). Run this once per scenario rather than per parametrized
-  test case.
-
-  On exit the original ``sys`` async-gen hooks are restored.
-  """
-  prev_firstiter, prev_finalizer = sys.get_asyncgen_hooks()
-
-  def wrapped_firstiter(coro: AsyncGenerator[object, object]):
-    if _is_async_context_manager():
-      if prev_firstiter:
-        prev_firstiter(coro)
-      return
-
-    assert any(
-        isinstance(referrer, aclosing)
-        or isinstance(indirect_referrer, aclosing)
-        for referrer in gc.get_referrers(coro)
-        # Some coroutines have a layer of indirection in Python 3.10
-        for indirect_referrer in gc.get_referrers(referrer)
-    ), _no_aclosing_assertion_error(coro)
-
-    if prev_firstiter:
-      prev_firstiter(coro)
-
-  sys.set_asyncgen_hooks(wrapped_firstiter, prev_finalizer)
-  try:
-    yield
-  finally:
-    sys.set_asyncgen_hooks(prev_firstiter, prev_finalizer)
-
-
-def _no_aclosing_assertion_error(coro: AsyncGenerator[object, object]) -> str:
-  first_iter_loc = ""
-  definition_loc = ""
-
-  if (f := inspect.currentframe()) and (f := f.f_back) and (f := f.f_back):
-    first_iter_loc = f'file "{f.f_code.co_filename}" line "{f.f_lineno}"'
-  if (ag_code := getattr(coro, "ag_code", None)) and isinstance(
-      ag_code, CodeType
-  ):
-    definition_loc = (
-        f'file "{ag_code.co_filename}" line "{ag_code.co_firstlineno}"'
-    )
-
-  header_str = f'Async generator "{coro.__name__}" is not wrapped in aclosing'
-  first_iter_str = (
-      f"first iterated in {first_iter_loc}" if first_iter_loc else ""
-  )
-  definition_str = f"defined in {definition_loc}" if definition_loc else ""
-  instruction_str = """
-Wrap the iteration in the following code snippet before iterating:
-
-async with contextlib.aclosing(...) as agen:
-  async for ... as agen:
-     ...
-"""
-
-  return "\n".join(
-      part
-      for part in [
-          header_str,
-          first_iter_str,
-          definition_str,
-          instruction_str,
-      ]
-      if part
-  )
-
-
-def _is_async_context_manager() -> bool:
-  """Checks if this function was invoked by contextlib.asynccontextmanager."""
-  frame = inspect.currentframe()
-  while frame:
-    if (
-        frame.f_code.co_name == "__aenter__"
-        and "contextlib" in frame.f_code.co_filename
-    ):
-      return True
-    frame = frame.f_back
-  return False

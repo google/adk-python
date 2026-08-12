@@ -1467,6 +1467,64 @@ class TestAgentToolWithCompositeAgents:
       # Should NOT have the fallback 'request' parameter
       assert 'request' not in sequence_tool.parameters.properties
 
+  @mark.asyncio
+  async def test_sequential_agent_returns_last_sub_agent_output(self):
+    """The tool result is the last sub-agent's output, not the whole pipeline's."""
+
+    class CustomOutput(BaseModel):
+      custom_output: str
+
+    function_call_seq = Part.from_function_call(
+        name='sequence', args={'request': 'test1'}
+    )
+
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            function_call_seq,
+            'a draft from the first step',
+            '{"custom_output": "final_response"}',
+            'root_response',
+        ]
+    )
+
+    first_agent = Agent(name='first_agent', model=mock_model)
+
+    second_agent = Agent(
+        name='second_agent',
+        model=mock_model,
+        output_schema=CustomOutput,
+        output_key='seq_output',
+    )
+
+    sequence = SequentialAgent(
+        name='sequence',
+        description='A sequential pipeline',
+        sub_agents=[first_agent, second_agent],
+    )
+
+    root_agent = Agent(
+        name='root_agent',
+        model=mock_model,
+        tools=[AgentTool(agent=sequence)],
+    )
+
+    runner = testing_utils.InMemoryRunner(root_agent)
+
+    # run_async, not run: run() drains the agent on a worker thread and would
+    # drop a validation error raised inside the tool.
+    events = await runner.run_async('test1')
+
+    assert testing_utils.simplify_events(events) == [
+        ('root_agent', function_call_seq),
+        (
+            'root_agent',
+            Part.from_function_response(
+                name='sequence', response={'custom_output': 'final_response'}
+            ),
+        ),
+        ('root_agent', 'root_response'),
+    ]
+
   def test_empty_sequential_agent_falls_back_to_request(self):
     """Test that AgentTool with empty SequentialAgent falls back to 'request'."""
 

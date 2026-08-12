@@ -217,6 +217,49 @@ class TestToGeminiSchema:
     gemini_schema = _to_gemini_schema(openapi_schema)
     assert gemini_schema.enum == ["a", "b", "c"]
 
+  def test_to_gemini_schema_stringifies_int_enum_on_string_type(self):
+    openapi_schema = {"type": "string", "enum": [256, 512, 1024]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.enum == ["256", "512", "1024"]
+
+  def test_to_gemini_schema_stringifies_nested_int_enum(self):
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "p": {"type": "string", "enum": [256, 512]},
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.properties["p"].type == Type.STRING
+    assert gemini_schema.properties["p"].enum == ["256", "512"]
+
+  def test_to_gemini_schema_int_enum_on_integer_type_unchanged(self):
+    openapi_schema = {"type": "integer", "enum": [1, 2]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.INTEGER
+    assert gemini_schema.enum == [1, 2]
+
+  def test_to_gemini_schema_nullable_string_enum(self):
+    openapi_schema = {"type": ["string", "null"], "enum": [256]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.nullable
+    assert gemini_schema.enum == ["256"]
+
+  def test_to_gemini_schema_drops_null_enum_member(self):
+    openapi_schema = {"type": ["string", "null"], "enum": ["a", None]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.nullable
+    assert gemini_schema.enum == ["a"]
+
+  def test_to_gemini_schema_stringifies_bool_enum_as_json(self):
+    openapi_schema = {"type": "string", "enum": [True, False]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.enum == ["true", "false"]
+
   def test_to_gemini_schema_required(self):
     openapi_schema = {
         "type": "object",

@@ -801,6 +801,12 @@ class BaseLlmFlow(ABC):
               'Connection closed (%s), reconnecting with session handle.', e
           )
           continue
+        # No resumption handle + normal (1000) close = the model ended the
+        # session cleanly; end the stream instead of erroring so live nodes
+        # finish normally.
+        if isinstance(e, ConnectionClosedOK):
+          logger.info('Connection closed normally: %s.', e)
+          return
         logger.error('Connection closed: %s.', e)
         raise
       except errors.APIError as e:
@@ -815,6 +821,12 @@ class BaseLlmFlow(ABC):
                 'Connection lost (%s), reconnecting with session handle.', e
             )
             continue
+          # No resumption handle + normal (1000) close = the model ended the
+          # session cleanly; end the stream instead of erroring so live nodes
+          # finish normally.
+          if e.code == 1000:
+            logger.info('Live session closed normally: %s.', e)
+            return
 
         logger.error('APIError in live flow: %s', e)
         raise
@@ -896,6 +908,11 @@ class BaseLlmFlow(ABC):
         content = live_request.content
         if content.parts and any(p.function_call for p in content.parts):
           raise ValueError('User message cannot contain function calls.')
+        # TODO: intercept `adk_request_confirmation` function responses here
+        # and re-execute the confirmed tool instead of forwarding them to the
+        # model. The request confirmation processor cannot do it: it runs once
+        # in `_preprocess_async`, before the live connection is opened, so an
+        # approval sent mid-session is never consumed.
         # Persist user text content to session (similar to non-live mode)
         # Skip function responses - they are already handled separately
         if not is_function_response and not content.role:
@@ -1337,6 +1354,10 @@ class BaseLlmFlow(ABC):
       if function_response_event := await functions.handle_function_calls_live(
           invocation_context, model_response_event, llm_request.tools_dict
       ):
+        # TODO: emit the confirmation request event here, the way
+        # `_postprocess_handle_function_calls_async` does. Without it the live
+        # client never receives an `adk_request_confirmation` function call, so
+        # it has no call id to approve or reject against.
         # Always yield the function response event first
         yield function_response_event
 

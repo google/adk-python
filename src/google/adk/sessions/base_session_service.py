@@ -155,7 +155,12 @@ class BaseSessionService(abc.ABC):
     )
 
   async def append_event(self, session: Session, event: Event) -> Event:
-    """Appends an event to a session object."""
+    """Appends an event to a session object.
+
+    Raises:
+      StaleSessionError: When a persistent implementation detects that the
+        supplied session has been superseded by a newer stored revision.
+    """
     if event.partial:
       return event
     # Apply temp-scoped state to the in-memory session BEFORE trimming the
