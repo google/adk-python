@@ -37,6 +37,7 @@ from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 import httpx
+from typing_extensions import override
 
 from ..a2a import _compat
 
@@ -503,6 +504,31 @@ class RemoteA2aAgent(BaseAgent):
 
     self._validate_card_rpc_targets(agent_card)
 
+  @override
+  async def _get_transfer_description(self, ctx: InvocationContext) -> str:
+    """Returns local or agent-card metadata for transfer selection."""
+    if self.description:
+      return self.description
+
+    if self._agent_card:
+      return self._agent_card.description or ""
+
+    agent_card = await self._resolve_agent_card(ctx)
+    await self._validate_agent_card(agent_card)
+
+    # Public cards are shared across invocations, matching the existing client
+    # cache. Authenticated cards remain invocation-scoped because their metadata
+    # may vary by session.
+    per_invocation_card = bool(
+        self._config.card_request_interceptors
+        and self._agent_card_source
+        and self._agent_card_source.startswith(("http://", "https://"))
+    )
+    if not per_invocation_card:
+      self._agent_card = agent_card
+
+    return agent_card.description or ""
+
   def _validate_card_rpc_targets(self, agent_card: AgentCard) -> None:
     """Constrains where a card fetched over the network may aim RPC traffic.
 
@@ -594,9 +620,11 @@ class RemoteA2aAgent(BaseAgent):
         # Validate agent card
         await self._validate_agent_card(self._agent_card)
 
-        # Update description if empty
-        if not self.description and self._agent_card.description:
-          self.description = self._agent_card.description
+      # A public card may already have been resolved for transfer selection.
+      # Preserve the existing behavior of adopting its description when the
+      # remote agent itself is initialized.
+      if not self.description and self._agent_card.description:
+        self.description = self._agent_card.description
 
       # Initialize A2A client
       if not self._a2a_client:

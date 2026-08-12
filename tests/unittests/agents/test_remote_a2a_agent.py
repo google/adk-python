@@ -1053,6 +1053,23 @@ class TestRemoteA2aAgentResolution:
           assert agent.description == agent_card.description
 
   @pytest.mark.asyncio
+  async def test_ensure_resolved_adopts_prefetched_card_description(self):
+    """Initializing a prefetched public card still adopts its description."""
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+    agent._agent_card = agent_card
+    mock_factory = Mock()
+    mock_factory.create.return_value = Mock()
+    agent._a2a_client_factory = mock_factory
+
+    with patch.object(agent, "_ensure_httpx_client", new_callable=AsyncMock):
+      await agent._ensure_resolved(Mock())
+
+    assert agent.description == agent_card.description
+
+  @pytest.mark.asyncio
   async def test_ensure_resolved_already_resolved(self):
     """Test _ensure_resolved when already resolved."""
     agent_card = create_test_agent_card()
