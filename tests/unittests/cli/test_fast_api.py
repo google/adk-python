@@ -50,6 +50,8 @@ from google.api_core.exceptions import InvalidArgument
 from google.genai import types
 from pydantic import BaseModel
 import pytest
+from google.adk.cli.fast_api import DynamicAppMap
+from google.adk.apps.app import App
 
 # Configure logging to help diagnose server startup issues
 logging.basicConfig(
@@ -3807,3 +3809,64 @@ def test_finalize_agent_identity_credentials_api_call_error(test_app):
 
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])
+
+def test_dynamic_app_map_finds_matching_app():
+    mock_agent_loader = MagicMock()
+    mock_agent_loader.list_agents.return_value = ["folder_a", "folder_b"]
+    
+    def mock_load_agent(folder):
+        mock_app = MagicMock(spec=App)
+        if folder == "folder_b":
+            mock_app.name = "target_app"
+        else:
+            mock_app.name = "other_app"
+        return mock_app
+        
+    mock_agent_loader.load_agent.side_effect = mock_load_agent
+    
+    app_map = DynamicAppMap(mock_agent_loader)
+    
+    # Should correctly map the internal app name to its physical folder
+    assert app_map["target_app"] == "folder_b"
+
+def test_dynamic_app_map_fallback_when_not_found():
+    mock_agent_loader = MagicMock()
+    mock_agent_loader.list_agents.return_value = ["folder_a"]
+    
+    def mock_load_agent(folder):
+        mock_app = MagicMock(spec=App)
+        mock_app.name = "other_app"
+        return mock_app
+        
+    mock_agent_loader.load_agent.side_effect = mock_load_agent
+    
+    app_map = DynamicAppMap(mock_agent_loader)
+    
+    # If the app isn't found, it should return the exact string it was given
+    assert app_map["missing_app"] == "missing_app"
+
+def test_dynamic_app_map_ignores_load_errors():
+    mock_agent_loader = MagicMock()
+    mock_agent_loader.list_agents.return_value = ["broken_folder", "good_folder"]
+    
+    def mock_load_agent(folder):
+        if folder == "broken_folder":
+            raise ValueError("Agent is completely broken")
+        mock_app = MagicMock(spec=App)
+        mock_app.name = "good_app"
+        return mock_app
+        
+    mock_agent_loader.load_agent.side_effect = mock_load_agent
+    
+    app_map = DynamicAppMap(mock_agent_loader)
+    
+    # Should ignore the ValueError from broken_folder and still find good_app
+    assert app_map["good_app"] == "good_folder"
+
+def test_dynamic_app_map_is_truthy():
+    mock_agent_loader = MagicMock()
+    app_map = DynamicAppMap(mock_agent_loader)
+    
+    # Must evaluate to True so that `app_map or {}` evaluates to app_map
+    assert bool(app_map) is True
+    assert (app_map or {}) is app_map
