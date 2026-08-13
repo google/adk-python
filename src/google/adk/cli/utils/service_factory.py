@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import parse_qsl
 from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
+from typing import Mapping, Optional
 
 from ...artifacts.base_artifact_service import BaseArtifactService
 from ...memory.base_memory_service import BaseMemoryService
@@ -172,7 +173,7 @@ def create_session_service_from_options(
     base_dir: Path | str,
     session_service_uri: str | None = None,
     session_db_kwargs: dict[str, Any] | None = None,
-    app_name_to_dir: dict[str, str] | None = None,
+    app_name_to_dir: Optional[Mapping[str, str]] = None,
     use_local_storage: bool = True,
 ) -> BaseSessionService:
   """Creates a session service based on CLI/web options."""
