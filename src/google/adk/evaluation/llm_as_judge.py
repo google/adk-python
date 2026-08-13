@@ -191,6 +191,16 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
                 )
             )
       if not invocation_result_samples:
+        # The auto-rater produced no samples for this invocation (e.g. the
+        # judge model's stream ended without emitting a response). Record it
+        # as not evaluated instead of silently dropping it from the results,
+        # which would shrink the denominator downstream with no trace.
+        per_invocation_results.append(
+            PerInvocationResult(
+                actual_invocation=actual,
+                expected_invocation=expected,
+            )
+        )
         continue
       per_invocation_results.append(
           self.aggregate_per_invocation_samples(invocation_result_samples)

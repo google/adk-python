@@ -289,3 +289,64 @@ async def test_evaluate_invocations_grades_criterion_only_metric(
   assert [r.eval_status for r in result.per_invocation_results] == [
       EvalStatus.PASSED
   ]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_records_not_evaluated_when_no_samples_produced(
+    mocker,
+):
+  """An invocation whose auto-rater call produces zero samples (e.g. the judge
+
+  model's stream ends without emitting a response) must still show up in
+  per_invocation_results as NOT_EVALUATED, not vanish from the results
+  entirely. Silently dropping it shrinks the denominator downstream with no
+  trace that anything went wrong.
+  """
+  judge = PerInvocationReportingLlmAsJudge(
+      eval_metric=EvalMetric(
+          metric_name="test_metric",
+          criterion=LlmAsAJudgeCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  judge_model_config=genai_types.GenerateContentConfig(),
+                  num_samples=1,
+              ),
+          ),
+      ),
+      criterion_type=LlmAsAJudgeCriterion,
+  )
+
+  empty_judge_model = mocker.MagicMock()
+
+  async def mock_generate_content_async_no_response(llm_request):
+    del llm_request
+    return
+    yield  # pragma: no cover -- makes this an async generator.
+
+  empty_judge_model.generate_content_async = (
+      mock_generate_content_async_no_response
+  )
+  judge._judge_model = empty_judge_model
+
+  actual_invocations = [
+      Invocation(
+          invocation_id="id1",
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="user content 1")],
+              role="user",
+          ),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="final response 1")],
+              role="model",
+          ),
+      )
+  ]
+
+  result = await judge.evaluate_invocations(actual_invocations)
+
+  assert len(result.per_invocation_results) == 1
+  assert (
+      result.per_invocation_results[0].eval_status == EvalStatus.NOT_EVALUATED
+  )
+  assert result.per_invocation_results[0].score is None
