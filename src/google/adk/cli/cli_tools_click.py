@@ -2702,6 +2702,18 @@ def cli_migrate_session(
         " Repeatable."
     ),
 )
+@click.option(
+    "--service_account",
+    type=str,
+    default=None,
+    help=(
+        "Optional. Google Cloud service account email used as the Agent Engine"
+        " runtime identity (e.g. my-agent@my-project.iam.gserviceaccount.com)."
+        " Overrides GOOGLE_CLOUD_SERVICE_ACCOUNT in the .env file and"
+        " service_account in .agent_engine_config.json. When omitted, Agent"
+        " Engine uses its default service agent."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2736,6 +2748,7 @@ def cli_deploy_agent_engine(
     session_service_uri: str | None = None,
     use_local_storage: bool = False,
     extra_packages: tuple[str, ...] = (),
+    service_account: str | None = None,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -2749,6 +2762,12 @@ def cli_deploy_agent_engine(
     # With Google Cloud Project and Region
     adk deploy agent_engine --project=[project] --region=[region]
       --display_name=[app_name] my_agent
+
+    \b
+    # With a custom runtime service account
+    adk deploy agent_engine --project=[project] --region=[region]
+      --service_account=my-agent@[project].iam.gserviceaccount.com
+      my_agent
   """
   logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
   try:
@@ -2783,6 +2802,7 @@ def cli_deploy_agent_engine(
         session_service_uri=session_service_uri,
         adk_version=adk_version,
         extra_packages=list(extra_packages),
+        service_account=service_account,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
