@@ -15,9 +15,11 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.apps.app import App
+from google.adk.evaluation import evaluation_generator as evaluation_generator_module
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.conversation_scenarios import ConversationScenario
@@ -1991,3 +1993,65 @@ def test_generate_responses_from_session_scopes_by_invocation_id(tmp_path):
 
   assert results[0][0]["actual_tool_use"] == []
   assert results[0][0]["response"] == "I rolled a 4."
+
+
+_real_open = builtins.open
+
+
+def _non_utf8_default_open(file, mode="r", *args, **kwargs):
+  """Emulates a platform whose default text encoding is not UTF-8.
+
+  Falls back to ASCII when a text-mode open does not specify an encoding, so a
+  missing `encoding="utf-8"` argument raises instead of silently depending on
+  the host locale (for example cp1252 on Windows).
+  """
+  if "b" not in mode and "encoding" not in kwargs:
+    kwargs["encoding"] = "ascii"
+  return _real_open(file, mode, *args, **kwargs)
+
+
+def test_generate_responses_from_session_reads_non_ascii_with_non_utf8_default(
+    tmp_path, mocker
+):
+  """The session file must be read as UTF-8 regardless of platform locale.
+
+  Session files serialized via `model_dump_json` contain raw (unescaped)
+  non-ASCII characters, so reading them without an explicit UTF-8 encoding
+  fails on platforms whose default encoding is not UTF-8.
+  """
+  non_ascii_text = "😀 你好 café"
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[
+          Event(
+              author="user",
+              invocation_id="inv1",
+              content=types.Content(
+                  role="user", parts=[types.Part(text=non_ascii_text)]
+              ),
+          ),
+          Event(
+              author="agent",
+              invocation_id="inv1",
+              content=types.Content(
+                  role="model",
+                  parts=[types.Part(text="response " + non_ascii_text)],
+              ),
+          ),
+      ],
+  )
+  session_path = tmp_path / "session.json"
+  session_path.write_text(session.model_dump_json(), encoding="utf-8")
+
+  mocker.patch.object(
+      evaluation_generator_module, "open", _non_utf8_default_open, create=True
+  )
+
+  results = EvaluationGenerator.generate_responses_from_session(
+      str(session_path), [[{"query": non_ascii_text}]]
+  )
+
+  assert results[0][0]["query"] == non_ascii_text
+  assert results[0][0]["response"] == "response " + non_ascii_text

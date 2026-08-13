@@ -94,7 +94,7 @@ EXPECTED_TOOL_USE_COLUMN = "expected_tool_use"
 
 
 def load_json(file_path: str) -> Union[Dict[str, Any], List[Any]]:
-  with open(file_path, "r") as f:
+  with open(file_path, "r", encoding="utf-8") as f:
     return cast(Union[Dict[str, Any], List[Any]], json.load(f))
 
 
@@ -365,7 +365,7 @@ class AgentEvaluator:
         old_eval_data_file, eval_config, initial_session
     )
 
-    with open(new_eval_data_file, "w") as f:
+    with open(new_eval_data_file, "w", encoding="utf-8") as f:
       f.write(eval_set.model_dump_json(indent=2))
 
   @staticmethod
@@ -424,7 +424,7 @@ class AgentEvaluator:
   ) -> dict[str, Any]:
     initial_session: dict[str, Any] = {}
     if initial_session_file:
-      with open(initial_session_file, "r") as f:
+      with open(initial_session_file, "r", encoding="utf-8") as f:
         initial_session = json.loads(f.read())
     return initial_session
 
