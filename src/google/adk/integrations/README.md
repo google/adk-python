@@ -9,6 +9,10 @@ ApiHub, etc., should be developed within sub-packages in this folder. This
 centralization makes it easier for developers to find, use, and contribute to
 various integrations.
 
+The `taskmarket` package provides requester tools for listing tasks, inspecting
+live status and submissions, previewing an exact task-creation record, and
+creating a task through the first-party Taskmarket CLI after ADK confirmation.
+
 ## What Belongs Here?
 
 *   Code that connects ADK to other services, APIs, or tools.
