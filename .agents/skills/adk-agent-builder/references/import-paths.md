@@ -1,148 +1,139 @@
-# ADK Import Paths Quick Reference
+# ADK Import Paths
 
-## 📋 Agent Verification Checklist (Imports)
-Use this checklist to ensure you are using the most idiomatic import paths:
+Prefer the canonical short import. The verbose module path is listed only where
+there is no short form, or where the short form does not exist yet.
 
-- [ ] **Canonical Imports**: Did you use the short canonical imports where available (e.g., `from google.adk import Agent`) instead of the verbose ones?
-- [ ] **Avoid Deprecated**: Are you avoiding deprecated paths (e.g., use `McpToolset` instead of `MCPToolset`)?
+## Canonical imports
 
-## Canonical Imports (preferred, used by all samples)
+These cover most agent code:
 
 ```python
-from google.adk import Agent, Context, Event, Workflow
-from google.adk.events import RequestInput
-from google.adk.workflow import node, RetryConfig, Edge, JoinNode
+from google.adk import Agent, Context, Event, Runner, Workflow
+from google.adk.events import Event, EventActions, RequestInput
+from google.adk.workflow import BaseNode, Edge, FunctionNode, JoinNode, node
+from google.adk.workflow import DEFAULT_ROUTE, RetryConfig, START
 ```
 
-## Core Agents
+`google.adk` and `google.adk.workflow` load their members lazily, so importing
+from them does not pull in the whole package.
+
+## Agents
 
 | Component | Import |
-|-----------|--------|
-| `Agent` (canonical) | `from google.adk import Agent` |
-| `Agent` (verbose) | `from google.adk.agents.llm_agent import Agent` |
-| `LlmAgent` | `from google.adk.agents.llm_agent import LlmAgent` |
-| `SequentialAgent` | `from google.adk.agents.sequential_agent import SequentialAgent` |
-| `ParallelAgent` | `from google.adk.agents.parallel_agent import ParallelAgent` |
-| `LoopAgent` | `from google.adk.agents.loop_agent import LoopAgent` |
+|---|---|
+| `Agent` (alias of `LlmAgent`) | `from google.adk import Agent` |
+| `LlmAgent` | `from google.adk.agents import LlmAgent` |
+| `BaseAgent` | `from google.adk.agents import BaseAgent` |
+| `SequentialAgent` (deprecated — use `Workflow`) | `from google.adk.agents import SequentialAgent` |
+| `ParallelAgent` (deprecated — use `Workflow`) | `from google.adk.agents import ParallelAgent` |
+| `LoopAgent` (deprecated — use `Workflow`) | `from google.adk.agents import LoopAgent` |
+| `RunConfig` | `from google.adk.agents import RunConfig` |
 
-## Workflow Agents (Experimental)
+## Workflow graph
 
 | Component | Import |
-|-----------|--------|
+|---|---|
 | `Workflow` | `from google.adk.workflow import Workflow` |
 | `Edge` | `from google.adk.workflow import Edge` |
-| `Agent` (supports task/single_turn mode) | `from google.adk import Agent` |
+| `DEFAULT_ROUTE` (`"__DEFAULT__"`) | `from google.adk.workflow import DEFAULT_ROUTE` |
+| `START` | `from google.adk.workflow import START` |
+| `Graph` | `from google.adk.workflow._graph import Graph` |
 
-## Workflow Nodes
+`Graph` is private; construct workflows from `edges=[...]` unless you need
+`Graph.from_edge_items(...)` directly.
 
-| Component                           | Import                                 |
-| ----------------------------------- | -------------------------------------- |
-| `FunctionNode`                      | `from google.adk.workflow import       |
-:                                     : FunctionNode`                          :
-| `_LlmAgentWrapper` (private,        | `from                                  |
-: auto-used)                          : google.adk.workflow._llm_agent_wrapper :
-:                                     : import _LlmAgentWrapper`               :
-| `AgentNode`                         | `from google.adk.workflow._agent_node  |
-:                                     : import AgentNode`                      :
-| `_ToolNode` (private)               | `from google.adk.workflow._tool_node   |
-:                                     : import _ToolNode`                      :
-| `JoinNode`                          | `from google.adk.workflow import       |
-:                                     : JoinNode`                              :
-| Parallel-worker behavior (no public | Set `parallel_worker=True` on `@node`  |
-: class)                              : or `LlmAgent`; the framework wraps     :
-:                                     : with an internal `_ParallelWorker`     :
-| `BaseNode`, `START`                 | `from google.adk.workflow import       |
-:                                     : BaseNode, START`                       :
-| `@node` decorator                   | `from google.adk.workflow import node` |
-
-## Workflow Events and Context
+## Nodes
 
 | Component | Import |
-|-----------|--------|
-| `Event` | `from google.adk.events.event import Event` |
-| `RequestInput` | `from google.adk.events.request_input import RequestInput` |
-| `Context` | `from google.adk.agents.context import Context` |
-| `WorkflowGraph` | `from google.adk.workflow._workflow_graph import WorkflowGraph` |
+|---|---|
+| `BaseNode` | `from google.adk.workflow import BaseNode` |
+| `FunctionNode` | `from google.adk.workflow import FunctionNode` |
+| `Node` | `from google.adk.workflow import Node` |
+| `@node` decorator | `from google.adk.workflow import node` |
+| `JoinNode` | `from google.adk.workflow import JoinNode` |
 | `RetryConfig` | `from google.adk.workflow import RetryConfig` |
+| `NodeTimeoutError` | `from google.adk.workflow import NodeTimeoutError` |
+| `_ToolNode` (private) | `from google.adk.workflow._tool_node import _ToolNode` |
 
-## Task Mode
+Parallel-worker behavior has no importable class. Set `parallel_worker=True` on
+`@node` or on an `LlmAgent`; the framework wraps it with an internal
+`_ParallelWorker`.
+
+## Events and context
 
 | Component | Import |
-|-----------|--------|
-| `RequestTaskTool` | `from google.adk.agents.llm.task._request_task_tool import RequestTaskTool` |
+|---|---|
+| `Event` | `from google.adk import Event` |
+| `EventActions` | `from google.adk.events import EventActions` |
+| `RequestInput` | `from google.adk.events import RequestInput` |
+| `Context` | `from google.adk import Context` |
+| `CallbackContext` (alias of `Context`) | `from google.adk.agents.callback_context import CallbackContext` |
+| `ReadonlyContext` | `from google.adk.agents.readonly_context import ReadonlyContext` |
+| `ToolContext` (alias of `Context`) | `from google.adk.tools import ToolContext` |
+
+## Task delegation
+
+| Component | Import |
+|---|---|
 | `FinishTaskTool` | `from google.adk.agents.llm.task._finish_task_tool import FinishTaskTool` |
 | `TaskRequest`, `TaskResult` | `from google.adk.agents.llm.task._task_models import TaskRequest, TaskResult` |
+
+All three are private. Setting `mode='task'` attaches `FinishTaskTool`
+automatically — there is no reason to import it in agent code.
 
 ## Tools
 
 | Component | Import |
-|-----------|--------|
-| `FunctionTool` | `from google.adk.tools.function_tool import FunctionTool` |
-| `BaseTool` | `from google.adk.tools.base_tool import BaseTool` |
+|---|---|
+| `FunctionTool` | `from google.adk.tools import FunctionTool` |
+| `BaseTool` | `from google.adk.tools import BaseTool` |
 | `BaseToolset` | `from google.adk.tools.base_toolset import BaseToolset` |
-| `ToolContext` | `from google.adk.tools.tool_context import ToolContext` |
-| `LongRunningFunctionTool` | `from google.adk.tools.long_running_tool import LongRunningFunctionTool` |
-| `McpToolset` | `from google.adk.tools.mcp_tool.mcp_toolset import McpToolset` |
+| `LongRunningFunctionTool` | `from google.adk.tools import LongRunningFunctionTool` |
+| `AgentTool` | `from google.adk.tools import AgentTool` |
+| `McpToolset` | `from google.adk.tools.mcp_tool import McpToolset` |
 | `StdioConnectionParams` | `from google.adk.tools.mcp_tool import StdioConnectionParams` |
 | `SseConnectionParams` | `from google.adk.tools.mcp_tool import SseConnectionParams` |
-| `OpenAPIToolset` | `from google.adk.tools.openapi_tool import OpenAPIToolset` |
+| `StreamableHTTPConnectionParams` | `from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams` |
+| `OpenAPIToolset`, `RestApiTool` | `from google.adk.tools.openapi_tool import OpenAPIToolset, RestApiTool` |
 
-## Built-in Tools
+`MCPToolset` (all caps) still resolves but raises a deprecation warning — use
+`McpToolset`.
 
-| Tool | Import |
-|------|--------|
-| `google_search` | `from google.adk.tools import google_search` |
-| `load_artifacts` | `from google.adk.tools import load_artifacts` |
-| `load_memory` | `from google.adk.tools import load_memory` |
-| `exit_loop` | `from google.adk.tools import exit_loop` |
-| `transfer_to_agent` | `from google.adk.tools import transfer_to_agent` |
-| `get_user_choice` | `from google.adk.tools import get_user_choice` |
-
-## Runner and Session
+## Runner, sessions, app
 
 | Component | Import |
-|-----------|--------|
-| `Runner` | `from google.adk.runners import Runner` |
+|---|---|
+| `Runner` | `from google.adk import Runner` |
 | `InMemoryRunner` | `from google.adk.runners import InMemoryRunner` |
 | `InMemorySessionService` | `from google.adk.sessions import InMemorySessionService` |
 | `DatabaseSessionService` | `from google.adk.sessions import DatabaseSessionService` |
-
-## App and Plugins
-
-| Component | Import |
-|-----------|--------|
-| `App` | `from google.adk.apps import App` |
-| `ResumabilityConfig` | `from google.adk.apps.app import ResumabilityConfig` |
+| `VertexAiSessionService` | `from google.adk.sessions import VertexAiSessionService` |
+| `App`, `ResumabilityConfig` | `from google.adk.apps import App, ResumabilityConfig` |
 | `BasePlugin` | `from google.adk.plugins.base_plugin import BasePlugin` |
-| `ContextFilterPlugin` | `from google.adk.plugins.context_filter_plugin import ContextFilterPlugin` |
+
+`DatabaseSessionService` needs the `db` extra; importing it without
+`sqlalchemy` installed raises a "missing extra" error rather than
+`ImportError`.
 
 ## Models
 
 | Component | Import |
-|-----------|--------|
+|---|---|
+| `BaseLlm` | `from google.adk.models.base_llm import BaseLlm` |
 | `LiteLlm` | `from google.adk.models.lite_llm import LiteLlm` |
 | `LlmRequest` | `from google.adk.models.llm_request import LlmRequest` |
 | `LlmResponse` | `from google.adk.models.llm_response import LlmResponse` |
 
-## Callbacks
+## Code executors
 
 | Component | Import |
-|-----------|--------|
-| `CallbackContext` | `from google.adk.agents.callback_context import CallbackContext` |
-| `ReadonlyContext` | `from google.adk.agents.readonly_context import ReadonlyContext` |
-
-## Code Executors
-
-| Component | Import |
-|-----------|--------|
+|---|---|
 | `BuiltInCodeExecutor` | `from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor` |
 
-## Google GenAI Types
+## google-genai types
 
 | Component | Import |
-|-----------|--------|
+|---|---|
 | `types` | `from google.genai import types` |
-| `Content` | `from google.genai.types import Content` |
-| `ModelContent` | `from google.genai.types import ModelContent` |
-| `Part` | `from google.genai.types import Part` |
+| `Content`, `ModelContent`, `Part` | `from google.genai.types import Content, ModelContent, Part` |
 | `GenerateContentConfig` | `from google.genai.types import GenerateContentConfig` |

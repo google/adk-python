@@ -116,6 +116,10 @@ def get_target_issues(owner: str, repo: str) -> list[int]:
   Fetches issues.
   If INITIAL_FULL_SCAN is True, fetches ALL open issues.
   If False, fetches only issues updated in the last 24 hours using the 'since' parameter.
+
+  Raises requests.exceptions.RequestException if a page cannot be fetched. A
+  partial list is indistinguishable from a genuinely short one, so the caller
+  is told the fetch failed instead.
   """
   from datetime import datetime
   from datetime import timedelta
@@ -166,6 +170,6 @@ def get_target_issues(owner: str, repo: str) -> list[int]:
       page += 1
     except requests.exceptions.RequestException as e:
       logger.error(f"Failed to fetch issues on page {page}: {e}")
-      break
+      raise
 
   return issue_numbers

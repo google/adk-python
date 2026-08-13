@@ -171,6 +171,9 @@ def test_validate_path_segment_valid(value, field_name):
         "../escape",
         "../../etc",
         "foo/../../bar",
+        "mixed/..\\separators",
+        "./..\\",
+        ".\\../",
         "..",
         ".",
         "null\x00byte",
@@ -178,6 +181,9 @@ def test_validate_path_segment_valid(value, field_name):
         "/etc/passwd",
         "/leading/slash",
         "\\leading\\backslash",
+        "C:\\absolute",
+        "C:/absolute",
+        "C:drive-relative",
     ],
 )
 def test_validate_path_segment_invalid(value, field_name):
@@ -288,3 +294,22 @@ def test_validate_artifact_reference_scope_session_uri_without_caller_session_ra
     )
 
   assert "same session scope" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("C:", True),
+        ("c:/data", True),
+        ("Z:relative", True),
+        ("1:x", False),
+        ("_:x", False),
+        ("é:x", False),
+        (":x", False),
+        ("user:profile.txt", False),
+        ("plain", False),
+    ],
+)
+def test_is_drive_qualified_matches_only_drive_letters(value, expected):
+  """Only a single ASCII letter followed by a colon counts as a drive."""
+  assert artifact_util._is_drive_qualified(value) is expected

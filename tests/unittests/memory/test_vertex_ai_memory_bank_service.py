@@ -25,6 +25,7 @@ from google.adk.memory import vertex_ai_memory_bank_service as memory_service_mo
 from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
 from google.adk.sessions.session import Session
+from google.auth.credentials import Credentials
 from google.genai import types
 import pytest
 from vertexai import types as vertex_types
@@ -115,6 +116,7 @@ def mock_vertex_ai_memory_bank_service(
     location: Optional[str] = 'test-location',
     agent_engine_id: Optional[str] = '123',
     express_mode_api_key: Optional[str] = None,
+    credentials: Optional[Credentials] = None,
 ):
   """Creates a mock Vertex AI Memory Bank service for testing."""
   return VertexAiMemoryBankService(
@@ -122,6 +124,7 @@ def mock_vertex_ai_memory_bank_service(
       location=location,
       agent_engine_id=agent_engine_id,
       express_mode_api_key=express_mode_api_key,
+      credentials=credentials,
   )
 
 
@@ -238,6 +241,35 @@ def test_initialize_without_agent_engine_id_error():
       match='agent_engine_id is required for VertexAiMemoryBankService',
   ):
     mock_vertex_ai_memory_bank_service(agent_engine_id=None)
+
+
+def test_get_api_client_passes_credentials_through():
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  memory_service = mock_vertex_ai_memory_bank_service(
+      credentials=mock_credentials
+  )
+
+  with mock.patch('vertexai.Client') as mock_client_constructor:
+    memory_service._get_api_client()
+
+  mock_client_constructor.assert_called_once_with(
+      project='test-project',
+      location='test-location',
+      credentials=mock_credentials,
+  )
+
+
+def test_get_api_client_defaults_credentials_to_none():
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with mock.patch('vertexai.Client') as mock_client_constructor:
+    memory_service._get_api_client()
+
+  mock_client_constructor.assert_called_once_with(
+      project='test-project',
+      location='test-location',
+      credentials=None,
+  )
 
 
 @pytest.mark.asyncio

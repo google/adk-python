@@ -21,7 +21,7 @@ source .venv/bin/activate
 ### 2. Install dependencies
 
 ```bash
-pip install "google-adk[agent-identity]"
+pip install "google-adk[agent-identity,mcp]"
 ```
 
 ### 3. Authenticate your environment

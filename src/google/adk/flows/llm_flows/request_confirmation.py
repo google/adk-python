@@ -31,6 +31,8 @@ from ...tools.base_tool import BaseTool
 from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
 from ._base_llm_processor import BaseLlmRequestProcessor
+from .agent_transfer import _build_transfer_tool
+from .agent_transfer import _get_transfer_targets
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
@@ -328,6 +330,14 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
               ReadonlyContext(invocation_context)
           )
       }
+
+    from ...agents.llm_agent import LlmAgent
+
+    if isinstance(agent, LlmAgent):
+      transfer_targets = _get_transfer_targets(agent)
+      if transfer_targets:
+        transfer_tool = _build_transfer_tool(transfer_targets)
+        tools_dict[transfer_tool.name] = transfer_tool
 
     # Step 3: Resolve confirmation targets using extracted helper.
     confirmation_fc_ids = set(confirmations_by_fc_id.keys())

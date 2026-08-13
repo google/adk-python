@@ -1,9 +1,9 @@
-# Workflow Resumability: Model and Direction
+# Workflow resumability: model and direction
 
-This note describes how a `Workflow` node preserves and restores execution state
-across a human-in-the-loop pause, how that compares to peer agent frameworks,
-and the direction we are moving in. It complements `checkpoint-resume.md`, which
-covers the interrupt/resume lifecycle for a single node.
+How a `Workflow` node preserves and restores execution state across a
+human-in-the-loop pause, how that compares to peer agent frameworks, and where
+it is heading. This is the whole-workflow view; the interrupt/resume lifecycle
+of a single node is covered separately.
 
 The first thing to be clear about: a `Workflow` reconstructs its progress from
 the session event stream on every run, so it resumes whether or not resumability
@@ -23,10 +23,9 @@ supplied responses.
 
 This path (`_run_impl` -> `ReplayManager.scan_workflow_events`) has no
 `is_resumable` guard — the scan matches events purely by invocation id. The loop
-state is not persisted and there is no separate workflow checkpoint to load; the
-session event log is the source of truth. So within an invocation, a workflow is
-inherently replay-resumable, flag or no flag. This is exactly what deanchen
-means by "still resumable even when resumability is not set."
+state is not persisted and the checkpoint the workflow writes is not read back
+on the load path; the session event log is the source of truth. So within an
+invocation, a workflow is inherently replay-resumable, flag or no flag.
 
 ### What `is_resumable` actually adds: durability
 
@@ -53,14 +52,20 @@ loadable checkpoints and whether an invocation can be resumed across runner
 calls — not whether the workflow can resume. Resumability here is really
 durability.
 
-### The `Workflow` node emits no checkpoint of its own
+### The `Workflow` node writes a checkpoint, but does not read one
 
-Today the `Workflow` node does not persist a node-status checkpoint (a `nodes`
-payload of statuses/outputs). It relies solely on event replay. The `nodes`
-shape exists only as an input to graph visualization, not as something the
-runtime writes during a run. The only checkpoint events on the workflow path
-come from wrapped composite agents emitting their own `agent_state`, and those
-are gated on the flag as above.
+`Workflow._emit_node_checkpoint` does persist a node-status snapshot when
+`ic.is_resumable` — an `agent_state` event carrying `{"nodes": {name: {status,
+interrupts, resume_inputs}}}` for each static child. Two sibling markers are
+written under the same flag: `_maybe_reemit_replayed_output` re-surfaces a
+fast-forwarded node's output, and `_emit_end_of_agent` records that the
+workflow ran to completion.
+
+What is missing is the other half. Nothing loads that checkpoint: setup still
+begins with `ReplayManager.scan_workflow_events` over the whole invocation, and
+`_run_impl` carries a `TODO: resume from checkpoint event`. So the checkpoint
+is currently an observable record of progress rather than the durable state
+resume actually runs off. Resume cost still scales with history length.
 
 ## How peer frameworks do it
 
@@ -86,25 +91,21 @@ it. Two patterns from the peers are worth copying, both consistent across them:
     which keeps the durable state small and pushes an idempotency contract onto
     the node author — the same at-least-once contract ADK already documents.
 
-## Direction: persist a workflow checkpoint as the durable source of truth
+## Direction: load the checkpoint instead of replaying
 
-Even with durability on, the `Workflow` node reloads by replaying the event
-history rather than loading a compact checkpoint. The direction — peer-aligned,
-and the one ADK's own composite agents already follow — is to persist a workflow
-checkpoint and load the latest one on resume:
+The write half exists. The remaining step — peer-aligned, and the one ADK's own
+composite agents already take — is to make that checkpoint the thing resume
+reads:
 
--   As the workflow advances, persist node statuses and outputs as a checkpoint
-    (an `agent_state` payload), the way composite agents already persist theirs.
--   On resume, seed the loop state from the most recent checkpoint, then
-    continue: re-run only the interrupted node and dispatch newly-ready
-    successors.
+-   On resume, seed the loop state from the most recent `agent_state`
+    checkpoint instead of scanning the invocation's events, then continue:
+    re-run only the interrupted node and dispatch newly-ready successors.
 -   This makes resume cost independent of history length and unifies the
     `Workflow` node with composite agents and with LangGraph / pydantic-graph /
     the OpenAI SDK.
 
-This only applies when durability is on. Without `is_resumable` there is nothing
-to persist, and the workflow continues to resume within an invocation by replay
-as it does today.
+This only applies when durability is on. Without `is_resumable` nothing is
+persisted, and the workflow continues to resume within an invocation by replay.
 
 ## Open considerations
 

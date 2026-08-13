@@ -16,8 +16,11 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 
 from ..utils.model_name_utils import is_gemini_model
 from ..utils.variant_utils import get_google_llm_variant
@@ -70,8 +73,13 @@ class LlmCapabilities(BaseModel):
   model_config = ConfigDict(
       extra="forbid",
       frozen=True,  # A resolved snapshot; override by subclassing the model.
-      use_attribute_docstrings=True,
   )
 
-  output_schema_and_tools: bool = False
-  """Whether the model can use an output schema together with tools."""
+  output_schema_and_tools: Annotated[
+      bool,
+      Field(
+          description=(
+              "Whether the model can use an output schema together with tools."
+          )
+      ),
+  ] = False

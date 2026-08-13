@@ -215,6 +215,11 @@ def get_old_open_issue_numbers(
 
   Returns:
       List[int]: A list of issue numbers matching the criteria.
+
+  Raises:
+      requests.exceptions.RequestException: If a page of results cannot be
+          fetched. A partial list is indistinguishable from a genuinely short
+          one, so the caller is told the search failed instead.
   """
   if days_old is None:
     days_old = STALE_HOURS_THRESHOLD / 24
@@ -254,7 +259,7 @@ def get_old_open_issue_numbers(
 
     except requests.exceptions.RequestException as e:
       logger.error(f"GitHub search failed on page {page}: {e}")
-      break
+      raise
 
   logger.info(f"Found {len(issue_numbers)} stale issues.")
   return issue_numbers
