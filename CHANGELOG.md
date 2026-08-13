@@ -2,10 +2,26 @@
 
 ## [2.7.0](https://github.com/google/adk-python/compare/v2.6.3...v2.7.0) (2026-08-13)
 
+### Highlights
+
+A correctness and hardening release: most of the work went into what an agent sends to the model, what it exposes to its callers, and what it leaves reachable in production.
+
+* **Models declare their own capabilities**: an agent pairs an output schema with tools when the model actually supports it, instead of ADK inferring support from the model id. ([2aff82c](https://github.com/google/adk-python/commit/2aff82c30923e5f7df5ce4101db52bce82740329), [dc5dbfa](https://github.com/google/adk-python/commit/dc5dbfa2e475f2461177e80f7fa28c96a2bc3592))
+* **Tools can return media**: a tool's function response carries images and other media straight back to the model, on Gemini and on Anthropic, LiteLLM, Apigee and OCI alike. ([df9d6de](https://github.com/google/adk-python/commit/df9d6dec58f4cb22a1010b72e9fd8d347ce8145a), [703cf43](https://github.com/google/adk-python/commit/703cf43f6b03550ec2b02def526f3f4ba98f7abd))
+* **Conversation history keeps what Gemini needs**: thought signatures, server-side tool call parts, and every result of a parallel function call survive the round trip. ([d4ed347](https://github.com/google/adk-python/commit/d4ed3475397d16f9eb8d851f8945a6ed8121b6a8), [e908137](https://github.com/google/adk-python/commit/e908137125f9e14b3061f45f34f5379b48693313), [93dff41](https://github.com/google/adk-python/commit/93dff41417e81bad6150bd91acf1d73dedc298dc))
+* **One app or user cannot reach another's data**: artifact reads and Vertex RAG retrieval are scoped by app and user, and artifact paths that are rooted, drive-qualified or traversing are rejected. ([c27d868](https://github.com/google/adk-python/commit/c27d8688ed9ea619587ad96cbfd641c34dd7340c), [fbeab00](https://github.com/google/adk-python/commit/fbeab000103fb67440b2ccbbc566a1b44723e643), [2716ad5](https://github.com/google/adk-python/commit/2716ad55b8e9eb0c4f719f65bdc0b3f2a26cc551))
+* **The dev server and its credentials stay put**: `adk web` and `adk api_server` now validate the request origin on reads as well as writes, closing a DNS rebinding hole; tracing spans no longer carry credential values; and a production deploy to Agent Engine or Cloud Run disables the dev endpoints. ([2cf4fd1](https://github.com/google/adk-python/commit/2cf4fd1ddcceea93d60df8eb6c0a7e775e867230), [fd44a63](https://github.com/google/adk-python/commit/fd44a633d63af0ea23edfc8c7e20f01e2ffd702b), [b795a9b](https://github.com/google/adk-python/commit/b795a9ba8680f70ca4e705a80e4d0951ad0a0e60))
+
+#### Breaking changes
+
+* **`pyarrow` left the `gcp` extra**: it lives in the new `bigquery-analytics` extra, which takes roughly 50 MB off `pip install google-adk[gcp]`. If you use `BigQueryAgentAnalyticsPlugin`, install `google-adk[bigquery-analytics]`. ([ac71709](https://github.com/google/adk-python/commit/ac717091f6644f348c6f7e65a43cc0475a28fe45))
 
 ### ⚠ BREAKING CHANGES
 
 * **deps:** move pyarrow out of the gcp extra
+
+<details>
+<summary>All 212 changes</summary>
 
 ### Features
 
@@ -237,6 +253,8 @@
 
 * **deps:** move pyarrow out of the gcp extra ([ac71709](https://github.com/google/adk-python/commit/ac717091f6644f348c6f7e65a43cc0475a28fe45))
 * release this candidate as 2.7.0 ([e22b75a](https://github.com/google/adk-python/commit/e22b75aac1b86c9d264cb3def4965df218acf471))
+
+</details>
 
 ## [2.6.3](https://github.com/google/adk-python/compare/v2.6.2...v2.6.3) (2026-08-07)
 
