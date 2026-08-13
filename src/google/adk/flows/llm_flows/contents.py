@@ -144,9 +144,12 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
+  # `get_function_responses()` and `get_function_calls()` each rebuild a list
+  # by rescanning every part. Cache each result when its phase needs it.
+  responses_per_event = [event.get_function_responses() for event in events]
+
   function_call_id_to_response_events_index: dict[str | None, int] = {}
-  for i, event in enumerate(events):
-    function_responses = event.get_function_responses()
+  for i, function_responses in enumerate(responses_per_event):
     if function_responses:
       for function_response in function_responses:
         function_call_id = function_response.id
@@ -155,15 +158,16 @@ def _rearrange_events_for_async_function_responses_in_history(
   if not function_call_id_to_response_events_index:
     return events
 
+  calls_per_event = [event.get_function_calls() for event in events]
   result_events: list[Event] = []
-  for event in events:
-    if event.get_function_responses():
+  for i, event in enumerate(events):
+    if responses_per_event[i]:
       # function_response should be handled together with function_call below.
       continue
-    elif event.get_function_calls():
+    elif calls_per_event[i]:
 
       function_response_events_indices = set()
-      for function_call in event.get_function_calls():
+      for function_call in calls_per_event[i]:
         function_call_id = function_call.id
         if function_call_id in function_call_id_to_response_events_index:
           function_response_events_indices.add(
@@ -346,6 +350,13 @@ def _rearrange_events_for_latest_function_response(
   return result_events
 
 
+_INTERNAL_FUNCTION_NAMES = frozenset({
+    'adk_framework',
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+})
+
+
 def _is_part_invisible(
     p: types.Part, *, include_thoughts: bool = False
 ) -> bool:
@@ -519,12 +530,49 @@ def _should_include_event_in_context(
   ev_iso = getattr(event, 'isolation_scope', None)
   if ev_iso != isolation_scope:
     return False
+
+  # Single pass over the parts. `_contains_empty_content` and the three
+  # internal-event predicates below each re-walk `event.content.parts`; this
+  # derives the same two facts once. The returned expression keeps upstream's
+  # operand order and short-circuit structure exactly.
+  content = event.content
+  all_parts_invisible = True
+  is_internal_event = False
+  if content and content.parts:
+    for part in content.parts:
+      function_call = part.function_call
+      function_response = part.function_response
+      if function_call is not None or function_response is not None:
+        all_parts_invisible = False
+        if (
+            function_call is not None
+            and function_call.name in _INTERNAL_FUNCTION_NAMES
+        ) or (
+            function_response is not None
+            and function_response.name in _INTERNAL_FUNCTION_NAMES
+        ):
+          is_internal_event = True
+          break
+        continue
+      if all_parts_invisible and not _is_part_invisible(
+          part, include_thoughts=include_thoughts
+      ):
+        all_parts_invisible = False
+
+  if event.actions and event.actions.compaction:
+    contains_empty_content = False
+  else:
+    contains_empty_content = (
+        not content
+        or not content.role
+        or not content.parts
+        or all_parts_invisible
+    ) and (not event.output_transcription and not event.input_transcription)
+
   return not (
-      _contains_empty_content(event, include_thoughts=include_thoughts)
+      contains_empty_content
       or not _is_event_belongs_to_branch(current_branch, event)
-      or _is_adk_framework_event(event)
-      or _is_auth_event(event)
-      or _is_request_confirmation_event(event)
+      or is_internal_event
   )
 
 
@@ -759,16 +807,19 @@ def _copy_content_for_request(
   if not parts:
     return new_content
 
+  if not strip_client_function_call_ids:
+    new_content.parts = [part.model_copy() for part in parts]
+    return new_content
+
   new_parts = []
   for part in parts:
     new_part = part.model_copy()
-    if strip_client_function_call_ids:
-      fc = new_part.function_call
-      if fc and fc.id and fc.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
-        new_part.function_call = fc.model_copy(update={'id': None})
-      fr = new_part.function_response
-      if fr and fr.id and fr.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
-        new_part.function_response = fr.model_copy(update={'id': None})
+    fc = new_part.function_call
+    if fc and fc.id and fc.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
+      new_part.function_call = fc.model_copy(update={'id': None})
+    fr = new_part.function_response
+    if fr and fr.id and fr.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
+      new_part.function_response = fr.model_copy(update={'id': None})
     new_parts.append(new_part)
   new_content.parts = new_parts
   return new_content
@@ -829,9 +880,11 @@ def _get_contents(
       )
   ]
 
-  has_compaction_events = any(
-      e.actions and e.actions.compaction for e in raw_filtered_events
-  )
+  has_compaction_events = False
+  for e in raw_filtered_events:
+    if e.actions and e.actions.compaction:
+      has_compaction_events = True
+      break
 
   if has_compaction_events:
     events_to_process = _process_compaction_events(
