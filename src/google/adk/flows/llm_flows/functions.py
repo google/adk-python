@@ -1438,24 +1438,38 @@ def __build_response_event(
 
   # When summarization is skipped, ensure a displayable text part is added so
   # the tool's output is not lost in UIs that don't render function responses.
-  # Control-flow tools (e.g. exit_loop) set skip_summarization but return no
-  # meaningful output; their None result is normalized to {'result': None}, so
-  # skip those to avoid emitting a noisy "null" text part.
-  has_displayable_result = display_result is not None and display_result != {
-      'result': None
-  }
+  # Control-flow tools (e.g. exit_loop) are also skipped to avoid emitting a
+  # noisy "null" text part.
+  has_displayable_result = (
+      display_result is not None
+      and display_result != {'result': None}
+      and display_result != ''
+  )
   if (
       tool_context.actions.skip_summarization
       and 'error' not in function_result
       and has_displayable_result
   ):
-    if isinstance(display_result, str):
-      result_text = display_result
-    else:
-      result_text = json.dumps(display_result, ensure_ascii=False, default=str)
-    if content.parts is None:
-      raise RuntimeError('Function response content must contain parts.')
-    content.parts.append(types.Part.from_text(text=result_text))
+    # Imported lazily: AgentTool is only needed on the skip-summarization
+    # path, so it is not worth pulling into every functions.py import.
+    from ...tools.agent_tool import AgentTool
+
+    # This is scoped to AgentTool deliberately: other tools (e.g. UI/widget-
+    # rendering tools) set skip_summarization precisely because their function
+    # response is an internal acknowledgement that must NOT be surfaced as
+    # visible text. AgentTool subclasses can still return None (e.g.
+    # _SingleTurnAgentTool delegating to run_node), hence the
+    # has_displayable_result guard above.
+    if isinstance(tool, AgentTool):
+      if isinstance(display_result, str):
+        result_text = display_result
+      else:
+        result_text = json.dumps(
+            display_result, ensure_ascii=False, default=str
+        )
+      if content.parts is None:
+        raise RuntimeError('Function response content must contain parts.')
+      content.parts.append(types.Part.from_text(text=result_text))
 
   function_response_event = Event(
       invocation_id=invocation_context.invocation_id,
