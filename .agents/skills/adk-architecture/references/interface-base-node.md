@@ -127,11 +127,16 @@ async def _run_impl(self, *, ctx, node_input):
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
-| `name` | `str` | required | Unique identifier |
+| `name` | `str` | required | Unique identifier. Validated: must be a valid Python identifier. |
 | `description` | `str` | `''` | Human-readable description |
-| `rerun_on_resume` | `bool` | `False` | Re-execute on resume (required for `ctx.run_node()`) |
-| `wait_for_output` | `bool` | `False` | Stay WAITING until output is yielded (for join nodes) |
-| `retry_config` | `RetryConfig \| None` | `None` | Retry on failure |
-| `timeout` | `float \| None` | `None` | Max execution time in seconds |
-| `input_schema` | `SchemaType \| None` | `None` | Validate/coerce input data |
+| `rerun_on_resume` | `bool` | `False` | Re-execute from scratch on resume (required for `ctx.run_node()`). When `False` the node completes immediately using the resume input as its output. |
+| `wait_for_output` | `bool` | `False` | Stay WAITING until output *or* route is yielded, so predecessors can re-trigger the node (join nodes). Never yielding either deadlocks the node. |
+| `retry_config` | `RetryConfig \| None` | `None` | Retry on failure. Not persisted, so the count restarts after a resume. |
+| `timeout` | `float \| None` | `None` | Max execution time in seconds; exceeding it raises `NodeTimeoutError`, which `retry_config` can retry. |
+| `input_schema` | `SchemaType \| None` | `None` | Validate/coerce input data before `run()` |
 | `output_schema` | `SchemaType \| None` | `None` | Validate/coerce output data |
+| `state_schema` | `type[BaseModel] \| None` | `None` | Declare expected `ctx.state` keys and types; mutations are validated at runtime. Children inherit it unless they declare their own. Prefixed keys (`app:`, `user:`, `temp:`) bypass validation. |
+
+`START` (in the same module) is a sentinel `BaseNode` marking a graph's entry
+point. It is never executed — the Workflow seeds triggers for its successors
+directly.

@@ -350,11 +350,11 @@ There are a few options to perform similarity search:
         table_name="products",
         query=search_query,
         embedding_column_to_search="productDescriptionEmbedding",
-        columns= [
+        columns=[
           "productId",
           "productName",
           "productDescription",
-        ]
+        ],
         embedding_options={
           "vertex_ai_embedding_model_name": "text-embedding-005",
         },

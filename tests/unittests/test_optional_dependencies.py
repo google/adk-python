@@ -147,6 +147,18 @@ def test_vertex_ai_session_service_fails_on_creation():
     assert "google-cloud-aiplatform" in str(exc_info.value)
 
 
+def test_bigquery_agent_analytics_plugin_fails_on_import_naming_its_extra():
+  """Verify that importing the BigQuery analytics plugin without pyarrow names the extra."""
+  with mock.patch.dict("sys.modules", {"pyarrow": None}):
+    sys.modules.pop("google.adk.plugins.bigquery_agent_analytics_plugin", None)
+    with pytest.raises(ImportError) as exc_info:
+      import google.adk.plugins.bigquery_agent_analytics_plugin  # noqa: F401
+
+    message = str(exc_info.value)
+    assert "pyarrow" in message
+    assert "pip install google-adk[bigquery-analytics]" in message
+
+
 def test_vertexai_dependency_shim_raises_clear_importerror():
   """Verify that the Vertex AI dependency shim points users to the dependency."""
   module_path = _REPO_ROOT / "dependencies_internal/vertexai.py"

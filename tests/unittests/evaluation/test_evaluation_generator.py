@@ -1341,6 +1341,380 @@ class TestLiveSessionCallbacks:
     assert called_after_args.kwargs["llm_response"] == mock_event
 
 
+class TestLiveSessionNodeRouting:
+  """Verifies non-Agent BaseNode roots are driven via `Runner.run_live`."""
+
+  @pytest.mark.asyncio
+  async def test_workflow_root_uses_runner_run_live(self, mocker):
+    from google.adk.workflow import Workflow
+
+    # A Workflow has no `_llm_flow`/`run_live`; the session must fall back to
+    # `Runner.run_live`, which handles node scheduling and function calls.
+    mock_workflow = mocker.MagicMock(spec=Workflow)
+    mock_runner = mocker.MagicMock()
+    mock_runner.agent = mock_workflow
+
+    mock_event = Event(
+        author="agent",
+        content=types.Content(parts=[types.Part(text="Hi")]),
+        invocation_id="unused",
+        turn_complete=True,
+    )
+
+    async def mock_run_live(*args, **kwargs):
+      yield mock_event
+
+    mock_runner.run_live.return_value = mock_run_live()
+
+    live_session = _LiveSession(
+        runner=mock_runner,
+        session=mocker.MagicMock(),
+        user_id="test_user",
+        session_id="test_session",
+    )
+
+    await live_session._consume_events()
+
+    # The Agent-only driver must not be touched for a Workflow root.
+    mock_runner._new_invocation_context_for_live.assert_not_called()
+    mock_runner.run_live.assert_called_once()
+    call_kwargs = mock_runner.run_live.call_args.kwargs
+    assert call_kwargs["user_id"] == "test_user"
+    assert call_kwargs["session_id"] == "test_session"
+
+    # The event is re-stamped with the turn's invocation id and enqueued, and
+    # the agent's turn-complete releases the waiter.
+    queued_event = await live_session.event_queue.get()
+    assert queued_event.invocation_id == live_session.current_invocation_id
+    assert live_session.turn_complete_event.is_set()
+    assert live_session.live_finished.is_set()
+
+  @pytest.mark.asyncio
+  async def test_workflow_root_swallows_tool_call_turn_complete(self, mocker):
+    from google.adk.workflow import Workflow
+
+    # The intermediate `turn_complete` that accompanies a tool call must not
+    # release the waiter; only the true end-of-turn after the model continues.
+    mock_workflow = mocker.MagicMock(spec=Workflow)
+    mock_runner = mocker.MagicMock()
+    mock_runner.agent = mock_workflow
+
+    # A tool call and its `turn_complete` arrive as separate events.
+    fc_event = Event(
+        author="dob_verifier_agent",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="validate_date_of_birth",
+                        args={"dob": "1985-07-12"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="unused",
+    )
+    intermediate_turn_complete = Event(
+        author="dob_verifier_agent",
+        invocation_id="unused",
+        turn_complete=True,
+    )
+    # The real end-of-turn after the model continues.
+    final_event = Event(
+        author="dob_verifier_agent",
+        content=types.Content(
+            parts=[types.Part(text="Your identity is verified.")]
+        ),
+        invocation_id="unused",
+        turn_complete=True,
+    )
+
+    async def mock_run_live(*args, **kwargs):
+      yield fc_event
+      assert not live_session.turn_complete_event.is_set()
+      yield intermediate_turn_complete
+      assert not live_session.turn_complete_event.is_set()
+      yield final_event
+
+    mock_runner.run_live.return_value = mock_run_live()
+
+    live_session = _LiveSession(
+        runner=mock_runner,
+        session=mocker.MagicMock(),
+        user_id="test_user",
+        session_id="test_session",
+    )
+    mocker.patch.object(
+        live_session,
+        "_record_node_app_details",
+        new=mocker.AsyncMock(return_value={}),
+    )
+
+    await live_session._consume_node_events()
+
+    # The waiter is released only on the true end-of-turn.
+    assert live_session.turn_complete_event.is_set()
+
+  @pytest.mark.asyncio
+  async def test_workflow_root_finish_task_does_not_swallow_next_turn(
+      self, mocker
+  ):
+    from google.adk.workflow import Workflow
+
+    # `finish_task` hands off to the next agent, so its following `turn_complete`
+    # (the next agent's question) is a real end-of-turn and must not be swallowed
+    # -- otherwise the harness hangs.
+    mock_workflow = mocker.MagicMock(spec=Workflow)
+    mock_runner = mocker.MagicMock()
+    mock_runner.agent = mock_workflow
+
+    finish_task_event = Event(
+        author="greeter_agent",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="finish_task", args={"result": "John Doe"}
+                    )
+                )
+            ]
+        ),
+        invocation_id="unused",
+    )
+    # The next agent takes over and asks its first question, ending the turn.
+    next_agent_turn = Event(
+        author="dob_verifier_agent",
+        content=types.Content(
+            parts=[types.Part(text="What is your date of birth?")]
+        ),
+        invocation_id="unused",
+        turn_complete=True,
+    )
+
+    async def mock_run_live(*args, **kwargs):
+      yield finish_task_event
+      yield next_agent_turn
+
+    mock_runner.run_live.return_value = mock_run_live()
+
+    live_session = _LiveSession(
+        runner=mock_runner,
+        session=mocker.MagicMock(),
+        user_id="test_user",
+        session_id="test_session",
+    )
+    mocker.patch.object(
+        live_session,
+        "_record_node_app_details",
+        new=mocker.AsyncMock(return_value={}),
+    )
+
+    await live_session._consume_node_events()
+
+    # The next agent's turn_complete must release the waiter.
+    assert live_session.turn_complete_event.is_set()
+
+  @pytest.mark.asyncio
+  async def test_workflow_root_tolerates_normal_ws_closure(self, mocker):
+    from google.adk.workflow import Workflow
+    from google.genai import errors
+
+    # The node runner unwraps the end-of-session `1000` closure and re-raises it
+    # from `run_live`; the session must treat it as a normal end of stream
+    # rather than aborting the eval case.
+    mock_workflow = mocker.MagicMock(spec=Workflow)
+    mock_runner = mocker.MagicMock()
+    mock_runner.agent = mock_workflow
+
+    async def mock_run_live(*args, **kwargs):
+      raise errors.APIError(1000, {}, None)
+      yield  # pragma: no cover - makes this an async generator
+
+    mock_runner.run_live.return_value = mock_run_live()
+
+    live_session = _LiveSession(
+        runner=mock_runner,
+        session=mocker.MagicMock(),
+        user_id="test_user",
+        session_id="test_session",
+    )
+
+    # Must not raise; the normal closure is swallowed.
+    await live_session._consume_events()
+
+    # The `finally` still flags the stream finished and unblocks waiters.
+    assert live_session.live_finished.is_set()
+    assert live_session.turn_complete_event.is_set()
+
+  @pytest.mark.asyncio
+  async def test_workflow_root_reraises_abnormal_ws_closure(self, mocker):
+    from google.adk.workflow import Workflow
+    from google.genai import errors
+
+    # A non-1000 closure is a real failure and must propagate.
+    mock_workflow = mocker.MagicMock(spec=Workflow)
+    mock_runner = mocker.MagicMock()
+    mock_runner.agent = mock_workflow
+
+    async def mock_run_live(*args, **kwargs):
+      raise errors.APIError(1011, {}, None)
+      yield  # pragma: no cover - makes this an async generator
+
+    mock_runner.run_live.return_value = mock_run_live()
+
+    live_session = _LiveSession(
+        runner=mock_runner,
+        session=mocker.MagicMock(),
+        user_id="test_user",
+        session_id="test_session",
+    )
+
+    with pytest.raises(errors.APIError):
+      await live_session._consume_events()
+
+  @pytest.mark.asyncio
+  async def test_workflow_fires_after_model_callback_by_author(self, mocker):
+    from google.adk.workflow import Workflow
+
+    mock_workflow = mocker.MagicMock(spec=Workflow)
+    mock_runner = mocker.MagicMock()
+    mock_runner.agent = mock_workflow
+    mock_runner.plugin_manager.run_after_model_callback = mocker.AsyncMock()
+
+    greeter_event = Event(author="greeter", invocation_id="x")
+    other_event = Event(author="unrecorded_agent", invocation_id="x")
+
+    async def mock_run_live(*args, **kwargs):
+      yield greeter_event
+      yield other_event
+
+    mock_runner.run_live.return_value = mock_run_live()
+
+    live_session = _LiveSession(
+        runner=mock_runner,
+        session=mocker.MagicMock(),
+        user_id="u",
+        session_id="s",
+    )
+    greeter_context = mocker.MagicMock()
+    mocker.patch.object(
+        live_session,
+        "_record_node_app_details",
+        new=mocker.AsyncMock(return_value={"greeter": greeter_context}),
+    )
+
+    await live_session._consume_node_events()
+
+    # Only the recorded author's events replay after_model_callback, and with
+    # that author's callback context.
+    mock_runner.plugin_manager.run_after_model_callback.assert_called_once_with(
+        callback_context=greeter_context, llm_response=greeter_event
+    )
+
+
+class TestLiveSessionNodeAppDetails:
+  """Verifies the stop-gap that records autorater app details for node roots.
+
+  ``_record_app_details_for_agent`` (the per-agent preprocess + callback firing)
+  is exercised by ``TestLiveSessionCallbacks``; here we focus on the node graph
+  enumeration/mapping/skip logic in ``_record_node_app_details``.
+  """
+
+  def _make_agent_node(self, mocker, name: str):
+    from google.adk.agents.llm_agent import Agent
+
+    agent = mocker.MagicMock(spec=Agent)
+    agent.name = name
+    return agent
+
+  def _make_runner(self, mocker, nodes):
+    mock_workflow = mocker.MagicMock()
+    mock_workflow.graph.nodes = nodes
+
+    mock_runner = mocker.MagicMock()
+    mock_runner.agent = mock_workflow
+    # `model_copy` carries the target agent onto the per-agent context so
+    # `_record_app_details_for_agent` sees the right agent.
+    base_ic = mock_runner._new_invocation_context_for_live.return_value
+    base_ic.model_copy.side_effect = lambda update: mocker.MagicMock(
+        agent=update["agent"]
+    )
+    return mock_runner
+
+  @pytest.mark.asyncio
+  async def test_record_node_app_details_maps_each_agent(self, mocker):
+    greeter = self._make_agent_node(mocker, "greeter")
+    verifier = self._make_agent_node(mocker, "verifier")
+    mock_runner = self._make_runner(mocker, [greeter, verifier])
+
+    live_session = _LiveSession(
+        runner=mock_runner,
+        session=mocker.MagicMock(),
+        user_id="u",
+        session_id="s",
+    )
+
+    # Return a distinct callback context per recorded agent.
+    greeter_context = mocker.sentinel.greeter_context
+    verifier_context = mocker.sentinel.verifier_context
+    mocker.patch.object(
+        live_session,
+        "_record_app_details_for_agent",
+        new=mocker.AsyncMock(side_effect=[greeter_context, verifier_context]),
+    )
+
+    callback_context_by_author = await live_session._record_node_app_details()
+
+    assert callback_context_by_author == {
+        "greeter": greeter_context,
+        "verifier": verifier_context,
+    }
+
+  @pytest.mark.asyncio
+  async def test_record_node_app_details_no_graph_returns_empty(self, mocker):
+    mock_runner = mocker.MagicMock()
+    mock_runner.agent = object()  # no `graph` attribute
+
+    live_session = _LiveSession(
+        runner=mock_runner,
+        session=mocker.MagicMock(),
+        user_id="u",
+        session_id="s",
+    )
+
+    assert await live_session._record_node_app_details() == {}
+
+  @pytest.mark.asyncio
+  async def test_record_node_app_details_skips_failed_agent(self, mocker):
+    good = self._make_agent_node(mocker, "good")
+    bad = self._make_agent_node(mocker, "bad")
+    mock_runner = self._make_runner(mocker, [bad, good])
+
+    live_session = _LiveSession(
+        runner=mock_runner,
+        session=mocker.MagicMock(),
+        user_id="u",
+        session_id="s",
+    )
+
+    good_context = mocker.sentinel.good_context
+
+    async def record(ic):
+      if ic.agent.name == "bad":
+        raise RuntimeError("boom")
+      return good_context
+
+    mocker.patch.object(
+        live_session,
+        "_record_app_details_for_agent",
+        new=mocker.AsyncMock(side_effect=record),
+    )
+
+    # The failing agent is skipped; the healthy one is still recorded.
+    callback_context_by_author = await live_session._record_node_app_details()
+    assert callback_context_by_author == {"good": good_context}
+
+
 def test_convert_events_preserves_tool_calls_when_skip_summarization():
   """Regression test for tool calls dropped from invocation_events.
 

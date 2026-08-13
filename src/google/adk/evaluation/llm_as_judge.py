@@ -82,7 +82,6 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       expected_invocations_required: bool = False,
   ):
     self._eval_metric = eval_metric
-    self._threshold = _get_metric_threshold(eval_metric)
     self._expected_invocations_required = expected_invocations_required
 
     expected_criterion_type_error = ValueError(
@@ -101,6 +100,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       raise expected_criterion_type_error from e
 
     self._judge_model_options = self._criterion.judge_model_options
+    self._threshold = _get_metric_threshold(eval_metric)
     self._judge_model = self._setup_auto_rater()
 
   @abstractmethod

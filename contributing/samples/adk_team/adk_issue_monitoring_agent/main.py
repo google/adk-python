@@ -15,7 +15,9 @@
 import asyncio
 import logging
 import re
+import sys
 import time
+from typing import Literal
 
 from adk_issue_monitoring_agent.agent import root_agent
 from adk_issue_monitoring_agent.settings import BOT_ALERT_SIGNATURE
@@ -40,12 +42,17 @@ logger = logging.getLogger("google_adk." + __name__)
 APP_NAME = "issue_monitoring_app"
 USER_ID = "issue_monitoring_user"
 
+# An issue is skipped when there is deliberately nothing to review, which is a
+# normal outcome and not a failure.
+_Outcome = Literal["audited", "skipped", "failed"]
+
 
 async def process_single_issue(
     runner: InMemoryRunner, issue_number: int, maintainers: list[str]
-) -> tuple[float, int]:
+) -> tuple[float, int, _Outcome]:
   start_time = time.perf_counter()
   start_api_calls = get_api_call_count()
+  outcome: _Outcome = "audited"
 
   try:
     # 1. Fetch the main issue AND the comments
@@ -87,6 +94,7 @@ async def process_single_issue(
         return (
             time.perf_counter() - start_time,
             get_api_call_count() - start_api_calls,
+            "skipped",
         )
 
       if (
@@ -111,6 +119,7 @@ async def process_single_issue(
       return (
           time.perf_counter() - start_time,
           get_api_call_count() - start_api_calls,
+          "skipped",
       )
 
     logger.info(
@@ -147,14 +156,15 @@ async def process_single_issue(
 
   except Exception as e:
     logger.error(f"Error processing issue #{issue_number}: {e}", exc_info=True)
+    outcome = "failed"
 
   # Calculate duration and API calls regardless of success or failure
   duration = time.perf_counter() - start_time
   issue_api_calls = get_api_call_count() - start_api_calls
-  return duration, issue_api_calls
+  return duration, issue_api_calls, outcome
 
 
-async def main():
+async def main() -> int:
   logger.info(f"--- Starting Issue Monitoring Agent for {OWNER}/{REPO} ---")
   reset_api_call_count()
 
@@ -164,24 +174,28 @@ async def main():
     logger.info(f"Found {len(maintainers)} maintainers.")
   except Exception as e:
     logger.critical(f"Failed to fetch maintainers: {e}")
-    return
+    return 1
 
   # Step 2: Fetch target issues
   try:
     all_issues = get_target_issues(OWNER, REPO)
   except Exception as e:
     logger.critical(f"Failed to fetch issue list: {e}")
-    return
+    return 1
 
   total_count = len(all_issues)
   if total_count == 0:
     logger.info("No issues matched criteria. Run finished.")
-    return
+    return 0
 
   logger.info(f"Found {total_count} issues to process.")
 
   # Initialize the runner ONCE for the entire run
   runner = InMemoryRunner(agent=root_agent, app_name=APP_NAME)
+
+  audited_count = 0
+  skipped_count = 0
+  failed_count = 0
 
   # Step 3: Iterate through issues async 'CONCURRENCY_LIMIT' at a time
   for i in range(0, total_count, CONCURRENCY_LIMIT):
@@ -192,13 +206,28 @@ async def main():
         process_single_issue(runner, issue_num, maintainers)
         for issue_num in chunk
     ]
-    await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks)
+
+    for _, _, outcome in results:
+      if outcome == "audited":
+        audited_count += 1
+      elif outcome == "skipped":
+        skipped_count += 1
+      else:
+        failed_count += 1
 
     if (i + CONCURRENCY_LIMIT) < total_count:
       await asyncio.sleep(SLEEP_BETWEEN_CHUNKS)
 
   logger.info(f"--- Run Finished. Total API calls: {get_api_call_count()} ---")
+  logger.info(f"Successfully processed {audited_count} issues.")
+  if skipped_count:
+    logger.info(f"Skipped {skipped_count} issues.")
+  if failed_count:
+    logger.error(f"Failed to process {failed_count} issues.")
+
+  return 1 if failed_count else 0
 
 
 if __name__ == "__main__":
-  asyncio.run(main())
+  sys.exit(asyncio.run(main()))

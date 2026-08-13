@@ -9,7 +9,7 @@ graph nodes and tracks dynamic nodes spawned by `ctx.run_node()`.
 Workflow manages two kinds of child nodes:
 
 - **Static (graph) nodes** — declared in `edges`, compiled into a
-  `WorkflowGraph`. Scheduled by the orchestration loop via triggers
+  `Graph`. Scheduled by the orchestration loop via triggers
   and `asyncio.Task`s. Tracked in `_LoopState.nodes` by node name.
 - **Dynamic nodes** — spawned at runtime via `ctx.run_node()` from
   inside a graph node's `_run_impl`. Tracked in
@@ -104,16 +104,17 @@ class Orchestrator(BaseNode):
 ### Tracking
 
 Dynamic nodes are tracked by **full node_path**, not by name alone.
-The path is `parent_path/child_name`:
+Each segment is `node_name@run_id`:
 
-```
-wf/graph_node_a/dynamic_child     ← dynamic node under graph_node_a
-wf/graph_node_a/dynamic_child/inner  ← transitive dynamic node
+```text
+wf@1/graph_node_a@1/dynamic_child@1        ← dynamic node under graph_node_a
+wf@1/graph_node_a@1/dynamic_child@1/inner@1  ← transitive dynamic node
 ```
 
-The `child_name` comes from either:
-- The `name` parameter on `ctx.run_node(node, name='explicit')`
-- The node's own `name` field (default)
+The node name comes from the node's own `name` field. The run id comes from
+the `run_id` argument to `ctx.run_node()`, or a generated counter when that
+argument is omitted. There is no `name=` parameter on `ctx.run_node()` — pass
+a node whose `name` is what you want, and pass `run_id=` to pin the suffix.
 
 Each unique `node_path` is tracked exactly once in
 `_LoopState.dynamic_nodes`. This enables:
@@ -166,6 +167,17 @@ again, which hits the scheduler. The scheduler lazily scans events,
 finds the resolved FR, and either returns cached output or
 re-executes the dynamic child with `resume_inputs`.
 
+### ctx.run_node() options
+
+| Argument | Effect |
+|---|---|
+| `node_input` | Data handed to the child. |
+| `use_as_output` | The child's output becomes the calling node's output. |
+| `run_id` | Pins the `@run_id` suffix on the child's node path. |
+| `use_sub_branch` | Runs the child on a sub-branch so its events are isolated. |
+| `override_branch`, `override_isolation_scope` | Replace the inherited branch / scope tag. |
+| `raise_on_wait` | Raise `NodeInterruptedError` when the child is WAITING instead of returning `None`. |
+
 ### Output delegation (use_as_output)
 
 `ctx.run_node(node, use_as_output=True)` makes the dynamic child's
@@ -215,9 +227,8 @@ This works because:
   `wf/graph_node/outer/inner/leaf`
 - Nested interrupts are correctly attributed — the scheduler
   matches events from any descendant under a given path.
-- Only a nested **orchestration node** (another Workflow or
-  SingleAgentReactNode) takes over scheduling. Regular nodes
-  inherit the enclosing Workflow's scheduler.
+- Only a nested **orchestration node** (another Workflow) takes over
+  scheduling. Regular nodes inherit the enclosing Workflow's scheduler.
 
 ### Scoping
 
@@ -233,24 +244,29 @@ Workflow sets `ctx.event_author = self.name` at the start of
 All events emitted by children carry this author, giving the UI
 consistent attribution.
 
-An inner orchestration node (nested Workflow, SingleAgentReactNode)
-overrides `event_author` with its own name, so events are attributed
-to the nearest orchestration ancestor.
+A nested Workflow overrides `event_author` with its own name, so events are
+attributed to the nearest orchestration ancestor.
 
 ## Orchestration loop lifecycle
 
-```
+```text
 _run_impl
-  ├─ SETUP: resume from events OR seed start triggers
-  ├─ ctx._schedule_dynamic_node_internal = DynamicNodeScheduler
-  ├─ LOOP:
+  ├─ SETUP
+  │    ├─ ReplayManager.scan_workflow_events → recovered_executions
+  │    ├─ _seed_start_triggers
+  │    └─ ctx._workflow_scheduler = DynamicNodeScheduler(state=loop_state)
+  ├─ LOOP (_run_loop):
   │    ├─ _schedule_ready_nodes → pop triggers, create NodeRunners
   │    ├─ asyncio.wait(FIRST_COMPLETED)
   │    └─ _handle_completion → update state, buffer downstream
-  ├─ await dynamic_pending_tasks
+  ├─ _cleanup_all_tasks  (finally)
   ├─ _collect_remaining_interrupts
-  └─ FINALIZE: set ctx.output or ctx._interrupt_ids
+  ├─ FINALIZE: set ctx.output or ctx._interrupt_ids
+  └─ _emit_end_of_agent  (only when no interrupts remain)
 ```
+
+The event scan is unconditional: a Workflow reconstructs its progress from the
+session on every run, whether or not the app is configured resumable.
 
 Key behaviors:
 
@@ -301,9 +317,11 @@ called during the re-execution.
    `ctx.run_node()`. The Workflow must be able to re-execute your
    node so it can re-acquire dynamic children's results.
 
-2. **Use deterministic names** for dynamic children. The `name`
-   parameter on `ctx.run_node()` determines the `node_path`, which
-   is the dedup/resume key. Non-deterministic names break resume.
+2. **Use deterministic names** for dynamic children. The child node's `name`
+   (plus the optional `run_id=`) determines the `node_path`, which is the
+   dedup/resume key. A name derived from a timestamp, a UUID or model output
+   produces a different path on every run, so resume never finds the prior
+   execution and the child re-runs.
 
 3. **Always `await` ctx.run_node() directly.** Do not wrap in
    `asyncio.create_task()` — the task won't be tracked by the
@@ -321,6 +339,6 @@ called during the re-execution.
    catch it yourself if you need to clean up or adjust state before
    the interrupt propagates.
 
-6. **Don't set `ctx.event_author`** unless your node is an
-   orchestration node (like Workflow or SingleAgentReactNode). The
-   Workflow sets it for you and it propagates to all descendants.
+6. **Don't set `ctx.event_author`** unless your node is an orchestration node
+   like Workflow. The Workflow sets it for you and it propagates to all
+   descendants.

@@ -3,7 +3,7 @@
 ## Introduction
 
 This sample agent demonstrates the BigQuery first-party tools in ADK,
-distributed via the `google.adk.tools.bigquery` module. These tools include:
+distributed via the `google.adk.integrations.bigquery` module. These tools include:
 
 1. `list_dataset_ids`
 

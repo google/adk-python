@@ -23,6 +23,7 @@ import os
 import time
 from unittest import mock
 
+from google.adk.errors import StaleSessionError
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
@@ -293,6 +294,30 @@ async def test_append_event_session_not_found(mock_firestore_client):
   with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
     with pytest.raises(SessionNotFoundError):
       await service.append_event(session, event)
+
+
+@pytest.mark.asyncio
+async def test_append_event_rejects_stale_revision(mock_firestore_client):
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  session._storage_update_marker = "0"
+  event = Event(invocation_id="test_inv", author="user")
+
+  session_doc_snapshot = mock.MagicMock()
+  session_doc_snapshot.exists = True
+  session_doc_snapshot.to_dict.return_value = {"revision": 1}
+  session_doc_ref = (
+      mock_firestore_client.collection.return_value.document.return_value.collection.return_value.document.return_value.collection.return_value.document.return_value
+  )
+  session_doc_ref.get = mock.AsyncMock(return_value=session_doc_snapshot)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    with pytest.raises(StaleSessionError, match="modified in storage"):
+      await service.append_event(session, event)
+
+  transaction = mock_firestore_client.transaction.return_value
+  transaction.set.assert_not_called()
+  transaction.update.assert_not_called()
 
 
 @pytest.mark.asyncio

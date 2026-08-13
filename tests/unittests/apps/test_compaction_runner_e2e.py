@@ -18,12 +18,19 @@ Exercises the full ``runner.run_async`` path with a mock model, an in-memory
 session service, and token-threshold event compaction.
 """
 
+import asyncio
+from contextlib import suppress
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.apps.app import App
 from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
 from google.adk.runners import Runner
+from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 from google.genai.types import Content
@@ -210,3 +217,102 @@ async def test_runner_appends_sliding_window_compaction_event():
   assert (
       compaction_events
   ), "runner did not append the sliding-window compaction event"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_turn_drops_stale_post_response_compaction():
+  """A newer turn winning storage must not fail an already answered turn."""
+
+  class _BlockingFirstSummarizer(BaseEventsSummarizer):
+
+    def __init__(self):
+      self.first_started = asyncio.Event()
+      self.release_first = asyncio.Event()
+      self.call_count = 0
+
+    async def maybe_summarize_events(self, *, events):
+      self.call_count += 1
+      if self.call_count == 1:
+        self.first_started.set()
+        await self.release_first.wait()
+      compaction = EventCompaction(
+          start_timestamp=events[0].timestamp,
+          end_timestamp=events[-1].timestamp,
+          compacted_content=types.ModelContent(f"summary {self.call_count}"),
+      )
+      return Event(
+          author="compactor",
+          invocation_id=Event.new_id(),
+          content=compaction.compacted_content,
+          actions=EventActions(compaction=compaction),
+      )
+
+  summarizer = _BlockingFirstSummarizer()
+  agent = Agent(
+      name="agent",
+      model=testing_utils.MockModel.create(
+          responses=["answer one", "answer two"]
+      ),
+  )
+  app = App(
+      name="test_app",
+      root_agent=agent,
+      events_compaction_config=EventsCompactionConfig(
+          compaction_interval=1,
+          overlap_size=0,
+          summarizer=summarizer,
+      ),
+  )
+  session_service = DatabaseSessionService("sqlite+aiosqlite:///:memory:")
+  await session_service.create_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+  runner = Runner(app=app, session_service=session_service)
+
+  async def consume(message):
+    return [
+        event
+        async for event in runner.run_async(
+            user_id="u1",
+            session_id="s1",
+            new_message=types.UserContent(message),
+        )
+    ]
+
+  first_turn = None
+  try:
+    first_turn = asyncio.create_task(consume("turn one"))
+    await asyncio.wait_for(summarizer.first_started.wait(), timeout=5)
+
+    second_events = await asyncio.wait_for(consume("turn two"), timeout=5)
+    summarizer.release_first.set()
+    first_events = await asyncio.wait_for(first_turn, timeout=5)
+
+    assert first_events
+    assert second_events
+    assert summarizer.call_count == 2
+    refreshed = await session_service.get_session(
+        app_name="test_app", user_id="u1", session_id="s1"
+    )
+    assert refreshed is not None
+    compaction_events = [
+        event for event in refreshed.events if event.actions.compaction
+    ]
+    assert len(compaction_events) == 1
+    stored_text = [
+        part.text
+        for event in refreshed.events
+        if event.content
+        for part in event.content.parts or []
+        if part.text
+    ]
+    assert "turn one" in stored_text
+    assert "turn two" in stored_text
+  finally:
+    summarizer.release_first.set()
+    if first_turn is not None:
+      if not first_turn.done():
+        first_turn.cancel()
+      with suppress(asyncio.CancelledError, Exception):
+        await first_turn
+    await session_service.close()

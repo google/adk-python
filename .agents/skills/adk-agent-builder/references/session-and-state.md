@@ -1,49 +1,41 @@
-# Session, Memory, and Artifact Patterns
+# Sessions, Artifacts, and Memory
 
-## 📋 Agent Verification Checklist (Session & State)
-Use this checklist when managing state and artifacts:
-- [ ] **State Mutation**: Did you use `ctx.state['key'] = value` instead of reassigning `state = {...}`?
-- [ ] **Instruction Placeholders**: Did you use `{var?}` for variables that might not be in state yet?
-- [ ] **Key Collisions**: In parallel workflows, do state keys have unique names or appropriate prefixes (e.g., `app:`) to prevent overwrites?
+Where data lives beyond a single node: the session store, binary artifacts, and
+long-term memory.
 
-## 💡 Quick Reference (State Keys)
-- **Required**: `{key}` in instructions (raises error if missing).
-- **Optional**: `{key?}` in instructions (empty string if missing).
-- **App Scope**: `app:key` (Shared across agents).
-- **Agent Scope**: `key` (Default, scoped to current agent).
+## State key scopes
 
-## Session State
+A prefix on the key decides how far the value travels and how long it lives.
 
-Session state is a dict that persists across turns within a session.
-Access via `tool_context.state` or instruction placeholders:
+| Key form | Scope |
+|---|---|
+| `key` | This session |
+| `app:key` | The whole app — shared across every session and user |
+| `user:key` | This user, across their sessions |
+| `temp:key` | This invocation only; never persisted |
+
+A `state_schema` on a node validates writes, but prefixed keys bypass that
+validation.
+
+Mutate, do not rebind — `state['key'] = value` records a delta, whereas
+`state = {'key': value}` just rebinds a local name and is lost.
 
 ```python
-# In instruction (template variable substitution)
-instruction = 'Current user: {user_name}'
-
-# In tool
 def my_tool(tool_context: ToolContext):
   tool_context.state['user_name'] = 'Alice'
-
-# In callback
-def before_agent(callback_context):
-  callback_context.state['_time'] = datetime.now().isoformat()
+  tool_context.state['app:feature_flag'] = True
 ```
 
-**State key conventions:**
-- `app:key` -- app-level state (shared across agents)
-- `key` -- agent-level state (scoped to current agent)
-- `_key` -- convention for internal/framework state
-- `{key?}` in instruction -- optional placeholder (empty if missing)
-- `{key}` in instruction -- required placeholder (error if missing)
+In parallel branches, two nodes writing the same key race. Give each branch its
+own key, or write to a shared `app:`-scoped key deliberately.
 
-## Session Services
+## Session services
 
-| Service | Use Case |
-|---------|----------|
-| `InMemorySessionService` | Local dev, testing (default) |
-| `DatabaseSessionService` | Production (SQLite, PostgreSQL) |
-| `VertexAiSessionService` | Vertex AI Agent Engine |
+| Service | Use for | Import |
+|---|---|---|
+| `InMemorySessionService` | local development and tests | `from google.adk.sessions import InMemorySessionService` |
+| `DatabaseSessionService` | production on SQLite or PostgreSQL | `from google.adk.sessions import DatabaseSessionService` |
+| `VertexAiSessionService` | Vertex AI Agent Engine | `from google.adk.sessions import VertexAiSessionService` |
 
 ```python
 from google.adk import Runner
@@ -56,46 +48,44 @@ runner = Runner(
 )
 ```
 
+`DatabaseSessionService` needs the `db` extra (`pip install "google-adk[db]"`).
+It also serializes everything you put in state and in a `JoinNode`'s parked
+inputs, so a non-JSON-serializable value that works in memory fails here.
+
 ## Artifacts
 
-Artifacts store non-textual data (files, images) associated with sessions:
+Artifacts hold bytes — images, files, generated documents — keyed by filename
+and versioned per session.
 
 ```python
 from google.genai import types
 
-# Save from tool
+
 async def save_chart(tool_context: ToolContext):
-  chart_bytes = generate_chart()
-  part = types.Part.from_bytes(data=chart_bytes, mime_type='image/png')
+  part = types.Part.from_bytes(data=generate_chart(), mime_type='image/png')
   version = await tool_context.save_artifact('chart.png', part)
 
-# Load from tool
+
 async def get_chart(tool_context: ToolContext):
   part = await tool_context.load_artifact('chart.png')
   return part.inline_data.data
 ```
 
-## Memory Services
+## Memory
 
-Long-term recall across sessions:
+Memory is recall across sessions, as opposed to state, which is recall within
+one.
 
 ```python
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 
 runner = Runner(
     agent=root_agent,
+    app_name='my_app',
+    session_service=InMemorySessionService(),
     memory_service=InMemoryMemoryService(),
-    ...
 )
 ```
 
-Use `load_memory` and `preload_memory` tools to access memory from
-within agents.
-
-## Common Pitfalls
-
-- **State not persisting:** Assigning to `state` instead of mutating.
-  Use `tool_context.state['key'] = value` (not `state = {'key': value}`).
-- **State overwritten by parallel tools:** Multiple tools modifying same
-  key concurrently. Use unique keys per tool, or `app:` prefix for shared
-  state.
+Agents reach it through the `load_memory` and `preload_memory` tools, or
+directly with `await ctx.search_memory(query)`.

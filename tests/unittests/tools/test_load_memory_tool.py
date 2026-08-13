@@ -99,8 +99,8 @@ async def test_process_llm_request_appends_to_existing_system_instruction():
 
 
 @pytest.mark.asyncio
-async def test_preload_memory_registers_dynamic_instructions():
-  """Test that PreloadMemoryTool registers memory into _dynamic_instructions."""
+async def test_preload_memory_registers_transient_user_content():
+  """Test that PreloadMemoryTool registers memory as transient user content."""
   tool = PreloadMemoryTool()
   tool_context = mock.Mock(spec=ToolContext)
   tool_context.user_content = types.Content(
@@ -125,7 +125,8 @@ async def test_preload_memory_registers_dynamic_instructions():
       tool_context=tool_context, llm_request=llm_request
   )
 
-  assert len(llm_request._dynamic_instructions) == 1
-  assert '<PAST_CONVERSATIONS>' in llm_request._dynamic_instructions[0]
+  assert len(llm_request._dynamic_instructions) == 0
   assert llm_request.config.system_instruction is None
-  assert len(llm_request.contents) == 0
+  assert len(llm_request.contents) == 1
+  assert llm_request.contents[0].role == 'user'
+  assert '<PAST_CONVERSATIONS>' in llm_request.contents[0].parts[0].text

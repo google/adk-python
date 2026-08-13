@@ -54,6 +54,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ..workflow import BaseNode
 from ._retry_options_utils import EnsureRetryOptionsPlugin
 from .app_details import AgentDetails
 from .app_details import AppDetails
@@ -78,9 +79,36 @@ logger = logging.getLogger("google_adk." + __name__)
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"
 
+# Function calls that end the agent and hand off instead of continuing the turn
+# with a tool response, so their `turn_complete` is real. See
+# `_consume_node_events`.
+_TURN_ENDING_FUNCTION_CALLS = frozenset({
+    "finish_task",
+    "transfer_to_agent",
+    "task_completed",
+})
+
 # Chunk size for streaming audio blobs to the Live API.
 # See https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api#technical-specifications
 _AUDIO_CHUNK_BYTES = 16000
+
+# WebSocket close code for a normal (successful) closure.
+_WEBSOCKET_NORMAL_CLOSURE_CODE = 1000
+
+# Live run config shared by all live drivers. Server-side voice-activity
+# detection is disabled so turn boundaries are controlled explicitly via
+# activity markers around the sent audio.
+_LIVE_RUN_CONFIG = RunConfig(
+    streaming_mode=StreamingMode.BIDI,
+    response_modalities=["AUDIO"],
+    output_audio_transcription=types.AudioTranscriptionConfig(),
+    input_audio_transcription=types.AudioTranscriptionConfig(),
+    realtime_input_config=types.RealtimeInputConfig(
+        automatic_activity_detection=types.AutomaticActivityDetection(
+            disabled=True
+        )
+    ),
+)
 
 
 def _send_audio_to_live(
@@ -138,7 +166,7 @@ _APP_KEY = "app"
 
 
 def _build_eval_runner_kwargs(
-    root_agent: BaseAgent,
+    root_agent: BaseAgent | BaseNode,
     app_name: str,
     app: Optional[App],
     internal_eval_plugins: list[BasePlugin],
@@ -209,23 +237,21 @@ class _LiveSession:
   async def _consume_events(self) -> None:
     """Background task: consume events from run_live."""
     try:
-      run_config = RunConfig(
-          streaming_mode=StreamingMode.BIDI,
-          response_modalities=["AUDIO"],
-          output_audio_transcription=types.AudioTranscriptionConfig(),
-          input_audio_transcription=types.AudioTranscriptionConfig(),
-          # Disable server-side voice-activity detection so turn boundaries are
-          # controlled explicitly via activity markers around the sent audio.
-          realtime_input_config=types.RealtimeInputConfig(
-              automatic_activity_detection=types.AutomaticActivityDetection(
-                  disabled=True
-              )
-          ),
-      )
+      # Workflows have no _llm_flow/run_live; drive through Runner.run_live
+      if isinstance(self.runner.agent, BaseNode) and not isinstance(
+          self.runner.agent, BaseAgent
+      ):
+        await self._consume_node_events()
+        return
 
+      run_config = _LIVE_RUN_CONFIG
+
+      # Non-agent nodes are already routed to _consume_node_events above, so the
+      # root here is a BaseAgent and the resolved agent is expected to be an
+      # LlmAgent driven via _llm_flow.
       root_agent = self.runner.agent
       if not isinstance(root_agent, BaseAgent):
-        raise ValueError("Live evaluation requires an agent root node.")
+        raise TypeError("Live evaluation requires a root agent or workflow.")
 
       invocation_context = self.runner._new_invocation_context_for_live(
           self.session,
@@ -234,7 +260,10 @@ class _LiveSession:
       )
       agent_to_run = self.runner._find_agent_to_run(self.session, root_agent)
       if not isinstance(agent_to_run, Agent):
-        raise ValueError("Live evaluation requires an LlmAgent.")
+        raise TypeError(
+            f"Cannot drive {type(agent_to_run).__name__} via the LlmAgent live"
+            " flow."
+        )
       invocation_context.agent = agent_to_run
 
       callback_context = None
@@ -337,6 +366,141 @@ class _LiveSession:
       self.live_finished.set()
       self.turn_complete_event.set()  # Unblock any waiters
 
+  async def _consume_node_events(self) -> None:
+    """Drives a non-Agent `BaseNode` (e.g. `Workflow`) via `Runner.run_live`."""
+    from google.genai import errors
+
+    # TODO: Remove once the live flow fires before/after_model_callback natively.
+    callback_context_by_author = await self._record_node_app_details()
+
+    # Track tool-call turns so the user simulator isn't prompted before the
+    # agent has actually finished responding.
+    in_function_call_loop = False
+
+    try:
+      async with Aclosing(
+          self.runner.run_live(
+              user_id=self.user_id,
+              session_id=self.session_id,
+              live_request_queue=self.live_request_queue,
+              run_config=_LIVE_RUN_CONFIG,
+          )
+      ) as agen:
+        async for event in agen:
+          event.invocation_id = self.current_invocation_id
+          callback_context = callback_context_by_author.get(event.author)
+          if callback_context is not None:
+            await self.runner.plugin_manager.run_after_model_callback(
+                callback_context=callback_context,
+                llm_response=event,
+            )
+          await self.event_queue.put(event)
+          # Terminal/handoff calls end the agent; the next `turn_complete` is
+          # real, so they must not arm the guard.
+          if any(
+              fc.name not in _TURN_ENDING_FUNCTION_CALLS
+              for fc in event.get_function_calls()
+          ):
+            in_function_call_loop = True
+          if event.turn_complete and event.author != _USER_AUTHOR:
+            if not in_function_call_loop:
+              self.turn_complete_event.set()
+            else:
+              in_function_call_loop = False
+    except (ConnectionClosed, errors.APIError) as e:
+      # A clean session close ends the stream; keep the transcript so far
+      # instead of failing the eval case.
+      if not self._is_normal_closure(e):
+        raise
+      logger.info("Ignored WebSocket normal closure exception: %s", e)
+
+  @staticmethod
+  def _is_normal_closure(exc: BaseException) -> bool:
+    """Reports whether an exception is a normal Live WebSocket closure (1000)."""
+    from google.genai import errors
+
+    return isinstance(exc, ConnectionClosedOK) or (
+        isinstance(exc, errors.APIError)
+        and exc.code == _WEBSOCKET_NORMAL_CLOSURE_CODE
+    )
+
+  @staticmethod
+  async def _record_app_details_for_agent(
+      invocation_context: InvocationContext,
+  ) -> CallbackContext:
+    """Records the agent's live request so the autorater can score it.
+
+    By default, live API calls do not fire before_model_callback, but the
+    plugins rely on it to capture the agent instructions and tool declarations
+    that the autorater needs. We run the callback manually here and return the
+    callback context so callers can replay after_model_callback per event.
+
+    TODO: Remove once the live flow fires before/after_model_callback natively.
+    """
+    agent = invocation_context.agent
+    if not isinstance(agent, Agent):
+      raise TypeError(
+          f"Cannot record app details for {type(agent).__name__}; an LlmAgent"
+          " is required."
+      )
+    llm_request = LlmRequest()
+    async with Aclosing(
+        agent._llm_flow._preprocess_async(invocation_context, llm_request)
+    ) as agen:
+      async for _ in agen:
+        pass
+
+    callback_context = CallbackContext(invocation_context)
+    await invocation_context.plugin_manager.run_before_model_callback(
+        callback_context=callback_context,
+        llm_request=llm_request,
+    )
+    return callback_context
+
+  async def _record_node_app_details(self) -> dict[str, CallbackContext]:
+    """Records live requests for each agent in a node graph root.
+
+    Multi-agent node roots serve several agents over one live stream, so we
+    record each agent's request up front and return a {author: callback_context}
+    map the caller uses to fire after_model_callback for each agent's events. A
+    failure for one agent is logged and skipped so it never aborts the eval run.
+
+    Scope: only top-level ``graph.nodes`` agents are recorded; agents nested in
+    sub-workflows or wrapper nodes are covered once native Live callbacks land.
+
+    TODO: Remove once the live flow fires before/after_model_callback natively.
+    """
+    callback_context_by_author: dict[str, CallbackContext] = {}
+
+    graph = getattr(self.runner.agent, "graph", None)
+    if graph is None:
+      return callback_context_by_author
+
+    base_invocation_context = self.runner._new_invocation_context_for_live(
+        self.session,
+        live_request_queue=self.live_request_queue,
+        run_config=_LIVE_RUN_CONFIG,
+    )
+
+    for node in graph.nodes:
+      if not isinstance(node, Agent):
+        continue
+      try:
+        invocation_context = base_invocation_context.model_copy(
+            update={"agent": node}
+        )
+        callback_context_by_author[node.name] = (
+            await self._record_app_details_for_agent(invocation_context)
+        )
+      except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "Failed to record app details for agent %s.",
+            node.name,
+            exc_info=True,
+        )
+
+    return callback_context_by_author
+
   async def __aexit__(
       self,
       exc_type: type[BaseException] | None,
@@ -364,11 +528,7 @@ class _LiveSession:
       # connection is closed with code 1000. Some client libraries may raise an
       # exception rather than handling it silently. We log this as INFO to
       # avoid false-positive error reports for expected behavior.
-      is_normal_closure = isinstance(e, ConnectionClosedOK) or (
-          isinstance(e, errors.APIError) and e.code == 1000
-      )
-
-      if is_normal_closure:
+      if self._is_normal_closure(e):
         logger.info("Ignored WebSocket normal closure exception: %s", e)
       else:
         raise
@@ -576,7 +736,7 @@ class EvaluationGenerator:
 
   @staticmethod
   async def _generate_inferences_from_root_agent_live(
-      root_agent: BaseAgent,
+      root_agent: BaseAgent | BaseNode,
       user_simulator: UserSimulator,
       reset_func: Optional[Callable[[], object]] = None,
       initial_session: Optional[SessionInput] = None,
@@ -698,7 +858,7 @@ class EvaluationGenerator:
 
   @staticmethod
   async def _generate_inferences_from_root_agent(
-      root_agent: BaseAgent,
+      root_agent: BaseAgent | BaseNode,
       user_simulator: UserSimulator,
       reset_func: Optional[Callable[[], object]] = None,
       initial_session: Optional[SessionInput] = None,
