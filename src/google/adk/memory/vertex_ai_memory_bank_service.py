@@ -23,6 +23,7 @@ import logging
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.auth.credentials import Credentials
 from google.genai import types
 from typing_extensions import override
 
@@ -179,6 +180,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       agent_engine_id: Optional[str] = None,
       *,
       express_mode_api_key: Optional[str] = None,
+      credentials: Optional[Credentials] = None,
   ):
     """Initializes a VertexAiMemoryBankService.
 
@@ -195,6 +197,11 @@ class VertexAiMemoryBankService(BaseMemoryService):
         be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true. Do
         not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
+      credentials: The credentials to use when calling the Memory Bank API,
+        e.g. credentials obtained via Workload Identity Federation outside of
+        GCP. If not provided, Application Default Credentials are used.
+        Ignored in Express Mode, which authenticates via
+        express_mode_api_key instead.
     """
     if not agent_engine_id:
       raise ValueError(
@@ -211,6 +218,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
+    self._credentials = credentials
     self._express_mode_api_key = get_express_mode_api_key(
         project, location, express_mode_api_key
     )
@@ -620,7 +628,11 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
     if self._express_mode_api_key:
       return vertexai.Client(api_key=self._express_mode_api_key).aio
-    return vertexai.Client(project=self._project, location=self._location).aio
+    return vertexai.Client(
+        project=self._project,
+        location=self._location,
+        credentials=self._credentials,
+    ).aio
 
 
 def _log_ingest_task_error(task: asyncio.Task[object]) -> None:

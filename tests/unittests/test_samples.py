@@ -14,17 +14,25 @@
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import json
+import logging
 import os
 from pathlib import Path
 import sys
+from typing import Any
+from typing import AsyncIterator
+from typing import Iterator
 
 from google.adk.agents import config_agent_utils
 from google.adk.apps.app import App
 from google.adk.cli.agent_test_runner import test_agent_replay as _test_agent_replay
 from google.adk.cli.utils.agent_loader import AgentLoader
+from google.adk.events import Event
 from google.genai import types
 import pytest
+import requests
 
 CONTRIBUTING_DIR = Path(__file__).parent.parent.parent / "contributing"
 SAMPLES_DIR = CONTRIBUTING_DIR / "samples"
@@ -263,3 +271,215 @@ def test_sample_loads(sample_dir: Path, monkeypatch):
   assert getattr(
       root_agent, "name", None
   ), f"{sample_dir} root agent has no name"
+
+
+@contextlib.contextmanager
+def _sample_module(sample_dir: Path, module_name: str) -> Iterator[Any]:
+  """Imports one module of a sample package and evicts it afterwards."""
+  prefix = sample_dir.name
+  saved_path = list(sys.path)
+  sys.path.insert(0, str(sample_dir.parent))
+  try:
+    yield importlib.import_module(f"{prefix}.{module_name}")
+  finally:
+    sys.path[:] = saved_path
+    for name in list(sys.modules):
+      if name == prefix or name.startswith(prefix + "."):
+        del sys.modules[name]
+
+
+@pytest.mark.parametrize(
+    "failing_issue, expected_exit_code", [(None, 0), (2, 1)]
+)
+async def test_stale_agent_reports_failed_audits(
+    failing_issue: int | None,
+    expected_exit_code: int,
+    monkeypatch,
+    caplog,
+):
+  """The stale agent must not count a failed audit as processed."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+
+  issues = [1, 2, 3]
+  audited: list[int] = []
+
+  class _FakeSession:
+    id = "fake-session"
+
+  class _FakeSessionService:
+
+    async def create_session(
+        self, *, user_id: str, app_name: str
+    ) -> _FakeSession:
+      return _FakeSession()
+
+  class _FakeRunner:
+    """Stands in for InMemoryRunner, failing the audit of one issue."""
+
+    def __init__(self, *, agent: Any, app_name: str) -> None:
+      self.session_service = _FakeSessionService()
+
+    async def run_async(
+        self, *, user_id: str, session_id: str, new_message: types.Content
+    ) -> AsyncIterator[Event]:
+      issue_number = int(new_message.parts[0].text.split("#")[1].rstrip("."))
+      audited.append(issue_number)
+      if issue_number == failing_issue:
+        raise RuntimeError("model backend unavailable")
+      yield Event(
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part(text="No action needed.")]
+          ),
+      )
+
+  with _sample_module(
+      SAMPLES_DIR / "adk_team" / "adk_stale_agent", "main"
+  ) as main_module:
+    monkeypatch.setattr(main_module, "InMemoryRunner", _FakeRunner)
+    monkeypatch.setattr(main_module, "SLEEP_BETWEEN_CHUNKS", 0)
+    monkeypatch.setattr(
+        main_module,
+        "get_old_open_issue_numbers",
+        lambda owner, repo, days_old=None: list(issues),
+    )
+    with caplog.at_level(logging.INFO, logger="google_adk"):
+      exit_code = await main_module.main()
+
+  assert exit_code == expected_exit_code
+  # Every issue is still audited: one failure must not abort the batch.
+  assert sorted(audited) == issues
+  expected_successes = 3 if failing_issue is None else 2
+  assert f"Successfully processed {expected_successes} issues." in caplog.text
+  assert ("Failed to process 1 issues." in caplog.text) == (
+      failing_issue is not None
+  )
+
+
+@pytest.mark.parametrize(
+    "failing_issue, expected_exit_code", [(None, 0), (4, 1)]
+)
+async def test_issue_monitoring_agent_separates_skips_from_failures(
+    failing_issue: int | None,
+    expected_exit_code: int,
+    monkeypatch,
+    caplog,
+):
+  """A skipped issue is not a failure, and a failed one is not a success."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+
+  reviewed: list[int] = []
+
+  class _FakeSession:
+    id = "fake-session"
+
+  class _FakeSessionService:
+
+    async def create_session(
+        self, *, user_id: str, app_name: str
+    ) -> _FakeSession:
+      return _FakeSession()
+
+  class _FakeRunner:
+    """Stands in for InMemoryRunner, failing the audit of one issue."""
+
+    def __init__(self, *, agent: Any, app_name: str) -> None:
+      self.session_service = _FakeSessionService()
+
+    async def run_async(
+        self, *, user_id: str, session_id: str, new_message: types.Content
+    ) -> AsyncIterator[Event]:
+      text = new_message.parts[0].text
+      issue_number = int(text.split("#")[1].split(":")[0])
+      reviewed.append(issue_number)
+      if issue_number == failing_issue:
+        raise RuntimeError("model backend unavailable")
+      yield Event(
+          author="agent",
+          content=types.Content(
+              role="model", parts=[types.Part(text="Not spam.")]
+          ),
+      )
+
+  with _sample_module(
+      SAMPLES_DIR / "adk_team" / "adk_issue_monitoring_agent", "main"
+  ) as main_module:
+    # 1 and 4 are audited, 2 is skipped because the bot already alerted on it,
+    # 3 is skipped because only a maintainer has written on it.
+    details = {
+        n: {"user": {"login": "maintainer"}, "body": "tracking"} for n in (2, 3)
+    }
+    details[1] = {"user": {"login": "outsider"}, "body": "buy things"}
+    details[4] = {"user": {"login": "outsider"}, "body": "buy more things"}
+    comments = {
+        2: [{
+            "user": {"login": main_module.BOT_NAME},
+            "body": main_module.BOT_ALERT_SIGNATURE,
+        }],
+        3: [{"user": {"login": "maintainer"}, "body": "still looking"}],
+    }
+
+    monkeypatch.setattr(main_module, "InMemoryRunner", _FakeRunner)
+    monkeypatch.setattr(main_module, "SLEEP_BETWEEN_CHUNKS", 0)
+    monkeypatch.setattr(
+        main_module,
+        "get_repository_maintainers",
+        lambda owner, repo: ["maintainer"],
+    )
+    monkeypatch.setattr(
+        main_module, "get_target_issues", lambda owner, repo: [1, 2, 3, 4]
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_issue_details",
+        lambda owner, repo, issue_number: details[issue_number],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_issue_comments",
+        lambda owner, repo, issue_number: comments.get(issue_number, []),
+    )
+    with caplog.at_level(logging.INFO, logger="google_adk"):
+      exit_code = await main_module.main()
+
+  assert exit_code == expected_exit_code
+  # Every reviewable issue still reaches the agent: one failure must not abort
+  # the batch.
+  assert sorted(reviewed) == [1, 4]
+  expected_successes = 2 if failing_issue is None else 1
+  assert f"Successfully processed {expected_successes} issues." in caplog.text
+  assert "Skipped 2 issues." in caplog.text
+  assert ("Failed to process 1 issues." in caplog.text) == (
+      failing_issue is not None
+  )
+
+
+@pytest.mark.parametrize(
+    "sample_name, discovery_name",
+    [
+        ("adk_stale_agent", "get_old_open_issue_numbers"),
+        ("adk_issue_monitoring_agent", "get_target_issues"),
+    ],
+)
+def test_issue_discovery_propagates_page_failure(
+    sample_name: str, discovery_name: str, monkeypatch
+):
+  """A search that dies mid-pagination must not look like a short result."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+
+  full_page = [{"number": n} for n in range(1, 101)]
+
+  def _get_request(url: str, params: dict[str, Any] | None = None) -> Any:
+    if (params or {}).get("page", 1) > 1:
+      raise requests.exceptions.ConnectionError("connection reset")
+    return {"items": full_page} if "search" in url else full_page
+
+  with _sample_module(
+      SAMPLES_DIR / "adk_team" / sample_name, "utils"
+  ) as utils_module:
+    monkeypatch.setattr(utils_module, "get_request", _get_request)
+    with pytest.raises(requests.exceptions.ConnectionError):
+      getattr(utils_module, discovery_name)("google", "adk-python")

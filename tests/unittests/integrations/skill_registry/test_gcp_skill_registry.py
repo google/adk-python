@@ -110,6 +110,10 @@ async def test_get_skill_success():
   assert skill.frontmatter.name == "my-skill"
   assert skill.frontmatter.description == "test"
   assert skill.instructions == "# My Skill"
+  assert skill._uri == (
+      "https://agentregistry.googleapis.com/v1alpha/projects/test-project/"
+      "locations/us-central1/skills/my-skill/revisions/rev-123"
+  )
 
   mock_get_called.assert_has_calls([
       mock.call(

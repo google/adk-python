@@ -41,7 +41,7 @@ gcloud eventarc message-buses create my-bus \
 
 Set up environment variables in your `.env` file for using Google AI Studio or Google Cloud Vertex AI for the LLM service. For example:
 
-- `GOOGLE_GENAI_USE_VERTEXAI=FALSE`
+- `GOOGLE_GENAI_USE_ENTERPRISE=FALSE`
 - `GOOGLE_API_KEY={your api key}`
 
 ### With Application Default Credentials

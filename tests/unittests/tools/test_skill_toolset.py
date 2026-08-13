@@ -68,6 +68,7 @@ def _mock_skill1(mock_skill1_frontmatter):
           "list_scripts",
       ]
   )
+  skill._uri = "file:/mydir"
 
   def get_ref(name):
     if name == "ref1.md":
@@ -138,6 +139,7 @@ def _mock_skill2(mock_skill2_frontmatter):
           "list_scripts",
       ]
   )
+  skill._uri = "gs://my-bucket/skill"
 
   def get_ref(name):
     if name == "ref2.md":
@@ -2582,6 +2584,7 @@ async def test_registry_skill_resources_and_tools_resolved(
   mock_skill.resources = mock.MagicMock()
   mock_skill.resources.get_reference.return_value = "reference content"
 
+  mock_skill._uri = None
   mock_registry.get_skill.return_value = mock_skill
 
   # Setup toolset with the registry and the local implementation of the tool

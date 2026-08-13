@@ -36,6 +36,11 @@ from typing_extensions import override
 from . import testing_utils
 from .workflow_testing_utils import simplify_events_with_node
 
+# Upper bound on any wait between workers that are supposed to be running
+# concurrently. Reaching it means they are not, so the waiting test fails on
+# its own assertions rather than blocking until the whole target times out.
+_MAX_WAIT_S = 5.0
+
 
 class _ProducerNode(BaseNode):
   """A node that produces a list of items."""
@@ -330,8 +335,8 @@ async def test_parallel_worker_failure_propagates_and_cancels_others(
 ):
   """One worker failure cancels remaining workers and propagates the exception.
 
-  Setup: 3 items — task-1 completes fast, task-2 fails after delay,
-    task-3 is slow.
+  Setup: 3 items — task-1 completes, task-2 fails once task-1 has finished
+    and task-3 is parked, task-3 waits to be cancelled.
   Assert:
     - task-1 finishes before the failure.
     - task-2's ValueError propagates to the runner.
@@ -343,16 +348,25 @@ async def test_parallel_worker_failure_propagates_and_cancels_others(
 
   tracker = {}
   task_3_done_cancelled = False
+  # The interleaving the assertions below describe is established by handshake
+  # rather than by racing sleeps against each other: task-2 may only fail once
+  # task-1 has finished and task-3 is parked.
+  task_1_done = asyncio.Event()
+  task_3_parked = asyncio.Event()
 
   async def _worker_failable_func(node_input: str) -> AsyncGenerator[Any, None]:
     if node_input == 'task-1':
       yield f'{node_input}_processed'
     elif node_input == 'task-2':
-      await asyncio.sleep(0.05)
+      await asyncio.wait_for(task_1_done.wait(), timeout=_MAX_WAIT_S)
+      await asyncio.wait_for(task_3_parked.wait(), timeout=_MAX_WAIT_S)
       raise ValueError(f'{node_input} failed')
     elif node_input == 'task-3':
+      task_3_parked.set()
       try:
-        await asyncio.sleep(0.1)
+        # Long enough that only the cancellation task-2's failure delivers ends
+        # this wait; sleeping it out instead fails the assertions below.
+        await asyncio.sleep(_MAX_WAIT_S)
       except asyncio.CancelledError:
         nonlocal task_3_done_cancelled
         task_3_done_cancelled = True
@@ -360,6 +374,8 @@ async def test_parallel_worker_failure_propagates_and_cancels_others(
       yield f'{node_input}_processed'
 
     tracker[node_input] = True
+    if node_input == 'task-1':
+      task_1_done.set()
 
   worker = ParallelWorker(node=_worker_failable_func)
 

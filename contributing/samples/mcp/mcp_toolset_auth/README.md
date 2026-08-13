@@ -21,13 +21,13 @@ The toolset authentication flow works in two phases:
 1. Start the MCP server in one terminal:
 
 ```bash
-PYTHONPATH=src python contributing/samples/mcp_toolset_auth/oauth_mcp_server.py
+PYTHONPATH=src python contributing/samples/mcp/mcp_toolset_auth/oauth_mcp_server.py
 ```
 
 2. Run the test script in another terminal:
 
 ```bash
-PYTHONPATH=src python contributing/samples/mcp_toolset_auth/main.py
+PYTHONPATH=src python contributing/samples/mcp/mcp_toolset_auth/main.py
 ```
 
 ## Expected Behavior
@@ -41,7 +41,7 @@ PYTHONPATH=src python contributing/samples/mcp_toolset_auth/main.py
 You can also test with the ADK web UI:
 
 ```bash
-adk web contributing/samples/mcp_toolset_auth
+adk web contributing/samples/mcp/mcp_toolset_auth
 ```
 
 Note: The web UI will display the auth request and you'll need to manually provide credentials.

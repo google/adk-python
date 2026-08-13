@@ -1,110 +1,103 @@
 ---
 name: adk-verify-snippets
-description: >
-  Extracts and verifies the runnability and code coverage of all Python code blocks inside a Markdown file.
-  Generates a detailed compilation and execution report.
-metadata:
-  author: Antigravity
-  version: 1.4.0
+description: >-
+  Checks that every Python code block in a Markdown file actually compiles and
+  runs, by extracting each block to a temporary file, executing it in an
+  isolated subprocess, and writing a pass/fail report with per-snippet
+  coverage. Use when the user asks to verify, test, or validate the code
+  samples in a README, a guide, or a documentation page; wants to know which
+  snippets in a Markdown file are broken or out of date; or asks for a snippet
+  verification report. Don't use for running the project's test suite (run
+  pytest directly), for checking code style or formatting (use `adk-style`),
+  or for authoring a new runnable sample agent (use `adk-sample-creator`).
 ---
 
-# Verify Markdown Snippets Skill
+# Verify Markdown Snippets
 
-This skill extracts all ` ```python ` blocks from a Markdown file, executes each
-one in a process-isolated environment using the bundled `run.py` harness, and
-generates a structured report covering load status, run status, and line
-coverage.
+Extracts every ` ```python ` block from a Markdown file, runs each one in its
+own subprocess via the bundled `run.py` harness, and writes a report covering
+load status, run status, and line coverage per snippet.
 
-> [!CAUTION] **STRICT READ-ONLY CONSTRAINT — READ THIS BEFORE DOING ANYTHING
-> ELSE**
->
-> This skill is **read-only**. The agent **MUST NOT**: - **Modify** any file in
-> the repository (source, test, config, docs, or skill files — including this
-> SKILL.md). - **Delete** any file in the repository. - **Create** any new file
-> in the repository.
->
-> The **only two write operations permitted** are: 1. Writing temporary `.py`
-> snippet files to a **system temp directory outside the repository**. 2.
-> Writing the final `<filename>_REPORT.md` into the **same directory as the
-> source Markdown file**.
->
-> If in doubt, do not write. Any other mutation is a violation of this skill's
-> contract.
+## Read-only contract
 
---------------------------------------------------------------------------------
+Verifying a doc must never change the doc. Do not create, modify, or delete any
+file in the repository — including the Markdown being verified, its code
+blocks, and this SKILL.md. Report the failures; do not fix them and do not
+offer patches.
 
-## 🔧 Prerequisites
+The script performs the only two writes that happen: temporary `.py` files in a
+system temp directory outside the repository (removed when it exits), and the
+report beside the source Markdown file.
 
-1.  **ADK Python environment**: Run from the repository root with the `uv`
-    virtual environment active.
-2.  **`coverage` package** *(optional)*: Enables per-snippet coverage reporting.
-    Without it, coverage columns show `—`.
+## Prerequisites
 
-    ```bash
-    uv pip install coverage
-    ```
+1. An ADK development environment — run from the repository root with the `uv`
+   virtual environment active (see the `adk-setup` skill).
 
-3.  **Gemini API key**: Required only for snippets that instantiate an `Agent`,
-    `App`, or `Workflow` (which make live Gemini API calls). Set one of:
+2. `coverage`, optional. It is not a declared project dependency, so install it
+   explicitly; without it the Coverage column shows `—`.
 
-    ```bash
-    export GEMINI_API_KEY="your-key-here"
-    # or
-    export GOOGLE_API_KEY="your-key-here"
-    ```
+   ```bash
+   uv pip install coverage
+   ```
 
-    If both are set, `GEMINI_API_KEY` takes precedence.
+3. A Gemini API key, needed only for snippets that build an `Agent`, `App`, or
+   `Workflow` — those are executed against the live API.
 
---------------------------------------------------------------------------------
+   ```bash
+   export GEMINI_API_KEY="{your_key}"
+   # or
+   export GOOGLE_API_KEY="{your_key}"
+   ```
 
-## 🛠️ Usage
+   If both are set the harness drops `GOOGLE_API_KEY`, so `GEMINI_API_KEY` wins.
+
+## Usage
 
 ```bash
-uv run --no-sync python .agents/skills/adk-verify-snippets/scripts/verify_md.py <path_to_markdown_file.md>
+uv run --no-sync python .agents/skills/adk-verify-snippets/scripts/verify_md.py {path_to_markdown_file}
 ```
 
-The script prints progress for each snippet, then writes a report to
-**`<filename>_REPORT.md`** in the same directory as the source file and prints
-the full path on completion.
+The script prints per-snippet progress, then writes the report beside the source
+file and prints its full path.
 
-**Report contents:** :- **Executive Summary table** — one row per snippet:
-preceding heading, Load phase status, Run phase status, coverage %, and error
-detail.
+The report filename is the source file's stem lowercased with everything except
+`[a-z0-9_]` stripped, plus `_REPORT.md`. `Workflow-Guide.md` therefore produces
+`workflowguide_REPORT.md`, not `Workflow-Guide_REPORT.md` — read the path the
+script prints rather than reconstructing it.
 
--   **Detailed section** — for each snippet: the extracted code block, full
-    execution logs (stdout + stderr/traceback), and the coverage report.
+The report contains an Executive Summary table with one row per snippet, then a
+detailed section per snippet holding the code block, the execution logs
+(stdout plus stderr/traceback), and the coverage output.
 
---------------------------------------------------------------------------------
+## How each snippet is classified
 
-## 📝 How Snippets Are Classified
+### Runnable — has a module-level ADK component
 
-Each ` ```python ` block falls into one of these categories:
+If the snippet assigns a `Workflow`, `Agent`, or `App` to a module-level
+variable, the harness executes it against the Gemini API.
 
-### 1. Runnability Test (has a module-level ADK component)
+-   The variable name does not matter; the harness scans `vars(module)`.
+-   Precedence is `Workflow`, then root `Agent`, then `App`. A `Workflow`
+    anywhere in the snippet wins over any agent in it.
+-   The root agent is the first agent that appears in no other agent's
+    `sub_agents`, so multi-agent snippets resolve correctly whatever order the
+    agents are defined in.
+-   An `App` must have been constructed with a `root_agent` or the run fails.
+-   The prompt sent is `"Test input topic"`. Override it by defining a
+    module-level `test_input` string in the snippet.
 
-If the snippet assigns a `Workflow`, `Agent`, or `App` to a **module-level
-variable**, the runner executes it against the Gemini API.
+### Load-only — no ADK component
 
--   The variable name does not matter — the runner finds it automatically via
-    `vars(module)`.
--   For multi-agent snippets, the runner identifies the root agent by excluding
-    any agent that appears in another agent's `sub_agents` list.
--   To use a custom test prompt instead of the default `"Test input topic"`,
-    define a module-level `test_input` string in the snippet.
+The harness confirms the snippet compiles and imports, and makes no API call.
+The report shows `➖ NO ADK COMPONENT`.
 
-If no module-level ADK component is found, the run phase is skipped and the
-report shows `➖ NO ADK COMPONENT`.
+### Skipped — annotated with ignore
 
-### 2. Loadability-Only (no ADK component)
-
-The runner verifies the snippet compiles and imports without error. No API call
-is made.
-
-### 3. Skipped (annotated with ignore)
-
-Place `<!-- verify-snippets: ignore -->` immediately before the opening
-` ```python ` fence to exclude a block entirely. Use this for pseudo-code,
-illustrative examples, or snippets that require external setup.
+Put `<!-- verify-snippets: ignore -->` alone on a line immediately before the
+opening ` ```python ` fence to exclude a block. Use it for pseudo-code,
+illustrative fragments, and snippets that need external setup. The report shows
+`⏭️ SKIPPED`.
 
 ````markdown
 <!-- verify-snippets: ignore -->
@@ -114,39 +107,30 @@ my_agent = Agent(model="gemini-ultra-hypothetical", ...)
 ```
 ````
 
-The report shows these as `⏭️ SKIPPED`.
+## Limitations that make correct snippets report as broken
 
---------------------------------------------------------------------------------
+Annotate with `<!-- verify-snippets: ignore -->` instead of editing the doc to
+work around any of these.
 
-## ⚠️ Known Limitations
+-   **No shared state between snippets.** Each snippet runs in a fresh
+    subprocess, so one that relies on an import or variable from an earlier
+    block fails with `NameError` or `ImportError`.
+-   **120-second timeout** per snippet, after which the process is killed and
+    the snippet reports as a run failure.
+-   **Annotation placement.** The annotation applies to the next ` ```python `
+    fence. Blank lines between the two are fine; any prose line or heading
+    between them cancels it.
+-   **A bare ` ``` ` closes the block.** The parser closes a Python block at the
+    first fence carrying no language tag, so a bare fence used as content inside
+    a snippet truncates it. A tagged fence (for example ` ```bash `) is kept as
+    literal content and is safe.
+-   **Module-level `asyncio.run()`** collides with the harness's own event loop
+    and reports as a run failure. Snippets should keep top-level async calls
+    behind `if __name__ == "__main__":`.
 
--   **No shared state between snippets**: Each snippet runs in a fresh
-    subprocess with no imports or variables carried over from previous snippets.
-    A snippet that depends on code from an earlier block will fail with
-    `NameError` or `ImportError`. Make each snippet self-contained, or annotate
-    it with `<!-- verify-snippets: ignore -->`.
--   **120-second timeout**: Each snippet is killed after 120 seconds. Annotate
-    long-running or blocking snippets with `<!-- verify-snippets: ignore -->`.
--   **Ignore annotation placement**: The `<!-- verify-snippets: ignore -->`
-    annotation applies to the next ` ```python ` fence encountered. Blank lines
-    between the annotation and the fence are tolerated, but any non-blank line
-    (prose or a heading) cancels the annotation.
--   **Bare ` ``` ` closes the block**: The parser closes a Python block on the
-    first bare ` ``` ` line (no language tag). A bare ` ``` ` appearing as
-    content inside a snippet (e.g. to demonstrate Markdown syntax) will
-    prematurely close the block. Annotate such snippets with
-    `<!-- verify-snippets: ignore -->`.
+## Reporting back to the user
 
---------------------------------------------------------------------------------
-
-## ⚠️ Behavioral Constraints (For AI Agents)
-
--   **Read-only**: See the caution block at the top. The constraint is absolute.
--   **Report only, do not fix**: The agent MUST NOT rewrite the source Markdown,
-    modify code blocks, or generate patches. Present the summary table to the
-    user and stop.
--   **Present the summary table verbatim**: After the script completes, read the
-    generated `_REPORT.md` and copy the Executive Summary table to the user
-    **exactly as written** — same six columns, same order, no renaming or
-    dropping: `Snippet | Preceding Heading | Load Phase | Run Phase | Coverage |
-    Details`
+Read the generated report and copy the Executive Summary table across exactly as
+written — same six columns, same order, nothing renamed or dropped:
+`Snippet | Preceding Heading | Load Phase | Run Phase | Coverage | Details`.
+Present it and stop.

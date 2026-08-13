@@ -49,7 +49,7 @@ SPOTIFY_3LO_AUTH_PROVIDER = (
 
 MAPS_MCP_ENDPOINT = "https://mapstools.googleapis.com/mcp"
 CONTINUE_URI = "http://localhost:8080/commit"
-MODEL = "gemini/gemini-3.5-flash"
+MODEL = "gemini-3.5-flash"
 
 
 async def spotify_search_track(

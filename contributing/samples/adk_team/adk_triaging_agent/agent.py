@@ -22,28 +22,12 @@ from adk_triaging_agent.utils import error_response
 from adk_triaging_agent.utils import get_request
 from adk_triaging_agent.utils import patch_request
 from adk_triaging_agent.utils import post_request
+from component_owners import LABEL_TO_OWNER
 from google.adk.agents.llm_agent import Agent
 import requests
 
-LABEL_TO_OWNER = {
-    "agent engine": "yeesian",
-    "auth": "xuanyang15",
-    "bq": "shobsi",
-    "cli": "wyf7107",
-    "core": "Jacksunwei",
-    "documentation": "joefernandez",
-    "eval": "ankursharmas",
-    "integrations": "wukath",
-    "live": "wuliang229",
-    "mcp": "wukath",
-    "models": "xuanyang15",
-    "services": "DeanChensj",
-    "skills": "wukath",
-    "tools": "xuanyang15",
-    "tracing": "jawoszek",
-    "web": "wyf7107",
-    "workflow": "DeanChensj",
-}
+# LABEL_TO_OWNER is imported from component_owners and shared verbatim with
+# adk_pr_triaging_agent, so the two can't drift. Keep it in sync with OWNERS.
 
 
 LABEL_TO_GTECH = [

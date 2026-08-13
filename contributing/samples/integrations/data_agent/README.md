@@ -43,7 +43,7 @@ questions in the same session, and the agent will maintain context.
 1. Navigate to the root of the ADK repository.
 1. Run the agent using the ADK CLI:
    ```bash
-   adk run --agent-path contributing/samples/data_agent
+   adk run contributing/samples/integrations/data_agent
    ```
 1. The CLI will prompt you for input. You can ask questions like the examples
    below.

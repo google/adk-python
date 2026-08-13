@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from typing import Optional
@@ -99,6 +100,21 @@ def _sanitize_schema_type(
   )
   if is_array:
     schema.setdefault("items", {"type": "string"})
+
+  effective_type = schema_type
+  if isinstance(schema_type, list):
+    non_null = [t for t in schema_type if t != "null"]
+    effective_type = non_null[0] if non_null else None
+  if effective_type == "string" and isinstance(schema.get("enum"), list):
+    # Gemini rejects non-string enum values on a string-typed field; some
+    # servers emit integer enums on string fields, so render them in their
+    # JSON form. A null member is dropped: nullability is carried by the
+    # schema type, not by an enum entry.
+    schema["enum"] = [
+        v if isinstance(v, str) else json.dumps(v)
+        for v in schema["enum"]
+        if v is not None
+    ]
 
   return schema
 
@@ -187,7 +203,8 @@ def _sanitize_schema_formats_for_gemini(
   supported_fields.discard("additional_properties")
   schema_field_names: set[str] = {"items"}
   list_schema_field_names: set[str] = {
-      "any_of",  # 'one_of', 'all_of', 'not' to come
+      "any_of",
+      "one_of",  # 'all_of', 'not' to come
   }
   snake_case_schema: dict[str, Any] = {}
   dict_schema_field_names: tuple[str, ...] = (
@@ -202,12 +219,25 @@ def _sanitize_schema_formats_for_gemini(
       )
     elif field_name in list_schema_field_names:
       should_preserve = field_name in ("any_of", "one_of")
-      snake_case_schema[field_name] = [
+      sanitized_branches = [
           _sanitize_schema_formats_for_gemini(
               value, preserve_null_type=should_preserve
           )
           for value in field_value
       ]
+      if field_name == "one_of":
+        # Gemini's Schema has no one_of and the conversion drops an unknown
+        # field silently, which would leave the property with no type at all.
+        # Widening to any_of keeps the branch types; the difference is that
+        # any_of also accepts a value matching more than one branch.
+        field_name = "any_of"
+      if field_name == "any_of":
+        # A schema may carry both keywords, in either order, so accumulate
+        # instead of letting whichever comes second win.
+        sanitized_branches = (
+            snake_case_schema.get("any_of", []) + sanitized_branches
+        )
+      snake_case_schema[field_name] = sanitized_branches
     elif field_name in dict_schema_field_names and field_value is not None:
       snake_case_schema[field_name] = {
           key: _sanitize_schema_formats_for_gemini(value)

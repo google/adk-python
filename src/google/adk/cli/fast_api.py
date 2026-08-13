@@ -51,7 +51,6 @@ from ..telemetry._agent_engine import maybe_install_request_metrics_middleware
 from ..telemetry._agent_engine import TopSpanProcessor
 from .api_server import ApiServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
-from .dev_server import DevServer
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_change_handler import AgentChangeEventHandler
@@ -261,7 +260,24 @@ def get_fast_api_app(
   # Instantiate the appropriate server class based on web option
   # If web=True, use DevServer (includes all endpoints: production + dev)
   # If web=False, use ApiServer (production-safe endpoints only)
-  ServerClass = DevServer if web else ApiServer
+  if web:
+    try:
+      from .dev_server import DevServer
+
+      ServerClass = DevServer
+    except ModuleNotFoundError as e:
+      # Fallback to ApiServer if dev_server.py is not available
+      # (e.g., in production packages where dev_server.py is excluded)
+      if e.name and e.name.endswith("dev_server"):
+        logger.warning(
+            "DevServer not found, falling back to ApiServer. "
+            "Debug and evaluation endpoints will not be available."
+        )
+        ServerClass = ApiServer
+      else:
+        raise
+  else:
+    ServerClass = ApiServer
 
   adk_web_server = ServerClass(
       agent_loader=agent_loader,
@@ -604,14 +620,21 @@ def get_fast_api_app(
       output = await _invoke_callable_or_raise(method, parsed.input or {})
 
       if inspect.isgenerator(output):
+        # Sentinel-based exhaustion check. We cannot rely on catching
+        # StopIteration here: when ``next(iterator)`` is called inside the
+        # threadpool worker, the StopIteration propagates out of the
+        # ``run_in_threadpool`` coroutine frame, and Python (PEP 479) converts
+        # it to ``RuntimeError("coroutine raised StopIteration")`` before the
+        # ``except StopIteration`` clause can ever see it. Passing a default to
+        # ``next`` avoids raising at the boundary entirely.
+        _SENTINEL = object()
 
         async def _aiter_from_iter(iterator):
           while True:
-            try:
-              chunk = await run_in_threadpool(next, iterator)
-              yield chunk
-            except StopIteration:
+            chunk = await run_in_threadpool(next, iterator, _SENTINEL)
+            if chunk is _SENTINEL:
               break
+            yield chunk
 
         content_iter = _aiter_from_iter(output)
       else:
