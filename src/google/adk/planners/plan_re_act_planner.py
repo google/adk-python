@@ -102,10 +102,30 @@ class PlanReActPlanner(BasePlanner):
       return text, ''
     return text[: index + len(separator)], text[index + len(separator) :]
 
+  _PLANNING_TAGS = (PLANNING_TAG, REASONING_TAG, ACTION_TAG, REPLANNING_TAG)
+
+  def _strip_leading_planning_tag(self, text: str) -> str:
+    """Strips a leading planning tag from the text, if present.
+
+    Args:
+      text: The text to strip.
+
+    Returns:
+      The text with the leading planning tag removed.
+    """
+    for tag in self._PLANNING_TAGS:
+      if text.startswith(tag):
+        return text[len(tag) :]
+    return text
+
   def _handle_non_function_call_parts(
       self, response_part: types.Part, preserved_parts: list[types.Part]
   ) -> None:
     """Handles non-function-call parts of the response.
+
+    The method strips embedded planning tags (e.g. ``/*PLANNING*/``,
+    ``/*REASONING*/``) from the text so that callers receive clean content
+    blocks instead of raw tagged text.
 
     Args:
       response_part: The response part to handle.
@@ -116,6 +136,11 @@ class PlanReActPlanner(BasePlanner):
       reasoning_text, final_answer_text = self._split_by_last_pattern(
           response_part.text, FINAL_ANSWER_TAG
       )
+      # _split_by_last_pattern includes the separator in the left part; strip
+      # it so the reasoning block contains only the actual reasoning text.
+      if reasoning_text.endswith(FINAL_ANSWER_TAG):
+        reasoning_text = reasoning_text[: -len(FINAL_ANSWER_TAG)]
+      reasoning_text = self._strip_leading_planning_tag(reasoning_text)
       if reasoning_text:
         reasoning_part = types.Part(text=reasoning_text)
         self._mark_as_thought(reasoning_part)
@@ -129,18 +154,15 @@ class PlanReActPlanner(BasePlanner):
     else:
       response_text = response_part.text or ''
       # If the part is a text part with a planning/reasoning/action tag,
-      # label it as reasoning.
+      # label it as reasoning and strip the tag to produce clean text.
       if response_text and (
           any(
               response_text.startswith(tag)
-              for tag in [
-                  PLANNING_TAG,
-                  REASONING_TAG,
-                  ACTION_TAG,
-                  REPLANNING_TAG,
-              ]
+              for tag in self._PLANNING_TAGS
           )
       ):
+        clean_text = self._strip_leading_planning_tag(response_text)
+        response_part = types.Part(text=clean_text)
         self._mark_as_thought(response_part)
       preserved_parts.append(response_part)
 
