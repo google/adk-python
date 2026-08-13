@@ -205,11 +205,13 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
       scripts=scripts,
   )
 
-  return models.Skill(
+  skill = models.Skill(
       frontmatter=frontmatter,
       instructions=body,
       resources=resources,
   )
+  skill._uri = skill_dir.as_uri()
+  return skill
 
 
 def _load_skills_from_dir(
@@ -399,11 +401,12 @@ def _load_skill_from_zip_bytes(zip_bytes: bytes) -> models.Skill:
         scripts=scripts,
     )
 
-    return models.Skill(
+    skill = models.Skill(
         frontmatter=frontmatter,
         instructions=body,
         resources=resources,
     )
+    return skill
 
 
 def _validate_skill_dir(
@@ -673,11 +676,13 @@ def _load_skill_from_gcs_dir(
       scripts=scripts,
   )
 
-  return models.Skill(
+  skill = models.Skill(
       frontmatter=frontmatter,
       instructions=body,
       resources=resources,
   )
+  skill._uri = f"gs://{bucket_name}/{skill_dir_prefix}"
+  return skill
 
 
 async def _load_skill_from_dir_async(

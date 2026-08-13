@@ -21,6 +21,18 @@ This will generate:
 - `client.crt`, `client.key` (Client certificate/key)
 - `certificate_config.json` (Workload certificate configuration for `google-auth`)
 
+### 2. Application Default Credentials
+
+ADK builds the mTLS transport through `google.auth.default()`, so the client also
+needs Application Default Credentials:
+
+```bash
+gcloud auth application-default login
+```
+
+Without them the mTLS setup fails silently: ADK logs a warning, connects with
+plain TLS and no client certificate, and the server rejects the handshake.
+
 ______________________________________________________________________
 
 ## Running the Sample
@@ -51,7 +63,8 @@ cd adk-python
 source .venv/bin/activate
 
 # 1. Combine system CAs with our test CA so the client trusts the server cert
-cat /usr/lib/ssl/cert.pem contributing/samples/mcp/mcp_sse_mtls_agent/ca.crt > combined_ca.pem
+cat "$(python -c 'import ssl; print(ssl.get_default_verify_paths().cafile)')" \
+  contributing/samples/mcp/mcp_sse_mtls_agent/ca.crt > combined_ca.pem
 export SSL_CERT_FILE=$(pwd)/combined_ca.pem
 
 # 2. Point google-auth to our simulated workload config

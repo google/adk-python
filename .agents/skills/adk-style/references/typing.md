@@ -2,53 +2,123 @@
 
 ## General Rules
 
-- **Prefer Strong Typing**: Use type hints for all function arguments and return types. Avoid leaving types unspecified.
-- **Minimize `Any`**: Use specific types or `Generic` whenever possible. Avoid `Any` as it bypasses type checking.
-- **No double-quoted type hints**: When `from __future__ import annotations` is present, use bare type names (e.g., `list[str]` instead of `"list[str]"`).
-- **Always include `from __future__ import annotations`**: Every source file must include this immediately after the license header, before any other imports. This enables forward-referencing classes without quotes (PEP 563).
+- **Annotate everything**: type hints on all function arguments and return
+  types.
+- **Minimize `Any`**: use a specific type or a `TypeVar`. `Any` disables
+  checking for every value that flows through it.
+- **`from __future__ import annotations` goes at the top of every module**
+  under `src/google/adk/`, immediately after the license header and before any
+  other import. `scripts/compliance_checks.py` fails the commit if it is
+  missing. Exempt: `__init__.py`, `version.py`, `tests/`, and
+  `contributing/samples/`.
+- **No quoted type hints.** Deferred annotations make forward references work
+  unquoted, so write `list[str]`, not `"list[str]"`.
+- **Builtin generics** for new code: `list[str]`, `dict[str, int]`,
+  `tuple[str, ...]`. `typing.List` / `typing.Dict` survive in older modules;
+  don't add more, and don't churn existing ones.
+
+## Mypy
+
+Mypy runs in `strict` mode against `src/` with the Pydantic plugin, targeting
+Python 3.11 (`[tool.mypy]` in `pyproject.toml`). `tests/` and
+`contributing/samples/` are excluded.
+
+```bash
+mypy .
+```
+
+The CI job compares your branch's errors against the base branch and fails
+only on **new** ones, so a pre-existing error in a file you touched is not
+your problem — an error on a line you added is.
 
 ## `Optional[X]` vs `X | None`
 
-The codebase uses both styles. Follow this convention:
+Both appear in the codebase. Follow this convention:
 
-- **New code** (especially in `workflow/`): Prefer `X | None` — it is more concise and modern.
-- **Existing files**: Match the style already used in the file for consistency.
-- **Both are acceptable** — do not refactor one to the other without reason.
-
+- **New code** (especially in `workflow/`): prefer `X | None`.
+- **Existing files**: match the style already in the file.
+- Do not refactor one into the other without a reason.
 
 ## Abstract Types for Function Parameters
 
-Use abstract types from `collections.abc` for function parameter annotations. This accepts the widest range of inputs while remaining type-safe. Use concrete types for return annotations to give callers the most useful information.
+Annotate parameters with abstract types from `collections.abc` so callers can
+pass any compatible container; annotate returns with the concrete type so
+callers know exactly what they get.
 
+```python
+from collections.abc import Mapping
+from collections.abc import Sequence
 
+def merge_labels(
+    labels: Mapping[str, str], extra: Sequence[str]
+) -> dict[str, str]:
+  ...
+```
 
 ## Keyword-Only Arguments
 
-Use `*` to force keyword-only arguments on functions with multiple parameters of the same type, or where argument order is error-prone. This is a widely used pattern in ADK (16+ files).
+Put `*` before the parameters of any constructor or function where argument
+order is easy to get wrong — two parameters of the same type is enough for a
+silent bug.
 
+```python
+class NodeRunner:
 
-**When to use `*`:**
-- Constructors (`__init__`) with 2+ non-self parameters
-- Any function where swapping arguments would silently produce wrong results
-- Methods with multiple `str` or `int` parameters
+  def __init__(
+      self,
+      *,
+      node: BaseNode,
+      parent_ctx: Context,
+      run_id: str | None = None,
+  ):
+    ...
+```
+
+Use it for: constructors with 2+ non-`self` parameters, any function where
+swapping two arguments would still typecheck, and methods taking several
+`str` or `int` parameters.
 
 ## Mutable Default Arguments
 
-**Never use mutable default arguments.** Use `None` as a sentinel and initialize in the function body. This is a well-followed pattern throughout ADK.
+A mutable default is evaluated once at definition time and shared by every
+call, so one caller's mutation leaks into the next. Use `None` as a sentinel:
 
+```python
+# Bad — every caller shares one list.
+def add(item: str, items: list[str] = []) -> list[str]:
+  ...
+
+# Good
+def add(item: str, items: list[str] | None = None) -> list[str]:
+  items = list(items) if items else []
+  ...
+```
 
 This applies to `list`, `dict`, `set`, and any other mutable type.
 
 ## Runtime Type Discrimination with `isinstance()`
 
-Use `isinstance()` for runtime type discrimination when handling polymorphic inputs. This is pervasive in ADK (700+ usages). Prefer exhaustive `if/elif` chains with a clear fallback.
+`isinstance()` is the codebase's standard way to handle polymorphic input.
+Write exhaustive `if`/`elif` chains and always terminate them:
 
+```python
+if isinstance(node, FunctionNode):
+  ...
+elif isinstance(node, (JoinNode, ToolNode)):
+  ...
+else:
+  raise TypeError(f'Unsupported node type: {type(node)}')
+```
 
-**Guidelines:**
-- Always include an `else` branch that raises `TypeError` or handles the unknown case.
-- Prefer `isinstance(x, SomeType)` over `type(x) is SomeType` — it handles subclasses correctly.
-- For checking multiple types: `isinstance(x, (TypeA, TypeB))`.
+- Always include an `else` that raises `TypeError` or handles the unknown
+  case, so a new subclass fails loudly instead of silently doing nothing.
+- Prefer `isinstance(x, SomeType)` over `type(x) is SomeType` — it handles
+  subclasses.
+- Check several types at once with a tuple: `isinstance(x, (TypeA, TypeB))`.
 
 ## No Asserts in Production Code
 
-**Never use `assert` statements in production code.** They can be optimized away when Python runs with `-O` flags and provide poor error messages. Use specific exceptions like `ValueError`, `TypeError`, or `RuntimeError` instead.
+`assert` is stripped when Python runs with `-O`, so an assertion is not a
+runtime guarantee, and its failure message tells the caller nothing. Raise
+`ValueError`, `TypeError`, or `RuntimeError` instead. Asserts in tests are
+fine.

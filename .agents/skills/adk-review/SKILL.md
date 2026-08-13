@@ -1,83 +1,118 @@
 ---
 name: adk-review
-description: Reviews all local changes in the repository for errors, styling compliance, unintended outcomes, and necessary documentation/test/sample updates. Generates a report and assists in fixing identified issues on-demand. Triggers on "adk-review", "review changes", "pr review", "check code style", "verify changes".
+description: >-
+  Reviews the uncommitted changes in an adk-python working tree and reports
+  correctness, design, public-API stability, test, sample and documentation
+  gaps as a prioritized findings report, fixing them only when asked. Use when
+  the user asks to review local changes, wants a self-review before opening a
+  pull request, asks whether a change breaks the public API or needs tests,
+  samples or docs, or asks what is wrong with the current diff. Required for
+  changes to public APIs, core architecture (Runner, Workflow, BaseNode), new
+  features and major refactors. Don't use for a single style nit (use
+  adk-style), for diagnosing a failing test or a misbehaving agent at runtime
+  (use adk-debug), or for wording a commit message or PR description (use
+  adk-git).
 ---
 
-# ADK Change Reviewer (adk-review)
+# ADK Change Reviewer
 
-This skill guides AI assistants in performing a comprehensive, rigorous review of local repository changes before they are committed or submitted. It evaluates code correctness, style guidelines, architectural impact, and checks if associated tests, samples, and documentation need updates. It generates a detailed report and, upon explicit user request, assists in automatically fixing the identified issues.
+Review the working-tree diff against the seven dimensions below, report what is
+wrong, and stop. Fix only what the user then asks you to fix.
 
-> [!NOTE]
-> Always read this skill and follow its steps when asked to review local changes or before finalizing a PR/commit.
+## Workflow
 
----
+1. `git status` and `git diff` (add `--staged` for staged work) to get the exact
+   set of added, modified, and deleted files.
+2. Review the diff file by file against the checklist.
+3. Emit the report in the format below.
+4. Stop. Do not edit any file, and do not offer to. Wait for the user to ask.
+5. If the user asks for fixes, apply them, then re-run the affected tests
+   (`pytest tests/unittests/{path}`) and `pre-commit run --files {paths}`.
 
-## Review Checklist Dimensions
+Step 4 is the part that is easy to get wrong: an unrequested fix buries the
+findings the user asked for and mixes review output with new, unreviewed edits.
 
-### 1. Code Correctness & Errors
-- **Syntax & Types**: Ensure the code is free of syntax errors and conforms to strong typing guidelines. Avoid using `Any`, and prefer specific/abstract types. Use `X | None` instead of `Optional[X]`.
-- **Imports**: Verify there are no circular imports. Ensure absolute imports are used where appropriate.
-- **Exception Handling**: Avoid bare `except:`. Always catch specific exceptions and log them properly with context.
-- **Visibility**: Ensure internal modules and package-private attributes use proper naming (e.g., prefixed with `_`) per ADK rules.
-- **Edge Cases & Defensive Programming**:
-  - **Type & Attribute Discrimination**: Explicitly verify an object's type (e.g., using `isinstance`) before checking type-specific or custom attributes (e.g., checking if a node is an `LlmAgent` before inspecting its `mode`), avoiding errors on unexpected types.
-  - **Boundary and Null Conditions**: Ensure robust handling for boundary conditions and null values (e.g., `None`, empty collections, zero, or empty strings) using validation or fallback defaults.
-  - **Preconditions & Invariants**: Validate that preconditions and state invariants are checked before performing core logic.
+## Checklist
 
-### 2. Code Quality & Design
-- **Complexity & Readability**: Identify overly complex functions or classes. Suggest refactoring (e.g., splitting functions, extracting helper classes) to improve readability and maintainability. Ensure code is self-documenting.
-- **Design Patterns**: Check if appropriate design patterns are used. Avoid anti-patterns. Ensure high cohesion and low coupling.
-- **Performance & Efficiency**: Look for performance bottlenecks, such as unnecessary database queries, redundant computations, inefficient loops, or excessive memory allocation.
-- **Security & Privacy**: Verify that inputs are validated, sensitive data is handled securely, and there are no potential security vulnerabilities (like injection, resource exhaustion, or exposure of internal state).
+### 1. Correctness
 
-### 3. Style and Convention Compliance
-- **ADK Style Guide**: Cross-reference all code changes with the guidelines in the `adk-style` skill (including Pydantic v2 patterns, lazy logging evaluation, and file structure).
-- **Pre-commit Hooks**: Ensure changed files are formatted and linted. Remind the user to run `pre-commit run --files <files>` if hooks like `isort`, `pyink`, `addlicense`, or `mdformat` are not configured automatically.
+- **Types**: no new `mypy` errors. CI diffs `mypy` output against the base
+  branch and fails only on *newly introduced* errors, so a pre-existing error in
+  a file you touched is not a blocker but a new one is.
+- **Imports**: no circular imports; absolute imports where the module already
+  uses them.
+- **Exceptions**: no bare `except:`; catch a specific type and log with enough
+  context to identify the caller.
+- **Type discrimination**: check an object's type before reading a
+  type-specific attribute (for example confirm a node is an `LlmAgent` before
+  inspecting `mode`), so an unexpected node type raises nothing.
+- **Boundaries**: `None`, empty collections, zero, and empty strings are
+  handled by validation or a fallback default.
+- **Preconditions**: state invariants are checked before the core logic runs.
 
-### 4. Architectural Integrity & Unintended Outcomes
-- **Public API Stability**: Verify whether changes modify, remove, or restrict public-facing interfaces, classes, methods, argument lists, or CLI structures (e.g., in the public package namespaces under `src/google/adk/`). Breaking changes are unacceptable without a formal deprecation cycle under Semantic Versioning.
-- **Execution & Resumption**: If changing workflows, nodes, or state management, ensure compatibility with the ADK 2.0 event execution lifecycle and session resumption (HITL/checkpoints).
-- **Concurrency & Safety**: Check for race conditions or resource leaks. Ensure long-running or shared resources (like plugins, exporters, and connections) are closed/disposed of safely.
+### 2. Design
 
-### 5. Documentation Impact (`docs/design` and `docs/guides`)
-- **Design & Architecture**: Determine if the change updates a core design contract. If so, check if design docs under `docs/design/` require updates or new documents need to be written.
-- **Guides**: If the changes introduce a new feature or change a public API/workflow pattern, check if the guides under `docs/guides/` need updates.
+- **Complexity**: functions or classes that would be clearer split up.
+- **Coupling**: high cohesion, low coupling; no anti-patterns introduced.
+- **Performance**: redundant computation, repeated I/O in a loop, or
+  allocations that scale with input where they need not.
+- **Security**: inputs validated, sensitive data not logged, no injection,
+  resource exhaustion, or exposure of internal state.
 
-### 6. Sample Compatibility & Updates
-- **Sample Integrity**: Verify if existing samples under `contributing/samples/` are affected by the change.
-- **New Samples**: If the changes introduce a key new capability, assess whether a new sample should be added to demonstrate the feature (following `adk-sample-creator` conventions).
+### 3. Style
 
-### 7. Test Coverage & Quality
-- **Coverage**: Ensure that all modified or new code paths have corresponding unit or integration tests under `tests/`.
-- **ADK Test Rules**: Ensure test implementations adhere to the 9 rules in the `adk-style` testing reference (e.g., using deterministic IDs, event normalization, and clean up utilities).
+Cross-reference the diff against the `adk-style` skill rather than restating
+its rules here: visibility and `_` prefixes, typing, Pydantic v2 patterns, lazy
+logging, imports, async, and file organization.
 
----
+Confirm the changed files pass `pre-commit run --files {paths}`.
 
-## Execution Workflow
+### 4. Architecture and unintended outcomes
 
-When the `adk-review` skill is triggered, you MUST execute the following steps:
+- **Public API stability**: does the change modify, remove, or narrow a
+  public interface, class, method, argument list, or CLI surface under
+  `src/google/adk/`? A breaking change needs a deprecation cycle first, because
+  the package is released under Semantic Versioning and users pin minor
+  versions.
+- **Execution and resumption**: changes to workflows, nodes, or state must stay
+  compatible with the event execution lifecycle and with session resumption
+  (human-in-the-loop steps and checkpoints). See the `adk-architecture` skill.
+- **Concurrency and lifetime**: no race conditions; plugins, exporters, and
+  connections are closed on every path, including the error path.
 
-### Step 1: Retrieve Local Changes
-Run `git status` and `git diff` to identify exactly which files have been modified, added, or deleted.
+### 5. Documentation impact
 
-### Step 2: Perform the Multi-Dimensional Review
-Analyze the retrieved diffs file-by-file against the seven dimensions in the Checklist. Identify any errors, deviations, or missing files (such as docs, tests, or samples).
+- User-facing documentation lives in the separate `adk-docs` repository, so a
+  user-visible change needs a PR there as well; note it in the report.
+- Guides under `docs/guides/` may need an update when a public API or workflow
+  pattern changes.
+- If the change alters a code unit's design contract, the `adk-unit-design`
+  skill owns the design document for that unit.
 
-### Step 3: Generate and Present a Review Report
-Generate a clear, beautifully formatted Markdown report categorized by priority:
-- 🔴 **Critical Errors, Bugs, & Security**: Syntax, type safety violations, race conditions, resource leaks, or security vulnerabilities.
-- 🟠 **Code Quality & Design**: High complexity, poor readability, performance bottlenecks, or architectural misalignment.
-- 🟡 **Style & Conventions**: Lints, formatting issues, non-lazy logging, or minor typing mismatches.
-- 🔵 **Documentation, Tests, & Samples**: Missing or stale test coverage, design docs, or user guides.
+### 6. Samples
 
-Include the specific filename and line number/context for each finding.
+- Do existing samples under `contributing/samples/` still run against the
+  change?
+- Does a new capability warrant a new sample? Follow the `adk-sample-creator`
+  conventions if so.
 
-### Step 4: Present Findings and Stop
-Stop execution here. Do **NOT** call any code editing tools or modify the codebase automatically. Present the generated review report clearly to the user, highlighting key takeaways, and stop.
+### 7. Tests
 
-Do **NOT** ask the user if they want you to fix the issues, and do **NOT** offer interactive fixing options by default. Simply stop and wait for the user to explicitly command or ask you to fix the changes.
+- Every new or modified code path has a test under `tests/unittests/`.
+- A new test belongs in the existing `test_{module}*.py` file for its unit, not
+  in a file named after the change, which fragments that unit's coverage.
+- Tests follow the rules in the `adk-style` testing reference: one behavior per
+  test, behavior-named tests, no assertions on private attributes, minimal
+  fixtures, arrange/act/assert structure.
 
-### Step 5 (Optional): Implement Authorized Fixes & Verify
-If, and only if, the user explicitly instructs or requests you to apply a fix for some or all of the identified findings:
-1. Perform the necessary edits using precise code editing tools. Ensure all fixes strictly comply with the established `adk-style` and `adk-architecture` rules.
-2. Verify correctness by running associated unit and integration tests (e.g., via `pytest` or pre-commit hooks) before concluding.
+## Report format
+
+Group findings by priority and give a file path and line for each. Do not
+report a dimension with nothing to say.
+
+- 🔴 **Critical**: bugs, type errors, race conditions, resource leaks, security
+  issues.
+- 🟠 **Design**: complexity, readability, performance, architectural
+  misalignment.
+- 🟡 **Style**: lint, formatting, non-lazy logging, typing mismatches.
+- 🔵 **Docs, tests, samples**: missing or stale coverage, guides, samples.

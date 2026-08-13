@@ -41,8 +41,10 @@ dependencies = [
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
-  "opentelemetry-api>=1.39,<=1.42.1",
-  "opentelemetry-sdk>=1.39,<=1.42.1",
+  # Ceilinged because ADK builds on the unstable logs API (opentelemetry._logs
+  # and opentelemetry.sdk._logs), which carries no compatibility guarantee.
+  "opentelemetry-api>=1.39,<=1.43",
+  "opentelemetry-sdk>=1.39,<=1.43",
   "packaging>=21",
   "pydantic>=2.12,<3",
   "python-dotenv>=1,<2",
@@ -137,6 +139,14 @@ optional-dependencies.antigravity = [
 optional-dependencies.benchmark = [
   "google-benchmark>=1.9",
 ]
+# Everything BigQueryAgentAnalyticsPlugin needs. Separate from gcp because
+# pyarrow is a third of that extra's install size and only this plugin uses it.
+optional-dependencies.bigquery-analytics = [
+  "google-cloud-bigquery>=2.2",
+  "google-cloud-bigquery-storage>=2",
+  "google-cloud-storage>=2.18,<4",
+  "pyarrow>=14",
+]
 optional-dependencies.community = [
   "google-adk-community",
 ]
@@ -228,7 +238,6 @@ optional-dependencies.gcp = [
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
-  "pyarrow>=14",
   "python-dateutil>=2.9.0.post0,<3",
 ]
 optional-dependencies.mcp = [

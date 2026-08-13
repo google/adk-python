@@ -46,13 +46,13 @@ You can run this agent using the ADK CLI from the root of the repository.
 To interact with the agent through the command line:
 
 ```bash
-adk run contributing/samples/vertex_code_execution "Plot a sine wave from 0 to 10"
+adk run contributing/samples/code_execution/vertex_code_execution "Plot a sine wave from 0 to 10"
 ```
 
 To use the web interface:
 
 ```bash
-adk web contributing/samples/
+adk web contributing/samples/code_execution/
 ```
 
 Then select `vertex_code_execution` from the list of agents and interact with

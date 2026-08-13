@@ -1,80 +1,107 @@
 ---
 name: adk-sample-creator
-description: Author new samples for the ADK Python repository. Use this skill when the user wants to create a new sample demonstrating a feature or agent pattern (e.g., dynamic nodes, standalone agents, fan-out/fan-in) or when adding examples to subdirectories under `contributing/`.
+description: >-
+  Creates a new sample agent in the ADK Python repository — the sample
+  directory, its `agent.py`, and its `README.md` — following the conventions
+  the existing samples already use. Use when the user wants to add a sample or
+  example demonstrating a feature or agent pattern (dynamic nodes,
+  fan-out/fan-in, a standalone tool-using agent), asks where a new sample
+  belongs under `contributing/samples/`, or wants an existing sample's README
+  brought up to the standard structure. Don't use for building a real working
+  agent for the user's own project (use `adk-agent-builder`), or for checking
+  whether the Python blocks in a Markdown file run (use `adk-verify-snippets`).
 ---
 
 # ADK Sample Creator
 
-This skill helps you create new samples for the ADK Python repository. You should search for subdirectories under `contributing` (such as `new_workflow_samples`, `workflow_samples`, etc.) and confirm with the user which folder they want to use before creating the sample.
+Creates samples under `contributing/samples/`. These are deliberately minimal
+agents that each exercise one or two features — distinct from the `adk-samples`
+repository, which hosts full end-to-end applications.
 
-> [!TIP]
+Read the `adk-style` skill first for ADK 2.0 conventions if you have not
+already.
 
-> Before creating samples, you can use the `adk-style` skill to learn about ADK 2.0 architecture knowledge and best practices.
+## 1. Pick the category directory
 
-A sample consists of:
+Almost every sample lives at
+`contributing/samples/{category}/{sample_name}/`. List the categories and
+confirm with the user which one the sample belongs in before creating
+anything — a workflow sample landing outside `workflows/` is the usual mistake.
 
-1.  A directory per sample.
-2.  An `agent.py` file defining the agent or workflow logic.
-3.  A `README.md` file explaining the sample.
+```bash
+ls contributing/samples/
+```
 
-## Guidelines
+Categories include `workflows`, `patterns`, `core`, `multi_agent`, `tools`,
+`models`, `live`, `mcp`, `a2a`, `evaluation`, and `plugins`. A handful of
+samples nest one level further when a single feature needs several variants, as
+`plugins/plugin_reflect_tool_retry/basic/` does.
 
-### 1. Folder Name
+Name the sample directory in `snake_case`: `dynamic_nodes`, `fan_out_fan_in`.
 
-Use snake_case for the folder name (e.g., `dynamic_nodes`, `fan_out_fan_in`).
+## 2. Write `agent.py`
 
-### 2. `agent.py` Content
+Contents of a sample directory:
 
-The `agent.py` should focus on demonstrating a specific feature or agent pattern. Use absolute imports for testing convenience.
+| File | Required | Purpose |
+| --- | --- | --- |
+| `agent.py` | yes | The agent or workflow. Must expose `root_agent`. |
+| `README.md` | yes | See [readme-template.md](references/readme-template.md). |
+| `__init__.py` | sometimes | Present when the sample is imported as a package. |
+| `tests/*.json` | no | Recorded sessions used as eval sets. |
 
-> [!IMPORTANT]
-> **Model Selection**: Do not set the `model` parameter explicitly (e.g., `model="gemini-2.5-flash"`) on `Agent` instances in sample agents. Instead, let them default to the system-configured model, unless a specific model is explicitly requested by the user.
+Use absolute imports so the file can be run and imported directly.
 
-Choose one of the following patterns:
+Do not set `model=` on `Agent` instances. Samples inherit the
+system-configured model, which keeps them working when the default model
+changes; hardcoding `model="gemini-2.5-flash"` pins the sample to a model that
+will be retired. Set it only when the user explicitly asks for a specific model.
 
-#### Pattern A: Workflows (for complex graphs)
+Then pick one of the two shapes.
 
-Use this when you need multiple nodes, routing, or parallel execution.
+### Pattern A — Workflow, for multi-step graphs
 
-**Imports:**
+Use when the sample needs multiple nodes, routing, or parallel execution.
 
 ```python
 from google.adk import Agent
 from google.adk import Context
-from google.adk.workflow import node
+from google.adk import Event
+from google.adk import Workflow
 from google.adk.workflow import JoinNode
-from google.adk.workflow._workflow_class import Workflow
+from google.adk.workflow import node
 ```
 
-**Anatomy:**
+Import `Workflow` from `google.adk`, not from a private
+`google.adk.workflow._*` module.
 
 ```python
-my_agent = Agent(name="my_agent", ...)
+my_agent = Agent(name="my_agent", instruction="...")
+
 
 @node()
-async def my_node(node_input: str):
-    return "result"
+async def my_node(node_input: str) -> str:
+  return "result"
+
 
 root_agent = Workflow(
-    name="root_wf",
+    name="root_agent",
     edges=[("START", my_node)],
 )
 ```
 
-#### Pattern B: Standalone Agents (for single-agent or simple tool use)
+A plain function can be used as a node directly in `edges`; reach for the
+`@node(...)` decorator when you need one of its options, such as
+`rerun_on_resume=True` for a node that calls `ctx.run_node`.
 
-Use this when you don't need a graph and the agent handles the loop.
+### Pattern B — Standalone agent, for single-agent or simple tool use
 
-**Imports:**
+Use when there is no graph and the agent drives its own loop.
 
 ```python
 from google.adk import Agent
-from google.adk.tools import google_search  # example
-```
+from google.adk.tools import google_search
 
-**Anatomy:**
-
-```python
 root_agent = Agent(
     name="standalone_assistant",
     instruction="You are a helpful assistant.",
@@ -83,75 +110,44 @@ root_agent = Agent(
 )
 ```
 
-### 3. `README.md` Content
+## 3. Write `README.md`
 
-Each sample should have a `README.md` with the following structure:
+Follow [readme-template.md](references/readme-template.md) — section order,
+prompt formatting, the Mermaid topology rules, and the relative link depth for
+`docs/guides/`.
 
-- **Overview**: What the sample does.
-- **Sample Inputs**: Examples of inputs to test with. Each prompt must be wrapped in backticks. If a prompt has an explanation, always add a blank line between the prompt and the explanation, and indent the explanation by two spaces.
-- **Graph**: Visualization of the graph flow (Mermaid recommended). For Workflow root agents, visualize the graph flow of nodes. For agents that orchestrate tools or sub-agents (e.g., `LlmAgent`, `ManagedAgent`), visualize the topology of the agent and its tools/sub-agents instead of internal workflow nodes. Keep it a simple topology diagram (a few nodes and edges). Do **not** draw a request/response data-flow sequence (e.g., `user -> agent -> API -> tool -> ... -> user`); those are noisy and add little value over the topology.
-- **How To**: Explanation of key techniques used (e.g., `ctx.run_node`).
-- **Related Guides**: Links to relevant developer guides in `docs/guides/` that explain the concepts or classes used.
+## Worked examples
 
-#### README Example Template:
+Read these two before writing a new Pattern A sample — one dynamic graph, one
+static one.
 
-````markdown
-# ADK Sample Name
+-   `contributing/samples/workflows/dynamic_nodes/agent.py` — a Python node
+    driving a `while` loop with `ctx.run_node`, so the number of agent calls is
+    decided at runtime rather than by the edges.
 
-## Overview
+    ```python
+    @node(rerun_on_resume=True)
+    async def orchestrate(ctx: Context, node_input: str) -> str:
+      yield Event(state={"topic": node_input})
 
-Brief description.
-
-## Sample Inputs
-
-- `Prompt example 1`
-
-- `Prompt example 2`
-
-  *Explanation or expected behavior*
-
-## Graph
-
-For Workflow root agents:
-```mermaid
-graph TD
-    START --> MyNode
-```
-
-For agents that orchestrate tools or sub-agents (`LlmAgent`, `ManagedAgent`, ...):
-```mermaid
-graph TD
-    MyAgent[my_agent] -->|calls| MyTool(my_tool)
-```
-
-## How To
-
-Explain the details.
-
-## Related Guides
-
-- [Guide Title](../../docs/guides/path/to/guide.md) - Brief description of what the guide covers.
-````
-
-## Examples
-
-### Dynamic Nodes
-Snippet from `dynamic_nodes/agent.py`:
-```python
-@node(rerun_on_resume=True)
-async def orchestrate(ctx: Context, node_input: str) -> str:
-    while True:
+      while True:
         headline = await ctx.run_node(generate_headline)
         # ...
-````
+    ```
 
-### Fan Out Fan In
+-   `contributing/samples/workflows/fan_out_fan_in/agent.py` — three functions
+    run in parallel from `START`, collected by a `JoinNode`, then aggregated.
 
-Snippet from `fan_out_fan_in/agent.py`:
+    ```python
+    join_node = JoinNode(name="join_for_results")
 
-```python
-root_agent = Workflow(
-    name="root_agent",
-    edges=[("START", (node_a, node_b), join_node, aggregate)],
-)
-```
+    root_agent = Workflow(
+        name="root_agent",
+        edges=[(
+            "START",
+            (make_uppercase, count_characters, reverse_string),
+            join_node,
+            aggregate,
+        )],
+    )
+    ```

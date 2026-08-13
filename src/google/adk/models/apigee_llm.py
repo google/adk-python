@@ -62,6 +62,28 @@ _CUSTOM_METADATA_FIELDS = (
 
 _REFUSAL_PREFIX = '[[REFUSAL]]: '
 
+# Timeouts, in seconds, for the completions HTTP client. httpx applies no
+# timeout at all unless one is given, so a stalled proxy would otherwise hold
+# the connection and the streaming loop open indefinitely.
+_CONNECT_TIMEOUT_SECONDS = 30.0
+_REQUEST_TIMEOUT_SECONDS = 600.0
+
+
+def _httpx_timeout(timeout_seconds: Optional[float] = None) -> httpx.Timeout:
+  """Returns the httpx timeout budget for a completions request.
+
+  A bare float would spend the caller's whole budget on the connect phase too,
+  so the connect budget is always kept short enough to fail fast on an
+  unreachable proxy.
+
+  Args:
+    timeout_seconds: The total budget for the request, or None for the default.
+  """
+  return httpx.Timeout(
+      _REQUEST_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds,
+      connect=_CONNECT_TIMEOUT_SECONDS,
+  )
+
 
 class ApigeeLlm(Gemini):
   """A BaseLlm implementation for calling Apigee proxy.
@@ -437,8 +459,8 @@ class CompletionsHTTPClient:
     client = httpx.AsyncClient(
         base_url=self._base_url,
         headers=self._headers,
-        timeout=None,
-        follow_redirects=True,
+        timeout=_httpx_timeout(),
+        follow_redirects=False,
     )
     atexit.register(self._cleanup_client, client)
     return client
@@ -573,7 +595,7 @@ class CompletionsHTTPClient:
     async for attempt in tenacity.AsyncRetrying(**retry_kwargs):
       with attempt:
         response = await self._client.post(
-            url, json=payload, headers=headers, timeout=timeout
+            url, json=payload, headers=headers, timeout=_httpx_timeout(timeout)
         )
         response.raise_for_status()
         return response
@@ -594,7 +616,7 @@ class CompletionsHTTPClient:
         url,
         json=payload,
         headers=headers,
-        timeout=timeout,
+        timeout=_httpx_timeout(timeout),
     ) as resp:
       resp.raise_for_status()
       async for line in resp.aiter_lines():

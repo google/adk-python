@@ -2802,6 +2802,127 @@ tools:
   assert "args" in response.json()["detail"]
 
 
+def _save_builder_yaml(client, content, *, app_name="app"):
+  """POST YAML to the builder save endpoint for the given app."""
+  return client.post(
+      f"/dev/apps/{app_name}/builder/save?tmp=true",
+      files=[(
+          "files",
+          (f"{app_name}/root_agent.yaml", content, "application/x-yaml"),
+      )],
+  )
+
+
+def test_builder_save_rejects_external_tool_reference(
+    builder_test_client, tmp_path
+):
+  """A tool naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: os.system\n",
+  )
+  assert response.status_code == 400
+  assert "os.system" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_allows_project_tool_reference(builder_test_client):
+  """A tool under the app being edited is allowed."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: app.tools.search\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_allows_built_in_tool_short_name(builder_test_client):
+  """An undotted tool name still resolves against ADK's own built-ins."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: google_search\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_allows_built_in_agent_class(builder_test_client):
+  """A qualified ADK agent class is allowed."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"agent_class: google.adk.agents.LlmAgent\nname: my_agent\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_rejects_adk_submodule_reference(builder_test_client):
+  """An ADK path reaching past the exported built-ins is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n"
+      b"  - name: google.adk.tools.bash_tool.BashTool\n",
+  )
+  assert response.status_code == 400
+  assert "BashTool" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_callback_reference(builder_test_client):
+  """A callback naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\nbefore_agent_callbacks:\n  - name: os.system\n",
+  )
+  assert response.status_code == 400
+  assert "before_agent_callbacks" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_sub_agent_code(builder_test_client):
+  """A sub-agent naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\nsub_agents:\n  - code: other_package.agent\n",
+  )
+  assert response.status_code == 400
+  assert "other_package.agent" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_schema_reference(builder_test_client):
+  """A schema given as a bare string is validated like any other reference."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ninput_schema: os.path\n",
+  )
+  assert response.status_code == 400
+  assert "input_schema" in response.json()["detail"]
+
+
+def test_builder_save_rejects_reference_when_app_name_shadows_module(
+    builder_test_client,
+):
+  """An app named after a real module cannot vouch for its own references."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: os.system\n",
+      app_name="os",
+  )
+  assert response.status_code == 400
+  assert "shadows" in response.json()["detail"]
+
+
+def test_builder_save_covers_every_code_config_field(builder_test_client):
+  """Every config field holding a CodeConfig is checked on upload."""
+  code_config_fields = set()
+  for agent in (BaseAgent, LlmAgent):
+    for name, field in agent.config_type.model_fields.items():
+      if "CodeConfig" in str(field.annotation):
+        code_config_fields.add(name)
+  assert code_config_fields, "expected agent configs to declare CodeConfig"
+
+  for field_name in sorted(code_config_fields):
+    content = f"name: my_agent\n{field_name}:\n  name: os.system\n"
+    response = _save_builder_yaml(builder_test_client, content.encode())
+    assert response.status_code == 400, field_name
+    assert field_name in response.json()["detail"]
+
+
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
   """GET /dev/apps/{app_name}/builder?file_path=...
 

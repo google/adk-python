@@ -90,6 +90,8 @@ ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 
 # Install ADK - Start
 RUN pip install "google-adk[a2a]=={adk_version}"
+# Remove dev_server.py to ensure production-safe endpoints only (disabling dev endpoints in production)
+RUN python -c "import os, glob, google.adk.cli as cli; d = os.path.dirname(cli.__file__); [os.remove(f) for f in glob.glob(os.path.join(d, 'dev_server*'))]; [os.remove(f) for f in glob.glob(os.path.join(d, '__pycache__', 'dev_server*'))]" || true
 # Install ADK - End
 
 # Copy agent - Start

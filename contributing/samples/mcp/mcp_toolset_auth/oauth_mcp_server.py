@@ -23,11 +23,13 @@ This is used to test the toolset authentication feature in ADK.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+import contextlib
 import logging
 
 from fastapi import FastAPI
-from fastapi import HTTPException
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import Context
 from mcp.server.fastmcp import FastMCP
 import uvicorn
@@ -95,8 +97,22 @@ def list_users(context: Context) -> dict:
   }
 
 
+# FastMCP's own Starlette app is what serves the /mcp endpoint, so mounting it
+# under a FastAPI app is what puts the auth middleware in front of every MCP
+# request, tool listing included. A mounted app's lifespan is not run by the
+# mount, so the session manager the endpoint depends on is started from the
+# FastAPI lifespan instead.
+mcp_app = mcp.streamable_http_app()
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+  async with mcp.session_manager.run():
+    yield
+
+
 # Create custom FastAPI app to add auth middleware for list_tools
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 
 @app.middleware('http')
@@ -105,16 +121,20 @@ async def auth_middleware(request: Request, call_next):
   # Check if this is an MCP request
   if request.url.path.startswith('/mcp'):
     if not validate_auth_header(request):
-      raise HTTPException(status_code=401, detail='Unauthorized')
+      # Returned rather than raised: an exception from HTTP middleware escapes
+      # the exception handlers and becomes a 500.
+      return JSONResponse(status_code=401, content={'detail': 'Unauthorized'})
   return await call_next(request)
 
 
+app.mount('/', mcp_app)
+
+
 if __name__ == '__main__':
-  print(f'Starting OAuth Protected MCP server on http://localhost:3001')
+  print('Starting OAuth Protected MCP server on http://localhost:3001')
   print(f'Expected token: Bearer {VALID_TOKEN}')
   print(
       'This server requires authentication for both tool listing and calling.'
   )
 
-  # Run with streamable-http transport
-  mcp.run(transport='streamable-http')
+  uvicorn.run(app, host='localhost', port=3001)

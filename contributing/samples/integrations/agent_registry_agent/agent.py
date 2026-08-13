@@ -64,35 +64,36 @@ for server in matching_servers.get("mcpServers", []):
 # Example of using a specific agent or MCP server from the registry:
 # (Note: These names should be full resource names as returned by list methods)
 
+# Each of the calls below resolves its argument against the service, so
+# uncomment them only after replacing AGENT_NAME, MCP_SERVER_NAME and
+# ENDPOINT_NAME with resource names printed by the listings above.
+
 # 1. Using a Remote A2A Agent as a sub-agent
-# TODO: Replace AGENT_NAME with your agent name
-remote_agent = registry.get_remote_a2a_agent(
-    f"projects/{project_id}/locations/{location}/agents/AGENT_NAME"
-)
+# remote_agent = registry.get_remote_a2a_agent(
+#     f"projects/{project_id}/locations/{location}/agents/AGENT_NAME"
+# )
 
 # 2. Using an MCP Server in a toolset
-# TODO: Replace MCP_SERVER_NAME with your MCP server name
-mcp_toolset = registry.get_mcp_toolset(
-    f"projects/{project_id}/locations/{location}/mcpServers/MCP_SERVER_NAME"
-)
+# mcp_toolset = registry.get_mcp_toolset(
+#     f"projects/{project_id}/locations/{location}/mcpServers/MCP_SERVER_NAME"
+# )
 
 # 3. Getting a specific model endpoint configuration
 # This returns a string like:
 # "projects/adk12345/locations/us-central1/publishers/google/models/gemini-2.5-flash"
-# TODO: Replace ENDPOINT_NAME with your endpoint name
-model_name = registry.get_model_name(
-    f"projects/{project_id}/locations/{location}/endpoints/ENDPOINT_NAME"
-)
+# model_name = registry.get_model_name(
+#     f"projects/{project_id}/locations/{location}/endpoints/ENDPOINT_NAME"
+# )
 
 # Initialize the model using the resolved model name from registry.
-gemini_model = Gemini(model=model_name)
+# gemini_model = Gemini(model=model_name)
 
-root_agent = LlmAgent(
-    model=gemini_model,
-    name="discovery_agent",
-    instruction=(
-        "You have access to tools and sub-agents discovered via Registry."
-    ),
-    tools=[mcp_toolset],
-    sub_agents=[remote_agent],
-)
+# root_agent = LlmAgent(
+#     model=gemini_model,
+#     name="discovery_agent",
+#     instruction=(
+#         "You have access to tools and sub-agents discovered via Registry."
+#     ),
+#     tools=[mcp_toolset],
+#     sub_agents=[remote_agent],
+# )

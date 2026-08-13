@@ -1,187 +1,112 @@
-# Routing and Conditional Branching Reference
+# Routing and Conditional Branching
 
-Route workflow execution along different paths based on node outputs.
+A node emits `Event(route=...)`; the edges leaving that node decide which
+successors fire.
 
-## 📋 Agent Verification Checklist (Routing)
-Use this checklist when implementing routing logic:
-- [ ] **Syntax**: Is the preferred dict syntax used for mapping routes to targets? (Avoid verbose individual edges)
-- [ ] **Loops**: Are cycles (loops) routed? (Unconditional cycles are rejected during validation)
-- [ ] **Triggering**: If a node has conditional routing, do ALL outgoing edges have routes? (To avoid unintended triggering by unconditional edges)
+## Dict routing — the default form
 
-## 💡 Quick Reference
-- **Dict Routing**: `(source_node, {"route_a": target_a, "route_b": target_b})`
-- **Sequence**: `("START", step_a, step_b, step_c)`
-- **Default**: `"__DEFAULT__"` (Fallback route)
-
-## Basic Routing
-
-A node emits an `Event` with a `route` value. Use **dict syntax** to map routes to target nodes:
+Map route values to targets in one edge tuple:
 
 ```python
 from google.adk import Event, Workflow
 
+
 def classify(node_input: str):
-  if "error" in node_input:
-    return Event(output=node_input, route="error")
-  return Event(output=node_input, route="success")
+  route = 'error' if 'error' in node_input else 'success'
+  return Event(output=node_input, route=route)
 
-def handle_success(node_input: str) -> str:
-  return f"Success: {node_input}"
-
-def handle_error(node_input: str) -> str:
-  return f"Error: {node_input}"
 
 agent = Workflow(
-    name="router",
+    name='router',
     edges=[
         ('START', classify),
-        (classify, {"success": handle_success, "error": handle_error}),
+        (classify, {'success': handle_success, 'error': handle_error}),
     ],
 )
 ```
 
-## Routing Map (Dict Syntax) — Preferred
+The three-tuple form `(classify, handle_success, 'success')` does the same thing
+one target at a time. Reach for it only when a single edge must match several
+routes (see below), since the dict form maps one route to one target.
 
-The dict syntax is the idiomatic way to express routing. It maps route values to target nodes in a single edge tuple:
+## Sequence shorthand
+
+A tuple of more than two elements becomes a chain:
+
+```python
+edges = [('START', step_a, step_b, step_c)]
+# equivalent to [('START', step_a), (step_a, step_b), (step_b, step_c)]
+```
+
+Chains and dict routing compose:
 
 ```python
 edges = [
-    ("START", process_input, classifier, route_on_category),
-    (route_on_category, {
-        "question": answer_question,
-        "statement": comment_on_statement,
-        "other": handle_other,
-    }),
+    ('START', process_input, classify),
+    (classify, {'approved': send, 'rejected': discard}),
 ]
 ```
 
-This replaces verbose individual routed edges:
-```python
-# ❌ Verbose — avoid
-(classifier, answer_question, "question"),
-(classifier, comment_on_statement, "statement"),
-(classifier, handle_other, "other"),
+## Route values
 
-# ✅ Preferred — dict syntax
-(classifier, {"question": answer_question, "statement": comment_on_statement, "other": handle_other}),
-```
-
-## Sequence Shorthand (Tuple Chains)
-
-A tuple with more than 2 elements creates a sequential chain:
+A route is a `str`, `bool`, or `int`, or a list of those.
 
 ```python
-# Shorthand: tuple creates chain edges
-edges = [("START", step_a, step_b, step_c)]
-# Equivalent to: [("START", step_a), (step_a, step_b), (step_b, step_c)]
+(decision, {'approve': path_a, 'reject': path_b})   # strings
+(decision, {True: yes_path, False: no_path})        # booleans
+(decision, {0: path_0, 1: path_1})                  # integers
 ```
 
-Combine with dict routing:
-```python
-edges = [
-    ("START", process_input, classify, route_on_result),
-    (route_on_result, {"approved": send, "rejected": discard}),
-]
-```
+## Default route
 
-## Route Value Types
-
-Routes can be `str`, `bool`, or `int`:
-
-```python
-# String routes (most common)
-(decision_node, {"approve": path_a, "reject": path_b})
-
-# Boolean routes
-(decision_node, {True: yes_path, False: no_path})
-
-# Integer routes
-(decision_node, {0: path_0, 1: path_1})
-```
-
-## Default Route
-
-Use `'__DEFAULT__'` as a fallback when no other route matches:
+`'__DEFAULT__'` (exported as `DEFAULT_ROUTE`) fires when no other route on that
+node matches:
 
 ```python
 edges = [
-    ("START", classify),
+    ('START', classify),
     (classify, {
-        "success": handler_a,
-        "error": handler_b,
-        "__DEFAULT__": fallback_handler,
+        'success': handler_a,
+        'error': handler_b,
+        '__DEFAULT__': fallback_handler,
     }),
 ]
 ```
 
-Only one default route per node is allowed.
+One default per node. `'__DEFAULT__'` may not appear inside a list of routes on
+one edge — give it its own edge.
 
-**No duplicate edges:** Two edges from the same source to the same target are rejected, even with different routes. If you need both a named route and `__DEFAULT__` to reach the same destination, use a thin wrapper function for the default path.
+## One edge, several routes
 
-## Dynamic Routing with Functions
-
-A function node that emits different routes based on runtime data:
+Passing a list matches any value in it:
 
 ```python
-from google.adk import Context, Event
-
-def route_on_score(ctx: Context, node_input: dict):
-  score = node_input.get("score", 0)
-  if score > 0.8:
-    return Event(output=node_input, route="high")
-  elif score > 0.5:
-    return Event(output=node_input, route="medium")
-  else:
-    return Event(output=node_input, route="low")
-
-agent = Workflow(
-    name="scored_router",
-    edges=[
-        ("START", compute_score, route_on_score),
-        (route_on_score, {
-            "high": premium_handler,
-            "medium": standard_handler,
-            "low": basic_handler,
-        }),
-    ],
-)
+edges = [
+    ('START', classifier),
+    (classifier, {'route_z': handler_b}),
+    (classifier, handler_a, ['route_x', 'route_y']),
+]
 ```
 
-## Multi-Route (Fan-Out via Route)
+## Several routes from one node
 
-A node can output multiple routes to trigger multiple downstream paths simultaneously:
+A node can emit a list of routes to fire multiple branches at once:
 
 ```python
 def fan_out_router(node_input: str):
-  return Event(output=node_input, route=["path_a", "path_b"])
+  return Event(output=node_input, route=['path_a', 'path_b'])
+
 
 agent = Workflow(
-    name="multi_route",
+    name='multi_route',
     edges=[
-        ("START", fan_out_router),
-        (fan_out_router, {"path_a": branch_a, "path_b": branch_b}),
+        ('START', fan_out_router),
+        (fan_out_router, {'path_a': branch_a, 'path_b': branch_b}),
     ],
 )
 ```
 
-## List of Routes on a Single Edge
-
-An edge can match multiple routes by passing a list as the route value. The edge fires if the node output matches **any** route in the list:
-
-```python
-edges = [
-    ("START", classifier),
-    (classifier, {"route_z": handler_b}),
-    # handler_a fires on either route_x or route_y
-    (classifier, handler_a, ["route_x", "route_y"]),
-]
-```
-
-This is useful when multiple route values should lead to the same downstream node without duplicating edges. Note: list-of-routes on a single edge uses the 3-tuple syntax since dict syntax maps one route to one target.
-
-## Self-Loop
-
-A node can route back to itself:
+## Self-loop
 
 ```python
 def guess_number(target_number: int):
@@ -192,6 +117,7 @@ def guess_number(target_number: int):
   else:
     yield Event(route='guessed_wrong')
 
+
 agent = Workflow(
     name='root_agent',
     edges=[
@@ -201,32 +127,39 @@ agent = Workflow(
 )
 ```
 
-## Revision Loop
-
-A common pattern: route back to an earlier node for revision, or forward for approval:
+## Revision loop
 
 ```python
 edges = [
-    ("START", process_input, draft_email, human_review),
+    ('START', process_input, draft_email, human_review),
     (human_review, {
-        "revise": draft_email,
-        "approved": send,
-        "rejected": discard,
+        'revise': draft_email,
+        'approved': send,
+        'rejected': discard,
     }),
 ]
 ```
 
-**Important**: Cycles must have at least one routed edge (unconditional cycles are rejected during graph validation).
+## Constraints the graph validator enforces
 
-## Unconditional Edges
+- **A cycle needs at least one routed edge.** An entirely unconditional cycle is
+  rejected at construction time, because nothing could ever break out of it.
+- **Edges leaving `START` may not carry a route.** `START` never runs, so it
+  never emits one.
+- **No two edges may share a source and a target**, even with different routes.
+  To reach one destination from both a named route and `__DEFAULT__`, point the
+  default at a thin wrapper function.
 
-Edges without a route value are unconditional — they always fire:
+## Unrouted edges always fire
+
+An edge with no route fires on every output event from its source, whatever
+route that event carries. So if a node routes at all, give *every* one of its
+outgoing edges a route — otherwise the unrouted one fires alongside the branch
+you selected.
 
 ```python
 edges = [
-    ('START', node_a),       # Unconditional
-    (node_a, node_b),        # Unconditional (always fires)
+    ('START', node_a),  # unconditional
+    (node_a, node_b),   # fires on every node_a output
 ]
 ```
-
-**Important**: Unrouted edges always fire, regardless of whether the output event has a route. If a node has conditional routing, ALL outgoing edges should have routes to avoid unintended triggering.

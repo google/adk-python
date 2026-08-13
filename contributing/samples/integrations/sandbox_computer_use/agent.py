@@ -20,7 +20,7 @@ to create a computer use agent that operates in a remote sandbox environment.
 Prerequisites:
   1. A GCP project with Agent Engine setup (https://docs.cloud.google.com/agent-builder/agent-engine/set-up)
   2. A service account with roles/iam.serviceAccountTokenCreator permission
-  3. Environment variables in contributing/samples/.env:
+  3. Environment variables in a .env file in the same directory as agent.py:
      - GOOGLE_CLOUD_PROJECT: Your GCP project ID
      - VMAAS_SERVICE_ACCOUNT: Your service account email
      - VMAAS_SANDBOX_NAME: (Optional) Existing sandbox resource name for BYOS mode
@@ -29,10 +29,10 @@ Prerequisites:
 
 Usage:
   # Run via ADK web UI
-  adk web contributing/samples/sandbox_computer_use
+  adk web contributing/samples/integrations/sandbox_computer_use
 
   # Run via main.py
-  cd contributing/samples
+  cd contributing/samples/integrations
   python -m sandbox_computer_use.main
 """
 

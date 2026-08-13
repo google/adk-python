@@ -82,7 +82,13 @@ from google.cloud.bigquery_storage_v1 import types as bq_storage_types
 from google.cloud.bigquery_storage_v1.services.big_query_write.async_client import BigQueryWriteAsyncClient
 from google.genai import types
 from opentelemetry import trace
-import pyarrow as pa
+
+try:
+  import pyarrow as pa
+except ImportError as e:
+  from ..utils._dependency import missing_extra
+
+  raise missing_extra("pyarrow", "bigquery-analytics") from e
 
 from ..agents.callback_context import CallbackContext
 from ..models.llm_request import LlmRequest
