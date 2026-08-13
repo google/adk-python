@@ -515,3 +515,72 @@ class TestBasicLlmRequestProcessor:
     assert agent.generate_content_config.http_options.headers == {
         'Agent-Header': 'agent-val'
     }
+
+  @pytest.mark.asyncio
+  async def test_request_safety_settings_do_not_reach_the_agent(self):
+    """A callback appending to the request must not write into the agent."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-1.5-flash',
+        generate_content_config=types.GenerateContentConfig(
+            safety_settings=[
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                )
+            ]
+        ),
+    )
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    llm_request.config.safety_settings.append(
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        )
+    )
+
+    assert len(agent.generate_content_config.safety_settings) == 1
+
+  @pytest.mark.asyncio
+  async def test_safety_settings_do_not_accumulate_across_invocations(self):
+    """A second run must see the agent's own settings, not the first run's."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-1.5-flash',
+        generate_content_config=types.GenerateContentConfig(
+            safety_settings=[
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                )
+            ]
+        ),
+    )
+    processor = _BasicLlmRequestProcessor()
+
+    first_request = LlmRequest()
+    async for _ in processor.run_async(
+        await _create_invocation_context(agent), first_request
+    ):
+      pass
+    first_request.config.safety_settings.append(
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        )
+    )
+
+    second_request = LlmRequest()
+    async for _ in processor.run_async(
+        await _create_invocation_context(agent), second_request
+    ):
+      pass
+
+    assert len(second_request.config.safety_settings) == 1

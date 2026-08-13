@@ -153,6 +153,15 @@ class AntigravityAgent(BaseAgent):
           return str(part.text)
     return ''
 
+  @property
+  def _sdk_agent_cls(self) -> type[Agent]:
+    """The SDK Agent class each turn runs on.
+
+    Override in a subclass to run turns on a different Agent implementation.
+    """
+    # The ignore is for the SDK being untyped to mypy, not for the return.
+    return Agent  # type: ignore[no-any-return]
+
   @override
   async def _run_async_impl(
       self, ctx: InvocationContext
@@ -200,7 +209,7 @@ class AntigravityAgent(BaseAgent):
         ctx.run_config and ctx.run_config.streaming_mode == StreamingMode.SSE
     )
 
-    async with Agent(config) as active_agent:
+    async with self._sdk_agent_cls(config) as active_agent:
       await active_agent.conversation.send(prompt)
 
       async for step in active_agent.conversation.receive_steps():
