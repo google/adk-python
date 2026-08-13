@@ -111,6 +111,7 @@ attrs==26.1.0
     #   aiohttp
     #   e2b
     #   jsonschema
+    #   opensandbox
     #   referencing
 authlib==1.7.2
     # via
@@ -723,6 +724,7 @@ httpx==0.28.1
     #   llama-index-core
     #   mcp
     #   openai
+    #   opensandbox
 httpx-sse==0.4.3
     # via
     #   -c constraints-3.10.txt.stable.tmp
@@ -1029,6 +1031,10 @@ openai==2.46.0
     #   google-adk (pyproject.toml)
     #   litellm
 openpyxl==3.1.5
+    # via
+    #   -c constraints-3.10.txt.stable.tmp
+    #   google-adk (pyproject.toml)
+opensandbox==0.1.15
     # via
     #   -c constraints-3.10.txt.stable.tmp
     #   google-adk (pyproject.toml)
@@ -1340,6 +1346,7 @@ pydantic==2.13.4
     #   llama-index-workflows
     #   mcp
     #   openai
+    #   opensandbox
     #   pydantic-settings
     #   toolbox-core
 pydantic-core==2.46.4
@@ -1431,6 +1438,7 @@ python-dateutil==2.9.0.post0
     #   google-cloud-bigquery
     #   kubernetes
     #   oci
+    #   opensandbox
     #   pandas
 python-discovery==1.4.4
     # via

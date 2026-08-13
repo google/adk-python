@@ -23,6 +23,9 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Event and NodeInfo](events/event/index.md) - Understanding Event and NodeInfo in workflows.
 * [RequestInput](events/request_input/index.md) - How to use RequestInput for human-in-the-loop interactions.
 
+### Integrations
+* [OpenSandboxEnvironment](integrations/opensandbox/opensandbox_environment/index.md) - Run ADK environment tools in an isolated OpenSandbox workspace.
+
 ### Memory
 * [BaseMemoryService](memory/memory_service/index.md) - Storing finished sessions and recalling them from later conversations.
 
