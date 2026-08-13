@@ -34,6 +34,51 @@ from .base_tool import BaseTool
 from .tool_context import ToolContext
 
 
+def _merge_json_schema_descriptions(
+    target: dict[str, Any], source: dict[str, Any]
+) -> None:
+  """Copies ``description`` values from ``source`` onto ``target`` in place.
+
+  Walks ``properties`` / ``items`` so nested object and list schemas keep the
+  Field(description=...) metadata from the original Pydantic output schema.
+  """
+  source_props = source.get('properties')
+  target_props = target.get('properties')
+  if isinstance(source_props, dict) and isinstance(target_props, dict):
+    for name, source_prop in source_props.items():
+      if name not in target_props or not isinstance(source_prop, dict):
+        continue
+      target_prop = target_props[name]
+      if not isinstance(target_prop, dict):
+        continue
+      description = source_prop.get('description')
+      if isinstance(description, str) and description:
+        target_prop['description'] = description
+      _merge_json_schema_descriptions(target_prop, source_prop)
+
+  source_items = source.get('items')
+  target_items = target.get('items')
+  if isinstance(source_items, dict) and isinstance(target_items, dict):
+    description = source_items.get('description')
+    if isinstance(description, str) and description:
+      target_items['description'] = description
+    _merge_json_schema_descriptions(target_items, source_items)
+
+
+def _apply_descriptions_to_schema_properties(
+    properties: dict[str, types.Schema] | None,
+    model_fields: dict[str, Any],
+) -> None:
+  """Sets Schema.description from Pydantic FieldInfo.description when present."""
+  if not properties:
+    return
+  for name, field_info in model_fields.items():
+    prop = properties.get(name)
+    description = getattr(field_info, 'description', None)
+    if prop is not None and isinstance(description, str) and description:
+      prop.description = description
+
+
 class SetModelResponseTool(BaseTool):
   """Internal tool used for output schema workaround.
 
@@ -136,6 +181,55 @@ class SetModelResponseTool(BaseTool):
         description=self.func.__doc__.strip() if self.func.__doc__ else '',
     )
 
+  def _preserve_output_schema_field_descriptions(
+      self, function_decl: types.FunctionDeclaration
+  ) -> None:
+    """Restores Field(description=...) lost during function-declaration build.
+
+    ``build_function_declaration`` rebuilds parameters from ``inspect.Parameter``
+    objects, which cannot carry Pydantic field descriptions. Re-apply them from
+    the original ``output_schema`` so the model still sees the semantic hints.
+    """
+    if self._is_basemodel:
+      source_schema = self.output_schema.model_json_schema()
+      if function_decl.parameters_json_schema is not None:
+        _merge_json_schema_descriptions(
+            function_decl.parameters_json_schema, source_schema
+        )
+      elif function_decl.parameters is not None:
+        _apply_descriptions_to_schema_properties(
+            function_decl.parameters.properties,
+            self.output_schema.model_fields,
+        )
+      return
+
+    if self._is_list_of_basemodel:
+      inner_type = get_list_inner_type(self.output_schema)
+      if not is_basemodel_schema(inner_type):
+        return
+      source_schema = {
+          'properties': {
+              'items': {
+                  'type': 'array',
+                  'items': inner_type.model_json_schema(),
+              }
+          }
+      }
+      if function_decl.parameters_json_schema is not None:
+        _merge_json_schema_descriptions(
+            function_decl.parameters_json_schema, source_schema
+        )
+      elif (
+          function_decl.parameters is not None
+          and function_decl.parameters.properties
+          and 'items' in function_decl.parameters.properties
+      ):
+        items_schema = function_decl.parameters.properties['items']
+        if items_schema.items is not None:
+          _apply_descriptions_to_schema_properties(
+              items_schema.items.properties, inner_type.model_fields
+          )
+
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool."""
@@ -146,6 +240,7 @@ class SetModelResponseTool(BaseTool):
             variant=self._api_variant,
         )
     )
+    self._preserve_output_schema_field_descriptions(function_decl)
     return function_decl
 
   @override

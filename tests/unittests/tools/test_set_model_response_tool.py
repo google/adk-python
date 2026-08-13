@@ -137,6 +137,39 @@ def test_get_declaration_preserves_field_defaults():
   assert properties['is_active']['default'] is True
 
 
+def test_get_declaration_preserves_field_descriptions():
+  """Field(description=...) from output_schema must reach the tool schema."""
+  tool = SetModelResponseTool(PersonSchema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  properties = declaration.model_dump(exclude_none=True)[
+      'parameters_json_schema'
+  ]['properties']
+  assert properties['name']['description'] == "A person's name"
+  assert properties['age']['description'] == "A person's age"
+  assert properties['city']['description'] == 'The city they live in'
+
+
+def test_get_declaration_preserves_list_item_field_descriptions():
+  """list[BaseModel] item Field descriptions remain available to the model."""
+
+  class Item(BaseModel):
+    id: int = Field(description='Item ID')
+    name: str = Field(description='Item name')
+
+  tool = SetModelResponseTool(list[Item])
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  schema = declaration.model_dump(exclude_none=True)['parameters_json_schema']
+  # list[BaseModel] is emitted via $ref into $defs; descriptions live there.
+  item_props = schema['$defs']['Item']['properties']
+  assert item_props['id']['description'] == 'Item ID'
+  assert item_props['name']['description'] == 'Item name'
+
+
 @pytest.mark.asyncio
 async def test_run_async_valid_data():
   """Test tool execution with valid data."""
