@@ -19,7 +19,6 @@ import asyncio
 import logging
 
 import agent
-from google.adk.agents.run_config import RunConfig
 from google.adk.cli.utils import logs
 from google.adk.events.event import Event
 from google.adk.runners import InMemoryRunner
@@ -67,7 +66,6 @@ async def call_agent_async(
         user_id=user_id,
         session_id=session_id,
         new_message=content,
-        run_config=RunConfig(),
     ):
       events.append(event)
       if event.content and event.author and event.author != "user":

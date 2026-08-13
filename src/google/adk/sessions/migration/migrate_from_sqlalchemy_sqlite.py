@@ -38,7 +38,10 @@ def migrate(source_db_url: str, dest_db_path: str) -> None:
   # them automatically converted to 'sqlite://...' for migration.
   source_sync_url = _schema_check_utils.to_sync_url(source_db_url)
 
-  logger.info(f"Connecting to source database: {source_db_url}")
+  logger.info(
+      "Connecting to source database: %s",
+      _schema_check_utils._redact_db_url(source_db_url),
+  )
   try:
     engine = create_engine(source_sync_url)
     v0_schema.Base.metadata.create_all(

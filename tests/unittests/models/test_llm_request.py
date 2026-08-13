@@ -890,3 +890,52 @@ def test_append_tools_warns_on_duplicate_tool_name(caplog):
 
   assert 'Duplicate tool name' in caplog.text
   assert len(request.tools_dict) == 1
+
+
+def test_set_output_schema_sets_schema_and_forces_json_mime_type():
+  """Structured output requires both the schema and the JSON mime type."""
+  request = LlmRequest()
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={'answer': types.Schema(type=types.Type.STRING)},
+  )
+
+  request.set_output_schema(schema)
+
+  assert request.config.response_schema is schema
+  assert request.config.response_mime_type == 'application/json'
+
+
+def test_set_output_schema_accepts_deprecated_base_model_alias():
+  """base_model is a deprecated alias and must behave like output_schema."""
+  request = LlmRequest()
+  schema = {'type': 'object', 'properties': {'answer': {'type': 'string'}}}
+
+  request.set_output_schema(base_model=schema)
+
+  assert request.config.response_schema == schema
+  assert request.config.response_mime_type == 'application/json'
+
+
+def test_set_output_schema_prefers_output_schema_over_base_model():
+  """When both are supplied the non-deprecated argument wins."""
+  request = LlmRequest()
+  preferred = types.Schema(type=types.Type.STRING)
+  legacy = types.Schema(type=types.Type.INTEGER)
+
+  request.set_output_schema(preferred, base_model=legacy)
+
+  assert request.config.response_schema is preferred
+
+
+def test_set_output_schema_without_any_schema_raises_value_error():
+  """Calling with neither argument is a caller error, not a silent no-op."""
+  request = LlmRequest()
+
+  with pytest.raises(
+      ValueError, match='Either output_schema or base_model must be provided.'
+  ):
+    request.set_output_schema()
+
+  assert request.config.response_schema is None
+  assert request.config.response_mime_type is None

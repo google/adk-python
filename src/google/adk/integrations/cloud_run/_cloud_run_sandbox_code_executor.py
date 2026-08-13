@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+from typing import Optional
 
 from pydantic import Field
 from typing_extensions import override
@@ -68,6 +69,16 @@ class CloudRunSandboxCodeExecutor(BaseCodeExecutor):
 
   # Overrides the BaseCodeExecutor attribute: this executor cannot optimize_data_file.
   optimize_data_file: bool = Field(default=False, frozen=True, exclude=True)
+
+  # Overrides the BaseCodeExecutor attribute: the base default of None waits
+  # for the sandbox forever, which non-terminating generated code turns into a
+  # hung agent.
+  timeout_seconds: Optional[int] = 300
+  """The wall-clock timeout in seconds for a single code execution.
+
+  Defaults to 300, matching ``ContainerCodeExecutor`` and ``GkeCodeExecutor``.
+  None waits for the execution indefinitely.
+  """
 
   def __init__(self, **data):
     if 'stateful' in data and data['stateful']:

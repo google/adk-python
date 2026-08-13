@@ -27,7 +27,6 @@ import json
 import logging
 import threading
 from typing import Any
-from typing import AsyncGenerator
 from typing import Callable
 from typing import cast
 from typing import Dict
@@ -77,6 +76,13 @@ _TOOL_THREAD_POOLS: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop, dict[int, ThreadPoolExecutor]
 ] = weakref.WeakKeyDictionary()
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
+
+# The deepest container whose entries are searched for media: the value a tool
+# returns, and one container inside it. Searching further would mean walking a
+# tool's own data structures on every call, whether or not it ever returns
+# media, and the bound also stops a self-referential result being walked
+# forever.
+_MAX_MEDIA_CONTAINER_DEPTH = 1
 
 
 def _detect_error_type_for_telemetry(
@@ -814,6 +820,9 @@ async def _execute_single_function_call_live(
   )
   detected_error_type: Optional[str] = None
 
+  # TODO: thread a ToolConfirmation through here so an approved tool can be
+  # re-executed in live mode. `tool_confirmation` is always None on this path,
+  # so a confirmation-gated tool can only ever be refused, never resumed.
   tool_context = _create_tool_context(invocation_context, function_call)
 
   try:
@@ -1084,28 +1093,58 @@ async def _process_function_live_helper(
         function_args: dict[str, Any],
         tool_context: ToolContext,
     ) -> None:
+      live_request_queue = invocation_context.live_request_queue
+      if live_request_queue is None:
+        raise RuntimeError('Streaming tools require a live request queue.')
       try:
-        async with Aclosing(
-            __call_tool_live(
-                tool=tool,
-                args=function_args,
-                tool_context=tool_context,
-                invocation_context=invocation_context,
-            )
-        ) as agen:
-          async for result in agen:
-            updated_content = _build_function_response_content(
-                tool, result, tool_context.function_call_id
-            )
-            live_request_queue = invocation_context.live_request_queue
-            if live_request_queue is None:
-              raise RuntimeError(
-                  'Streaming tools require a live request queue.'
+        res = await __call_tool_async(
+            tool=tool,
+            args=function_args,
+            tool_context=tool_context,
+        )
+        if inspect.isasyncgen(res):
+          async with Aclosing(res) as agen:
+            async for result in agen:
+              updated_content = _build_function_response_content(
+                  tool, result, tool_context.function_call_id
               )
-            live_request_queue.send_content(updated_content, partial=True)
+              live_request_queue.send_content(updated_content, partial=True)
+        else:
+          # `res` is a single terminal payload (e.g. the error dict returned
+          # when confirmation is required/rejected or a mandatory argument is
+          # missing), not a chunk of a stream.
+          # TODO: for the confirmation-required case, hold the call pending
+          # (as long-running tools do) instead of relaying the error. Relaying
+          # it closes the call id with the model, so a later approval would
+          # have to send a second response reusing that same id.
+          updated_content = _build_function_response_content(
+              tool, res, tool_context.function_call_id
+          )
+          live_request_queue.send_content(updated_content, partial=False)
       except asyncio.CancelledError:
         raise  # Re-raise to properly propagate the cancellation
+      except Exception:  # pylint: disable=broad-except
+        # The model already got a `pending` response for this call, so it waits
+        # for a follow-up FunctionResponse. Swallowing the exception here would
+        # leave the live session hanging, so report the failure to the model.
+        # The exception text is deliberately not forwarded to the model: it can
+        # carry internal detail that is irrelevant to it. It is logged instead.
+        logger.exception('Error executing streaming tool %s.', tool.name)
+        error_content = _build_function_response_content(
+            tool,
+            {
+                'error': (
+                    f'Invoking `{tool.name}()` failed with an internal error.'
+                )
+            },
+            tool_context.function_call_id,
+        )
+        live_request_queue.send_content(error_content, partial=False)
 
+    # TODO: resolve `require_confirmation` before spawning the task. The
+    # confirmation request is recorded on `tool_context.actions` by the
+    # background task while the caller builds the response event, and nothing
+    # orders the two, so the request can be missing from the emitted event.
     task = asyncio.create_task(
         run_tool_and_update_queue(streaming_tool, function_args, tool_context)
     )
@@ -1260,22 +1299,101 @@ def _try_decode_computer_use_image(
     return None
 
 
-async def __call_tool_live(
-    tool: FunctionTool,
-    args: dict[str, Any],
-    tool_context: ToolContext,
-    invocation_context: InvocationContext,
-) -> AsyncGenerator[object, None]:
-  """Calls the tool asynchronously (awaiting the coroutine)."""
-  async with Aclosing(
-      tool._call_live(
-          args=args,
-          tool_context=tool_context,
-          invocation_context=invocation_context,
-      )
-  ) as agen:
-    async for item in agen:
-      yield item
+def _as_function_response_part(
+    value: object,
+) -> Optional[types.FunctionResponsePart]:
+  """Converts a tool-returned part into a function response part.
+
+  Returns None when the value is not a part carrying usable media.
+  """
+  if not isinstance(value, types.Part):
+    return None
+  blob = value.inline_data
+  if blob is not None and blob.data is not None and blob.mime_type:
+    return types.FunctionResponsePart.from_bytes(
+        data=blob.data, mime_type=blob.mime_type
+    )
+  file = value.file_data
+  if file is not None and file.file_uri and file.mime_type:
+    return types.FunctionResponsePart.from_uri(
+        file_uri=file.file_uri, mime_type=file.mime_type
+    )
+  return None
+
+
+def _extract_media_from_entry(
+    value: object,
+    parts: list[types.FunctionResponsePart],
+    depth: int,
+) -> tuple[bool, object]:
+  """Removes media from one entry of a tool result.
+
+  Any parts found are appended to ``parts``. Only dicts, lists and tuples are
+  descended into, so an arbitrary object a tool returns is left alone.
+
+  Returns:
+    Whether the entry should be kept, and what is left of it. An entry that
+    was media, or a container left empty once its media was taken out, is not
+    kept.
+  """
+  part = _as_function_response_part(value)
+  if part is not None:
+    parts.append(part)
+    return False, None
+  if depth >= _MAX_MEDIA_CONTAINER_DEPTH or not isinstance(
+      value, (dict, list, tuple)
+  ):
+    return True, value
+  remaining, nested_parts = _extract_multimodal_parts(value, depth + 1)
+  if not nested_parts:
+    return True, value
+  parts.extend(nested_parts)
+  return bool(remaining), remaining
+
+
+def _extract_multimodal_parts(
+    function_result: object,
+    depth: int = 0,
+) -> tuple[object, Optional[list[types.FunctionResponsePart]]]:
+  """Moves media in a tool result into function response parts.
+
+  A tool result is otherwise required to be JSON-serializable, which leaves no
+  way to hand back media except by encoding it into a string the model reads
+  as text. A tool that produces an image, audio clip or document returns a
+  part holding the raw bytes or a uri instead, on its own or among the entries
+  of a returned container, which may itself hold a container of parts.
+
+  Returns:
+    The result with the media removed, and the extracted parts. The parts are
+    None when the result carries no media, in which case the result is
+    returned unchanged.
+  """
+  single_part = _as_function_response_part(function_result)
+  if single_part is not None:
+    return {}, [single_part]
+
+  parts: list[types.FunctionResponsePart] = []
+  remaining: object
+  if isinstance(function_result, dict):
+    kept_items = {}
+    for key, value in function_result.items():
+      keep, kept = _extract_media_from_entry(value, parts, depth)
+      if keep:
+        kept_items[key] = kept
+    remaining = kept_items
+  elif isinstance(function_result, (list, tuple)):
+    kept_values = []
+    for value in function_result:
+      keep, kept = _extract_media_from_entry(value, parts, depth)
+      if keep:
+        kept_values.append(kept)
+    remaining = kept_values
+  else:
+    return function_result, None
+
+  if not parts:
+    return function_result, None
+  return remaining or {}, parts
 
 
 async def __call_tool_async(
@@ -1297,11 +1415,16 @@ def __build_response_event(
   # Capture the raw result for display purposes before any normalization.
   display_result = function_result
 
-  # The callback and FunctionResponse contracts require a string-keyed dict.
-  function_result = _normalize_tool_result(function_result)
+  # Media has to come out before the result is coerced to a dict, so that a
+  # media part returned on its own or inside a list is still reachable.
+  remaining_result, function_response_parts = _extract_multimodal_parts(
+      function_result
+  )
 
-  function_response_parts = None
-  if isinstance(tool, ComputerUseTool):
+  # The callback and FunctionResponse contracts require a string-keyed dict.
+  function_result = _normalize_tool_result(remaining_result)
+
+  if function_response_parts is None and isinstance(tool, ComputerUseTool):
     function_response_parts = _try_decode_computer_use_image(
         tool, function_result
     )
@@ -1352,6 +1475,11 @@ def _build_function_response_content(
     function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
 ) -> types.Content:
   """Builds the content carrying a tool result as a FunctionResponse."""
+  if function_response_parts is None:
+    function_result, function_response_parts = _extract_multimodal_parts(
+        function_result
+    )
+
   # Specs requires the result to be a dict.
   if not isinstance(function_result, dict):
     function_result = {'result': function_result}

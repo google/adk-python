@@ -120,6 +120,7 @@ class LLMRegistry:
       )
 
     _llm_registry_dict[model_name_regex] = llm_cls
+    LLMRegistry.resolve.cache_clear()
 
   @staticmethod
   def register(llm_cls: type[BaseLlm]) -> None:
@@ -139,6 +140,7 @@ class LLMRegistry:
     """Pre-registers a lazily-imported LLM class."""
     for regex in model_name_regexes:
       _llm_registry_dict[regex] = (module_path, class_name)
+    LLMRegistry.resolve.cache_clear()
 
   @staticmethod
   @lru_cache(maxsize=32)

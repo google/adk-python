@@ -29,11 +29,11 @@ available tools, and it must decide whether to respond to the user or call a
 tool.
 
 The easiest way to run this demo is through the provided Colab notebook:
-[`gepa_tau_bench.ipynb`](https://colab.research.google.com/github/google/adk-python/blob/main/contributing/samples/gepa/gepa_tau_bench.ipynb).
+[`gepa_tau_bench.ipynb`](https://colab.research.google.com/github/google/adk-python/blob/main/contributing/samples/integrations/gepa/gepa_tau_bench.ipynb).
 
 ### Improving a voter Agent's PII filtering ability
 
-This demo notebook ([`voter_agent/gepa.ipynb`](https://colab.research.google.com/github/google/adk-python/blob/main/contributing/samples/gepa/voter_agent/gepa.ipynb)) walks you through optimizing an AI
+This demo notebook ([`voter_agent/gepa.ipynb`](https://colab.research.google.com/github/google/adk-python/blob/main/contributing/samples/integrations/gepa/voter_agent/gepa.ipynb)) walks you through optimizing an AI
 agent's prompt using the Genetic-Pareto (GEPA) algorithm. We'll use the Google
 Agent Development Kit (ADK) to build and evaluate a "Vote Taker" agent designed
 to collect audience votes while filtering sensitive information.
@@ -63,10 +63,26 @@ This can result in a more detailed and robust prompt that has learned from its
 mistakes, and capturing nuances that are sometimes difficult to discover
 through manual prompt engineering.
 
+## Setup
+
+Install the ADK and the packages this sample depends on:
+
+```bash
+pip install google-adk absl-py gepa jinja2 litellm retry
+```
+
+The Tau-bench example additionally needs Tau-bench itself:
+
+```bash
+git clone https://github.com/sierra-research/tau-bench.git
+cd tau-bench/
+pip install -e .
+```
+
 ## Running the experiment
 
 The easiest way to run this demo is through the provided Colab notebook:
-[`gepa_tau_bench.ipynb`](https://colab.research.google.com/github/google/adk-python/blob/main/contributing/samples/gepa/gepa_tau_bench.ipynb).
+[`gepa_tau_bench.ipynb`](https://colab.research.google.com/github/google/adk-python/blob/main/contributing/samples/integrations/gepa/gepa_tau_bench.ipynb).
 
 Alternatively, you can run GEPA optimization using the `run_experiment.py`
 script:

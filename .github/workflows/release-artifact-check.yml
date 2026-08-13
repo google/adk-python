@@ -1,0 +1,131 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Builds the release candidate and checks it does not import worse than the
+# last published release. Publishing otherwise never installs the wheel it is
+# about to upload.
+#
+# This runs on the release pull request, which is where the version bump and
+# the changelog live and where the release oncaller is already looking. It is
+# not a required check until someone marks it one in the repository settings.
+name: "Release: Artifact Check"
+
+on:
+  pull_request:
+    branches:
+      - release/candidate
+      - release/v1-candidate
+  # Once the changelog pull request merges the candidate branch is renamed to
+  # release/v{version}, and cherry-picks land there afterwards. Both names
+  # have to be watched, or the tree that actually publishes is never checked.
+  push:
+    branches:
+      - release/candidate
+      - "release/v*"
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "Version to compare against, or 'auto'"
+        required: false
+        type: string
+        default: auto
+
+concurrency:
+  group: release-artifact-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  artifact-check:
+    if: github.repository == 'google/adk-python'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Read candidate version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(python -c "import re, pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/google/adk/version.py').read_text()).group(1))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Checking $VERSION"
+
+      # Exit 1 means a module regressed. Exit 2 means the check could not run,
+      # which also fails the job on purpose: a check that did not run must
+      # never read as a pass.
+      - name: Compare imports against the last release
+        env:
+          BASELINE: ${{ inputs.baseline || 'auto' }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python scripts/verify_release_artifact.py \
+            --wheel 'dist/*.whl' \
+            --baseline "$BASELINE" \
+            --expected-version "$EXPECTED_VERSION" \
+            --allowlist scripts/release_import_allowlist.txt \
+            --report release-artifact-check.md
+
+      - name: Publish report to the run summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f release-artifact-check.md ]]; then
+            cat release-artifact-check.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Release artifact check"
+              echo
+              echo "The check did not produce a report. See the step log above."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Edit the existing comment rather than adding one per push, so a
+      # long-lived release pull request does not accumulate a wall of reports.
+      # Reporting must never decide the verdict: if the token cannot comment,
+      # say so and leave the check's own result standing.
+      - name: Comment on the release pull request
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f release-artifact-check.md ]]; then
+            echo "No report to post."
+            exit 0
+          fi
+          gh pr comment "$PR_NUMBER" --body-file release-artifact-check.md --edit-last \
+            || gh pr comment "$PR_NUMBER" --body-file release-artifact-check.md

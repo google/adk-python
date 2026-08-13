@@ -33,6 +33,8 @@ class ParsedArtifactUri(NamedTuple):
   version: int
 
 
+_WINDOWS_DRIVE_RE = re.compile(r"[A-Za-z]:")
+
 _SESSION_SCOPED_ARTIFACT_URI_RE = re.compile(
     r"artifact://apps/([^/]+)/users/([^/]+)/sessions/([^/]+)/artifacts/(.+)/versions/(\d+)"
 )
@@ -136,6 +138,11 @@ def validate_artifact_reference_scope(
     )
 
 
+def _is_drive_qualified(value: str) -> bool:
+  """Checks whether a value starts with a Windows drive letter such as ``C:``."""
+  return _WINDOWS_DRIVE_RE.match(value) is not None
+
+
 def validate_path_segment(value: str, field_name: str) -> None:
   """Rejects values that could alter the constructed path.
 
@@ -145,7 +152,7 @@ def validate_path_segment(value: str, field_name: str) -> None:
 
   Raises:
     InputValidationError: If the value contains traversal segments, null bytes,
-      or is an absolute path / starts with a slash.
+      is an absolute path / starts with a slash, or is drive-qualified.
   """
   if not value:
     raise input_validation_error.InputValidationError(
@@ -162,11 +169,11 @@ def validate_path_segment(value: str, field_name: str) -> None:
         f"{field_name} {value!r} must not be an absolute path or start with a"
         " slash."
     )
-  if (
-      value in (".", "..")
-      or ".." in value.split("/")
-      or ".." in value.split("\\")
-  ):
+  if isinstance(value, str) and _is_drive_qualified(value):
+    raise input_validation_error.InputValidationError(
+        f"{field_name} {value!r} must not be drive-qualified."
+    )
+  if value in (".", "..") or ".." in value.replace("\\", "/").split("/"):
     raise input_validation_error.InputValidationError(
         f"{field_name} {value!r} must not contain traversal segments."
     )

@@ -25,7 +25,6 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...utils import model_name_utils
-from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
 from ._invocation_utils import as_llm_agent
 from ._invocation_utils import require_run_config
@@ -37,11 +36,14 @@ def _merge_run_config_http_options(
 ) -> None:
   """Merges RunConfig http_options into the request config, RunConfig wins.
 
+  The RunConfig's options are copied in rather than aliased, so request
+  assembly cannot write back into the RunConfig.
+
   base_url and api_version are configuration-time settings, not request-time,
-  so they are intentionally not merged here.
+  so they are intentionally not merged into an existing config.http_options.
   """
   if config.http_options is None:
-    config.http_options = run_config_http_options
+    config.http_options = _copy_http_options(run_config_http_options)
     return
 
   if run_config_http_options.headers:
@@ -53,6 +55,44 @@ def _merge_run_config_http_options(
     value = getattr(run_config_http_options, field, None)
     if value is not None:
       setattr(config.http_options, field, value)
+
+
+def _copy_http_options(
+    http_options: types.HttpOptions,
+) -> types.HttpOptions:
+  """Copies http_options far enough that assembly cannot write through it.
+
+  Deliberately not a deep copy: the field can carry a live httpx or aiohttp
+  client and an SSL context, which raise ``TypeError: cannot pickle`` on a deep
+  copy. Only ``headers`` is mutated in place during assembly.
+  """
+  return http_options.model_copy(
+      update={'headers': dict(http_options.headers)}
+      if http_options.headers is not None
+      else {}
+  )
+
+
+def _copy_request_scoped_fields(
+    config: types.GenerateContentConfig,
+) -> types.GenerateContentConfig:
+  """Copies the agent config fields that request assembly goes on to mutate.
+
+  ``model_copy`` is shallow, so ``labels`` and ``http_options`` would still be
+  the agent's own objects and the writes during assembly would outlive the
+  invocation and be seen by every later run of that agent.
+
+  The copies stay shallow on purpose. ``http_options`` can hold a live httpx or
+  aiohttp client and an SSL context, none of which survive a deep copy, so only
+  its ``headers`` dict is copied: that is the one part assembly mutates in
+  place, and assigning the other fields lands on the copy.
+  """
+  updates: dict[str, object] = {}
+  if config.labels is not None:
+    updates['labels'] = dict(config.labels)
+  if config.http_options is not None:
+    updates['http_options'] = _copy_http_options(config.http_options)
+  return config.model_copy(update=updates)
 
 
 def _build_basic_request(
@@ -71,14 +111,15 @@ def _build_basic_request(
   agent = as_llm_agent(invocation_context)
   run_config = require_run_config(invocation_context)
   model = agent.canonical_model
-  llm_request.model = model if isinstance(model, str) else model.model
+  llm_request.model = model.model
 
   # Preserved across the agent-config overwrite below, then merged back.
   run_config_http_options = llm_request.config.http_options
 
+  generate_content_config = agent.generate_content_config
   llm_request.config = (
-      agent.generate_content_config.model_copy(deep=True)
-      if agent.generate_content_config
+      _copy_request_scoped_fields(generate_content_config)
+      if generate_content_config
       else types.GenerateContentConfig()
   )
 
@@ -100,7 +141,7 @@ def _build_basic_request(
   # the basic flow. Structured output for tasks is collected via the
   # finish_task tool schema instead.
   if getattr(agent, 'mode', None) != 'task' and agent.output_schema:
-    if not agent.tools or can_use_output_schema_with_tools(model):
+    if not agent.tools or model.capabilities.output_schema_and_tools:
       llm_request.set_output_schema(agent.output_schema)
 
   llm_request.live_connect_config.response_modalities = (

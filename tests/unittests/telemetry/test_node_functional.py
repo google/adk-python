@@ -22,25 +22,22 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
 
+from .functional._aclosing import aclosing_wrapping_assertions
+from .functional._recording import record_case
+from .functional._scenarios import install_telemetry
+from .functional._scenarios import run_node_scenario
 from .functional_node_test_cases import ALL_NODE_CASES
-from .functional_test_helpers import aclosing_wrapping_assertions
-from .functional_test_helpers import install_telemetry
-from .functional_test_helpers import run_node_scenario
-from .functional_test_helpers import TelemetryDigest
 
 if TYPE_CHECKING:
   from google.adk.events.event import Event
   from opentelemetry.sdk.trace import ReadableSpan
 
-  from .functional_test_helpers import FunctionalTestCase
+  from .functional._recording import FunctionalTestCase
 
 
-@pytest.mark.parametrize('case', ALL_NODE_CASES, ids=lambda c: c.test_id)
+@pytest.mark.parametrize("case", ALL_NODE_CASES, ids=lambda c: c.test_id)
 @pytest.mark.asyncio
-async def test_telemetry_schema(
-    case: FunctionalTestCase,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_telemetry_schema(case: FunctionalTestCase) -> None:
   """Tests creation of multiple spans/logs in an E2E runner invocation with a
 
   workflow.
@@ -49,20 +46,10 @@ async def test_telemetry_schema(
   matches the hand-written expected shape for the given semconv +
   content-capture configuration.
   """
-  case.apply_env(monkeypatch)
-  span_exporter = InMemorySpanExporter()
-  log_exporter = InMemoryLogRecordExporter()
-  metric_reader = InMemoryMetricReader()
-  install_telemetry(monkeypatch, span_exporter, log_exporter, metric_reader)
+  recording = await record_case(case)
 
-  events = await run_node_scenario()
-  spans = span_exporter.get_finished_spans()
-  digest = TelemetryDigest.build(
-      spans, log_exporter.get_finished_logs(), metric_reader.get_metrics_data()
-  )
-
-  assert digest == case.expected
-  _verify_associated_events(spans, events)
+  assert recording.digest == case.expected
+  _verify_associated_events(recording.spans, recording.events)
 
 
 @pytest.mark.asyncio
@@ -93,28 +80,28 @@ def _verify_associated_events(
     spans: tuple[ReadableSpan, ...], events: list[Event]
 ):
   def _nodelike_name(span: ReadableSpan) -> str:
-    for prefix in ['invoke_node ', 'invoke_workflow ', 'invoke_agent ']:
+    for prefix in ["invoke_node ", "invoke_workflow ", "invoke_agent "]:
       if span.name.startswith(prefix):
-        return span.name.replace(prefix, '')
-    return ''
+        return span.name.replace(prefix, "")
+    return ""
 
   def _emitting_node_name(event: Event) -> str:
     # Strip out
     # 1. Path except for the last node (everything before "/")
     # 2. Retry count (everything after "@")
-    return event.node_info.path.split('/')[-1].split('@')[0]
+    return event.node_info.path.split("/")[-1].split("@")[0]
 
   events_by_id = {event.id: event for event in events}
   for span in spans:
     if not span.attributes:
       continue
     associated_ids = span.attributes.get(
-        'gcp.vertex.agent.associated_event_ids', None
+        "gcp.vertex.agent.associated_event_ids", None
     )
     if associated_ids is None:
       continue
     assert isinstance(associated_ids, tuple)
-    assert len(associated_ids) > 0, f'Span name {span.name} emitted no events'
+    assert len(associated_ids) > 0, f"Span name {span.name} emitted no events"
     for event_id in associated_ids:
       event = events_by_id[str(event_id)]
       assert _nodelike_name(span) == _emitting_node_name(event)
@@ -135,7 +122,7 @@ async def test_exception_preserves_attributes(
   )
 
   captured_events: list[Event] = []
-  with pytest.raises(ValueError, match='This tool always fails'):
+  with pytest.raises(ValueError, match="This tool always fails"):
     await run_node_scenario(failing=True, event_sink=captured_events)
 
   # Assert
@@ -143,25 +130,25 @@ async def test_exception_preserves_attributes(
   _verify_associated_events(spans, captured_events)
   spans_by_name = {span.name: span for span in spans}
 
-  assert 'execute_tool some_tool' in spans_by_name
-  tool_span = spans_by_name['execute_tool some_tool']
+  assert "execute_tool some_tool" in spans_by_name
+  tool_span = spans_by_name["execute_tool some_tool"]
 
   attrs = dict(tool_span.attributes)
   # Dynamic ID
-  tool_call_id = attrs.get('gen_ai.tool.call.id')
+  tool_call_id = attrs.get("gen_ai.tool.call.id")
 
   assert dict(tool_span.attributes) == {
-      'gen_ai.operation.name': 'execute_tool',
-      'gen_ai.agent.name': 'some_root_agent',
-      'gen_ai.tool.name': 'some_tool',
-      'gen_ai.tool.description': 'A sample tool.',
-      'gen_ai.tool.type': 'FunctionTool',
-      'error.type': 'ValueError',
-      'gcp.vertex.agent.llm_request': '{}',
-      'gcp.vertex.agent.llm_response': '{}',
-      'gcp.vertex.agent.tool_call_args': '{"arg1": "val1"}',
-      'gen_ai.tool.call.id': tool_call_id,
-      'gcp.vertex.agent.tool_response': '{"result": "<not specified>"}',
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.agent.name": "some_root_agent",
+      "gen_ai.tool.name": "some_tool",
+      "gen_ai.tool.description": "A sample tool.",
+      "gen_ai.tool.type": "FunctionTool",
+      "error.type": "ValueError",
+      "gcp.vertex.agent.llm_request": "{}",
+      "gcp.vertex.agent.llm_response": "{}",
+      "gcp.vertex.agent.tool_call_args": '{"arg1": "val1"}',
+      "gen_ai.tool.call.id": tool_call_id,
+      "gcp.vertex.agent.tool_response": '{"result": "<not specified>"}',
   }
 
 
@@ -182,12 +169,12 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
   # Arrange
   monkeypatch.setattr(
       tracing,
-      '_instrumented_with_opentelemetry_instrumentation_google_genai',
+      "_instrumented_with_opentelemetry_instrumentation_google_genai",
       lambda: True,
   )
   monkeypatch.setattr(
       tracing,
-      '_is_gemini_agent',
+      "_is_gemini_agent",
       lambda _: True,
   )
 
@@ -195,4 +182,4 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
 
   # Assert
   spans = span_exporter.get_finished_spans()
-  assert not any(span.name.startswith('generate_content') for span in spans)
+  assert not any(span.name.startswith("generate_content") for span in spans)

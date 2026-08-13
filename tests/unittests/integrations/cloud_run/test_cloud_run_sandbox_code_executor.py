@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import sys
+import time
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -48,6 +49,14 @@ class TestCloudRunSandboxCodeExecutor:
     assert not executor.optimize_data_file
     assert executor.sandbox_bin == "/usr/local/gcp/bin/sandbox"
     assert not executor.allow_egress
+    # Bounded by default, so generated code that never terminates cannot hang
+    # the agent waiting on it.
+    assert executor.timeout_seconds == 300
+
+  def test_init_accepts_timeout_seconds_none(self):
+    """Asking for no timeout at all is still allowed, as on the base class."""
+    executor = CloudRunSandboxCodeExecutor(timeout_seconds=None)
+    assert executor.timeout_seconds is None
 
   def test_init_stateful_raises_error(self):
     with pytest.raises(
@@ -93,7 +102,7 @@ class TestCloudRunSandboxCodeExecutor:
         input='print("hello world")',
         capture_output=True,
         text=True,
-        timeout=None,
+        timeout=300,
         check=False,
     )
 
@@ -163,6 +172,30 @@ class TestCloudRunSandboxCodeExecutor:
 
     assert result.stdout == "partial stdout"
     assert result.stderr == "partial stderr"
+
+  @pytest.mark.skipif(
+      sys.platform == "win32", reason="the sandbox binary is POSIX-only"
+  )
+  def test_explicit_timeout_beats_the_default(
+      self, tmp_path, mock_invocation_context: InvocationContext
+  ):
+    """A shorter timeout is enforced against a sandbox that never finishes."""
+    fake_sandbox = tmp_path / "sandbox"
+    fake_sandbox.write_text("#!/bin/sh\nsleep 120\n")
+    fake_sandbox.chmod(0o755)
+
+    executor = CloudRunSandboxCodeExecutor(
+        sandbox_bin=str(fake_sandbox), timeout_seconds=1
+    )
+    started = time.monotonic()
+    result = executor.execute_code(
+        mock_invocation_context, CodeExecutionInput(code="while True: pass")
+    )
+    elapsed = time.monotonic() - started
+
+    # Well under both the 120s sandbox and the 300s default.
+    assert elapsed < 30
+    assert "timed out after 1 seconds" in result.stderr
 
   @patch("subprocess.run")
   def test_execute_code_binary_not_found(

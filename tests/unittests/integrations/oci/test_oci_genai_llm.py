@@ -166,7 +166,10 @@ def test_content_to_oci_message_user_text():
   import oci.generative_ai_inference.models as oci_models
 
   content = Content(role="user", parts=[Part.from_text(text="Hi there")])
-  msg = _content_to_oci_message(content)
+  msgs = _content_to_oci_message(content)
+  assert isinstance(msgs, list)
+  assert len(msgs) == 1
+  msg = msgs[0]
   assert isinstance(msg, oci_models.UserMessage)
   assert msg.role == oci_models.UserMessage.ROLE_USER
   assert msg.content[0].text == "Hi there"
@@ -176,7 +179,10 @@ def test_content_to_oci_message_assistant_text():
   import oci.generative_ai_inference.models as oci_models
 
   content = Content(role="model", parts=[Part.from_text(text="I can help.")])
-  msg = _content_to_oci_message(content)
+  msgs = _content_to_oci_message(content)
+  assert isinstance(msgs, list)
+  assert len(msgs) == 1
+  msg = msgs[0]
   assert isinstance(msg, oci_models.AssistantMessage)
   assert msg.role == oci_models.AssistantMessage.ROLE_ASSISTANT
   assert msg.content[0].text == "I can help."
@@ -192,7 +198,10 @@ def test_content_to_oci_message_multi_part_text():
           Part.from_text(text="Second"),
       ],
   )
-  msg = _content_to_oci_message(content)
+  msgs = _content_to_oci_message(content)
+  assert isinstance(msgs, list)
+  assert len(msgs) == 1
+  msg = msgs[0]
   assert isinstance(msg, oci_models.UserMessage)
   assert "First" in msg.content[0].text
   assert "Second" in msg.content[0].text
@@ -203,7 +212,10 @@ def test_content_to_oci_message_function_call():
 
   part = Part.from_function_call(name="get_weather", args={"city": "Toronto"})
   content = Content(role="model", parts=[part])
-  msg = _content_to_oci_message(content)
+  msgs = _content_to_oci_message(content)
+  assert isinstance(msgs, list)
+  assert len(msgs) == 1
+  msg = msgs[0]
   assert isinstance(msg, oci_models.AssistantMessage)
   assert msg.tool_calls is not None
   assert len(msg.tool_calls) == 1
@@ -221,10 +233,116 @@ def test_content_to_oci_message_function_response():
   )
   part.function_response.id = "call_xyz"
   content = Content(role="user", parts=[part])
-  msg = _content_to_oci_message(content)
+  msgs = _content_to_oci_message(content)
+  assert isinstance(msgs, list)
+  assert len(msgs) == 1
+  msg = msgs[0]
   assert isinstance(msg, oci_models.ToolMessage)
   assert msg.tool_call_id == "call_xyz"
   assert msg.content[0].text
+
+
+def test_content_to_oci_message_multiple_function_responses():
+  import oci.generative_ai_inference.models as oci_models
+
+  part1 = Part.from_function_response(
+      name="get_weather", response={"result": "Sunny, 22°C"}
+  )
+  part1.function_response.id = "call_A"
+
+  part2 = Part.from_function_response(
+      name="get_price", response={"result": "$150"}
+  )
+  part2.function_response.id = "call_B"
+
+  content = Content(role="user", parts=[part1, part2])
+  msgs = _content_to_oci_message(content)
+
+  assert isinstance(msgs, list)
+  assert len(msgs) == 2
+
+  assert isinstance(msgs[0], oci_models.ToolMessage)
+  assert msgs[0].tool_call_id == "call_A"
+
+  assert isinstance(msgs[1], oci_models.ToolMessage)
+  assert msgs[1].tool_call_id == "call_B"
+
+
+def test_content_to_oci_message_multiple_function_responses_no_id():
+  import oci.generative_ai_inference.models as oci_models
+
+  part1 = Part.from_function_response(
+      name="get_weather", response={"result": "Sunny, 22°C"}
+  )
+  part2 = Part.from_function_response(
+      name="get_price", response={"result": "$150"}
+  )
+
+  content = Content(role="user", parts=[part1, part2])
+  msgs = _content_to_oci_message(content)
+
+  assert isinstance(msgs, list)
+  assert len(msgs) == 2
+
+  assert isinstance(msgs[0], oci_models.ToolMessage)
+  assert msgs[0].tool_call_id == ""
+  assert len(msgs[0].content) == 1
+  assert "Sunny" in msgs[0].content[0].text
+
+  assert isinstance(msgs[1], oci_models.ToolMessage)
+  assert msgs[1].tool_call_id == ""
+  assert len(msgs[1].content) == 1
+  assert "$150" in msgs[1].content[0].text
+
+
+def test_content_to_oci_message_mixed_tool_and_text():
+  import oci.generative_ai_inference.models as oci_models
+
+  part1 = Part.from_function_response(
+      name="get_weather", response={"result": "Sunny, 22°C"}
+  )
+  part1.function_response.id = "call_A"
+  part2 = Part.from_text(text="Here is the weather and some extra text.")
+
+  content = Content(role="user", parts=[part1, part2])
+  msgs = _content_to_oci_message(content)
+
+  assert isinstance(msgs, list)
+  assert len(msgs) == 2
+
+  assert isinstance(msgs[0], oci_models.ToolMessage)
+  assert msgs[0].tool_call_id == "call_A"
+
+  assert isinstance(msgs[1], oci_models.UserMessage)
+  assert msgs[1].content[0].text == "Here is the weather and some extra text."
+
+
+def test_build_chat_details_flattens_multiple_tool_messages(oci_llm):
+  import oci.generative_ai_inference.models as oci_models
+
+  part1 = Part.from_function_response(
+      name="get_weather", response={"result": "Sunny, 22°C"}
+  )
+  part1.function_response.id = "call_A"
+
+  part2 = Part.from_function_response(
+      name="get_price", response={"result": "$150"}
+  )
+  part2.function_response.id = "call_B"
+
+  request = LlmRequest(
+      model="google.gemini-2.5-flash",
+      contents=[Content(role="user", parts=[part1, part2])],
+  )
+
+  chat_details = oci_llm._build_chat_details(request)
+  messages = chat_details.chat_request.messages
+
+  assert len(messages) == 2
+  assert isinstance(messages[0], oci_models.ToolMessage)
+  assert messages[0].tool_call_id == "call_A"
+  assert isinstance(messages[1], oci_models.ToolMessage)
+  assert messages[1].tool_call_id == "call_B"
 
 
 # ---------------------------------------------------------------------------

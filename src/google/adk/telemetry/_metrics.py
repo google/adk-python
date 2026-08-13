@@ -141,7 +141,7 @@ def record_agent_invocation_duration(
     agent_name: str,
     elapsed_s: float,
     error: Exception | None = None,
-):
+) -> None:
   """Records the duration of the agent invocation."""
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
   if error is not None:
@@ -189,7 +189,7 @@ def record_tool_execution_duration(
     elapsed_s: float,
     error: Exception | None = None,
     error_type: str | None = None,
-):
+) -> None:
   """Records the duration of the tool execution.
 
   Args:
@@ -219,7 +219,7 @@ def record_client_operation_duration(
     llm_request: LlmRequest,
     responses: list[LlmResponse],
     error: Exception | None = None,
-):
+) -> None:
   """Encapsulates the business logic for tracking gen_ai client operation duration."""
 
   attrs = {
@@ -247,7 +247,7 @@ def record_client_token_usage(
     agent_name: str,
     llm_request: LlmRequest,
     responses: list[LlmResponse],
-):
+) -> None:
   """Encapsulates the business logic for tracking gen_ai client token usage."""
   if not responses:
     return

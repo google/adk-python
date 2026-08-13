@@ -1,90 +1,135 @@
 # Callbacks and Plugins
 
-## 📋 Agent Verification Checklist (Callbacks)
-Use this checklist when implementing callbacks or plugins:
-- [ ] **Override Behavior**: Remember that returning a non-`None` value in a callback *overrides* the default behavior (e.g., skips model call or tool execution). Is that intentional?
-- [ ] **Context Type**: Remember that `CallbackContext` is an alias for `Context`.
-
-## 💡 Quick Reference (Callback Returns)
-- **Continue Normal Flow**: Return `None`.
-- **Override Model**: Return `LlmResponse` in `before_model`.
-- **Override Tool**: Return `dict` in `before_tool`.
-
-## Agent Callbacks
+Callbacks hook one agent; plugins hook every agent under an `App`. Both follow
+the same contract: **return `None` to let the normal thing happen, return a
+value to replace it.**
 
 ```python
-root_agent = Agent(
-    before_agent_callback=my_before_cb,      # Before agent runs
-    after_agent_callback=my_after_cb,         # After agent runs
-    before_model_callback=my_before_model,    # Before LLM call
-    after_model_callback=my_after_model,      # After LLM call
-    before_tool_callback=my_before_tool,      # Before tool call
-    after_tool_callback=my_after_tool,        # After tool call
-    on_model_error_callback=my_error_cb,      # On LLM error
-    on_tool_error_callback=my_tool_error_cb,  # On tool error
-    ...
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.adk.tools import BaseTool, ToolContext
+```
+
+`CallbackContext` and `ToolContext` are both aliases for `Context`.
+
+## The eight agent callbacks
+
+| Field | Arguments | Return to override |
+|---|---|---|
+| `before_agent_callback` | `(CallbackContext)` | `types.Content` — skips the agent entirely |
+| `after_agent_callback` | `(CallbackContext)` | `types.Content` — replaces the agent's output |
+| `before_model_callback` | `(CallbackContext, LlmRequest)` | `LlmResponse` — skips the model call |
+| `after_model_callback` | `(CallbackContext, LlmResponse)` | `LlmResponse` — replaces the response |
+| `on_model_error_callback` | `(CallbackContext, LlmRequest, Exception)` | `LlmResponse` — suppresses the error |
+| `before_tool_callback` | `(BaseTool, dict, ToolContext)` | `dict` — skips the tool call |
+| `after_tool_callback` | `(BaseTool, dict, ToolContext, dict)` | `dict` — replaces the tool result |
+| `on_tool_error_callback` | `(BaseTool, dict, ToolContext, Exception)` | `dict` — suppresses the error |
+
+Every one may be sync or async, and every one accepts either a single callable
+or a list. A list runs in order and stops at the first callback that returns
+something other than `None`.
+
+## Examples
+
+Blocking a request before it reaches the model:
+
+```python
+def guard(
+    callback_context: CallbackContext, llm_request: LlmRequest
+) -> LlmResponse | None:
+  for content in llm_request.contents:
+    for part in content.parts or []:
+      if part.text and 'unsafe' in part.text:
+        return LlmResponse(content=types.ModelContent('I cannot process that.'))
+  return None
+
+
+agent = LlmAgent(
+    name='guarded', model='gemini-2.5-flash', before_model_callback=guard
 )
 ```
 
-**Note:** `CallbackContext` is a backward-compatible alias for `Context`. Both work identically.
-
-## Callback Signatures
+Observing without changing anything — note the explicit `return None`:
 
 ```python
-# before_agent / after_agent
-def callback(callback_context: CallbackContext):
-  return None  # Continue normal flow
-  # OR return ModelContent to override
-
-# before_model
-def callback(callback_context, llm_request: LlmRequest):
-  return None  # Continue to LLM
-  # OR return LlmResponse to skip LLM
-
-# after_model
-def callback(callback_context, llm_response):
-  return None  # Use actual response
-  # OR return LlmResponse to override
-
-# before_tool
-def callback(tool, args, tool_context):
-  return None  # Call tool normally
-  # OR return dict to skip tool
-
-# after_tool
-def callback(tool, args, tool_context, tool_response):
-  return None  # Use actual response
-  # OR return dict to override
+def log_response(
+    callback_context: CallbackContext, llm_response: LlmResponse
+) -> LlmResponse | None:
+  logger.info('model said: %s', llm_response.content)
+  return None
 ```
 
-**Multiple callbacks:** Pass a list. They execute in order until one
-returns non-None.
+Auditing and repairing tool calls:
 
-## Plugins (App-Level Callbacks)
+```python
+def audit(tool: BaseTool, args: dict, tool_context: ToolContext) -> dict | None:
+  logger.info('calling %s with %s', tool.name, args)
+  return None
+
+
+def repair(
+    tool: BaseTool, args: dict, tool_context: ToolContext, tool_response: dict
+) -> dict | None:
+  if 'error' in tool_response:
+    return {'result': 'Tool execution failed, please try again.'}
+  return None
+
+
+agent = LlmAgent(
+    name='audited',
+    model='gemini-2.5-flash',
+    tools=[my_tool],
+    before_tool_callback=audit,
+    after_tool_callback=repair,
+)
+```
+
+Degrading gracefully on failure:
+
+```python
+def handle_model_error(
+    callback_context: CallbackContext,
+    llm_request: LlmRequest,
+    error: Exception,
+) -> LlmResponse | None:
+  return LlmResponse(content=types.ModelContent('Service unavailable.'))
+
+
+agent = LlmAgent(
+    name='resilient',
+    model='gemini-2.5-flash',
+    on_model_error_callback=handle_model_error,
+)
+```
+
+## Plugins
+
+A plugin is the same set of hooks applied to every agent, tool, and model call
+in an app, plus a few that only make sense at app scope. All hooks are async and
+keyword-only.
 
 ```python
 from google.adk.plugins.base_plugin import BasePlugin
 
+
 class MyPlugin(BasePlugin):
+
   def __init__(self):
     super().__init__(name='my_plugin')
 
   async def before_agent_callback(self, *, agent, callback_context):
-    pass
+    return None
 
   async def before_model_callback(self, *, callback_context, llm_request):
-    pass
+    return None
 ```
 
-## Built-in Plugins
+Beyond the eight agent-level hooks, `BasePlugin` adds
+`on_user_message_callback`, `before_run_callback`, `on_event_callback`,
+`after_run_callback`, `on_agent_error_callback`, and `on_run_error_callback`.
 
-| Plugin | Import | Purpose |
-|--------|--------|---------|
-| `ContextFilterPlugin` | `from google.adk.plugins.context_filter_plugin import ContextFilterPlugin` | Limit history in context |
-| `SaveFilesAsArtifactsPlugin` | `from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin` | Auto-save file outputs |
-| `GlobalInstructionPlugin` | `from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin` | Inject global instructions |
-
-Usage with App:
+Register plugins on the `App`:
 
 ```python
 from google.adk.apps import App
@@ -96,3 +141,17 @@ app = App(
     plugins=[ContextFilterPlugin(num_invocations_to_keep=3)],
 )
 ```
+
+## Built-in plugins
+
+| Plugin | Module under `google.adk.plugins` | Purpose |
+|---|---|---|
+| `ContextFilterPlugin` | `context_filter_plugin` | Trims history to the last N invocations |
+| `SaveFilesAsArtifactsPlugin` | `save_files_as_artifacts_plugin` | Stores file outputs as session artifacts |
+| `GlobalInstructionPlugin` | `global_instruction_plugin` | Prepends an instruction to every agent |
+| `LoggingPlugin` | `logging_plugin` | Logs the invocation lifecycle |
+| `DebugLoggingPlugin` | `debug_logging_plugin` | Verbose request and response logging |
+| `ReflectAndRetryToolPlugin` | `reflect_retry_tool_plugin` | Retries a failed tool call after letting the model reflect |
+| `MultimodalToolResultsPlugin` | `multimodal_tool_results_plugin` | Routes non-text tool results into content |
+| `AutoTracingPlugin` | `auto_tracing_plugin` | Emits tracing spans automatically |
+| `BigQueryAgentAnalyticsPlugin` | `bigquery_agent_analytics_plugin` | Exports invocation analytics to BigQuery |

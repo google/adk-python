@@ -18,11 +18,9 @@ Wraps a pre-configured ``google.antigravity.Agent`` as a native ADK
 ``BaseAgent`` node, delegating each turn to the Antigravity runner and
 streaming its trajectory steps back as ADK events.
 
-The Antigravity SDK currently only supports its local (in-process Go harness)
-mode. That mode owns its own session lifecycle and cannot participate in ADK's
-multi-agent delegation, so an ``AntigravityAgent`` is restricted to running as a
-standalone root agent. This restriction is expected to be lifted once the SDK
-gains a remote connection mode.
+The SDK harness runs its own agent loop and owns its own conversation, so an
+``AntigravityAgent`` can never be given ADK ``sub_agents``, and it must run as
+a standalone root agent unless it declares ``mode='single_turn'``.
 """
 
 from __future__ import annotations
@@ -31,6 +29,7 @@ import hashlib
 import logging
 from typing import Any
 from typing import AsyncGenerator
+from typing import Literal
 
 from google.antigravity import Agent
 from google.antigravity import AgentConfig
@@ -41,32 +40,66 @@ from typing_extensions import override
 from . import _event_converter
 from . import _trajectory_files
 from ...agents.base_agent import BaseAgent
+from ...agents.context import Context
 from ...agents.invocation_context import InvocationContext
 from ...agents.run_config import StreamingMode
 from ...events.event import Event
+from ...utils.content_utils import to_user_content
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-_ROOT_ONLY_MESSAGE = (
-    'AntigravityAgent currently only supports the Antigravity SDK local mode, '
-    'which must run as a standalone root agent. Using it as a sub-agent or '
-    'giving it sub-agents is not supported yet (this restriction is temporary '
-    'and will be lifted once the SDK supports remote connection modes).'
+_NO_SUB_AGENTS_MESSAGE = (
+    'AntigravityAgent cannot be given sub_agents: the Antigravity SDK harness '
+    'runs its own agent loop and would never dispatch to an ADK child.'
+)
+_PARENT_REQUIRES_SINGLE_TURN_MESSAGE = (
+    "AntigravityAgent may only be a sub-agent when it sets mode='single_turn', "
+    'where the parent composes a self-contained request. Otherwise it must run '
+    'as a standalone root agent.'
 )
 
 
 def _derive_conversation_id(session_id: str, agent_name: str) -> str:
   """Returns a deterministic conversation id (>=32 chars, [a-zA-Z0-9-])."""
-  # Hashing keeps the id stable across turns (so trajectories resume) while
-  # always satisfying the Antigravity SDK's length and character constraints.
+  # Hashing keeps the id stable across turns while satisfying the SDK's length
+  # and character constraints.
   return hashlib.sha256(f'{session_id}/{agent_name}'.encode()).hexdigest()
 
 
+def _final_model_text(event: Event, author: str) -> str | None:
+  """Returns an event's user-visible model text, or None if it carries none.
+
+  Partials, other authors, and thought/function parts do not count.
+
+  Args:
+    event: The event to inspect.
+    author: The agent name whose events count as model output.
+
+  Returns:
+    The concatenated user-visible text, or None if the event carries none.
+  """
+  if event.partial or event.author != author or not event.content:
+    return None
+  parts = event.content.parts or []
+  chunks = [
+      part.text
+      for part in parts
+      if part.text
+      and not part.thought
+      and not part.function_call
+      and not part.function_response
+  ]
+  return ''.join(chunks) if chunks else None
+
+
 class AntigravityAgent(BaseAgent):
-  """Runs a Google Antigravity SDK agent as an ADK root agent.
+  """Runs a Google Antigravity SDK agent as an ADK agent.
 
   Each turn spins up a fresh SDK ``Agent`` from ``config`` and exposes its
   trajectory steps as standard ADK events recorded in the session.
+
+  Must be a standalone root agent unless ``mode='single_turn'``; see the module
+  docstring.
   """
 
   model_config = ConfigDict(
@@ -78,23 +111,38 @@ class AntigravityAgent(BaseAgent):
   config: AgentConfig = Field(exclude=True)
   """The ``google.antigravity.AgentConfig`` describing the SDK agent.
 
-  Typically a ``LocalAgentConfig``. Excluded from serialization because it holds
+  Typically a ``LocalAgentConfig``. Excluded from serialization: it holds
   runtime wiring (e.g. callable tools) that is not JSON-serializable.
+  """
+
+  mode: Literal['single_turn'] | None = Field(default=None, frozen=True)
+  """Composition mode when used as a sub-agent.
+
+  ``'single_turn'`` is what allows this agent to have a parent at all: the
+  parent ``LlmAgent`` exposes it as an inline tool taking a ``request`` string,
+  rather than as an LLM-transfer target. The parent composes the task; session
+  history is not forwarded. Each call is an independent conversation: nothing
+  is resumed, and ``config.save_dir`` is not required.
+
+  Leave as ``None`` for a standalone root agent. Frozen, because the adoption
+  guard only gets to check it once, at construction.
   """
 
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
     if self.sub_agents:
-      raise ValueError(_ROOT_ONLY_MESSAGE)
+      raise ValueError(_NO_SUB_AGENTS_MESSAGE)
 
   def __setattr__(self, name: str, value: Any) -> None:
-    # `parent_agent` is assigned by a parent agent when it adopts this agent as
-    # a sub-agent (see BaseAgent.__set_parent_agent_for_sub_agents). Rejecting a
-    # non-None assignment here is what enforces the root-only restriction for
-    # the "used as a sub-agent" direction at construction time.
-    if name == 'parent_agent' and value is not None:
-      raise ValueError(_ROOT_ONLY_MESSAGE)
+    # A parent assigns `parent_agent` on adoption; rejecting it here is what
+    # enforces the restriction. `mode` via __dict__: fields may be unpopulated.
+    if (
+        name == 'parent_agent'
+        and value is not None
+        and self.__dict__.get('mode') != 'single_turn'
+    ):
+      raise ValueError(_PARENT_REQUIRES_SINGLE_TURN_MESSAGE)
     super().__setattr__(name, value)
 
   def _extract_user_prompt(self, ctx: InvocationContext) -> str:
@@ -109,8 +157,11 @@ class AntigravityAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
+    # A single-turn call neither resumes an earlier conversation nor leaves
+    # one behind, so it needs no folder to keep them in.
+    single_turn = self.mode == 'single_turn'
     save_dir = self.config.save_dir
-    if not save_dir:
+    if not single_turn and not save_dir:
       raise ValueError(
           'AntigravityAgent requires config.save_dir to persist and resume '
           'conversation trajectories across turns.'
@@ -118,24 +169,29 @@ class AntigravityAgent(BaseAgent):
 
     prompt = self._extract_user_prompt(ctx)
 
-    # Deep-copy the config so each turn gets an independent, fresh SDK Agent.
-    # The SDK Agent's AsyncExitStack is single-use, so a new instance is needed
-    # per turn; copying also avoids mutating the caller's config.
+    # The SDK Agent's AsyncExitStack is single-use, so each turn needs a fresh
+    # one; copying also avoids mutating the caller's config.
     config = self.config.model_copy(deep=True)
-    conversation_id = _derive_conversation_id(ctx.session.id, self.name)
-
-    # Resume only when a trajectory already exists; the harness errors if a
-    # conversation_id is given with no matching file on disk.
-    resumed = _trajectory_files.has_trajectory(save_dir, conversation_id)
+    # The id is keyed on the ADK session, so the turns of one session share a
+    # conversation. Single-turn calls are not, so they get no id.
+    conversation_id: str | None = None
+    resumed = False
+    resume_step_index = -1  # Highest step_index already emitted; -1 = none.
+    # `and save_dir` is redundant at runtime (the guard above raised already);
+    # it narrows save_dir to str for the type checker.
+    if not single_turn and save_dir:
+      conversation_id = _derive_conversation_id(ctx.session.id, self.name)
+      # Resume only when a trajectory already exists; the harness errors if a
+      # conversation_id is given with no matching file on disk.
+      resumed = _trajectory_files.has_trajectory(save_dir, conversation_id)
+      if resumed:
+        # On resume the harness replays the whole trajectory; skip steps
+        # already emitted in earlier turns and track the new max to persist.
+        resume_step_index = _trajectory_files.load_resume_step_index(
+            save_dir, conversation_id
+        )
     config.conversation_id = conversation_id if resumed else None
 
-    # On resume the harness replays the whole trajectory; skip steps already
-    # emitted in earlier turns and track the new max index to persist.
-    resume_step_index = (
-        _trajectory_files.load_resume_step_index(save_dir, conversation_id)
-        if resumed
-        else -1
-    )
     max_step_index = resume_step_index
 
     seen_tool_calls: set[str] = set()
@@ -163,12 +219,63 @@ class AntigravityAgent(BaseAgent):
 
       harness_conversation_id = active_agent.conversation_id
 
-    # On a fresh turn the harness wrote traj-<random>; rename it to our
-    # deterministic name (the file is flushed once the session above exits).
-    if not resumed and harness_conversation_id:
-      _trajectory_files.rename_trajectory(
-          save_dir, conversation_id, harness_conversation_id
+    # On a fresh turn the harness wrote traj-<random> (flushed when the session
+    # exits above); rename it. No id under single-turn, so that case skips.
+    if save_dir and conversation_id:
+      if not resumed and harness_conversation_id:
+        _trajectory_files.rename_trajectory(
+            save_dir, conversation_id, harness_conversation_id
+        )
+      _trajectory_files.save_resume_step_index(
+          save_dir, conversation_id, max_step_index
       )
-    _trajectory_files.save_resume_step_index(
-        save_dir, conversation_id, max_step_index
+
+  @override
+  async def _run_impl(
+      self,
+      *,
+      ctx: Context,
+      node_input: Any,
+  ) -> AsyncGenerator[Event, None]:
+    """Runs the agent as a node, threading node_input in and output out.
+
+    Unlike ``BaseAgent._run_impl``, the parent's composed request is used as
+    the prompt, and the final model text is reported as the node's output.
+
+    Args:
+      ctx: The node context for this run.
+      node_input: The parent's composed request, or None for a classic
+        agent-tree run.
+
+    Yields:
+      The agent's events, followed by a trailing event whose ``output`` is the
+      final model text, or the empty string if there was none.
+    """
+    parent_context = ctx.get_invocation_context()
+    if node_input is not None:
+      parent_context = parent_context.model_copy(
+          update={'user_content': to_user_content(node_input)}
+      )
+
+    last_text: str | None = None
+    # Keep in sync with BaseAgent._run_impl: super() cannot be delegated to,
+    # since it re-derives the invocation context and would drop node_input.
+    async for event in self.run_async(parent_context=parent_context):
+      # Preserve author by setting it in context for NodeRunner.
+      if event.author:
+        ctx.event_author = event.author
+      if not event.node_info.path and event.author == self.name:
+        event.node_info.path = ctx.node_path
+      if (text := _final_model_text(event, self.name)) is not None:
+        last_text = text
+      yield event
+
+    # Both assignments are needed: NodeRunner._enrich_event reads
+    # ctx.event_author, and a direct consumer reads author=.
+    ctx.event_author = self.name
+    yield Event(
+        invocation_id=parent_context.invocation_id,
+        author=self.name,
+        branch=parent_context.branch,
+        output=last_text or '',
     )

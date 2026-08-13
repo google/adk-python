@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
-from ..utils.model_name_utils import is_gemini_1_model
 from ..utils.model_name_utils import is_gemini_model
 from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_tool import BaseTool
@@ -30,7 +29,7 @@ if TYPE_CHECKING:
 
 
 class GoogleMapsGroundingTool(BaseTool):
-  """A built-in tool that is automatically invoked by Gemini 2 models to ground query results with Google Maps.
+  """A built-in tool that is automatically invoked by Gemini models to ground query results with Google Maps.
 
   This tool operates internally within the model and does not require or perform
   local code execution.
@@ -53,11 +52,7 @@ class GoogleMapsGroundingTool(BaseTool):
     model_check_disabled = is_gemini_model_id_check_disabled()
     llm_request.config = llm_request.config or types.GenerateContentConfig()
     llm_request.config.tools = llm_request.config.tools or []
-    if is_gemini_1_model(llm_request.model):
-      raise ValueError(
-          'Google Maps grounding tool cannot be used with Gemini 1.x models.'
-      )
-    elif is_gemini_model(llm_request.model) or model_check_disabled:
+    if is_gemini_model(llm_request.model) or model_check_disabled:
       llm_request.config.tools.append(
           types.Tool(google_maps=types.GoogleMaps())
       )

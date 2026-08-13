@@ -54,8 +54,53 @@ def test_get_declaration_with_json_schema_feature_enabled():
 
 
 @pytest.mark.asyncio
-async def test_preload_memory_registers_dynamic_instructions():
-  """Test that PreloadMemoryTool registers memory into _dynamic_instructions."""
+async def test_process_llm_request_registers_the_tool():
+  """The base class contribution: the model can actually call load_memory."""
+  tool_context = mock.Mock(spec=ToolContext)
+  llm_request = LlmRequest()
+
+  await load_memory_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert llm_request.tools_dict['load_memory'] is load_memory_tool
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_tells_the_model_it_has_memory():
+  """Without the instruction the model never knows to call the tool."""
+  tool_context = mock.Mock(spec=ToolContext)
+  llm_request = LlmRequest()
+
+  await load_memory_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert 'You have memory.' in llm_request.config.system_instruction
+  assert (
+      'call load_memory function with a query'
+      in llm_request.config.system_instruction
+  )
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_appends_to_existing_system_instruction():
+  """The memory instruction must not clobber instructions already there."""
+  tool_context = mock.Mock(spec=ToolContext)
+  llm_request = LlmRequest()
+  llm_request.config.system_instruction = 'be terse'
+
+  await load_memory_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert llm_request.config.system_instruction.startswith('be terse')
+  assert 'You have memory.' in llm_request.config.system_instruction
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_registers_transient_user_content():
+  """Test that PreloadMemoryTool registers memory as transient user content."""
   tool = PreloadMemoryTool()
   tool_context = mock.Mock(spec=ToolContext)
   tool_context.user_content = types.Content(
@@ -80,7 +125,8 @@ async def test_preload_memory_registers_dynamic_instructions():
       tool_context=tool_context, llm_request=llm_request
   )
 
-  assert len(llm_request._dynamic_instructions) == 1
-  assert '<PAST_CONVERSATIONS>' in llm_request._dynamic_instructions[0]
+  assert len(llm_request._dynamic_instructions) == 0
   assert llm_request.config.system_instruction is None
-  assert len(llm_request.contents) == 0
+  assert len(llm_request.contents) == 1
+  assert llm_request.contents[0].role == 'user'
+  assert '<PAST_CONVERSATIONS>' in llm_request.contents[0].parts[0].text

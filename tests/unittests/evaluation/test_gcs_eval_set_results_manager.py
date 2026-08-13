@@ -218,3 +218,41 @@ class TestGcsEvalSetResultsManager:
         gcs_eval_set_results_manager.list_eval_set_results(app_name)
     )
     assert retrieved_eval_set_result_ids == []
+
+  @pytest.mark.parametrize("app_name", ["", ".", "..", "foo/bar", "foo\\bar"])
+  def test_save_eval_set_result_rejects_invalid_app_name(
+      self, gcs_eval_set_results_manager, app_name
+  ):
+    with pytest.raises(ValueError):
+      gcs_eval_set_results_manager.save_eval_set_result(
+          app_name, "test_eval_set", _get_test_eval_case_results()
+      )
+
+  @pytest.mark.parametrize(
+      "eval_set_id", ["", ".", "..", "foo/bar", "foo\\bar"]
+  )
+  def test_save_eval_set_result_rejects_invalid_eval_set_id(
+      self, gcs_eval_set_results_manager, eval_set_id
+  ):
+    with pytest.raises(ValueError):
+      gcs_eval_set_results_manager.save_eval_set_result(
+          "test_app", eval_set_id, _get_test_eval_case_results()
+      )
+
+  @pytest.mark.parametrize("app_name", ["", ".", "..", "foo/bar", "foo\\bar"])
+  def test_get_eval_set_result_rejects_invalid_app_name(
+      self, gcs_eval_set_results_manager, app_name
+  ):
+    with pytest.raises(ValueError):
+      gcs_eval_set_results_manager.get_eval_set_result(app_name, "some_id")
+
+  @pytest.mark.parametrize(
+      "eval_set_result_id", ["", ".", "..", "foo/bar", "foo\\bar"]
+  )
+  def test_get_eval_set_result_rejects_invalid_eval_set_result_id(
+      self, gcs_eval_set_results_manager, eval_set_result_id
+  ):
+    with pytest.raises(ValueError):
+      gcs_eval_set_results_manager.get_eval_set_result(
+          "test_app", eval_set_result_id
+      )
