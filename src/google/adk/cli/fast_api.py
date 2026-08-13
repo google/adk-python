@@ -79,7 +79,7 @@ class AgentAppMapping(Mapping[str, str]):
       try:
         loaded = self.agent_loader.load_agent(folder_name)
         if isinstance(loaded, App) and loaded.name == app_name:
-          return folder_name
+          return str(folder_name)
       except Exception:
         pass
     return app_name
