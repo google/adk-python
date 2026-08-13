@@ -1,0 +1,35 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""ADK-owned span attribute names.
+
+These attributes are defined by ADK itself; they are not part of any
+OpenTelemetry semantic convention (neither the stable one in
+``_stable_semconv`` nor the experimental one in ``_experimental_semconv``).
+
+Everything named ``adk.experimental.*`` is emitted only when experimental
+telemetry is enabled and carries no compatibility guarantee: an attribute may be
+renamed, restructured, or removed in any release.
+"""
+
+from __future__ import annotations
+
+ADK_EXPERIMENTAL_SKILL_NAME = 'adk.experimental.skill.name'
+ADK_EXPERIMENTAL_SKILL_SOURCE_TYPE = 'adk.experimental.skill.source.type'
+ADK_EXPERIMENTAL_SKILL_CACHE_HIT = 'adk.experimental.skill.cache_hit'
+ADK_EXPERIMENTAL_SKILL_DESCRIPTION = 'adk.experimental.skill.description'
+ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS = (
+    'adk.experimental.skill.additional_tools'
+)
+ADK_EXPERIMENTAL_SKILL_SOURCE_URI = 'adk.experimental.skill.source.uri'
