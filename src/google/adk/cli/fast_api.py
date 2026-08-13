@@ -26,7 +26,7 @@ from typing import AsyncIterator
 from typing import Awaitable
 from typing import Callable
 from typing import Literal
-from typing import Mapping
+from typing import Mapping, Iterator
 
 import click
 from fastapi import FastAPI
@@ -71,10 +71,10 @@ _ALLOWED_AGENT_ENGINE_CLASS_METHODS = frozenset(
 
 class AgentAppMapping(Mapping[str, str]):
 
-  def __init__(self, agent_loader):
+  def __init__(self, agent_loader: Any) -> None:
     self.agent_loader = agent_loader
 
-  def __getitem__(self, app_name):
+  def __getitem__(self, app_name: str) -> str:
     for folder_name in self.agent_loader.list_agents():
       try:
         loaded = self.agent_loader.load_agent(folder_name)
@@ -84,10 +84,10 @@ class AgentAppMapping(Mapping[str, str]):
         pass
     return app_name
 
-  def __iter__(self):
+  def __iter__(self) -> Iterator[str]:
     return iter([])
 
-  def __len__(self):
+  def __len__(self) -> int:
     return 1
 
 
