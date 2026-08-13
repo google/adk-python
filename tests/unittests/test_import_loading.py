@@ -136,6 +136,20 @@ for module_name in {_LAZY_PACKAGES!r}:
   assert result.returncode == 0, result.stderr
 
 
+def test_lazy_packages_resolve_subpackages_as_attributes():
+  """A subpackage stays reachable on its parent, as eager imports left it."""
+  result = run_isolated("""
+import types
+
+import google.adk
+
+for name in ('agents', 'events', 'runners', 'sessions', 'tools'):
+  assert isinstance(getattr(google.adk, name), types.ModuleType), name
+""")
+
+  assert result.returncode == 0, result.stderr
+
+
 def test_lazy_packages_reject_unknown_attributes():
   """The lazy hook raises AttributeError rather than masking typos."""
   result = run_isolated(f"""
