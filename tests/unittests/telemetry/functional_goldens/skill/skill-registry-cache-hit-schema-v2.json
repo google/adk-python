@@ -1,0 +1,368 @@
+{
+  "root_span": {
+    "name": "invoke_workflow some_root_agent",
+    "attributes": {
+      "gen_ai.operation.name": "invoke_workflow",
+      "gen_ai.conversation.id": "PRESENT",
+      "gen_ai.workflow.name": "some_root_agent"
+    },
+    "status": "UNSET",
+    "children": [
+      {
+        "name": "invoke_agent some_root_agent",
+        "attributes": {
+          "gen_ai.operation.name": "invoke_agent",
+          "gen_ai.agent.description": "A sample root agent.",
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.conversation.id": "PRESENT"
+        },
+        "status": "UNSET",
+        "children": [
+          {
+            "name": "call_llm",
+            "attributes": {
+              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.request.model": "mock",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gcp.vertex.agent.session_id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}"
+            },
+            "status": "UNSET",
+            "children": [
+              {
+                "name": "generate_content mock",
+                "attributes": {
+                  "gen_ai.system": "gemini",
+                  "gen_ai.operation.name": "generate_content",
+                  "gen_ai.request.model": "mock",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT"
+                },
+                "status": "UNSET",
+                "children": [
+                  {
+                    "name": "execute_tool load_skill",
+                    "attributes": {
+                      "gen_ai.operation.name": "execute_tool",
+                      "gen_ai.tool.description": "Loads the SKILL.md instructions for a given skill.",
+                      "gen_ai.tool.name": "load_skill",
+                      "gen_ai.tool.type": "LoadSkillTool",
+                      "gen_ai.agent.name": "some_root_agent",
+                      "gcp.vertex.agent.llm_request": "{}",
+                      "gcp.vertex.agent.llm_response": "{}",
+                      "gcp.vertex.agent.tool_call_args": "{}",
+                      "gen_ai.tool.call.id": "PRESENT",
+                      "gcp.vertex.agent.event_id": "PRESENT",
+                      "gcp.vertex.agent.tool_response": "{}",
+                      "adk.experimental.skill.name": "registry-skill",
+                      "adk.experimental.skill.description": "A sample skill.",
+                      "adk.experimental.skill.source.uri": "https://fake-registry.com/skill/registry-skill",
+                      "adk.experimental.skill.cache_hit": false,
+                      "adk.experimental.skill.additional_tools": []
+                    },
+                    "status": "UNSET",
+                    "children": [],
+                    "logs": []
+                  }
+                ],
+                "logs": [
+                  {
+                    "event_name": "gen_ai.choice",
+                    "body": {
+                      "content": "<elided>",
+                      "index": 0
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.system.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  }
+                ]
+              }
+            ],
+            "logs": []
+          },
+          {
+            "name": "call_llm",
+            "attributes": {
+              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.request.model": "mock",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gcp.vertex.agent.session_id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}"
+            },
+            "status": "UNSET",
+            "children": [
+              {
+                "name": "generate_content mock",
+                "attributes": {
+                  "gen_ai.system": "gemini",
+                  "gen_ai.operation.name": "generate_content",
+                  "gen_ai.request.model": "mock",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT"
+                },
+                "status": "UNSET",
+                "children": [
+                  {
+                    "name": "execute_tool load_skill",
+                    "attributes": {
+                      "gen_ai.operation.name": "execute_tool",
+                      "gen_ai.tool.description": "Loads the SKILL.md instructions for a given skill.",
+                      "gen_ai.tool.name": "load_skill",
+                      "gen_ai.tool.type": "LoadSkillTool",
+                      "gen_ai.agent.name": "some_root_agent",
+                      "gcp.vertex.agent.llm_request": "{}",
+                      "gcp.vertex.agent.llm_response": "{}",
+                      "gcp.vertex.agent.tool_call_args": "{}",
+                      "gen_ai.tool.call.id": "PRESENT",
+                      "gcp.vertex.agent.event_id": "PRESENT",
+                      "gcp.vertex.agent.tool_response": "{}",
+                      "adk.experimental.skill.name": "registry-skill",
+                      "adk.experimental.skill.description": "A sample skill.",
+                      "adk.experimental.skill.source.uri": "https://fake-registry.com/skill/registry-skill",
+                      "adk.experimental.skill.cache_hit": true,
+                      "adk.experimental.skill.additional_tools": []
+                    },
+                    "status": "UNSET",
+                    "children": [],
+                    "logs": []
+                  }
+                ],
+                "logs": [
+                  {
+                    "event_name": "gen_ai.choice",
+                    "body": {
+                      "content": "<elided>",
+                      "index": 0
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.system.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  }
+                ]
+              }
+            ],
+            "logs": []
+          },
+          {
+            "name": "call_llm",
+            "attributes": {
+              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.request.model": "mock",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gcp.vertex.agent.session_id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}"
+            },
+            "status": "UNSET",
+            "children": [
+              {
+                "name": "generate_content mock",
+                "attributes": {
+                  "gen_ai.system": "gemini",
+                  "gen_ai.operation.name": "generate_content",
+                  "gen_ai.request.model": "mock",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT"
+                },
+                "status": "UNSET",
+                "children": [],
+                "logs": [
+                  {
+                    "event_name": "gen_ai.choice",
+                    "body": {
+                      "content": "<elided>",
+                      "index": 0
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.system.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  }
+                ]
+              }
+            ],
+            "logs": []
+          }
+        ],
+        "logs": []
+      }
+    ],
+    "logs": []
+  },
+  "metric_points": {
+    "gen_ai.client.operation.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "mock",
+          "gen_ai.response.model": "mock"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.execute_tool.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.tool.name": "load_skill",
+          "gen_ai.tool.type": "LoadSkillTool"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.invoke_agent.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.invoke_agent.inference_calls": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 3
+      }
+    ],
+    "gen_ai.invoke_agent.tool_calls": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 2
+      }
+    ],
+    "gen_ai.invoke_workflow.duration": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "invoke_workflow",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": "PRESENT"
+      }
+    ]
+  }
+}
