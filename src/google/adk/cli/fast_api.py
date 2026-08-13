@@ -66,11 +66,31 @@ from .utils.service_factory import _create_task_store_from_options
 from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
-
+from ..apps.app import App
+from collections.abc import Mapping
 _ALLOWED_AGENT_ENGINE_CLASS_METHODS = frozenset(
     method["name"] for method in _AGENT_ENGINE_CLASS_METHODS
 )
 
+class DynamicAppMap(Mapping):
+    def __init__(self, agent_loader):
+        self.agent_loader = agent_loader
+        
+    def __getitem__(self, app_name):
+        for folder_name in self.agent_loader.list_agents():
+            try:
+                loaded = self.agent_loader.load_agent(folder_name)
+                if isinstance(loaded, App) and loaded.name == app_name:
+                    return folder_name
+            except Exception:
+                pass
+        return app_name
+
+    def __iter__(self):
+        return iter([])
+    
+    def __len__(self):
+        return 1
 
 class _QueryRequest(BaseModel):
   input: dict[str, Any] | None = None
@@ -543,13 +563,15 @@ def get_fast_api_app(
     )
   except ValueError as exc:
     raise click.ClickException(str(exc)) from exc
-
+  
+  app_name_to_dir = DynamicAppMap(agent_loader)
   # Build the Session service
   session_service = create_session_service_from_options(
       base_dir=agents_dir,
       session_service_uri=session_service_uri,
       session_db_kwargs=session_db_kwargs,
       use_local_storage=use_local_storage,
+      app_name_to_dir=app_name_to_dir
   )
 
   # Build the Artifact service

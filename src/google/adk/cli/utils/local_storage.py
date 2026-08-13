@@ -141,7 +141,7 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       app_name_to_dir: Optional[Mapping[str, str]] = None,
   ):
     self._agents_root = Path(agents_root).resolve()
-    self._app_name_to_dir = dict(app_name_to_dir or {})
+    self._app_name_to_dir = app_name_to_dir or {}
     self._services: dict[str, BaseSessionService] = {}
     self._service_lock = asyncio.Lock()
 
