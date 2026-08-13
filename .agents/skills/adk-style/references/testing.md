@@ -6,6 +6,10 @@
 - **Test behavior, not implementation** — verify outcomes (outputs, side effects, errors), not internal mechanics.
 - **Refactor-proof** — if an internal refactor preserves the same behavior, all tests should still pass.
 
+`pytest` runs with `asyncio_mode = "auto"`, so a bare `async def test_...`
+works without `@pytest.mark.asyncio`. Many older tests still carry the marker;
+it is harmless, and not worth a cleanup pass.
+
 ## Rules
 
 ### 1. Test names describe the behavior, not the mechanism
@@ -121,7 +125,6 @@ Extract to module level only when 3+ tests share the same helper.
 
 ```python
 # Good — helper defined inline, right next to the test
-@pytest.mark.asyncio
 async def test_state_delta_bundled_with_output():
     """State set before yield is flushed onto the output event."""
 

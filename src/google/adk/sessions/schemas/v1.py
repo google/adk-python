@@ -44,6 +44,8 @@ from .shared import DEFAULT_MAX_KEY_LENGTH
 from .shared import DEFAULT_MAX_VARCHAR_LENGTH
 from .shared import DynamicJSON
 from .shared import PreciseTimestamp
+from .shared import timestamp_to_utc_datetime
+from .shared import utc_datetime_to_timestamp
 
 
 class Base(DeclarativeBase):
@@ -229,7 +231,7 @@ class StorageEvent(Base):
         session_id=session.id,
         app_name=session.app_name,
         user_id=session.user_id,
-        timestamp=datetime.fromtimestamp(event.timestamp),
+        timestamp=timestamp_to_utc_datetime(event.timestamp),
         event_data=event.model_dump(exclude_none=True, mode="json"),
     )
 
@@ -243,7 +245,7 @@ class StorageEvent(Base):
     # which shifts the event and reorders the conversation on read back.
     timestamp = event_data.get("timestamp")
     if timestamp is None:
-      timestamp = self.timestamp.timestamp()
+      timestamp = utc_datetime_to_timestamp(self.timestamp)
     return Event.model_validate({
         **event_data,
         "id": self.id,

@@ -596,7 +596,7 @@ class EvaluationGenerator:
     """
     results = []
 
-    with open(session_path, "r") as f:
+    with open(session_path, "r", encoding="utf-8") as f:
       session_data = Session.model_validate_json(f.read())
       logger.info("Loaded session %s", session_path)
 

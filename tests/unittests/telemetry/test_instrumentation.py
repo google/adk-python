@@ -126,6 +126,39 @@ async def test_record_tool_execution_forwards_detected_error_type():
   assert mock_record.call_args.kwargs["error_type"] == "MCP_TOOL_ERROR"
 
 
+@pytest.mark.asyncio
+async def test_record_skill_load_reaches_the_enclosing_tool_execution():
+  """A skill load is reported to the tool execution that wraps it."""
+  tool = mock.MagicMock()
+  tool.name = "load_skill"
+  agent = mock.MagicMock()
+  agent.name = "sample_agent"
+
+  async with _instrumentation.record_tool_execution(
+      tool=tool,
+      agent=agent,
+      function_args={},
+      invocation_context=mock.MagicMock(),
+  ) as tel_ctx:
+    skill_telemetry = _instrumentation.record_skill_telemetry(
+        _instrumentation.SkillTelemetrySpanType.SKILL_LOAD
+    )
+    skill_telemetry.skill_name = "sample_skill"
+    skill_telemetry.skill = mock.MagicMock()
+    skill_telemetry.cache_hit = True
+
+  assert tel_ctx.skill_telemetry is skill_telemetry
+
+
+def test_record_skill_load_outside_tool_execution_is_a_noop():
+  """Callers never depend on a tool execution (and thus a span) being open."""
+  _instrumentation.record_skill_telemetry(
+      _instrumentation.SkillTelemetrySpanType.SKILL_LOAD,
+  )
+
+  assert _instrumentation._active_tool_execution_tel_ctx() is None
+
+
 # ---------------------------------------------------------------------------
 # The consolidated span + metric context managers.
 #
