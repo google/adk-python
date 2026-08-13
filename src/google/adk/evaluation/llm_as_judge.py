@@ -40,6 +40,7 @@ from .eval_metrics import LlmAsAJudgeCriterion
 from .eval_metrics import RubricsBasedCriterion
 from .eval_metrics import RubricScore
 from .evaluator import _validate_invocation_lengths
+from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
@@ -195,10 +196,17 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
         # judge model's stream ended without emitting a response). Record it
         # as not evaluated instead of silently dropping it from the results,
         # which would shrink the denominator downstream with no trace.
+        # Spelled out explicitly (matching hallucinations_v1's equivalent
+        # empty-row case) rather than relying on PerInvocationResult's
+        # defaults, so both sites stay grep-matchable if those defaults ever
+        # move.
         per_invocation_results.append(
             PerInvocationResult(
                 actual_invocation=actual,
                 expected_invocation=expected,
+                score=None,
+                eval_status=EvalStatus.NOT_EVALUATED,
+                rubric_scores=[],
             )
         )
         continue
