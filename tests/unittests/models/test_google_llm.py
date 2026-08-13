@@ -796,6 +796,32 @@ def test_live_api_version_vertex_ai(gemini_llm):
     assert gemini_llm._live_api_version == "v1beta1"
 
 
+def test_api_version_field_overrides_default_vertex_ai():
+  """Explicit api_version='v1' overrides the default 'v1beta1' for Vertex AI."""
+  gemini_llm = Gemini(model="gemini-2.5-pro", api_version="v1")
+  with mock.patch.object(gemini_llm, "_api_backend", GoogleLLMVariant.VERTEX_AI):
+    assert gemini_llm._live_api_version == "v1"
+
+
+def test_api_version_field_overrides_base_url_version():
+  """Explicit api_version field takes precedence over version embedded in base_url."""
+  gemini_llm = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+      api_version="v1",
+  )
+  _, version = gemini_llm._base_url_and_api_version
+  assert version == "v1"
+  assert gemini_llm._live_api_version == "v1"
+
+
+def test_api_client_uses_explicit_api_version_field():
+  """api_client passes the explicit api_version to http_options."""
+  gemini_llm = Gemini(model="gemini-2.5-pro", api_version="v1")
+  client = gemini_llm.api_client
+  assert client._api_client._http_options.api_version == "v1"
+
+
 def test_live_api_version_uses_google_base_url_version():
   gemini_llm = Gemini(
       model="gemini-2.5-flash",

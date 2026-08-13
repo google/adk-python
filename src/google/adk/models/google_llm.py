@@ -127,6 +127,20 @@ class Gemini(BaseLlm):
   base_url: Optional[str] = None
   """The base URL for the AI platform service endpoint."""
 
+  api_version: Optional[str] = None
+  """The Vertex AI / Gemini API version to use (e.g. ``"v1"`` or ``"v1beta1"``).
+
+  When set, this overrides the version embedded in ``base_url`` (if any) and
+  the built-in per-backend defaults.  Set to ``"v1"`` to use the stable,
+  GA Vertex AI endpoint instead of the default ``"v1beta1"``.
+
+  Example::
+
+      from google.adk.models import Gemini
+
+      agent = Agent(model=Gemini(model="gemini-2.5-pro", api_version="v1"))
+  """
+
   speech_config: Optional[types.SpeechConfig] = None
 
   use_interactions_api: bool = False
@@ -392,7 +406,10 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _base_url_and_api_version(self) -> tuple[Optional[str], Optional[str]]:
-    return _normalize_base_url_and_api_version(self.base_url)
+    base_url, url_api_version = _normalize_base_url_and_api_version(self.base_url)
+    # An explicitly set api_version field takes precedence over whatever
+    # version was embedded in base_url.
+    return base_url, self.api_version or url_api_version
 
   @cached_property
   def _live_api_version(self) -> str:
