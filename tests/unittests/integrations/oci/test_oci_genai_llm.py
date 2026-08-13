@@ -242,6 +242,31 @@ def test_content_to_oci_message_function_response():
   assert msg.content[0].text
 
 
+def test_content_to_oci_message_function_response_with_media():
+  """Media a tool attached to its response follows as its own message."""
+  import oci.generative_ai_inference.models as oci_models
+
+  part = Part.from_function_response(
+      name="draw_chart",
+      response={"title": "Revenue"},
+      parts=[
+          types.FunctionResponsePart.from_bytes(
+              data=b"chart", mime_type="image/png"
+          )
+      ],
+  )
+  part.function_response.id = "call_xyz"
+  content = Content(role="user", parts=[part])
+
+  msgs = _content_to_oci_message(content)
+
+  assert len(msgs) == 2
+  assert isinstance(msgs[0], oci_models.ToolMessage)
+  assert msgs[0].tool_call_id == "call_xyz"
+  assert isinstance(msgs[1], oci_models.UserMessage)
+  assert msgs[1].content[0].image_url.url.startswith("data:image/png;base64,")
+
+
 def test_content_to_oci_message_multiple_function_responses():
   import oci.generative_ai_inference.models as oci_models
 

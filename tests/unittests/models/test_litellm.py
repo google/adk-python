@@ -2244,6 +2244,63 @@ async def test_content_to_message_param_function_response_with_extra_parts():
 
 
 @pytest.mark.asyncio
+async def test_content_to_message_param_function_response_with_media():
+  """Media a tool attached to its response follows as its own message."""
+  image_bytes = b"test_image_data"
+  tool_part = types.Part.from_function_response(
+      name="draw_chart",
+      response={"title": "Revenue"},
+      parts=[
+          types.FunctionResponsePart.from_bytes(
+              data=image_bytes, mime_type="image/png"
+          )
+      ],
+  )
+  tool_part.function_response.id = "tool_call_1"
+
+  content = types.Content(role="user", parts=[tool_part])
+
+  messages = await _content_to_message_param(content)
+
+  assert messages == [
+      {
+          "role": "tool",
+          "tool_call_id": "tool_call_1",
+          "content": '{"title": "Revenue"}',
+      },
+      {
+          "role": "user",
+          "content": [{
+              "type": "image_url",
+              "image_url": {
+                  "url": "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
+              },
+          }],
+      },
+  ]
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_function_response_without_media():
+  """A response carrying no media still converts to a lone tool message."""
+  tool_part = types.Part.from_function_response(
+      name="lookup",
+      response={"status": "success"},
+  )
+  tool_part.function_response.id = "tool_call_1"
+
+  content = types.Content(role="user", parts=[tool_part])
+
+  message = await _content_to_message_param(content)
+
+  assert message == {
+      "role": "tool",
+      "tool_call_id": "tool_call_1",
+      "content": '{"status": "success"}',
+  }
+
+
+@pytest.mark.asyncio
 async def test_content_to_message_param_function_response_preserves_string():
   """Tests that string responses are used directly without double-serialization.
 
@@ -2267,6 +2324,9 @@ async def test_content_to_message_param_function_response_preserves_string():
   mock_function_response = Mock(spec=types.FunctionResponse)
   mock_function_response.response = response_payload
   mock_function_response.id = "tool_call_1"
+  # Mock(spec=...) exposes none of a Pydantic model's fields, so every field
+  # the converter reads has to be set explicitly.
+  mock_function_response.parts = None
   part.function_response = mock_function_response
 
   content = types.Content(

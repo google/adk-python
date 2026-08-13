@@ -1121,6 +1121,23 @@ def _extract_thought_signature_from_tool_call(
   return None
 
 
+def _function_response_media_parts(
+    function_response: types.FunctionResponse,
+) -> list[types.Part]:
+  """Converts media a tool attached to its response into content parts."""
+  media_parts: list[types.Part] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    if blob is None or blob.data is None or not blob.mime_type:
+      continue
+    media_parts.append(
+        types.Part(
+            inline_data=types.Blob(data=blob.data, mime_type=blob.mime_type)
+        )
+    )
+  return media_parts
+
+
 async def _content_to_message_param(
     content: types.Content,
     *,
@@ -1168,6 +1185,10 @@ async def _content_to_message_param(
               content=response_content,
           )
       )
+      # A tool can attach media alongside the serializable part of its
+      # result. A tool-role message carries text only, so the media has to
+      # follow the tool result as its own message.
+      non_tool_parts.extend(_function_response_media_parts(function_response))
     else:
       non_tool_parts.append(part)
 
