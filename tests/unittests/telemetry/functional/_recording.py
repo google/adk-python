@@ -21,6 +21,7 @@ the configuration to drive it under.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from typing import Literal
 from typing import TYPE_CHECKING
 
@@ -31,8 +32,10 @@ import pytest
 from typing_extensions import assert_never
 
 from ._digests import TelemetryDigest
+from ._scenarios import ADK_EXPERIMENTAL_TELEMETRY
 from ._scenarios import ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN
 from ._scenarios import build_mcp_test_runner
+from ._scenarios import build_skill_test_runner
 from ._scenarios import build_test_runner
 from ._scenarios import CAPTURE_CONTENT
 from ._scenarios import FakeMcpSession
@@ -41,6 +44,7 @@ from ._scenarios import OTEL_OPT_IN
 from ._scenarios import run_agent_scenario
 from ._scenarios import run_node_scenario
 from ._scenarios import Scenario
+from ._scenarios import SkillType
 
 if TYPE_CHECKING:
   from google.adk.events.event import Event
@@ -67,6 +71,8 @@ class FunctionalTestCase:
   # When true, the tool raises instead of returning, and the scenario is
   # expected to propagate it (tool-failure telemetry path).
   tool_fails: bool = False
+  experimental_telemetry: bool = False
+  loaded_skills: list[SkillType] = field(default_factory=list)
 
   @property
   def expects_failure(self) -> bool:
@@ -99,6 +105,9 @@ class FunctionalTestCase:
         ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN, str(self.schema_version)
     )
     monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
+    monkeypatch.setenv(
+        ADK_EXPERIMENTAL_TELEMETRY, str(self.experimental_telemetry).lower()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +171,9 @@ async def _run_scenario(
     await run_agent_scenario(
         build_mcp_test_runner(monkeypatch, FakeMcpSession())
     )
+    return []
+  elif case.scenario == "skill":
+    await run_agent_scenario(build_skill_test_runner(skills=case.loaded_skills))
     return []
   else:
     assert_never(case.scenario)
