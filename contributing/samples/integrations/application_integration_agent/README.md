@@ -25,9 +25,9 @@ This sample demonstrates how to use the `ApplicationIntegrationToolset` within a
 ## How to Use
 
 1. **Install Dependencies:** Ensure you have the necessary libraries installed (e.g., `google-adk`, `python-dotenv`).
-1. **Run the Agent:** Execute the agent script from your terminal:
+1. **Run the Agent:** From the root of the ADK repository, start the agent with the ADK CLI:
    ```bash
-   python agent.py
+   adk run contributing/samples/integrations/application_integration_agent
    ```
 1. **Interact:** Once the agent starts, you can interact with it by typing prompts related to Jira issue management.
 

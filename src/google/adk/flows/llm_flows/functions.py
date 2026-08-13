@@ -77,6 +77,13 @@ _TOOL_THREAD_POOLS: weakref.WeakKeyDictionary[
 ] = weakref.WeakKeyDictionary()
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
 
+# The deepest container whose entries are searched for media: the value a tool
+# returns, and one container inside it. Searching further would mean walking a
+# tool's own data structures on every call, whether or not it ever returns
+# media, and the bound also stops a self-referential result being walked
+# forever.
+_MAX_MEDIA_CONTAINER_DEPTH = 1
+
 
 def _detect_error_type_for_telemetry(
     tool: BaseTool,
@@ -1297,28 +1304,64 @@ def _as_function_response_part(
 ) -> Optional[types.FunctionResponsePart]:
   """Converts a tool-returned part into a function response part.
 
-  Returns None when the value is not a part carrying usable inline media.
+  Returns None when the value is not a part carrying usable media.
   """
   if not isinstance(value, types.Part):
     return None
   blob = value.inline_data
-  if blob is None or blob.data is None or not blob.mime_type:
-    return None
-  return types.FunctionResponsePart.from_bytes(
-      data=blob.data, mime_type=blob.mime_type
-  )
+  if blob is not None and blob.data is not None and blob.mime_type:
+    return types.FunctionResponsePart.from_bytes(
+        data=blob.data, mime_type=blob.mime_type
+    )
+  file = value.file_data
+  if file is not None and file.file_uri and file.mime_type:
+    return types.FunctionResponsePart.from_uri(
+        file_uri=file.file_uri, mime_type=file.mime_type
+    )
+  return None
+
+
+def _extract_media_from_entry(
+    value: object,
+    parts: list[types.FunctionResponsePart],
+    depth: int,
+) -> tuple[bool, object]:
+  """Removes media from one entry of a tool result.
+
+  Any parts found are appended to ``parts``. Only dicts, lists and tuples are
+  descended into, so an arbitrary object a tool returns is left alone.
+
+  Returns:
+    Whether the entry should be kept, and what is left of it. An entry that
+    was media, or a container left empty once its media was taken out, is not
+    kept.
+  """
+  part = _as_function_response_part(value)
+  if part is not None:
+    parts.append(part)
+    return False, None
+  if depth >= _MAX_MEDIA_CONTAINER_DEPTH or not isinstance(
+      value, (dict, list, tuple)
+  ):
+    return True, value
+  remaining, nested_parts = _extract_multimodal_parts(value, depth + 1)
+  if not nested_parts:
+    return True, value
+  parts.extend(nested_parts)
+  return bool(remaining), remaining
 
 
 def _extract_multimodal_parts(
     function_result: object,
+    depth: int = 0,
 ) -> tuple[object, Optional[list[types.FunctionResponsePart]]]:
-  """Moves inline media in a tool result into function response parts.
+  """Moves media in a tool result into function response parts.
 
-  A tool result is otherwise required to be JSON-serializable, which leaves
-  no way to hand back bytes except by encoding them into a string the model
-  reads as text. A tool that produces an image, audio clip or document
-  returns a part holding the raw bytes instead, either on its own or among
-  the entries of a returned list or dict.
+  A tool result is otherwise required to be JSON-serializable, which leaves no
+  way to hand back media except by encoding it into a string the model reads
+  as text. A tool that produces an image, audio clip or document returns a
+  part holding the raw bytes or a uri instead, on its own or among the entries
+  of a returned container, which may itself hold a container of parts.
 
   Returns:
     The result with the media removed, and the extracted parts. The parts are
@@ -1334,20 +1377,16 @@ def _extract_multimodal_parts(
   if isinstance(function_result, dict):
     kept_items = {}
     for key, value in function_result.items():
-      part = _as_function_response_part(value)
-      if part is None:
-        kept_items[key] = value
-      else:
-        parts.append(part)
+      keep, kept = _extract_media_from_entry(value, parts, depth)
+      if keep:
+        kept_items[key] = kept
     remaining = kept_items
   elif isinstance(function_result, (list, tuple)):
     kept_values = []
     for value in function_result:
-      part = _as_function_response_part(value)
-      if part is None:
-        kept_values.append(value)
-      else:
-        parts.append(part)
+      keep, kept = _extract_media_from_entry(value, parts, depth)
+      if keep:
+        kept_values.append(kept)
     remaining = kept_values
   else:
     return function_result, None

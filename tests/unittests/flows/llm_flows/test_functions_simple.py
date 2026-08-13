@@ -1305,6 +1305,82 @@ async def test_tool_returning_several_media_parts():
 
 
 @pytest.mark.asyncio
+async def test_tool_returning_a_file_reference_part():
+  """A part naming a file by uri is handed over as a reference, not as text."""
+
+  def get_chart() -> types.Part:
+    return types.Part(
+        file_data=types.FileData(
+            file_uri='gs://bucket/chart.png', mime_type='image/png'
+        )
+    )
+
+  response = await _run_single_tool_call(FunctionTool(get_chart))
+
+  assert len(response.parts) == 1
+  assert response.parts[0].file_data.file_uri == 'gs://bucket/chart.png'
+  assert response.parts[0].file_data.mime_type == 'image/png'
+  assert not response.response
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_a_file_reference_without_a_mime_type():
+  """A reference the model would not know how to read is left in the result."""
+
+  def get_chart() -> types.Part:
+    return types.Part(file_data=types.FileData(file_uri='gs://bucket/chart'))
+
+  response = await _run_single_tool_call(FunctionTool(get_chart))
+
+  assert not response.parts
+  assert isinstance(response.response['result'], types.Part)
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_media_nested_under_a_key():
+  """Media in a list under a dict key is found rather than left in the result."""
+
+  def render_charts() -> dict[str, Any]:
+    return {
+        'images': [
+            types.Part.from_bytes(data=b'one', mime_type='image/png'),
+            types.Part.from_bytes(data=b'two', mime_type='image/jpeg'),
+        ],
+        'summary': 'two charts',
+    }
+
+  response = await _run_single_tool_call(FunctionTool(render_charts))
+
+  assert [p.inline_data.mime_type for p in response.parts] == [
+      'image/png',
+      'image/jpeg',
+  ]
+  assert response.response == {'summary': 'two charts'}
+
+
+@pytest.mark.asyncio
+async def test_tool_returning_media_buried_too_deep():
+  """Media further down than a tool result is expected to nest is left alone."""
+
+  def render_chart() -> dict[str, Any]:
+    return {
+        'report': {
+            'charts': {
+                'first': types.Part.from_bytes(
+                    data=b'chart-bytes', mime_type='image/png'
+                )
+            }
+        }
+    }
+
+  response = await _run_single_tool_call(FunctionTool(render_chart))
+
+  assert not response.parts
+  buried = response.response['report']['charts']['first']
+  assert isinstance(buried, types.Part)
+
+
+@pytest.mark.asyncio
 async def test_tool_returning_plain_data_is_unchanged():
   """A result without media keeps its existing shape."""
 

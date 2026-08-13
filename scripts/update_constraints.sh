@@ -80,8 +80,11 @@ for ver in "${PYTHON_VERSIONS[@]}"; do
     fi
   fi
 
-  # Construct the command from scratch
-  GENERATION_CMD="uv pip compile pyproject.toml --all-extras --python-version $ver"
+  # Construct the command from scratch. google-adk is excluded from the output
+  # because the community extra pulls the published package in as a transitive
+  # dependency; emitting a pin for it would hold anyone installing with these
+  # constraints at whatever release was current when they were generated.
+  GENERATION_CMD="uv pip compile pyproject.toml --all-extras --python-version $ver --no-emit-package google-adk"
   if [ -n "$date_to_use" ]; then
     GENERATION_CMD="$GENERATION_CMD --exclude-newer $date_to_use"
   fi

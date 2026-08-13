@@ -203,7 +203,8 @@ def _sanitize_schema_formats_for_gemini(
   supported_fields.discard("additional_properties")
   schema_field_names: set[str] = {"items"}
   list_schema_field_names: set[str] = {
-      "any_of",  # 'one_of', 'all_of', 'not' to come
+      "any_of",
+      "one_of",  # 'all_of', 'not' to come
   }
   snake_case_schema: dict[str, Any] = {}
   dict_schema_field_names: tuple[str, ...] = (
@@ -218,12 +219,25 @@ def _sanitize_schema_formats_for_gemini(
       )
     elif field_name in list_schema_field_names:
       should_preserve = field_name in ("any_of", "one_of")
-      snake_case_schema[field_name] = [
+      sanitized_branches = [
           _sanitize_schema_formats_for_gemini(
               value, preserve_null_type=should_preserve
           )
           for value in field_value
       ]
+      if field_name == "one_of":
+        # Gemini's Schema has no one_of and the conversion drops an unknown
+        # field silently, which would leave the property with no type at all.
+        # Widening to any_of keeps the branch types; the difference is that
+        # any_of also accepts a value matching more than one branch.
+        field_name = "any_of"
+      if field_name == "any_of":
+        # A schema may carry both keywords, in either order, so accumulate
+        # instead of letting whichever comes second win.
+        sanitized_branches = (
+            snake_case_schema.get("any_of", []) + sanitized_branches
+        )
+      snake_case_schema[field_name] = sanitized_branches
     elif field_name in dict_schema_field_names and field_value is not None:
       snake_case_schema[field_name] = {
           key: _sanitize_schema_formats_for_gemini(value)

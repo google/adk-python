@@ -382,6 +382,41 @@ class TestOAuth2CredentialUtil:
 
     assert "scope" not in captured["data"]
 
+  def test_token_requests_are_bounded_by_a_timeout(self):
+    """Token requests must not wait forever on an unresponsive endpoint."""
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            redirect_uri="https://example.com/callback",
+        ),
+    )
+
+    client, token_endpoint = create_oauth2_session(
+        self._oauth2_scheme_with_scopes(), credential
+    )
+    assert client is not None
+
+    response = Mock()
+    response.status_code = 200
+    response.json.return_value = {
+        "access_token": "new_access_token",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": "new_refresh_token",
+    }
+    # Intercept the transport so the timeout the session applies is observable.
+    client.send = Mock(return_value=response)
+
+    client.fetch_token(
+        token_endpoint, grant_type="authorization_code", code="test_code"
+    )
+    assert client.send.call_args.kwargs["timeout"] is not None
+
+    client.refresh_token(token_endpoint, refresh_token="old_refresh_token")
+    assert client.send.call_args.kwargs["timeout"] is not None
+
   def test_update_credential_with_tokens(self):
     """Test update_credential_with_tokens function."""
     credential = AuthCredential(

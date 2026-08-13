@@ -139,6 +139,14 @@ optional-dependencies.antigravity = [
 optional-dependencies.benchmark = [
   "google-benchmark>=1.9",
 ]
+# Everything BigQueryAgentAnalyticsPlugin needs. Separate from gcp because
+# pyarrow is a third of that extra's install size and only this plugin uses it.
+optional-dependencies.bigquery-analytics = [
+  "google-cloud-bigquery>=2.2",
+  "google-cloud-bigquery-storage>=2",
+  "google-cloud-storage>=2.18,<4",
+  "pyarrow>=14",
+]
 optional-dependencies.community = [
   "google-adk-community",
 ]
@@ -230,7 +238,6 @@ optional-dependencies.gcp = [
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
-  "pyarrow>=14",
   "python-dateutil>=2.9.0.post0,<3",
 ]
 optional-dependencies.mcp = [

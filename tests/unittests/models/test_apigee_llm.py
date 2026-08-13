@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from typing import AsyncGenerator
 from typing import cast
 from unittest import mock
@@ -682,7 +684,9 @@ async def test_chat_completions_honors_request_timeout():
     _ = [item async for item in client.generate_content_async(request, False)]
 
   _, call_kwargs = http_client.post.await_args
-  assert call_kwargs['timeout'] == 1.5
+  assert call_kwargs['timeout'].read == 1.5
+  # The caller's budget must not stretch the fast-failing connect phase.
+  assert call_kwargs['timeout'].connect == 30.0
 
 
 @pytest.mark.asyncio
@@ -715,7 +719,63 @@ async def test_streaming_chat_completions_honors_request_timeout():
     _ = [item async for item in client.generate_content_async(request, True)]
 
   _, call_kwargs = http_client.stream.call_args
-  assert call_kwargs['timeout'] == 2.5
+  assert call_kwargs['timeout'].read == 2.5
+  assert call_kwargs['timeout'].connect == 30.0
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_without_request_timeout_stays_bounded():
+  """A request with no configured timeout still gets the default budget."""
+  request = LlmRequest(model='apigee/openai/gpt-4o', contents=[])
+  response = mock.MagicMock()
+  response.json.return_value = {
+      'choices': [{
+          'message': {'role': 'assistant', 'content': 'Done'},
+          'finish_reason': 'stop',
+      }]
+  }
+  http_client = mock.MagicMock()
+  http_client.post = AsyncMock(return_value=response)
+
+  with mock.patch(
+      'google.adk.models.apigee_llm.httpx.AsyncClient',
+      return_value=http_client,
+  ):
+    client = CompletionsHTTPClient(base_url=PROXY_URL)
+    _ = [item async for item in client.generate_content_async(request, False)]
+
+  _, call_kwargs = http_client.post.await_args
+  # A bare timeout=None here would switch every timeout back off.
+  assert call_kwargs['timeout'].connect == 30.0
+  assert call_kwargs['timeout'].read == 600.0
+
+
+@pytest.mark.asyncio
+async def test_streaming_chat_completions_without_request_timeout_stays_bounded():
+  """A stream with no configured timeout still gets the default budget."""
+  request = LlmRequest(model='apigee/openai/gpt-4o', contents=[])
+
+  async def stream_lines():
+    yield 'data: [DONE]'
+
+  response = mock.MagicMock()
+  response.aiter_lines = stream_lines
+  stream_context = mock.MagicMock()
+  stream_context.__aenter__ = AsyncMock(return_value=response)
+  stream_context.__aexit__ = AsyncMock(return_value=None)
+  http_client = mock.MagicMock()
+  http_client.stream.return_value = stream_context
+
+  with mock.patch(
+      'google.adk.models.apigee_llm.httpx.AsyncClient',
+      return_value=http_client,
+  ):
+    client = CompletionsHTTPClient(base_url=PROXY_URL)
+    _ = [item async for item in client.generate_content_async(request, True)]
+
+  _, call_kwargs = http_client.stream.call_args
+  assert call_kwargs['timeout'].connect == 30.0
+  assert call_kwargs['timeout'].read == 600.0
 
 
 @pytest.mark.asyncio
@@ -735,6 +795,94 @@ async def test_api_key_injection_openai(model: str) -> None:
   )
   client = apigee_llm._completions_http_client
   assert client._headers['Authorization'] == 'Bearer sk-test-key'
+
+
+def test_completions_http_client_bounds_requests_and_stays_on_base_url() -> (
+    None
+):
+  """Tests that the httpx client has finite timeouts and does not redirect."""
+  completions_client = CompletionsHTTPClient(base_url='http://test')
+  try:
+    httpx_client = completions_client._client
+    timeout = httpx_client.timeout
+    # Pinned to the literal budgets rather than to the constants themselves,
+    # so that shrinking a constant to something a slow model cannot meet
+    # fails here.
+    assert timeout.connect == 30.0
+    assert timeout.read == 600.0
+    assert timeout.write == 600.0
+    assert timeout.pool == 600.0
+    assert not httpx_client.follow_redirects
+  finally:
+    completions_client.close()
+
+
+@pytest.mark.asyncio
+async def test_completions_http_client_streams_longer_than_request_timeout() -> (
+    None
+):
+  """Tests that a slow but steady stream outlives the request timeout."""
+  request_timeout_seconds = 1.0
+  chunk_gap_seconds = 0.25
+  chunk_count = 6
+  # Every gap between chunks stays well inside the budget while the whole
+  # generation runs past it, because httpx spends the budget per read rather
+  # than per request.
+  assert chunk_gap_seconds < request_timeout_seconds
+  assert chunk_gap_seconds * chunk_count > request_timeout_seconds
+
+  async def serve_slow_stream(reader, writer):
+    head = await reader.readuntil(b'\r\n\r\n')
+    for header in head.split(b'\r\n'):
+      if header.lower().startswith(b'content-length:'):
+        await reader.readexactly(int(header.split(b':')[1]))
+    writer.write(
+        b'HTTP/1.1 200 OK\r\n'
+        b'Content-Type: text/event-stream\r\n'
+        b'Transfer-Encoding: chunked\r\n'
+        b'\r\n'
+    )
+    for index in range(chunk_count):
+      await asyncio.sleep(chunk_gap_seconds)
+      body = (
+          'data: {"choices": [{"index": 0, "delta": {"content":'
+          f' "{index}"}}, "finish_reason": null}}]}}\n\n'
+      ).encode()
+      writer.write(f'{len(body):x}\r\n'.encode() + body + b'\r\n')
+      await writer.drain()
+    writer.write(b'0\r\n\r\n')
+    await writer.drain()
+    writer.close()
+
+  server = await asyncio.start_server(serve_slow_stream, '127.0.0.1', 0)
+  port = server.sockets[0].getsockname()[1]
+  completions_client = CompletionsHTTPClient(
+      base_url=f'http://127.0.0.1:{port}'
+  )
+  request = LlmRequest(
+      model='apigee/openai/gpt-4o',
+      contents=[Content(role='user', parts=[Part.from_text(text='hi')])],
+  )
+  try:
+    with mock.patch(
+        'google.adk.models.apigee_llm._REQUEST_TIMEOUT_SECONDS',
+        request_timeout_seconds,
+    ):
+      started = time.monotonic()
+      responses = [
+          response
+          async for response in completions_client.generate_content_async(
+              request, stream=True
+          )
+      ]
+      elapsed = time.monotonic() - started
+  finally:
+    await completions_client.aclose()
+    server.close()
+    await server.wait_closed()
+
+  assert len(responses) == chunk_count
+  assert elapsed > request_timeout_seconds
 
 
 def test_parse_response_usage_metadata() -> None:

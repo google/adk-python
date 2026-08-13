@@ -32,6 +32,8 @@ from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import LiveModelConfig
 from google.adk.evaluation.eval_metrics import EvalMetricResult
+from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
+from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.eval_set_results_manager import EvalSetResultsManager
 from google.adk.evaluation.evaluator import EvalStatus
@@ -133,6 +135,129 @@ async def test_evaluate_eval_set_threads_artifact_service(mocker):
       mock_local_eval_service_cls.call_args.kwargs["artifact_service"]
       is my_service
   )
+
+
+async def _mock_evaluate_eval_set(mocker, eval_case_result: EvalCaseResult):
+  """Runs evaluate_eval_set against an eval service yielding the given result."""
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=mocker.AsyncMock(return_value=(mocker.MagicMock(), None)),
+  )
+  mock_local_eval_service_cls = mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+  )
+
+  async def _one_result(*args, **kwargs):
+    yield eval_case_result
+
+  instance = mock_local_eval_service_cls.return_value
+  instance.perform_inference = _empty_async_gen
+  instance.evaluate = _one_result
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module="my.agent.module",
+      eval_set=_make_eval_set(),
+      eval_config=EvalConfig(),
+      num_runs=1,
+      print_detailed_results=False,
+  )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_fails_when_inference_crashed(mocker):
+  """A FAILED eval case with no metric results is still reported as a failure.
+
+  This is the shape recorded when inferencing raised: the verdict lives only in
+  `final_eval_status`, with no per-invocation metric results to re-derive it
+  from.
+  """
+  crashed_result = EvalCaseResult(
+      eval_set_id="test_eval_set",
+      eval_id="case1",
+      final_eval_status=EvalStatus.FAILED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[],
+      session_id="",
+  )
+
+  with pytest.raises(AssertionError, match="case1 for my.agent.module Failed"):
+    await _mock_evaluate_eval_set(mocker, crashed_result)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_keeps_metric_detail_for_failed_metric(mocker):
+  """A metric that scored below threshold still reports the metric detail."""
+  failed_metric_result = EvalCaseResult(
+      eval_set_id="test_eval_set",
+      eval_id="case1",
+      final_eval_status=EvalStatus.FAILED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("5"),
+              ),
+              expected_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              eval_metric_results=[
+                  EvalMetricResult(
+                      metric_name="response_match_score",
+                      threshold=0.8,
+                      score=0.1,
+                      eval_status=EvalStatus.FAILED,
+                  )
+              ],
+          )
+      ],
+      session_id="",
+  )
+
+  with pytest.raises(AssertionError) as exc_info:
+    await _mock_evaluate_eval_set(mocker, failed_metric_result)
+
+  message = str(exc_info.value)
+  assert "response_match_score for my.agent.module Failed" in message
+  assert "Expected 0.8, but got 0.1" in message
+  # The metric detail accounts for the failure; nothing extra is reported.
+  assert "no metric results" not in message
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_passes_when_metrics_pass(mocker):
+  """A passing eval case is not turned into a failure."""
+  passing_result = EvalCaseResult(
+      eval_set_id="test_eval_set",
+      eval_id="case1",
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              expected_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              eval_metric_results=[
+                  EvalMetricResult(
+                      metric_name="response_match_score",
+                      threshold=0.8,
+                      score=1.0,
+                      eval_status=EvalStatus.PASSED,
+                  )
+              ],
+          )
+      ],
+      session_id="",
+  )
+
+  await _mock_evaluate_eval_set(mocker, passing_result)
 
 
 class TestGetAgentForEval:

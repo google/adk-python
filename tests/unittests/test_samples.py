@@ -32,6 +32,7 @@ from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.events import Event
 from google.genai import types
 import pytest
+import requests
 
 CONTRIBUTING_DIR = Path(__file__).parent.parent.parent / "contributing"
 SAMPLES_DIR = CONTRIBUTING_DIR / "samples"
@@ -453,3 +454,32 @@ async def test_issue_monitoring_agent_separates_skips_from_failures(
   assert ("Failed to process 1 issues." in caplog.text) == (
       failing_issue is not None
   )
+
+
+@pytest.mark.parametrize(
+    "sample_name, discovery_name",
+    [
+        ("adk_stale_agent", "get_old_open_issue_numbers"),
+        ("adk_issue_monitoring_agent", "get_target_issues"),
+    ],
+)
+def test_issue_discovery_propagates_page_failure(
+    sample_name: str, discovery_name: str, monkeypatch
+):
+  """A search that dies mid-pagination must not look like a short result."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+
+  full_page = [{"number": n} for n in range(1, 101)]
+
+  def _get_request(url: str, params: dict[str, Any] | None = None) -> Any:
+    if (params or {}).get("page", 1) > 1:
+      raise requests.exceptions.ConnectionError("connection reset")
+    return {"items": full_page} if "search" in url else full_page
+
+  with _sample_module(
+      SAMPLES_DIR / "adk_team" / sample_name, "utils"
+  ) as utils_module:
+    monkeypatch.setattr(utils_module, "get_request", _get_request)
+    with pytest.raises(requests.exceptions.ConnectionError):
+      getattr(utils_module, discovery_name)("google", "adk-python")
