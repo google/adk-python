@@ -1164,3 +1164,193 @@ def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
   assert (tmp_dir / "requirements.txt").read_text() == (
       "some-unrelated-package\n"
   )
+
+
+_VALID_SERVICE_ACCOUNT = "my-agent@my-gcp-project.iam.gserviceaccount.com"
+
+
+def test_validate_service_account_accepts_email() -> None:
+  """A well-formed service account email is accepted."""
+  assert cli_deploy._validate_service_account(_VALID_SERVICE_ACCOUNT) == (
+      _VALID_SERVICE_ACCOUNT
+  )
+
+
+@pytest.mark.parametrize(
+    "bad_sa",
+    [
+        "",
+        "   ",
+        "not-an-email",
+        "missing-domain@",
+        "@no-local-part.com",
+        "spaces emma.t@example.net",
+    ],
+)
+def test_validate_service_account_rejects_malformed_emails(
+    bad_sa: str,
+) -> None:
+  """Malformed service account emails raise a clear ClickException."""
+  with pytest.raises(click.ClickException):
+    cli_deploy._validate_service_account(bad_sa)
+
+
+def test_apply_service_account_sets_top_level_config_field() -> None:
+  """CLI service_account is set as a top-level Agent Engine config field."""
+  agent_config: Dict[str, Any] = {}
+  cli_deploy._apply_service_account_to_agent_config(
+      agent_config, _VALID_SERVICE_ACCOUNT
+  )
+  assert agent_config["service_account"] == _VALID_SERVICE_ACCOUNT
+
+
+def test_apply_service_account_cli_overrides_config_file() -> None:
+  """Explicit CLI service_account overrides the config-file value."""
+  override = "other@my-gcp-project.iam.gserviceaccount.com"
+  agent_config: Dict[str, Any] = {
+      "service_account": _VALID_SERVICE_ACCOUNT,
+  }
+  cli_deploy._apply_service_account_to_agent_config(agent_config, override)
+  assert agent_config["service_account"] == override
+
+
+def test_apply_service_account_validates_config_file_value() -> None:
+  """service_account from .agent_engine_config.json is validated in place."""
+  agent_config: Dict[str, Any] = {
+      "service_account": _VALID_SERVICE_ACCOUNT,
+  }
+  cli_deploy._apply_service_account_to_agent_config(agent_config, None)
+  assert agent_config["service_account"] == _VALID_SERVICE_ACCOUNT
+
+
+def test_to_agent_engine_forwards_service_account_in_update_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """to_agent_engine puts service_account on agent_engines.update config."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      service_account=_VALID_SERVICE_ACCOUNT,
+  )
+
+  assert len(captured) == 1
+  assert captured[0]["service_account"] == _VALID_SERVICE_ACCOUNT
+
+
+def test_to_agent_engine_reads_service_account_from_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """service_account from .agent_engine_config.json is forwarded on deploy."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  (src_dir / ".agent_engine_config.json").write_text(
+      json.dumps({"service_account": _VALID_SERVICE_ACCOUNT})
+  )
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  assert captured[0]["service_account"] == _VALID_SERVICE_ACCOUNT
+
+
+def test_to_agent_engine_reads_service_account_from_env_file(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """GOOGLE_CLOUD_SERVICE_ACCOUNT in .env becomes runtime service_account."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  (src_dir / ".env").write_text(
+      f"GOOGLE_CLOUD_SERVICE_ACCOUNT={_VALID_SERVICE_ACCOUNT}\n"
+      "OTHER_VAR=keep-me\n"
+  )
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  assert captured[0]["service_account"] == _VALID_SERVICE_ACCOUNT
+  # SA email must not leak into the deployed runtime env vars.
+  assert "GOOGLE_CLOUD_SERVICE_ACCOUNT" not in captured[0]["env_vars"]
+  assert captured[0]["env_vars"]["OTHER_VAR"] == "keep-me"
+
+
+def test_to_agent_engine_rejects_invalid_service_account(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """An invalid --service_account value fails before Agent Engine APIs."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        service_account="not-an-email",
+    )
+
+  assert "Invalid service_account" in str(exc_info.value)
+  assert captured == []
+
+
+def test_cli_deploy_agent_engine_passes_service_account(
+    tmp_path: Path,
+) -> None:
+  """--service_account reaches to_agent_engine as a keyword argument."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            f"--service_account={_VALID_SERVICE_ACCOUNT}",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["service_account"] == _VALID_SERVICE_ACCOUNT

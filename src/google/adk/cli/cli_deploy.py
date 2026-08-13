@@ -17,6 +17,7 @@ from datetime import datetime
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,75 @@ _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
 _AGENT_ENGINE_REQUIREMENT: Final[str] = (
     'google-cloud-aiplatform[adk,agent_engines]'
 )
+# Runtime service account email for Agent Engine, e.g.
+# my-agent@my-project.iam.gserviceaccount.com
+_SERVICE_ACCOUNT_EMAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r'^[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+)
+
+
+def _validate_service_account(service_account: str) -> str:
+  """Validates an Agent Engine runtime service account email.
+
+  Args:
+    service_account: Google Cloud service account email.
+
+  Returns:
+    The validated service account email.
+
+  Raises:
+    click.ClickException: If the email is empty or malformed.
+  """
+  service_account = service_account.strip()
+  if not service_account:
+    raise click.ClickException(
+        'service_account must be a non-empty service account email.'
+    )
+  if not _SERVICE_ACCOUNT_EMAIL_RE.fullmatch(service_account):
+    raise click.ClickException(
+        'Invalid service_account email. Expected a Google Cloud service'
+        ' account email such as'
+        ' my-agent@my-project.iam.gserviceaccount.com.'
+        f' Got: {service_account}'
+    )
+  return service_account
+
+
+def _apply_service_account_to_agent_config(
+    agent_config: dict[str, Any],
+    service_account: Optional[str],
+) -> None:
+  """Sets top-level ``service_account`` on the Agent Engine update config.
+
+  Precedence (highest last):
+
+  1. Existing ``service_account`` in ``.agent_engine_config.json``.
+  2. Explicit ``service_account`` argument (CLI / resolved from
+     ``GOOGLE_CLOUD_SERVICE_ACCOUNT``), which overrides the config file.
+
+  The Vertex Agent Engine SDK maps ``config.service_account`` onto
+  ``spec.service_account`` (runtime identity). This is distinct from
+  ``build_config.service_account`` (Cloud Build identity).
+  """
+  if service_account is not None:
+    validated = _validate_service_account(service_account)
+    existing = agent_config.get('service_account')
+    if existing and existing != validated:
+      click.echo(
+          'Overriding service_account in agent platform config with'
+          f' {validated}'
+      )
+    agent_config['service_account'] = validated
+    return
+
+  existing = agent_config.get('service_account')
+  if existing is None:
+    return
+  if not isinstance(existing, str):
+    raise click.ClickException(
+        'service_account in agent platform config must be a string email.'
+    )
+  agent_config['service_account'] = _validate_service_account(existing)
 
 
 def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
@@ -886,6 +956,7 @@ def to_agent_engine(
     artifact_service_uri: Optional[str] = None,
     adk_version: Optional[str] = None,
     extra_packages: Optional[list[str]] = None,
+    service_account: Optional[str] = None,
 ) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
@@ -952,6 +1023,11 @@ def to_agent_engine(
       used.
     extra_packages (list[str]): Optional. Additional local file or directory
       paths to stage alongside the agent and make importable in the image.
+    service_account (str): Optional. Google Cloud service account email used
+      as the Agent Engine runtime identity. Overrides
+      ``GOOGLE_CLOUD_SERVICE_ACCOUNT`` in the ``.env`` file and
+      ``service_account`` in ``.agent_engine_config.json`` when both are
+      present. When omitted, Agent Engine uses its default service agent.
   """
   app_name = os.path.basename(agent_folder)
   display_name = display_name or app_name
@@ -1131,6 +1207,23 @@ def to_agent_engine(
           else:
             region = env_region
             click.echo(f'{region=} set by GOOGLE_CLOUD_LOCATION in {env_file}')
+      # Pop so the SA email is not forwarded as a runtime env var.
+      if 'GOOGLE_CLOUD_SERVICE_ACCOUNT' in env_vars:
+        env_service_account = env_vars.pop('GOOGLE_CLOUD_SERVICE_ACCOUNT')
+        if env_service_account:
+          if service_account:
+            click.secho(
+                'Ignoring GOOGLE_CLOUD_SERVICE_ACCOUNT in .env as'
+                ' `--service_account` was explicitly passed and takes'
+                ' precedence',
+                fg='yellow',
+            )
+          else:
+            service_account = env_service_account
+            click.echo(
+                f'{service_account=} set by GOOGLE_CLOUD_SERVICE_ACCOUNT in'
+                f' {env_file}'
+            )
     if api_key:
       if 'GOOGLE_API_KEY' in env_vars:
         click.secho(
@@ -1173,6 +1266,8 @@ def to_agent_engine(
       agent_config['env_vars'] = env_vars
     # Set env_vars in agent_config to None if it is not set.
     agent_config['env_vars'] = agent_config.get('env_vars', env_vars)
+
+    _apply_service_account_to_agent_config(agent_config, service_account)
 
     import vertexai
 
