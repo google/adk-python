@@ -24,6 +24,7 @@ from typing import Callable
 
 from google.adk.agents.context import Context
 from google.adk.tools.google_tool import GoogleTool
+from google.adk.utils.context_utils import find_context_parameter
 import google.auth.credentials
 import pydantic
 
@@ -45,6 +46,10 @@ class OmitSentinel:
 OMIT = OmitSentinel()
 
 
+def _is_context_param(func: Any, param_name: str) -> bool:
+  return find_context_parameter(func) == param_name
+
+
 @dataclass
 class AgentProvided:
   """Indicates that a CloudEvent attribute should be provided by the LLM."""
@@ -53,26 +58,37 @@ class AgentProvided:
   default: Any | OmitSentinel | MissingSentinel = MISSING
 
 
-AttributeBinding = str | Callable[[Any], str] | AgentProvided
+AttributeBinding = str | Callable[..., str] | AgentProvided
 OptionalAttributeBinding = (
     str
-    | Callable[[Any], str | OmitSentinel]
+    | Callable[..., str | OmitSentinel]
     | AgentProvided
     | OmitSentinel
     | MissingSentinel
     | None
 )
 CustomAttributeBinding = (
-    str | Callable[[Any], str | OmitSentinel] | AgentProvided | OmitSentinel
+    str | Callable[..., str | OmitSentinel] | AgentProvided | OmitSentinel
 )
 SpecVersionBinding = (
-    str | Callable[[Any], str] | AgentProvided | MissingSentinel | None
+    str | Callable[..., str] | AgentProvided | MissingSentinel | None
 )
 
 
 @dataclass
 class CloudEventAttributesBinding:
-  """Configuration for binding CloudEvent attributes to static values, lambdas, or AgentProvided fields."""
+  """Configuration for binding CloudEvent attributes to static values, lambdas, or AgentProvided fields.
+
+  Lambda/callable bindings can accept:
+  - 1 parameter for the event payload (`lambda p: ...`)
+  - 1 parameter for the runtime context (`lambda ctx: ...` or type-annotated with `Context`)
+  - 2 parameters for both (`lambda p, ctx: ...`)
+  - 0 parameters (`lambda: ...`)
+
+  Setting optional attributes (`time`, `datacontenttype`, `subject`,
+  `custom_attributes`) to `OMIT` omits them from the published CloudEvent.
+  Required attributes (`type`, `source`, `id`, `specversion`) cannot be `OMIT`.
+  """
 
   type: AttributeBinding
   source: AttributeBinding
@@ -92,17 +108,21 @@ def build_domain_specific_tool(
     ce_attributes_binding: CloudEventAttributesBinding,
     payload_schema: type[pydantic.BaseModel] | None = None,
 ) -> GoogleTool:
-  """Dynamically builds a GoogleTool wrapping publish_message with specific bindings."""
+  """Dynamically builds a GoogleTool wrapping publish_message with specific bindings.
+
+  Callable bindings in `ce_attributes_binding` can inspect the event payload, the
+  runtime `Context` (`tool_context`), or both.
+  """
 
   # 1. Validation
   mandatory_fields = ["type", "source"]
   for field in mandatory_fields:
     val = getattr(ce_attributes_binding, field)
-    if val is MISSING:
+    if val is MISSING:  # type: ignore[comparison-overlap]
       raise TypeError(
           f"CloudEventAttributesBinding requires '{field}' to be provided."
       )
-    if val is OMIT:
+    if val is OMIT:  # type: ignore[comparison-overlap]
       raise TypeError(
           f"CloudEvent field '{field}' is mandatory and cannot be OMIT."
       )
@@ -117,6 +137,13 @@ def build_domain_specific_tool(
     raise TypeError("The 'bus' parameter is mandatory and must be provided.")
   if bus is None:
     raise TypeError("The 'bus' parameter is mandatory and cannot be None.")
+
+  for field in ("id", "specversion"):
+    val = getattr(ce_attributes_binding, field)
+    if val is OMIT:  # type: ignore[comparison-overlap]
+      raise TypeError(
+          f"CloudEvent field '{field}' is mandatory and cannot be OMIT."
+      )
 
   reserved_attributes = {
       "type",
@@ -300,7 +327,29 @@ def build_domain_specific_tool(
 
       # Evaluate lambdas
       if callable(val):
-        val = val(payload)
+        tool_context = kwargs.get("tool_context")
+        try:
+          sig = inspect.signature(val)
+        except (ValueError, TypeError):
+          sig = None
+
+        if sig is not None:
+          params = list(sig.parameters.values())
+          if len(params) == 2:
+            first_param = params[0]
+            if _is_context_param(val, first_param.name):
+              val = val(tool_context, payload)
+            else:
+              val = val(payload, tool_context)
+          elif len(params) == 1:
+            if _is_context_param(val, params[0].name):
+              val = val(tool_context)
+            else:
+              val = val(payload)
+          else:
+            val = val()
+        else:
+          val = val(payload)
 
       if val is OMIT:
         if is_mandatory:
@@ -325,7 +374,14 @@ def build_domain_specific_tool(
       val = resolve_attr(
           field, getattr(ce_attributes_binding, field), is_mandatory
       )
-      if val is not OMIT and val is not None:
+      if val is OMIT:
+        if field in ("time", "datacontenttype"):
+          publish_kwargs[field] = ""
+        elif field in ("id", "specversion"):
+          raise ValueError(
+              f"CloudEvent attribute '{field}' is mandatory and cannot be OMIT."
+          )
+      elif val is not None:
         publish_kwargs[field] = val
 
     # Resolve custom attributes
