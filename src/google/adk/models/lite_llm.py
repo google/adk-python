@@ -3038,7 +3038,7 @@ class LiteLlm(BaseLlm):
         llm_response = _message_to_generate_content_response(
             ChatCompletionAssistantMessage(
                 role="assistant",
-                content="".join(text_parts),
+                content=None,
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
