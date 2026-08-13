@@ -46,6 +46,12 @@ gcloud eventarc message-buses create my-bus \
 
 *(Make sure to update the `BUS_NAME` variable in `agent.py` to match your actual bus URI).*
 
+3. Install the GCP extra dependency (required for Eventarc publishing):
+
+```bash
+pip install "google-adk[gcp]"
+```
+
 `create_publish_tool` is highly flexible. It uses `pydantic.create_model` to construct the LLM's function signature, encapsulating the `payload_schema` inside an `event_data` parameter and appending any parameter marked with `AgentProvided`.
 
 ### Example A: Fully Statically Bound (Safest)
@@ -89,11 +95,14 @@ complete_outreach_dynamic_tool = toolset.create_publish_tool(
 
 ### Example C: Lambda Execution & Mixed Custom Attributes
 
-The developer uses Python callables to generate IDs dynamically at runtime.
+The developer uses Python callables to generate attributes dynamically at runtime. Callables can inspect the event payload, the agent's runtime `Context` (`tool_context`), or both.
 
 ```python
 def get_custom_trace_id(payload: OutreachContext) -> str:
     return f"trace-{payload.customer_id}-{uuid.uuid4().hex[:8]}"
+
+def get_source_from_session(ctx: Context) -> str:
+    return f"//my-agent/outreach/{ctx.session_id}"
 
 complete_outreach_lambda_tool = toolset.create_publish_tool(
     name="complete_outreach_lambda",
@@ -102,8 +111,8 @@ complete_outreach_lambda_tool = toolset.create_publish_tool(
     bus=f"projects/{PROJECT_ID}/locations/us-central1/messageBuses/{BUS_NAME}",
     ce_attributes_binding=CloudEventAttributesBinding(
         type="vendor_outreach.completed",
-        source="//my-agent/outreach",
-        id=get_custom_trace_id, # Executed at runtime
+        source=get_source_from_session, # Evaluated against runtime Context
+        id=get_custom_trace_id, # Evaluated against event payload
         custom_attributes={
             "environment": "production", # Statically bound
             "priority": AgentProvided("The priority of the outreach: 'high' or 'low'")
@@ -114,9 +123,9 @@ complete_outreach_lambda_tool = toolset.create_publish_tool(
 
 **What the Agent Sees:** `complete_outreach_lambda(event_data: OutreachContext, priority: str)`
 
-### Example D: Empty Payloads & Dynamic Defaults
+### Example D: Empty Payloads, Omit Headers & Dynamic Defaults
 
-The developer wants to emit a simple signal (no business payload). If the agent omits the priority, it is dynamically calculated.
+The developer wants to emit a simple signal (no business payload) without a timestamp header (`time=OMIT`). If the agent omits the priority, it is dynamically calculated.
 
 ```python
 def default_priority(_: None) -> str:
@@ -130,6 +139,7 @@ ping_system_tool = toolset.create_publish_tool(
     ce_attributes_binding=CloudEventAttributesBinding(
         type="system.ping",
         source="//my-agent/ping",
+        time=OMIT, # Omits time attribute from event
         custom_attributes={
             "retry": AgentProvided("Whether to retry on failure", default="false"),
             "priority": AgentProvided("The priority of the ping", default=default_priority)
