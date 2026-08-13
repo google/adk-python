@@ -52,6 +52,23 @@ DEFAULT_ERROR_MESSAGE = "An error occurred during processing"
 logger = logging.getLogger("google_adk." + __name__)
 
 
+def _extract_text_from_event(event: Event) -> str:
+  """Returns the text content of an ADK event, or an empty string."""
+  if event.content and event.content.parts:
+    return "".join(part.text or "" for part in event.content.parts if part.text)
+  return ""
+
+
+def _mark_a2a_task_failed(event: Event) -> Event:
+  """Marks an event produced from a failed A2A task."""
+  event.error_code = _compat.A2A_TASK_FAILED_ERROR_CODE
+  if not event.error_message:
+    event.error_message = (
+        _extract_text_from_event(event) or _compat.A2A_TASK_FAILED_ERROR_MESSAGE
+    )
+  return event
+
+
 AdkEventToA2AEventsConverter = Callable[
     [
         Event,
@@ -250,27 +267,30 @@ def convert_a2a_task_to_event(
       if agent_messages:
         message = agent_messages[-1]
 
-    # Convert message if available
+    # Convert message if available; otherwise create a minimal event.
     if message:
       try:
         event: Event = convert_a2a_message_to_event(
             message, author, invocation_context, part_converter=part_converter
         )
-        return event
       except Exception as e:
         logger.error("Failed to convert A2A task message to event: %s", e)
         raise RuntimeError(f"Failed to convert task message: {e}") from e
+    else:
+      event = Event(
+          invocation_id=(
+              invocation_context.invocation_id
+              if invocation_context
+              else platform_uuid.new_uuid()
+          ),
+          author=author or "a2a agent",
+          branch=invocation_context.branch if invocation_context else None,
+      )
 
-    # Create minimal event if no message is available
-    return Event(
-        invocation_id=(
-            invocation_context.invocation_id
-            if invocation_context
-            else platform_uuid.new_uuid()
-        ),
-        author=author or "a2a agent",
-        branch=invocation_context.branch if invocation_context else None,
-    )
+    if _compat.is_failed_status(a2a_task.status):
+      event = _mark_a2a_task_failed(event)
+
+    return event
 
   except Exception as e:
     logger.error("Failed to convert A2A task to event: %s", e)

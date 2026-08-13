@@ -139,6 +139,9 @@ if IS_A2A_V1:
   TS_AUTH_REQUIRED = TaskState.Value("TASK_STATE_AUTH_REQUIRED")
   TS_CANCELED = TaskState.Value("TASK_STATE_CANCELED")
 
+  A2A_TASK_FAILED_ERROR_CODE = "A2A_TASK_FAILED"
+  A2A_TASK_FAILED_ERROR_MESSAGE = "Remote agent task failed"
+
   TP_JSONRPC = TransportProtocol.JSONRPC
   TP_HTTP_JSON = TransportProtocol.HTTP_JSON
   TP_GRPC = TransportProtocol.GRPC
@@ -153,6 +156,9 @@ else:
   TS_INPUT_REQUIRED = TaskState.input_required
   TS_AUTH_REQUIRED = TaskState.auth_required
   TS_CANCELED = TaskState.canceled
+
+  A2A_TASK_FAILED_ERROR_CODE = "A2A_TASK_FAILED"
+  A2A_TASK_FAILED_ERROR_MESSAGE = "Remote agent task failed"
 
   TP_JSONRPC = getattr(TransportProtocol, "jsonrpc")
   TP_HTTP_JSON = getattr(TransportProtocol, "http_json")
@@ -1185,6 +1191,11 @@ def role_to_str(role: Any) -> str:
   1.x ``_a2a_role_to_content_role`` behavior.
   """
   return "user" if role == ROLE_USER else "model"
+
+
+def is_failed_status(status: Any) -> bool:
+  """Returns whether an A2A task status is in the failed state."""
+  return status is not None and getattr(status, "state", None) == TS_FAILED
 
 
 def normalize_message(msg: Any) -> Any:

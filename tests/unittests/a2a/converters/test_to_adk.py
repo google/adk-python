@@ -178,6 +178,38 @@ class TestToAdk:
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
 
+  def test_convert_a2a_task_to_event_failed_status_sets_error(self):
+    """Test failed A2A task status maps to an error Event."""
+    a2a_part = _make_a2a_part_for_test({})
+    failed_message = Message(
+        message_id="msg-failed",
+        role=_compat.ROLE_AGENT,
+        parts=[a2a_part],
+    )
+    task = _compat.make_task(
+        id="task-failed",
+        status=_compat.make_task_status(
+            _compat.TS_FAILED, message=failed_message
+        ),
+    )
+    mock_part_converter = Mock(
+        return_value=[
+            genai_types.Part.from_text(text="Remote agent task failed")
+        ]
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.error_code == _compat.A2A_TASK_FAILED_ERROR_CODE
+    assert event.error_message == "Remote agent task failed"
+    assert event.content.parts[0].text == "Remote agent task failed"
+
   def test_convert_a2a_task_to_event_returns_action_only_event(self):
     """Test A2A task conversion returns action-only events."""
     task = Task(
@@ -633,6 +665,26 @@ class TestToAdk:
     assert event.invocation_id == "test-invocation"
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
+
+  def test_convert_a2a_status_update_to_event_failed_status_without_message(
+      self,
+  ):
+    """Test failed status update without a message still emits an error event."""
+    update = _compat.make_task_status_update_event(
+        task_id="task-failed",
+        status=_compat.make_task_status(_compat.TS_FAILED),
+        context_id="context-1",
+        final=False,
+    )
+
+    event = convert_a2a_status_update_to_event(
+        update, "test-author", self.mock_context, Mock()
+    )
+
+    assert event is not None
+    assert event.error_code == _compat.A2A_TASK_FAILED_ERROR_CODE
+    assert event.error_message == "Remote agent task failed"
+    assert event.content is None
 
   def test_convert_a2a_status_update_to_event_none(self):
     """Test convert_a2a_status_update_to_event with None."""
