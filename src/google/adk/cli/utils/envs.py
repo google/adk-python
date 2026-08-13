@@ -88,3 +88,10 @@ def load_dotenv_for_agent(
     )
   else:
     logger.info('No %s file found for %s', filename, agent_name)
+
+  # After `.env` (and explicit shell env) are applied, fill any remaining
+  # unset Vertex/GCP identity vars from the instance metadata server when
+  # running on GCP. Explicit values always win.
+  from ...utils._gcp_metadata import apply_gcp_runtime_defaults
+
+  apply_gcp_runtime_defaults()

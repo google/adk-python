@@ -358,6 +358,12 @@ class Gemini(BaseLlm):
     """
     from google.genai import Client
 
+    from ..utils.env_utils import apply_gcp_runtime_defaults
+
+    # Fill unset Vertex project/location/enterprise flags from the GCP metadata
+    # server before constructing the client (explicit env / `.env` still win).
+    apply_gcp_runtime_defaults()
+
     base_url, api_version = self._base_url_and_api_version
     kwargs_for_http_options: dict[str, Any] = {
         'headers': self._tracking_headers(),
