@@ -38,7 +38,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import StatusCode
 import pytest
 
-from .functional_test_helpers import install_telemetry
+from .functional._scenarios import install_telemetry
 
 
 def test_get_elapsed_s_span_none():

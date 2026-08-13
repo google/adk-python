@@ -235,6 +235,13 @@ class AgentEvaluator:
       )
 
       failures.extend(failures_per_eval_case)
+      failures.extend(
+          AgentEvaluator._get_failures_from_final_eval_status(
+              eval_id=eval_id,
+              eval_results_per_eval_id=eval_results_per_eval_id,
+              agent_module=agent_module,
+          )
+      )
 
       if output_file:
         csv_rows.extend(
@@ -839,6 +846,39 @@ class AgentEvaluator:
         )
 
     return failures
+
+  @staticmethod
+  def _get_failures_from_final_eval_status(
+      eval_id: str,
+      eval_results_per_eval_id: list[EvalCaseResult],
+      agent_module: str,
+  ) -> list[str]:
+    """Returns failures that the per-invocation metric results cannot show.
+
+    A run that produced no metric results at all, for example because
+    inferencing raised, leaves `_process_metrics_and_get_failures` with nothing
+    to derive a verdict from. The status recorded on the EvalCaseResult is the
+    only record that such a run failed, so we honor it here.
+    """
+    failed_runs = 0
+    for eval_case_result in eval_results_per_eval_id:
+      if eval_case_result.final_eval_status != EvalStatus.FAILED:
+        continue
+      per_invocation_results = (
+          eval_case_result.eval_metric_result_per_invocation
+      )
+      if any(r.eval_metric_results for r in per_invocation_results):
+        continue
+      failed_runs += 1
+
+    if not failed_runs:
+      return []
+
+    return [
+        f"{eval_id} for {agent_module} Failed. {failed_runs} of"
+        f" {len(eval_results_per_eval_id)} runs were recorded as failed without"
+        " producing any metric results."
+    ]
 
   @staticmethod
   def _get_results_as_rows(

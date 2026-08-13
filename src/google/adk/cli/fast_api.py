@@ -51,7 +51,6 @@ from ..telemetry._agent_engine import maybe_install_request_metrics_middleware
 from ..telemetry._agent_engine import TopSpanProcessor
 from .api_server import ApiServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
-from .dev_server import DevServer
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_change_handler import AgentChangeEventHandler
@@ -261,7 +260,24 @@ def get_fast_api_app(
   # Instantiate the appropriate server class based on web option
   # If web=True, use DevServer (includes all endpoints: production + dev)
   # If web=False, use ApiServer (production-safe endpoints only)
-  ServerClass = DevServer if web else ApiServer
+  if web:
+    try:
+      from .dev_server import DevServer
+
+      ServerClass = DevServer
+    except ModuleNotFoundError as e:
+      # Fallback to ApiServer if dev_server.py is not available
+      # (e.g., in production packages where dev_server.py is excluded)
+      if e.name and e.name.endswith("dev_server"):
+        logger.warning(
+            "DevServer not found, falling back to ApiServer. "
+            "Debug and evaluation endpoints will not be available."
+        )
+        ServerClass = ApiServer
+      else:
+        raise
+  else:
+    ServerClass = ApiServer
 
   adk_web_server = ServerClass(
       agent_loader=agent_loader,

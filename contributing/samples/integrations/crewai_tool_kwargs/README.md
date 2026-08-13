@@ -42,7 +42,7 @@ pip install 'crewai-tools>=0.2.0'
 ```bash
 export GOOGLE_API_KEY="your-api-key-here"
 # OR
-export GOOGLE_GENAI_API_KEY="your-api-key-here"
+export GEMINI_API_KEY="your-api-key-here"
 ```
 
 ## Running the Sample
@@ -50,7 +50,7 @@ export GOOGLE_GENAI_API_KEY="your-api-key-here"
 ### Option 1: Run the Happy Path Test
 
 ```bash
-cd contributing/samples/crewai_tool_kwargs
+cd contributing/samples/integrations/crewai_tool_kwargs
 python main.py
 ```
 
@@ -162,4 +162,4 @@ export GOOGLE_API_KEY="your-key-here"
 ## Related
 
 - Parent class: `FunctionTool` - Base class for all function-based tools
-- Unit tests: `tests/unittests/tools/test_crewai_tool.py`
+- Unit tests: `tests/unittests/integrations/crewai/test_crewai_tool.py`

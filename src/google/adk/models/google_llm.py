@@ -583,7 +583,7 @@ class Gemini(BaseLlm):
           await self._adapt_computer_use_tool(llm_request)
 
     # Sanitize inputs by ensuring unsupported inline types (e.g. DOCX from UI)
-    # are converted to plain text using load_artifacts_tool._as_safe_part_for_llm.
+    # are converted to plain text using load_artifacts_tool.as_safe_part_for_llm.
     if llm_request.contents:
       for content in llm_request.contents:
         if not content.parts:
@@ -593,8 +593,8 @@ class Gemini(BaseLlm):
           if part.inline_data:
             # GE inline_data does not preserve filenames, so we pass a dummy
             # 'inline-file' name as a placeholder for
-            # _as_safe_part_for_llm's required artifact_name argument.
-            part = load_artifacts_tool._as_safe_part_for_llm(  # pylint: disable=protected-access
+            # as_safe_part_for_llm's required artifact_name argument.
+            part = load_artifacts_tool.as_safe_part_for_llm(  # pylint: disable=protected-access
                 part, 'inline-file'
             )
           new_parts.append(part)

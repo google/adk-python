@@ -16,10 +16,10 @@ import os
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.auth.auth_credential import AuthCredentialTypes
-from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
-from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
-from google.adk.tools.bigquery.config import BigQueryToolConfig
-from google.adk.tools.bigquery.config import WriteMode
+from google.adk.integrations.bigquery.bigquery_credentials import BigQueryCredentialsConfig
+from google.adk.integrations.bigquery.bigquery_toolset import BigQueryToolset
+from google.adk.integrations.bigquery.config import BigQueryToolConfig
+from google.adk.integrations.bigquery.config import WriteMode
 import google.auth
 import google.auth.transport.requests
 

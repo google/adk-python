@@ -1,308 +1,233 @@
-# Advanced Workflow Patterns Reference
+# Advanced Workflow Patterns
 
-Nested workflows, dynamic nodes, retry configuration, custom node types, and graph construction.
-
-## 📋 Agent Verification Checklist (Advanced Patterns)
-Use this checklist when implementing complex workflows:
-
-- [ ] **Validation**: Does your graph follow all 7 validation rules? (e.g., no unconditional cycles)
-- [ ] **Custom Nodes**: If creating a custom node, did you override `get_name()` and `run()`?
-- [ ] **Dynamic Execution**: If using `run_node`, did you follow the rules in the dedicated dynamic-nodes reference?
-- [ ] **Waiting State**: Did you use `wait_for_output=True` if the node should stay in WAITING state until output is yielded?
-
-## 💡 Quick Reference
-
-- **Retry**: `RetryConfig(max_attempts=5, initial_delay=1.0)`
-- **Custom Node Fields**: `rerun_on_resume`, `wait_for_output`, `retry_config`, `timeout`
-
-## Nested Workflows
-
-A `Workflow` is both an agent and a node. Use one workflow inside another:
+Nested workflows, retries, timeouts, custom node classes, and the graph
+validation rules that reject a malformed graph at construction time.
 
 ```python
-from google.adk.workflow import Workflow
+from google.adk import Context, Event, Workflow
+from google.adk.workflow import BaseNode, Edge, FunctionNode, RetryConfig, START
+```
 
-# Inner workflow
-inner = Workflow(
-    name="inner_pipeline",
-    edges=[
-        ('START', step_a),
-        (step_a, step_b),
-    ],
-)
+## Nested workflows
 
-# Outer workflow using inner as a node
+A `Workflow` is both an agent and a node, so one can sit inside another. The
+inner workflow takes the predecessor's output as its `START` input, and its
+terminal output flows on to the next node outside.
+
+```python
+inner = Workflow(name='inner_pipeline', edges=[('START', step_a, step_b)])
+
 outer = Workflow(
-    name="outer_pipeline",
-    edges=[
-        ('START', pre_process),
-        (pre_process, inner),      # Nested workflow
-        (inner, post_process),
-    ],
+    name='outer_pipeline',
+    edges=[('START', pre_process, inner, post_process)],
 )
 ```
 
-The inner workflow receives the predecessor's output as its START input and its terminal output flows to the next node in the outer workflow.
+## Retries
 
-## Dynamic Node Scheduling
+Every `RetryConfig` field defaults to `None`, which means "use the built-in
+fallback" rather than "disabled":
 
-Schedule nodes at runtime using `ctx.run_node()`.
-
-See the dedicated [Dynamic Node Scheduling Reference](dynamic-nodes.md) for
-detailed rules, examples, and best practices.
-
-## Retry Configuration
-
-Configure automatic retry for nodes that may fail:
+| Field | Fallback | Meaning |
+|---|---|---|
+| `max_attempts` | 5 | Total attempts including the first; 0 or 1 disables retrying |
+| `initial_delay` | 1.0 | Seconds before the first retry |
+| `max_delay` | 60.0 | Ceiling on the computed delay |
+| `backoff_factor` | 2.0 | Multiplier applied per attempt |
+| `jitter` | 1.0 | Randomness factor; 0.0 removes it |
+| `exceptions` | all | Exception classes or class-name strings to retry on |
 
 ```python
-from google.adk.workflow import RetryConfig
-from google.adk.workflow import FunctionNode
-
-retry = RetryConfig(
-    max_attempts=5,         # Max attempts (default: 5). 0 or 1 = no retry
-    initial_delay=1.0,      # Seconds before first retry (default: 1.0)
-    max_delay=60.0,         # Max seconds between retries (default: 60.0)
-    backoff_factor=2.0,     # Delay multiplier per attempt (default: 2.0)
-    jitter=1.0,             # Randomness factor (default: 1.0, 0.0 = none)
-    exceptions=None,        # Exception types to retry (None = all)
-)
-
-node = FunctionNode(
-    flaky_api_call,
-    name="api_call",
-    retry_config=retry,
+api_node = FunctionNode(
+    func=flaky_api_call,
+    name='api_call',
+    retry_config=RetryConfig(max_attempts=5, exceptions=[TimeoutError]),
 )
 ```
 
-### Retry delay formula
+Delay for attempt *n* is
+`min(initial_delay * backoff_factor ** n, max_delay) * (1 + random(0, jitter))`.
 
-```
-delay = initial_delay * (backoff_factor ^ attempt)
-delay = min(delay, max_delay)
-delay = delay * (1 + random(0, jitter))
-```
-
-### Accessing the attempt count
+Read the current try from the context — it is 1 on the first attempt:
 
 ```python
 def my_node(ctx: Context, node_input: str) -> str:
-  # attempt_count is 1 on the first try, ≥2 on retries
   if ctx.attempt_count > 1:
-    print(f"Retry attempt {ctx.attempt_count}")
-  return "result"
+    logger.warning('retry %d', ctx.attempt_count)
+  return 'result'
 ```
 
-## Custom Node Types
+## Timeouts
 
-Subclass `BaseNode` for custom behavior:
+`timeout` is a per-node wall-clock limit in seconds. Exceeding it raises
+`NodeTimeoutError` (importable from `google.adk.workflow`), which the retry
+machinery treats like any other exception.
+
+## Custom node classes
+
+`BaseNode` is a Pydantic model. Declare fields as fields, and override
+`_run_impl` — **not** `run`, which is `@final` and does the normalization of
+yielded values into events.
 
 ```python
-from google.adk.workflow import BaseNode
-from google.adk.events.event import Event
-from google.adk.agents.context import Context
-from pydantic import ConfigDict, Field
 from typing import Any, AsyncGenerator
+
 from typing_extensions import override
 
+
 class BatchProcessorNode(BaseNode):
-  """Processes items in batches."""
-  model_config = ConfigDict(arbitrary_types_allowed=True)
+  """Processes a list of items in fixed-size batches."""
 
-  name: str = Field(default="batch_processor")
-  batch_size: int = Field(default=10)
-
-  def __init__(self, *, name: str = "batch_processor", batch_size: int = 10):
-    super().__init__()
-    object.__setattr__(self, 'name', name)
-    object.__setattr__(self, 'batch_size', batch_size)
+  batch_size: int = 10
 
   @override
-  def get_name(self) -> str:
-    return self.name
-
-  @override
-  async def run(
-      self,
-      *,
-      ctx: Context,
-      node_input: Any,
+  async def _run_impl(
+      self, *, ctx: Context, node_input: Any
   ) -> AsyncGenerator[Any, None]:
     items = node_input if isinstance(node_input, list) else [node_input]
     results = []
     for i in range(0, len(items), self.batch_size):
-      batch = items[i:i + self.batch_size]
-      batch_result = await process_batch(batch)
-      results.extend(batch_result)
+      results.extend(await process_batch(items[i:i + self.batch_size]))
     yield Event(output=results)
+
+
+batcher = BatchProcessorNode(name='batch_processor', batch_size=25)
 ```
 
-### BaseNode Fields
+`_run_impl` may yield an `Event`, a `RequestInput`, a bare value (wrapped as
+`Event(output=...)`), or `None` (skipped). There is no `get_name()` to override
+— the node's name is the `name` field.
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `rerun_on_resume` | `False` | Whether to rerun after HITL interrupt |
-| `wait_for_output` | `False` | Node stays in WAITING state until it yields output (see below) |
-| `retry_config` | `None` | Retry configuration on failure |
-| `timeout` | `None` | Max seconds for node to complete |
+### `BaseNode` fields
 
-### wait_for_output
+| Field | Default | Purpose |
+|---|---|---|
+| `name` | required | Node identity within the graph; must be unique |
+| `description` | `''` | Human-readable label |
+| `rerun_on_resume` | `False` | Re-run after an interrupt instead of taking the answer as output |
+| `wait_for_output` | `False` | Finishing without an output event leaves the node WAITING, not COMPLETED |
+| `retry_config` | `None` | Retry policy |
+| `timeout` | `None` | Seconds before `NodeTimeoutError` |
+| `input_schema` | `None` | Validates and coerces `node_input` |
+| `output_schema` | `None` | Validates and coerces `event.output` |
+| `state_schema` | `None` | Validates `ctx.state` writes; `app:`, `user:`, `temp:` keys bypass it |
 
-When `wait_for_output=True`, a node that finishes without yielding an `Event` with output moves to **WAITING** state instead of COMPLETED. Downstream nodes are **not** triggered. The node can then be re-triggered by upstream predecessors.
+### `wait_for_output`
 
-This is how `JoinNode` works internally — it runs once per predecessor, storing partial inputs, and only yields output (triggering downstream) when all predecessors have completed. `LlmAgentWrapper` in `task` mode also sets `wait_for_output=True` automatically.
+With `wait_for_output=True`, a node that completes without emitting an output
+event moves to WAITING rather than COMPLETED, and no downstream node fires. An
+upstream predecessor can trigger it again later — useful for a node that
+accumulates across several triggers before producing one answer.
 
 ```python
-from google.adk.workflow import BaseNode
-
 class CollectorNode(BaseNode):
-  wait_for_output: bool = True  # Stay in WAITING until output is yielded
+  wait_for_output: bool = True
 
-  async def run(self, *, ctx, node_input):
-    # Store partial input, don't yield output yet
-    collected = ctx.state.get("collected", [])
-    collected.append(node_input)
-    yield Event(state={"collected": collected})
-
-    # Only yield output when we have enough
+  @override
+  async def _run_impl(self, *, ctx, node_input):
+    collected = ctx.state.get('collected', []) + [node_input]
+    yield Event(state={'collected': collected})
     if len(collected) >= 3:
-      yield Event(output=collected)
-      # Now node transitions to COMPLETED and triggers downstream
+      yield Event(output=collected)  # now COMPLETED, downstream fires
 ```
 
-Nodes with `wait_for_output=True` default:
+`JoinNode` reaches a similar result by a different mechanism — it sets
+`_requires_all_predecessors`, so the orchestrator holds it until every
+predecessor has run and then hands it all their outputs at once.
 
-- `JoinNode`: `True` (waits for all predecessors)
-- `LlmAgentWrapper` (task mode): `True` (set in `model_post_init`)
-- All other nodes: `False`
+## Wrapping a tool as a node
 
-### Required Methods
-
-| Method | Description |
-|--------|-------------|
-| `get_name() -> str` | Return the node name |
-| `run(*, ctx, node_input) -> AsyncGenerator` | Execute the node, yield events |
-
-## ToolNode
-
-Wrap an ADK tool as a workflow node:
+`_ToolNode` is private and keyword-only. Its input must be a dict of tool
+arguments, or `None`.
 
 ```python
-from google.adk.workflow._tool_node import _ToolNode as ToolNode
-from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools import FunctionTool
+from google.adk.workflow._tool_node import _ToolNode
+
 
 def search(query: str) -> str:
   """Search for information."""
-  return f"Results for: {query}"
+  return f'Results for: {query}'
 
-tool = FunctionTool(search)
-tool_node = ToolNode(tool, name="search_node")
 
-agent = Workflow(
-    name="with_tool",
-    edges=[
-        ('START', prepare_query),
-        (prepare_query, tool_node),  # Input must be dict (tool args) or None
-        (tool_node, process_results),
-    ],
-)
-```
-
-**Important**: ToolNode input must be a dictionary of tool arguments or None.
-
-## AgentNode
-
-Wrap any `BaseAgent` (not just LlmAgent) as a workflow node:
-
-```python
-from google.adk.workflow._agent_node import AgentNode
-from google.adk.agents.loop_agent import LoopAgent
-
-loop = LoopAgent(
-    name="refine_loop",
-    sub_agents=[writer, reviewer],
-    max_iterations=3,
-)
-
-loop_node = AgentNode(agent=loop, name="refinement")
+tool_node = _ToolNode(tool=FunctionTool(search), name='search_node')
 
 agent = Workflow(
-    name="with_loop",
-    edges=[
-        ('START', loop_node),
-        (loop_node, final_step),
-    ],
+    name='with_tool',
+    edges=[('START', prepare_query, tool_node, process_results)],
 )
 ```
 
-## Graph Validation Rules
+## Graph validation
 
-The workflow graph is validated on construction. These rules are enforced:
+`Workflow` validates the graph when it is constructed, in this order. Each check
+raises `ValueError` naming the offending node or edge.
 
-1. START node must exist
-2. START node must not have incoming edges
-3. All non-START nodes must be reachable (appear as `to_node` in some edge)
-4. No duplicate node names
-5. No duplicate edges
-6. At most one `__DEFAULT__` route per node
-7. No unconditional cycles (cycles must have at least one routed edge)
+1. No duplicate node names.
+2. A `START` node exists.
+3. No edge leaving `START` carries a route.
+4. Every node is reachable from `START`, and `START` has no incoming edges.
+5. No two edges share both a source and a target — routes are not part of edge
+   identity.
+6. At most one `__DEFAULT__` route per node, and `__DEFAULT__` never appears
+   inside a list of routes.
+7. No unconditional cycle — a cycle needs at least one routed edge.
+8. Where a source declares `output_schema` and its target declares
+   `input_schema`, the two must be the same schema.
+9. No edge into a `mode='chat'` `LlmAgent` from anything but `START`, because a
+   chat agent reads conversation history rather than a node input.
 
-## Edge Construction Patterns
+Nodes with no outgoing edges are the graph's terminals; their outputs become the
+workflow's own output.
+
+## Ways to declare edges
 
 ```python
-from google.adk.workflow import Edge
-from google.adk.workflow._workflow_graph import WorkflowGraph
-
-# Tuple syntax (most common)
 edges = [
-    ('START', node_a),                    # Simple edge
-    (node_a, node_b, "route"),            # Routed edge
-    (node_a, (node_b, node_c)),           # Fan-out
-    ((node_b, node_c), join_node),        # Fan-in
+    ('START', node_a),                 # simple
+    (node_a, node_b, 'route'),         # routed
+    (node_a, (node_b, node_c)),        # fan-out
+    ((node_b, node_c), join_node),     # fan-in
+    ('START', node_a, node_b, node_c), # chain of three edges
+    (classifier, {'ok': handler_a, 'err': handler_b}),  # routing map
 ]
-
-# Sequence shorthand (tuple with 3+ elements creates chain)
-edges = [('START', node_a, node_b, node_c)]
-# Equivalent to: [('START', node_a), (node_a, node_b), (node_b, node_c)]
-
-# Routing map (dict syntax)
-edges = [
-    (classifier, {"success": handler_a, "error": handler_b}),
-]
-
-# Edge objects (explicit)
-edges = [
-    Edge(START, node_a),
-    Edge(node_a, node_b, route="success"),
-]
-
-# Edge.chain helper
-edges = Edge.chain('START', node_a, node_b, node_c)
-# Returns: [(START, node_a), (node_a, node_b), (node_b, node_c)]
-
-# WorkflowGraph.from_edge_items
-graph = WorkflowGraph.from_edge_items([
-    ('START', node_a),
-    (node_a, node_b),
-])
-agent = Workflow(name="my_workflow", graph=graph)
 ```
 
-## Source File Locations
+`Edge` objects are the explicit form. It is a Pydantic model, so its fields are
+keyword-only:
+
+```python
+edges = [
+    Edge(from_node=START, to_node=node_a),
+    Edge(from_node=node_a, to_node=node_b, route='success'),
+]
+```
+
+To build the graph yourself, pass `graph=` instead of `edges=`:
+
+```python
+from google.adk.workflow._graph import Graph
+
+graph = Graph.from_edge_items([('START', node_a), (node_a, node_b)])
+agent = Workflow(name='my_workflow', graph=graph)
+```
+
+## Where the code lives
 
 | Component | File |
-|-----------|------|
-| Workflow | `src/google/adk/workflow/_workflow.py` |
-| WorkflowGraph, Edge | `src/google/adk/workflow/_workflow_graph.py` |
-| Context | `src/google/adk/agents/context.py` |
-| FunctionNode | `src/google/adk/workflow/_function_node.py` |
-| _LlmAgentWrapper | `src/google/adk/workflow/_llm_agent_wrapper.py` |
-| AgentNode | `src/google/adk/workflow/_agent_node.py` |
-| _ToolNode | `src/google/adk/workflow/_tool_node.py` |
-| JoinNode | `src/google/adk/workflow/_join_node.py` |
-| ParallelWorker | `src/google/adk/workflow/_parallel_worker.py` |
-| BaseNode, START | `src/google/adk/workflow/_base_node.py` |
-| @node decorator | `src/google/adk/workflow/_node.py` |
-| RetryConfig | `src/google/adk/workflow/_retry_config.py` |
-| Event | `src/google/adk/events/event.py` |
-| RequestInput | `src/google/adk/events/request_input.py` |
+|---|---|
+| `Workflow` | `src/google/adk/workflow/_workflow.py` |
+| `Graph`, `Edge`, `DEFAULT_ROUTE` | `src/google/adk/workflow/_graph.py` |
+| graph validation rules | `src/google/adk/workflow/utils/_graph_validation.py` |
+| `BaseNode`, `START` | `src/google/adk/workflow/_base_node.py` |
+| `FunctionNode` | `src/google/adk/workflow/_function_node.py` |
+| `@node`, `Node` | `src/google/adk/workflow/_node.py` |
+| `JoinNode` | `src/google/adk/workflow/_join_node.py` |
+| `_ParallelWorker` | `src/google/adk/workflow/_parallel_worker.py` |
+| `_ToolNode` | `src/google/adk/workflow/_tool_node.py` |
+| `RetryConfig` | `src/google/adk/workflow/_retry_config.py` |
+| running an `LlmAgent` as a node | `src/google/adk/workflow/_llm_agent_wrapper.py` |
+| dynamic node scheduling | `src/google/adk/workflow/_dynamic_node_scheduler.py` |
+| `Context` | `src/google/adk/agents/context.py` |
+| `Event` | `src/google/adk/events/event.py` |
+| `RequestInput` | `src/google/adk/events/request_input.py` |

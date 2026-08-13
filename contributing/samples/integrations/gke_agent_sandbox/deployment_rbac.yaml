@@ -38,8 +38,8 @@ rules:
 - apiGroups: [""]
   resources: ["configmaps"]
   # create: Needed mount the agent's code into the Job's Pod.
-  # delete: Needed for cleanup in the finally block
-  verbs: ["create", "get", "list", "delete"]
+  # patch: Needed for _add_owner_reference() so the ConfigMap is garbage collected with its Job.
+  verbs: ["create", "get", "list", "patch"]
 - apiGroups: [""]
   resources: ["pods"]
   # list: Needed to find the correct Pod _core_v1.list_namespaced_pod(label_selector=...)

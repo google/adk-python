@@ -1207,9 +1207,21 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
     ("filename", "session_id"),
     [
         ("../escape.txt", "sess123"),
+        (r"..\escape.txt", "sess123"),
+        ("folder/../alias.txt", "sess123"),
+        (r"folder\..\alias.txt", "sess123"),
+        (r"folder/..\alias.txt", "sess123"),
         ("user:../escape.txt", "sess123"),
+        (r"user:..\escape.txt", "sess123"),
+        (r"user:folder\..\alias.txt", "sess123"),
         ("/absolute/path.txt", "sess123"),
         ("user:/absolute/path.txt", None),
+        (r"C:\absolute\path.txt", "sess123"),
+        ("C:/absolute/path.txt", "sess123"),
+        ("C:drive-relative.txt", "sess123"),
+        (r"\\server\share\file.txt", "sess123"),
+        ("//server/share/file.txt", "sess123"),
+        (r"\rooted\file.txt", "sess123"),
     ],
 )
 async def test_file_save_artifact_rejects_out_of_scope_paths(
@@ -1242,6 +1254,9 @@ INVALID_PATH_SEGMENT_CASES = (
         "\\leading\\backslash",
         "must not be an absolute path or start with a slash",
     ),
+    (r"C:\absolute", "must not be drive-qualified"),
+    ("C:/absolute", "must not be drive-qualified"),
+    ("C:drive-relative", "must not be drive-qualified"),
 )
 
 
