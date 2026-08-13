@@ -503,6 +503,17 @@ class UpdateSessionRequest(common.BaseModel):
   """The state changes to apply to the session."""
 
 
+class RewindSessionRequest(common.BaseModel):
+  """Request to rewind a session to before a prior invocation."""
+
+  rewind_before_invocation_id: str = Field(
+      description=(
+          "The invocation ID to rewind before. Events from that invocation"
+          " onward are annulled for subsequent LLM turns."
+      ),
+  )
+
+
 class FinalizeAgentIdentityCredentialsRequest(common.BaseModel):
   """Request to finalize a 3LO consent for an Agent Identity connector."""
 
@@ -1425,6 +1436,45 @@ class ApiServer:
       )
 
       return session
+
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind",
+        response_model_exclude_none=True,
+    )
+    async def rewind_session(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: RewindSessionRequest,
+    ) -> Session:
+      """Rewinds a session to before the given invocation.
+
+      This is the REST equivalent of ``runner.rewind_async`` and is the
+      supported path for edit-message / undo flows on ``adk api_server`` and
+      Agent Engine container deploys.
+      """
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+      runner = await self.get_runner_async(app_name)
+      try:
+        await runner.rewind_async(
+            user_id=user_id,
+            session_id=session_id,
+            rewind_before_invocation_id=req.rewind_before_invocation_id,
+        )
+      except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+      updated = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not updated:
+        raise HTTPException(status_code=404, detail="Session not found")
+      return updated
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}/metadata",
