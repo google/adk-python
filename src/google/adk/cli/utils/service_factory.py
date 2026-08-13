@@ -18,10 +18,11 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
+from typing import Mapping
+from typing import Optional
 from urllib.parse import parse_qsl
 from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
-from typing import Mapping, Optional
 
 from ...artifacts.base_artifact_service import BaseArtifactService
 from ...memory.base_memory_service import BaseMemoryService

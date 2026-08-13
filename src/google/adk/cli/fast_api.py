@@ -25,8 +25,9 @@ from typing import Any
 from typing import AsyncIterator
 from typing import Awaitable
 from typing import Callable
+from typing import Iterator
 from typing import Literal
-from typing import Mapping, Iterator
+from typing import Mapping
 
 import click
 from fastapi import FastAPI
@@ -44,7 +45,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import Lifespan
 from watchdog.observers import Observer
 
-
+from ..apps.app import App
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..telemetry._agent_engine import get_propagated_context
@@ -61,8 +62,6 @@ from .utils.service_factory import _create_task_store_from_options
 from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
-from ..apps.app import App
-
 
 _ALLOWED_AGENT_ENGINE_CLASS_METHODS = frozenset(
     method["name"] for method in _AGENT_ENGINE_CLASS_METHODS
