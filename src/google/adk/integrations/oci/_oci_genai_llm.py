@@ -156,6 +156,25 @@ def _media_blocks_for_part(part: types.Part) -> list[Any]:
   ]
 
 
+def _function_response_media_blocks(
+    function_response: types.FunctionResponse,
+) -> list[Any]:
+  """Converts media a tool attached to its response into OCI content blocks."""
+  blocks: list[Any] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    if blob is None or blob.data is None or not blob.mime_type:
+      continue
+    blocks.extend(
+        _media_blocks_for_part(
+            types.Part(
+                inline_data=types.Blob(data=blob.data, mime_type=blob.mime_type)
+            )
+        )
+    )
+  return blocks
+
+
 def _content_to_oci_message(content: types.Content) -> list[Any]:
   """Convert an ADK Content object to an OCI GenAI message.
 
@@ -191,6 +210,12 @@ def _content_to_oci_message(content: types.Content) -> list[Any]:
           part.function_response.id or "",
           json.dumps(result) if isinstance(result, dict) else str(result),
       ))
+      # A tool can attach media alongside the serializable part of its result.
+      # A tool message carries text only, so the media has to follow the tool
+      # results as its own message.
+      media_blocks.extend(
+          _function_response_media_blocks(part.function_response)
+      )
     elif part.inline_data or part.file_data:
       media_blocks.extend(_media_blocks_for_part(part))
 

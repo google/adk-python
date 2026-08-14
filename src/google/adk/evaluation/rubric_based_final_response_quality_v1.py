@@ -306,14 +306,25 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
 
     app_details = actual_invocation.app_details
     if app_details:
+      # Determine agent name from invocation events if available,
+      # otherwise fall back to the first agent in app_details.
+      # This ensures developer_instructions are populated even when
+      # the agent makes zero tool calls (e.g., declining out-of-scope
+      # requests).
+      agent_name = None
       if (
           isinstance(actual_invocation.intermediate_data, InvocationEvents)
           and actual_invocation.intermediate_data.invocation_events
       ):
+        agent_name = actual_invocation.intermediate_data.invocation_events[
+            0
+        ].author
+      elif app_details.agent_details:
+        agent_name = next(iter(app_details.agent_details))
+
+      if agent_name:
         developer_instructions = app_details.get_developer_instructions(
-            agent_name=actual_invocation.intermediate_data.invocation_events[
-                0
-            ].author
+            agent_name=agent_name
         )
       tool_declarations = get_tool_declarations_as_json_str(app_details)
 
