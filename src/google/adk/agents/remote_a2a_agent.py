@@ -677,7 +677,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
-  ) -> tuple[list[A2APart], Optional[str]]:
+  ) -> tuple[list[A2APart], Optional[str], Optional[str]]:
     """Construct A2A message parts from session events.
 
     Args:
@@ -689,6 +689,7 @@ class RemoteA2aAgent(BaseAgent):
     """
     message_parts: list[A2APart] = []
     context_id = None
+    task_id = None
 
     events_to_process = []
     for event in reversed(ctx.session.events):
@@ -698,6 +699,10 @@ class RemoteA2aAgent(BaseAgent):
         if event.custom_metadata:
           metadata = event.custom_metadata
           context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
+          # Always forward task_id if present. The remote agent (server) owns task
+          # lifecycle and will reject or ignore a stale task_id if the task is no
+          # longer open. Filtering by state client-side is error-prone.
+          task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
         # Historical note: this behavior originally always applied, regardless
         # of whether the agent was stateful or stateless. However, only stateful
         # agents can be expected to have previous events in the remote session.
@@ -746,7 +751,7 @@ class RemoteA2aAgent(BaseAgent):
         else:
           logger.warning("Failed to convert part to A2A format: %s", part)
 
-    return message_parts, context_id
+    return message_parts, context_id, task_id
 
   async def _handle_a2a_response(
       self,
@@ -979,7 +984,7 @@ class RemoteA2aAgent(BaseAgent):
     # Create A2A request for function response or regular message
     a2a_request = self._create_a2a_request_for_user_function_response(ctx)
     if not a2a_request:
-      message_parts, context_id = self._construct_message_parts_from_session(
+      message_parts, context_id, task_id = self._construct_message_parts_from_session(
           ctx
       )
 
@@ -1000,6 +1005,7 @@ class RemoteA2aAgent(BaseAgent):
           parts=message_parts,
           role=_compat.ROLE_USER,
           context_id=context_id,
+          task_id=task_id,
       )
 
     logger.debug(build_a2a_request_log(a2a_request))

@@ -1170,7 +1170,7 @@ class TestRemoteA2aAgentMessageHandling:
       mock_a2a_part = Mock()
       self.mock_genai_part_converter.return_value = mock_a2a_part
 
-      parts, context_id = self.agent._construct_message_parts_from_session(
+      parts, context_id, task_id = self.agent._construct_message_parts_from_session(
           self.mock_context
       )
 
@@ -1234,7 +1234,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_part2,
       ]
 
-      parts, context_id = self.agent._construct_message_parts_from_session(
+      parts, context_id, task_id = self.agent._construct_message_parts_from_session(
           self.mock_context
       )
 
@@ -1245,7 +1245,7 @@ class TestRemoteA2aAgentMessageHandling:
     """Test message parts construction with empty events."""
     self.mock_session.events = []
 
-    parts, context_id = self.agent._construct_message_parts_from_session(
+    parts, context_id, task_id = self.agent._construct_message_parts_from_session(
         self.mock_context
     )
 
@@ -1301,7 +1301,7 @@ class TestRemoteA2aAgentMessageHandling:
         "google.adk.agents.remote_a2a_agent._present_other_agent_message"
     ) as mock_present:
       mock_present.side_effect = lambda event: event
-      parts, context_id = self.agent._construct_message_parts_from_session(
+      parts, context_id, task_id = self.agent._construct_message_parts_from_session(
           self.mock_context
       )
       assert len(parts) == 1
@@ -1349,7 +1349,7 @@ class TestRemoteA2aAgentMessageHandling:
         "google.adk.agents.remote_a2a_agent._present_other_agent_message"
     ) as mock_present:
       mock_present.side_effect = lambda event: event
-      parts, context_id = self.agent._construct_message_parts_from_session(
+      parts, context_id, task_id = self.agent._construct_message_parts_from_session(
           self.mock_context
       )
       assert len(parts) == 3
@@ -1402,7 +1402,7 @@ class TestRemoteA2aAgentMessageHandling:
         "google.adk.agents.remote_a2a_agent._present_other_agent_message"
     ) as mock_present:
       mock_present.side_effect = lambda event: event
-      parts, context_id = self.agent._construct_message_parts_from_session(
+      parts, context_id, task_id = self.agent._construct_message_parts_from_session(
           self.mock_context
       )
       assert len(parts) == 1
@@ -1557,7 +1557,7 @@ class TestRemoteA2aAgentMessageHandling:
 
       self.mock_genai_part_converter.side_effect = mock_converter
 
-      parts, context_id = self.agent._construct_message_parts_from_session(
+      parts, context_id, task_id = self.agent._construct_message_parts_from_session(
           self.mock_context
       )
 
@@ -2235,12 +2235,12 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
       mock_convert.return_value = mock_event
 
       with patch.object(
-          self.agent, "_genai_part_converter"
+         self.agent, "_genai_part_converter"
       ) as mock_convert_part:
         mock_a2a_part = Mock()
         mock_convert_part.return_value = mock_a2a_part
 
-        parts, context_id = self.agent._construct_message_parts_from_session(
+        parts, context_id, task_id = self.agent._construct_message_parts_from_session(
             self.mock_context
         )
 
@@ -2252,7 +2252,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     """Test message parts construction with empty events."""
     self.mock_session.events = []
 
-    parts, context_id = self.agent._construct_message_parts_from_session(
+    parts, context_id, task_id = self.agent._construct_message_parts_from_session(
         self.mock_context
     )
 
@@ -3059,10 +3059,7 @@ class TestRemoteA2aAgentExecution:
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
-          mock_construct.return_value = (
-              [],
-              None,
-          )  # Tuple with empty parts and no context_id
+          mock_construct.return_value =([], None, None)  # Tuple with empty parts and no context_id
 
           events = []
           async for event in self.agent._run_async_impl(self.mock_context):
@@ -3091,7 +3088,8 @@ class TestRemoteA2aAgentExecution:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
-          )  # Tuple with parts and context_id
+              None,
+          )  # Tuple with parts and context_id , no task_id
 
           # Mock A2A client. Build the raw stream item version-
           # correctly (real ``StreamResponse`` on 1.x, bare
@@ -3226,6 +3224,7 @@ class TestRemoteA2aAgentExecution:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Mock A2A client that throws an exception
@@ -3287,6 +3286,7 @@ class TestRemoteA2aAgentExecution:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Mock A2A client. The raw stream item is built
@@ -3396,10 +3396,8 @@ class TestRemoteA2aAgentExecutionFromFactory:
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
-          mock_construct.return_value = (
-              [],
-              None,
-          )  # Tuple with empty parts and no context_id
+          mock_construct.return_value = ([], None, None)
+          # Tuple with empty parts and no context_id
 
           events = []
           async for event in self.agent._run_async_impl(self.mock_context):
@@ -3428,6 +3426,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Build the raw stream item version-correctly (real
@@ -3501,6 +3500,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Mock A2A client that throws an exception
