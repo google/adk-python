@@ -60,7 +60,7 @@ dependencies = [
   "websockets>=15.0.1,<16",
 ]
 optional-dependencies.a2a = [
-  "a2a-sdk>=0.3.4,<2",
+  "a2a-sdk[http-server]>=0.3.4,<2",
 ]
 optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
@@ -70,7 +70,7 @@ optional-dependencies.agent-identity = [
 # community, dev, docs and test, which exist to build, test or document ADK
 # itself.
 optional-dependencies.all = [
-  "a2a-sdk>=0.3.4,<2",
+  "a2a-sdk[http-server]>=0.3.4,<2",
   "anthropic>=0.78",
   "anyio>=4.9,<5",
   "beautifulsoup4>=3.2.2",
@@ -125,6 +125,7 @@ optional-dependencies.all = [
   "pyarrow>=14",
   "pypika>=0.50",
   "python-dateutil>=2.9.0.post0,<3",
+  "redis>=4.2",
   "rouge-score>=0.1.2",
   "slack-bolt>=1.22",
   "sqlalchemy>=2,<3",
@@ -251,6 +252,9 @@ optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
+]
+optional-dependencies.redis = [
+  "redis>=4.2", # 4.2 is where redis.asyncio landed, the only API used.
 ]
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [

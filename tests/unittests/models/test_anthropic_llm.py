@@ -838,6 +838,89 @@ def test_part_to_message_block_with_multiple_content_items():
   assert result["content"] == "First part\nSecond part"
 
 
+def test_part_to_message_block_tool_result_with_image():
+  """Media a tool attached to its response reaches Claude as an image block."""
+  image_data = b"chart-bytes"
+  part = types.Part.from_function_response(
+      name="draw_chart",
+      response={"title": "Revenue"},
+      parts=[
+          types.FunctionResponsePart.from_bytes(
+              data=image_data, mime_type="image/png"
+          )
+      ],
+  )
+  part.function_response.id = "call_1"
+
+  result = part_to_message_block(part)
+
+  assert result["type"] == "tool_result"
+  text_block, image_block = result["content"]
+  assert text_block["type"] == "text"
+  assert "Revenue" in text_block["text"]
+  assert image_block["type"] == "image"
+  assert image_block["source"]["media_type"] == "image/png"
+  assert image_block["source"]["data"] == base64.b64encode(image_data).decode()
+
+
+def test_part_to_message_block_tool_result_with_only_image():
+  """A tool that returns nothing but media produces no empty text block."""
+  part = types.Part.from_function_response(
+      name="screenshot",
+      response={},
+      parts=[
+          types.FunctionResponsePart.from_bytes(
+              data=b"png-bytes", mime_type="image/png"
+          )
+      ],
+  )
+  part.function_response.id = "call_2"
+
+  result = part_to_message_block(part)
+
+  assert [block["type"] for block in result["content"]] == ["image"]
+
+
+def test_part_to_message_block_tool_result_with_pdf():
+  """A PDF a tool attaches reaches Claude as a document block."""
+  pdf_data = b"%PDF-1.4 report"
+  part = types.Part.from_function_response(
+      name="build_report",
+      response={},
+      parts=[
+          types.FunctionResponsePart.from_bytes(
+              data=pdf_data, mime_type="application/pdf"
+          )
+      ],
+  )
+  part.function_response.id = "call_3"
+
+  result = part_to_message_block(part)
+
+  document_block = result["content"][0]
+  assert document_block["type"] == "document"
+  assert document_block["source"]["media_type"] == "application/pdf"
+  assert document_block["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
+def test_part_to_message_block_tool_result_drops_unsupported_media():
+  """Media Claude cannot accept is dropped rather than failing the turn."""
+  part = types.Part.from_function_response(
+      name="record_audio",
+      response={"duration": 3},
+      parts=[
+          types.FunctionResponsePart.from_bytes(
+              data=b"wav-bytes", mime_type="audio/wav"
+          )
+      ],
+  )
+  part.function_response.id = "call_4"
+
+  result = part_to_message_block(part)
+
+  assert result["content"] == json.dumps({"duration": 3})
+
+
 def test_part_to_message_block_with_pdf_document():
   """Test that part_to_message_block handles PDF document parts."""
   pdf_data = b"%PDF-1.4 fake pdf content"

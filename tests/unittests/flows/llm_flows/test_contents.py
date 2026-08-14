@@ -2322,3 +2322,118 @@ def test_task_input_user_content_preserves_non_ascii():
   assert "שלום עולם" in text
   assert "北京" in text
   assert "\\u" not in text
+
+
+def _internal_call_event(name: str, **kwargs) -> Event:
+  """An event whose only part is an internal ADK function call."""
+  return Event(
+      invocation_id="inv_internal",
+      author="agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="fc-1", name=name, args={}
+                  )
+              )
+          ],
+      ),
+      **kwargs,
+  )
+
+
+@pytest.mark.parametrize(
+    "internal_name",
+    [
+        "adk_framework",
+        REQUEST_EUC_FUNCTION_CALL_NAME,
+        REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    ],
+)
+def test_internal_events_excluded_even_with_transcription(internal_name):
+  """Internal ADK events stay excluded whatever else the event carries.
+
+  The exclusion is independent of the emptiness check, so an internal event is
+  filtered out even when a transcription or a compaction action would otherwise
+  make it non-empty.
+  """
+  compaction = EventCompaction(
+      start_timestamp=1.0,
+      end_timestamp=2.0,
+      compacted_content=types.Content(
+          role="model", parts=[types.Part(text="summary")]
+      ),
+  )
+
+  plain = _internal_call_event(internal_name)
+  with_transcription = _internal_call_event(
+      internal_name,
+      input_transcription=types.Transcription(text="hello"),
+  )
+  with_compaction = _internal_call_event(
+      internal_name, actions=EventActions(compaction=compaction)
+  )
+
+  for event in (plain, with_transcription, with_compaction):
+    assert not contents._should_include_event_in_context(None, event)
+
+
+def test_internal_event_with_empty_role_and_transcription_excluded():
+  """The internal-event exclusion does not depend on the content role.
+
+  A transcription keeps the event from being empty, and an empty role keeps the
+  parts from counting as visible content; the internal function call must still
+  exclude the event.
+  """
+  event = Event(
+      invocation_id="inv_internal_empty_role",
+      author="agent",
+      content=types.Content(
+          role="",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="fc-1", name="adk_framework", args={}
+                  )
+              )
+          ],
+      ),
+      input_transcription=types.Transcription(text="hello"),
+  )
+
+  assert not contents._should_include_event_in_context(None, event)
+
+
+def test_compaction_event_included_but_still_branch_filtered():
+  """A compaction event is not empty, but the other filters still apply."""
+  compaction = EventCompaction(
+      start_timestamp=1.0,
+      end_timestamp=2.0,
+      compacted_content=types.Content(
+          role="model", parts=[types.Part(text="summary")]
+      ),
+  )
+  event = Event(
+      invocation_id="inv_compaction",
+      author="agent",
+      branch="root.other_agent",
+      content=types.Content(role="model", parts=[types.Part(text="hi")]),
+      actions=EventActions(compaction=compaction),
+  )
+
+  assert contents._should_include_event_in_context(None, event)
+  assert not contents._should_include_event_in_context(
+      "root.third_agent", event
+  )
+
+
+def test_content_with_parts_but_empty_role_is_empty():
+  """Emptiness depends on the role as well as on the parts."""
+  event = Event(
+      invocation_id="inv_empty_role",
+      author="agent",
+      content=types.Content(role="", parts=[types.Part(text="hi")]),
+  )
+
+  assert not contents._should_include_event_in_context(None, event)

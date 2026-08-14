@@ -682,7 +682,11 @@ class DatabaseSessionService(BaseSessionService):
         )
 
         if config and config.after_timestamp:
-          after_dt = datetime.fromtimestamp(config.after_timestamp)
+          after_dt = datetime.fromtimestamp(
+              config.after_timestamp, tz=timezone.utc
+          )
+          if self._uses_naive_datetime():
+            after_dt = after_dt.replace(tzinfo=None)
           stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
         # Break timestamp ties on id, matching the ordering the stale-session
@@ -932,12 +936,9 @@ class DatabaseSessionService(BaseSessionService):
           storage_session.state.update(state_deltas["session"])
 
         is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
-        if is_sqlite or is_postgresql:
-          update_time = datetime.fromtimestamp(
-              event.timestamp, timezone.utc
-          ).replace(tzinfo=None)
-        else:
-          update_time = datetime.fromtimestamp(event.timestamp)
+        update_time = datetime.fromtimestamp(event.timestamp, timezone.utc)
+        if self._uses_naive_datetime():
+          update_time = update_time.replace(tzinfo=None)
         storage_session.update_time = update_time
         sql_session.add(schema.StorageEvent.from_event(session, event))
 
