@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
 
 
 class DataAgentToolConfig(BaseModel):
@@ -41,4 +42,22 @@ class DataAgentToolConfig(BaseModel):
   """Optional custom API endpoint for Gemini Data Analytics requests.
 
   If provided, this overrides the default or location-derived API endpoint.
+  """
+
+  data_agent_modification_timeout_seconds: int = Field(default=60, gt=0)
+  """Total timeout in seconds when waiting for data agent mutation.
+
+  Defaults to 60 seconds.
+  """
+
+  data_agent_modification_poll_interval_seconds: int = Field(default=2, gt=0)
+  """Poll interval in seconds when waiting for data agent mutation.
+
+  Defaults to 2 seconds.
+  """
+
+  enable_data_agent_modification: bool = False
+  """Whether the toolset is allowed to mutate data agent resources (i.e., create, update, and delete).
+
+  Defaults to False so a read-only toolset stays read-only.
   """

@@ -1004,19 +1004,20 @@ class BaseLlmFlow(ABC):
                   run_config.save_live_blob
                   and event.content
                   and event.content.parts
-                  and event.content.parts[0].inline_data
-                  and event.content.parts[0].inline_data.mime_type
-                  and event.content.parts[0].inline_data.mime_type.startswith(
-                      'audio/'
-                  )
               ):
-                audio_blob = types.Blob(
-                    data=event.content.parts[0].inline_data.data,
-                    mime_type=event.content.parts[0].inline_data.mime_type,
-                )
-                self.audio_cache_manager.cache_audio(
-                    invocation_context, audio_blob, cache_type='output'
-                )
+                for part in event.content.parts:
+                  if (
+                      part.inline_data
+                      and part.inline_data.mime_type
+                      and part.inline_data.mime_type.startswith('audio/')
+                  ):
+                    audio_blob = types.Blob(
+                        data=part.inline_data.data,
+                        mime_type=part.inline_data.mime_type,
+                    )
+                    self.audio_cache_manager.cache_audio(
+                        invocation_context, audio_blob, cache_type='output'
+                    )
 
               yield event
       # Give opportunity for other tasks to run.

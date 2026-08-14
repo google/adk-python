@@ -210,10 +210,23 @@ async def _convert_tool_union_to_tools(
   try:
     return await tool_union.get_tools_with_prefix(ctx)
   except Exception as e:
-    logger.warning(
-        'Failed to get tools from toolset %s: %s',
+    # The agent still runs, just without this toolset's tools, and the model
+    # will answer as though it never had them. That is a lost capability
+    # rather than a degraded one, so report it at error level, name which
+    # toolset was lost, and keep the traceback: str(e) is empty for several
+    # of the exceptions raised by transport clients.
+    logger.error(
+        'Agent %s will run without the tools from toolset %s%s, which failed'
+        ' to load: %s',
+        ctx.agent_name if ctx else '<unknown>',
         type(tool_union).__name__,
+        (
+            f' (prefix {tool_union.tool_name_prefix!r})'
+            if tool_union.tool_name_prefix
+            else ''
+        ),
         e,
+        exc_info=True,
     )
     return []
 

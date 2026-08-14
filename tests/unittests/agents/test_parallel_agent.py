@@ -27,7 +27,9 @@ from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.telemetry.node_tracing import TelemetryContext
 from google.genai import types
+from opentelemetry import context as context_api
 import pytest
 from typing_extensions import override
 
@@ -414,3 +416,41 @@ async def test_merge_agent_run_pre_3_11_no_aclose_error_on_failure():
 def test_deprecation_mentions_sub_agent_limitation():
   with pytest.warns(DeprecationWarning, match='sub-agent'):
     ParallelAgent(name='deprecated_parallel', sub_agents=[])
+
+
+class _TestingAgentWithOpenTelemetryContext(_TestingAgent):
+  """Mock agent for testing opentelemetry contextvars termination."""
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    token = context_api.attach(context_api.set_value('test_key', 'test_val'))
+    try:
+      yield self.event(ctx)
+      yield self.event(ctx)
+    finally:
+      context_api.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_parallel_agent_early_exit_context_cleanup(caplog):
+  """Verify that early breaking out of a ParallelAgent run doesn't crash contextvars."""
+  agent1 = _TestingAgentWithOpenTelemetryContext(name='otel_agent_1')
+  parallel_agent = ParallelAgent(
+      name='otel_parallel_agent',
+      sub_agents=[agent1],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      'otel_test', parallel_agent
+  )
+
+  agen = parallel_agent.run_async(parent_ctx)
+  # Break early to trigger GeneratorExit and cleanup
+  async for _ in agen:
+    break
+
+  # Check it exited successfully without logging open telemetry detachment errors
+  # "ValueError: Token was created in a different Context" usually logged by opentelemetry.
+  assert 'Failed to detach context' not in caplog.text
+  assert 'test_key' not in context_api.get_current()

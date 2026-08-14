@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import asyncio
+import gc
+import logging
 from typing import Any
 from typing import AsyncGenerator
 
@@ -1140,3 +1142,168 @@ async def test_parallel_worker_simultaneous_failures_raise_lowest_index(
 
     with pytest.raises(ValueError, match='item-0 failed'):
       await runner.run_async(testing_utils.get_user_content('start'))
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_cancels_in_flight_items(
+    request: pytest.FixtureRequest,
+):
+  """Cancelling the worker cancels the items it still has in flight.
+
+  Setup: 2 items that never finish on their own, driven by a plain node so
+    the worker is the only owner of the item tasks.
+  Assert: cancelling the run cancels both items. Previously asyncio.wait was
+    left to abandon them, and an orphaned item kept running and then blocked
+    forever emitting into a run nobody consumes any more.
+  """
+  items = ['item1', 'item2']
+  started = {item: asyncio.Event() for item in items}
+  cancelled = {item: asyncio.Event() for item in items}
+
+  async def _never_finishing_worker_func(node_input: str) -> str:
+    started[node_input].set()
+    try:
+      await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+      cancelled[node_input].set()
+      raise
+    return f'{node_input}_processed'
+
+  worker = ParallelWorker(node=_never_finishing_worker_func)
+
+  @node(name='Driver', rerun_on_resume=True)
+  async def driver(ctx: Context, node_input: Any) -> AsyncGenerator[Any, None]:
+    yield Event(output=await ctx.run_node(worker, node_input=items))
+
+  app = App(name=request.function.__name__, root_agent=driver)
+  runner = testing_utils.InMemoryRunner(app=app)
+  run_task = asyncio.create_task(
+      runner.run_async(testing_utils.get_user_content('start'))
+  )
+  await asyncio.wait_for(
+      asyncio.gather(*(event.wait() for event in started.values())), timeout=5
+  )
+
+  # When the run is cancelled while both items are still in flight
+  run_task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    # Bounded so that a worker which waits on abandoned items fails here
+    # instead of hanging the suite.
+    await asyncio.wait_for(run_task, timeout=5)
+
+  # Then both items were cancelled rather than left running
+  await asyncio.wait_for(
+      asyncio.gather(*(event.wait() for event in cancelled.values())), timeout=1
+  )
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_retrieves_every_simultaneous_failure(
+    request: pytest.FixtureRequest,
+):
+  """Concurrent failures are all retrieved from their tasks.
+
+  Setup: 2 items whose workers both fail immediately, so both tasks complete
+    within the same asyncio.wait wake-up.
+  Assert: asyncio does not report "Task exception was never retrieved" for
+    the failure that is not the one propagated.
+  """
+  unretrieved: list[str] = []
+  loop = asyncio.get_running_loop()
+  previous_handler = loop.get_exception_handler()
+  loop.set_exception_handler(
+      lambda _, context: unretrieved.append(context.get('message', ''))
+  )
+  try:
+
+    async def _worker_always_fails(node_input: str) -> str:
+      raise ValueError(f'{node_input} failed')
+
+    node_a = _ProducerNode(items=['item-0', 'item-1'], name='NodeA')
+    worker = ParallelWorker(node=_worker_always_fails)
+    agent = Workflow(
+        name='test_agent_retrieved_failures',
+        edges=[
+            (START, node_a),
+            (node_a, worker),
+        ],
+    )
+    app = App(name=request.function.__name__, root_agent=agent)
+    runner = testing_utils.InMemoryRunner(app=app)
+
+    # When both items fail. The error is caught by hand rather than with
+    # pytest.raises, whose ExceptionInfo holds the traceback (and so the task
+    # objects) alive past the point where asyncio would report them.
+    error_message = None
+    try:
+      await runner.run_async(testing_utils.get_user_content('start'))
+    except ValueError as e:
+      error_message = str(e)
+    assert error_message == 'item-0 failed'
+
+    gc.collect()
+    await asyncio.sleep(0)
+  finally:
+    loop.set_exception_handler(previous_handler)
+
+  # Then nothing was left unretrieved
+  assert [
+      message for message in unretrieved if 'never retrieved' in message
+  ] == []
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_gives_up_on_item_that_ignores_cancellation(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+  """An item that swallows cancellation does not hang the worker.
+
+  Setup: 1 item that catches CancelledError and keeps running, driven by a
+    plain node so the worker is the only owner of the item task.
+  Assert: the worker stops waiting once the drain timeout elapses and says
+    so, rather than waiting on the item forever.
+  """
+  monkeypatch.setattr(
+      'google.adk.workflow._parallel_worker'
+      '._CANCELLED_ITEM_DRAIN_TIMEOUT_SECONDS',
+      0.1,
+  )
+  started = asyncio.Event()
+  release = asyncio.Event()
+
+  async def _ignores_cancellation(node_input: str) -> str:
+    started.set()
+    try:
+      await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+      # Keep running past the cancellation until the test lets go.
+      await release.wait()
+    return f'{node_input}_processed'
+
+  worker = ParallelWorker(node=_ignores_cancellation)
+
+  @node(name='Driver', rerun_on_resume=True)
+  async def driver(ctx: Context, node_input: Any) -> AsyncGenerator[Any, None]:
+    yield Event(output=await ctx.run_node(worker, node_input=['item1']))
+
+  app = App(name=request.function.__name__, root_agent=driver)
+  runner = testing_utils.InMemoryRunner(app=app)
+  run_task = asyncio.create_task(
+      runner.run_async(testing_utils.get_user_content('start'))
+  )
+  await asyncio.wait_for(started.wait(), timeout=5)
+
+  # When the run is cancelled and the item refuses to stop
+  run_task.cancel()
+  with caplog.at_level(logging.WARNING):
+    with pytest.raises(asyncio.CancelledError):
+      # Well past the drain timeout, so an unbounded wait fails here.
+      await asyncio.wait_for(run_task, timeout=3)
+
+  # Then the worker gave up on it and said so
+  assert 'did not stop within' in caplog.text
+
+  release.set()
+  await asyncio.sleep(0)

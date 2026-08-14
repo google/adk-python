@@ -1164,3 +1164,45 @@ def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
   assert (tmp_dir / "requirements.txt").read_text() == (
       "some-unrelated-package\n"
   )
+
+
+# _robust_rmtree / _on_rm_error tests
+
+
+class TestRobustRmtree:
+  """Tests for the _robust_rmtree helper."""
+
+  def test_removes_directory_tree(self, tmp_path: Path) -> None:
+    """It should remove a normal directory tree."""
+    d = tmp_path / "subdir"
+    d.mkdir()
+    (d / "file.txt").write_text("hello")
+    cli_deploy._robust_rmtree(str(d))
+    assert not d.exists()
+
+  def test_removes_readonly_files(self, tmp_path: Path) -> None:
+    """It should remove a tree containing read-only files."""
+    import os
+    import stat
+
+    d = tmp_path / "ro_dir"
+    d.mkdir()
+    ro_file = d / "readonly.txt"
+    ro_file.write_text("locked")
+    ro_file.chmod(stat.S_IREAD)
+    cli_deploy._robust_rmtree(str(d))
+    assert not d.exists()
+
+  def test_on_rm_error_clears_readonly_and_retries(
+      self, tmp_path: Path
+  ) -> None:
+    """_on_rm_error should chmod the file and call the removal function."""
+    import os
+    import stat
+
+    ro_file = tmp_path / "locked.txt"
+    ro_file.write_text("data")
+    ro_file.chmod(stat.S_IREAD)
+
+    cli_deploy._on_rm_error(os.remove, str(ro_file), None)
+    assert not ro_file.exists()

@@ -37,6 +37,10 @@ questions in the same session, and the agent will maintain context.
 - `get_data_agent_info`: Retrieves details about a specific Data Agent given
   its full resource name.
 - `ask_data_agent`: Chats with a specific Data Agent using natural language.
+- `create_data_agent`: Creates a new Data Agent for your GCP project (requires
+  setting `enable_data_agent_modification=True` in `DataAgentToolConfig`). Takes
+  a JSON string (`agent_config`) representing the DataAgent resource. This tool
+  is experimental.
 
 ## How to Run
 
@@ -55,3 +59,4 @@ questions in the same session, and the agent will maintain context.
   `projects/my-project/locations/global/dataAgents/sales-agent-123`, who were
   my top 3 customers last quarter?"
 - "How does that compare to the quarter before?"
+- "Create a new data agent named `my-new-agent`."
