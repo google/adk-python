@@ -1572,6 +1572,61 @@ class TestRemoteA2aAgentMessageHandling:
       assert _compat.part_text(parts[0]) == "User question"
       assert _compat.part_text(parts[1]) == "For context:"
 
+  def test_init_accepts_context_builder(self):
+    """RemoteA2aAgent stores an optional context_builder callable."""
+
+    def _builder(ctx, agent_name, genai_part_converter):
+      del ctx, agent_name, genai_part_converter
+      return [], None
+
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+        context_builder=_builder,
+    )
+    assert agent._context_builder is _builder
+
+  def test_build_message_parts_uses_custom_context_builder(self):
+    """Custom context_builder replaces default session construction."""
+    custom_part = _compat.make_text_part("only-current-turn")
+    seen = {}
+
+    def _builder(ctx, agent_name, genai_part_converter):
+      seen["ctx"] = ctx
+      seen["agent_name"] = agent_name
+      seen["converter"] = genai_part_converter
+      return [custom_part], "ctx-custom"
+
+    self.agent._context_builder = _builder
+    with patch.object(
+        self.agent, "_construct_message_parts_from_session"
+    ) as mock_default:
+      parts, context_id = self.agent._build_message_parts_for_request(
+          self.mock_context
+      )
+
+    assert parts == [custom_part]
+    assert context_id == "ctx-custom"
+    assert seen["ctx"] is self.mock_context
+    assert seen["agent_name"] == self.agent.name
+    assert seen["converter"] is self.agent._genai_part_converter
+    mock_default.assert_not_called()
+
+  def test_build_message_parts_falls_back_without_context_builder(self):
+    """Without context_builder, default session construction is used."""
+    self.agent._context_builder = None
+    with patch.object(
+        self.agent, "_construct_message_parts_from_session"
+    ) as mock_default:
+      mock_default.return_value = ([], None)
+      parts, context_id = self.agent._build_message_parts_for_request(
+          self.mock_context
+      )
+
+    assert parts == []
+    assert context_id is None
+    mock_default.assert_called_once_with(self.mock_context)
+
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_submitted_and_no_update(self):
     """Test successful A2A response handling with streaming task and no update."""
@@ -3151,6 +3206,72 @@ class TestRemoteA2aAgentExecution:
                     A2A_METADATA_PREFIX + "request"
                     in mock_event.custom_metadata
                 )
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_uses_custom_context_builder(self):
+    """_run_async_impl uses context_builder instead of default construction."""
+    custom_part = _compat.make_text_part("from-builder")
+
+    def _builder(ctx, agent_name, genai_part_converter):
+      del ctx, agent_name, genai_part_converter
+      return [custom_part], "builder-context"
+
+    self.agent._context_builder = _builder
+
+    with patch.object(self.agent, "_ensure_resolved"):
+      with patch.object(
+          self.agent, "_create_a2a_request_for_user_function_response"
+      ) as mock_create_func:
+        mock_create_func.return_value = None
+        with patch.object(
+            self.agent, "_construct_message_parts_from_session"
+        ) as mock_default:
+          mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
+          mock_response = _make_stream_message(
+              A2AMessage(
+                  message_id="m1",
+                  role=_compat.ROLE_USER,
+                  parts=[custom_part],
+              )
+          )
+          mock_send_message = AsyncMock()
+          mock_send_message.__aiter__.return_value = [mock_response]
+          mock_a2a_client.send_message.return_value = mock_send_message
+          self.agent._a2a_client = mock_a2a_client
+          self.agent._ensure_resolved.return_value = mock_a2a_client
+
+          mock_event = Event(
+              author=self.agent.name,
+              invocation_id=self.mock_context.invocation_id,
+              branch=self.mock_context.branch,
+          )
+          with patch.object(self.agent, "_handle_a2a_response") as mock_handle:
+            mock_handle.return_value = mock_event
+            with patch(
+                "google.adk.agents.remote_a2a_agent.build_a2a_request_log",
+                return_value="Mock request log",
+            ):
+              with patch(
+                  "google.adk.agents.remote_a2a_agent.build_a2a_response_log",
+                  return_value="Mock response log",
+              ):
+                with patch(
+                    "google.adk.a2a._compat.a2a_to_dict",
+                    return_value={"k": "v"},
+                ):
+                  events = []
+                  async for event in self.agent._run_async_impl(
+                      self.mock_context
+                  ):
+                    events.append(event)
+
+          mock_default.assert_not_called()
+          assert len(events) == 1
+          assert events[0] == mock_event
+          request_meta = mock_event.custom_metadata[
+              A2A_METADATA_PREFIX + "request"
+          ]
+          assert request_meta == {"k": "v"}
 
   @pytest.mark.asyncio
   async def test_run_async_impl_closes_stream_when_abandoned(self):
