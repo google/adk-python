@@ -15,6 +15,7 @@
 import base64
 import io
 from typing import Any
+from unittest import mock
 import zipfile
 
 from google.adk.features import FeatureName
@@ -24,6 +25,7 @@ from google.adk.tools.load_artifacts_tool import _maybe_base64_to_bytes
 from google.adk.tools.load_artifacts_tool import load_artifacts_tool
 from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
 from google.genai import types
+import pandas as pd
 import pytest
 
 
@@ -881,3 +883,272 @@ async def test_load_artifacts_custom_callback_returns_non_part_raises():
     await tool.process_llm_request(
         tool_context=tool_context, llm_request=llm_request
     )
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_parses_spreadsheet():
+  """Spreadsheet artifacts are parsed into markdown."""
+  artifact_name = 'test.xlsx'
+  df = pd.DataFrame({'col1': [1, 2], 'col2': ['a', 'b']})
+  output = io.BytesIO()
+  # Use openpyxl as engine since it is in deps
+  with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    df.to_excel(writer, sheet_name='Sheet1', index=False)
+  xlsx_bytes = output.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=xlsx_bytes,
+          mime_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  custom_tool = LoadArtifactsTool(enable_spreadsheet_parsing=True)
+  await custom_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+
+  # Check for Markdown table content
+  # We expect something like:
+  # ### Sheet: Sheet1
+  #
+  # | col1 | col2 |
+  # | :--- | :--- |
+  # | 1    | a    |
+  # | 2    | b    |
+
+  markdown_output = artifact_part.text
+
+  assert 'Sheet1' in markdown_output
+  assert '| col1' in markdown_output
+  assert '| col2' in markdown_output
+  assert '| 1' in markdown_output
+  assert '| a' in markdown_output
+  assert '| 2' in markdown_output
+  assert '| b' in markdown_output
+
+
+@pytest.mark.asyncio
+@mock.patch('pandas.ExcelFile')
+async def test_load_artifacts_parses_xls_spreadsheet(mock_excel_file_cls):
+  """Spreadsheet artifacts (.xls) are parsed into markdown."""
+  artifact_name = 'test.xls'
+  xls_bytes = b'dummy_xls_content'
+
+  # Mock ExcelFile context manager
+  mock_xl = mock.MagicMock()
+  mock_xl.__enter__.return_value = mock_xl
+  mock_xl.sheet_names = ['Sheet1']
+  mock_xl.parse.return_value = pd.DataFrame(
+      {'col1': [1, 2], 'col2': ['a', 'b']}
+  )
+  mock_excel_file_cls.return_value = mock_xl
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=xls_bytes,
+          mime_type='application/vnd.ms-excel',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  custom_tool = LoadArtifactsTool(enable_spreadsheet_parsing=True)
+  await custom_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+
+  markdown_output = artifact_part.text
+
+  assert 'Sheet1' in markdown_output
+  assert '| col1' in markdown_output
+  assert '| col2' in markdown_output
+  assert '| 1' in markdown_output
+  assert '| a' in markdown_output
+  assert '| 2' in markdown_output
+  assert '| b' in markdown_output
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_handles_invalid_spreadsheet():
+  """Invalid spreadsheet artifacts return an error message."""
+  artifact_name = 'invalid.xlsx'
+  invalid_bytes = b'not a valid excel file'
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=invalid_bytes,
+          mime_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  custom_tool = LoadArtifactsTool(enable_spreadsheet_parsing=True)
+  await custom_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+  assert '[Invalid spreadsheet format' in artifact_part.text
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_spreadsheet_truncation():
+  """Spreadsheet artifacts with > 100 rows are truncated."""
+  artifact_name = 'large.xlsx'
+  # Create a DataFrame with 101 rows
+  df = pd.DataFrame({'col1': list(range(101))})
+  output = io.BytesIO()
+  with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    df.to_excel(writer, sheet_name='Sheet1', index=False)
+  xlsx_bytes = output.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=xlsx_bytes,
+          mime_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  custom_tool = LoadArtifactsTool(enable_spreadsheet_parsing=True)
+  await custom_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+
+  markdown_output = artifact_part.text
+  assert 'Output is limited to the first 100 rows' in markdown_output
+  assert 'Total rows: 101' in markdown_output
+
+  # Verify that the table itself is truncated
+  # A 100-row table (plus header and separator) should have 102 lines starting with '|'
+  table_lines = [
+      line
+      for line in markdown_output.splitlines()
+      if line.strip().startswith('|')
+  ]
+  assert len(table_lines) == 102
+
+  # The 101st row (value 100) should NOT appear in the table body
+  # This checks that '| 100' does not appear as a trailing row.
+  # Note: '100' appears in the notice, so it checks specifically for table row format.
+  assert '| 100' not in markdown_output.split('Output is limited')[0]
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_spreadsheet_unparsed_by_default():
+  """Spreadsheet artifacts remain unparsed if enable_spreadsheet_parsing is False."""
+  artifact_name = 'test.xlsx'
+  df = pd.DataFrame({'col1': [1, 2]})
+  output = io.BytesIO()
+  with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    df.to_excel(writer, sheet_name='Sheet1', index=False)
+  xlsx_bytes = output.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=xlsx_bytes,
+          mime_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  # Use default LoadArtifactsTool (enable_spreadsheet_parsing=False)
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+  assert '[Binary artifact: test.xlsx' in artifact_part.text
+  assert 'Content cannot be displayed inline' in artifact_part.text

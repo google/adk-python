@@ -107,6 +107,7 @@ def get_fast_api_app(
     a2a: bool = False,
     task_store_uri: str | None = None,
     host: str = "127.0.0.1",
+    bind_host: str | None = None,
     port: int = 8000,
     url_prefix: str | None = None,
     trace_to_cloud: bool = False,
@@ -154,7 +155,11 @@ def get_fast_api_app(
     a2a: Whether to enable Agent-to-Agent (A2A) protocol support.
     task_store_uri: URI for the A2A task store. Uses in-memory task store if
       None. Only used when ``a2a=True``.
-    host: Host address for the server (defaults to 127.0.0.1).
+    host: Host address for the server (defaults to 127.0.0.1). Unused by the
+      returned app; pass ``bind_host`` to guard it.
+    bind_host: The address the caller will bind the returned app to. A loopback
+      value turns on DNS-rebinding protection, which rejects requests addressed
+      to any other host. Leave it None to serve the app yourself without that.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -384,6 +389,7 @@ def get_fast_api_app(
       lifespan=lifespan,
       allow_origins=allow_origins,
       otel_to_cloud=otel_to_cloud,
+      bind_host=bind_host,
       **extra_fast_api_args,
   )
 

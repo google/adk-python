@@ -1102,3 +1102,54 @@ def test_content_conversion_rejects_incomplete_inline_data(
   client = CompletionsHTTPClient(base_url='http://test')
   with pytest.raises(ValueError, match='Inline data must include'):
     client._content_to_messages(content)
+
+
+def test_content_conversion_carries_function_response_media() -> None:
+  """Media a tool attached to its response follows as its own message."""
+  part = types.Part.from_function_response(
+      name='draw_chart',
+      response={'title': 'Revenue'},
+      parts=[
+          types.FunctionResponsePart.from_bytes(
+              data=b'chart', mime_type='image/png'
+          )
+      ],
+  )
+  part.function_response.id = 'call_1'
+  content = types.Content(role='user', parts=[part])
+
+  client = CompletionsHTTPClient(base_url='http://test')
+  messages = client._content_to_messages(content)
+
+  assert messages == [
+      {
+          'role': 'tool',
+          'tool_call_id': 'call_1',
+          'content': '{"title": "Revenue"}',
+      },
+      {
+          'role': 'user',
+          'content': [{
+              'type': 'image_url',
+              'image_url': {'url': 'data:image/png;base64,Y2hhcnQ='},
+          }],
+      },
+  ]
+
+
+def test_content_conversion_without_function_response_media() -> None:
+  """A response carrying no media still converts to a lone tool message."""
+  part = types.Part.from_function_response(
+      name='lookup', response={'status': 'ok'}
+  )
+  part.function_response.id = 'call_1'
+  content = types.Content(role='user', parts=[part])
+
+  client = CompletionsHTTPClient(base_url='http://test')
+  messages = client._content_to_messages(content)
+
+  assert messages == [{
+      'role': 'tool',
+      'tool_call_id': 'call_1',
+      'content': '{"status": "ok"}',
+  }]

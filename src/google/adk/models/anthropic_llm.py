@@ -78,6 +78,13 @@ _MessageBlockParam: TypeAlias = Union[
     anthropic_types.ToolResultBlockParam,
 ]
 
+# The subset of block types Claude accepts inside a tool result.
+_ToolResultContentBlockParam: TypeAlias = Union[
+    anthropic_types.TextBlockParam,
+    anthropic_types.ImageBlockParam,
+    anthropic_types.DocumentBlockParam,
+]
+
 # Attributes an Anthropic client exposes once it has resolved a credential,
 # whichever source it came from: a static API key, a static bearer token, or a
 # credential provider discovered from the environment or from the on-disk
@@ -330,6 +337,55 @@ def _normalize_image_media_type(mime_type: str) -> _ImageMediaType:
   return cast(_ImageMediaType, normalized)
 
 
+def _function_response_media_blocks(
+    function_response: types.FunctionResponse,
+) -> list[_ToolResultContentBlockParam]:
+  """Converts media a tool attached to its response into tool result blocks.
+
+  Media Claude cannot carry in a tool result is dropped with a warning rather
+  than raised on, because the tool that produced it is often third-party code
+  the caller cannot change, and losing one image is better than losing the
+  conversation.
+  """
+  blocks: list[_ToolResultContentBlockParam] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    if blob is None or blob.data is None or not blob.mime_type:
+      continue
+    media_type = blob.mime_type.split(";", 1)[0].strip().lower()
+    data = base64.b64encode(blob.data).decode()
+    if media_type in _ANTHROPIC_IMAGE_MEDIA_TYPES:
+      blocks.append(
+          anthropic_types.ImageBlockParam(
+              type="image",
+              source=anthropic_types.Base64ImageSourceParam(
+                  type="base64",
+                  # Narrowed by the membership test above.
+                  media_type=cast(_ImageMediaType, media_type),
+                  data=data,
+              ),
+          )
+      )
+    elif media_type == "application/pdf":
+      blocks.append(
+          anthropic_types.DocumentBlockParam(
+              type="document",
+              source=anthropic_types.Base64PDFSourceParam(
+                  type="base64",
+                  media_type="application/pdf",
+                  data=data,
+              ),
+          )
+      )
+    else:
+      logger.warning(
+          "Dropping tool result media of type %s, which Claude cannot receive"
+          " in a tool result.",
+          media_type,
+      )
+  return blocks
+
+
 class _ToolUseIdSanitizer:
   """Maps invalid tool_use IDs to deterministic fallbacks.
 
@@ -426,10 +482,25 @@ def _part_to_message_block(
       # dropped.
       content = json.dumps(response_data)
 
+    # A tool can attach media alongside the serializable part of its result.
+    # It travels in a dedicated field, so it has to be mapped over explicitly
+    # or the model never sees it.
+    media_blocks = _function_response_media_blocks(function_response)
+    tool_result_content: Union[str, list[_ToolResultContentBlockParam]]
+    if media_blocks:
+      leading_text: list[_ToolResultContentBlockParam] = (
+          [anthropic_types.TextBlockParam(type="text", text=content)]
+          if content
+          else []
+      )
+      tool_result_content = leading_text + media_blocks
+    else:
+      tool_result_content = content
+
     return anthropic_types.ToolResultBlockParam(
         tool_use_id=sanitizer.sanitize(function_response.id),
         type="tool_result",
-        content=content,
+        content=tool_result_content,
         is_error=False,
     )
   elif _is_image_part(part):

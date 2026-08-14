@@ -58,6 +58,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("google_adk." + __name__)
 
+# An app told it binds 127.0.0.1 rejects requests addressed to any other host,
+# so its client cannot use TestClient's default "http://testserver".
+_LOOPBACK_BASE_URL = "http://127.0.0.1:8000"
+
 
 # Here we create a dummy agent module that get_fast_api_app expects
 class DummyAgent(BaseAgent):
@@ -813,9 +817,10 @@ def builder_test_client(
         allow_origins=None,
         a2a=False,
         host="127.0.0.1",
+        bind_host="127.0.0.1",
         port=8000,
     )
-    return TestClient(app)
+    return TestClient(app, base_url=_LOOPBACK_BASE_URL)
 
 
 @pytest.fixture
@@ -2623,7 +2628,7 @@ def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
 def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   response = builder_test_client.post(
       "/dev/apps/app/builder/save?tmp=true",
-      headers={"origin": "http://testserver"},
+      headers={"origin": _LOOPBACK_BASE_URL},
       files=[(
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
@@ -2635,14 +2640,34 @@ def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
 
 
-def test_builder_get_allows_cross_origin_get(builder_test_client):
+def test_builder_get_rejects_cross_origin_get(builder_test_client):
+  """Reads expose agent config and session data, so they are guarded too."""
   response = builder_test_client.get(
       "/dev/apps/missing/builder?tmp=true",
       headers={"origin": "https://evil.com"},
   )
 
+  assert response.status_code == 403
+  assert response.text == "Forbidden: origin not allowed"
+
+
+def test_builder_get_allows_same_origin_get(builder_test_client):
+  """The dev UI reads its own agent config from the same origin."""
+  response = builder_test_client.get(
+      "/dev/apps/missing/builder?tmp=true",
+      headers={"origin": _LOOPBACK_BASE_URL},
+  )
+
   assert response.status_code == 200
-  assert response.text == ""
+  assert not response.text
+
+
+def test_builder_get_allows_request_without_origin(builder_test_client):
+  """Browsers omit Origin on same-origin reads, and CLI clients never send it."""
+  response = builder_test_client.get("/dev/apps/missing/builder?tmp=true")
+
+  assert response.status_code == 200
+  assert not response.text
 
 
 def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):

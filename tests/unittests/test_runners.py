@@ -772,6 +772,111 @@ def test_run_passes_state_delta():
   assert user_event.actions.state_delta == state_delta
 
 
+def test_run_reraises_agent_error():
+  """run should re-raise an error the agent raised on the worker thread."""
+
+  class FailingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      raise ValueError("agent failed")
+      yield  # pragma: no cover
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=FailingAgent(name="failing_agent"),
+      session_service=InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  with pytest.raises(ValueError, match="agent failed"):
+    list(
+        runner.run(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    )
+
+
+def test_run_yields_events_before_reraising_agent_error():
+  """run should deliver the events produced before the failure."""
+
+  class FailsAfterOneEventAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[types.Part(text="hi")]),
+      )
+      raise ValueError("agent failed late")
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=FailsAfterOneEventAgent(name="failing_agent"),
+      session_service=InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  events = []
+  with pytest.raises(ValueError, match="agent failed late"):
+    for event in runner.run(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="hello")]
+        ),
+    ):
+      events.append(event)
+
+  assert [e.author for e in events] == ["failing_agent"]
+
+
+def test_run_reports_agent_cancellation_as_runtime_error():
+  """A cancellation is reported without being re-raised as a CancelledError.
+
+  Re-raising it on the calling thread would read as the caller having been
+  cancelled, which an enclosing event loop absorbs silently.
+  """
+
+  class CancelledAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      raise asyncio.CancelledError("agent cancelled")
+      yield  # pragma: no cover
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=CancelledAgent(name="cancelled_agent"),
+      session_service=InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  with pytest.raises(RuntimeError, match="CancelledError") as exc_info:
+    list(
+        runner.run(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    )
+
+  assert isinstance(exc_info.value.__cause__, asyncio.CancelledError)
+
+
 @pytest.mark.asyncio
 async def test_run_async_propagates_invocation_id():
   """run_async should propagate invocation_id to the invocation context and events."""
