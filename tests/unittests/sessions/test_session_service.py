@@ -2565,3 +2565,75 @@ def test_list_sessions_sync_unknown_app_or_user_returns_empty_response():
   assert [
       s.id for s in service.list_sessions_sync(app_name='my_app').sessions
   ] == ['s1']
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for duplicate-event deduplication (issue #5723)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_service',
+    [InMemorySessionService()],
+    ids=['in_memory'],
+)
+async def test_append_event_is_idempotent_for_same_event_id(session_service):
+  """Appending the same event ID twice must not duplicate entries or state."""
+  app_name = 'test_app'
+  user_id = 'user_dup'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='session_dup'
+  )
+
+  event = Event(
+      invocation_id='inv_dup',
+      author='user',
+      actions=EventActions(state_delta={'session:counter': 1}),
+  )
+
+  # Append the same event object twice (simulates a duplicate broadcast).
+  await session_service.append_event(session=session, event=event)
+  await session_service.append_event(session=session, event=event)
+
+  # The storage session must contain the event exactly once.
+  retrieved = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_dup'
+  )
+  matching = [e for e in retrieved.events if e.id == event.id]
+  assert (
+      len(matching) == 1
+  ), f'Expected 1 occurrence of event {event.id!r}, got {len(matching)}'
+
+  # State must not be double-applied.
+  assert (
+      retrieved.state.get('session:counter') == 1
+  ), 'State was applied more than once — duplicate event caused double-apply'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_service',
+    [InMemorySessionService()],
+    ids=['in_memory'],
+)
+async def test_append_different_events_not_deduplicated(session_service):
+  """Events with distinct IDs must both be stored."""
+  app_name = 'test_app'
+  user_id = 'user_multi'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='session_multi'
+  )
+
+  e1 = Event(invocation_id='inv_a', author='user')
+  e2 = Event(invocation_id='inv_b', author='agent')
+
+  await session_service.append_event(session=session, event=e1)
+  await session_service.append_event(session=session, event=e2)
+
+  retrieved = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_multi'
+  )
+  assert (
+      len(retrieved.events) == 2
+  ), f'Expected 2 distinct events, got {len(retrieved.events)}'

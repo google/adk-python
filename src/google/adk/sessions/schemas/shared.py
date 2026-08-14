@@ -31,6 +31,20 @@ DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256
 
 
+def timestamp_to_utc_datetime(timestamp: float) -> datetime.datetime:
+  """Converts a POSIX timestamp to a naive UTC database value."""
+  return datetime.datetime.fromtimestamp(
+      timestamp, tz=datetime.timezone.utc
+  ).replace(tzinfo=None)
+
+
+def utc_datetime_to_timestamp(value: datetime.datetime) -> float:
+  """Converts a database UTC datetime to a POSIX timestamp."""
+  if value.tzinfo is None:
+    value = value.replace(tzinfo=datetime.timezone.utc)
+  return value.timestamp()
+
+
 class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
   """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON serialization for other databases."""
 

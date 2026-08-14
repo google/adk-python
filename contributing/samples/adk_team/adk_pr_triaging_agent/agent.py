@@ -28,23 +28,19 @@ from component_owners import LABEL_TO_OWNER
 from google.adk import Agent
 import requests
 
-# LABEL_TO_OWNER (component label -> owner GitHub login; the owner becomes the
-# PR's assignee) is imported from component_owners and shared verbatim with
+# LABEL_TO_OWNER (component -> owner GitHub login; the owner becomes the PR's
+# assignee) is imported from component_owners and shared verbatim with
 # adk_triaging_agent, so the two can't drift. Keep it in sync with OWNERS.
-
-# Labels the agent may apply, derived from LABEL_TO_OWNER so a newly-owned
-# component is allowed automatically (this was a separate list that silently
-# fell out of sync and blocked applying the newer labels).
-ALLOWED_LABELS = sorted(LABEL_TO_OWNER)
+# This agent only reads the map to pick an assignee; the component names are
+# never written to the PR as labels.
 
 APPROVAL_INSTRUCTION = (
-    "Do not ask for user approval for labeling or assigning!"
-    " If you can't find appropriate labels for the PR, do not label it."
+    "Do not ask for user approval for assigning!"
+    " If you can't tell which component the PR belongs to, leave it"
+    " unassigned."
 )
 if IS_INTERACTIVE:
-  APPROVAL_INSTRUCTION = (
-      "Only label or assign when the user approves the action!"
-  )
+  APPROVAL_INSTRUCTION = "Only assign when the user approves the action!"
 
 
 def get_pull_request_details(pr_number: int) -> dict[str, Any]:
@@ -156,43 +152,8 @@ def get_pull_request_details(pr_number: int) -> dict[str, Any]:
     return error_response(str(e))
 
 
-def add_label_to_pr(pr_number: int, label: str) -> dict[str, Any]:
-  """Adds a specified label on a pull request.
-
-  Args:
-      pr_number: the number of the GitHub pull request
-      label: the label to add
-
-  Returns:
-      The status of this request, with the applied label and response when
-      successful.
-  """
-  print(f"Attempting to add label '{label}' to PR #{pr_number}")
-  if label not in ALLOWED_LABELS:
-    return error_response(
-        f"Error: Label '{label}' is not an allowed label. Will not apply."
-    )
-
-  # Pull Request is a special issue in GitHub, so we can use issue url for PR.
-  label_url = (
-      f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{pr_number}/labels"
-  )
-  label_payload = [label]
-
-  try:
-    response = post_request(label_url, label_payload)
-  except requests.exceptions.RequestException as e:
-    return error_response(f"Error: {e}")
-
-  return {
-      "status": "success",
-      "applied_label": label,
-      "response": response,
-  }
-
-
-def assign_owner_to_pr(pr_number: int, label: str) -> dict[str, Any]:
-  """Assign the component owner (the shepherd) to a PR based on its label.
+def assign_owner_to_pr(pr_number: int, component: str) -> dict[str, Any]:
+  """Assign the component owner (the shepherd) to a PR.
 
   The owner is looked up from `LABEL_TO_OWNER` so the contributor can see who is
   shepherding their PR. GitHub only allows assigning users with
@@ -201,14 +162,16 @@ def assign_owner_to_pr(pr_number: int, label: str) -> dict[str, Any]:
 
   Args:
     pr_number: the number of the GitHub pull request
-    label: the component label the PR was triaged into
+    component: the component the PR belongs to
 
   Returns:
     The status of this request, with the assigned owner when successful.
   """
-  owner = LABEL_TO_OWNER.get(label)
+  owner = LABEL_TO_OWNER.get(component)
   if not owner:
-    return error_response(f"Error: no owner mapped for label '{label}'.")
+    return error_response(
+        f"Error: no owner mapped for component '{component}'."
+    )
   print(f"Attempting to assign owner '{owner}' to PR #{pr_number}")
   if not is_assignable(owner):
     return {
@@ -233,11 +196,11 @@ def assign_owner_to_pr(pr_number: int, label: str) -> dict[str, Any]:
   }
 
 
-def list_untriaged_pull_requests(pr_count: int) -> dict[str, Any]:
-  """List open pull requests that need triaging.
+def list_unassigned_pull_requests(pr_count: int) -> dict[str, Any]:
+  """List open pull requests that have nobody assigned.
 
-  Returns pull requests that need triaging (i.e. do not have google-contributor
-  label and do not have any allowed triage category labels).
+  Skips pull requests labeled google-contributor, which are shepherded by their
+  own author.
 
   Args:
     pr_count: number of pull requests to return
@@ -246,7 +209,7 @@ def list_untriaged_pull_requests(pr_count: int) -> dict[str, Any]:
     The status of this request, with a list of pull requests when successful.
   """
   url = f"{GITHUB_BASE_URL}/search/issues"
-  query = f"repo:{OWNER}/{REPO} is:open is:pr"
+  query = f"repo:{OWNER}/{REPO} is:open is:pr no:assignee"
   params = {
       "q": query,
       "sort": "updated",
@@ -261,32 +224,28 @@ def list_untriaged_pull_requests(pr_count: int) -> dict[str, Any]:
     return error_response(f"Error: {e}")
 
   issues = response.get("items", [])
-  triage_labels = set(ALLOWED_LABELS)
-  untriaged_prs = []
+  unassigned_prs = []
 
   for pr in issues:
     pr_labels = {label["name"] for label in pr.get("labels", [])}
     if "google-contributor" in pr_labels:
       continue
-    # If it already has any of the ALLOWED_LABELS, skip it.
-    if pr_labels & triage_labels:
-      continue
 
-    untriaged_prs.append({
+    unassigned_prs.append({
         "number": pr["number"],
         "title": pr["title"],
     })
 
-    if len(untriaged_prs) >= pr_count:
+    if len(unassigned_prs) >= pr_count:
       break
 
-  return {"status": "success", "pull_requests": untriaged_prs}
+  return {"status": "success", "pull_requests": unassigned_prs}
 
 
 root_agent = Agent(
     model="gemini-3.5-flash",
     name="adk_pr_triaging_assistant",
-    description="Triage ADK pull requests.",
+    description="Assign component owners to ADK pull requests.",
     instruction=f"""
       # 1. Identity
       You are a Pull Request (PR) triaging bot for the GitHub {REPO} repo with the owner {OWNER}.
@@ -294,55 +253,53 @@ root_agent = Agent(
       # 2. Responsibilities
       Your core responsibility includes:
       - Get the pull request details.
-      - Add a label to the pull request.
-      - Assign the component owner (the shepherd) to the pull request.
+      - Work out which component the pull request belongs to.
+      - Assign that component's owner (the shepherd) to the pull request.
+
+      Never label a pull request. The component you pick is only used to look up
+      the owner, and is never written to the pull request.
 
       **IMPORTANT: {APPROVAL_INSTRUCTION}**
 
       # 3. Guidelines & Rules
-      Here are the rules for labeling:
-      - If the PR is about documentations, label it with "documentation".
-      - If it's about session, memory, artifacts services, label it with "services"
-      - If it's about UI/web, label it with "web"
-      - If it's related to tools, label it with "tools"
-      - If it's about agent evaluation, then label it with "eval".
-      - If it's about streaming/live, label it with "live".
-      - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
-      - If it's about tracing, label it with "tracing".
-      - If it's about authentication or authorization, label it with "auth".
-      - If it's about BigQuery integration, label it with "bq".
-      - If it's about ADK CLI commands (e.g. create, deploy, eval) or CLI tools, label it with "cli".
-      - If it's about third-party integrations (e.g. CrewAI, LangChain, Slack) excluding BigQuery, label it with "integrations".
-      - If it's about GCP Skills Registry (GCPSkillRegistry), skill prompt models, or dynamic skill toolsets, label it with "skills".
-      - If it's about workflow agents or workflow execution, label it with "workflow".
-      - If it's agent orchestration, agent definition, label it with "core".
-      - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with "mcp".
-      - If you can't find an appropriate labels for the PR, follow the previous instruction that starts with "IMPORTANT:".
+      Here are the rules for picking the component:
+      - If the PR is about documentations, the component is "documentation".
+      - If it's about session, memory, artifacts services, the component is "services".
+      - If it's about UI/web, the component is "web".
+      - If it's related to tools, the component is "tools".
+      - If it's about agent evaluation, the component is "eval".
+      - If it's about streaming/live, the component is "live".
+      - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), the component is "models".
+      - If it's about tracing, the component is "tracing".
+      - If it's about authentication or authorization, the component is "auth".
+      - If it's about BigQuery integration, the component is "bq".
+      - If it's about ADK CLI commands (e.g. create, deploy, eval) or CLI tools, the component is "cli".
+      - If it's about third-party integrations (e.g. CrewAI, LangChain, Slack) excluding BigQuery, the component is "integrations".
+      - If it's about GCP Skills Registry (GCPSkillRegistry), skill prompt models, or dynamic skill toolsets, the component is "skills".
+      - If it's about workflow agents or workflow execution, the component is "workflow".
+      - If it's agent orchestration, agent definition, the component is "core".
+      - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), the component is "mcp".
+      - If you can't find an appropriate component for the PR, follow the previous instruction that starts with "IMPORTANT:".
 
       # 4. Steps
-      - If you are asked to find pull requests that need triaging, use `list_untriaged_pull_requests` first.
-      - For each pull request to be triaged:
+      - If you are asked to find pull requests that need an owner, use `list_unassigned_pull_requests` first.
+      - For each pull request:
         - Call the `get_pull_request_details` tool to get the details of the PR.
-        - Skip the PR (i.e. do not label) if any of the following is true:
+        - Skip the PR (i.e. do not assign anyone) if any of the following is true:
           - the PR is closed
           - the PR is labeled with "google-contributor"
-          - the PR is already labelled with the above labels (e.g. "documentation", "services", "tools", etc.).
-        - Recommend or add a label to the PR.
-        - After you add a component label, assign the component owner (the shepherd) to the PR:
-          - Call `assign_owner_to_pr` with the same label you applied.
-          - Skip assignment if the PR already has an assignee.
-          - If the tool reports the owner is not assignable, just note it.
+          - the PR already has an assignee
+        - Work out the component, then call `assign_owner_to_pr` with it.
+        - If the tool reports the owner is not assignable, just note it.
 
       # 5. Output
-      Present the following in an easy to read format highlighting PR number and your label.
+      Present the following in an easy to read format highlighting PR number and the owner you assigned.
       - The PR summary in a few sentence
-      - The label you recommended or added with the justification
-      - The owner you assigned (or why you did not)
+      - The owner you assigned with the justification, or why you assigned nobody
     """,
     tools=[
-        list_untriaged_pull_requests,
+        list_unassigned_pull_requests,
         get_pull_request_details,
-        add_label_to_pr,
         assign_owner_to_pr,
     ],
 )

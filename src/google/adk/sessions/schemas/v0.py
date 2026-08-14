@@ -63,6 +63,8 @@ from .shared import DEFAULT_MAX_KEY_LENGTH
 from .shared import DEFAULT_MAX_VARCHAR_LENGTH
 from .shared import DynamicJSON
 from .shared import PreciseTimestamp
+from .shared import timestamp_to_utc_datetime
+from .shared import utc_datetime_to_timestamp
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -345,7 +347,7 @@ class StorageEvent(Base):
         session_id=session.id,
         app_name=session.app_name,
         user_id=session.user_id,
-        timestamp=datetime.fromtimestamp(event.timestamp),
+        timestamp=timestamp_to_utc_datetime(event.timestamp),
         long_running_tool_ids=event.long_running_tool_ids,
         partial=event.partial,
         turn_complete=event.turn_complete,
@@ -396,7 +398,7 @@ class StorageEvent(Base):
             if self.actions
             else EventActions()
         ),
-        timestamp=self.timestamp.timestamp(),
+        timestamp=utc_datetime_to_timestamp(self.timestamp),
         long_running_tool_ids=self.long_running_tool_ids,
         partial=self.partial,
         turn_complete=self.turn_complete,
