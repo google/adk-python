@@ -1388,6 +1388,17 @@ def cli_eval(
       )
       pretty_print_eval_result(eval_result)
 
+  # The printed "Eval Run Summary" above is otherwise the only place this
+  # command's verdict is visible -- without this, the process exit code is
+  # always 0 regardless of any failed test, indistinguishable from every
+  # test genuinely passing. Every other subcommand in this file that has a
+  # pass/fail outcome (e.g. `test`, `run --query`) already does this; `eval`
+  # was the one command whose exit code carried no signal at all.
+  total_failed = sum(
+      pass_fail_count[1] for pass_fail_count in eval_run_summary.values()
+  )
+  sys.exit(1 if total_failed else 0)
+
 
 @main.command("optimize", cls=HelpfulCommand)
 @click.argument(
