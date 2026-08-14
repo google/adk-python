@@ -15,15 +15,16 @@
 name: ADK Pull Request Triaging Agent
 
 on:
-  # React within seconds of a PR opening/updating so the owner is assigned
-  # promptly. pull_request_target (not pull_request) is required so the run has
-  # the base-repo token needed to assign on community fork PRs; this workflow
-  # only reads PR metadata via the API and never checks out untrusted PR code.
+  # React within seconds of a PR arriving so the owner is assigned promptly.
+  # pull_request_target (not pull_request) is required so the run has the
+  # base-repo token needed to assign on community fork PRs; this workflow only
+  # reads PR metadata via the API and never checks out untrusted PR code.
+  #
+  # Only events that bring in a new PR are listed. Pushes to an open PR and a
+  # periodic backfill would both re-assign an owner a maintainer had just taken
+  # off, so removing an assignee has to stay a decision the agent cannot undo.
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review]
-  schedule:
-    # Backfill every 6 hours in case an event was missed.
-    - cron: '0 */6 * * *'
+    types: [opened, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -36,8 +37,8 @@ on:
         default: '10'
         type: 'string'
 
-# Never let two runs triage the same PR at once (e.g. rapid pushes); the
-# scheduled backfill still runs under its own group.
+# Never let two runs triage the same PR at once (e.g. a reopen right after an
+# open); a manually dispatched batch run gets its own group.
 concurrency:
   group: pr-triage-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: false

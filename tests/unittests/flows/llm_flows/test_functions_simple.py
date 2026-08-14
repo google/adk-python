@@ -1797,6 +1797,71 @@ async def test_response_scheduling_unset_by_default():
   assert function_response.scheduling is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'handle_function_calls',
+    [
+        (handle_function_calls_async),
+        (handle_function_calls_live),
+    ],
+)
+@pytest.mark.parametrize(
+    'tool_result, expected_response',
+    [
+        (
+            {'status': 'ok', 'widget': 'rendered'},
+            {'status': 'ok', 'widget': 'rendered'},
+        ),
+        (
+            'widget_rendered_ack',
+            {'result': 'widget_rendered_ack'},
+        ),
+    ],
+)
+async def test_skip_summarization_non_agent_tool_appends_no_text_part(
+    handle_function_calls, tool_result, expected_response
+):
+  """A non-AgentTool with skip_summarization must not emit a visible text part.
+
+  The skip_summarization text-append in __build_response_event exists to keep
+  AgentTool output visible in UIs that don't render function responses (#3881).
+  It must not fire for other tools: UI/widget tools set skip_summarization
+  because their function response is an internal acknowledgement, not
+  user-facing text. A FunctionTool result must therefore produce only a
+  function_response part (no Part.from_text), otherwise the ack payload would be
+  surfaced to the UI as visible text.
+  """
+
+  def render_widget(tool_context: ToolContext) -> Any:
+    tool_context.actions.skip_summarization = True
+    return tool_result
+
+  tool = FunctionTool(render_widget)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_test')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result_event = await handle_function_calls(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  assert result_event.actions.skip_summarization is True
+  # The ack is carried only as a function_response part — never as text.
+  parts = result_event.content.parts
+  assert len(parts) == 1
+  assert parts[0].text is None
+  assert parts[0].function_response.response == expected_response
+
+
 async def _drain_live_function_responses(
     live_request_queue: LiveRequestQueue,
     count: int,

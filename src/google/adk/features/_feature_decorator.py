@@ -18,7 +18,6 @@ import functools
 from typing import Callable
 from typing import cast
 from typing import TypeVar
-from typing import Union
 
 from ._feature_registry import _get_feature_config
 from ._feature_registry import _register_feature
@@ -27,7 +26,7 @@ from ._feature_registry import FeatureName
 from ._feature_registry import FeatureStage
 from ._feature_registry import is_feature_enabled
 
-T = TypeVar("T", bound=Union[Callable, type])
+T = TypeVar("T", bound=Callable[..., object])
 
 
 def _make_feature_decorator(
@@ -60,33 +59,32 @@ def _make_feature_decorator(
     )
 
   def decorator(obj: T) -> T:
-    def check_feature_enabled():
+    def check_feature_enabled() -> None:
       if not is_feature_enabled(feature_name):
         raise RuntimeError(f"Feature {feature_name} is not enabled.")
 
     if isinstance(obj, type):  # decorating a class
-      original_init = obj.__init__
+      original_init = cast(Callable[..., None], getattr(obj, "__init__"))
 
       @functools.wraps(original_init)
-      def new_init(*args, **kwargs):
+      def new_init(*args: object, **kwargs: object) -> None:
         check_feature_enabled()
-        return original_init(*args, **kwargs)
+        original_init(*args, **kwargs)
 
-      obj.__init__ = new_init
-      return cast(T, obj)
-    elif isinstance(obj, Callable):  # decorating a function
+      setattr(obj, "__init__", new_init)
+      return obj
+    if callable(obj):  # decorating a function
 
       @functools.wraps(obj)
-      def wrapper(*args, **kwargs):
+      def wrapper(*args: object, **kwargs: object) -> object:
         check_feature_enabled()
         return obj(*args, **kwargs)
 
       return cast(T, wrapper)
 
-    else:
-      raise TypeError(
-          "@experimental can only be applied to classes or callable objects"
-      )
+    raise TypeError(
+        "@experimental can only be applied to classes or callable objects"
+    )
 
   return decorator
 

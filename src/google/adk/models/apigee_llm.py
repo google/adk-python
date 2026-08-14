@@ -382,6 +382,23 @@ def _parse_logprobs(
   )
 
 
+def _function_response_media_content_parts(
+    function_response: types.FunctionResponse,
+) -> list[dict[str, Any]]:
+  """Converts media a tool attached to its response into content parts."""
+  media_content_parts: list[dict[str, Any]] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    if blob is None or blob.data is None or not blob.mime_type:
+      continue
+    data = base64.b64encode(blob.data).decode('utf-8')
+    media_content_parts.append({
+        'type': 'image_url',
+        'image_url': {'url': f'data:{blob.mime_type};base64,{data}'},
+    })
+  return media_content_parts
+
+
 def _validate_model_string(model: str) -> bool:
   """Validates the model string for Apigee LLM.
 
@@ -736,7 +753,11 @@ class CompletionsHTTPClient:
     content_parts: list[dict[str, Any]] = []
     refusals: list[str] = []
 
-    function_responses = []
+    function_responses: list[dict[str, Any]] = []
+    # A tool can attach media alongside the serializable part of its result.
+    # A tool-role message carries text only, so the media has to follow the
+    # tool results as its own message.
+    response_media_parts: list[dict[str, Any]] = []
 
     for part in content.parts or []:
       self._process_content_part(
@@ -748,7 +769,14 @@ class CompletionsHTTPClient:
             'tool_call_id': part.function_response.id,
             'content': json.dumps(part.function_response.response),
         })
+        response_media_parts.extend(
+            _function_response_media_content_parts(part.function_response)
+        )
     if function_responses:
+      if response_media_parts:
+        function_responses.append(
+            {'role': 'user', 'content': response_media_parts}
+        )
       return function_responses
 
     message: dict[str, Any] = {'role': role}

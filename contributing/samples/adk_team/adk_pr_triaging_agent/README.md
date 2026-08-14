@@ -1,6 +1,6 @@
 # ADK Pull Request Triaging Assistant
 
-The ADK Pull Request (PR) Triaging Assistant is a Python-based agent designed to help manage and triage GitHub pull requests for the `google/adk-python` repository. It uses a large language model to analyze new and unlabelled pull requests, recommend appropriate labels, and assign the component owner based on a predefined set of rules.
+The ADK Pull Request (PR) Triaging Assistant is a Python-based agent designed to help manage and triage GitHub pull requests for the `google/adk-python` repository. It uses a large language model to work out which component an incoming pull request belongs to, and assigns that component's owner as the assignee. It never labels a pull request; the component it picks is only used to look up the owner.
 
 This agent can be operated in two distinct modes:
 
@@ -16,7 +16,7 @@ This mode allows you to run the agent locally to review its recommendations in r
 ### Features
 
 - **Web Interface**: The agent's interactive mode can be rendered in a web browser using the ADK's `adk web` command.
-- **User Approval**: In interactive mode, the agent is instructed to ask for your confirmation before applying a label or assigning an owner to a GitHub pull request.
+- **User Approval**: In interactive mode, the agent is instructed to ask for your confirmation before assigning an owner to a GitHub pull request.
 
 ### Running in Interactive Mode
 
@@ -36,13 +36,13 @@ For automated, hands-off PR triaging, the agent can be integrated directly into 
 
 ### Workflow Triggers
 
-The GitHub workflow is configured to run on specific triggers:
+The GitHub workflow runs when a PR is `opened`, `reopened`, or marked `ready_for_review`, and on manual dispatch.
 
-- **Pull Request Events**: The workflow executes automatically whenever a new PR is `opened` or an existing one is `reopened` or `edited`.
+It deliberately does not run on pushes to an open PR, and there is no periodic backfill. Either one would re-assign an owner that a maintainer had just taken off, so removing an assignee stays a decision the agent cannot undo.
 
-### Automated Labeling
+### Automated Assignment
 
-When running as part of the GitHub workflow, the agent operates non-interactively. It identifies and applies the best label and assigns the component owner directly without requiring user approval. This behavior is configured by setting the `INTERACTIVE` environment variable to `0` in the workflow file.
+When running as part of the GitHub workflow, the agent operates non-interactively. It assigns the component owner directly without requiring user approval, and skips any PR that already has an assignee. This behavior is configured by setting the `INTERACTIVE` environment variable to `0` in the workflow file.
 
 ### Workflow Configuration
 

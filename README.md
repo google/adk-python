@@ -6,6 +6,8 @@
 [![PyPI downloads](https://static.pepy.tech/badge/google-adk/month)](https://pepy.tech/project/google-adk)
 [![Continuous Integration](https://github.com/google/adk-python/actions/workflows/continuous-integration.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/continuous-integration.yml)
 [![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://google.github.io/adk-docs/)
+[![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
+<a href="https://codewiki.google/github.com/google/adk-python"><img src="https://www.gstatic.com/_/boq-sdlc-agents-ui/_/r/Mvosg4klCA4.svg" alt="Ask Code Wiki" height="20"></a>
 
 <h2 align="center">
   <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/agent-development-kit.png" width="256"/>
@@ -19,6 +21,19 @@
   <a href="https://github.com/google/adk-samples">Samples</a> &
   <a href="https://github.com/google/adk-web">ADK Web</a>.
 </h3>
+<h3 align="center">
+  ADK in other languages:
+  <a href="https://github.com/google/adk-java">ADK Java</a>,
+  <a href="https://github.com/google/adk-kotlin">ADK Kotlin</a>,
+  <a href="https://github.com/google/adk-go">ADK Go</a> &
+  <a href="https://github.com/google/adk-js">ADK Typescript</a>.
+</h3>
+
+Agent Development Kit (ADK) is a flexible and modular framework that applies
+software development principles to AI agent creation. It is designed to
+simplify building, deploying, and orchestrating agent workflows, from simple
+tasks to complex systems. While optimized for Gemini, ADK is model-agnostic,
+deployment-agnostic, and compatible with other frameworks.
 
 ______________________________________________________________________
 
@@ -30,7 +45,7 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 🔥 What's New in 2.0
+## ✨ Key Features
 
 - **Workflow Runtime**: A graph-based execution engine for composing
   deterministic execution flows for agentic apps, with support for routing,
@@ -41,7 +56,29 @@ ______________________________________________________________________
   mode, single-turn controlled output, mixed delegation patterns,
   human-in-the-loop, and task agents as workflow nodes.
 
+- **Modular Multi-Agent Systems**: Design scalable applications by composing
+  multiple specialized agents into flexible hierarchies.
+
+- **Rich Tool Ecosystem**: Utilize pre-built tools, custom functions,
+  OpenAPI specs, MCP tools or integrate existing tools to give agents diverse
+  capabilities, all for tight integration with the Google ecosystem.
+
+- **Code-First Development**: Define agent logic, tools, and orchestration
+  directly in Python for ultimate flexibility, testability, and versioning.
+
+- **Agent Config**: Build agents without code. Check out the
+  [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
+
+- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input.
+
+- **Deploy Anywhere**: Easily containerize and deploy agents on Cloud Run or
+  scale seamlessly with Vertex AI Agent Engine.
+
 ## 🚀 Installation
+
+### Stable Release (Recommended)
+
+You can install the latest stable version of ADK using `pip`:
 
 ```bash
 pip install google-adk
@@ -68,6 +105,16 @@ pip install "google-adk[extensions]"
 ```
 
 The release cadence is roughly bi-weekly.
+
+### Development Version
+
+Bug fixes and new features are merged into the main branch on GitHub first. If you need access to changes that haven't been included in an official PyPI release yet, you can install directly from the main branch:
+
+```bash
+pip install git+https://github.com/google/adk-python.git@main
+```
+
+Note: The development version is built directly from the latest code commits. While it includes the newest fixes and features, it may also contain experimental changes or bugs not present in the stable release. Use it primarily for testing upcoming changes or accessing critical fixes before they are officially released.
 
 ## Quick Start
 
@@ -118,6 +165,22 @@ adk run path/to/my_agent
 adk web path/to/agents_dir
 ```
 
+### Development UI
+
+A built-in development UI to help you test, evaluate, debug, and showcase your agent(s).
+
+[![ADK Web UI](https://raw.githubusercontent.com/google/adk-python/main/assets/adk-web-dev-ui.png)](https://youtu.be/TEjqk0eeNy8)
+
+[![Watch on YouTube](https://img.shields.io/badge/YouTube-Watch%20ADK%20Web%20Demo-FF0000?style=flat&logo=youtube&logoColor=white)](https://youtu.be/TEjqk0eeNy8)
+
+### Evaluate Agents
+
+```bash
+adk eval \
+    samples_for_testing/hello_world \
+    samples_for_testing/hello_world/hello_world_eval_set_001.evalset.json
+```
+
 ## 📚 Documentation
 
 - **Getting Started**: https://google.github.io/adk-docs/
@@ -131,9 +194,30 @@ adk web path/to/agents_dir
 
 ## 🤝 Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our:
+
+- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/).
+- [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
+
+## Community Repo
+
+We have [adk-python-community repo](https://github.com/google/adk-python-community) that is home to a growing ecosystem of community-contributed tools, third-party
+service integrations, and deployment scripts that extend the core capabilities
+of the ADK.
+
+## Vibe Coding
+
+If you want to develop agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to LLM. While the former one is a summarized one and the later one has the full information in case your LLM has big enough context window.
+
+## Community Events
+
+- [Completed] ADK's 1st community meeting on Wednesday, October 15, 2025. Remember to [join our group](https://groups.google.com/g/adk-community) to get access to the [recording](https://drive.google.com/file/d/1rpXDq5NSH8-MyMeYI6_5pZ3Lhn0X9BQf/view), and [deck](https://docs.google.com/presentation/d/1_b8LG4xaiadbUUDzyNiapSFyxanc9ZgFdw7JQ6zmZ9Q/edit?slide=id.g384e60cdaca_0_658&resourcekey=0-tjFFv0VBQhpXBPCkZr0NOg#slide=id.g384e60cdaca_0_658).
 
 ## 📄 License
 
 This project is licensed under the Apache 2.0 License — see the
 [LICENSE](LICENSE) file for details.
+
+______________________________________________________________________
+
+*Happy Agent Building!*

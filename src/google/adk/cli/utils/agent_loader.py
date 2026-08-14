@@ -79,6 +79,7 @@ class AgentLoader(BaseAgentLoader):
     self._init_agent_mode(agents_path)
     self._original_sys_path = None
     self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
+    self._root_agent_type_mismatches: list[tuple[str, str, bool]] = []
 
   def _init_agent_mode(self, agents_path: Path) -> None:
     if is_single_agent_directory(agents_path):
@@ -106,6 +107,15 @@ class AgentLoader(BaseAgentLoader):
     self._single_agent_name = name
     self.agents_dir = agents_dir
 
+  def _record_root_agent_type_mismatch(self, location: str, value: Any) -> None:
+    """Records a found `root_agent` whose type prevents loading it."""
+    value_type = type(value)
+    self._root_agent_type_mismatches.append((
+        location,
+        f"{value_type.__module__}.{value_type.__qualname__}",
+        isinstance(value, App),
+    ))
+
   def _load_from_module_or_package(
       self, agent_name: str
   ) -> Optional[Union[BaseAgent, App]]:
@@ -132,6 +142,9 @@ class AgentLoader(BaseAgentLoader):
           logger.warning(
               "Root agent found is not an instance of BaseAgent. But a type %s",
               type(module_candidate.root_agent),
+          )
+          self._record_root_agent_type_mismatch(
+              agent_name, module_candidate.root_agent
           )
       else:
         logger.debug(
@@ -181,6 +194,9 @@ class AgentLoader(BaseAgentLoader):
           logger.warning(
               "Root agent found is not an instance of BaseAgent. But a type %s",
               type(module_candidate.root_agent),
+          )
+          self._record_root_agent_type_mismatch(
+              f"{agent_name}.agent", module_candidate.root_agent
           )
       else:
         logger.debug(
@@ -275,6 +291,7 @@ class AgentLoader(BaseAgentLoader):
 
   def _perform_load(self, agent_name: str) -> Union[BaseAgent, App]:
     """Internal logic to load an agent"""
+    self._root_agent_type_mismatches = []
     self._validate_agent_name(agent_name)
     # Determine the directory to use for loading
     if agent_name.startswith("__"):
@@ -341,6 +358,25 @@ class AgentLoader(BaseAgentLoader):
       )
       return root_agent
 
+    # A root_agent was found but had an unusable type: surface that
+    # diagnosis instead of the generic not-found guidance.
+    if self._root_agent_type_mismatches:
+      details = "\n".join(
+          f"  - '{location}.root_agent' is of type '{type_name}'"
+          for location, type_name, _ in self._root_agent_type_mismatches
+      )
+      app_hint = ""
+      if any(is_app for _, _, is_app in self._root_agent_type_mismatches):
+        app_hint = (
+            "\n\nHINT: To serve an App, expose it under the name 'app'"
+            " instead of 'root_agent'."
+        )
+      raise ValueError(
+          f"A 'root_agent' was found for '{agent_name}' but it is not a"
+          " BaseAgent (or workflow node) instance:\n"
+          f"{details}\n\nExpose a BaseAgent instance named"
+          f" 'root_agent'.{app_hint}"
+      )
     # If no root_agent was found by any pattern
     # Check if user might be in the wrong directory
     hint = ""

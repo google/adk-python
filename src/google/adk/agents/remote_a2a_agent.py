@@ -869,6 +869,14 @@ class RemoteA2aAgent(BaseAgent):
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
         )
+      # Filter out thought parts from user-facing response content.
+      # Intermediate (submitted/working) events have all parts marked as
+      # thought, so non_thought_parts will be empty and we preserve them.
+      if event.content is not None and event.content.parts:
+        non_thought_parts = [p for p in event.content.parts if not p.thought]
+        if non_thought_parts:
+          event.content.parts = non_thought_parts
+
       return event
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)

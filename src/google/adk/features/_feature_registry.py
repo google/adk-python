@@ -392,7 +392,7 @@ def temporary_feature_override(
 
   # Save the original override state
   had_override = feature_name in _FEATURE_OVERRIDES
-  original_value = _FEATURE_OVERRIDES.get(feature_name)
+  original_value = _FEATURE_OVERRIDES.get(feature_name, False)
 
   # Apply the temporary override
   _FEATURE_OVERRIDES[feature_name] = enabled

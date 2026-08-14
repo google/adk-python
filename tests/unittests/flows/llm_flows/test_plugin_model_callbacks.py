@@ -171,7 +171,11 @@ def test_on_model_error_callback_with_plugin(mock_plugin):
 
 
 def test_on_model_error_callback_fallback_to_runner(mock_plugin):
-  """Tests that the model error is not handled and surfaces from the runner."""
+  """Tests that the model error is not handled and surfaces from the runner.
+
+  It surfaces twice, the same way it does from run_async: first as an event
+  carrying the error code, then as the exception once the events run out.
+  """
   mock_model = testing_utils.MockModel.create(error=mock_error, responses=[])
   mock_plugin.enable_on_model_error_callback = False
   agent = Agent(
@@ -180,8 +184,19 @@ def test_on_model_error_callback_fallback_to_runner(mock_plugin):
   )
 
   runner = testing_utils.InMemoryRunner(agent, plugins=[mock_plugin])
+  session = runner.session
 
-  events = runner.run('test')
+  # Iterate the runner directly: the test helper collects into a list, which
+  # discards the events already produced when the run raises.
+  events = []
+  with pytest.raises(ClientError):
+    for event in runner.runner.run(
+        user_id=session.user_id,
+        session_id=session.id,
+        new_message=testing_utils.get_user_content('test'),
+    ):
+      events.append(event)
+
   error_events = [e for e in events if e.error_code]
   assert len(error_events) == 1
   assert error_events[0].error_code == 'ClientError'
