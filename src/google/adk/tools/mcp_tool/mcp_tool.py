@@ -28,6 +28,7 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from mcp import ClientSession
 from mcp.shared.exceptions import McpError
 from mcp.shared.session import ProgressFnT
 from mcp.types import Tool as McpBaseTool
@@ -42,6 +43,9 @@ from ...auth.auth_tool import AuthConfig
 from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...utils.context_utils import find_context_parameter
 # `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
 # error-boundary and transport-crash-detection behavior added in this module.
@@ -52,12 +56,23 @@ from ...utils.context_utils import find_context_parameter
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
+from ..transfer_to_agent_tool import transfer_to_agent
 from .mcp_session_manager import _http_debug_var
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Tool names the framework itself puts on the wire. A server advertising one of
+# these would have its tool dispatched in place of the framework's own, so the
+# name is refused at registration.
+_RESERVED_TOOL_NAMES = frozenset({
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    REQUEST_INPUT_FUNCTION_CALL_NAME,
+    transfer_to_agent.__name__,
+})
 
 
 @runtime_checkable
@@ -176,8 +191,14 @@ class McpTool(BaseAuthenticatedTool):
             and modify runtime context like session state.
 
     Raises:
-        ValueError: If mcp_tool or mcp_session_manager is None.
+        ValueError: If the MCP tool name collides with a reserved ADK tool
+          name.
     """
+    if mcp_tool.name in _RESERVED_TOOL_NAMES:
+      raise ValueError(
+          f"MCP tool name '{mcp_tool.name}' collides with a reserved ADK tool"
+          " name."
+      )
 
     super().__init__(
         name=mcp_tool.name,
@@ -393,6 +414,17 @@ class McpTool(BaseAuthenticatedTool):
           debug_list.extend(current_debug)
 
   @retry_on_errors
+  async def _create_session(
+      self, *, headers: dict[str, str] | None
+  ) -> ClientSession:
+    """Opens a session, retrying once because nothing has been sent yet.
+
+    Session setup happens before the tool call exists, so a failure here
+    provably did not run anything on the server and can be retried without
+    risking a duplicate side effect.
+    """
+    return await self._mcp_session_manager.create_session(headers=headers)
+
   @override
   async def _run_async_impl(
       self, *, args, tool_context: ToolContext, credential: AuthCredential
@@ -430,9 +462,7 @@ class McpTool(BaseAuthenticatedTool):
     meta_trace_context = trace_carrier if trace_carrier else None
 
     # Get the session from the session manager
-    session = await self._mcp_session_manager.create_session(
-        headers=final_headers
-    )
+    session = await self._create_session(headers=final_headers)
 
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
@@ -449,10 +479,10 @@ class McpTool(BaseAuthenticatedTool):
       # transport crashes (e.g. non-2xx HTTP responses from an AGW with
       # Model Armor) surface immediately instead of hanging until
       # sse_read_timeout (default 5 minutes) expires. ConnectionError is
-      # intentionally NOT caught here; it propagates to retry_on_errors,
-      # which will create a fresh session and retry once before finally
-      # surfacing the failure to the agent (where the run_async wrapper
-      # converts it into an `{"error": ...}` dict).
+      # intentionally NOT caught here. Replaying a tool call after an
+      # ambiguous transport failure could duplicate a remote side effect, so
+      # the failure surfaces to the run_async wrapper without an automatic
+      # retry.
       #
       # The isinstance check is intentional: tests and external subclasses
       # may inject mock session managers whose `_get_session_context`

@@ -49,6 +49,7 @@ from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pytest
 from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosedOK
 
 from ... import testing_utils
 
@@ -1089,6 +1090,85 @@ async def test_run_live_no_reconnect_without_handle():
           pass
 
       # Verify that we only attempted to connect once.
+      assert mock_connect.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_live_ends_cleanly_on_connection_closed_ok():
+  """Test that run_live ends the stream on a normal close without a handle."""
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    # Simulate a normal (code 1000) close with no handle update.
+    if False:
+      yield
+    raise ConnectionClosedOK(None, None)
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  # Ensure no handle is set so the normal-close branch is taken.
+  invocation_context.live_session_resumption_handle = None
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__.return_value = mock_connection
+
+      # The stream should end cleanly instead of raising.
+      events = [event async for event in flow.run_live(invocation_context)]
+
+      assert events == []
+      # Verify that we only attempted to connect once (no reconnect).
+      assert mock_connect.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_live_ends_cleanly_on_api_error_1000_without_handle():
+  """Test that run_live ends the stream on an APIError 1000 without a handle."""
+  from google.genai.errors import APIError
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    # Simulate a normal (code 1000) close with no handle update.
+    if False:
+      yield
+    raise APIError(1000, {})
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  # Ensure no handle is set so the normal-close branch is taken.
+  invocation_context.live_session_resumption_handle = None
+
+  flow = BaseLlmFlowForTesting()
+
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__.return_value = mock_connection
+
+      # The stream should end cleanly instead of raising.
+      events = [event async for event in flow.run_live(invocation_context)]
+
+      assert events == []
+      # Verify that we only attempted to connect once (no reconnect).
       assert mock_connect.call_count == 1
 
 

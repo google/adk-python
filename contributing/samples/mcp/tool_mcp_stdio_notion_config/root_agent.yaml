@@ -21,12 +21,13 @@ instruction: |
 # Declaring a stdio MCP server launches `command` as a local process when this
 # config loads, so it requires ADK_ALLOW_CONFIG_STDIO_MCP_SERVERS=1. See README.
 tools:
-- name: MCPToolset
+- name: McpToolset
   args:
-    stdio_server_params:
-      command: "npx"
-      args:
-      - "-y"
-      - "@notionhq/notion-mcp-server"
-      env:
-        OPENAPI_MCP_HEADERS: '{"Authorization": "Bearer <your_notion_token>", "Notion-Version": "2022-06-28"}'
+    stdio_connection_params:
+      server_params:
+        command: "npx"
+        args:
+        - "-y"
+        - "@notionhq/notion-mcp-server"
+        env:
+          OPENAPI_MCP_HEADERS: '{"Authorization": "Bearer <your_notion_token>", "Notion-Version": "2022-06-28"}'

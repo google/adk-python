@@ -50,6 +50,7 @@ except ImportError:
 from typing_extensions import override
 
 from . import _session_util
+from ..errors._stale_session_error import StaleSessionError
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
@@ -681,7 +682,11 @@ class DatabaseSessionService(BaseSessionService):
         )
 
         if config and config.after_timestamp:
-          after_dt = datetime.fromtimestamp(config.after_timestamp)
+          after_dt = datetime.fromtimestamp(
+              config.after_timestamp, tz=timezone.utc
+          )
+          if self._uses_naive_datetime():
+            after_dt = after_dt.replace(tzinfo=None)
           stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
         # Break timestamp ties on id, matching the ordering the stale-session
@@ -905,7 +910,7 @@ class DatabaseSessionService(BaseSessionService):
           # revision marker, so stale-writer detection can use that marker
           # instead of relying on rounded timestamps.
           if session._storage_update_marker != storage_update_marker:
-            raise ValueError(_STALE_SESSION_ERROR_MESSAGE)
+            raise StaleSessionError(_STALE_SESSION_ERROR_MESSAGE)
           # Keep the float timestamp synchronized with the exact storage value
           # so tiny round-trip differences do not trigger false stale checks on
           # the next append.
@@ -918,7 +923,7 @@ class DatabaseSessionService(BaseSessionService):
           if not await self._session_matches_storage_revision(
               sql_session=sql_session, schema=schema, session=session
           ):
-            raise ValueError(_STALE_SESSION_ERROR_MESSAGE)
+            raise StaleSessionError(_STALE_SESSION_ERROR_MESSAGE)
           session.last_update_time = storage_update_time
         session._storage_update_marker = storage_update_marker
 
@@ -931,12 +936,9 @@ class DatabaseSessionService(BaseSessionService):
           storage_session.state.update(state_deltas["session"])
 
         is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
-        if is_sqlite or is_postgresql:
-          update_time = datetime.fromtimestamp(
-              event.timestamp, timezone.utc
-          ).replace(tzinfo=None)
-        else:
-          update_time = datetime.fromtimestamp(event.timestamp)
+        update_time = datetime.fromtimestamp(event.timestamp, timezone.utc)
+        if self._uses_naive_datetime():
+          update_time = update_time.replace(tzinfo=None)
         storage_session.update_time = update_time
         sql_session.add(schema.StorageEvent.from_event(session, event))
 

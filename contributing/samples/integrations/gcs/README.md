@@ -5,13 +5,25 @@
 This sample agent demonstrates the Google Cloud Storage (GCS) first-party tools in ADK,
 distributed via the `google.adk.integrations.gcs` module. These tools include:
 
-1. `gcs_list_objects`
+1. `list_objects`
 
 List object names in a GCS bucket.
 
-1. `gcs_get_object_metadata`
+1. `get_object_metadata`
 
 Get metadata information about a GCS object (blob).
+
+1. `get_object_data`
+
+Get the content/data of a GCS object (blob).
+
+1. `create_object`
+
+Create a new object (blob) in a GCS bucket from provided data or a local file.
+
+1. `delete_objects`
+
+Delete multiple objects (blobs) from a GCS bucket.
 
 ## How to use
 

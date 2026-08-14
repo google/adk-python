@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import enum
 import logging
 import sys
 import time
@@ -26,6 +27,7 @@ from typing import TYPE_CHECKING
 from opentelemetry import trace
 import opentelemetry.context as context_api
 
+from . import _adk_attributes
 from . import _metrics
 from . import tracing
 from ._schema_version import resolve_schema_version
@@ -38,12 +40,16 @@ if TYPE_CHECKING:
   from ..events import event as event_lib
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
+  from ..skills.models import Skill
   from ..tools.base_tool import BaseTool
   from ..workflow._base_node import BaseNode
 
 logger = logging.getLogger("google_adk." + __name__)
 
 _INVOKE_AGENT_TELEMETRY_KEY = context_api.create_key("invoke_agent_telemetry")
+_TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
+    "tool_execution_telemetry"
+)
 
 
 @contextlib.contextmanager
@@ -85,6 +91,37 @@ def record_invocation(
     yield
 
 
+class SkillTelemetrySpanType(enum.Enum):
+  """Skill telemetry type."""
+
+  SKILL_LOAD = enum.auto()
+
+
+@dataclasses.dataclass
+class SkillTelemetry:
+  """Skill related telemetry.
+
+  Added to the enclosing tool execution via :func:`record_skill_telemetry`,
+  which is what turns it into attributes on the skill related spans.
+
+  Attributes:
+    span_type: The type of skill telemetry being recorded.
+    skill_name: The name of the skill.
+    skill: The loaded skill, or None if the load did not produce one (unknown
+      skill name, registry failure). Nothing is recorded in that case; the
+      failure itself is already reported as the span's ``error.type``.
+    cache_hit: Whether the skill came from the per-invocation fetch cache
+      instead of the registry. Only meaningful for registry-sourced skills.
+    additional_tools: The list of additional tools reported by the skill.
+  """
+
+  span_type: SkillTelemetrySpanType
+  skill_name: str | None = None
+  skill: Skill | None = None
+  cache_hit: bool = False
+  additional_tools: list[str] = dataclasses.field(default_factory=list)
+
+
 @dataclasses.dataclass
 class TelemetryContext:
   """Stores all telemetry related state."""
@@ -93,6 +130,7 @@ class TelemetryContext:
   function_response_event: event_lib.Event | None = None
   error_type: str | None = None
   span: tracing.GenerateContentSpan | trace.Span | None = None
+  skill_telemetry: SkillTelemetry | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
   _inference_call_count: int = 0
   _tool_call_count: int = 0
@@ -167,6 +205,109 @@ def _accumulate_invoke_agent_inference_call() -> None:
     span_tel_ctx.increment_inference_calls()
 
 
+def _active_tool_execution_tel_ctx() -> TelemetryContext | None:
+  """Returns the TelemetryContext of the active execute_tool span."""
+  value = context_api.get_value(_TOOL_EXECUTION_TELEMETRY_KEY)
+  return value if isinstance(value, TelemetryContext) else None
+
+
+def record_skill_telemetry(
+    telemetry_type: SkillTelemetrySpanType,
+) -> SkillTelemetry:
+  """Attaches skill telemetry to the enclosing tool execution.
+
+  The attributes are written by :func:`record_tool_execution`, which owns the
+  ``execute_tool`` span, once the tool call completes. Callers therefore never
+  depend on a span being open: outside a tool execution this is a no-op rather
+  than an attribute silently landing on whatever span happens to be current.
+
+  A tool execution references a single skill, so a second call within the same
+  tool execution replaces the first.
+
+  Args:
+    telemetry_type: The type of skill telemetry being recorded.
+
+  Returns:
+    skill_telemetry: Skill telemetry reference to record against the active tool
+    call.
+  """
+  tel_ctx = _active_tool_execution_tel_ctx()
+  if tel_ctx is None:
+    logger.debug(
+        "No tool execution is being recorded, skill telemetry will not be"
+        " attached to current span."
+    )
+    return SkillTelemetry(span_type=telemetry_type)
+  if tel_ctx.skill_telemetry is not None:
+    logger.warning(
+        "Tool execution already has attached skill telemetry, overwriting."
+    )
+  tel_ctx.skill_telemetry = SkillTelemetry(span_type=telemetry_type)
+  return tel_ctx.skill_telemetry
+
+
+def record_skill_cache_hit() -> None:
+  """Records a skill cache hit against the enclosing tool execution."""
+  tel_ctx = _active_tool_execution_tel_ctx()
+  if tel_ctx is None:
+    logger.debug(
+        "Skipping skill cache hit: no tool execution is being recorded."
+    )
+    return
+  if tel_ctx.skill_telemetry is None:
+    logger.warning(
+        "Tool execution has no attached skill telemetry, skipping cache hit."
+    )
+    return
+  tel_ctx.skill_telemetry.cache_hit = True
+
+
+def _trace_skill_load(
+    span: trace.Span,
+    skill_telemetry: SkillTelemetry | None,
+    invocation_context: InvocationContext,
+) -> None:
+  """Stamps the skill load attributes onto the ``execute_tool`` span."""
+  if skill_telemetry is None:
+    return
+
+  telemetry_config = tracing._telemetry_config_from_invocation_context(
+      invocation_context
+  )
+  if not telemetry_config.should_emit_experimental_telemetry:
+    return
+
+  if skill_telemetry.skill_name is not None:
+    span.set_attribute(
+        _adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME, skill_telemetry.skill_name
+    )
+
+  skill = skill_telemetry.skill
+  if skill is None:
+    return
+
+  span.set_attribute(
+      _adk_attributes.ADK_EXPERIMENTAL_SKILL_DESCRIPTION, skill.description
+  )
+
+  if skill._uri is not None:
+    span.set_attribute(
+        _adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI, skill._uri
+    )
+
+    if skill._uri.startswith(("http", "https")):
+      # Only meaningful if skill is from registry.
+      span.set_attribute(
+          _adk_attributes.ADK_EXPERIMENTAL_SKILL_CACHE_HIT,
+          skill_telemetry.cache_hit,
+      )
+
+  span.set_attribute(
+      _adk_attributes.ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS,
+      skill_telemetry.additional_tools,
+  )
+
+
 @contextlib.asynccontextmanager
 async def record_agent_invocation(
     ctx: InvocationContext, agent: BaseAgent
@@ -216,12 +357,19 @@ async def record_tool_execution(
     with tracing.tracer.start_as_current_span(span_name) as s:
       span = s
       tel_ctx = TelemetryContext(otel_context=context_api.get_current())
+      # Published so the running tool can report telemetry back to this span
+      # (see `record_skill_telemetry`) without reaching for the ambient span
+      # itself.
+      token = context_api.attach(
+          context_api.set_value(_TOOL_EXECUTION_TELEMETRY_KEY, tel_ctx)
+      )
       try:
         yield tel_ctx
       except Exception as e:
         caught_error = e
         raise
       finally:
+        context_api.detach(token)
         detected_error_type = tel_ctx.error_type
         response_event = (
             tel_ctx.function_response_event if caught_error is None else None
@@ -234,6 +382,12 @@ async def record_tool_execution(
             invocation_context=invocation_context,
             error_type=tel_ctx.error_type,
         )
+        if (
+            tel_ctx.skill_telemetry is not None
+            and tel_ctx.skill_telemetry.span_type
+            == SkillTelemetrySpanType.SKILL_LOAD
+        ):
+          _trace_skill_load(span, tel_ctx.skill_telemetry, invocation_context)
   finally:
     _accumulate_invoke_agent_tool_call()
     try:

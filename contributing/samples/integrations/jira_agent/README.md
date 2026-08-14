@@ -10,15 +10,15 @@ Connect your agent to enterprise applications using [Integration Connectors](htt
 
 1. To use a connector from Integration Connectors, you need to [provision](https://console.cloud.google.com/) Application Integration in the same region as your connection by clicking on "QUICK SETUP" button.
    Google Cloud Tools
-   ![image_alt](https://github.com/karthidec/adk-python/blob/adk-samples-jira-agent/contributing/samples/jira_agent/image-application-integration.png?raw=true)
+   ![Provisioning Application Integration](image-application-integration.png)
 
 1. Go to [Connection Tool](https://console.cloud.google.com/) template from the template library and click on "USE TEMPLATE" button.
-   ![image_alt](https://github.com/karthidec/adk-python/blob/adk-samples-jira-agent/contributing/samples/jira_agent/image-connection-tool.png?raw=true)
+   ![Connection Tool template](image-connection-tool.png)
 
 1. Fill the Integration Name as **ExecuteConnection** (It is mandatory to use this integration name only) and select the region same as the connection region. Click on "CREATE".
 
 1. Publish the integration by using the "PUBLISH" button on the Application Integration Editor.
-   ![image_alt](https://github.com/karthidec/adk-python/blob/adk-samples-jira-agent/contributing/samples/jira_agent/image-app-intg-editor.png?raw=true)
+   ![Publishing from the Application Integration Editor](image-app-intg-editor.png)
 
 **References:**
 

@@ -39,9 +39,15 @@ gcloud eventarc message-buses create my-bus \
 
 *(Make sure to update the `BUS_NAME` variable in `agent.py` to match your actual bus URI).*
 
+3. Install the GCP extra dependency (required for Eventarc publishing):
+
+```bash
+pip install "google-adk[gcp]"
+```
+
 Set up environment variables in your `.env` file for using Google AI Studio or Google Cloud Vertex AI for the LLM service. For example:
 
-- `GOOGLE_GENAI_USE_VERTEXAI=FALSE`
+- `GOOGLE_GENAI_USE_ENTERPRISE=FALSE`
 - `GOOGLE_API_KEY={your api key}`
 
 ### With Application Default Credentials

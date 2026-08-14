@@ -45,7 +45,7 @@ Command-line interface for running the WeatherAssistant agent:
 
 ```bash
 # Ask for weather
-python contributing/samples/oauth2_client_credentials/main.py "What's the weather in Tokyo?"
+python contributing/samples/integrations/oauth2_client_credentials/main.py "What's the weather in Tokyo?"
 ```
 
 **Requirements:**
@@ -58,12 +58,12 @@ python contributing/samples/oauth2_client_credentials/main.py "What's the weathe
 Mock OAuth2 server for testing the client credentials flow:
 
 ```bash
-python contributing/samples/oauth2_client_credentials/oauth2_test_server.py
+python contributing/samples/integrations/oauth2_client_credentials/oauth2_test_server.py
 ```
 
 **Features:**
 
-- OIDC discovery endpoint (`/.well-known/openid_configuration`)
+- OIDC discovery endpoint (`/.well-known/openid-configuration`)
 - Client credentials token exchange (`/token`)
 - Protected weather API (`/api/weather`)
 - Supports both `authorization_code` and `client_credentials` grant types
@@ -71,7 +71,7 @@ python contributing/samples/oauth2_client_credentials/oauth2_test_server.py
 
 **Endpoints:**
 
-- `GET /.well-known/openid_configuration` - OIDC discovery
+- `GET /.well-known/openid-configuration` - OIDC discovery
 - `POST /token` - Token exchange
 - `GET /api/weather` - Weather API (requires Bearer token)
 - `GET /` - Server info
@@ -80,7 +80,7 @@ python contributing/samples/oauth2_client_credentials/oauth2_test_server.py
 
 1. **Start the OAuth2 server:**
    ```bash
-   python contributing/samples/oauth2_client_credentials/oauth2_test_server.py &
+   python contributing/samples/integrations/oauth2_client_credentials/oauth2_test_server.py &
    ```
 1. Create a `.env` file in the project root with your API credentials:
 
@@ -100,17 +100,17 @@ GOOGLE_CLOUD_LOCATION=us-central1
 
    ```bash
    # Ask for weather
-   python contributing/samples/oauth2_client_credentials/main.py "What's the weather in Tokyo?"
+   python contributing/samples/integrations/oauth2_client_credentials/main.py "What's the weather in Tokyo?"
    ```
 
 1. **Interactive demo (use ADK commands):**
 
    ```bash
    # Interactive CLI
-   adk run contributing/samples/oauth2_client_credentials
+   adk run contributing/samples/integrations/oauth2_client_credentials
 
    # Interactive web UI
-   adk web contributing/samples
+   adk web contributing/samples/integrations
    ```
 
 ## OAuth2 Configuration
@@ -120,7 +120,7 @@ The agent uses these OAuth2 settings (configured in `agent.py`):
 ```python
 flows = OAuthFlows(
     clientCredentials=OAuthFlowClientCredentials(
-        tokenUrl="http://localhost:8000/token",
+        tokenUrl="http://localhost:8080/token",
         scopes={
             "read": "Read access to weather data",
             "write": "Write access for data updates",

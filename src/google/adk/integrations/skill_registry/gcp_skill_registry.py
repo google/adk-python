@@ -205,7 +205,11 @@ class GCPSkillRegistry(SkillRegistry):
       zip_bytes = media_response.content
 
     # pylint: disable=protected-access
-    return await asyncio.to_thread(_utils._load_skill_from_zip_bytes, zip_bytes)
+    skill = await asyncio.to_thread(
+        _utils._load_skill_from_zip_bytes, zip_bytes
+    )
+    skill._uri = revision_url
+    return skill
 
   async def search_skills(self, *, query: str) -> list[models.Frontmatter]:
     """Searches for skills in the registry.

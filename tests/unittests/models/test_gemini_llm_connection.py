@@ -191,6 +191,33 @@ async def test_send_content_function_response(
 
 
 @pytest.mark.asyncio
+async def test_send_content_mixed_content_sends_via_client_content(
+    gemini_connection, mock_gemini_session
+):
+  """Test send_content with mixed text and function response sends via send."""
+  function_response = types.FunctionResponse(
+      name='test_function', response={'result': 'success'}
+  )
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part.from_text(text='Hello'),
+          types.Part(function_response=function_response),
+      ],
+  )
+
+  await gemini_connection.send_content(content)
+
+  mock_gemini_session.send.assert_called_once_with(
+      input=types.LiveClientContent(
+          turns=[content],
+          turn_complete=True,
+      )
+  )
+  mock_gemini_session.send_tool_response.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_close(gemini_connection, mock_gemini_session):
   """Test close method."""
   await gemini_connection.close()
@@ -1587,6 +1614,107 @@ async def test_receive_aggregates_thoughts_separately(
 
   # Check turn complete
   assert responses[5].turn_complete is True
+
+
+@pytest.mark.asyncio
+async def test_receive_multiplexed_thought_and_text(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive with multiplexed thought and text in a single chunk."""
+  part1 = types.Part.from_text(text='Let me think.')
+  part1.thought = True
+  part2 = types.Part.from_text(text=' Hello.')
+  part2.thought = False
+  mock_content = types.Content(
+      role='model',
+      parts=[part1, part2],
+  )
+  mock_server_content = mock.Mock()
+  mock_server_content.model_turn = mock_content
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.turn_complete = True
+  mock_server_content.grounding_metadata = None
+  mock_server_content.turn_complete_reason = None
+
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+  mock_message.voice_activity = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 3
+
+  assert responses[0].content.parts[0].text == 'Let me think.'
+  assert responses[0].content.parts[0].thought is True
+  assert responses[0].partial is False
+
+  assert responses[1].content.parts[0].text == ' Hello.'
+  assert not getattr(responses[1].content.parts[0], 'thought', False)
+  assert responses[1].partial is False
+
+  assert responses[2].turn_complete is True
+
+
+@pytest.mark.asyncio
+async def test_receive_multiplexed_thought_and_text_partial(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive with multiplexed thought and text in a single chunk with turn_complete=False."""
+  part1 = types.Part.from_text(text='Let me think.')
+  part1.thought = True
+  part2 = types.Part.from_text(text=' Hello.')
+  part2.thought = False
+  mock_content = types.Content(
+      role='model',
+      parts=[part1, part2],
+  )
+  mock_server_content = mock.Mock()
+  mock_server_content.model_turn = mock_content
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.turn_complete = False
+  mock_server_content.grounding_metadata = None
+  mock_server_content.turn_complete_reason = None
+
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+  mock_message.voice_activity = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 2
+
+  assert responses[0].content.parts[0].text == 'Let me think.'
+  assert responses[0].content.parts[0].thought is True
+  assert responses[0].partial is False
+
+  assert len(responses[1].content.parts) == 1
+  assert responses[1].content.parts[0].text == ' Hello.'
+  assert not getattr(responses[1].content.parts[0], 'thought', False)
+  assert responses[1].partial is True
 
 
 @pytest.mark.asyncio

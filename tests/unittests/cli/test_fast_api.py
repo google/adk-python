@@ -58,6 +58,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("google_adk." + __name__)
 
+# An app told it binds 127.0.0.1 rejects requests addressed to any other host,
+# so its client cannot use TestClient's default "http://testserver".
+_LOOPBACK_BASE_URL = "http://127.0.0.1:8000"
+
 
 # Here we create a dummy agent module that get_fast_api_app expects
 class DummyAgent(BaseAgent):
@@ -813,9 +817,10 @@ def builder_test_client(
         allow_origins=None,
         a2a=False,
         host="127.0.0.1",
+        bind_host="127.0.0.1",
         port=8000,
     )
-    return TestClient(app)
+    return TestClient(app, base_url=_LOOPBACK_BASE_URL)
 
 
 @pytest.fixture
@@ -1043,6 +1048,63 @@ def test_app_with_gemini_enterprise(
     client.mock_vertexai_init = mock_vertexai_init
     client.mock_adk_app_cls = mock_adk_app_cls
     client.mock_adk_app_instance = mock_adk_app_instance
+    yield client
+
+
+@pytest.fixture
+def test_app_with_gemini_enterprise_sync_stream(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Like test_app_with_gemini_enterprise but stream_query is a sync generator.
+
+  This exercises the inspect.isgenerator() branch in stream_reasoning_engine,
+  where the sync iterator is adapted to an async iterator via a threadpool.
+  """
+  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  mock_agent_loader.list_agents = MagicMock(
+      return_value=["test_app", "gemini_app"]
+  )
+
+  mock_adk_app_instance = MagicMock()
+  mock_adk_app_instance._tmpl_attrs = {}
+
+  def stream_query_impl(**kwargs):
+    yield {"chunk": 1, "kwargs": kwargs}
+    yield {"chunk": 2, "kwargs": kwargs}
+
+  mock_adk_app_instance.stream_query = stream_query_impl
+
+  with (
+      patch("google.auth.default", return_value=(MagicMock(), "test-project")),
+      patch("vertexai.init", new_callable=MagicMock),
+      patch(
+          "vertexai.agent_engines.AdkApp", return_value=mock_adk_app_instance
+      ),
+      patch("google.adk.agents.Agent", new_callable=MagicMock),
+      patch(
+          "google.adk.telemetry._agent_engine.TopSpanProcessor",
+          new_callable=MagicMock,
+      ),
+      patch(
+          "google.adk.telemetry._agent_engine.get_propagated_context",
+          new_callable=MagicMock,
+      ),
+  ):
+    client = _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        gemini_enterprise_app_name="gemini_app",
+    )
     yield client
 
 
@@ -2566,7 +2628,7 @@ def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
 def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   response = builder_test_client.post(
       "/dev/apps/app/builder/save?tmp=true",
-      headers={"origin": "http://testserver"},
+      headers={"origin": _LOOPBACK_BASE_URL},
       files=[(
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
@@ -2578,14 +2640,34 @@ def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
 
 
-def test_builder_get_allows_cross_origin_get(builder_test_client):
+def test_builder_get_rejects_cross_origin_get(builder_test_client):
+  """Reads expose agent config and session data, so they are guarded too."""
   response = builder_test_client.get(
       "/dev/apps/missing/builder?tmp=true",
       headers={"origin": "https://evil.com"},
   )
 
+  assert response.status_code == 403
+  assert response.text == "Forbidden: origin not allowed"
+
+
+def test_builder_get_allows_same_origin_get(builder_test_client):
+  """The dev UI reads its own agent config from the same origin."""
+  response = builder_test_client.get(
+      "/dev/apps/missing/builder?tmp=true",
+      headers={"origin": _LOOPBACK_BASE_URL},
+  )
+
   assert response.status_code == 200
-  assert response.text == ""
+  assert not response.text
+
+
+def test_builder_get_allows_request_without_origin(builder_test_client):
+  """Browsers omit Origin on same-origin reads, and CLI clients never send it."""
+  response = builder_test_client.get("/dev/apps/missing/builder?tmp=true")
+
+  assert response.status_code == 200
+  assert not response.text
 
 
 def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
@@ -2743,6 +2825,127 @@ tools:
   )
   assert response.status_code == 400
   assert "args" in response.json()["detail"]
+
+
+def _save_builder_yaml(client, content, *, app_name="app"):
+  """POST YAML to the builder save endpoint for the given app."""
+  return client.post(
+      f"/dev/apps/{app_name}/builder/save?tmp=true",
+      files=[(
+          "files",
+          (f"{app_name}/root_agent.yaml", content, "application/x-yaml"),
+      )],
+  )
+
+
+def test_builder_save_rejects_external_tool_reference(
+    builder_test_client, tmp_path
+):
+  """A tool naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: os.system\n",
+  )
+  assert response.status_code == 400
+  assert "os.system" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_allows_project_tool_reference(builder_test_client):
+  """A tool under the app being edited is allowed."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: app.tools.search\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_allows_built_in_tool_short_name(builder_test_client):
+  """An undotted tool name still resolves against ADK's own built-ins."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: google_search\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_allows_built_in_agent_class(builder_test_client):
+  """A qualified ADK agent class is allowed."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"agent_class: google.adk.agents.LlmAgent\nname: my_agent\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_rejects_adk_submodule_reference(builder_test_client):
+  """An ADK path reaching past the exported built-ins is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n"
+      b"  - name: google.adk.tools.bash_tool.BashTool\n",
+  )
+  assert response.status_code == 400
+  assert "BashTool" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_callback_reference(builder_test_client):
+  """A callback naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\nbefore_agent_callbacks:\n  - name: os.system\n",
+  )
+  assert response.status_code == 400
+  assert "before_agent_callbacks" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_sub_agent_code(builder_test_client):
+  """A sub-agent naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\nsub_agents:\n  - code: other_package.agent\n",
+  )
+  assert response.status_code == 400
+  assert "other_package.agent" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_schema_reference(builder_test_client):
+  """A schema given as a bare string is validated like any other reference."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ninput_schema: os.path\n",
+  )
+  assert response.status_code == 400
+  assert "input_schema" in response.json()["detail"]
+
+
+def test_builder_save_rejects_reference_when_app_name_shadows_module(
+    builder_test_client,
+):
+  """An app named after a real module cannot vouch for its own references."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: os.system\n",
+      app_name="os",
+  )
+  assert response.status_code == 400
+  assert "shadows" in response.json()["detail"]
+
+
+def test_builder_save_covers_every_code_config_field(builder_test_client):
+  """Every config field holding a CodeConfig is checked on upload."""
+  code_config_fields = set()
+  for agent in (BaseAgent, LlmAgent):
+    for name, field in agent.config_type.model_fields.items():
+      if "CodeConfig" in str(field.annotation):
+        code_config_fields.add(name)
+  assert code_config_fields, "expected agent configs to declare CodeConfig"
+
+  for field_name in sorted(code_config_fields):
+    content = f"name: my_agent\n{field_name}:\n  name: os.system\n"
+    response = _save_builder_yaml(builder_test_client, content.encode())
+    assert response.status_code == 400, field_name
+    assert field_name in response.json()["detail"]
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
@@ -3579,6 +3782,27 @@ def test_gemini_stream_reasoning_engine_missing_class_method(
       json={"input": {"arg1": 1}},
   )
   assert response.status_code == 400
+
+
+def test_gemini_stream_reasoning_engine_sync_generator(
+    test_app_with_gemini_enterprise_sync_stream,
+):
+  """Regression test: a synchronous streaming class_method must not raise.
+
+  A sync generator is adapted to an async iterator via run_in_threadpool. The
+  adapter must not rely on catching StopIteration across the await boundary,
+  since Python (PEP 479) converts an escaping StopIteration into
+  RuntimeError("coroutine raised StopIteration") after the final chunk.
+  """
+  response = test_app_with_gemini_enterprise_sync_stream.post(
+      "/api/stream_reasoning_engine",
+      json={"class_method": "stream_query", "input": {"arg1": 1}},
+  )
+  assert response.status_code == 200
+  lines = response.text.strip().split("\n")
+  assert len(lines) == 2
+  assert json.loads(lines[0]) == {"chunk": 1, "kwargs": {"arg1": 1}}
+  assert json.loads(lines[1]) == {"chunk": 2, "kwargs": {"arg1": 1}}
 
 
 def test_run_eval_request_live_fields_default():

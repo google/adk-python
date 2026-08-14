@@ -66,17 +66,21 @@ class DataAgentToolset(BaseToolset):
   async def get_tools(
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> List[BaseTool]:
+    funcs = [
+        data_agent_tool.list_accessible_data_agents,
+        data_agent_tool.get_data_agent_info,
+        data_agent_tool.ask_data_agent,
+    ]
+    if self._tool_settings.enable_data_agent_modification:
+      funcs.append(data_agent_tool.create_data_agent)
+
     all_tools = [
         GoogleTool(
             func=func,
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,
         )
-        for func in [
-            data_agent_tool.list_accessible_data_agents,
-            data_agent_tool.get_data_agent_info,
-            data_agent_tool.ask_data_agent,
-        ]
+        for func in funcs
     ]
 
     return [

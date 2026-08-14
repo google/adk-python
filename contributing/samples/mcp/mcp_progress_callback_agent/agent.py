@@ -36,7 +36,7 @@ do not send progress updates. This sample uses a mock server that demonstrates
 progress reporting.
 
 Usage:
-  adk run contributing/samples/mcp_progress_callback_agent
+  adk run contributing/samples/mcp/mcp_progress_callback_agent
 
 Then try:
   "Run the long running task with 5 steps"
