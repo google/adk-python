@@ -818,17 +818,45 @@ class AgentEvaluator:
           for m in eval_metric_results_with_invocations
           if m.eval_metric_result.score is not None
       ]
+      overall_score = statistics.mean(scores) if scores else None
 
-      if scores:
-        overall_score = statistics.mean(scores)
-        overall_eval_status = (
-            EvalStatus.PASSED
-            if overall_score >= threshold
-            else EvalStatus.FAILED
+      # Aggregate PASSED/FAILED/NOT_EVALUATED from each invocation's own
+      # `eval_status` -- set by the registered Evaluator itself (see
+      # LocalEvalService._evaluate_metric, which copies
+      # `PerInvocationResult.eval_status` verbatim onto each
+      # `EvalMetricResult`) -- rather than recomputing a fresh verdict here
+      # via `overall_score >= threshold`. That recomputation hardcoded a
+      # higher-is-better convention for every metric uniformly, which is
+      # backwards for any metric an Evaluator defines as lower-is-better
+      # (e.g. a cost or latency metric, PASSED when `score <= threshold`):
+      # such a metric's own correct eval_status was silently discarded and
+      # replaced with an inverted one, misclassifying a genuinely-passing
+      # run as failed (and vice versa) for every real threshold value.
+      # `Evaluator`/`EvalStatus` have no separate "polarity" concept
+      # anywhere else in this module either -- eval_status is already the
+      # one place a metric's own pass/fail semantics are recorded, so this
+      # reads that instead of re-deriving a possibly-wrong one. Mirrors
+      # `LocalEvalService._generate_final_eval_status`'s existing
+      # aggregation convention (FAILED takes precedence over everything;
+      # otherwise PASSED if any result passed; else NOT_EVALUATED) --
+      # applied here across an eval metric's own invocations instead of
+      # across an eval case's metrics, but the same three-way logic.
+      overall_eval_status = EvalStatus.NOT_EVALUATED
+      for (
+          eval_metric_result_with_invocation
+      ) in eval_metric_results_with_invocations:
+        invocation_status = (
+            eval_metric_result_with_invocation.eval_metric_result.eval_status
         )
-      else:
-        overall_score = None
-        overall_eval_status = EvalStatus.NOT_EVALUATED
+        if invocation_status == EvalStatus.FAILED:
+          overall_eval_status = EvalStatus.FAILED
+          break
+        elif invocation_status == EvalStatus.PASSED:
+          overall_eval_status = EvalStatus.PASSED
+        elif invocation_status == EvalStatus.NOT_EVALUATED:
+          continue
+        else:
+          raise ValueError(f"Unknown eval status: {invocation_status}.")
 
       # Gather all the failures.
       if overall_eval_status != EvalStatus.PASSED:
