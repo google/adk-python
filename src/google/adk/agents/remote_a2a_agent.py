@@ -1028,6 +1028,7 @@ class RemoteA2aAgent(BaseAgent):
       # status/artifact updates are aggregated into a running task (matching the
       # 0.3.x client behavior).
       normalize_stream_item = _compat.make_stream_normalizer()
+      last_task = None
       async with Aclosing(
           _compat.send_message(
               a2a_client,
@@ -1043,6 +1044,7 @@ class RemoteA2aAgent(BaseAgent):
           metadata = None
           if isinstance(a2a_response, tuple):
             task = a2a_response[0]
+            last_task = task
             if task:
               metadata = task.metadata
           else:
@@ -1080,6 +1082,31 @@ class RemoteA2aAgent(BaseAgent):
             )
 
           yield event
+
+      if last_task and last_task.status:
+        task_state = last_task.status.state
+        if task_state not in (
+            _compat.TS_COMPLETED,
+            _compat.TS_FAILED,
+            _compat.TS_CANCELED,
+        ):
+          error_message = (
+              "A2A response stream ended before the task reached a terminal "
+              f"state (last state: {task_state})"
+          )
+          logger.error(error_message)
+          yield Event(
+              author=self.name,
+              error_message=error_message,
+              invocation_id=ctx.invocation_id,
+              branch=ctx.branch,
+              custom_metadata={
+                  A2A_METADATA_PREFIX + "request": _compat.a2a_to_dict(
+                      a2a_request
+                  ),
+                  A2A_METADATA_PREFIX + "error": error_message,
+              },
+          )
 
     except _compat.A2A_HTTP_ERRORS as e:
       error_message = f"A2A request failed: {e}"

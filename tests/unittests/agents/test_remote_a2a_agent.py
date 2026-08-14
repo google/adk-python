@@ -3209,6 +3209,64 @@ class TestRemoteA2aAgentExecution:
           mock_send_message.aclose.assert_awaited_once()
 
   @pytest.mark.asyncio
+  async def test_run_async_impl_reports_non_terminal_stream_end(self):
+    """A cleanly closed stream must not hide a still-running remote task."""
+    with patch.object(self.agent, "_ensure_resolved") as mock_ensure_resolved:
+      with patch.object(
+          self.agent, "_create_a2a_request_for_user_function_response"
+      ) as mock_create_func:
+        mock_create_func.return_value = None
+
+        with patch.object(
+            self.agent, "_construct_message_parts_from_session"
+        ) as mock_construct:
+          mock_a2a_part = _compat.make_text_part("test")
+          mock_construct.return_value = ([mock_a2a_part], "context-123")
+
+          mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
+          mock_send_message = AsyncMock()
+          update = _compat.make_task_status_update_event(
+              "task-123",
+              "context-123",
+              _compat.make_task_status(_compat.TS_WORKING),
+              final=False,
+          )
+          if _compat.IS_A2A_V1:
+            from a2a.types import StreamResponse
+
+            stream_response = StreamResponse()
+            stream_response.status_update.CopyFrom(update)
+            raw_update = stream_response
+          else:
+            raw_update = update
+          mock_send_message.__aiter__.return_value = [raw_update]
+          mock_a2a_client.send_message.return_value = mock_send_message
+          mock_ensure_resolved.return_value = mock_a2a_client
+
+          with patch.object(self.agent, "_handle_a2a_response", return_value=None):
+            with patch(
+                "google.adk.agents.remote_a2a_agent.build_a2a_request_log"
+            ):
+              with patch(
+                  "google.adk.agents.remote_a2a_agent.build_a2a_response_log"
+              ):
+                with patch(
+                    "google.adk.a2a._compat.a2a_to_dict",
+                    return_value={"k": "v"},
+                ):
+                  events = [
+                      event
+                      async for event in self.agent._run_async_impl(
+                          self.mock_context
+                      )
+                  ]
+
+          assert len(events) == 1
+          assert "ended before the task reached a terminal state" in (
+              events[0].error_message
+          )
+
+  @pytest.mark.asyncio
   async def test_run_async_impl_a2a_client_error(self):
     """Test _run_async_impl when A2A send_message fails."""
     with patch.object(self.agent, "_ensure_resolved"):
