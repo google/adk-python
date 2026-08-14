@@ -49,6 +49,7 @@ from google.adk.models.lite_llm import _is_anthropic_provider
 from google.adk.models.lite_llm import _is_anthropic_route
 from google.adk.models.lite_llm import _is_litellm_gemini_model
 from google.adk.models.lite_llm import _is_litellm_vertex_model
+from google.adk.models.lite_llm import _is_proxied_model
 from google.adk.models.lite_llm import _looks_like_openai_file_id
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
@@ -5412,7 +5413,10 @@ async def test_get_content_pdf_proxied_azure_uses_file_id(mocker):
       types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
   ]
   content = await _get_content(
-      parts, provider=_get_provider_from_model(model), model=model
+      parts,
+      provider=_get_provider_from_model(model),
+      model=model,
+      upload_params={"api_base": "http://proxy:4000", "api_key": "proxy-key"},
   )
 
   assert content[0]["type"] == "file"
@@ -5428,6 +5432,8 @@ async def test_get_content_pdf_proxied_azure_uses_file_id(mocker):
       file=b"test_pdf_data",
       purpose="assistants",
       custom_llm_provider="azure",
+      api_base="http://proxy:4000",
+      api_key="proxy-key",
   )
 
 
@@ -5471,7 +5477,83 @@ async def test_get_content_pdf_proxied_azure_uses_file_id(mocker):
 )
 def test_get_upload_params(model, completion_args, expected):
   """Only proxied models forward endpoint overrides to the file upload."""
-  assert _get_upload_params(model, completion_args) == expected
+  # These cases pin the completion-argument path, so the proxy environment
+  # fallbacks must not bleed in from the ambient environment.
+  with patch.dict(
+      os.environ,
+      {"LITELLM_PROXY_API_BASE": "", "LITELLM_PROXY_API_KEY": ""},
+      clear=False,
+  ):
+    os.environ.pop("LITELLM_PROXY_API_BASE")
+    os.environ.pop("LITELLM_PROXY_API_KEY")
+    assert _get_upload_params(model, completion_args) == expected
+
+
+def test_get_upload_params_falls_back_to_proxy_env():
+  """A proxy configured only through the environment still routes the upload.
+
+  LiteLLM resolves the proxy endpoint from `LITELLM_PROXY_API_BASE` and
+  `LITELLM_PROXY_API_KEY` when the completion call carries none, so the upload
+  has to follow the same fallback or it lands on the provider's own endpoint.
+  """
+  with patch.dict(
+      os.environ,
+      {
+          "LITELLM_PROXY_API_BASE": "http://proxy:4000",
+          "LITELLM_PROXY_API_KEY": "proxy-key",
+      },
+  ):
+    assert _get_upload_params("litellm_proxy/openai/gpt-4o", {}) == {
+        "api_base": "http://proxy:4000",
+        "api_key": "proxy-key",
+    }
+    # Explicit completion arguments win over the environment.
+    assert _get_upload_params(
+        "litellm_proxy/openai/gpt-4o", {"api_base": "http://explicit:9000"}
+    ) == {"api_base": "http://explicit:9000", "api_key": "proxy-key"}
+    # Direct models are unaffected by the proxy environment.
+    assert _get_upload_params("openai/gpt-4o", {}) == {}
+
+
+def test_is_proxied_model_honors_use_litellm_proxy_flag():
+  """`USE_LITELLM_PROXY` routes unprefixed models through the proxy too."""
+  with patch.dict(os.environ, {"USE_LITELLM_PROXY": "true"}):
+    assert _is_proxied_model("openai/gpt-4o") is True
+  with patch.dict(os.environ, {"USE_LITELLM_PROXY": "false"}):
+    assert _is_proxied_model("openai/gpt-4o") is False
+    # The explicit prefix still wins regardless of the flag.
+    assert _is_proxied_model("litellm_proxy/openai/gpt-4o") is True
+
+
+@pytest.mark.asyncio
+async def test_get_content_proxied_upload_without_endpoint_raises(mocker):
+  """An unroutable proxied upload must fail instead of leaving the proxy.
+
+  `custom_llm_provider="openai"` resolves to https://api.openai.com/v1 by
+  default, so uploading without a known proxy endpoint would send proxied file
+  content to the public OpenAI API whenever `OPENAI_API_KEY` happens to be set.
+  """
+  mock_acreate_file = AsyncMock()
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "litellm_proxy/openai/gpt-4o"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+
+  with patch.dict(os.environ, {}, clear=False):
+    os.environ.pop("LITELLM_PROXY_API_BASE", None)
+    os.environ.pop("LITELLM_PROXY_API_KEY", None)
+    with pytest.raises(ValueError, match="LiteLLM Proxy endpoint is unknown"):
+      await _get_content(
+          parts,
+          provider=_get_provider_from_model(model),
+          model=model,
+          upload_params=_get_upload_params(model, {}),
+      )
+
+  # Nothing may be sent when the destination cannot be determined.
+  mock_acreate_file.assert_not_called()
 
 
 @pytest.mark.asyncio

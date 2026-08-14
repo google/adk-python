@@ -341,6 +341,14 @@ def _strip_proxy_prefix(model: str) -> str:
 
 _UPLOAD_ENDPOINT_KEYS = ("api_base", "api_key", "api_version")
 
+# LiteLLM reads these when the completion call carries no explicit endpoint,
+# so a proxy configured only through the environment still has to be honored
+# by the upload.
+_PROXY_ENV_FALLBACKS = {
+    "api_base": "LITELLM_PROXY_API_BASE",
+    "api_key": "LITELLM_PROXY_API_KEY",
+}
+
 
 def _get_upload_params(
     model: str, completion_args: Dict[str, Any]
@@ -348,10 +356,17 @@ def _get_upload_params(
   """Endpoint overrides to forward to `litellm.acreate_file`.
 
   File uploads resolve their endpoint independently of the completion call, so
-  without these they fall back to the underlying provider's environment
-  variables. For a proxied model that would send the upload straight to the
-  provider while the completion goes to the proxy, which fails whenever the
-  caller only holds proxy credentials.
+  without these they fall back to the underlying provider's own credentials.
+  For a proxied model that splits the request in two: the completion goes to
+  the proxy while the upload goes straight to the provider. That fails when the
+  caller holds only proxy credentials, and when the provider resolves to
+  ``openai`` it is worse than a failure -- `get_openai_credentials` defaults to
+  ``https://api.openai.com/v1``, so a stray ``OPENAI_API_KEY`` in the
+  environment sends proxied file content to the public OpenAI API instead.
+
+  Explicit completion arguments win, falling back to the proxy's own
+  environment variables so that proxies configured purely through the
+  environment are still routed correctly.
 
   Only proxied models forward anything. A direct `azure/...` model keeps the
   existing environment-variable behavior, since its `api_base` already points
@@ -366,16 +381,36 @@ def _get_upload_params(
   """
   if not _is_proxied_model(model):
     return {}
-  return {
+  upload_params = {
       key: completion_args[key]
       for key in _UPLOAD_ENDPOINT_KEYS
       if completion_args.get(key)
   }
+  # LiteLLM resolves the proxy endpoint from these when the completion call
+  # does not carry one, so the upload has to follow the same fallback.
+  for key, env_var in _PROXY_ENV_FALLBACKS.items():
+    if not upload_params.get(key):
+      value = os.environ.get(env_var)
+      if value:
+        upload_params[key] = value
+  return upload_params
 
 
 def _is_proxied_model(model: str) -> bool:
-  """Returns True if the model is served through a LiteLLM Proxy."""
-  return bool(model) and model.lower().startswith(_PROXY_PROVIDER + "/")
+  """Returns True if the model is served through a LiteLLM Proxy.
+
+  Covers both the explicit ``litellm_proxy/`` prefix and LiteLLM's
+  ``USE_LITELLM_PROXY`` flag, which routes unprefixed models through the proxy
+  as well.
+  """
+  if not model:
+    return False
+  if model.lower().startswith(_PROXY_PROVIDER + "/"):
+    return True
+  return os.environ.get("USE_LITELLM_PROXY", "").strip().lower() in (
+      "true",
+      "1",
+  )
 
 
 def _get_provider_from_model(model: str) -> str:
@@ -1577,6 +1612,20 @@ async def _get_content(
           # Keep the provider that actually serves the request so the payload
           # keeps its provider-specific shape, and point the upload at the
           # proxy via `upload_params` instead of swapping the provider out.
+          if _is_proxied_model(model) and not (upload_params or {}).get(
+              "api_base"
+          ):
+            # Without an endpoint the upload would fall back to the provider's
+            # own credentials. For `openai` that default is the public
+            # https://api.openai.com/v1, so proxied file content would leave
+            # the proxy entirely. Fail instead of silently sending it there.
+            raise ValueError(
+                f"Cannot upload file for proxied model {model!r}: the LiteLLM"
+                " Proxy endpoint is unknown. Pass `api_base` (and `api_key`) to"
+                " LiteLlm(...), or set LITELLM_PROXY_API_BASE and"
+                " LITELLM_PROXY_API_KEY, so the upload reaches the proxy"
+                " instead of the provider's default endpoint."
+            )
           file_response = await litellm.acreate_file(
               file=part.inline_data.data,
               purpose="assistants",
