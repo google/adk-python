@@ -16,7 +16,6 @@ from unittest import mock
 
 from google.adk.cli.utils import agent_loader
 from google.adk.cli.utils.agent_change_handler import AgentChangeEventHandler
-from google.adk.cli.utils.shared_value import SharedValue
 import pytest
 from watchdog.events import FileModifiedEvent
 
@@ -35,19 +34,18 @@ class TestAgentChangeEventHandler:
   def handler(self, mock_agent_loader):
     """Create an AgentChangeEventHandler with mocked dependencies."""
     runners_to_clean = set()
-    current_app_name_ref = SharedValue(value="test_agent")
     return AgentChangeEventHandler(
         agent_loader=mock_agent_loader,
         runners_to_clean=runners_to_clean,
-        current_app_name_ref=current_app_name_ref,
+        agents_dir="/path/to",
     )
 
   @pytest.mark.parametrize(
       "file_path",
       [
-          pytest.param("/path/to/agent.py", id="python_file"),
-          pytest.param("/path/to/config.yaml", id="yaml_file"),
-          pytest.param("/path/to/config.yml", id="yml_file"),
+          pytest.param("/path/to/test_agent/agent.py", id="python_file"),
+          pytest.param("/path/to/test_agent/config.yaml", id="yaml_file"),
+          pytest.param("/path/to/test_agent/config.yml", id="yml_file"),
       ],
   )
   def test_on_modified_triggers_reload_for_supported_extensions(

@@ -16,11 +16,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
 
 from .agent_loader import AgentLoader
-from .shared_value import SharedValue
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -31,15 +31,18 @@ class AgentChangeEventHandler(FileSystemEventHandler):
       self,
       agent_loader: AgentLoader,
       runners_to_clean: set[str],
-      current_app_name_ref: SharedValue[str],
+      agents_dir: str,
   ):
     self.agent_loader = agent_loader
     self.runners_to_clean = runners_to_clean
-    self.current_app_name_ref = current_app_name_ref
+    self.agents_dir = Path(agents_dir).resolve()
 
   def on_modified(self, event):
     if not event.src_path.endswith((".py", ".yaml", ".yml")):
       return
     logger.info("Change detected in agents directory: %s", event.src_path)
-    self.agent_loader.remove_agent_from_cache(self.current_app_name_ref.value)
-    self.runners_to_clean.add(self.current_app_name_ref.value)
+    agent_name = (
+        Path(event.src_path).resolve().relative_to(self.agents_dir).parts[0]
+    )
+    self.agent_loader.remove_agent_from_cache(agent_name)
+    self.runners_to_clean.add(agent_name)

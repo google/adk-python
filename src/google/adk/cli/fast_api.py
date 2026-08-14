@@ -337,7 +337,7 @@ def get_fast_api_app(
       agent_change_handler = AgentChangeEventHandler(
           agent_loader=agent_loader,
           runners_to_clean=adk_web_server.runners_to_clean,
-          current_app_name_ref=adk_web_server.current_app_name_ref,
+          agents_dir=agents_dir,
       )
       observer.schedule(agent_change_handler, agents_dir, recursive=True)
       observer.start()
