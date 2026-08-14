@@ -45,6 +45,8 @@ class EvalStatus(Enum):
 class PrebuiltMetrics(Enum):
   TOOL_TRAJECTORY_AVG_SCORE = "tool_trajectory_avg_score"
 
+  TOOL_PARAMETER_MATCH = "tool_parameter_match"
+
   RESPONSE_EVALUATION_SCORE = "response_evaluation_score"
 
   RESPONSE_MATCH_SCORE = "response_match_score"
