@@ -1881,6 +1881,104 @@ class TestRemoteA2aAgentMessageHandling:
     assert result.error_code == _compat.A2A_TASK_FAILED_ERROR_CODE
     assert result.error_message == "Remote agent task failed"
     assert result.content is None
+    mock_update.status.state = _compat.TS_COMPLETED
+    mock_update.status.message = Mock(spec=A2AMessage)
+
+    # Create event with mixed thought/non-thought parts
+    thought_part = genai_types.Part(text="thinking...", thought=True)
+    answer_part = genai_types.Part(text="the answer")
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(
+            role="model", parts=[thought_part, answer_part]
+        ),
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, mock_update), self.mock_context
+      )
+
+      # Only non-thought parts should remain
+      assert len(result.content.parts) == 1
+      assert result.content.parts[0].text == "the answer"
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_preserves_all_thought_parts_for_working(
+      self,
+  ):
+    """Test that working state events keep all parts as thoughts.
+
+    Intermediate events (working/submitted) should retain all parts
+    marked as thought for streaming progress display.
+    """
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = _compat.TS_WORKING
+
+    part = genai_types.Part(text="still thinking", thought=True)
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[part]),
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+      # All parts should be marked as thought and preserved
+      assert len(result.content.parts) == 1
+      assert result.content.parts[0].thought is True
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_filters_thought_from_a2a_message(self):
+    """Test thought filtering for regular A2AMessage responses.
+
+    Fixes #4676.
+    """
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_a2a_message.context_id = "context-123"
+
+    thought_part = genai_types.Part(text="reasoning", thought=True)
+    answer_part = genai_types.Part(text="response")
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(
+            role="model", parts=[thought_part, answer_part]
+        ),
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          mock_a2a_message, self.mock_context
+      )
+
+      # Only non-thought parts should remain
+      assert len(result.content.parts) == 1
+      assert result.content.parts[0].text == "response"
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_artifact_update(self):
