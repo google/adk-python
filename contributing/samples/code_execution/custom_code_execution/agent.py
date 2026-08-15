@@ -114,7 +114,7 @@ def base_system_instruction():
       print(df.shape)
       ```
       The output will be presented to you as:
-      ```tool_outputs
+      ```tool_output
       (49, 7)
 
       ```
@@ -124,11 +124,11 @@ def base_system_instruction():
       print(f'{{x=}}')
       ```
       The output will be presented to you as:
-      ```tool_outputs
+      ```tool_output
       x=999751168
 
       ```
-    - You **never** generate ```tool_outputs yourself.
+    - You **never** generate ```tool_output yourself.
     - You can then use this output to decide on next steps.
     - Print just variables (e.g., `print(f'{{variable=}}')`.
 
@@ -161,5 +161,5 @@ When plotting trends, you should make sure to sort and order the data by the x-a
 
 
 """,
-    code_executor=CustomCodeExecutor(),
+    code_executor=CustomCodeExecutor(stateful=True),
 )

@@ -25,6 +25,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
+from openai import AsyncOpenAI
 import pytest
 
 
@@ -465,3 +466,46 @@ async def test_generate_content_async_absent_prompt_tokens_details():
       ]
 
       assert responses[0].usage_metadata.cached_content_token_count is None
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_routes_through_provided_client():
+  """Requests reach the pre-configured client, not a default one."""
+  client = AsyncOpenAI(base_url="https://compatible.example/v1", api_key="k")
+  openai_llm = OpenAILlm(model="my-model", client=client)
+  llm_request = LlmRequest(
+      model="my-model",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+  )
+
+  mock_response = mock.MagicMock()
+  mock_choice = mock.MagicMock()
+  mock_message = mock.MagicMock()
+  mock_message.content = "Hello there!"
+  mock_message.tool_calls = None
+  mock_choice.message = mock_message
+  mock_response.choices = [mock_choice]
+  mock_response.usage.prompt_tokens = 10
+  mock_response.usage.completion_tokens = 5
+  mock_response.usage.total_tokens = 15
+  mock_response.usage.prompt_tokens_details = None
+
+  async def mock_create(*args, **kwargs):
+    return mock_response
+
+  with mock.patch.object(
+      client.chat.completions, "create", side_effect=mock_create
+  ) as mock_client_create:
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      responses = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+  mock_client_class.assert_not_called()
+  mock_client_create.assert_called_once()
+  assert responses[0].content.parts[0].text == "Hello there!"

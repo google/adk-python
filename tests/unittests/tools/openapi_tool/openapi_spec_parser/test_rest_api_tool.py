@@ -1709,6 +1709,31 @@ class TestRestApiTool:
 
     assert request_params["url"] == "https://example.com/test"
 
+  def test_rest_api_tool_repr_and_str(
+      self, sample_endpoint, sample_operation, sample_auth_scheme
+  ):
+    """The attached credential is not rendered into repr or str."""
+    secret_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY,
+        api_key="sk-live-secret-api-key-12345",
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="test description",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=secret_cred,
+    )
+    repr_str = repr(tool)
+    str_str = str(tool)
+    assert 'name="test_tool"' in repr_str
+    assert 'description="test description"' in repr_str
+    assert "auth_scheme=" in repr_str
+    assert "auth_credential=" not in repr_str
+    assert "sk-live-secret-api-key-12345" not in repr_str
+    assert "sk-live-secret-api-key-12345" not in str_str
+
 
 def test_snake_to_lower_camel():
   assert snake_to_lower_camel("single") == "single"

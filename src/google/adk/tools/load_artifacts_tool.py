@@ -16,17 +16,21 @@ from __future__ import annotations
 
 import base64
 import binascii
+import inspect
 import io
 import json
 import logging
 import re
 import struct
 from typing import Any
+from typing import Awaitable
+from typing import Callable
 from typing import TYPE_CHECKING
 import zipfile
 
 from google.genai import types
 from typing_extensions import override
+from typing_extensions import TypeAlias
 
 from ..features import FeatureName
 from ..features import is_feature_enabled
@@ -42,7 +46,7 @@ _GEMINI_SUPPORTED_INLINE_MIME_TYPES = frozenset({'application/pdf'})
 # MIME subtypes that match a supported prefix above but that Gemini
 # rejects with 400 INVALID_ARGUMENT when sent as inline data. These
 # must fall through to the text-conversion path in
-# `_as_safe_part_for_llm` instead of being forwarded as inline image
+# `as_safe_part_for_llm` instead of being forwarded as inline image
 # data. Verified empirically against gemini-2.5-flash via
 # google-genai 1.69.0 on 2026-05-13.
 _GEMINI_UNSUPPORTED_INLINE_SUBTYPES = frozenset({
@@ -61,6 +65,10 @@ _TEXT_LIKE_MIME_TYPES = frozenset({
     'image/svg',
     'image/svg+xml',
     'image/xml',
+})
+_SPREADSHEET_MIME_TYPES = frozenset({
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
 })
 
 if TYPE_CHECKING:
@@ -136,10 +144,90 @@ def _try_extract_docx_text(data: bytes) -> str | None:
     return None
 
 
-def _as_safe_part_for_llm(
-    artifact: types.Part, artifact_name: str
+def _parse_spreadsheet(data: bytes) -> str:
+  """Parses a spreadsheet into a markdown representation.
+
+  Args:
+    data: The bytes content of the spreadsheet file (e.g., XLSX).
+
+  Returns:
+    A markdown string representing the spreadsheet, capped at 100 rows.
+    Each sheet is rendered as a separate markdown table with a heading.
+    Returns "[Empty Spreadsheet]" if the spreadsheet contains no data.
+    Returns "[Error parsing spreadsheet: {e}]" if an error occurs during
+    parsing, including details of the exception.
+  """
+  try:
+    import pandas as pd
+
+    with pd.ExcelFile(io.BytesIO(data)) as xl:
+      output = []
+
+      # Process each sheet
+      for sheet_name in xl.sheet_names:
+        df = xl.parse(sheet_name)
+        if df.empty:
+          continue
+        # Cap rows to avoid exceeding context window limits
+        max_rows = 100
+        total_rows = len(df)
+
+        if total_rows > max_rows:
+          df_display = df.head(max_rows)
+          truncation_notice = (
+              f'\n\n[Output is limited to the first {max_rows} rows. Total '
+              f'rows: {total_rows}]'
+          )
+        else:
+          df_display = df
+          truncation_notice = ''
+
+        # Convert to markdown table
+        markdown_table = df_display.to_markdown(
+            index=False, numalign='left', stralign='left'
+        )
+
+        if markdown_table:
+          markdown_table += truncation_notice
+
+        output.append(f'### Sheet: {sheet_name}\n\n{markdown_table}')
+
+      if not output:
+        return '[Empty Spreadsheet]'
+
+      return '\n\n'.join(output)
+
+  except ImportError as e:
+    logger.warning(f'Missing dependency for spreadsheet parsing: {e!r}')
+    return (
+        f'[Missing dependency: {e!r}. Pandas and its support libraries are'
+        ' required to parse spreadsheets. Please install them using `pip'
+        ' install pandas openpyxl tabulate xlrd`.]'
+    )
+  except ValueError as e:
+    logger.warning(f'Invalid spreadsheet format or data: {e!r}')
+    return f'[Invalid spreadsheet format: {e!r}]'
+  except Exception as e:
+    logger.warning(f'Failed to parse spreadsheet: {e!r}')
+    return f'[Error parsing spreadsheet: {e!r}]'
+
+
+def as_safe_part_for_llm(
+    artifact: types.Part,
+    artifact_name: str,
+    enable_spreadsheet_parsing: bool = False,
 ) -> types.Part:
-  """Returns a Part that is safe to send to Gemini."""
+  """Returns a Part that is safe to send to an LLM.
+
+  Useful for providing standard safety conversions for user-uploaded artifacts.
+
+  Args:
+    artifact: The artifact to convert to a safe Part.
+    artifact_name: The name of the artifact.
+
+  Returns:
+    A safe Part for Gemini.
+  """
   inline_data = artifact.inline_data
   if inline_data is None:
     return artifact
@@ -187,6 +275,12 @@ def _as_safe_part_for_llm(
     except UnicodeDecodeError:
       return types.Part.from_text(text=data.decode('utf-8', errors='replace'))
 
+  if enable_spreadsheet_parsing and (
+      mime_type in _SPREADSHEET_MIME_TYPES
+      or artifact_name.lower().endswith(('.xlsx', '.xls'))
+  ):
+    return types.Part.from_text(text=_parse_spreadsheet(data))
+
   size_kb = len(data) / 1024
   return types.Part.from_text(
       text=(
@@ -197,10 +291,38 @@ def _as_safe_part_for_llm(
   )
 
 
+ProcessArtifactCallback: TypeAlias = Callable[
+    [types.Part, str],
+    types.Part | None | Awaitable[types.Part | None],
+]
+
+
 class LoadArtifactsTool(BaseTool):
   """A tool that loads the artifacts and adds them to the session."""
 
-  def __init__(self):
+  def __init__(
+      self,
+      *,
+      process_artifact: ProcessArtifactCallback | None = None,
+      enable_spreadsheet_parsing: bool = False,
+  ):
+    """Initializes the tool.
+
+    Args:
+      process_artifact: An optional sync or async callable with signature
+        `(artifact: types.Part, artifact_name: str) -> types.Part | None |
+        Awaitable[types.Part | None]`. Allows artifact parts to be customized or
+        filtered before being added to the LLM request. If `None` (default), the
+        built-in safety conversion (`as_safe_part_for_llm`) is used to convert
+        unsupported formats (e.g., extracting text from DOCX/CSV/JSON/plain text
+        or replacing binary data with safe placeholder descriptions). If a
+        custom function is supplied, it bypasses default safety conversions;
+        returning `None` skips the artifact so it is omitted from the request.
+        If a custom callback raises an exception, the error is logged and the
+        artifact is skipped.
+      enable_spreadsheet_parsing: Whether to enable spreadsheet parsing
+        files (e.g., .xlsx, .xls) into text. Defaults to False.
+    """
     super().__init__(
         name='load_artifacts',
         description=("""Loads artifacts into the session for this request.
@@ -208,6 +330,8 @@ class LoadArtifactsTool(BaseTool):
 NOTE: Call when you need access to artifacts (for example, uploads saved by the
 web UI)."""),
     )
+    self._process_artifact: ProcessArtifactCallback | None = process_artifact
+    self._enable_spreadsheet_parsing: bool = enable_spreadsheet_parsing
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
@@ -304,13 +428,29 @@ web UI)."""),
             logger.warning('Artifact "%s" not found, skipping', artifact_name)
             continue
 
-          artifact_part = _as_safe_part_for_llm(artifact, artifact_name)
+          if self._process_artifact is not None:
+            try:
+              artifact_part = self._process_artifact(artifact, artifact_name)
+              if inspect.isawaitable(artifact_part):
+                artifact_part = await artifact_part
+            except Exception:  # pylint: disable=broad-exception-caught
+              logger.exception(
+                  'Failed to process artifact "%s", skipping.', artifact_name
+              )
+              continue
+          else:
+            artifact_part = as_safe_part_for_llm(
+                artifact, artifact_name, self._enable_spreadsheet_parsing
+            )
+
+          if artifact_part is None:
+            continue
           if artifact_part is not artifact:
             mime_type = (
                 artifact.inline_data.mime_type if artifact.inline_data else None
             )
             logger.debug(
-                'Converted artifact "%s" (mime_type=%s) to text Part',
+                'Transformed artifact "%s" (mime_type=%s) to Part',
                 artifact_name,
                 mime_type,
             )

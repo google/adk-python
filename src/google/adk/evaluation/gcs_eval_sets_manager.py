@@ -30,6 +30,7 @@ from ._eval_sets_manager_utils import delete_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_set_from_app_and_id
 from ._eval_sets_manager_utils import update_eval_case_in_eval_set
+from ._path_validation import validate_path_segment
 from .eval_case import EvalCase
 from .eval_set import EvalSet
 from .eval_sets_manager import EvalSetsManager
@@ -61,9 +62,11 @@ class GcsEvalSetsManager(EvalSetsManager):
       )
 
   def _get_eval_sets_dir(self, app_name: str) -> str:
+    validate_path_segment(app_name, "app_name")
     return f"{app_name}/{_EVAL_SETS_DIR}"
 
   def _get_eval_set_blob_name(self, app_name: str, eval_set_id: str) -> str:
+    validate_path_segment(eval_set_id, "eval_set_id")
     eval_sets_dir = self._get_eval_sets_dir(app_name)
     return f"{eval_sets_dir}/{eval_set_id}{_EVAL_SET_FILE_EXTENSION}"
 

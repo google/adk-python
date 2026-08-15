@@ -1,20 +1,13 @@
-# ADK Tool Catalog
+# Tool Catalog
 
-## 📋 Agent Verification Checklist (Tools)
-Use this checklist when creating or binding tools:
-- [ ] **Python Functions**: Do they have both **type hints** and a **docstring**? (Required for schema generation)
-- [ ] **Context Injection**: Is the special parameter named `tool_context` or `ctx` used for accessing state?
-- [ ] **MCP Tools**: Did you verify that `pip install mcp` is run if using MCP tools?
-- [ ] **Class Names**: Are you using `McpToolset` (the non-deprecated name)?
+Every way to give an agent a capability, from a plain Python function to a whole
+remote API.
 
-## 💡 Quick Reference (Built-in Tools)
-- **Google Search**: `from google.adk.tools import google_search`
-- **Load Artifacts**: `from google.adk.tools import load_artifacts`
-- **Agent Transfer**: `from google.adk.tools import transfer_to_agent`
+## Python functions
 
-## Python Function Tools (Most Common)
-
-Any Python function with type annotations and a docstring becomes a tool:
+Pass callables straight to `tools=`. The name, docstring, and type hints become
+the schema the model sees, so all three are load-bearing — an undocumented or
+untyped parameter is invisible to the model.
 
 ```python
 def get_weather(city: str, unit: str = 'celsius') -> str:
@@ -27,37 +20,68 @@ def get_weather(city: str, unit: str = 'celsius') -> str:
   Returns:
     A string with the weather information.
   """
-  return f"Sunny, 22 degrees {unit} in {city}"
+  return f'Sunny, 22 degrees {unit} in {city}'
+
 
 root_agent = Agent(tools=[get_weather], ...)
 ```
 
-**Rules:**
-- Type hints required (they generate the JSON schema)
-- Docstring required (becomes the tool description)
-- Both sync and async functions supported
-- Special parameter `tool_context: ToolContext` is auto-injected (not in schema)
+Sync and async both work.
 
-## ToolContext
+### Getting the context inside a tool
 
-`ToolContext` is a backward-compatible alias for `Context`. Both work identically.
+Add a parameter annotated with `ToolContext` (or `Context` / `CallbackContext` —
+they are all the same class). It is matched **by annotation**, not by name, and
+excluded from the schema the model sees. A parameter literally named
+`tool_context` is used as a fallback when no annotation matches.
 
 ```python
-from google.adk.tools.tool_context import ToolContext
+from google.adk.tools import ToolContext
+
 
 async def my_tool(query: str, tool_context: ToolContext) -> str:
-  tool_context.state['key'] = 'value'         # Session state
-  await tool_context.save_artifact('f.txt', part)  # Save artifact
-  part = await tool_context.load_artifact('f.txt') # Load artifact
-  results = await tool_context.search_memory('q')  # Search memory
+  tool_context.state['key'] = 'value'
+  await tool_context.save_artifact('f.txt', part)
+  results = await tool_context.search_memory('q')
   return 'done'
 ```
 
-## MCP Tools (Model Context Protocol)
+A parameter named `input_stream` is also excluded, for streaming tools.
+
+## Built-in tools
+
+| Tool | Import from `google.adk.tools` |
+|---|---|
+| `google_search` | Google Search grounding |
+| `url_context` | Fetch and ground on URLs in the prompt |
+| `load_artifacts` | Pull session artifacts into context |
+| `load_memory` / `preload_memory` | Query long-term memory |
+| `exit_loop` | Break out of a `LoopAgent` |
+| `transfer_to_agent` | Hand control to another agent |
+| `get_user_choice` | Ask the user to pick an option |
+| `google_maps_grounding`, `enterprise_web_search` | Other grounding sources |
+
+## Long-running tools
+
+`LongRunningFunctionTool` returns its result asynchronously against the original
+`function_call_id`, which is how an agent pauses for a human.
 
 ```python
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-from google.adk.tools.mcp_tool import StdioConnectionParams
+from google.adk.tools import LongRunningFunctionTool
+
+
+def approve_expense(amount: float) -> dict:
+  """Submit an expense for approval."""
+  return {'status': 'pending', 'id': 'exp-123'}
+
+
+root_agent = Agent(tools=[LongRunningFunctionTool(approve_expense)], ...)
+```
+
+## MCP servers
+
+```python
+from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
 from mcp import StdioServerParameters
 
 root_agent = Agent(
@@ -72,17 +96,18 @@ root_agent = Agent(
             ),
             tool_filter=['read_file', 'list_directory'],
         )
-    ], ...
+    ],
+    ...
 )
 ```
 
-Connection types: `StdioConnectionParams`, `SseConnectionParams`,
+Connection classes: `StdioConnectionParams`, `SseConnectionParams`,
 `StreamableHTTPConnectionParams`.
 
-**Pitfalls:** Requires `pip install mcp`. Use `McpToolset` (not deprecated
-`MCPToolset`). `StdioServerParameters` is from the `mcp` package, not ADK.
+Needs `pip install mcp`. `StdioServerParameters` comes from that package, not
+from ADK. Use `McpToolset`; the all-caps `MCPToolset` still resolves but warns.
 
-## OpenAPI Tools
+## OpenAPI specs
 
 ```python
 from google.adk.tools.openapi_tool import OpenAPIToolset
@@ -91,43 +116,30 @@ toolset = OpenAPIToolset(spec_str=open('openapi.yaml').read(), spec_str_type='ya
 root_agent = Agent(tools=[toolset], ...)
 ```
 
-Also: `from google.adk.tools.openapi_tool import RestApiTool` for individual endpoints.
+`spec_str_type` is `'json'` (the default) or `'yaml'`. Pass `spec_dict=` instead
+to skip parsing. `RestApiTool` from the same module wraps a single endpoint.
 
-## Google API Tools
+## Google API toolsets
+
+Generated from Google's API discovery documents. `BigQueryToolset`,
+`CalendarToolset`, and their siblings all take the same arguments.
 
 ```python
 from google.adk.tools.google_api_tool.google_api_toolsets import BigQueryToolset
 
-bigquery = BigQueryToolset(client_id='...', client_secret='...',
-    tool_filter=['bigquery_datasets_list'])
-root_agent = Agent(tools=[bigquery], ...)
+bigquery = BigQueryToolset(
+    client_id='...',
+    client_secret='...',
+    tool_filter=['bigquery_datasets_list'],
+)
 ```
 
-## Built-in Tools
+Also accepted: `service_account=` instead of the OAuth pair, and
+`tool_name_prefix=` to namespace the generated tool names.
 
-| Tool | Import |
-|------|--------|
-| `google_search` | `from google.adk.tools import google_search` |
-| `load_artifacts` | `from google.adk.tools import load_artifacts` |
-| `load_memory` | `from google.adk.tools import load_memory` |
-| `exit_loop` | `from google.adk.tools import exit_loop` |
-| `transfer_to_agent` | `from google.adk.tools import transfer_to_agent` |
-| `get_user_choice` | `from google.adk.tools import get_user_choice` |
-| `url_context` | `from google.adk.tools import url_context` |
+## Code execution
 
-## LongRunningFunctionTool
-
-```python
-from google.adk.tools.long_running_tool import LongRunningFunctionTool
-
-def approve_expense(amount: float) -> dict:
-    """Submit expense for approval."""
-    return {"status": "pending", "id": "exp-123"}
-
-root_agent = Agent(tools=[LongRunningFunctionTool(approve_expense)], ...)
-```
-
-## Code Execution
+The code executor is its own agent field, not a tool.
 
 ```python
 from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
@@ -135,21 +147,22 @@ from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
 root_agent = Agent(code_executor=BuiltInCodeExecutor(), ...)
 ```
 
-Note: `code_executor` is a separate parameter from `tools`.
-
-## Custom BaseTool
+## Custom `BaseTool`
 
 ```python
-from google.adk.tools.base_tool import BaseTool
+from google.adk.tools import BaseTool
 from google.genai import types
 
+
 class MyTool(BaseTool):
+
   def __init__(self):
     super().__init__(name='my_tool', description='Does something.')
 
   def _get_declaration(self):
     return types.FunctionDeclaration(
-        name=self.name, description=self.description,
+        name=self.name,
+        description=self.description,
         parameters_json_schema={
             'type': 'object',
             'properties': {'param': {'type': 'string'}},
@@ -161,12 +174,19 @@ class MyTool(BaseTool):
     return {'result': args['param']}
 ```
 
-## BaseToolset (Tool Collections)
+## Custom `BaseToolset`
+
+A toolset supplies tools dynamically, so the set can depend on context.
 
 ```python
 from google.adk.tools.base_toolset import BaseToolset
 
+
 class MyToolset(BaseToolset):
+
+  def __init__(self):
+    super().__init__(tool_filter=None, tool_name_prefix='my')
+
   async def get_tools(self, readonly_context=None):
     return [ToolA(), ToolB()]
 
@@ -174,4 +194,6 @@ class MyToolset(BaseToolset):
     llm_request.append_instructions(['Custom instruction'])
 ```
 
-Toolsets support `tool_filter`, `tool_name_prefix`, and `process_llm_request`.
+`tool_filter` is a list of tool names or a `ToolPredicate` callable;
+`tool_name_prefix` renames every tool the toolset returns, which is how you keep
+two toolsets from colliding.

@@ -185,6 +185,7 @@ class NestedAgentLoader(AgentLoader):
   @override
   def _perform_load(self, agent_path: str) -> Union[BaseAgent, App]:
     """Internal logic to load an agent allowing slash-separated paths."""
+    self._root_agent_type_mismatches = []
     self._validate_agent_name(agent_path)
     # Determine the directory to use for loading
     if agent_path.startswith("__"):
@@ -242,6 +243,26 @@ class NestedAgentLoader(AgentLoader):
           agents_dir=agents_dir,
       )
       return root_agent
+
+    # A root_agent was found but had an unusable type: surface that
+    # diagnosis instead of the generic not-found guidance.
+    if self._root_agent_type_mismatches:
+      details = "\n".join(
+          f"  - '{location}.root_agent' is of type '{type_name}'"
+          for location, type_name, _ in self._root_agent_type_mismatches
+      )
+      app_hint = ""
+      if any(is_app for _, _, is_app in self._root_agent_type_mismatches):
+        app_hint = (
+            "\n\nHINT: To serve an App, expose it under the name 'app'"
+            " instead of 'root_agent'."
+        )
+      raise ValueError(
+          f"A 'root_agent' was found for '{agent_path}' but it is not a"
+          " BaseAgent (or workflow node) instance:\n"
+          f"{details}\n\nExpose a BaseAgent instance named"
+          f" 'root_agent'.{app_hint}"
+      )
 
     hint = ""
     agents_path = Path(agents_dir)

@@ -50,9 +50,7 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
     if not transfer_targets:
       return
 
-    transfer_to_agent_tool = TransferToAgentTool(
-        agent_names=[agent.name for agent in transfer_targets]
-    )
+    transfer_to_agent_tool = _build_transfer_tool(transfer_targets)
 
     llm_request.append_instructions([
         _build_transfer_instructions(
@@ -205,3 +203,19 @@ def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
     ])
 
   return result
+
+
+def _build_transfer_tool(
+    transfer_targets: Sequence[BaseAgent],
+) -> TransferToAgentTool:
+  """Builds the transfer tool offering the given agents as targets.
+
+  Args:
+    transfer_targets: The agents that can be transferred to.
+
+  Returns:
+    A TransferToAgentTool for the given targets.
+  """
+  return TransferToAgentTool(
+      agent_names=[target.name for target in transfer_targets]
+  )

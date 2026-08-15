@@ -346,12 +346,20 @@ class InMemorySessionService(BaseSessionService):
       _warning(f'session_id {session_id} not in sessions[app_name][user_id]')
       return event
 
+    # Fetch the canonical storage session early so we can check for duplicate
+    # event IDs before modifying any state.  The same event can be delivered
+    # more than once when the orchestrator broadcasts a shared-state delta to
+    # several concurrent session references; deduplicating here prevents
+    # double-application of state updates and duplicate entries in event lists.
+    storage_session = self.sessions[app_name][user_id][session_id]
+    if any(e.id == event.id for e in storage_session.events):
+      return event
+
     # Update the in-memory session.
     await super().append_event(session=session, event=event)
     session.last_update_time = event.timestamp
 
-    # Update the storage session
-    storage_session = self.sessions[app_name][user_id][session_id]
+    # Update the storage session if the caller holds a stale copy.
     if storage_session is not session:
       storage_session.events.append(event)
       storage_session.last_update_time = event.timestamp

@@ -189,6 +189,108 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
   assert captured['session_app_name'] == parent_app_name
 
 
+async def _capture_nested_run_config(
+    monkeypatch, parent_run_config: RunConfig
+) -> RunConfig:
+  """Returns the RunConfig an AgentTool hands to the Runner it starts."""
+  captured: dict[str, Any] = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent: Agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del app_name, artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id: Optional[str] = None,
+        new_message: Optional[types.Content] = None,
+        state_delta: Optional[dict[str, Any]] = None,
+        run_config: Optional[RunConfig] = None,
+    ):
+      del user_id, session_id, invocation_id, new_message, state_delta
+      captured['run_config'] = run_config
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name='parent_app',
+      user_id='user',
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='invocation-id',
+      agent=root_agent,
+      session=parent_session,
+      run_config=parent_run_config,
+  )
+
+  await agent_tool.run_async(
+      args={'request': 'hello'},
+      tool_context=ToolContext(invocation_context),
+  )
+
+  return captured['run_config']
+
+
+@mark.asyncio
+async def test_agent_tool_forwards_parent_run_config(monkeypatch):
+  parent_run_config = RunConfig(max_llm_calls=7, custom_metadata={'tier': 'x'})
+
+  nested_run_config = await _capture_nested_run_config(
+      monkeypatch, parent_run_config
+  )
+
+  assert nested_run_config is parent_run_config
+  assert nested_run_config.max_llm_calls == 7
+  assert nested_run_config.custom_metadata == {'tier': 'x'}
+
+
+@mark.asyncio
+async def test_agent_tool_does_not_forward_support_cfc(monkeypatch):
+  """CFC describes the caller's own model, not the agent it wraps as a tool."""
+  parent_run_config = RunConfig(support_cfc=True, max_llm_calls=7)
+
+  nested_run_config = await _capture_nested_run_config(
+      monkeypatch, parent_run_config
+  )
+
+  assert nested_run_config.support_cfc is False
+  assert nested_run_config.max_llm_calls == 7
+  assert parent_run_config.support_cfc is True
+
+
 def test_no_schema():
   mock_model = testing_utils.MockModel.create(
       responses=[
@@ -1466,6 +1568,64 @@ class TestAgentToolWithCompositeAgents:
       assert 'custom_input' in sequence_tool.parameters.properties
       # Should NOT have the fallback 'request' parameter
       assert 'request' not in sequence_tool.parameters.properties
+
+  @mark.asyncio
+  async def test_sequential_agent_returns_last_sub_agent_output(self):
+    """The tool result is the last sub-agent's output, not the whole pipeline's."""
+
+    class CustomOutput(BaseModel):
+      custom_output: str
+
+    function_call_seq = Part.from_function_call(
+        name='sequence', args={'request': 'test1'}
+    )
+
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            function_call_seq,
+            'a draft from the first step',
+            '{"custom_output": "final_response"}',
+            'root_response',
+        ]
+    )
+
+    first_agent = Agent(name='first_agent', model=mock_model)
+
+    second_agent = Agent(
+        name='second_agent',
+        model=mock_model,
+        output_schema=CustomOutput,
+        output_key='seq_output',
+    )
+
+    sequence = SequentialAgent(
+        name='sequence',
+        description='A sequential pipeline',
+        sub_agents=[first_agent, second_agent],
+    )
+
+    root_agent = Agent(
+        name='root_agent',
+        model=mock_model,
+        tools=[AgentTool(agent=sequence)],
+    )
+
+    runner = testing_utils.InMemoryRunner(root_agent)
+
+    # run_async, not run: run() drains the agent on a worker thread and would
+    # drop a validation error raised inside the tool.
+    events = await runner.run_async('test1')
+
+    assert testing_utils.simplify_events(events) == [
+        ('root_agent', function_call_seq),
+        (
+            'root_agent',
+            Part.from_function_response(
+                name='sequence', response={'custom_output': 'final_response'}
+            ),
+        ),
+        ('root_agent', 'root_response'),
+    ]
 
   def test_empty_sequential_agent_falls_back_to_request(self):
     """Test that AgentTool with empty SequentialAgent falls back to 'request'."""

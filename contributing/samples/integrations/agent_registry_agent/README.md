@@ -28,7 +28,7 @@ export GOOGLE_CLOUD_LOCATION=global  # or your specific region
    gcloud alpha agent-registry mcp-servers list --project=$GOOGLE_CLOUD_PROJECT --location=$GOOGLE_CLOUD_LOCATION
    ```
 
-1. Replace `AGENT_NAME` and `MCP_SERVER_NAME` in `agent.py` with the last part of the resource names (e.g., if the name is `projects/.../agents/my-agent`, use `my-agent`).
+1. Uncomment the example block at the end of `agent.py` and replace `AGENT_NAME`, `MCP_SERVER_NAME` and `ENDPOINT_NAME` with the last part of the resource names (e.g., if the name is `projects/.../agents/my-agent`, use `my-agent`).
 
 ## Running the Sample
 
@@ -51,3 +51,4 @@ It also shows (in comments) how to:
 
 - Get a `RemoteA2aAgent` instance using `get_remote_a2a_agent(name)`.
 - Get an `McpToolset` instance using `get_mcp_toolset(name)`.
+- Resolve a model endpoint using `get_model_name(name)`.

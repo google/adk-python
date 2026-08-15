@@ -19,7 +19,7 @@ from typing import Generator
 from google.adk import Agent
 from google.adk import Event
 from google.adk import Workflow
-from google.adk.apps._configs import ResumabilityConfig
+from google.adk.apps import ResumabilityConfig
 from google.adk.apps.app import App
 from google.adk.workflow import node
 from pydantic import BaseModel
@@ -38,10 +38,10 @@ from google.adk.events import RequestInput
 # 2. Define a regular Node using the @node decorator.
 # This Node is wrapped as a NodeTool automatically by the Agent.
 # As a NodeTool, it has the ability to yield intermediate Events during execution.
+# Annotate the yield type with the data the tool returns, not the Event and
+# RequestInput control-flow items, so the tool's response schema stays small.
 @node(rerun_on_resume=True)
-def calculate_discount(
-    tier: str, ctx: Context
-) -> Generator[Event | RequestInput | str, None, None]:
+def calculate_discount(tier: str, ctx: Context) -> Generator[str, None, None]:
   """Calculates the discount percentage based on customer tier.
 
   Args:

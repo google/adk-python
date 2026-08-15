@@ -26,6 +26,7 @@ from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.llm_as_judge_utils import get_average_rubric_score
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
+from google.adk.evaluation.llm_as_judge_utils import get_grounding_metadata_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.evaluation.llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_tool_declarations_as_json_str
@@ -362,3 +363,36 @@ def test_get_tool_calls_and_responses_as_json_str_with_invocation_events_multipl
       ]
   }
   assert json.loads(json_str) == expected_json
+
+
+def test_get_grounding_metadata_as_json_str_with_invocation_events():
+  """Tests grounding metadata is serialized for LLM-as-judge prompts."""
+  grounding_metadata = genai_types.GroundingMetadata(
+      web_search_queries=["recent AI news"]
+  )
+  intermediate_data = InvocationEvents(
+      invocation_events=[
+          InvocationEvent(
+              author="agent",
+              content=None,
+              grounding_metadata=grounding_metadata,
+          )
+      ]
+  )
+
+  json_str = get_grounding_metadata_as_json_str(intermediate_data)
+  parsed = json.loads(json_str)
+
+  assert parsed["grounding_metadata"][0]["step"] == 0
+  assert parsed["grounding_metadata"][0]["author"] == "agent"
+  assert parsed["grounding_metadata"][0]["grounding_metadata"][
+      "web_search_queries"
+  ] == ["recent AI news"]
+
+
+def test_get_grounding_metadata_as_json_str_without_metadata():
+  """Tests empty grounding metadata serialization."""
+  assert (
+      get_grounding_metadata_as_json_str(InvocationEvents())
+      == "No grounding metadata was provided."
+  )

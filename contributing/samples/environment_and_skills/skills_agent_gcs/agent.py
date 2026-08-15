@@ -27,11 +27,14 @@ import os
 
 from google.adk import Agent
 from google.adk import Runner
+from google.adk.apps import App
 from google.adk.code_executors.agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
 from google.adk.plugins import LoggingPlugin
+from google.adk.sessions import InMemorySessionService
 from google.adk.skills import list_skills_in_gcs_dir
 from google.adk.skills import load_skill_from_gcs_dir
 from google.adk.tools.skill_toolset import SkillToolset
+from google.genai import types
 
 # Define the GCS bucket and skills prefix
 BUCKET_NAME = "sample-skills"
@@ -82,20 +85,35 @@ async def main():
   logging_plugin = LoggingPlugin()
 
   # Create a Runner
+  app_name = "skills_agent_gcs"
+  user_id = "user"
+  session_service = InMemorySessionService()
   runner = Runner(
-      agents=[root_agent],
-      plugins=[logging_plugin],
+      app=App(
+          name=app_name,
+          root_agent=root_agent,
+          plugins=[logging_plugin],
+      ),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
   )
 
   # Example run
   print("Agent initialized with GCS skills. Sending a test prompt...")
   # You can replace this with an interactive loop if needed.
-  responses = await runner.run(
-      user_input="Hello! What skills do you have access to?"
+  new_message = types.Content(
+      role="user",
+      parts=[
+          types.Part.from_text(text="Hello! What skills do you have access to?")
+      ],
   )
-
-  if responses and responses[-1].content and responses[-1].content.parts:
-    print(f"\nResponse: {responses[-1].content.parts[0].text}")
+  async for event in runner.run_async(
+      user_id=user_id, session_id=session.id, new_message=new_message
+  ):
+    if event.content and event.content.parts and event.content.parts[0].text:
+      print(f"\nResponse: {event.content.parts[0].text}")
 
 
 if __name__ == "__main__":

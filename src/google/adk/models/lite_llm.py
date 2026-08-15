@@ -242,6 +242,10 @@ _SUPPORTED_FILE_CONTENT_MIME_TYPES = frozenset({
 # Providers that require file_id instead of inline file_data
 _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 
+# Routing-only prefix: requests go through a LiteLLM Proxy deployment, but the
+# payload must still be shaped for the provider named in the next segment.
+_PROXY_PROVIDER = "litellm_proxy"
+
 _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
@@ -309,6 +313,35 @@ def _map_finish_reason(
   return _FINISH_REASON_MAPPING.get(finish_reason_str, types.FinishReason.OTHER)
 
 
+def _strip_proxy_prefix(model: str) -> str:
+  """Removes a leading ``litellm_proxy/`` routing prefix from a model string.
+
+  ``litellm_proxy`` selects the transport (a LiteLLM Proxy deployment), not the
+  model family, so the segment after it identifies the provider that actually
+  serves the request (e.g. ``litellm_proxy/azure/my-deployment`` is served by
+  Azure). Provider-specific request shaping must follow that underlying
+  provider, otherwise proxied requests get generic payloads the backend
+  rejects.
+
+  A bare ``litellm_proxy/<deployment>`` has no nested provider, so the
+  prefix is not stripped and it is treated as the ``litellm_proxy`` provider.
+
+  Args:
+    model: The model string (e.g., "litellm_proxy/azure/gpt-4").
+
+  Returns:
+    The model string without the ``litellm_proxy/`` prefix if nested.
+  """
+  if not model:
+    return model
+  prefix = _PROXY_PROVIDER + "/"
+  if model.lower().startswith(prefix):
+    remaining = model[len(prefix) :]
+    if "/" in remaining:
+      return remaining
+  return model
+
+
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
 
@@ -320,6 +353,9 @@ def _get_provider_from_model(model: str) -> str:
   """
   if not model:
     return ""
+  # `litellm_proxy` is a transport prefix; the provider that actually serves
+  # the request is the next segment.
+  model = _strip_proxy_prefix(model)
   # LiteLLM uses "provider/model" format
   if "/" in model:
     provider, _ = model.split("/", 1)
@@ -440,6 +476,9 @@ def _redact_file_uri_for_log(
 
 def _is_file_uri_supported(provider: str, model: str, file_uri: str) -> bool:
   """Returns True when `file_uri` can be sent as a file content block."""
+  # If the model is proxied, the proxy might accept arbitrary URIs.
+  if model.lower().startswith(_PROXY_PROVIDER + "/"):
+    return True
   if provider in _FILE_ID_REQUIRED_PROVIDERS:
     return _looks_like_openai_file_id(file_uri)
   if provider == "anthropic":
@@ -1121,6 +1160,23 @@ def _extract_thought_signature_from_tool_call(
   return None
 
 
+def _function_response_media_parts(
+    function_response: types.FunctionResponse,
+) -> list[types.Part]:
+  """Converts media a tool attached to its response into content parts."""
+  media_parts: list[types.Part] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    if blob is None or blob.data is None or not blob.mime_type:
+      continue
+    media_parts.append(
+        types.Part(
+            inline_data=types.Blob(data=blob.data, mime_type=blob.mime_type)
+        )
+    )
+  return media_parts
+
+
 async def _content_to_message_param(
     content: types.Content,
     *,
@@ -1168,6 +1224,10 @@ async def _content_to_message_param(
               content=response_content,
           )
       )
+      # A tool can attach media alongside the serializable part of its
+      # result. A tool-role message carries text only, so the media has to
+      # follow the tool result as its own message.
+      non_tool_parts.extend(_function_response_media_parts(function_response))
     else:
       non_tool_parts.append(part)
 
@@ -1461,10 +1521,15 @@ async def _get_content(
       elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         # OpenAI/Azure require file_id from uploaded file, not inline data
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
+          upload_provider = (
+              "openai"
+              if model.lower().startswith(_PROXY_PROVIDER + "/")
+              else provider
+          )
           file_response = await litellm.acreate_file(
               file=part.inline_data.data,
               purpose="assistants",
-              custom_llm_provider=provider,
+              custom_llm_provider=upload_provider,
           )
           content_objects.append(
               _FileContentObject(
@@ -2690,7 +2755,7 @@ def _is_anthropic_model(model_string: str) -> bool:
   Returns:
     True if it's an Anthropic Claude model, False otherwise.
   """
-  lower = model_string.lower()
+  lower = _strip_proxy_prefix(model_string.lower())
   if lower.startswith("anthropic/"):
     return True
   if lower.startswith("bedrock/"):
@@ -2711,7 +2776,7 @@ def _is_litellm_vertex_model(model_string: str) -> bool:
   Returns:
     True if it's a Vertex AI model accessed via LiteLLM, False otherwise
   """
-  return model_string.startswith("vertex_ai/")
+  return _strip_proxy_prefix(model_string).startswith("vertex_ai/")
 
 
 def _is_litellm_gemini_model(model_string: str) -> bool:
@@ -2724,7 +2789,9 @@ def _is_litellm_gemini_model(model_string: str) -> bool:
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise
   """
-  return model_string.startswith(("gemini/gemini-", "vertex_ai/gemini-"))
+  return _strip_proxy_prefix(model_string).startswith(
+      ("gemini/gemini-", "vertex_ai/gemini-")
+  )
 
 
 def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
@@ -2736,6 +2803,9 @@ def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
   Returns:
     Pure Gemini model name like "gemini-2.5-pro"
   """
+  # Remove the proxy routing prefix first so the provider prefix below is the
+  # one that actually names the model family.
+  litellm_model = _strip_proxy_prefix(litellm_model)
   # Remove LiteLLM provider prefix
   if "/" in litellm_model:
     return litellm_model.split("/", 1)[1]
@@ -2752,6 +2822,10 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
     model_string: The LiteLLM model string to check
   """
   if not _is_litellm_gemini_model(model_string):
+    return
+
+  # Do not warn if using a proxy, as native Gemini client might not support it.
+  if model_string.lower().startswith(_PROXY_PROVIDER + "/"):
     return
 
   # Check if warning should be suppressed via environment variable

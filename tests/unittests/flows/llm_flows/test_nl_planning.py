@@ -21,10 +21,12 @@ from unittest.mock import patch
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.flows.llm_flows._nl_planning import request_processor
 from google.adk.flows.llm_flows._nl_planning import response_processor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.planners.base_planner import BasePlanner
 from google.adk.planners.built_in_planner import BuiltInPlanner
 from google.adk.planners.plan_re_act_planner import PlanReActPlanner
 from google.genai import types
@@ -218,3 +220,67 @@ async def test_process_planning_response_not_called_without_override(
     ):
       pass
     mock_method.assert_not_called()
+
+
+class CustomPlanner(BasePlanner):
+  """A planner deriving straight from BasePlanner."""
+
+  def build_planning_instruction(
+      self,
+      readonly_context: ReadonlyContext,
+      llm_request: LlmRequest,
+  ) -> Optional[str]:
+    return 'Custom instruction'
+
+  def process_planning_response(
+      self,
+      callback_context: CallbackContext,
+      response_parts: List[types.Part],
+  ) -> Optional[List[types.Part]]:
+    return response_parts
+
+
+@pytest.mark.asyncio
+async def test_custom_planner_instruction_appended():
+  """Test that a planner deriving from BasePlanner gets its instruction used.
+
+  Regression test: the request processor used to dispatch only on the two
+  built-in planner types, so a custom planner's instruction was dropped.
+  """
+  agent = Agent(name='test_agent', planner=CustomPlanner())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  llm_request = LlmRequest()
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert llm_request.config.system_instruction == 'Custom instruction'
+
+
+@pytest.mark.asyncio
+async def test_custom_planner_removes_thought_from_request():
+  """Test that thought parts are stripped for a custom planner."""
+  agent = Agent(name='test_agent', planner=CustomPlanner())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.UserContent(parts=[types.Part(text='initial query')]),
+          types.ModelContent(
+              parts=[
+                  types.Part(text='Text with thought', thought=True),
+                  types.Part(text='Regular text'),
+              ]
+          ),
+      ]
+  )
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  for content in llm_request.contents:
+    for part in content.parts or []:
+      assert part.thought is None

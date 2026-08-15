@@ -67,6 +67,9 @@ class InvocationEvent(EvalBaseModel):
   content: Optional[genai_types.Content] = None
   """The content of the event."""
 
+  grounding_metadata: Optional[genai_types.GroundingMetadata] = None
+  """Grounding metadata emitted with the event."""
+
 
 class InvocationEvents(EvalBaseModel):
   """A container for events that occur during the course of an invocation."""

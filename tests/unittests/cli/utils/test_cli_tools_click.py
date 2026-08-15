@@ -36,6 +36,7 @@ from click.testing import CliRunner
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
+from google.adk.cli.utils import gcp_utils
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
@@ -125,6 +126,63 @@ def test_validate_exclusive_blocks_multiple() -> None:
     cli_tools_click.validate_exclusive(ctx, param2, "resume.json")
 
 
+def test_resolve_eval_config_file_path_prefers_explicit_path(
+    tmp_path: Path,
+) -> None:
+  eval_set_file = tmp_path / "sample.test.json"
+  eval_set_file.touch()
+  explicit_config = tmp_path / "explicit_config.json"
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=str(explicit_config),
+      eval_set_file_or_id_to_evals={str(eval_set_file): []},
+  )
+
+  assert resolved_path == str(explicit_config)
+
+
+def test_resolve_eval_config_file_path_uses_test_config_next_to_eval_file(
+    tmp_path: Path,
+) -> None:
+  eval_set_file = tmp_path / "sample.test.json"
+  eval_set_file.touch()
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={str(eval_set_file): []},
+  )
+
+  assert resolved_path == str(tmp_path / "test_config.json")
+
+
+def test_resolve_eval_config_file_path_returns_none_for_eval_set_id() -> None:
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={"eval_set_id": []},
+  )
+
+  assert resolved_path is None
+
+
+def test_resolve_eval_config_file_path_returns_none_for_multiple_eval_files(
+    tmp_path: Path,
+) -> None:
+  eval_set_file_1 = tmp_path / "sample_1.test.json"
+  eval_set_file_2 = tmp_path / "sample_2.test.json"
+  eval_set_file_1.touch()
+  eval_set_file_2.touch()
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={
+          str(eval_set_file_1): [],
+          str(eval_set_file_2): [],
+      },
+  )
+
+  assert resolved_path is None
+
+
 # cli create
 def test_cli_create_cmd_invokes_run_cmd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -204,6 +262,56 @@ def test_cli_telemetry_captures_subcommand_flags(
     assert "--api_key" in source["command_run"]["flags"]
     # Ensure sanitized positional placeholder is logged
     assert "<app_name>" in source["command_run"]["flags"]
+
+
+def test_cli_telemetry_records_express_mode_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """An onboarding choice must reach the logged command_run.
+
+  This is the only test covering the hand-off as a whole: `_onboarding` writes
+  the action into the Click context and `TelemetryGroup` reads it back out. A
+  typo in the meta key on either side passes every other test in the suite.
+  """
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._metrics_collector"
+      ".MetricsCollector._is_rate_limited",
+      lambda: True,
+  )
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.TELEMETRY_SESSIONS_DIR",
+      str(tmp_path / "telemetry_sessions"),
+  )
+
+  # Drive `create` into the "3. Login with Google" branch, which finds an
+  # existing Express project and records EXISTING_EXPRESS.
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(
+      gcp_utils,
+      "retrieve_express_project",
+      lambda: {"api_key": "key", "project_id": "proj", "region": "us-central1"},
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["create", "--model", "gemini-2.0", str(tmp_path / "new_app")],
+      input="3\n",
+  )
+  assert result.exit_code == 0
+
+  event = json.loads(temp_queue.read_text().splitlines()[0])
+  source = json.loads(event["source_extension_json"])
+  assert source["command_run"]["express_mode_action"] == "EXISTING_EXPRESS"
 
 
 def test_cli_telemetry_skips_when_already_recorded(
@@ -1502,6 +1610,54 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("session_service_uri") == "sqlite:///test.db"
   assert called_kwargs.get("artifact_service_uri") == "gs://mybucket"
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
+
+
+@pytest.mark.parametrize("command", ["web", "api_server"])
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
+def test_cli_arms_rebinding_guard_with_the_address_it_binds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, host: str
+) -> None:
+  """The DNS-rebinding guard is off unless the CLI names the address it binds.
+
+  Every other test of the guard supplies ``bind_host`` itself, so only this one
+  fails if the CLI stops passing it and serves `adk web` unguarded again.
+  """
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+
+  app_kwargs: Dict[str, Any] = {}
+  uvicorn_kwargs: Dict[str, Any] = {}
+
+  def _record_get_fast_api_app(**kwargs: Any) -> object:
+    app_kwargs.update(kwargs)
+    return object()
+
+  def _record_uvicorn_config(*_a: Any, **kwargs: Any) -> object:
+    uvicorn_kwargs.update(kwargs)
+    return object()
+
+  class _DummyServer:
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+      ...
+
+    def run(self) -> None:
+      ...
+
+  monkeypatch.setattr(
+      "google.adk.cli.fast_api.get_fast_api_app", _record_get_fast_api_app
+  )
+  monkeypatch.setattr("uvicorn.Config", _record_uvicorn_config)
+  monkeypatch.setattr("uvicorn.Server", lambda *_a, **_k: _DummyServer())
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, [command, "--host", host, str(agents_dir)]
+  )
+
+  assert result.exit_code == 0
+  assert uvicorn_kwargs.get("host") == host, "the CLI binds --host"
+  assert app_kwargs.get("bind_host") == host
 
 
 @pytest.mark.parametrize(

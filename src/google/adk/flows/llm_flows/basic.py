@@ -36,11 +36,14 @@ def _merge_run_config_http_options(
 ) -> None:
   """Merges RunConfig http_options into the request config, RunConfig wins.
 
+  The RunConfig's options are copied in rather than aliased, so request
+  assembly cannot write back into the RunConfig.
+
   base_url and api_version are configuration-time settings, not request-time,
-  so they are intentionally not merged here.
+  so they are intentionally not merged into an existing config.http_options.
   """
   if config.http_options is None:
-    config.http_options = run_config_http_options
+    config.http_options = _copy_http_options(run_config_http_options)
     return
 
   if run_config_http_options.headers:
@@ -52,6 +55,51 @@ def _merge_run_config_http_options(
     value = getattr(run_config_http_options, field, None)
     if value is not None:
       setattr(config.http_options, field, value)
+
+
+def _copy_http_options(
+    http_options: types.HttpOptions,
+) -> types.HttpOptions:
+  """Copies http_options far enough that assembly cannot write through it.
+
+  Deliberately not a deep copy: the field can carry a live httpx or aiohttp
+  client and an SSL context, which raise ``TypeError: cannot pickle`` on a deep
+  copy. Only ``headers`` is mutated in place during assembly.
+  """
+  return http_options.model_copy(
+      update={'headers': dict(http_options.headers)}
+      if http_options.headers is not None
+      else {}
+  )
+
+
+def _copy_request_scoped_fields(
+    config: types.GenerateContentConfig,
+) -> types.GenerateContentConfig:
+  """Copies the agent config fields that request assembly goes on to mutate.
+
+  ``model_copy`` is shallow, so every container the agent configured would still
+  be the agent's own object, and a write during assembly would outlive the
+  invocation and be seen by every later run of that agent.
+
+  Every list and dict is copied, not just the fields assembly happens to touch
+  today: a before-model callback receives the request config and can append to
+  any of them. The elements themselves are shared, because assembly replaces
+  entries rather than mutating them.
+
+  ``http_options`` needs its own copy because it is a model rather than a
+  container. It can hold a live httpx or aiohttp client and an SSL context,
+  none of which survive a deep copy, so only its ``headers`` dict is copied.
+  """
+  updates: dict[str, object] = {}
+  for name, value in config:
+    if isinstance(value, list):
+      updates[name] = list(value)
+    elif isinstance(value, dict):
+      updates[name] = dict(value)
+  if config.http_options is not None:
+    updates['http_options'] = _copy_http_options(config.http_options)
+  return config.model_copy(update=updates)
 
 
 def _build_basic_request(
@@ -77,11 +125,7 @@ def _build_basic_request(
 
   generate_content_config = agent.generate_content_config
   llm_request.config = (
-      generate_content_config.model_copy(
-          update={'labels': dict(generate_content_config.labels)}
-          if generate_content_config.labels
-          else {}
-      )
+      _copy_request_scoped_fields(generate_content_config)
       if generate_content_config
       else types.GenerateContentConfig()
   )

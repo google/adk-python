@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from google.genai import types
 from typing_extensions import override
 
 from . import _memory_entry_utils
@@ -80,13 +81,17 @@ class PreloadMemoryTool(BaseTool):
       return
 
     full_memory_text = '\n'.join(memory_text_lines)
-    si = f"""The following content is from your previous conversations with the user.
+    memory_context = f"""The following content is from your previous conversations with the user.
 They may be useful for answering the user's current query.
 <PAST_CONVERSATIONS>
 {full_memory_text}
 </PAST_CONVERSATIONS>
 """
-    llm_request._append_dynamic_instructions([si])
+    llm_request._insert_transient_user_content([  # pylint: disable=protected-access
+        types.Content(
+            role='user', parts=[types.Part.from_text(text=memory_context)]
+        )
+    ])
 
 
 preload_memory_tool = PreloadMemoryTool()

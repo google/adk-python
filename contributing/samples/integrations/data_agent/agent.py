@@ -68,6 +68,7 @@ else:
 
 tool_config = DataAgentToolConfig(
     max_query_result_rows=100,
+    enable_data_agent_modification=True,
 )
 da_toolset = DataAgentToolset(
     credentials_config=credentials_config,
@@ -76,6 +77,7 @@ da_toolset = DataAgentToolset(
         "list_accessible_data_agents",
         "get_data_agent_info",
         "ask_data_agent",
+        "create_data_agent",
     ],
 )
 
@@ -132,7 +134,8 @@ root_agent = Agent(
         " list available data agents using `list_accessible_data_agents`.\n-"
         " You can get information about a specific data agent using"
         " `get_data_agent_info`.\n- You can chat with a specific data"
-        " agent using `ask_data_agent`.\n- `generate_chart` renders"
+        " agent using `ask_data_agent`.\n- You can create a new data agent"
+        " using `create_data_agent`.\n- `generate_chart` renders"
         " professional charts from a `chart_spec` (Vega-Lite JSON). Use this"
         " whenever you need to visualize data; do not show raw JSON to the"
         " user.\n- You can load artifacts using `load_artifacts`.\n"

@@ -22,7 +22,7 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.auth.auth_credential import ServiceAccountCredential
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPServerParams
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 # TODO: Update this to the production MCP server url and scopes.
 MCP_SERVER_URL = "https://test.sandbox.googleapis.com/mcp"
@@ -34,7 +34,7 @@ root_agent = LlmAgent(
 Help the user with the tools available to you.
     """,
     tools=[
-        MCPToolset(
+        McpToolset(
             connection_params=StreamableHTTPServerParams(
                 url=MCP_SERVER_URL,
             ),

@@ -40,12 +40,14 @@ from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
+from .agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from .agents.run_config import RunConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
+from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event_actions import EventActions
@@ -114,12 +116,13 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
       scope = ``<node_name>@<run_id>``, stamped on every event the
       task agent emits.
 
-  Both close on a SUCCESSFUL ``finish_task`` FunctionResponse —
-  i.e., one whose response is ``FINISH_TASK_SUCCESS_RESULT``.  An
-  error FR (validation failure) does NOT close the scope: the task
-  agent is still active, will see the error, and retry.  Walking
-  backward, the first non-empty scope we encounter that hasn't been
-  closed by a later successful ``finish_task`` is the paused task
+  Both close on a terminal ``finish_task`` FunctionResponse containing a
+  'result' key matching ``FINISH_TASK_SUCCESS_RESULT`` or
+  ``FINISH_TASK_ERROR_RESULT``. A FunctionResponse containing an 'error' key
+  (indicating a tool validation failure) does NOT close the scope: the task
+  agent is still active, will see the validation error, and retry. Walking
+  backward, the first non-empty scope we encounter that hasn't been closed by a
+  later successful or failed terminal ``finish_task`` is the paused task
   awaiting the user's next reply.
 
   Used by ``Runner._append_user_event`` to scope the new user message
@@ -129,8 +132,12 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
     A tuple of (isolation_scope, invocation_id) for the active task if found,
     or None if no active task scope is found.
   """
+  # Pass 1: Scan forward to find all scopes that have successfully finished.
+  # We must do this in a separate pass because walking backward directly would
+  # hit post-finish events (like status updates or duplicate FRs) before hitting
+  # the older success FR, falsely indicating the scope is still active.
   finished_scopes: set[str] = set()
-  for event in reversed(session.events):
+  for event in session.events:
     scope = event.isolation_scope
     if not scope:
       continue
@@ -139,9 +146,18 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
         fr = part.function_response
         if fr and fr.name == FINISH_TASK_TOOL_NAME:
           response = fr.response or {}
-          if response.get('result') == FINISH_TASK_SUCCESS_RESULT:
+          if response.get('result') in (
+              FINISH_TASK_SUCCESS_RESULT,
+              FINISH_TASK_ERROR_RESULT,
+          ):
             finished_scopes.add(scope)
           break
+
+  # Pass 2: Walk backward to find the latest active scope that is not finished.
+  for event in reversed(session.events):
+    scope = event.isolation_scope
+    if not scope:
+      continue
     if scope not in finished_scopes:
       return scope, event.invocation_id
   return None
@@ -337,9 +353,23 @@ class Runner:
     # Validate mutual exclusivity.
     provided = sum(x is not None for x in (app, agent, node))
     if provided > 1:
-      raise ValueError('Only one of app, agent, or node may be provided.')
+      provided_args = []
+      if app is not None:
+        provided_args.append(f'app={type(app).__name__}')
+      if agent is not None:
+        provided_args.append(f'agent={type(agent).__name__}')
+      if node is not None:
+        provided_args.append(f'node={type(node).__name__}')
+      args_str = ', '.join(provided_args)
+      raise ValueError(
+          'Only one of app, agent, or node may be provided, but got:'
+          f' {args_str}. Pass exactly one to Runner().'
+      )
     if provided == 0:
-      raise ValueError('One of app, agent, or node must be provided.')
+      raise ValueError(
+          'One of app, agent, or node must be provided. Got none.'
+          ' Pass exactly one to Runner().'
+      )
 
     # Handle deprecated plugins argument.
     if plugins is not None:
@@ -517,9 +547,13 @@ class Runner:
         session.events, function_response_id
     )
     if not fc_event:
+      fr_id = function_responses[0].id
+      fr_name = function_responses[0].name
       raise ValueError(
-          'Function call event not found for function response id:'
-          f' {function_responses[0].id}'
+          'Function call event not found for function response'
+          f' (id={fr_id!r}, name={fr_name!r}). Ensure the function'
+          ' call ID matches an existing function call in the session'
+          ' history.'
       )
 
     if invocation_id and invocation_id != fc_event.invocation_id:
@@ -720,22 +754,10 @@ class Runner:
             await ic.plugin_manager.run_after_run_callback(
                 invocation_context=ic
             )
-            if self.app and self.app.events_compaction_config:
-              logger.debug('Running event compactor.')
-              from google.adk.apps.compaction import _run_compaction_for_sliding_window
-
-              async with aclosing(
-                  _run_compaction_for_sliding_window(
-                      self.app,
-                      session,
-                      self.session_service,
-                      skip_token_compaction=ic.token_compaction_checked,
-                  )
-              ) as compaction_events:
-                async for compaction_event in compaction_events:
-                  await self.session_service.append_event(
-                      session=session, event=compaction_event
-                  )
+            await self._run_post_invocation_compaction(
+                session=session,
+                skip_token_compaction=ic.token_compaction_checked,
+            )
           except Exception as e:
             await _notify_run_error(ic.plugin_manager, ic, e)
             raise
@@ -861,11 +883,14 @@ class Runner:
     if fr_ids:
       raise ValueError(
           f'Function call not found for function response ids: {fr_ids}.'
+          ' Ensure each function response ID matches an existing function'
+          ' call in the session history.'
       )
     if len(invocation_ids) > 1:
       raise ValueError(
           'Function responses resolve to multiple'
-          f' invocations: {invocation_ids}.'
+          f' invocations: {invocation_ids}. All function responses in a'
+          ' single message must belong to the same invocation.'
       )
     return invocation_ids.pop()
 
@@ -990,6 +1015,45 @@ class Runner:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
 
+  async def _run_post_invocation_compaction(
+      self,
+      *,
+      session: Session,
+      skip_token_compaction: bool,
+  ) -> None:
+    """Run best-effort derived compaction after a completed invocation.
+
+    A later turn is allowed to update the same session while summarization is
+    running. If that happens, the old summary is discarded rather than making
+    an already answered invocation fail. Raw events remain persisted and a
+    later turn can re-evaluate compaction against its newer snapshot.
+    """
+    if not self.app or not self.app.events_compaction_config:
+      return
+
+    from google.adk.apps.compaction import _run_compaction_for_sliding_window
+
+    logger.debug('Running event compactor.')
+    try:
+      async with aclosing(
+          _run_compaction_for_sliding_window(
+              self.app,
+              session,
+              self.session_service,
+              skip_token_compaction=skip_token_compaction,
+          )
+      ) as compaction_events:
+        async for compaction_event in compaction_events:
+          await self.session_service.append_event(
+              session=session, event=compaction_event
+          )
+    except StaleSessionError:
+      logger.info(
+          'Discarding stale post-invocation compaction for session %s; a'
+          ' newer turn updated the session while summarization was running.',
+          session.id,
+      )
+
   async def _get_or_create_session(
       self,
       *,
@@ -1061,29 +1125,40 @@ class Runner:
 
     Yields:
       The events generated by the agent.
+
+    Raises:
+      Exception: Whatever the agent raised, re-raised on the calling thread
+        once the events produced before the failure have been yielded. A
+        failure that is not an Exception, such as a cancellation, is reported
+        as a RuntimeError chained to it, because re-raising it here would tell
+        the caller's own event loop that the caller was cancelled. Nothing is
+        raised if the caller stops iterating before the run finishes.
     """
     run_config = run_config or RunConfig()
-    event_queue: queue.Queue[Event | None] = queue.Queue()
+    event_queue: queue.Queue[Event | BaseException | None] = queue.Queue()
 
     async def _invoke_run_async() -> None:
-      try:
-        async with aclosing(
-            self.run_async(
-                user_id=user_id,
-                session_id=session_id,
-                new_message=new_message,
-                state_delta=state_delta,
-                run_config=run_config,
-            )
-        ) as agen:
-          async for event in agen:
-            event_queue.put(event)
-      finally:
-        event_queue.put(None)
+      async with aclosing(
+          self.run_async(
+              user_id=user_id,
+              session_id=session_id,
+              new_message=new_message,
+              state_delta=state_delta,
+              run_config=run_config,
+          )
+      ) as agen:
+        async for event in agen:
+          event_queue.put(event)
 
     def _asyncio_thread_main() -> None:
       try:
         asyncio.run(_invoke_run_async())
+      except BaseException as e:  # pylint: disable=broad-except
+        # The failure surfaces only on this thread, and the agent may raise
+        # anything, so forward it for the calling thread to report. This
+        # catches BaseException because a cancelled run raises CancelledError,
+        # which would otherwise be lost here.
+        event_queue.put(e)
       finally:
         event_queue.put(None)
 
@@ -1091,14 +1166,26 @@ class Runner:
     thread.start()
 
     # consumes and re-yield the events from background thread.
+    agent_error: BaseException | None = None
     while True:
-      event = event_queue.get()
-      if event is None:
+      item = event_queue.get()
+      if item is None:
+        break
+      elif isinstance(item, BaseException):
+        agent_error = item
         break
       else:
-        yield event
+        yield item
 
     thread.join()
+    if isinstance(agent_error, Exception):
+      raise agent_error
+    if agent_error is not None:
+      # Re-raising a CancelledError here would read as the caller being
+      # cancelled, and a SystemExit would end the caller's process.
+      raise RuntimeError(
+          f'Agent run terminated by {type(agent_error).__name__}.'
+      ) from agent_error
 
   async def run_async(
       self,
@@ -1133,6 +1220,13 @@ class Runner:
     Yields:
       The events generated by the agent.
 
+    Note on Root LlmAgent in Task Mode:
+      A root LlmAgent configured with `mode="task"` is fully supported. The
+      runner drives it to completion via the finish_task tool and promotes the
+      task result onto the terminal event's `output` field, which any caller can
+      consume: a direct `run_async` caller reads it off the event stream, and
+      the server-side `A2aAgentExecutor` wrapper turns it into an A2A artifact.
+
     Raises:
       ValueError: If the session is not found; If both invocation_id and
         new_message are None.
@@ -1145,35 +1239,58 @@ class Runner:
     from .agents.llm_agent import LlmAgent
     from .workflow._base_node import BaseNode
 
+    # Optional dependency: RemoteA2aAgent is only available if a2a is installed.
+    remote_a2a_agent_type: Any = None
+    try:
+      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
+
+      remote_a2a_agent_type = RemoteA2aAgent
+    except ImportError:
+      pass
+
     if isinstance(self.agent, LlmAgent):
       if self.agent.mode is None:
-        # LlmAgent as root agent must have chat mode.
+        # LlmAgent as root agent defaults to chat mode.
         self.agent.mode = 'chat'
 
-      if self.agent.mode == 'chat':
+      # A root LlmAgent runs in chat mode (the default) or task mode. Task mode
+      # is fully supported for any caller: the agent runs to completion via the
+      # finish_task tool and its result is promoted onto the terminal event's
+      # output field (an A2A server turns that into an artifact; a direct caller
+      # reads it off the event stream).
+      if self.agent.mode in ('chat', 'task'):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
             get_session_config=run_config.get_session_config,
         )
-        # when the chat coordinator has task-mode sub-agents,
-        # the wrapper handles delegation via ctx.run_node. Don't let
-        # the legacy sub-agent picker bypass the coordinator on resume.
-        has_task_subagent = any(
-            isinstance(sa, LlmAgent) and getattr(sa, 'mode', None) == 'task'
-            for sa in self.agent.sub_agents or []
-        )
-        agent_to_run: BaseAgent
-        if has_task_subagent:
-          agent_to_run = self.agent
+        if self.agent.mode == 'chat':
+          # when the chat coordinator has task-mode sub-agents,
+          # the wrapper handles delegation via ctx.run_node. Don't let
+          # the legacy sub-agent picker bypass the coordinator on resume.
+          remote_a2a_agent_class = (
+              (remote_a2a_agent_type,)
+              if remote_a2a_agent_type is not None
+              else ()
+          )
+          has_task_subagent = any(
+              isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
+              and getattr(sa, 'mode', None) == 'task'
+              for sa in self.agent.sub_agents or []
+          )
+          agent_to_run: BaseAgent
+          if has_task_subagent:
+            agent_to_run = self.agent
+          else:
+            agent_to_run = self._find_agent_to_run(session, self.agent)
         else:
-          agent_to_run = self._find_agent_to_run(session, self.agent)
+          agent_to_run = self.agent
 
         # The agent_to_run will be built/cloned inside Context.run_node,
         # so we don't call build_node here to avoid double cloning.
       else:
         raise ValueError(
-            "LlmAgent as root agent must have mode='chat', but got"
+            "LlmAgent as root agent must have mode='chat' or 'task', but got"
             f" mode='{self.agent.mode}'."
         )
       async with aclosing(
@@ -1312,22 +1429,10 @@ class Runner:
         # Run compaction after all events are yielded from the agent.
         # (We don't compact in the middle of an invocation, we only compact at
         # the end of an invocation.)
-        if self.app and self.app.events_compaction_config:
-          logger.debug('Running event compactor.')
-          from google.adk.apps.compaction import _run_compaction_for_sliding_window
-
-          async with aclosing(
-              _run_compaction_for_sliding_window(
-                  self.app,
-                  invocation_context.session,
-                  self.session_service,
-                  skip_token_compaction=invocation_context.token_compaction_checked,
-              )
-          ) as compaction_events:
-            async for compaction_event in compaction_events:
-              await self.session_service.append_event(
-                  session=invocation_context.session, event=compaction_event
-              )
+        await self._run_post_invocation_compaction(
+            session=invocation_context.session,
+            skip_token_compaction=(invocation_context.token_compaction_checked),
+        )
 
     async with aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:

@@ -54,6 +54,7 @@ from .eval_metrics import EvalMetricResult
 from .eval_metrics import PrebuiltMetrics
 from .eval_result import EvalCaseResult
 from .eval_set import EvalSet
+from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
@@ -93,7 +94,7 @@ EXPECTED_TOOL_USE_COLUMN = "expected_tool_use"
 
 
 def load_json(file_path: str) -> Union[Dict[str, Any], List[Any]]:
-  with open(file_path, "r") as f:
+  with open(file_path, "r", encoding="utf-8") as f:
     return cast(Union[Dict[str, Any], List[Any]], json.load(f))
 
 
@@ -130,6 +131,8 @@ class AgentEvaluator:
       print_detailed_results: bool = True,
       artifact_service: Optional[BaseArtifactService] = None,
       output_file: Optional[str] = None,
+      app_name: Optional[str] = None,
+      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
   ) -> None:
     """Evaluates an agent using the given EvalSet.
 
@@ -155,7 +158,16 @@ class AgentEvaluator:
         passing and failing metrics) are written to this path as a CSV file.
         Disabled by default. The parent directory is created if it does not
         already exist.
+      app_name: The application name used by eval set results manager while
+        persisting eval set results.
+      eval_set_results_manager: Optional manager used to persist the eval set
+        evaluation result as `*.evalset_result.json`.
     """
+    if eval_set_results_manager is not None and not app_name:
+      raise ValueError(
+          "app_name is required when eval_set_results_manager is provided."
+      )
+
     if criteria:
       logger.warning(
           "`criteria` field is deprecated and will be removed in future"
@@ -180,6 +192,12 @@ class AgentEvaluator:
     )
     live_model_config = eval_config.live_model_config
 
+    # `eval_set_results_manager`, when provided, is what persists the eval
+    # results as `*.evalset_result.json` files (via LocalEvalService), stored
+    # under `app_name`. When no manager is given, nothing is saved, so a dummy
+    # `app_name` is fine here.
+    app_name = app_name or "test_app"
+
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
         agent_for_eval=agent_for_eval,
@@ -187,9 +205,11 @@ class AgentEvaluator:
         eval_metrics=eval_metrics,
         num_runs=num_runs,
         user_simulator_provider=user_simulator_provider,
+        app_name=app_name,
         live_model_config=live_model_config,
         artifact_service=artifact_service,
         app=app,
+        eval_set_results_manager=eval_set_results_manager,
     )
 
     # Step 2: Post-process the results!
@@ -215,6 +235,13 @@ class AgentEvaluator:
       )
 
       failures.extend(failures_per_eval_case)
+      failures.extend(
+          AgentEvaluator._get_failures_from_final_eval_status(
+              eval_id=eval_id,
+              eval_results_per_eval_id=eval_results_per_eval_id,
+              agent_module=agent_module,
+          )
+      )
 
       if output_file:
         csv_rows.extend(
@@ -249,6 +276,8 @@ class AgentEvaluator:
       print_detailed_results: bool = True,
       artifact_service: Optional[BaseArtifactService] = None,
       output_file: Optional[str] = None,
+      app_name: Optional[str] = None,
+      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
   ) -> None:
     """Evaluates an Agent given eval data.
 
@@ -275,7 +304,16 @@ class AgentEvaluator:
         this path as a CSV file. Disabled by default. When the eval data spans
         multiple test files, results from all of them are appended to the same
         file.
+      app_name: The application name used by eval set results manager while
+        persisting eval set results.
+      eval_set_results_manager: Optional manager used to persist the eval set
+        evaluation result as `*.evalset_result.json`.
     """
+    if eval_set_results_manager is not None and not app_name:
+      raise ValueError(
+          "app_name is required when eval_set_results_manager is provided."
+      )
+
     test_files = []
     if isinstance(eval_dataset_file_path_or_dir, str) and os.path.isdir(
         eval_dataset_file_path_or_dir
@@ -302,6 +340,8 @@ class AgentEvaluator:
           num_runs=num_runs,
           agent_name=agent_name,
           print_detailed_results=print_detailed_results,
+          app_name=app_name,
+          eval_set_results_manager=eval_set_results_manager,
           artifact_service=artifact_service,
           output_file=output_file,
       )
@@ -325,7 +365,7 @@ class AgentEvaluator:
         old_eval_data_file, eval_config, initial_session
     )
 
-    with open(new_eval_data_file, "w") as f:
+    with open(new_eval_data_file, "w", encoding="utf-8") as f:
       f.write(eval_set.model_dump_json(indent=2))
 
   @staticmethod
@@ -384,7 +424,7 @@ class AgentEvaluator:
   ) -> dict[str, Any]:
     initial_session: dict[str, Any] = {}
     if initial_session_file:
-      with open(initial_session_file, "r") as f:
+      with open(initial_session_file, "r", encoding="utf-8") as f:
         initial_session = json.loads(f.read())
     return initial_session
 
@@ -636,6 +676,9 @@ class AgentEvaluator:
       live_model_config: Optional[LiveModelConfig] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       app: Optional[App] = None,
+      *,
+      app_name: str,
+      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -652,8 +695,6 @@ class AgentEvaluator:
     except ModuleNotFoundError as e:
       raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
 
-    # It is okay to pick up this dummy name.
-    app_name = "test_app"
     eval_service = LocalEvalService(
         root_agent=agent_for_eval,
         eval_sets_manager=AgentEvaluator._get_eval_sets_manager(
@@ -662,6 +703,7 @@ class AgentEvaluator:
         user_simulator_provider=user_simulator_provider,
         artifact_service=artifact_service,
         app=app,
+        eval_set_results_manager=eval_set_results_manager,
     )
 
     if live_model_config:
@@ -804,6 +846,39 @@ class AgentEvaluator:
         )
 
     return failures
+
+  @staticmethod
+  def _get_failures_from_final_eval_status(
+      eval_id: str,
+      eval_results_per_eval_id: list[EvalCaseResult],
+      agent_module: str,
+  ) -> list[str]:
+    """Returns failures that the per-invocation metric results cannot show.
+
+    A run that produced no metric results at all, for example because
+    inferencing raised, leaves `_process_metrics_and_get_failures` with nothing
+    to derive a verdict from. The status recorded on the EvalCaseResult is the
+    only record that such a run failed, so we honor it here.
+    """
+    failed_runs = 0
+    for eval_case_result in eval_results_per_eval_id:
+      if eval_case_result.final_eval_status != EvalStatus.FAILED:
+        continue
+      per_invocation_results = (
+          eval_case_result.eval_metric_result_per_invocation
+      )
+      if any(r.eval_metric_results for r in per_invocation_results):
+        continue
+      failed_runs += 1
+
+    if not failed_runs:
+      return []
+
+    return [
+        f"{eval_id} for {agent_module} Failed. {failed_runs} of"
+        f" {len(eval_results_per_eval_id)} runs were recorded as failed without"
+        " producing any metric results."
+    ]
 
   @staticmethod
   def _get_results_as_rows(

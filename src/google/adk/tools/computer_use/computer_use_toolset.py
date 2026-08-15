@@ -33,10 +33,16 @@ from ...models.llm_request import LlmRequest
 from ..base_toolset import BaseToolset
 from ..tool_context import ToolContext
 from .base_computer import BaseComputer
+from .base_computer import ComputerState
 from .computer_use_tool import ComputerUseTool
 
 # Methods that should be excluded when creating tools from BaseComputer methods
 EXCLUDED_METHODS = {"screen_size", "environment", "close", "prepare"}
+
+_URL_REFUSED_ERROR = (
+    "navigate refused: url must be http(s) and must not target a private or"
+    " link-local address."
+)
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -49,10 +55,22 @@ class ComputerUseToolset(BaseToolset):
       *,
       computer: BaseComputer,
       excluded_predefined_functions: Optional[list[str]] = None,
+      allow_private_network_access: bool = False,
   ):
+    """Initializes the ComputerUseToolset.
+
+    Args:
+      computer: The computer environment to expose as tools.
+      excluded_predefined_functions: Names of BaseComputer methods that should
+        not be exposed as tools.
+      allow_private_network_access: By default `navigate` refuses urls whose
+        host is not publicly routable. Set this to True when the agent is
+        meant to drive the browser against localhost or an internal host.
+    """
     super().__init__()
     self._computer = computer
     self._excluded_predefined_functions = excluded_predefined_functions
+    self._allow_private_network_access = allow_private_network_access
     self._initialized = False
     self._tools = None
 
@@ -104,6 +122,42 @@ class ComputerUseToolset(BaseToolset):
         )
     ]
     wrapper.__signature__ = orig_sig.replace(parameters=new_params)
+
+    return wrapper
+
+  def _wrap_navigate_with_url_validation(
+      self, navigate_method: Callable[..., Any]
+  ) -> Callable[..., Any]:
+    """Checks a model-supplied url before `navigate` hands it to the browser."""
+
+    @functools.wraps(navigate_method)
+    async def wrapper(url: str) -> Any:
+      # Deferred to keep `requests` off the computer-use import path.
+      from ..load_web_page import _is_blocked_hostname
+      from ..load_web_page import _parse_request_target
+      from ..load_web_page import _resolve_direct_addresses
+
+      try:
+        if not isinstance(url, str):
+          raise ValueError("url is not a string")
+        target = _parse_request_target(url)
+        # A browser ends the authority at "\" but urlparse does not: in
+        # `http://169.254.169.254\@example.com/` the host is example.com here
+        # and 169.254.169.254 in Chrome, so refuse instead of checking it.
+        if "\\" in target.parsed_url.netloc:
+          raise ValueError("backslash in hostname")
+        if not self._allow_private_network_access:
+          if _is_blocked_hostname(target.hostname):
+            raise ValueError("hostname is blocked")
+          # getaddrinfo blocks, so keep it off the event loop.
+          await asyncio.to_thread(_resolve_direct_addresses, target.hostname)
+      except ValueError:
+        logger.warning("Refusing navigate(): url failed safety validation.")
+        # The computer-use model rejects a function response with no url,
+        # so report the page the browser is currently on.
+        state: ComputerState = await self._computer.current_state()
+        return {"error": _URL_REFUSED_ERROR, "url": state.url}
+      return await navigate_method(url)
 
     return wrapper
 
@@ -217,6 +271,11 @@ class ComputerUseToolset(BaseToolset):
       if attr is not None and callable(attr):
         # Get the corresponding method from the concrete instance
         instance_method = getattr(self._computer, method_name)
+        if method_name == "navigate":
+          # Check the url the model supplied before it reaches the browser.
+          instance_method = self._wrap_navigate_with_url_validation(
+              instance_method
+          )
         # Wrap with state binding so session_state is set before each call
         wrapped_method = self._wrap_method_with_state_binding(instance_method)
         computer_methods.append(wrapped_method)

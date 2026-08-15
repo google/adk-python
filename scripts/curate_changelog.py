@@ -24,7 +24,9 @@ newest version section, in order:
    landed under several commits), and lowercase the leading word so entries
    read as consistent imperative phrases.
 2. Draft a short "Highlights" block with Gemini and place it above the fold, so
-   a reader grasps the release in a handful of bullets.
+   a reader grasps the release in a handful of bullets. The drafted prose is
+   unwrapped to one line per paragraph and per bullet, because GitHub renders a
+   single newline as a line break.
 3. For large releases, collapse the full categorized list under a ``<details>``
    fold so the notes read short while remaining a complete record.
 
@@ -62,6 +64,11 @@ _MENTION_RE = re.compile(r"\[@([\w-]+)\]\(https://github\.com/\1\)")
 _LEAD_RE = re.compile(
     r"(?P<head>\s*\* (?:\*\*[^*]+\*\* )?)(?P<first>\w+)(?P<rest>.*)", re.S
 )
+# Opens a list item. A wrapped continuation is joined onto one of these.
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+] |\d+\. )")
+# Lines whose meaning depends on standing alone: headers, table rows, block
+# quotes, code fences. A wrapped continuation is never joined onto one.
+_STANDALONE_RE = re.compile(r"^\s*(?:#{1,6} |[|>]|```)")
 
 # Inserted verbatim when the model is unavailable, so the release manager has a
 # scaffold to fill in by hand. Mirrors the format the model is asked to produce.
@@ -96,7 +103,8 @@ Write a short Highlights section so a reader can grasp the release at a glance:
   the bullets, each with a one-line migration note.
 
 Output ONLY the markdown body. Do NOT include the "### Highlights" header and do
-NOT wrap the output in code fences.
+NOT wrap the output in code fences. Put each paragraph and each bullet on a
+single line, however long; do not hard-wrap them.
 
 Changelog for the new version:
 
@@ -206,9 +214,35 @@ def _draft_highlights(section_text: str, *, model: str) -> str | None:
     return None
 
 
+def _unwrap_lines(text: str) -> str:
+  """Joins each hard-wrapped paragraph and list item back onto one line.
+
+  Markdown treats a wrapped paragraph as one paragraph, but GitHub does not:
+  in a pull request body or a release note it renders every newline as a line
+  break, so prose a model wrapped at 80 columns breaks mid-sentence. Blank
+  lines, headers, table rows, quotes and fenced blocks keep their own lines.
+  """
+  out: list[str] = []
+  fenced = False
+  for line in text.splitlines():
+    stripped = line.strip()
+    if stripped.startswith("```"):
+      fenced = not fenced
+      out.append(line.rstrip())
+    elif fenced or not stripped:
+      out.append(line.rstrip())
+    elif _LIST_ITEM_RE.match(line) or _STANDALONE_RE.match(line):
+      out.append(line.rstrip())
+    elif out and out[-1].strip() and not _STANDALONE_RE.match(out[-1]):
+      out[-1] = f"{out[-1]} {stripped}"
+    else:
+      out.append(stripped)
+  return "\n".join(out)
+
+
 def _build_block(body: str) -> str:
   """Wraps a model-drafted body in the Highlights header."""
-  body = body.strip()
+  body = _unwrap_lines(body).strip()
   if body.startswith(_HIGHLIGHTS_HEADER):
     body = body[len(_HIGHLIGHTS_HEADER) :].lstrip("\n")
   return f"{_HIGHLIGHTS_HEADER}\n\n{body}\n"

@@ -64,6 +64,15 @@ class MockLlmAsJudge(LlmAsJudge):
     )
 
 
+class PerInvocationReportingLlmAsJudge(MockLlmAsJudge):
+  """Surfaces the per-invocation results the base class graded."""
+
+  def aggregate_invocation_results(
+      self, per_invocation_results: list[PerInvocationResult]
+  ) -> EvaluationResult:
+    return EvaluationResult(per_invocation_results=per_invocation_results)
+
+
 @pytest.fixture
 def mock_llm_as_judge():
   return MockLlmAsJudge(
@@ -237,3 +246,46 @@ async def test_evaluate_invocations_with_mock(
   assert mock_llm_as_judge.format_auto_rater_prompt.call_count == 2
   assert mock_llm_as_judge.convert_auto_rater_response_to_score.call_count == 6
   assert mock_llm_as_judge.aggregate_invocation_results.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_grades_criterion_only_metric(
+    mock_judge_model,
+):
+  # A metric configured with just a criterion carries no deprecated threshold,
+  # and must still be graded against the criterion's own threshold.
+  judge = PerInvocationReportingLlmAsJudge(
+      eval_metric=EvalMetric(
+          metric_name="test_metric",
+          criterion=LlmAsAJudgeCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  judge_model_config=genai_types.GenerateContentConfig(),
+                  num_samples=1,
+              ),
+          ),
+      ),
+      criterion_type=LlmAsAJudgeCriterion,
+  )
+  judge._judge_model = mock_judge_model
+  actual_invocations = [
+      Invocation(
+          invocation_id="id1",
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="user content 1")],
+              role="user",
+          ),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="final response 1")],
+              role="model",
+          ),
+      )
+  ]
+
+  result = await judge.evaluate_invocations(actual_invocations)
+
+  # The auto-rater scores 1.0, which clears the criterion's 0.5 threshold.
+  assert [r.eval_status for r in result.per_invocation_results] == [
+      EvalStatus.PASSED
+  ]

@@ -70,6 +70,62 @@ class TestConvertA2aPartToGenaiPart:
     assert isinstance(result, genai_types.Part)
     assert result.text == "Hello, world!"
 
+  def test_convert_text_part_with_thought_metadata(self):
+    """Test conversion of A2A TextPart with adk_thought metadata to GenAI Part.
+
+    Verifies that the inbound conversion restores thought=True from A2A
+    metadata, which is essential for the thought-filtering logic in
+    RemoteA2aAgent._handle_a2a_response. See #4676.
+    """
+    # Arrange
+    a2a_part = _compat.make_text_part("internal reasoning")
+    _compat.set_part_metadata(
+        a2a_part, {_get_adk_metadata_key("thought"): True}
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, genai_types.Part)
+    assert result.text == "internal reasoning"
+    assert result.thought is True
+
+  def test_convert_text_part_with_thought_false_metadata(self):
+    """Test conversion of A2A TextPart with adk_thought=False metadata."""
+    # Arrange
+    a2a_part = _compat.make_text_part("user-facing text")
+    _compat.set_part_metadata(
+        a2a_part, {_get_adk_metadata_key("thought"): False}
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.text == "user-facing text"
+    # thought=False means it's not a thought part; the filter won't match
+    assert result.thought is False
+
+  def test_convert_text_part_without_thought_metadata(self):
+    """Test conversion of A2A TextPart without adk_thought metadata.
+
+    When no thought metadata is present, thought should remain None.
+    """
+    # Arrange
+    a2a_part = _compat.make_text_part("regular text")
+    _compat.set_part_metadata(a2a_part, {"some_other_key": "value"})
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.text == "regular text"
+    assert result.thought is None
+
   def test_convert_file_part_with_uri(self):
     """Test conversion of A2A FilePart with URI to GenAI Part."""
     # Arrange
@@ -752,6 +808,36 @@ class TestRoundTripConversions:
     assert isinstance(result_genai_part, genai_types.Part)
     assert result_genai_part.text == original_text
     assert result_genai_part.thought
+
+  def test_thought_round_trip_enables_filtering(self):
+    """Test that thought round-trip enables downstream filtering.
+
+    This reproduces the exact scenario from #4676: an A2A response
+    contains both thought and non-thought parts serialized as artifacts.
+    After round-tripping through part_converter, the thought flag must
+    be preserved so that filtering (e.g., in RemoteA2aAgent) can remove
+    thought parts from user-facing output.
+    """
+    # Simulate outbound: GenAI parts -> A2A parts (server side)
+    thought_genai = genai_types.Part(
+        text="<internal reasoning text>", thought=True
+    )
+    answer_genai = genai_types.Part(text="<final user-facing answer>")
+
+    thought_a2a = convert_genai_part_to_a2a_part(thought_genai)
+    answer_a2a = convert_genai_part_to_a2a_part(answer_genai)
+
+    # Simulate inbound: A2A parts -> GenAI parts (client side)
+    restored_thought = convert_a2a_part_to_genai_part(thought_a2a)
+    restored_answer = convert_a2a_part_to_genai_part(answer_a2a)
+
+    # Apply the filter that RemoteA2aAgent uses
+    parts = [restored_thought, restored_answer]
+    filtered = [p for p in parts if not p.thought]
+
+    # Only the user-facing answer should survive
+    assert len(filtered) == 1
+    assert filtered[0].text == "<final user-facing answer>"
 
   def test_file_uri_round_trip(self):
     """Test round-trip conversion for file parts with URI."""

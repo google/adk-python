@@ -182,6 +182,37 @@ def test_format_auto_rater_prompt_with_intermediate_data(
   assert '"result": "ok"' in prompt
 
 
+def test_format_auto_rater_prompt_with_grounding_metadata(
+    evaluator: RubricBasedFinalResponseQualityV1Evaluator,
+):
+  """Tests grounding metadata is included as trusted evidence."""
+  grounding_metadata = genai_types.GroundingMetadata(
+      web_search_queries=["recent AI news"]
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="What's new in AI?")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Here are sources.")]
+      ),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="agent",
+                  content=None,
+                  grounding_metadata=grounding_metadata,
+              )
+          ]
+      ),
+  )
+  prompt = evaluator.format_auto_rater_prompt(invocation, None)
+
+  assert "<grounding_metadata>" in prompt
+  assert "recent AI news" in prompt
+  assert "model-supplied grounding metadata" in prompt
+
+
 def test_format_auto_rater_prompt_with_app_details_no_tools(
     evaluator: RubricBasedFinalResponseQualityV1Evaluator,
 ):
@@ -222,3 +253,69 @@ def test_format_auto_rater_prompt_with_intermediate_data_no_tools(
   prompt = evaluator.format_auto_rater_prompt(invocation, None)
 
   assert "No intermediate steps were taken." in prompt
+
+
+def test_format_auto_rater_prompt_with_app_details_empty_invocation_events(
+    evaluator: RubricBasedFinalResponseQualityV1Evaluator,
+):
+  """Tests that developer_instructions are populated even when invocation_events is empty.
+
+  This covers the case where an agent declines a request without calling any
+  tools (e.g., out-of-scope rejection), resulting in zero invocation events.
+  The judge should still receive the developer instructions to evaluate rubrics
+  that reference the system prompt.
+  """
+  app_details = AppDetails(
+      agent_details={
+          "my_agent": AgentDetails(
+              name="my_agent",
+              instructions=(
+                  "Only answer questions about cooking. Decline all other"
+                  " requests."
+              ),
+              tool_declarations=[],
+          )
+      },
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="What is the capital of France?")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="I can only help with cooking.")]
+      ),
+      app_details=app_details,
+      intermediate_data=InvocationEvents(invocation_events=[]),
+  )
+  prompt = evaluator.format_auto_rater_prompt(invocation, None)
+
+  assert "Only answer questions about cooking." in prompt
+  assert "I can only help with cooking." in prompt
+
+
+def test_format_auto_rater_prompt_with_app_details_no_intermediate_data(
+    evaluator: RubricBasedFinalResponseQualityV1Evaluator,
+):
+  """Tests that developer_instructions are populated when intermediate_data is None."""
+  app_details = AppDetails(
+      agent_details={
+          "my_agent": AgentDetails(
+              name="my_agent",
+              instructions="Agent instructions here.",
+              tool_declarations=[],
+          )
+      },
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User input here.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Final agent response.")]
+      ),
+      app_details=app_details,
+      intermediate_data=None,
+  )
+  prompt = evaluator.format_auto_rater_prompt(invocation, None)
+
+  assert "Agent instructions here." in prompt

@@ -1210,7 +1210,7 @@ class _FixedResponseParser(AutoRaterResponseParser):
 
 
 def _metric_with_thresholds(
-    metric_threshold: float, criterion_threshold: float
+    metric_threshold: float | None, criterion_threshold: float
 ) -> EvalMetric:
   """Returns a metric whose own threshold differs from its criterion's."""
   rubrics = [
@@ -1240,7 +1240,7 @@ def _metric_with_thresholds(
 class TestRubricBasedEvaluatorCollaborators:
   """RubricBasedEvaluator must defer to the collaborators it is given."""
 
-  def test_per_invocation_aggregation_uses_the_metric_threshold(self):
+  def test_per_invocation_aggregation_uses_the_criterion_threshold(self):
     sentinel = _create_per_invocation_result(
         [RubricScore(rubric_id="1", score=1.0)]
     )
@@ -1253,10 +1253,10 @@ class TestRubricBasedEvaluatorCollaborators:
 
     assert evaluator.aggregate_per_invocation_samples(samples) is sentinel
     assert aggregator.received_samples == [samples]
-    # The metric's own threshold reaches the aggregator, not the criterion's.
-    assert aggregator.thresholds == [0.9]
+    # The criterion's threshold reaches the aggregator, not the deprecated one.
+    assert aggregator.thresholds == [0.1]
 
-  def test_invocation_summarization_uses_the_metric_threshold(self):
+  def test_invocation_summarization_uses_the_criterion_threshold(self):
     sentinel = EvaluationResult(overall_score=0.25)
     summarizer = _RecordingSummarizer(sentinel)
     evaluator = ConfigurableFakeRubricBasedEvaluator(
@@ -1265,7 +1265,32 @@ class TestRubricBasedEvaluatorCollaborators:
     )
 
     assert evaluator.aggregate_invocation_results([]) is sentinel
-    assert summarizer.thresholds == [0.9]
+    assert summarizer.thresholds == [0.1]
+
+  def test_criterion_only_metric_still_grades(self):
+    # A metric configured with just a criterion carries no deprecated
+    # threshold, and must still produce a real verdict.
+    evaluator = FakeRubricBasedEvaluator(
+        _metric_with_thresholds(metric_threshold=None, criterion_threshold=0.5)
+    )
+
+    passing = evaluator.aggregate_per_invocation_samples(
+        [_create_per_invocation_result([RubricScore(rubric_id="1", score=1.0)])]
+    )
+    assert passing.eval_status == EvalStatus.PASSED
+    assert (
+        evaluator.aggregate_invocation_results([passing]).overall_eval_status
+        == EvalStatus.PASSED
+    )
+
+    failing = evaluator.aggregate_per_invocation_samples(
+        [_create_per_invocation_result([RubricScore(rubric_id="1", score=0.0)])]
+    )
+    assert failing.eval_status == EvalStatus.FAILED
+    assert (
+        evaluator.aggregate_invocation_results([failing]).overall_eval_status
+        == EvalStatus.FAILED
+    )
 
   def test_scoring_uses_the_injected_response_parser(self):
     # The parser is the only thing that reads the auto-rater's raw text, so a
