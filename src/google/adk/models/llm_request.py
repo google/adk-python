@@ -257,7 +257,10 @@ class LlmRequest(BaseModel):
       return []
 
     # Invalid input
-    raise TypeError("instructions must be list[str] or types.Content")
+    raise TypeError(
+        "instructions must be list[str] or types.Content, got"
+        f" {type(instructions).__name__}."
+    )
 
   def append_tools(self, tools: list[BaseTool]) -> None:
     """Appends tools to the request.
@@ -345,7 +348,10 @@ class LlmRequest(BaseModel):
     """
     schema = output_schema or base_model
     if schema is None:
-      raise ValueError("Either output_schema or base_model must be provided.")
+      raise ValueError(
+          "Either output_schema or base_model must be provided."
+          " Pass output_schema=<your_schema> (base_model is deprecated)."
+      )
 
     self.config.response_schema = schema
     self.config.response_mime_type = "application/json"

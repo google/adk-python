@@ -86,6 +86,11 @@ _NO_CONTENT_ERROR_MESSAGE = (
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
 
+# How long a live run waits for a background tool task to honor cancellation
+# before giving up on it. Matches the budget `stop_streaming` already gives a
+# streaming tool it cancels.
+_TOOL_SHUTDOWN_TIMEOUT_SECONDS = 1.0
+
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 # Statistics configuration
@@ -579,262 +584,347 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow using live api."""
-    from google.genai import errors
+    try:
+      from google.genai import errors
 
-    llm_request = LlmRequest()
-    event_id = Event.new_id()
+      llm_request = LlmRequest()
+      event_id = Event.new_id()
 
-    # Preprocess before calling the LLM.
-    async with Aclosing(
-        self._preprocess_async(invocation_context, llm_request)
-    ) as agen:
-      async for event in agen:
-        yield event
-    if invocation_context.end_invocation:
-      return
+      # Preprocess before calling the LLM.
+      async with Aclosing(
+          self._preprocess_async(invocation_context, llm_request)
+      ) as agen:
+        async for event in agen:
+          yield event
+      if invocation_context.end_invocation:
+        return
 
-    agent = _as_llm_agent(invocation_context)
-    live_request_queue = _require_live_request_queue(invocation_context)
-    llm_request.model = agent.canonical_live_model.model
+      agent = _as_llm_agent(invocation_context)
+      live_request_queue = _require_live_request_queue(invocation_context)
+      llm_request.model = agent.canonical_live_model.model
 
-    llm = self.__get_llm(invocation_context)
-    # Only log non-sensitive request metadata. The full request carries the
-    # user conversation and http_options.headers, which may hold credentials.
-    logger.debug(
-        'Establishing live connection for agent: %s, model: %s, contents: %s,'
-        ' response modalities: %s',
-        agent.name,
-        llm_request.model,
-        len(llm_request.contents),
-        llm_request.live_connect_config.response_modalities,
-    )
+      llm = self.__get_llm(invocation_context)
+      # Only log non-sensitive request metadata. The full request carries the
+      # user conversation and http_options.headers, which may hold credentials.
+      logger.debug(
+          'Establishing live connection for agent: %s, model: %s, contents: %s,'
+          ' response modalities: %s',
+          agent.name,
+          llm_request.model,
+          len(llm_request.contents),
+          llm_request.live_connect_config.response_modalities,
+      )
 
-    attempt = 1
-    while True:
-      try:
-        # On subsequent attempts, use the saved token to reconnect
-        if invocation_context.live_session_resumption_handle:
-          logger.info('Attempting to reconnect (Attempt %s)...', attempt)
-          attempt += 1
-          if not llm_request.live_connect_config:
-            llm_request.live_connect_config = types.LiveConnectConfig()
-          if not llm_request.live_connect_config.session_resumption:
-            llm_request.live_connect_config.session_resumption = (
-                types.SessionResumptionConfig()
-            )
-          llm_request.live_connect_config.session_resumption.handle = (
-              invocation_context.live_session_resumption_handle
-          )
-
-          # Only set transparent=True for Vertex AI backend, as the Gemini API
-          # backend explicitly rejects it.
-          if (
-              isinstance(llm, Gemini)
-              and llm._api_backend == GoogleLLMVariant.VERTEX_AI  # pylint: disable=protected-access
-          ):
-            session_resumption = (
-                llm_request.live_connect_config.session_resumption
-            )
-            if session_resumption.transparent is None:
-              session_resumption.transparent = True
-
-        # When seeding a fresh connection with prior conversation history, set
-        # initial_history_in_client_content to True. This tells the Live server
-        # that the provided history already includes the model's past responses,
-        # preventing the server from generating duplicate responses for those replayed turns.
-        if (
-            llm_request.contents
-            and not invocation_context.live_session_resumption_handle
-        ):
-          if not llm_request.live_connect_config:
-            llm_request.live_connect_config = types.LiveConnectConfig()
-          if not llm_request.live_connect_config.history_config:
-            llm_request.live_connect_config.history_config = (
-                types.HistoryConfig()
-            )
-          if (
-              llm_request.live_connect_config.history_config.initial_history_in_client_content
-              is None
-          ):
-            llm_request.live_connect_config.history_config.initial_history_in_client_content = (
-                True
+      attempt = 1
+      while True:
+        try:
+          # On subsequent attempts, use the saved token to reconnect
+          if invocation_context.live_session_resumption_handle:
+            logger.info('Attempting to reconnect (Attempt %s)...', attempt)
+            attempt += 1
+            if not llm_request.live_connect_config:
+              llm_request.live_connect_config = types.LiveConnectConfig()
+            if not llm_request.live_connect_config.session_resumption:
+              llm_request.live_connect_config.session_resumption = (
+                  types.SessionResumptionConfig()
+              )
+            llm_request.live_connect_config.session_resumption.handle = (
+                invocation_context.live_session_resumption_handle
             )
 
-        logger.info(
-            'Establishing live connection for agent: %s',
-            agent.name,
-        )
-        async with llm.connect(llm_request) as llm_connection:
-          # Reset retry count to allow the maximum reconnect attempts for
-          # subsequent connection drops.
-          attempt = 1
-          # Skip sending history if we are resuming a session. The server
-          # already has the state associated with the resumption handle.
+            # Only set transparent=True for Vertex AI backend, as the Gemini API
+            # backend explicitly rejects it.
+            if (
+                isinstance(llm, Gemini)
+                and llm._api_backend == GoogleLLMVariant.VERTEX_AI  # pylint: disable=protected-access
+            ):
+              session_resumption = (
+                  llm_request.live_connect_config.session_resumption
+              )
+              if session_resumption.transparent is None:
+                session_resumption.transparent = True
+
+          # When seeding a fresh connection with prior conversation history, set
+          # initial_history_in_client_content to True. This tells the Live server
+          # that the provided history already includes the model's past responses,
+          # preventing the server from generating duplicate responses for those replayed turns.
           if (
               llm_request.contents
               and not invocation_context.live_session_resumption_handle
           ):
-            # Sends the conversation history to the model.
-            with tracer.start_as_current_span('send_data'):
-              # Combine regular contents with audio/transcription from session
-              logger.debug('Sending history to model: %s', llm_request.contents)
-              await llm_connection.send_history(llm_request.contents)
-              trace_send_data(
-                  invocation_context, event_id, llm_request.contents
+            if not llm_request.live_connect_config:
+              llm_request.live_connect_config = types.LiveConnectConfig()
+            if not llm_request.live_connect_config.history_config:
+              llm_request.live_connect_config.history_config = (
+                  types.HistoryConfig()
+              )
+            if (
+                llm_request.live_connect_config.history_config.initial_history_in_client_content
+                is None
+            ):
+              llm_request.live_connect_config.history_config.initial_history_in_client_content = (
+                  True
               )
 
-          send_task = asyncio.create_task(
-              self._send_to_model(llm_connection, invocation_context)
-          )
-
-          should_reconnect = False
-          try:
-            async with Aclosing(
-                self._receive_from_model(
-                    llm_connection,
-                    event_id,
-                    invocation_context,
-                    llm_request,
-                )
-            ) as agen:
-              async for event in agen:
-                if isinstance(event, _ReconnectSentinel):
-                  should_reconnect = True
-                  break
-                # Empty event means the queue is closed.
-                if not event:
-                  break
-                logger.debug('Receive new event: %s', event)
-                yield event
-                # send back the function response to models
-                if event.get_function_responses():
-                  logger.debug(
-                      'Sending back last function response event: %s', event
-                  )
-                  if event.content is None:
-                    raise RuntimeError(
-                        'A function response event must contain content.'
-                    )
-                  live_request_queue.send_content(event.content)
-                # We handle agent transfer here in `run_live` rather than
-                # in `_postprocess_live` to prevent duplication of function
-                # response processing. If agent transfer were handled in
-                # `_postprocess_live`, events yielded from child agent's
-                # `run_live` would bubble up to parent agent's `run_live`,
-                # causing `event.get_function_responses()` to be true in both
-                # child and parent, and `send_content()` to be called twice for
-                # the same function response. By handling agent transfer here,
-                # we ensure that only child agent processes its own function
-                # responses after the transfer.
-                #
-                # The transfer is gated on the `transfer_to_agent` action
-                # rather than on the position of the `transfer_to_agent`
-                # function response: the model may issue the transfer alongside
-                # other function calls, whose responses are merged into a
-                # single event in call order, so the transfer response is not
-                # necessarily `parts[0]`. Gating on the action matches
-                # `_postprocess_handle_function_calls_async`, and also covers
-                # tools that request a transfer by setting the action directly
-                # instead of calling `transfer_to_agent`.
-                transfer_to_agent = event.actions.transfer_to_agent
-                if transfer_to_agent:
-                  await asyncio.sleep(DEFAULT_TRANSFER_AGENT_DELAY)
-                  # cancel the tasks that belongs to the closed connection.
-                  send_task.cancel()
-                  logger.debug('Closing live connection')
-                  await llm_connection.close()
-                  logger.debug('Live connection closed.')
-                  # transfer to the sub agent.
-                  logger.debug('Transferring to agent: %s', transfer_to_agent)
-                  agent_to_run = self._get_agent_to_run(
-                      invocation_context, transfer_to_agent
-                  )
-                  child_ctx = invocation_context.model_copy()
-                  # Child Live agent should start a new Live session.
-                  # Do not reuse the parent session's resumption handle.
-                  child_ctx.live_session_resumption_handle = None
-
-                  if child_ctx.run_config:
-                    child_ctx.run_config = child_ctx.run_config.model_copy(
-                        deep=True
-                    )
-                    if child_ctx.run_config.session_resumption:
-                      child_ctx.run_config.session_resumption.handle = None
-
-                  async with Aclosing(agent_to_run.run_live(child_ctx)) as agen:
-                    async for item in agen:
-                      yield item
-                # `task_completed` is an ordinary tool, so the model may call
-                # it alongside others. Their responses are merged into a single
-                # event in call order, so scan every response rather than only
-                # `parts[0]`. Unlike agent transfer there is no corresponding
-                # action to key off, since `task_completed` only signals
-                # completion through its function response.
-                if any(
-                    function_response.name == 'task_completed'
-                    for function_response in event.get_function_responses()
-                ):
-                  # this is used for sequential agent to signal the end of the agent.
-                  await asyncio.sleep(DEFAULT_TASK_COMPLETION_DELAY)
-                  # cancel the tasks that belongs to the closed connection.
-                  send_task.cancel()
-                  return
-          finally:
-            # Clean up
-            if not send_task.done():
-              send_task.cancel()
-            try:
-              await send_task
-            except asyncio.CancelledError:
-              pass
-        if should_reconnect:
-          continue
-        break
-      except (ConnectionClosed, ConnectionClosedOK) as e:
-        # If we have a session resumption handle, we attempt to reconnect.
-        # This handle is updated dynamically during the session.
-        if invocation_context.live_session_resumption_handle:
-          if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
-            logger.error('Max reconnection attempts reached (%s).', e)
-            raise
           logger.info(
-              'Connection closed (%s), reconnecting with session handle.', e
+              'Establishing live connection for agent: %s',
+              agent.name,
           )
-          continue
-        # No resumption handle + normal (1000) close = the model ended the
-        # session cleanly; end the stream instead of erroring so live nodes
-        # finish normally.
-        if isinstance(e, ConnectionClosedOK):
-          logger.info('Connection closed normally: %s.', e)
-          return
-        logger.error('Connection closed: %s.', e)
-        raise
-      except errors.APIError as e:
-        # Error code 1000, 1006 and 1011 indicates a recoverable connection drop.
-        # In that case, we attempt to reconnect with session handle if available.
-        if e.code in [1000, 1006, 1011]:
+          async with llm.connect(llm_request) as llm_connection:
+            # Reset retry count to allow the maximum reconnect attempts for
+            # subsequent connection drops.
+            attempt = 1
+            # Skip sending history if we are resuming a session. The server
+            # already has the state associated with the resumption handle.
+            if (
+                llm_request.contents
+                and not invocation_context.live_session_resumption_handle
+            ):
+              # Sends the conversation history to the model.
+              with tracer.start_as_current_span('send_data'):
+                # Combine regular contents with audio/transcription from session
+                logger.debug(
+                    'Sending history to model: %s', llm_request.contents
+                )
+                await llm_connection.send_history(llm_request.contents)
+                trace_send_data(
+                    invocation_context, event_id, llm_request.contents
+                )
+
+            send_task = asyncio.create_task(
+                self._send_to_model(llm_connection, invocation_context)
+            )
+
+            should_reconnect = False
+            try:
+              async with Aclosing(
+                  self._receive_from_model(
+                      llm_connection,
+                      event_id,
+                      invocation_context,
+                      llm_request,
+                  )
+              ) as agen:
+                async for event in agen:
+                  if isinstance(event, _ReconnectSentinel):
+                    should_reconnect = True
+                    break
+                  # Empty event means the queue is closed.
+                  if not event:
+                    break
+                  logger.debug('Receive new event: %s', event)
+                  yield event
+                  # send back the function response to models
+                  if event.get_function_responses():
+                    logger.debug(
+                        'Sending back last function response event: %s', event
+                    )
+                    if event.content is None:
+                      raise RuntimeError(
+                          'A function response event must contain content.'
+                      )
+                    live_request_queue.send_content(event.content)
+                  # We handle agent transfer here in `run_live` rather than
+                  # in `_postprocess_live` to prevent duplication of function
+                  # response processing. If agent transfer were handled in
+                  # `_postprocess_live`, events yielded from child agent's
+                  # `run_live` would bubble up to parent agent's `run_live`,
+                  # causing `event.get_function_responses()` to be true in both
+                  # child and parent, and `send_content()` to be called twice for
+                  # the same function response. By handling agent transfer here,
+                  # we ensure that only child agent processes its own function
+                  # responses after the transfer.
+                  #
+                  # The transfer is gated on the `transfer_to_agent` action
+                  # rather than on the position of the `transfer_to_agent`
+                  # function response: the model may issue the transfer alongside
+                  # other function calls, whose responses are merged into a
+                  # single event in call order, so the transfer response is not
+                  # necessarily `parts[0]`. Gating on the action matches
+                  # `_postprocess_handle_function_calls_async`, and also covers
+                  # tools that request a transfer by setting the action directly
+                  # instead of calling `transfer_to_agent`.
+                  transfer_to_agent = event.actions.transfer_to_agent
+                  if transfer_to_agent:
+                    await asyncio.sleep(DEFAULT_TRANSFER_AGENT_DELAY)
+                    # cancel the tasks that belongs to the closed connection.
+                    send_task.cancel()
+                    logger.debug('Closing live connection')
+                    await llm_connection.close()
+                    logger.debug('Live connection closed.')
+                    # The sub agent takes over the live request queue, so this
+                    # agent's background tools have to stop here rather than
+                    # when this run_live eventually returns: it does not return
+                    # until the sub agent is done, and until then a tool of this
+                    # agent would keep feeding function responses to a model
+                    # that never made those calls.
+                    await self._stop_background_tool_tasks(invocation_context)
+                    # transfer to the sub agent.
+                    logger.debug('Transferring to agent: %s', transfer_to_agent)
+                    agent_to_run = self._get_agent_to_run(
+                        invocation_context, transfer_to_agent
+                    )
+                    child_ctx = invocation_context.model_copy()
+                    # Child Live agent should start a new Live session.
+                    # Do not reuse the parent session's resumption handle.
+                    child_ctx.live_session_resumption_handle = None
+
+                    if child_ctx.run_config:
+                      child_ctx.run_config = child_ctx.run_config.model_copy(
+                          deep=True
+                      )
+                      if child_ctx.run_config.session_resumption:
+                        child_ctx.run_config.session_resumption.handle = None
+
+                    async with Aclosing(
+                        agent_to_run.run_live(child_ctx)
+                    ) as agen:
+                      async for item in agen:
+                        yield item
+                  # `task_completed` is an ordinary tool, so the model may call
+                  # it alongside others. Their responses are merged into a single
+                  # event in call order, so scan every response rather than only
+                  # `parts[0]`. Unlike agent transfer there is no corresponding
+                  # action to key off, since `task_completed` only signals
+                  # completion through its function response.
+                  if any(
+                      function_response.name == 'task_completed'
+                      for function_response in event.get_function_responses()
+                  ):
+                    # this is used for sequential agent to signal the end of the agent.
+                    await asyncio.sleep(DEFAULT_TASK_COMPLETION_DELAY)
+                    # cancel the tasks that belongs to the closed connection.
+                    send_task.cancel()
+                    return
+            finally:
+              # Clean up
+              if not send_task.done():
+                send_task.cancel()
+              try:
+                await send_task
+              except asyncio.CancelledError:
+                pass
+          if should_reconnect:
+            continue
+          break
+        except (ConnectionClosed, ConnectionClosedOK) as e:
+          # If we have a session resumption handle, we attempt to reconnect.
+          # This handle is updated dynamically during the session.
           if invocation_context.live_session_resumption_handle:
             if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
               logger.error('Max reconnection attempts reached (%s).', e)
               raise
             logger.info(
-                'Connection lost (%s), reconnecting with session handle.', e
+                'Connection closed (%s), reconnecting with session handle.', e
             )
             continue
           # No resumption handle + normal (1000) close = the model ended the
           # session cleanly; end the stream instead of erroring so live nodes
           # finish normally.
-          if e.code == 1000:
-            logger.info('Live session closed normally: %s.', e)
+          if isinstance(e, ConnectionClosedOK):
+            logger.info('Connection closed normally: %s.', e)
             return
+          logger.error('Connection closed: %s.', e)
+          raise
+        except errors.APIError as e:
+          # Error code 1000, 1006 and 1011 indicates a recoverable connection drop.
+          # In that case, we attempt to reconnect with session handle if available.
+          if e.code in [1000, 1006, 1011]:
+            if invocation_context.live_session_resumption_handle:
+              if attempt > DEFAULT_MAX_RECONNECT_ATTEMPTS:
+                logger.error('Max reconnection attempts reached (%s).', e)
+                raise
+              logger.info(
+                  'Connection lost (%s), reconnecting with session handle.', e
+              )
+              continue
+            # No resumption handle + normal (1000) close = the model ended the
+            # session cleanly; end the stream instead of erroring so live nodes
+            # finish normally.
+            if e.code == 1000:
+              logger.info('Live session closed normally: %s.', e)
+              return
 
-        logger.error('APIError in live flow: %s', e)
-        raise
-      except Exception as e:
+          logger.error('APIError in live flow: %s', e)
+          raise
+        except Exception as e:
+          logger.error(
+              'An unexpected error occurred in live flow: %s', e, exc_info=True
+          )
+          raise
+    finally:
+      await self._stop_background_tool_tasks(invocation_context)
+
+  async def _stop_background_tool_tasks(
+      self, invocation_context: InvocationContext
+  ) -> None:
+    """Cancels the background tool tasks this live run started.
+
+    A live run starts two kinds of tools as bare asyncio tasks: streaming
+    tools (``active_streaming_tools``) and non-blocking tools
+    (``active_non_blocking_tool_tasks``). Nothing tied either to the lifetime
+    of the run that started it — only an explicit ``stop_streaming`` call ever
+    cancelled one — so a tool kept running after its agent was done, feeding
+    function responses into a live request queue that by then belonged to
+    another agent, or to nobody at all.
+
+    The tools stop when the run that started them ends, whether that is a
+    handoff to another agent, ``task_completed``, the connection closing, or
+    the caller walking away. Tying this to the agent run rather than to the
+    whole invocation is what keeps a tool from reaching the model of the
+    agent that comes after it.
+
+    Cancellation is best effort: a task that does not stop within
+    ``_TOOL_SHUTDOWN_TIMEOUT_SECONDS`` is logged and left behind rather than
+    stalling the handoff or the caller's teardown on it.
+    """
+    tasks = [
+        active.task
+        for active in (invocation_context.active_streaming_tools or {}).values()
+        if active.task is not None
+    ]
+    tasks.extend(
+        (invocation_context.active_non_blocking_tool_tasks or {}).values()
+    )
+    pending = [task for task in tasks if not task.done()]
+    if not pending:
+      return
+
+    logger.debug('Stopping %d background tool task(s).', len(pending))
+    for task in pending:
+      task.cancel()
+    stopped, still_running = await asyncio.wait(
+        pending, timeout=_TOOL_SHUTDOWN_TIMEOUT_SECONDS
+    )
+    for task in still_running:
+      logger.warning(
+          'Tool task %s ignored cancellation and outlives its agent.',
+          task.get_name(),
+      )
+    for task in stopped:
+      # A tool reports its own failures to the model, so an exception here is
+      # unexpected. Retrieve it anyway: an unread one is reported by asyncio
+      # itself, out of context, when the task is garbage collected.
+      if not task.cancelled() and task.exception() is not None:
         logger.error(
-            'An unexpected error occurred in live flow: %s', e, exc_info=True
+            'Tool task %s failed.', task.get_name(), exc_info=task.exception()
         )
-        raise
+
+    # Retire the registry entries: the run is over, so nothing it started is
+    # current any more, whether or not the task honored the cancellation.
+    # (``stop_streaming`` blanks an entry's fields and keeps the key, because
+    # the model it answers to is still running and may ask again. Here nobody
+    # is coming back for it.) Letting go of the streams is what matters most:
+    # ``_send_to_model`` copies every live request into each registered
+    # stream, so one left behind by a tool that no longer reads it grows for
+    # as long as the session lasts, an entry per audio chunk the user speaks.
+    if invocation_context.active_streaming_tools:
+      invocation_context.active_streaming_tools.clear()
+    # A non-blocking tool drops its own entry in its `finally`, so that one is
+    # usually empty already; it has something to remove only when the task
+    # never got there, because it ignored the cancellation or died first.
+    if invocation_context.active_non_blocking_tool_tasks:
+      invocation_context.active_non_blocking_tool_tasks.clear()
 
   async def _send_to_model(
       self,
