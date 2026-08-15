@@ -40,6 +40,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _ALLOWED_PICKLE_GLOBALS: set[tuple[str, str]] = {
     # Builtin containers/primitives.
+    # Pydantic models may use getattr in their reduction on Python 3.11.
+    ("builtins", "getattr"),
     ("builtins", "dict"),
     ("builtins", "list"),
     ("builtins", "set"),
