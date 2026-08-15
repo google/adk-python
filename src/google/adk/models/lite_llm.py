@@ -2061,6 +2061,21 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
         else items
     )
 
+  # `model_dump()` spells this `any_of`, but downstream JSON Schema consumers
+  # read `anyOf`, so an un-renamed union is silently dropped: the argument
+  # reaches the model as a bare `{"type": "object"}` with none of its variants.
+  # Recursing also lowercases the types nested inside each branch.
+  any_of = schema_dict.pop("any_of", None)
+  if any_of is None:
+    any_of = schema_dict.get("anyOf")
+  if any_of is not None:
+    schema_dict["anyOf"] = [
+        _schema_to_dict(item)
+        if isinstance(item, (types.Schema, dict))
+        else item
+        for item in any_of
+    ]
+
   if "properties" in schema_dict:
     new_props = {}
     for key, value in schema_dict["properties"].items():

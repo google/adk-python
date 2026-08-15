@@ -805,6 +805,67 @@ def test_schema_to_dict_filters_none_enum_values():
   ]
 
 
+def test_schema_to_dict_preserves_any_of_as_camel_case():
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "value": types.Schema(
+              any_of=[
+                  types.Schema(type=types.Type.STRING),
+                  types.Schema(type=types.Type.NUMBER),
+              ],
+              description="id or index",
+          ),
+      },
+  )
+
+  value = _schema_to_dict(schema)["properties"]["value"]
+
+  assert "any_of" not in value
+  assert value["anyOf"] == [{"type": "string"}, {"type": "number"}]
+  assert value["description"] == "id or index"
+
+
+def test_schema_to_dict_recurses_into_any_of_branches():
+  """A union of object variants keeps its branches, nested types and all."""
+  schema = types.Schema(
+      type=types.Type.ARRAY,
+      items=types.Schema(
+          any_of=[
+              types.Schema(
+                  type=types.Type.OBJECT,
+                  properties={
+                      "type": types.Schema(
+                          type=types.Type.STRING, enum=["table"]
+                      ),
+                      "rows": types.Schema(
+                          type=types.Type.ARRAY,
+                          items=types.Schema(type=types.Type.STRING),
+                      ),
+                  },
+              ),
+              types.Schema(
+                  type=types.Type.OBJECT,
+                  properties={
+                      "type": types.Schema(
+                          type=types.Type.STRING, enum=["divider"]
+                      ),
+                  },
+              ),
+          ],
+      ),
+  )
+
+  branches = _schema_to_dict(schema)["items"]["anyOf"]
+
+  assert [branch["properties"]["type"]["enum"] for branch in branches] == [
+      ["table"],
+      ["divider"],
+  ]
+  assert branches[0]["type"] == "object"
+  assert branches[0]["properties"]["rows"]["items"]["type"] == "string"
+
+
 def test_safe_json_serialize_serializable_object():
   assert _safe_json_serialize({"a": 1, "b": [2, 3]}) == '{"a": 1, "b": [2, 3]}'
 
