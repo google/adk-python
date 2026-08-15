@@ -34,6 +34,7 @@ from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.models.lite_llm import LiteLlm
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from pydantic import BaseModel
 import pytest
 import yaml
@@ -717,6 +718,121 @@ def test_load_config_from_path_blocks_args_when_enforced(tmp_path: Path):
     with pytest.raises(ValueError) as exc_info:
       config_agent_utils._load_config_from_path(str(config_file))
     assert "Blocked key 'args' found" in str(exc_info.value)
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+
+def test_load_config_from_path_allows_registered_mcp_toolset_args(
+    tmp_path: Path,
+):
+  """A registered remote McpToolset loads through the public config API."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text(dedent("""\
+          name: mcp_agent
+          instruction: Use the MCP tools.
+          tools:
+            - name: McpToolset
+              args:
+                streamable_http_connection_params:
+                  url: https://example.com/mcp
+          """))
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    agent = config_agent_utils.from_config(str(config_file))
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+  assert isinstance(agent.tools[0], McpToolset)
+
+
+def test_load_config_from_path_allows_opted_in_stdio_mcp_toolset_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+  """The stdio opt-in also permits its nested command args under web."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text(dedent("""\
+          name: mcp_agent
+          instruction: Use the MCP tools.
+          tools:
+            - name: McpToolset
+              args:
+                stdio_connection_params:
+                  server_params:
+                    command: npx
+                    args:
+                      - -y
+                      - example-mcp-server
+          """))
+  monkeypatch.setenv("ADK_ALLOW_CONFIG_STDIO_MCP_SERVERS", "1")
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    agent = config_agent_utils.from_config(str(config_file))
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+  assert isinstance(agent.tools[0], McpToolset)
+
+
+def test_load_config_from_path_blocks_unregistered_tool_args(tmp_path: Path):
+  """Tool args remain blocked unless the built-in has a safe validator."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text(dedent("""\
+          name: custom_agent
+          instruction: Use the custom tool.
+          tools:
+            - name: my_package.create_tool
+              args:
+                command: unsafe
+          """))
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    with pytest.raises(ValueError, match="Blocked key 'args' found"):
+      config_agent_utils._load_config_from_path(str(config_file))
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+
+def test_load_config_from_path_rejects_invalid_mcp_toolset_args(
+    tmp_path: Path,
+):
+  """McpToolset args cannot supply executable callback fields."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text(dedent("""\
+          name: mcp_agent
+          instruction: Use the MCP tools.
+          tools:
+            - name: McpToolset
+              args:
+                streamable_http_connection_params:
+                  url: https://example.com/mcp
+                  httpx_client_factory: os.system
+          """))
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    with pytest.raises(ValueError, match="Invalid 'args' for safe built-in"):
+      config_agent_utils._load_config_from_path(str(config_file))
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+
+def test_load_config_from_path_does_not_allow_args_outside_tool_list(
+    tmp_path: Path,
+):
+  """A custom agent's tools field cannot opt into the built-in exception."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text(dedent("""\
+          agent_class: my_package.CustomAgent
+          name: custom_agent
+          tools:
+            - name: McpToolset
+              args:
+                streamable_http_connection_params:
+                  url: https://example.com/mcp
+          """))
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    with pytest.raises(ValueError, match="Blocked key 'args' found"):
+      config_agent_utils._load_config_from_path(str(config_file))
   finally:
     config_agent_utils._set_enforce_yaml_key_denylist(False)
 

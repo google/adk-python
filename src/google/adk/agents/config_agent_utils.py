@@ -14,12 +14,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import importlib
 import inspect
 import os
 import sys
 from typing import Any
 from typing import List
+from typing import NoReturn
 
 from typing_extensions import deprecated
 import yaml
@@ -92,20 +94,90 @@ def _set_enforce_yaml_key_denylist(value: bool) -> None:
   _ENFORCE_YAML_KEY_DENYLIST = value
 
 
-def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
-  """Recursively check if the configuration contains any blocked keys."""
+def _validate_mcp_toolset_args(args: Any) -> None:
+  """Validates McpToolset args without resolving a code reference."""
+  from ..tools.mcp_tool.mcp_toolset import McpToolsetConfig
+
+  McpToolsetConfig.model_validate(args)
+
+
+# Entries in this registry must be built-in tools whose validator treats the
+# YAML input as data only. The registry key is matched literally; it is never
+# imported or otherwise resolved from the configuration.
+_SAFE_BUILTIN_TOOL_ARGS_VALIDATORS: dict[str, Callable[[Any], None]] = {
+    "McpToolset": _validate_mcp_toolset_args,
+}
+_BUILTIN_LLM_AGENT_NAMES = frozenset({
+    "LlmAgent",
+    "google.adk.agents.LlmAgent",
+    "google.adk.agents.llm_agent.LlmAgent",
+})
+
+
+def _raise_blocked_key(key: str, filename: str) -> NoReturn:
+  raise ValueError(
+      f"Blocked key {key!r} found in {filename!r}. "
+      f"The '{key}' field is not allowed in agent configurations "
+      "because it can execute arbitrary code."
+  )
+
+
+def _check_node_for_blocked_keys(node: Any, filename: str) -> None:
+  """Recursively checks a non-tool configuration node for blocked keys."""
   if isinstance(node, dict):
     for key, value in node.items():
       if key in _BLOCKED_YAML_KEYS:
-        raise ValueError(
-            f"Blocked key {key!r} found in {filename!r}. "
-            f"The '{key}' field is not allowed in agent configurations "
-            "because it can execute arbitrary code."
-        )
-      _check_config_for_blocked_keys(value, filename)
+        _raise_blocked_key(key, filename)
+      _check_node_for_blocked_keys(value, filename)
   elif isinstance(node, list):
     for item in node:
-      _check_config_for_blocked_keys(item, filename)
+      _check_node_for_blocked_keys(item, filename)
+
+
+def _check_tool_configs_for_blocked_keys(
+    tools: list[Any], filename: str
+) -> None:
+  """Checks tool configs, allowing args only for registered built-ins."""
+  for tool in tools:
+    if not isinstance(tool, dict):
+      _check_node_for_blocked_keys(tool, filename)
+      continue
+
+    tool_name = tool.get("name")
+    validator = (
+        _SAFE_BUILTIN_TOOL_ARGS_VALIDATORS.get(tool_name)
+        if isinstance(tool_name, str)
+        else None
+    )
+    for key, value in tool.items():
+      if key not in _BLOCKED_YAML_KEYS:
+        _check_node_for_blocked_keys(value, filename)
+        continue
+      if validator is None:
+        _raise_blocked_key(key, filename)
+      try:
+        validator(value)
+      except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"Invalid {key!r} for safe built-in tool {tool_name!r} "
+            f"in {filename!r}."
+        ) from e
+
+
+def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
+  """Checks blocked keys with a narrow exception for safe built-in tools."""
+  if not isinstance(node, dict):
+    _check_node_for_blocked_keys(node, filename)
+    return
+
+  is_builtin_llm_agent = (
+      node.get("agent_class", "LlmAgent") in _BUILTIN_LLM_AGENT_NAMES
+  )
+  for key, value in node.items():
+    if key == "tools" and is_builtin_llm_agent and isinstance(value, list):
+      _check_tool_configs_for_blocked_keys(value, filename)
+    else:
+      _check_node_for_blocked_keys({key: value}, filename)
 
 
 def _load_config_from_path(config_path: str) -> AgentConfig:
