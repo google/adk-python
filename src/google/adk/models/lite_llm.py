@@ -2395,7 +2395,14 @@ def _message_to_generate_content_response(
           raise ValueError(
               "Function-call part factory returned no function call"
           )
-        function_call.id = tool_call.id
+        # The signature is carried on the part, so strip it back out of the id.
+        # Leaving it there appends a few hundred characters of base64 to every
+        # consumer of `function_call_id`, and `_content_to_message_param`
+        # re-attaches it to the outgoing tool call from `thought_signature`
+        # anyway.
+        function_call.id = tool_call.id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)[
+            0
+        ]
         if thought_signature:
           part.thought_signature = thought_signature
         parts.append(part)

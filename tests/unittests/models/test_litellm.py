@@ -2977,6 +2977,30 @@ def test_message_to_generate_content_response_preserves_thought_signature():
   assert fc_part.thought_signature == b"round_trip_sig"
 
 
+def test_message_to_generate_content_response_strips_signature_from_id():
+  """An id carrying an embedded signature is split before it reaches the part."""
+  sig_b64 = base64.b64encode(b"embedded_sig").decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"call_ts_2{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}",
+              function=Function(
+                  name="load_skill",
+                  arguments='{"skill": "my_skill"}',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.id == "call_ts_2"
+  assert fc_part.thought_signature == b"embedded_sig"
+
+
 def test_message_to_generate_content_response_no_thought_signature():
   """Parts without thought_signature have thought_signature=None."""
   message = ChatCompletionAssistantMessage(
