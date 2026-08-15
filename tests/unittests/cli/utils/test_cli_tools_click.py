@@ -184,6 +184,15 @@ def test_resolve_eval_config_file_path_returns_none_for_multiple_eval_files(
 
 
 # cli create
+@pytest.mark.unmute_click
+def test_cli_create_help_shows_agent_type_option() -> None:
+  """`adk create --help` should document the supported agent types."""
+  result = CliRunner().invoke(cli_tools_click.main, ["create", "--help"])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert "--type [code|config]" in result.output.lower()
+
+
 def test_cli_create_cmd_invokes_run_cmd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
