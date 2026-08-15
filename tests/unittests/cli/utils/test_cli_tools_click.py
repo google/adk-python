@@ -2848,6 +2848,102 @@ def test_cli_conformance_test_forwards_mode_and_report_options(
   }]
 
 
+def test_cli_conformance_test_accepts_multiple_directories(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """Several PATHS arguments are all forwarded, in order, to the runner."""
+  core_dir = tmp_path / "core"
+  tools_dir = tmp_path / "tools"
+  core_dir.mkdir()
+  tools_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(core_dir), str(tools_dir)],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test[0]["test_paths"] == [
+      Path(os.path.realpath(core_dir)),
+      Path(os.path.realpath(tools_dir)),
+  ]
+
+
+def test_cli_conformance_test_forwards_live_mode(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """`--mode live` is lower-cased and forwarded like `replay` is."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--mode", "live"],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test[0]["mode"] == "live"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("sse", StreamingMode.SSE),
+        ("BIDI", StreamingMode.BIDI),
+        ("None", StreamingMode.NONE),
+    ],
+)
+def test_cli_conformance_test_converts_streaming_mode_to_enum(
+    tmp_path: Path,
+    fake_conformance_test,
+    value: str,
+    expected: StreamingMode,
+) -> None:
+  """Every documented `--streaming-mode` choice reaches the runner as an enum."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--streaming-mode", value],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test[0]["streaming_mode"] is expected
+
+
+def test_cli_conformance_test_rejects_invalid_mode(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """An unsupported `--mode` value is rejected by Click before dispatch."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--mode", "bogus"],
+  )
+
+  assert result.exit_code == 2
+  assert fake_conformance_test == []
+
+
+def test_cli_conformance_test_rejects_invalid_streaming_mode(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """An unsupported `--streaming-mode` value is rejected by Click before dispatch."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--streaming-mode", "bogus"],
+  )
+
+  assert result.exit_code == 2
+  assert fake_conformance_test == []
+
+
 # adk eval_set create
 def test_cli_create_eval_set_surfaces_duplicate_id_as_click_exception(
     tmp_path: Path,
