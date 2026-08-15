@@ -655,6 +655,53 @@ async def test_session_state_is_not_shared(session_service):
 
 
 @pytest.mark.asyncio
+async def test_dict_valued_state_delta_replaces_stored_value(session_service):
+  """A dict-valued delta replaces the stored value, it is not deep-merged."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'profile': {'name': 'ada', 'role': 'admin'}},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'profile': {'name': 'bob'}}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('profile') == {'name': 'bob'}
+  assert session.state.get('profile') == {'name': 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_none_valued_state_delta_is_stored_not_dropped(session_service):
+  """A None-valued delta stores null, it does not delete the key."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': True}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'flag': None}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert 'flag' in reloaded.state
+  assert reloaded.state.get('flag') is None
+  assert 'flag' in session.state
+  assert session.state.get('flag') is None
+
+
+@pytest.mark.asyncio
 async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   app_name = 'my_app'
   user_id = 'u1'

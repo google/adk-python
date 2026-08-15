@@ -47,6 +47,21 @@ logger = logging.getLogger("google_adk." + __name__)
 
 PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 
+# Merges {delta} into {state} with dict.update() semantics: keys in the delta
+# always win with their delta value (including SQL NULL / JSON null), unlike
+# json_patch() which deep-merges dict values and treats null as "delete key".
+_MERGE_STATE_SQL = """
+        SELECT json_group_object(
+                 key,
+                 CASE WHEN type IN ('object','array') THEN json(value) ELSE value END)
+        FROM (
+          SELECT key, value, type FROM json_each({delta})
+          UNION ALL
+          SELECT key, value, type FROM json_each({state})
+           WHERE key NOT IN (SELECT key FROM json_each({delta}))
+        )
+      """
+
 APP_STATES_TABLE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_states (
     app_name TEXT PRIMARY KEY,
@@ -548,11 +563,11 @@ class SqliteSessionService(BaseSessionService):
       delta: dict[str, Any],
       now: float,
   ) -> None:
-    """Atomically inserts or updates app state using json_patch."""
+    """Atomically inserts or updates app state with dict.update() semantics."""
     await db.execute(
-        """
+        f"""
         INSERT INTO app_states (app_name, state, update_time) VALUES (?, ?, ?)
-        ON CONFLICT(app_name) DO UPDATE SET state=json_patch(state, excluded.state), update_time=excluded.update_time
+        ON CONFLICT(app_name) DO UPDATE SET state=({_MERGE_STATE_SQL.format(delta='excluded.state', state='state')}), update_time=excluded.update_time
         """,
         (app_name, json.dumps(delta), now),
     )
@@ -565,11 +580,11 @@ class SqliteSessionService(BaseSessionService):
       delta: dict[str, Any],
       now: float,
   ) -> None:
-    """Atomically inserts or updates user state using json_patch."""
+    """Atomically inserts or updates user state with dict.update() semantics."""
     await db.execute(
-        """
+        f"""
         INSERT INTO user_states (app_name, user_id, state, update_time) VALUES (?, ?, ?, ?)
-        ON CONFLICT(app_name, user_id) DO UPDATE SET state=json_patch(state, excluded.state), update_time=excluded.update_time
+        ON CONFLICT(app_name, user_id) DO UPDATE SET state=({_MERGE_STATE_SQL.format(delta='excluded.state', state='state')}), update_time=excluded.update_time
         """,
         (app_name, user_id, json.dumps(delta), now),
     )
@@ -583,11 +598,13 @@ class SqliteSessionService(BaseSessionService):
       delta: dict[str, Any],
       now: float,
   ) -> None:
-    """Atomically updates session state using json_patch."""
+    """Atomically updates session state with dict.update() semantics."""
     await db.execute(
-        "UPDATE sessions SET state=json_patch(state, ?), update_time=? WHERE"
-        " app_name=? AND user_id=? AND id=?",
+        "UPDATE sessions SET"
+        f" state=({_MERGE_STATE_SQL.format(delta='?', state='state')}),"
+        " update_time=? WHERE app_name=? AND user_id=? AND id=?",
         (
+            json.dumps(delta),
             json.dumps(delta),
             now,
             app_name,
