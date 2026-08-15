@@ -25,6 +25,7 @@ from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import RubricsBasedCriterion
+from .llm_as_judge_utils import get_grounding_metadata_as_json_str
 from .llm_as_judge_utils import get_text_from_content
 from .llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from .llm_as_judge_utils import get_tool_declarations_as_json_str
@@ -45,8 +46,9 @@ Only respond to the properties provided. Do not make up new properties.
 
 # Key Evaluation Principles
 Your evaluation must follow a two-part process: first, collect trusted evidence from the agent's work, and second, judge the final answer against it.
-1. **Establish Trusted Evidence from Tool Calls**: You must first examine the agent's tool calls to determine if they are procedurally sound, meaning that the agent used the appropriate tools with logical parameters to address the user's prompt.
-  * Your ONLY sources of truth are the <user_prompt> and the direct output ('tool_response') from PROCEDURALLY SOUND tool calls found in the <response_steps>. Examples of procedural flaws include:
+1. **Establish Trusted Evidence from Tool Calls and Grounding**: You must first examine the agent's tool calls to determine if they are procedurally sound, meaning that the agent used the appropriate tools with logical parameters to address the user's prompt.
+  * Your ONLY sources of truth are the <user_prompt>, the direct output ('tool_response') from PROCEDURALLY SOUND tool calls found in the <response_steps>, and model-supplied grounding metadata found in <grounding_metadata>.
+  * Grounding metadata is trusted evidence for model-internal tools such as google_search whose raw search results may not appear as function tool responses. Examples of procedural flaws include:
     * The agent failed to call a tool that will enable it to answer the user's prompt despite having all the necessary parameters to do so.
     * The agent called the tool with incorrect or missing parameters.
     * The agent called a tool that does not exist, or called a tool with a parameter that does not exist.
@@ -222,6 +224,9 @@ Verdict: yes
   <response_steps>
   {response_steps}
   </response_steps>
+  <grounding_metadata>
+  {grounding_metadata}
+  </grounding_metadata>
   <final_answer>
   {final_response}
   </final_answer>
@@ -303,6 +308,9 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     response_steps = get_tool_calls_and_responses_as_json_str(
         actual_invocation.intermediate_data
     )
+    grounding_metadata = get_grounding_metadata_as_json_str(
+        actual_invocation.intermediate_data
+    )
 
     app_details = actual_invocation.app_details
     if app_details:
@@ -333,6 +341,7 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
         tool_declarations=tool_declarations,
         user_input=user_input,
         response_steps=response_steps,
+        grounding_metadata=grounding_metadata,
         final_response=final_response,
         rubrics=rubrics_text,
     )

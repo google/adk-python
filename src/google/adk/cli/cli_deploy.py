@@ -878,6 +878,15 @@ def _print_agent_engine_url(resource_name: str) -> None:
     )
 
 
+def _print_gemini_enterprise_hint() -> None:
+  """Prints a pointer to the Gemini Enterprise registration docs."""
+  click.secho(
+      'To make this agent available in Gemini Enterprise, register it by'
+      ' following:\nhttps://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent\n',
+      fg='cyan',
+  )
+
+
 def to_agent_engine(
     *,
     agent_folder: str,
@@ -1322,6 +1331,7 @@ def to_agent_engine(
         click.secho(f'Cleaned up the instance: {resource_name}', fg='green')
       raise e
     _print_agent_engine_url(resource_name)
+    _print_gemini_enterprise_hint()
   finally:
     temp_folder_path = os.path.join(parent_folder, temp_folder)
     click.echo(f'Cleaning up the temp folder: {temp_folder_path}')

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
+from typing import Literal
 from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
@@ -46,6 +47,7 @@ except ImportError:
   # Fallback for older versions of a2a-sdk.
   AGENT_CARD_WELL_KNOWN_PATH = "/.well-known/agent.json"
 
+
 from ..a2a.agent.config import A2aRemoteAgentConfig
 from ..a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..a2a.agent.interceptors.new_integration_extension import _new_integration_extension_interceptor
@@ -66,6 +68,11 @@ from ..a2a.experimental import a2a_experimental
 from ..a2a.logs.log_utils import build_a2a_request_log
 from ..a2a.logs.log_utils import build_a2a_response_log
 from ..agents.invocation_context import InvocationContext
+from ..agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
+from ..agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
+from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
+from ..agents.llm.task._finish_task_tool import get_output_wrapper_key
+from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.contents import _present_other_agent_message
@@ -73,6 +80,7 @@ from ..flows.llm_flows.functions import find_matching_function_call
 from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 
@@ -275,6 +283,84 @@ class A2AClientError(Exception):
   pass
 
 
+def _text_from_content(content: Optional[genai_types.Content]) -> Optional[str]:
+  """Joins the text parts of a content, or None when there is no text."""
+  if content is None or not content.parts:
+    return None
+  texts = [part.text for part in content.parts if part.text]
+  return "\n".join(texts) if texts else None
+
+
+def _create_finish_task_event(
+    ctx: InvocationContext,
+    agent_name: str,
+    *,
+    output: Any = None,
+    error_message: Optional[str] = None,
+    is_error: bool = False,
+) -> Event:
+  """Creates a finish_task Event."""
+  return Event(
+      author=agent_name,
+      invocation_id=ctx.invocation_id,
+      branch=ctx.branch,
+      isolation_scope=ctx.isolation_scope,
+      error_message=error_message,
+      content=genai_types.Content(
+          role="user",
+          parts=[
+              genai_types.Part(
+                  function_response=genai_types.FunctionResponse(
+                      name=FINISH_TASK_TOOL_NAME,
+                      response={
+                          "result": (
+                              FINISH_TASK_ERROR_RESULT
+                              if is_error
+                              else FINISH_TASK_SUCCESS_RESULT
+                          )
+                      },
+                  )
+              )
+          ],
+      ),
+      output=output,
+  )
+
+
+def _create_task_failure_events(
+    error_text: str,
+    ctx: InvocationContext,
+    agent_name: str,
+    task_id: str,
+    a2a_request: Any = None,
+) -> tuple[Event, Event]:
+  """Creates events for a failed remote task."""
+  error_message = f"Remote A2A task failed: {error_text}"
+  error_event_metadata: dict[str, Any] = {
+      A2A_METADATA_PREFIX + "error": error_message,
+      A2A_METADATA_PREFIX + "task_id": task_id,
+  }
+  if a2a_request is not None:
+    error_event_metadata[A2A_METADATA_PREFIX + "request"] = _compat.a2a_to_dict(
+        a2a_request
+    )
+  error_event = Event(
+      author=agent_name,
+      invocation_id=ctx.invocation_id,
+      branch=ctx.branch,
+      isolation_scope=ctx.isolation_scope,
+      error_message=error_message,
+      custom_metadata=error_event_metadata,
+  )
+  finish_event = _create_finish_task_event(
+      ctx=ctx,
+      agent_name=agent_name,
+      error_message=error_message,
+      is_error=True,
+  )
+  return error_event, finish_event
+
+
 def _add_mock_function_call(event: Event, state: TaskState) -> None:
   """Generates a mock function call for input-required events if applicable."""
   if event.content is None:
@@ -291,6 +377,33 @@ def _add_mock_function_call(event: Event, state: TaskState) -> None:
   event.long_running_tool_ids = long_running_tool_ids
 
 
+def _find_finish_task_args_from_history(
+    session: Session,
+    isolation_scope: Optional[str] = None,
+    completed_fr_event: Optional[Event] = None,
+) -> Optional[dict[str, Any]]:
+  """Search session events for the latest finish_task FC and return args."""
+  matching_fc_id = None
+  if completed_fr_event:
+    for fr in completed_fr_event.get_function_responses():
+      if fr.name == FINISH_TASK_TOOL_NAME:
+        matching_fc_id = fr.id
+        break
+
+  for event in reversed(session.events):
+    if isolation_scope and event.isolation_scope != isolation_scope:
+      continue
+    calls = event.get_function_calls()
+    for fc in calls:
+      if fc.name == FINISH_TASK_TOOL_NAME:
+        if matching_fc_id is not None:
+          if fc.id == matching_fc_id:
+            return dict(fc.args or {})
+        else:
+          return dict(fc.args or {})
+  return None
+
+
 @a2a_experimental
 class RemoteA2aAgent(BaseAgent):
   """Agent that communicates with a remote A2A agent via A2A client.
@@ -305,6 +418,23 @@ class RemoteA2aAgent(BaseAgent):
   - HTTP client management with proper resource cleanup
   - A2A message conversion and error handling
   - Session state management across requests
+  """
+
+  mode: Literal["task"] | None = None
+  """Delegation mode.
+
+  Only ``task`` is supported: the agent runs as a task sub-agent of a parent
+  ``LlmAgent`` that owns the conversation across multiple turns, then hands
+  control back to the parent when the remote A2A task reaches a terminal
+  completed state. Note: this requires the remote agent to invoke the
+  ``finish_task`` tool to signal completion (natively supported by ADK
+  task-mode agents, or must be manually implemented on custom A2A servers
+  by returning a FunctionResponse named ``finish_task`` with a response
+  containing a ``result`` key matching ``"Task completed."`` for success, or
+  ``"Task failed."`` for failure). Additionally, the client's ``output_schema``
+  must be set to mirror the remote agent's output schema to ensure correct
+  output unwrapping. ``None`` (default) leaves the agent as a plain
+  ``transfer_to_agent`` target.
   """
 
   def __init__(
@@ -342,8 +472,8 @@ class RemoteA2aAgent(BaseAgent):
         request.
       full_history_when_stateless: If True, stateless agents (those that do not
         return Tasks or context IDs) will receive all session events on every
-        request. If False, the default behavior of sending only events since the
-        last reply from the agent will be used.
+        request. If False (default), the behavior depends on the agent's
+        delegation mode: True in "task" mode, False otherwise.
       config: Optional configuration object.
       use_legacy: If false, send request to the server including the extension
         indicating that the server should use the new implementation.
@@ -373,7 +503,7 @@ class RemoteA2aAgent(BaseAgent):
     self._a2a_part_converter = a2a_part_converter
     self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
     self._a2a_request_meta_provider = a2a_request_meta_provider
-    self._full_history_when_stateless = full_history_when_stateless
+    self._full_history_when_stateless_param = full_history_when_stateless
     self._config = config or A2aRemoteAgentConfig()
 
     if not use_legacy:
@@ -401,6 +531,14 @@ class RemoteA2aAgent(BaseAgent):
           "agent_card must be AgentCard, URL string, or file path string, "
           f"got {type(agent_card)}"
       )
+
+  @property
+  def _full_history_when_stateless(self) -> bool:
+    return self._full_history_when_stateless_param or self.mode == "task"
+
+  @_full_history_when_stateless.setter
+  def _full_history_when_stateless(self, value: bool) -> None:
+    self._full_history_when_stateless_param = value
 
   async def _ensure_httpx_client(self) -> httpx.AsyncClient:
     """Ensure HTTP client is available and properly configured."""
@@ -669,11 +807,22 @@ class RemoteA2aAgent(BaseAgent):
     return a2a_message
 
   def _is_remote_response(self, event: Event) -> bool:
-    return bool(
+    is_a2a_resp = bool(
         event.author == self.name
         and event.custom_metadata
         and event.custom_metadata.get(A2A_METADATA_PREFIX + "response", False)
     )
+    if is_a2a_resp:
+      return True
+
+    # Also stop on synthesized FR events for this agent (meaning the previous
+    # delegation to this agent has completed).
+    if self.mode == "task":
+      for fr in event.get_function_responses():
+        if fr.name == self.name:
+          return True
+
+    return False
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
@@ -691,7 +840,46 @@ class RemoteA2aAgent(BaseAgent):
     context_id = None
 
     events_to_process = []
+    task_scope = ctx.isolation_scope if self.mode == "task" else None
+    broke_loop = False
+
     for event in reversed(ctx.session.events):
+      if task_scope:
+        # In task mode, we restrict the history to the current task scope
+        # (isolation scope) to prevent cross-task data leakage and minimize
+        # context size.
+        if event.isolation_scope == task_scope:
+          # Stop walking backward if we hit a previous response from this
+          # remote agent. Stateful remote servers already have this history
+          # in their session, so we don't need to resend it.
+          if self._is_remote_response(event):
+            if event.custom_metadata:
+              metadata = event.custom_metadata
+              context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
+            if not self._full_history_when_stateless or context_id:
+              broke_loop = True
+              break
+          events_to_process.append(event)
+          continue
+        # We must also include the coordinator's FunctionCall event that
+        # triggered this task (its ID matches the task_scope). This provides the
+        # remote task agent with the initial task parameters (inputs). Once we
+        # find it, we stop because anything older is outside this task's
+        # lifetime.
+        has_trigger_fc = False
+        calls = event.get_function_calls()
+        for fc in calls:
+          if fc.id == task_scope:
+            has_trigger_fc = True
+            break
+        if has_trigger_fc:
+          events_to_process.append(event)
+          broke_loop = True
+          break
+        # Ignore events belonging to other tasks (different isolation scopes)
+        # or coordinator events outside the remote task agent execution.
+        continue
+
       if self._is_remote_response(event):
         # stop on content generated by current a2a agent given it should already
         # be in remote session
@@ -705,8 +893,33 @@ class RemoteA2aAgent(BaseAgent):
         # _full_history_when_stateless is false (the default) or if the agent
         # is stateful (i.e. returned a context ID).
         if not self._full_history_when_stateless or context_id:
+          broke_loop = True
           break
       events_to_process.append(event)
+
+    # In task mode, an FC-delegation task must be bounded by a triggering
+    # FunctionCall from the coordinator. If the history walk completes to the
+    # root without finding the matching FC (and did not stop at a prior
+    # stateful turn), the isolation scope is invalid (e.g. a workflow graph
+    # node).
+    if self.mode == "task" and task_scope and not broke_loop:
+      raise ValueError(
+          f"RemoteA2aAgent '{self.name}' in task mode could not find the"
+          f" triggering FunctionCall for isolation scope '{task_scope}' in"
+          " session history. Workflow path scopes are not supported."
+      )
+
+    # Collect all FC IDs emitted by this remote agent in the task scope.
+    remote_fc_ids = set()
+    if self.mode == "task":
+      for event in ctx.session.events:
+        if (
+            not task_scope or event.isolation_scope == task_scope
+        ) and event.author == self.name:
+          calls = event.get_function_calls()
+          for fc in calls:
+            if fc.id is not None:
+              remote_fc_ids.add(fc.id)
 
     for event in reversed(events_to_process):
       processed_event: Optional[Event] = event
@@ -731,9 +944,40 @@ class RemoteA2aAgent(BaseAgent):
           # path where a dropped credential resume falls back to here and the
           # untouched function_response would otherwise be re-serialized.
           continue
-        converted_parts = self._genai_part_converter(part)
-        if not isinstance(converted_parts, list):
-          converted_parts = [converted_parts] if converted_parts else []
+
+        if (
+            self.mode == "task"
+            and task_scope
+            and part.function_call
+            and isinstance(part.function_call, genai_types.FunctionCall)
+            and part.function_call.id is not None
+            and part.function_call.id != task_scope
+            and part.function_call.id not in remote_fc_ids
+        ):
+          # Skip sibling function calls from the coordinator intended for other tools/agents.
+          continue
+
+        if (
+            self.mode == "task"
+            and part.function_response
+            and isinstance(part.function_response, genai_types.FunctionResponse)
+            and part.function_response.id not in remote_fc_ids
+        ):
+          # Convert non-agent function response to text to prevent A2A server
+          # validation errors.
+          text_content = (
+              f"Tool {part.function_response.name} returned:"
+              f" {json.dumps(part.function_response.response)}"
+          )
+          converted_parts = [_compat.make_text_part(text_content)]
+        else:
+          raw_parts = self._genai_part_converter(part)
+          if isinstance(raw_parts, list):
+            converted_parts = raw_parts
+          elif raw_parts is not None:
+            converted_parts = [raw_parts]
+          else:
+            converted_parts = []
 
         if processed_event.author == "user":
           for a2a_part in converted_parts:
@@ -869,6 +1113,14 @@ class RemoteA2aAgent(BaseAgent):
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
         )
+      # Filter out thought parts from user-facing response content.
+      # Intermediate (submitted/working) events have all parts marked as
+      # thought, so non_thought_parts will be empty and we preserve them.
+      if event.content is not None and event.content.parts:
+        non_thought_parts = [p for p in event.content.parts if not p.thought]
+        if non_thought_parts:
+          event.content.parts = non_thought_parts
+
       return event
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)
@@ -957,152 +1209,246 @@ class RemoteA2aAgent(BaseAgent):
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     """Core implementation for async agent execution."""
+    # Tracks whether task control should be released back to the parent
+    # coordinator and any error output to emit on early termination.
+    should_release_task_control = False
+    task_error_message: Optional[str] = None
+    a2a_request = None
+
     try:
-      a2a_client = await self._ensure_resolved(ctx)
-    except Exception as e:
-      yield Event(
-          author=self.name,
-          error_message=f"Failed to initialize remote A2A agent: {e}",
-          invocation_id=ctx.invocation_id,
-          branch=ctx.branch,
-      )
-      return
-
-    # Create A2A request for function response or regular message
-    a2a_request = self._create_a2a_request_for_user_function_response(ctx)
-    if not a2a_request:
-      message_parts, context_id = self._construct_message_parts_from_session(
-          ctx
-      )
-
-      if not message_parts:
-        logger.warning(
-            "No parts to send to remote A2A agent. Emitting empty event."
-        )
+      try:
+        a2a_client = await self._ensure_resolved(ctx)
+      except Exception as e:
+        task_error_message = f"Failed to initialize remote A2A agent: {e}"
+        should_release_task_control = True
         yield Event(
             author=self.name,
-            content=genai_types.Content(),
+            error_message=task_error_message,
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
         )
         return
 
-      a2a_request = A2AMessage(
-          message_id=platform_uuid.new_uuid(),
-          parts=message_parts,
-          role=_compat.ROLE_USER,
-          context_id=context_id,
-      )
-
-    logger.debug(build_a2a_request_log(a2a_request))
-
-    try:
-      intercepted_request, parameters = (
-          await execute_before_request_interceptors(
-              self._config.request_interceptors, ctx, a2a_request
-          )
-      )
-
-      if isinstance(intercepted_request, Event):
-        yield intercepted_request
-        return
-      a2a_request = intercepted_request
-
-      # Backward compatibility
-      if self._a2a_request_meta_provider:
-        parameters.request_metadata = self._a2a_request_meta_provider(
-            ctx, a2a_request
+      # Create A2A request for function response or regular message
+      a2a_request = self._create_a2a_request_for_user_function_response(ctx)
+      if not a2a_request:
+        message_parts, context_id = self._construct_message_parts_from_session(
+            ctx
         )
 
-      # TODO: Add support for requested_extension and
-      # message_send_configuration once they are supported by the A2A client.
-      # A single stateful normalizer per stream so incremental
-      # status/artifact updates are aggregated into a running task (matching the
-      # 0.3.x client behavior).
-      normalize_stream_item = _compat.make_stream_normalizer()
-      async with Aclosing(
-          _compat.send_message(
-              a2a_client,
-              request=a2a_request,
-              request_metadata=parameters.request_metadata,
-              context=parameters.client_call_context,
+        if not message_parts:
+          logger.warning(
+              "No parts to send to remote A2A agent. Emitting empty event."
           )
-      ) as agen:
-        async for raw_a2a_response in agen:
-          a2a_response = normalize_stream_item(raw_a2a_response)
-          logger.debug(build_a2a_response_log(a2a_response))
-
-          metadata = None
-          if isinstance(a2a_response, tuple):
-            task = a2a_response[0]
-            if task:
-              metadata = task.metadata
-          else:
-            metadata = a2a_response.metadata
-
-          if metadata and _compat.metadata_get(
-              metadata, _NEW_A2A_ADK_INTEGRATION_EXTENSION
-          ):
-            event = await self._handle_a2a_response_v2(a2a_response, ctx)
-          else:
-            event = await self._handle_a2a_response(a2a_response, ctx)
-          if not event:
-            continue
-
-          event = await execute_after_request_interceptors(
-              self._config.request_interceptors, ctx, a2a_response, event
+          task_error_message = "No parts to send to remote A2A agent."
+          should_release_task_control = True
+          yield Event(
+              author=self.name,
+              content=genai_types.Content(),
+              invocation_id=ctx.invocation_id,
+              branch=ctx.branch,
           )
-          if not event:
-            continue
+          return
 
-          # Add metadata about the request and response
-          event.custom_metadata = event.custom_metadata or {}
-          event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
+        a2a_request = A2AMessage(
+            message_id=platform_uuid.new_uuid(),
+            parts=message_parts,
+            role=_compat.ROLE_USER,
+            context_id=context_id,
+        )
+
+      logger.debug(build_a2a_request_log(a2a_request))
+
+      try:
+        intercepted_request, parameters = (
+            await execute_before_request_interceptors(
+                self._config.request_interceptors, ctx, a2a_request
+            )
+        )
+
+        if isinstance(intercepted_request, Event):
+          task_error_message = "Request intercepted"
+          should_release_task_control = True
+          yield intercepted_request
+          return
+        a2a_request = intercepted_request
+
+        # Backward compatibility
+        if self._a2a_request_meta_provider:
+          parameters.request_metadata = self._a2a_request_meta_provider(
+              ctx, a2a_request
+          )
+
+        # TODO: Add support for requested_extension and
+        # message_send_configuration once they are supported by the A2A client.
+        # A single stateful normalizer per stream so incremental
+        # status/artifact updates are aggregated into a running task (matching the
+        # 0.3.x client behavior).
+        normalize_stream_item = _compat.make_stream_normalizer()
+        async with Aclosing(
+            _compat.send_message(
+                a2a_client,
+                request=a2a_request,
+                request_metadata=parameters.request_metadata,
+                context=parameters.client_call_context,
+            )
+        ) as agen:
+          async for raw_a2a_response in agen:
+            a2a_response = normalize_stream_item(raw_a2a_response)
+            logger.debug(build_a2a_response_log(a2a_response))
+
+            task = None
+            metadata = None
+            if isinstance(a2a_response, tuple):
+              task = a2a_response[0]
+              if task:
+                metadata = task.metadata
+            else:
+              metadata = a2a_response.metadata
+
+            if metadata and _compat.metadata_get(
+                metadata, _NEW_A2A_ADK_INTEGRATION_EXTENSION
+            ):
+              event = await self._handle_a2a_response_v2(a2a_response, ctx)
+            else:
+              event = await self._handle_a2a_response(a2a_response, ctx)
+            if not event:
+              continue
+
+            event = await execute_after_request_interceptors(
+                self._config.request_interceptors, ctx, a2a_response, event
+            )
+            if not event:
+              continue
+
+            # Add metadata about the request and response
+            event.custom_metadata = event.custom_metadata or {}
+            if a2a_request:
+              event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
+                  _compat.a2a_to_dict(a2a_request)
+              )
+            # If the response is a ClientEvent, record the task state; otherwise,
+            # record the message object.
+            if isinstance(a2a_response, tuple):
+              event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                  _compat.a2a_to_dict(a2a_response[0])
+              )
+            else:
+              event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                  _compat.a2a_to_dict(a2a_response)
+              )
+
+            if self.mode == "task" and is_finish_task_terminal_fr(event):
+              args = _find_finish_task_args_from_history(
+                  ctx.session, ctx.isolation_scope, completed_fr_event=event
+              )
+              if args is not None:
+                wrapper_key = get_output_wrapper_key(self.output_schema)
+                if wrapper_key and wrapper_key in args:
+                  event.output = args[wrapper_key]
+                else:
+                  event.output = args
+              else:
+                logger.warning(
+                    "Could not find finish_task arguments in session history"
+                    " for isolation scope '%s'. Task output will not be set.",
+                    ctx.isolation_scope,
+                )
+              # Yield the semantic output event so the parent runner can capture
+              # the final task output and record the tool response in history.
+              yield event
+              # Mark the agent as finished so parent coordinator regains control.
+              # Returning early terminates the stream reader, ignoring any legacy
+              # duplicate FRs sent by the server at the end of the run.
+              should_release_task_control = True
+              return
+
+            yield event
+
+            if self.mode == "task" and task:
+              if task.status and task.status.state in (
+                  _compat.TS_FAILED,
+                  _compat.TS_CANCELED,
+              ):
+                is_cancel = task.status.state == _compat.TS_CANCELED
+                logger.warning(
+                    "Remote task reported %s state. Yielding error event and "
+                    "releasing control.",
+                    "canceled" if is_cancel else "failure",
+                )
+                error_text = "Unknown error"
+                if is_cancel:
+                  error_text = "Task canceled"
+                elif event:
+                  error_text = (
+                      _text_from_content(event.content) or "Unknown error"
+                  )
+
+                error_event, failure_event = _create_task_failure_events(
+                    error_text=error_text,
+                    ctx=ctx,
+                    agent_name=self.name,
+                    task_id=task.id,
+                    a2a_request=a2a_request,
+                )
+                yield error_event
+                yield failure_event
+                should_release_task_control = True
+                return
+
+      except _compat.A2A_HTTP_ERRORS as e:
+        error_message = f"A2A request failed: {e}"
+        task_error_message = error_message
+        should_release_task_control = True
+        logger.error(error_message)
+        status_code: object = getattr(e, "status_code", None)
+        custom_metadata: dict[str, Any] = {
+            A2A_METADATA_PREFIX + "error": error_message,
+            A2A_METADATA_PREFIX + "status_code": str(status_code),
+        }
+        if a2a_request:
+          custom_metadata[A2A_METADATA_PREFIX + "request"] = (
               _compat.a2a_to_dict(a2a_request)
           )
-          # If the response is a ClientEvent, record the task state; otherwise,
-          # record the message object.
-          if isinstance(a2a_response, tuple):
-            event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-                _compat.a2a_to_dict(a2a_response[0])
-            )
-          else:
-            event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-                _compat.a2a_to_dict(a2a_response)
-            )
+        yield Event(
+            author=self.name,
+            error_message=error_message,
+            invocation_id=ctx.invocation_id,
+            branch=ctx.branch,
+            custom_metadata=custom_metadata,
+        )
 
-          yield event
+      except Exception as e:
+        error_message = f"A2A request failed: {e}"
+        task_error_message = error_message
+        should_release_task_control = True
+        logger.error(error_message)
+        custom_metadata = {
+            A2A_METADATA_PREFIX + "error": error_message,
+        }
+        if a2a_request:
+          custom_metadata[A2A_METADATA_PREFIX + "request"] = (
+              _compat.a2a_to_dict(a2a_request)
+          )
+        yield Event(
+            author=self.name,
+            error_message=error_message,
+            invocation_id=ctx.invocation_id,
+            branch=ctx.branch,
+            custom_metadata=custom_metadata,
+        )
 
-    except _compat.A2A_HTTP_ERRORS as e:
-      error_message = f"A2A request failed: {e}"
-      logger.error(error_message)
-      status_code: object = getattr(e, "status_code", None)
-      yield Event(
-          author=self.name,
-          error_message=error_message,
-          invocation_id=ctx.invocation_id,
-          branch=ctx.branch,
-          custom_metadata={
-              A2A_METADATA_PREFIX + "request": _compat.a2a_to_dict(a2a_request),
-              A2A_METADATA_PREFIX + "error": error_message,
-              A2A_METADATA_PREFIX + "status_code": str(status_code),
-          },
-      )
-
-    except Exception as e:
-      error_message = f"A2A request failed: {e}"
-      logger.error(error_message)
-
-      yield Event(
-          author=self.name,
-          error_message=error_message,
-          invocation_id=ctx.invocation_id,
-          branch=ctx.branch,
-          custom_metadata={
-              A2A_METADATA_PREFIX + "request": _compat.a2a_to_dict(a2a_request),
-              A2A_METADATA_PREFIX + "error": error_message,
-          },
-      )
+    finally:
+      if self.mode == "task" and should_release_task_control:
+        if task_error_message is not None:
+          yield _create_finish_task_event(
+              ctx=ctx,
+              agent_name=self.name,
+              error_message=task_error_message,
+              is_error=True,
+          )
+        ctx.set_agent_state(self.name, end_of_agent=True)
+        yield self._create_agent_state_event(ctx)
 
   async def _run_live_impl(
       self, ctx: InvocationContext
@@ -1144,8 +1490,10 @@ class RemoteA2aAgent(BaseAgent):
     """
     promoted = False
     async for event in super()._run_impl(ctx=ctx, node_input=node_input):
-      if not promoted and self._promote_response_to_output(
-          event, ctx.node_path
+      if (
+          self.mode != "task"
+          and not promoted
+          and self._promote_response_to_output(event, ctx.node_path)
       ):
         promoted = True
       yield event

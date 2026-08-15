@@ -144,14 +144,9 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
-  # `get_function_responses()` and `get_function_calls()` each rebuild a list
-  # by rescanning every part, and upstream calls them repeatedly per event.
-  # Compute both once per event and reuse them below.
-  responses_per_event = [event.get_function_responses() for event in events]
-  calls_per_event = [event.get_function_calls() for event in events]
-
   function_call_id_to_response_events_index: dict[str | None, int] = {}
-  for i, function_responses in enumerate(responses_per_event):
+  for i, event in enumerate(events):
+    function_responses = event.get_function_responses()
     if function_responses:
       for function_response in function_responses:
         function_call_id = function_response.id
@@ -161,14 +156,14 @@ def _rearrange_events_for_async_function_responses_in_history(
     return events
 
   result_events: list[Event] = []
-  for i, event in enumerate(events):
-    if responses_per_event[i]:
+  for event in events:
+    if event.get_function_responses():
       # function_response should be handled together with function_call below.
       continue
-    elif calls_per_event[i]:
+    elif event.get_function_calls():
 
       function_response_events_indices = set()
-      for function_call in calls_per_event[i]:
+      for function_call in event.get_function_calls():
         function_call_id = function_call.id
         if function_call_id in function_call_id_to_response_events_index:
           function_response_events_indices.add(
@@ -351,13 +346,6 @@ def _rearrange_events_for_latest_function_response(
   return result_events
 
 
-_INTERNAL_FUNCTION_NAMES = frozenset({
-    'adk_framework',
-    REQUEST_EUC_FUNCTION_CALL_NAME,
-    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-})
-
-
 def _is_part_invisible(
     p: types.Part, *, include_thoughts: bool = False
 ) -> bool:
@@ -407,6 +395,38 @@ def _is_part_invisible(
       or p.executable_code
       or p.code_execution_result
   )
+
+
+def _contains_empty_content(
+    event: Event, *, include_thoughts: bool = False
+) -> bool:
+  """Check if an event should be skipped due to missing or empty content.
+
+  This can happen to the events that only changed session state.
+  When both content and transcriptions are empty, the event will be considered
+  as empty. The content is considered empty if none of its parts contain text,
+  inline data, file data, function call, function response, server-side tool
+  call, server-side tool response, executable code, or code execution result.
+  Parts with only thoughts are also considered empty.
+
+  Args:
+    event: The event to check.
+
+  Returns:
+    True if the event should be skipped, False otherwise.
+  """
+  if event.actions and event.actions.compaction:
+    return False
+
+  return (
+      not event.content
+      or not event.content.role
+      or not event.content.parts
+      or all(
+          _is_part_invisible(p, include_thoughts=include_thoughts)
+          for p in event.content.parts
+      )
+  ) and (not event.output_transcription and not event.input_transcription)
 
 
 _SINGLE_TURN_NUDGE = (
@@ -499,43 +519,12 @@ def _should_include_event_in_context(
   ev_iso = getattr(event, 'isolation_scope', None)
   if ev_iso != isolation_scope:
     return False
-
-  # Single pass over the parts. The emptiness and internal-event checks
-  # previously each re-walked `event.content.parts`; this derives the same two
-  # facts once. The returned expression keeps upstream's operand order and
-  # short-circuit structure exactly.
-  content = event.content
-  all_parts_invisible = True
-  if content and content.parts:
-    is_internal_event = any(
-        (p.function_call and p.function_call.name in _INTERNAL_FUNCTION_NAMES)
-        or (
-            p.function_response
-            and p.function_response.name in _INTERNAL_FUNCTION_NAMES
-        )
-        for p in content.parts
-    )
-    if is_internal_event:
-      return False
-
-    all_parts_invisible = all(
-        _is_part_invisible(p, include_thoughts=include_thoughts)
-        for p in content.parts
-    )
-
-  if event.actions and event.actions.compaction:
-    contains_empty_content = False
-  else:
-    contains_empty_content = (
-        not content
-        or not content.role
-        or not content.parts
-        or all_parts_invisible
-    ) and (not event.output_transcription and not event.input_transcription)
-
   return not (
-      contains_empty_content
+      _contains_empty_content(event, include_thoughts=include_thoughts)
       or not _is_event_belongs_to_branch(current_branch, event)
+      or _is_adk_framework_event(event)
+      or _is_auth_event(event)
+      or _is_request_confirmation_event(event)
   )
 
 
@@ -770,19 +759,16 @@ def _copy_content_for_request(
   if not parts:
     return new_content
 
-  if not strip_client_function_call_ids:
-    new_content.parts = [part.model_copy() for part in parts]
-    return new_content
-
   new_parts = []
   for part in parts:
     new_part = part.model_copy()
-    fc = new_part.function_call
-    if fc and fc.id and fc.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
-      new_part.function_call = fc.model_copy(update={'id': None})
-    fr = new_part.function_response
-    if fr and fr.id and fr.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
-      new_part.function_response = fr.model_copy(update={'id': None})
+    if strip_client_function_call_ids:
+      fc = new_part.function_call
+      if fc and fc.id and fc.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
+        new_part.function_call = fc.model_copy(update={'id': None})
+      fr = new_part.function_response
+      if fr and fr.id and fr.id.startswith(AF_FUNCTION_CALL_ID_PREFIX):
+        new_part.function_response = fr.model_copy(update={'id': None})
     new_parts.append(new_part)
   new_content.parts = new_parts
   return new_content
@@ -1249,6 +1235,33 @@ def _is_event_belongs_to_branch(
   inv_path = _BranchPath.from_string(invocation_branch)
   evt_path = _BranchPath.from_string(event.branch)
   return inv_path == evt_path or inv_path.is_descendant_of(evt_path)
+
+
+def _is_function_call_event(event: Event, function_name: str) -> bool:
+  """Checks if an event is a function call/response for a given function name."""
+  if not event.content or not event.content.parts:
+    return False
+  for part in event.content.parts:
+    if part.function_call and part.function_call.name == function_name:
+      return True
+    if part.function_response and part.function_response.name == function_name:
+      return True
+  return False
+
+
+def _is_auth_event(event: Event) -> bool:
+  """Checks if the event is an authentication event."""
+  return _is_function_call_event(event, REQUEST_EUC_FUNCTION_CALL_NAME)
+
+
+def _is_request_confirmation_event(event: Event) -> bool:
+  """Checks if the event is a request confirmation event."""
+  return _is_function_call_event(event, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+
+
+def _is_adk_framework_event(event: Event) -> bool:
+  """Checks if the event is an ADK framework event."""
+  return _is_function_call_event(event, 'adk_framework')
 
 
 def _is_live_model_media_event_with_inline_data(event: Event) -> bool:

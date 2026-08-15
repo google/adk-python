@@ -182,6 +182,37 @@ def test_format_auto_rater_prompt_with_intermediate_data(
   assert '"result": "ok"' in prompt
 
 
+def test_format_auto_rater_prompt_with_grounding_metadata(
+    evaluator: RubricBasedFinalResponseQualityV1Evaluator,
+):
+  """Tests grounding metadata is included as trusted evidence."""
+  grounding_metadata = genai_types.GroundingMetadata(
+      web_search_queries=["recent AI news"]
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="What's new in AI?")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Here are sources.")]
+      ),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="agent",
+                  content=None,
+                  grounding_metadata=grounding_metadata,
+              )
+          ]
+      ),
+  )
+  prompt = evaluator.format_auto_rater_prompt(invocation, None)
+
+  assert "<grounding_metadata>" in prompt
+  assert "recent AI news" in prompt
+  assert "model-supplied grounding metadata" in prompt
+
+
 def test_format_auto_rater_prompt_with_app_details_no_tools(
     evaluator: RubricBasedFinalResponseQualityV1Evaluator,
 ):

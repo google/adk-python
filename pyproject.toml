@@ -112,6 +112,7 @@ optional-dependencies.all = [
   "nltk!=3.10.1",
   "oci>=2.126",
   "openai>=2.20,<3",
+  "openpyxl>=3.1.5,<4",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
@@ -132,6 +133,7 @@ optional-dependencies.all = [
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "toolbox-adk>=1,<2",
+  "xlrd>=2,<3",
 ]
 optional-dependencies.antigravity = [
   "google-antigravity>=0.1,<0.2",
@@ -196,9 +198,11 @@ optional-dependencies.eval = [
   "google-cloud-texttospeech>=2.37",
   "jinja2>=3.1.4,<4",                           # For eval template rendering
   "nltk!=3.10.1",                               # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
+  "openpyxl>=3.1.5,<4",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
+  "xlrd>=2,<3",
 ]
 optional-dependencies.extensions = [
   "anthropic>=0.78",                                                 # For anthropic model support; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
@@ -298,6 +302,7 @@ optional-dependencies.test = [
   "mcp>=1.24,<2",
   "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
+  "openpyxl>=3.1.5,<4",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
@@ -320,6 +325,7 @@ optional-dependencies.test = [
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "tomli>=2,<3; python_version<'3.11'",
+  "xlrd>=2,<3",
 ]
 optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
 optional-dependencies.tools = [

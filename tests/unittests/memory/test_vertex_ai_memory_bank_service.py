@@ -201,6 +201,79 @@ def test_build_create_memory_config_merges_revision_labels_when_supported():
   }
 
 
+def test_build_create_memory_config_sets_memory_id_when_supported():
+  with (
+      mock.patch.object(
+          memory_service_module,
+          '_get_create_memory_config_keys',
+          return_value=frozenset({'wait_for_completion', 'memory_id'}),
+      ),
+      mock.patch.object(
+          memory_service_module,
+          '_supports_create_memory_metadata',
+          return_value=False,
+      ),
+  ):
+    config = memory_service_module._build_create_memory_config(
+        None, memory_id='mem-123'
+    )
+
+  assert config == {'wait_for_completion': False, 'memory_id': 'mem-123'}
+
+
+def test_build_create_memory_config_omits_memory_id_when_none():
+  with mock.patch.object(
+      memory_service_module,
+      '_get_create_memory_config_keys',
+      return_value=frozenset({'wait_for_completion', 'memory_id'}),
+  ):
+    config = memory_service_module._build_create_memory_config(
+        None, memory_id=None
+    )
+
+  assert config == {'wait_for_completion': False}
+
+
+def test_build_create_memory_config_ignores_memory_id_when_unsupported():
+  with (
+      mock.patch.object(
+          memory_service_module,
+          '_get_create_memory_config_keys',
+          return_value=frozenset({'wait_for_completion'}),
+      ),
+      mock.patch.object(
+          memory_service_module,
+          '_supports_create_memory_metadata',
+          return_value=False,
+      ),
+  ):
+    config = memory_service_module._build_create_memory_config(
+        None, memory_id='mem-123'
+    )
+
+  assert config == {'wait_for_completion': False}
+
+
+def test_build_create_memory_config_custom_metadata_memory_id_wins():
+  with (
+      mock.patch.object(
+          memory_service_module,
+          '_get_create_memory_config_keys',
+          return_value=frozenset({'wait_for_completion', 'memory_id'}),
+      ),
+      mock.patch.object(
+          memory_service_module,
+          '_supports_create_memory_metadata',
+          return_value=False,
+      ),
+  ):
+    config = memory_service_module._build_create_memory_config(
+        {'memory_id': 'explicit'}, memory_id='from-entry'
+    )
+
+  assert config['memory_id'] == 'explicit'
+
+
 @pytest.fixture
 def mock_vertexai_client():
   with mock.patch('vertexai.Client') as mock_client_constructor:
@@ -801,6 +874,88 @@ async def test_add_memory_calls_create_with_memory_entry_metadata(
       ]
   )
   vertex_types.AgentEngineMemoryConfig(**create_config)
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_allowed_topics_routes_to_generate(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with mock.patch.object(
+      memory_service_module,
+      '_get_generate_memories_config_keys',
+      return_value=frozenset({'wait_for_completion', 'allowed_topics'}),
+  ):
+    await memory_service.add_events_to_memory(
+        app_name=MOCK_SESSION.app_name,
+        user_id=MOCK_SESSION.user_id,
+        events=[MOCK_SESSION.events[0]],
+        custom_metadata={'allowed_topics': ['USER_PREFERENCES']},
+    )
+
+  mock_vertexai_client.agent_engines.memories.ingest_events.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  call_kwargs = (
+      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
+  )
+  assert call_kwargs['config']['allowed_topics'] == ['USER_PREFERENCES']
+
+
+@pytest.mark.asyncio
+async def test_add_memory_forwards_entry_id_as_memory_id(mock_vertexai_client):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with mock.patch.object(
+      memory_service_module,
+      '_get_create_memory_config_keys',
+      return_value=frozenset({'wait_for_completion', 'memory_id'}),
+  ):
+    await memory_service.add_memory(
+        app_name=MOCK_SESSION.app_name,
+        user_id=MOCK_SESSION.user_id,
+        memories=[
+            MemoryEntry(
+                id='mem-123',
+                content=types.Content(parts=[types.Part(text='fact one')]),
+            )
+        ],
+    )
+
+  create_config = (
+      mock_vertexai_client.agent_engines.memories.create.call_args.kwargs[
+          'config'
+      ]
+  )
+  assert create_config['memory_id'] == 'mem-123'
+
+
+@pytest.mark.asyncio
+async def test_add_memory_custom_metadata_memory_id_overrides_entry_id(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with mock.patch.object(
+      memory_service_module,
+      '_get_create_memory_config_keys',
+      return_value=frozenset({'wait_for_completion', 'memory_id'}),
+  ):
+    await memory_service.add_memory(
+        app_name=MOCK_SESSION.app_name,
+        user_id=MOCK_SESSION.user_id,
+        memories=[
+            MemoryEntry(
+                id='from-entry',
+                content=types.Content(parts=[types.Part(text='fact one')]),
+            )
+        ],
+        custom_metadata={'memory_id': 'explicit'},
+    )
+
+  create_config = (
+      mock_vertexai_client.agent_engines.memories.create.call_args.kwargs[
+          'config'
+      ]
+  )
+  assert create_config['memory_id'] == 'explicit'
 
 
 @pytest.mark.asyncio

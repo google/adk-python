@@ -23,12 +23,17 @@ from typing import AsyncGenerator
 from typing import Optional
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
+from unittest.mock import patch
 
 from google.adk import runners
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
@@ -1913,7 +1918,13 @@ class TestRunnerResolveApp:
   def test_resolve_app_rejects_app_and_agent(self):
     """Test that providing both app and agent raises."""
     app = App(name="test_app", root_agent=self.root_agent)
-    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Only one of app, agent, or node may be provided, but got:"
+            r" app=App, agent=MockLlmAgent\. Pass exactly one to Runner\(\)\."
+        ),
+    ):
       Runner(
           app=app,
           agent=self.root_agent,
@@ -1926,7 +1937,13 @@ class TestRunnerResolveApp:
 
     app = App(name="test_app", root_agent=self.root_agent)
     node = BaseNode(name="test_node")
-    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Only one of app, agent, or node may be provided, but got:"
+            r" app=App, node=BaseNode\. Pass exactly one to Runner\(\)\."
+        ),
+    ):
       Runner(
           app=app,
           node=node,
@@ -1938,7 +1955,14 @@ class TestRunnerResolveApp:
     from google.adk.workflow._base_node import BaseNode
 
     node = BaseNode(name="test_node")
-    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Only one of app, agent, or node may be provided, but got:"
+            r" agent=MockLlmAgent, node=BaseNode\. Pass exactly one to"
+            r" Runner\(\)\."
+        ),
+    ):
       Runner(
           app_name="test_app",
           agent=self.root_agent,
@@ -1949,7 +1973,11 @@ class TestRunnerResolveApp:
   def test_resolve_app_rejects_none(self):
     """Test that providing no app, agent, or node raises."""
     with pytest.raises(
-        ValueError, match="One of app, agent, or node must be provided"
+        ValueError,
+        match=(
+            r"One of app, agent, or node must be provided\. Got none\. Pass"
+            r" exactly one to Runner\(\)\."
+        ),
     ):
       Runner(
           app_name="test_app",
@@ -2513,6 +2541,144 @@ def test_runner_agent_is_a_class_attribute():
   assert "agent" in dir(Runner)
   assert Runner.agent is None
   assert create_autospec(Runner).agent is not None
+
+
+@pytest.mark.asyncio
+async def test_runner_delegation_finds_active_task_scope_on_non_terminal_error():
+  """find_active_task_scope ignores non-terminal errors; remains on active task."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(name="task_agent", mode="task")
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  # Simulate non-terminal error (validation failure)
+  events = [
+      Event(
+          author="task_agent",
+          invocation_id="inv-1",
+          isolation_scope="scope-1",
+          content=types.Content(
+              parts=[
+                  types.Part.from_function_response(
+                      name=FINISH_TASK_TOOL_NAME,
+                      response={"result": "Validation failed; retry"},
+                  )
+              ]
+          ),
+      )
+  ]
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session.events.extend(events)
+  assert runners._find_active_task_scope(session) == ("scope-1", "inv-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result", [FINISH_TASK_SUCCESS_RESULT, FINISH_TASK_ERROR_RESULT]
+)
+async def test_runner_delegation_closes_active_task_scope_on_terminal_results(
+    result,
+):
+  """find_active_task_scope returns None if the task scope has finished with a terminal result."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(name="task_agent", mode="task")
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  # Simulate terminal result
+  events = [
+      Event(
+          author="task_agent",
+          invocation_id="inv-1",
+          isolation_scope="scope-1",
+          content=types.Content(
+              parts=[
+                  types.Part.from_function_response(
+                      name=FINISH_TASK_TOOL_NAME,
+                      response={"result": result},
+                  )
+              ]
+          ),
+      )
+  ]
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session.events.extend(events)
+  assert runners._find_active_task_scope(session) is None
+
+
+@pytest.mark.asyncio
+async def test_runner_picks_coordinator_when_has_remote_a2a_task_subagent():
+  """Runner runs coordinator, not sub-agent, when RemoteA2aAgent is in task mode."""
+  session_service = InMemorySessionService()
+
+  sub_agent = RemoteA2aAgent(
+      name="remote_task_agent",
+      agent_card="https://example.com/rpc",
+      mode="task",
+  )
+
+  # Coordinator LlmAgent in chat mode
+  coordinator = LlmAgent(
+      name="coordinator", mode="chat", sub_agents=[sub_agent]
+  )
+  sub_agent.parent_agent = coordinator
+
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=coordinator, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  # Simulate some events so _find_agent_to_run would be called on resume.
+  events = [
+      Event(
+          author="remote_task_agent",
+          invocation_id="inv-1",
+          isolation_scope="scope-1",
+          content=types.Content(parts=[types.Part(text="task progress")]),
+      )
+  ]
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session.events.extend(events)
+
+  # Mock _run_node_async to just yield a dummy event and return
+  async def mock_run_node_async(*args, **kwargs):
+    yield Event(
+        author="system",
+        content=types.Content(parts=[types.Part(text="dummy")]),
+    )
+
+  with patch.object(
+      runner, "_run_node_async", side_effect=mock_run_node_async
+  ) as mock_run_node:
+    # Run with new message (resume-like)
+    async for _ in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(parts=[types.Part(text="user reply")]),
+    ):
+      pass
+
+    # Verify that _run_node_async was called with the coordinator (self.agent)
+    # not the sub_agent.
+    assert mock_run_node.call_count == 1
+    called_node = mock_run_node.call_args[1].get("node")
+    assert called_node == coordinator
 
 
 if __name__ == "__main__":
