@@ -1,0 +1,595 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+import copy
+from datetime import datetime
+from datetime import timezone
+import json
+import logging
+import os
+from typing import Any
+from typing import AsyncGenerator
+from typing import cast
+from typing import Iterator
+from typing import Optional
+
+from ...errors._stale_session_error import StaleSessionError
+from ...errors.already_exists_error import AlreadyExistsError
+from ...errors.session_not_found_error import SessionNotFoundError
+from ...events.event import Event
+from ...platform import uuid as platform_uuid
+from ...sessions import _session_util
+from ...sessions.base_session_service import BaseSessionService
+from ...sessions.base_session_service import GetSessionConfig
+from ...sessions.base_session_service import ListSessionsResponse
+from ...sessions.session import Session
+from ...sessions.state import State
+
+try:
+  from google.cloud import firestore
+except ImportError as e:
+  raise ImportError(
+      "FirestoreSessionService requires google-cloud-firestore. "
+      "Install it with: pip install google-cloud-firestore"
+  ) from e
+
+_SessionLockKey = tuple[str, str, str]
+
+logger = logging.getLogger("google_adk." + __name__)
+
+_STALE_SESSION_ERROR_MESSAGE = (
+    "The session has been modified in storage since it was loaded. "
+    "Please reload the session before appending more events."
+)
+
+DEFAULT_ROOT_COLLECTION = "adk-session"
+DEFAULT_SESSIONS_COLLECTION = "sessions"
+DEFAULT_EVENTS_COLLECTION = "events"
+DEFAULT_APP_STATE_COLLECTION = "app_states"
+DEFAULT_USER_STATE_COLLECTION = "user_states"
+
+
+def _to_last_update_time(update_time: Any) -> float:
+  """Converts a Firestore updateTime value to epoch seconds, or 0.0."""
+  if not update_time:
+    return 0.0
+  if isinstance(update_time, datetime):
+    return update_time.timestamp()
+  try:
+    return float(update_time)
+  except (ValueError, TypeError):
+    return 0.0
+
+
+class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
+  """Session service that uses Google Cloud Firestore as the backend.
+
+  Hierarchy for sessions:
+  adk-session
+  ↳ <app name>
+    ↳ users
+      ↳ <user ID>
+        ↳ sessions
+          ↳ <session ID>
+            ↳ events
+              ↳ <event ID>
+
+  Hierarchy for shared App/User state configurations:
+  app_states
+  ↳ <app name>
+
+  user_states
+  ↳ <app name>
+    ↳ users
+      ↳ <user ID>
+  """
+
+  def __init__(
+      self,
+      client: Optional[firestore.AsyncClient] = None,
+      root_collection: Optional[str] = None,
+  ):
+    """Initializes the Firestore session service.
+
+    Args:
+      client: An optional Firestore AsyncClient. If not provided, a new one
+        will be created.
+      root_collection: The root collection name. Defaults to 'adk-session' or
+        or the value of ADK_FIRESTORE_ROOT_COLLECTION env var.
+    """
+    self.client = client or firestore.AsyncClient()
+    self.root_collection = (
+        root_collection
+        or os.environ.get("ADK_FIRESTORE_ROOT_COLLECTION")
+        or DEFAULT_ROOT_COLLECTION
+    )
+    self.sessions_collection = DEFAULT_SESSIONS_COLLECTION
+
+    # Per-session locks used to serialize append_event calls in this process.
+    self._session_locks: dict[_SessionLockKey, asyncio.Lock] = {}
+    self._session_lock_ref_count: dict[_SessionLockKey, int] = {}
+    self._session_locks_guard = asyncio.Lock()
+    self.events_collection = DEFAULT_EVENTS_COLLECTION
+    self.app_state_collection = DEFAULT_APP_STATE_COLLECTION
+    self.user_state_collection = DEFAULT_USER_STATE_COLLECTION
+
+  @asynccontextmanager
+  async def _with_session_lock(
+      self, *, app_name: str, user_id: str, session_id: str
+  ) -> AsyncGenerator[None]:
+    """Serializes event appends for the same session within this process."""
+    lock_key = (app_name, user_id, session_id)
+    async with self._session_locks_guard:
+      lock = self._session_locks.get(lock_key)
+      if lock is None:
+        lock = asyncio.Lock()
+        self._session_locks[lock_key] = lock
+      self._session_lock_ref_count[lock_key] = (
+          self._session_lock_ref_count.get(lock_key, 0) + 1
+      )
+
+    try:
+      async with lock:
+        yield
+    finally:
+      async with self._session_locks_guard:
+        remaining = self._session_lock_ref_count.get(lock_key, 0) - 1
+        if remaining <= 0 and not lock.locked():
+          self._session_lock_ref_count.pop(lock_key, None)
+          self._session_locks.pop(lock_key, None)
+        else:
+          self._session_lock_ref_count[lock_key] = remaining
+
+  @staticmethod
+  def _merge_state(
+      app_state: Optional[dict[str, Any]],
+      user_state: Optional[dict[str, Any]],
+      session_state: dict[str, Any],
+  ) -> dict[str, Any]:
+    """Merge app, user, and session states into a single state dictionary."""
+    merged_state = copy.deepcopy(session_state)
+    for key, value in (app_state or {}).items():
+      merged_state[State.APP_PREFIX + key] = value
+    for key, value in (user_state or {}).items():
+      merged_state[State.USER_PREFIX + key] = value
+    return merged_state
+
+  def _get_sessions_ref(
+      self, app_name: str, user_id: str
+  ) -> firestore.AsyncCollectionReference:
+    return cast(
+        "firestore.AsyncCollectionReference",
+        self.client.collection(self.root_collection)
+        .document(app_name)
+        .collection("users")
+        .document(user_id)
+        .collection(self.sessions_collection),
+    )
+
+  async def create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      state: Optional[dict[str, Any]] = None,
+      session_id: Optional[str] = None,
+  ) -> Session:
+    """Creates a new session in Firestore."""
+    if not session_id:
+      session_id = platform_uuid.new_uuid()
+
+    initial_state = state or {}
+    now = firestore.SERVER_TIMESTAMP
+
+    session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
+
+    # Extract state deltas
+    state_deltas = _session_util.extract_state_delta(initial_state)
+    app_state_delta = state_deltas["app"]
+    user_state_delta = state_deltas["user"]
+    session_state = state_deltas["session"]
+
+    app_ref = self.client.collection(self.app_state_collection).document(
+        app_name
+    )
+    user_ref = (
+        self.client.collection(self.user_state_collection)
+        .document(app_name)
+        .collection("users")
+        .document(user_id)
+    )
+
+    session_data = {
+        "id": session_id,
+        "appName": app_name,
+        "userId": user_id,
+        "state": json.dumps(session_state),
+        "createTime": now,
+        "updateTime": now,
+        "revision": 0,
+    }
+
+    @firestore.async_transactional  # type: ignore[untyped-decorator]
+    async def _create_txn(
+        transaction: firestore.AsyncTransaction,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+      # 1. Reads
+      snap = await session_ref.get(transaction=transaction)
+      if snap.exists:
+        raise AlreadyExistsError(f"Session {session_id} already exists.")
+
+      app_snap = await app_ref.get(transaction=transaction)
+      user_snap = await user_ref.get(transaction=transaction)
+
+      current_app: dict[str, Any] = (
+          (app_snap.to_dict() or {}) if app_snap.exists else {}
+      )
+      current_user: dict[str, Any] = (
+          (user_snap.to_dict() or {}) if user_snap.exists else {}
+      )
+
+      # 2. Writes
+      if app_state_delta:
+        current_app.update(app_state_delta)
+        transaction.set(app_ref, current_app, merge=True)
+
+      if user_state_delta:
+        current_user.update(user_state_delta)
+        transaction.set(user_ref, current_user, merge=True)
+
+      transaction.set(session_ref, session_data)
+      return current_app, current_user
+
+    transaction_obj = self.client.transaction()
+    storage_app_state, storage_user_state = await _create_txn(transaction_obj)
+
+    merged_state = self._merge_state(
+        storage_app_state, storage_user_state, session_state
+    )
+
+    local_now = datetime.now(timezone.utc).timestamp()
+
+    session = Session(
+        id=session_id,
+        app_name=app_name,
+        user_id=user_id,
+        state=merged_state,
+        events=[],
+        last_update_time=local_now,
+    )
+    session._storage_update_marker = "0"
+    return session
+
+  async def get_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      config: Optional[GetSessionConfig] = None,
+  ) -> Optional[Session]:
+    """Gets a session from Firestore."""
+    session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
+    doc = await session_ref.get()
+
+    if not doc.exists:
+      return None
+
+    data = doc.to_dict()
+    if not data:
+      return None
+
+    app_ref = self.client.collection(self.app_state_collection).document(
+        app_name
+    )
+    user_ref = (
+        self.client.collection(self.user_state_collection)
+        .document(app_name)
+        .collection("users")
+        .document(user_id)
+    )
+
+    # A requested count of zero asks for no event history at all (callers use
+    # it to probe whether a session exists), so skip the events query rather
+    # than falling through and reading the whole transcript.
+    if config is not None and config.num_recent_events == 0:
+      events_docs: list[Any] = []
+      app_doc, user_doc = await asyncio.gather(app_ref.get(), user_ref.get())
+    else:
+      # Fetch events and shared state concurrently
+      events_ref = session_ref.collection(self.events_collection)
+      query = events_ref.order_by("timestamp")
+
+      if config:
+        if config.after_timestamp:
+          # Stored event timestamps are aware UTC; a naive cursor is read as
+          # UTC on the wire and would skew the filter by the host's UTC offset.
+          after_dt = datetime.fromtimestamp(
+              config.after_timestamp, tz=timezone.utc
+          )
+          query = query.where("timestamp", ">=", after_dt)
+        if config.num_recent_events is not None:
+          query = query.limit_to_last(config.num_recent_events)
+
+      events_docs, app_doc, user_doc = await asyncio.gather(
+          query.get(),
+          app_ref.get(),
+          user_ref.get(),
+      )
+
+    events = []
+    for event_doc in events_docs:
+      event_data = event_doc.to_dict()
+      if event_data and "event_data" in event_data:
+        ed = event_data["event_data"]
+        events.append(Event.model_validate(ed))
+
+    raw_state = data.get("state", {})
+    session_state = (
+        json.loads(raw_state) if isinstance(raw_state, str) else raw_state
+    )
+    app_state = app_doc.to_dict() if app_doc.exists else {}
+    user_state = user_doc.to_dict() if user_doc.exists else {}
+
+    merged_state = self._merge_state(app_state, user_state, session_state)
+
+    current_revision = data.get("revision", 0)
+    session = Session(
+        id=session_id,
+        app_name=app_name,
+        user_id=user_id,
+        state=merged_state,
+        events=events,
+        last_update_time=_to_last_update_time(data.get("updateTime")),
+    )
+    session._storage_update_marker = str(current_revision)
+    return session
+
+  async def list_sessions(
+      self, *, app_name: str, user_id: Optional[str] = None
+  ) -> ListSessionsResponse:
+    """Lists sessions from Firestore."""
+    if user_id:
+      query = self._get_sessions_ref(app_name, user_id).where(
+          "appName", "==", app_name
+      )
+      docs = await query.get()
+    else:
+      query = self.client.collection_group(self.sessions_collection).where(
+          "appName", "==", app_name
+      )
+      docs = await query.get()
+
+    def _iter_sessions_data() -> Iterator[dict[str, Any]]:
+      for doc in docs:
+        if data := doc.to_dict():
+          yield data
+
+    # Fetch shared state once
+    app_ref = self.client.collection(self.app_state_collection).document(
+        app_name
+    )
+    app_doc = await app_ref.get()
+    app_state = app_doc.to_dict() if app_doc.exists else {}
+
+    user_states_map = {}
+    if user_id:
+      user_ref = (
+          self.client.collection(self.user_state_collection)
+          .document(app_name)
+          .collection("users")
+          .document(user_id)
+      )
+      user_doc = await user_ref.get()
+      if user_doc.exists:
+        user_states_map[user_id] = user_doc.to_dict()
+    else:
+      unique_user_ids = {
+          s["userId"] for s in _iter_sessions_data() if "userId" in s
+      }
+      if unique_user_ids:
+        users_coll = (
+            self.client.collection(self.user_state_collection)
+            .document(app_name)
+            .collection("users")
+        )
+        refs = [users_coll.document(uid) for uid in sorted(unique_user_ids)]
+        async for u_doc in self.client.get_all(refs):
+          if u_doc.exists:
+            user_states_map[u_doc.id] = u_doc.to_dict()
+
+    sessions = []
+    for data in _iter_sessions_data():
+      u_id = data["userId"]
+      raw_s_state = data.get("state", {})
+      s_state = (
+          json.loads(raw_s_state)
+          if isinstance(raw_s_state, str)
+          else raw_s_state
+      )
+      u_state = user_states_map.get(u_id, {})
+      merged = self._merge_state(app_state, u_state, s_state)
+
+      sessions.append(
+          Session(
+              id=data["id"],
+              app_name=data["appName"],
+              user_id=data["userId"],
+              state=merged,
+              events=[],
+              last_update_time=_to_last_update_time(data.get("updateTime")),
+          )
+      )
+
+    sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
+    return ListSessionsResponse(sessions=sessions)
+
+  async def delete_session(
+      self, *, app_name: str, user_id: str, session_id: str
+  ) -> None:
+    """Deletes a session and its events from Firestore."""
+    session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
+
+    @firestore.async_transactional  # type: ignore[untyped-decorator]
+    async def _mark_deleting_txn(
+        transaction: firestore.AsyncTransaction,
+    ) -> None:
+      snap = await session_ref.get(transaction=transaction)
+      if snap.exists:
+        transaction.update(session_ref, {"status": "DELETING"})
+
+    try:
+      transaction_obj = self.client.transaction()
+      await _mark_deleting_txn(transaction_obj)
+    except Exception:
+      pass
+
+    events_ref = session_ref.collection(self.events_collection)
+
+    batch = self.client.batch()
+    count = 0
+    async for event_doc in events_ref.stream():
+      batch.delete(event_doc.reference)
+      count += 1
+      if count >= 500:
+        await batch.commit()
+        batch = self.client.batch()
+        count = 0
+    if count > 0:
+      await batch.commit()
+
+    await session_ref.delete()
+
+  async def append_event(self, session: Session, event: Event) -> Event:
+    """Appends an event to a session in Firestore."""
+    if event.partial:
+      return event
+
+    self._apply_temp_state(session, event)
+    event = self._trim_temp_delta_state(event)
+
+    session_ref = self._get_sessions_ref(
+        session.app_name, session.user_id
+    ).document(session.id)
+
+    state_delta = (
+        event.actions.state_delta
+        if event.actions and event.actions.state_delta
+        else {}
+    )
+    state_deltas = _session_util.extract_state_delta(state_delta)
+    app_updates = state_deltas["app"]
+    user_updates = state_deltas["user"]
+    session_updates = state_deltas["session"]
+
+    app_ref = self.client.collection(self.app_state_collection).document(
+        session.app_name
+    )
+    user_ref = (
+        self.client.collection(self.user_state_collection)
+        .document(session.app_name)
+        .collection("users")
+        .document(session.user_id)
+    )
+
+    async with self._with_session_lock(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+    ):
+
+      @firestore.async_transactional  # type: ignore[untyped-decorator]
+      async def _append_txn(transaction: firestore.AsyncTransaction) -> int:
+        # 1. Reads
+        session_snap = await session_ref.get(transaction=transaction)
+        if not session_snap.exists:
+          raise SessionNotFoundError(f"Session {session.id} not found.")
+
+        session_doc = session_snap.to_dict() or {}
+        if session_doc.get("status") == "DELETING":
+          raise ValueError(f"Session {session.id} is currently being deleted.")
+
+        current_revision = session_doc.get("revision", 0)
+
+        if session._storage_update_marker is not None:
+          if session._storage_update_marker != str(current_revision):
+            raise StaleSessionError(_STALE_SESSION_ERROR_MESSAGE)
+
+        app_snap = (
+            await app_ref.get(transaction=transaction) if app_updates else None
+        )
+        user_snap = (
+            await user_ref.get(transaction=transaction)
+            if user_updates
+            else None
+        )
+
+        # 2. Writes
+        if app_updates and app_snap is not None:
+          current_app = (app_snap.to_dict() or {}) if app_snap.exists else {}
+          current_app.update(app_updates)
+          transaction.set(app_ref, current_app, merge=True)
+
+        if user_updates and user_snap is not None:
+          current_user = user_snap.to_dict() if user_snap.exists else {}
+          current_user.update(user_updates)
+          transaction.set(user_ref, current_user, merge=True)
+
+        new_revision = current_revision + 1
+
+        session_only_state = {
+            k: v
+            for k, v in session.state.items()
+            if not k.startswith(State.APP_PREFIX)
+            and not k.startswith(State.USER_PREFIX)
+            and not k.startswith(State.TEMP_PREFIX)
+        }
+        session_only_state.update(session_updates)
+        transaction.update(
+            session_ref,
+            {
+                "state": json.dumps(session_only_state),
+                "updateTime": firestore.SERVER_TIMESTAMP,
+                "revision": new_revision,
+            },
+        )
+
+        event_id = event.id
+        event_ref = session_ref.collection(self.events_collection).document(
+            event_id
+        )
+        event_data = event.model_dump(exclude_none=True, mode="json")
+        transaction.set(
+            event_ref,
+            {
+                "event_data": event_data,
+                "timestamp": firestore.SERVER_TIMESTAMP,
+                "appName": session.app_name,
+                "userId": session.user_id,
+            },
+        )
+
+        return cast(int, new_revision)
+
+      transaction_obj = self.client.transaction()
+      new_revision_count = await _append_txn(transaction_obj)
+      session._storage_update_marker = str(new_revision_count)
+      session.last_update_time = event.timestamp
+
+    await super().append_event(session, event)
+    return event

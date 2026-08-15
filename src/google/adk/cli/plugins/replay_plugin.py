@@ -29,11 +29,7 @@ from typing_extensions import override
 import yaml
 
 from ...agents.callback_context import CallbackContext
-from ...models.llm_request import LlmRequest
-from ...models.llm_response import LlmResponse
 from ...plugins.base_plugin import BasePlugin
-from .recordings_schema import LlmRecording
-from .recordings_schema import Recording
 from .recordings_schema import Recordings
 from .recordings_schema import ToolRecording
 
@@ -65,8 +61,8 @@ class _InvocationReplayState(BaseModel):
   recordings: Recordings
 
   # Per-agent replay indices for parallel execution
-  # key: agent_name -> current replay index for that agent
-  agent_replay_indices: dict[str, int] = Field(default_factory=dict)
+  # key: agent_name -> current tool replay index for that agent
+  agent_tool_replay_indices: dict[str, int] = Field(default_factory=dict)
 
 
 class ReplayPlugin(BasePlugin):
@@ -89,31 +85,6 @@ class ReplayPlugin(BasePlugin):
       # Load the replay state for this invocation
       self._load_invocation_state(ctx)
     return None
-
-  @override
-  async def before_model_callback(
-      self, *, callback_context: CallbackContext, llm_request: LlmRequest
-  ) -> Optional[LlmResponse]:
-    """Replay LLM response from recordings instead of making real call."""
-    if not self._is_replay_mode_on(callback_context):
-      return None
-
-    if (state := self._get_invocation_state(callback_context)) is None:
-      raise ReplayConfigError(
-          "Replay state not initialized. Ensure before_run created it."
-      )
-
-    agent_name = callback_context.agent_name
-
-    # Verify and get the next LLM recording for this specific agent
-    recording = self._verify_and_get_next_llm_recording_for_agent(
-        state, agent_name, llm_request
-    )
-
-    logger.debug("Verified and replaying LLM response for agent %s", agent_name)
-
-    # Return the recorded response
-    return recording.llm_response
 
   @override
   async def before_tool_callback(
@@ -196,6 +167,7 @@ class ReplayPlugin(BasePlugin):
     config = session_state.get("_adk_replay_config", {})
     case_dir = config.get("dir")
     msg_index = config.get("user_message_index")
+    streaming_mode = config.get("streaming_mode")
 
     if not case_dir or msg_index is None:
       raise ReplayConfigError(
@@ -203,7 +175,12 @@ class ReplayPlugin(BasePlugin):
       )
 
     # Load recordings
-    recordings_file = Path(case_dir) / "generated-recordings.yaml"
+    if streaming_mode == "sse":
+      recordings_file = Path(case_dir) / "generated-recordings-sse.yaml"
+    elif streaming_mode == "none":
+      recordings_file = Path(case_dir) / "generated-recordings.yaml"
+    else:
+      raise ValueError(f"Unsupported streaming mode: {streaming_mode}")
 
     if not recordings_file.exists():
       raise ReplayConfigError(f"Recordings file not found: {recordings_file}")
@@ -216,6 +193,9 @@ class ReplayPlugin(BasePlugin):
       raise ReplayConfigError(
           f"Failed to load recordings from {recordings_file}: {e}"
       ) from e
+
+    # Store recordings in session state for BaseLlmFlow to access
+    config["_adk_replay_recordings"] = recordings
 
     # Load and store invocation state
     state = _InvocationReplayState(
@@ -234,31 +214,32 @@ class ReplayPlugin(BasePlugin):
     )
     return state
 
-  def _get_next_recording_for_agent(
+  def _get_next_tool_recording_for_agent(
       self,
       state: _InvocationReplayState,
       agent_name: str,
-  ) -> Recording:
-    """Get the next recording for the specific agent in strict order."""
+  ) -> ToolRecording:
+    """Get the next tool recording for the specific agent."""
     # Get current agent index
-    current_agent_index = state.agent_replay_indices.get(agent_name, 0)
+    current_agent_index = state.agent_tool_replay_indices.get(agent_name, 0)
 
-    # Filter ALL recordings for this agent and user message index (strict order)
+    # Filter tool recordings for this agent and user message index
     agent_recordings = [
-        recording
+        recording.tool_recording
         for recording in state.recordings.recordings
         if (
             recording.agent_name == agent_name
             and recording.user_message_index == state.user_message_index
+            and recording.tool_recording
         )
     ]
 
     # Check if we have enough recordings for this agent
     if current_agent_index >= len(agent_recordings):
       raise ReplayVerificationError(
-          f"Runtime sent more requests than expected for agent '{agent_name}'"
-          f" at user_message_index {state.user_message_index}. Expected"
-          f" {len(agent_recordings)}, but got request at index"
+          "Runtime sent more tool requests than expected for agent"
+          f" '{agent_name}' at user_message_index {state.user_message_index}."
+          f" Expected {len(agent_recordings)}, but got request at index"
           f" {current_agent_index}"
       )
 
@@ -266,36 +247,9 @@ class ReplayPlugin(BasePlugin):
     expected_recording = agent_recordings[current_agent_index]
 
     # Advance agent index
-    state.agent_replay_indices[agent_name] = current_agent_index + 1
+    state.agent_tool_replay_indices[agent_name] = current_agent_index + 1
 
     return expected_recording
-
-  def _verify_and_get_next_llm_recording_for_agent(
-      self,
-      state: _InvocationReplayState,
-      agent_name: str,
-      llm_request: LlmRequest,
-  ) -> LlmRecording:
-    """Verify and get the next LLM recording for the specific agent."""
-    current_agent_index = state.agent_replay_indices.get(agent_name, 0)
-    expected_recording = self._get_next_recording_for_agent(state, agent_name)
-
-    # Verify this is an LLM recording
-    if not expected_recording.llm_recording:
-      raise ReplayVerificationError(
-          f"Expected LLM recording for agent '{agent_name}' at index "
-          f"{current_agent_index}, but found tool recording"
-      )
-
-    # Strict verification of LLM request
-    self._verify_llm_request_match(
-        expected_recording.llm_recording.llm_request,
-        llm_request,
-        agent_name,
-        current_agent_index,
-    )
-
-    return expected_recording.llm_recording
 
   def _verify_and_get_next_tool_recording_for_agent(
       self,
@@ -305,58 +259,21 @@ class ReplayPlugin(BasePlugin):
       tool_args: dict[str, Any],
   ) -> ToolRecording:
     """Verify and get the next tool recording for the specific agent."""
-    current_agent_index = state.agent_replay_indices.get(agent_name, 0)
-    expected_recording = self._get_next_recording_for_agent(state, agent_name)
-
-    # Verify this is a tool recording
-    if not expected_recording.tool_recording:
-      raise ReplayVerificationError(
-          f"Expected tool recording for agent '{agent_name}' at index "
-          f"{current_agent_index}, but found LLM recording"
-      )
+    current_agent_index = state.agent_tool_replay_indices.get(agent_name, 0)
+    expected_recording = self._get_next_tool_recording_for_agent(
+        state, agent_name
+    )
 
     # Strict verification of tool call
     self._verify_tool_call_match(
-        expected_recording.tool_recording.tool_call,
+        expected_recording.tool_call,
         tool_name,
         tool_args,
         agent_name,
         current_agent_index,
     )
 
-    return expected_recording.tool_recording
-
-  def _verify_llm_request_match(
-      self,
-      recorded_request: LlmRequest,
-      current_request: LlmRequest,
-      agent_name: str,
-      agent_index: int,
-  ) -> None:
-    """Verify that the current LLM request exactly matches the recorded one."""
-    # Comprehensive exclude dict for all fields that can differ between runs
-    excluded_fields = {
-        "live_connect_config": True,
-        "config": {  # some config fields can vary per run
-            "http_options": True,
-            "labels": True,
-        },
-    }
-
-    # Compare using model dumps with nested exclude dict
-    recorded_dict = recorded_request.model_dump(
-        exclude_none=True, exclude=excluded_fields, exclude_defaults=True
-    )
-    current_dict = current_request.model_dump(
-        exclude_none=True, exclude=excluded_fields, exclude_defaults=True
-    )
-
-    if recorded_dict != current_dict:
-      raise ReplayVerificationError(
-          f"""LLM request mismatch for agent '{agent_name}' (index {agent_index}):
-recorded: {recorded_dict}
-current: {current_dict}"""
-      )
+    return expected_recording
 
   def _verify_tool_call_match(
       self,

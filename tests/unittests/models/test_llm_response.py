@@ -107,6 +107,31 @@ def test_llm_response_create_no_candidates():
   assert response.error_message == 'Prompt blocked for safety'
 
 
+def test_llm_response_create_no_candidates_without_prompt_feedback():
+  """Test LlmResponse.create() for empty successful model responses."""
+  usage_metadata = types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=10,
+      candidates_token_count=0,
+      total_token_count=10,
+  )
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[],
+      usage_metadata=usage_metadata,
+      model_version='gemini-2.5-flash',
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.error_code is None
+  assert response.error_message is None
+  assert response.finish_reason is None
+  assert response.content is not None
+  assert response.content.role == 'model'
+  assert not response.content.parts
+  assert response.usage_metadata == usage_metadata
+  assert response.model_version == 'gemini-2.5-flash'
+
+
 def test_llm_response_create_with_concrete_logprobs_result():
   """Test LlmResponse.create() with detailed logprobs_result containing actual token data."""
   # Create realistic logprobs data
@@ -320,11 +345,36 @@ def test_llm_response_create_error_case_with_citation_metadata():
 
 
 def test_llm_response_create_empty_content_with_stop_reason():
-  """Test LlmResponse.create() with empty content and stop finish reason."""
+  """Empty content + STOP stays a successful response at the model layer.
+
+  Surfacing the empty turn as an error is the flow's job (non-streaming only);
+  the model/streaming layer must not classify a terminal finish-only chunk as
+  an error or it breaks streaming consumers that batch parts across chunks.
+  """
   generate_content_response = types.GenerateContentResponse(
       candidates=[
           types.Candidate(
               content=types.Content(parts=[]),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  response = LlmResponse.create(generate_content_response)
+
+  assert response.error_code is None
+  assert response.content is not None
+  assert response.finish_reason == types.FinishReason.STOP
+
+
+def test_llm_response_create_non_empty_parts_with_stop_is_success():
+  """Regression guard: real text + STOP must remain a successful response."""
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role='model', parts=[types.Part(text='ok')]
+              ),
               finish_reason=types.FinishReason.STOP,
           )
       ]
@@ -339,7 +389,7 @@ def test_llm_response_create_empty_content_with_stop_reason():
 def test_llm_response_create_includes_model_version():
   """Test LlmResponse.create() includes model version."""
   generate_content_response = types.GenerateContentResponse(
-      model_version='gemini-2.0-flash',
+      model_version='gemini-2.5-flash',
       candidates=[
           types.Candidate(
               content=types.Content(parts=[types.Part(text='Response text')]),
@@ -348,4 +398,62 @@ def test_llm_response_create_includes_model_version():
       ],
   )
   response = LlmResponse.create(generate_content_response)
-  assert response.model_version == 'gemini-2.0-flash'
+  assert response.model_version == 'gemini-2.5-flash'
+
+
+def test_get_function_calls_returns_calls_in_order():
+  fc1 = types.FunctionCall(name='a', args={})
+  fc2 = types.FunctionCall(name='b', args={'x': 1})
+  response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(function_call=fc1),
+              types.Part(text='ignored'),
+              types.Part(function_call=fc2),
+          ]
+      )
+  )
+  assert response.get_function_calls() == [fc1, fc2]
+
+
+def test_get_function_calls_empty_when_no_content():
+  assert LlmResponse().get_function_calls() == []
+
+
+def test_get_function_calls_empty_when_no_parts():
+  response = LlmResponse(content=types.Content(parts=None))
+  assert response.get_function_calls() == []
+
+
+def test_get_function_responses_returns_responses_in_order():
+  fr1 = types.FunctionResponse(name='a', response={'r': 1})
+  fr2 = types.FunctionResponse(name='b', response={'r': 2})
+  response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(function_response=fr1),
+              types.Part(text='ignored'),
+              types.Part(function_response=fr2),
+          ]
+      )
+  )
+  assert response.get_function_responses() == [fr1, fr2]
+
+
+def test_get_function_responses_empty_when_no_content():
+  assert LlmResponse().get_function_responses() == []
+
+
+def test_get_function_responses_empty_when_no_parts():
+  response = LlmResponse(content=types.Content(parts=None))
+  assert response.get_function_responses() == []
+
+
+def test_environment_id_defaults_to_none_and_roundtrips():
+  resp = LlmResponse()
+  assert resp.environment_id is None
+
+  resp.environment_id = 'env_abc'
+  dumped = resp.model_dump(exclude_none=True)
+  assert dumped['environment_id'] == 'env_abc'
+  assert LlmResponse.model_validate(dumped).environment_id == 'env_abc'

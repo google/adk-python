@@ -54,11 +54,12 @@ def mock_spanner_ids():
         ),
     ],
 )
-@mock.patch.object(utils, "embed_contents")
+@pytest.mark.asyncio
+@mock.patch.object(utils, "embed_contents_async", autospec=True)
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_knn_success(
+async def test_similarity_search_knn_success(
     mock_get_spanner_client,
-    mock_embed_contents,
+    mock_embed_contents_async,
     mock_spanner_ids,
     mock_credentials,
     embedding_option_key,
@@ -77,7 +78,7 @@ def test_similarity_search_knn_success(
   mock_get_spanner_client.return_value = mock_spanner_client
 
   if embedding_option_key == "vertex_ai_embedding_model_name":
-    mock_embed_contents.return_value = [expected_embedding]
+    mock_embed_contents_async.return_value = [expected_embedding]
     # execute_sql is called once for the kNN search
     mock_snapshot.execute_sql.return_value = iter([("result1",), ("result2",)])
   else:
@@ -90,7 +91,7 @@ def test_similarity_search_knn_success(
         iter([("result1",), ("result2",)]),
     ]
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -111,13 +112,14 @@ def test_similarity_search_knn_success(
   assert "@embedding" in sql
   assert call_args.kwargs == {"params": {"embedding": expected_embedding}}
   if embedding_option_key == "vertex_ai_embedding_model_name":
-    mock_embed_contents.assert_called_once_with(
+    mock_embed_contents_async.assert_called_once_with(
         embedding_option_value, ["test query"], None
     )
 
 
+@pytest.mark.asyncio
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_ann_success(
+async def test_similarity_search_ann_success(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
   """Test similarity_search function with ANN success."""
@@ -139,7 +141,7 @@ def test_similarity_search_ann_success(
   mock_spanner_client.instance.return_value = mock_instance
   mock_get_spanner_client.return_value = mock_spanner_client
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -164,13 +166,14 @@ def test_similarity_search_ann_success(
   assert call_args.kwargs == {"params": {"embedding": [0.1, 0.2, 0.3]}}
 
 
+@pytest.mark.asyncio
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_error(
+async def test_similarity_search_error(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
   """Test similarity_search function with a generic error."""
   mock_get_spanner_client.side_effect = Exception("Test Exception")
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -187,11 +190,12 @@ def test_similarity_search_error(
   assert "Test Exception" in result["error_details"]
 
 
-@mock.patch.object(utils, "embed_contents")
+@pytest.mark.asyncio
+@mock.patch.object(utils, "embed_contents_async")
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_circular_row_fallback_to_string(
+async def test_similarity_search_circular_row_fallback_to_string(
     mock_get_spanner_client,
-    mock_embed_contents,
+    mock_embed_contents_async,
     mock_spanner_ids,
     mock_credentials,
 ):
@@ -202,7 +206,7 @@ def test_similarity_search_circular_row_fallback_to_string(
   mock_snapshot = MagicMock()
   circular_row = []
   circular_row.append(circular_row)
-  mock_embed_contents.return_value = [[0.1, 0.2, 0.3]]
+  mock_embed_contents_async.return_value = [[0.1, 0.2, 0.3]]
   mock_snapshot.execute_sql.return_value = iter([circular_row])
   mock_database.snapshot.return_value.__enter__.return_value = mock_snapshot
   mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
@@ -210,7 +214,7 @@ def test_similarity_search_circular_row_fallback_to_string(
   mock_spanner_client.instance.return_value = mock_instance
   mock_get_spanner_client.return_value = mock_spanner_client
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -228,8 +232,9 @@ def test_similarity_search_circular_row_fallback_to_string(
   assert result["rows"] == [str(circular_row)]
 
 
+@pytest.mark.asyncio
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_postgresql_knn_success(
+async def test_similarity_search_postgresql_knn_success(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
   """Test similarity_search with PostgreSQL dialect for kNN."""
@@ -249,7 +254,7 @@ def test_similarity_search_postgresql_knn_success(
   mock_spanner_client.instance.return_value = mock_instance
   mock_get_spanner_client.return_value = mock_spanner_client
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -273,8 +278,9 @@ def test_similarity_search_postgresql_knn_success(
   assert call_args.kwargs == {"params": {"p1": [0.1, 0.2, 0.3]}}
 
 
+@pytest.mark.asyncio
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_postgresql_ann_unsupported(
+async def test_similarity_search_postgresql_ann_unsupported(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
   """Test similarity_search with unsupported ANN for PostgreSQL dialect."""
@@ -286,7 +292,7 @@ def test_similarity_search_postgresql_ann_unsupported(
   mock_spanner_client.instance.return_value = mock_instance
   mock_get_spanner_client.return_value = mock_spanner_client
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -311,8 +317,9 @@ def test_similarity_search_postgresql_ann_unsupported(
   )
 
 
+@pytest.mark.asyncio
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_gsql_missing_embedding_model_error(
+async def test_similarity_search_gsql_missing_embedding_model_error(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
   """Test similarity_search with missing embedding_options for GoogleSQL dialect."""
@@ -324,7 +331,7 @@ def test_similarity_search_gsql_missing_embedding_model_error(
   mock_spanner_client.instance.return_value = mock_instance
   mock_get_spanner_client.return_value = mock_spanner_client
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -348,8 +355,9 @@ def test_similarity_search_gsql_missing_embedding_model_error(
   )
 
 
+@pytest.mark.asyncio
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_pg_missing_embedding_model_error(
+async def test_similarity_search_pg_missing_embedding_model_error(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
   """Test similarity_search with missing embedding_options for PostgreSQL dialect."""
@@ -361,7 +369,7 @@ def test_similarity_search_pg_missing_embedding_model_error(
   mock_spanner_client.instance.return_value = mock_instance
   mock_get_spanner_client.return_value = mock_spanner_client
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -427,8 +435,9 @@ def test_similarity_search_pg_missing_embedding_model_error(
         ),
     ],
 )
+@pytest.mark.asyncio
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_multiple_embedding_options_error(
+async def test_similarity_search_multiple_embedding_options_error(
     mock_get_spanner_client,
     mock_spanner_ids,
     mock_credentials,
@@ -443,7 +452,7 @@ def test_similarity_search_multiple_embedding_options_error(
   mock_spanner_client.instance.return_value = mock_instance
   mock_get_spanner_client.return_value = mock_spanner_client
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -461,8 +470,9 @@ def test_similarity_search_multiple_embedding_options_error(
   )
 
 
+@pytest.mark.asyncio
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_output_dimensionality_gsql_error(
+async def test_similarity_search_output_dimensionality_gsql_error(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
   """Test similarity_search with output_dimensionality and spanner_googlesql_embedding_model_name."""
@@ -474,7 +484,7 @@ def test_similarity_search_output_dimensionality_gsql_error(
   mock_spanner_client.instance.return_value = mock_instance
   mock_get_spanner_client.return_value = mock_spanner_client
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],
@@ -492,8 +502,9 @@ def test_similarity_search_output_dimensionality_gsql_error(
   assert "is not supported when" in result["error_details"]
 
 
+@pytest.mark.asyncio
 @mock.patch.object(client, "get_spanner_client")
-def test_similarity_search_unsupported_algorithm_error(
+async def test_similarity_search_unsupported_algorithm_error(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
   """Test similarity_search with an unsupported nearest neighbors algorithm."""
@@ -505,7 +516,7 @@ def test_similarity_search_unsupported_algorithm_error(
   mock_spanner_client.instance.return_value = mock_instance
   mock_get_spanner_client.return_value = mock_spanner_client
 
-  result = search_tool.similarity_search(
+  result = await search_tool.similarity_search(
       project_id=mock_spanner_ids["project_id"],
       instance_id=mock_spanner_ids["instance_id"],
       database_id=mock_spanner_ids["database_id"],

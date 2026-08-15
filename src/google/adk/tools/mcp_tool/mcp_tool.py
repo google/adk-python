@@ -16,21 +16,23 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Awaitable
 import inspect
 import logging
 from typing import Any
 from typing import Callable
-from typing import Dict
-from typing import Optional
+from typing import cast
 from typing import Protocol
 from typing import runtime_checkable
-from typing import Union
 import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from mcp import ClientSession
+from mcp.shared.exceptions import McpError
 from mcp.shared.session import ProgressFnT
 from mcp.types import Tool as McpBaseTool
+from opentelemetry import propagate
 from typing_extensions import override
 
 from ...agents.callback_context import CallbackContext
@@ -38,15 +40,39 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...utils.context_utils import find_context_parameter
+# `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
+# error-boundary and transport-crash-detection behavior added in this module.
+# When the flag is off (default) or via ADK_DISABLE_MCP_GRACEFUL_ERROR_HANDLING=1
+# `run_async` and `_run_async_impl` fall back to the pre-fix behavior.
+# The enum member is intentionally private (leading underscore) so it is not
+# part of the ADK public API; consumers flip the env var, not the symbol.
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
+from ..transfer_to_agent_tool import transfer_to_agent
+from .mcp_session_manager import _http_debug_var
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
+from .session_context import SessionContext
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Tool names the framework itself puts on the wire. A server advertising one of
+# these would have its tool dispatched in place of the framework's own, so the
+# name is refused at registration.
+_RESERVED_TOOL_NAMES = frozenset({
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    REQUEST_INPUT_FUNCTION_CALL_NAME,
+    transfer_to_agent.__name__,
+})
 
 
 @runtime_checkable
@@ -91,9 +117,9 @@ class ProgressCallbackFactory(Protocol):
       self,
       tool_name: str,
       *,
-      callback_context: Optional[CallbackContext] = None,
+      callback_context: CallbackContext | None = None,
       **kwargs: Any,
-  ) -> Optional[ProgressFnT]:
+  ) -> ProgressFnT | None:
     """Create a progress callback for a specific tool.
 
     Args:
@@ -126,15 +152,17 @@ class McpTool(BaseAuthenticatedTool):
       *,
       mcp_tool: McpBaseTool,
       mcp_session_manager: MCPSessionManager,
-      auth_scheme: Optional[AuthScheme] = None,
-      auth_credential: Optional[AuthCredential] = None,
-      require_confirmation: Union[bool, Callable[..., bool]] = False,
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
-      progress_callback: Optional[
-          Union[ProgressFnT, ProgressCallbackFactory]
-      ] = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+      require_confirmation: bool | Callable[..., bool] = False,
+      header_provider: (
+          Callable[
+              [ReadonlyContext],
+              dict[str, str] | Awaitable[dict[str, str]],
+          ]
+          | None
+      ) = None,
+      progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
   ):
     """Initializes an McpTool.
 
@@ -163,8 +191,15 @@ class McpTool(BaseAuthenticatedTool):
             and modify runtime context like session state.
 
     Raises:
-        ValueError: If mcp_tool or mcp_session_manager is None.
+        ValueError: If the MCP tool name collides with a reserved ADK tool
+          name.
     """
+    if mcp_tool.name in _RESERVED_TOOL_NAMES:
+      raise ValueError(
+          f"MCP tool name '{mcp_tool.name}' collides with a reserved ADK tool"
+          " name."
+      )
+
     super().__init__(
         name=mcp_tool.name,
         description=mcp_tool.description if mcp_tool.description else "",
@@ -210,6 +245,48 @@ class McpTool(BaseAuthenticatedTool):
     """Returns the raw MCP tool."""
     return self._mcp_tool
 
+  @property
+  def visibility(self) -> list[str]:
+    """Returns the visibility if this MCP tool meta has one."""
+    meta = getattr(self.raw_mcp_tool, "meta", None)
+    if not meta or not isinstance(meta, dict):
+      return []
+
+    # Format: meta.ui.visibility
+    ui = meta.get("ui", {})
+    if isinstance(ui, dict):
+      return ui.get("visibility", [])
+    return []
+
+  @property
+  def mcp_app_resource_uri(self) -> str | None:
+    """Returns the MCP App UI resource URI if this tool has one.
+
+    MCP Apps declare a UI resource via `meta.ui.resourceUri` in the tool
+    definition. This property extracts that URI, supporting both the nested
+    format (`{"ui": {"resourceUri": "ui://..."}}`) and the flat format
+    (`{"ui/resourceUri": "ui://..."}`).
+
+    Returns:
+        The `ui://` resource URI string, or None if not present.
+    """
+    meta = getattr(self.raw_mcp_tool, "meta", None)
+    if not meta or not isinstance(meta, dict):
+      return None
+    # Nested format: meta.ui.resourceUri (preferred)
+    ui = meta.get("ui")
+    if isinstance(ui, dict):
+      uri = ui.get("resourceUri")
+      if isinstance(uri, str) and uri.startswith("ui://"):
+        return uri
+    # Flat format: meta["ui/resourceUri"] (deprecated)
+    # Reference:
+    # https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx
+    uri = meta.get("ui/resourceUri")
+    if isinstance(uri, str) and uri.startswith("ui://"):
+      return uri
+    return None
+
   async def _invoke_callable(
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
@@ -227,68 +304,131 @@ class McpTool(BaseAuthenticatedTool):
     else:
       return target(**args_to_call)
 
+  def _prepare_callable_args(
+      self,
+      target: Callable[..., Any],
+      args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> dict[str, Any]:
+    """Prepares arguments for invoking a user-provided callable."""
+    args_to_call = args.copy()
+    try:
+      signature = inspect.signature(target)
+    except (ValueError, TypeError):
+      return args_to_call
+
+    valid_params = set(signature.parameters.keys())
+    has_kwargs = any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    )
+
+    # Detect context parameter by type or fallback to 'tool_context' name
+    context_param = find_context_parameter(target) or "tool_context"
+    if context_param in valid_params or has_kwargs:
+      args_to_call[context_param] = tool_context
+
+    # Filter args_to_call only if there's no **kwargs
+    if not has_kwargs:
+      # Add context param to valid_params if it was added to args_to_call
+      if context_param in args_to_call:
+        valid_params.add(context_param)
+      args_to_call = {
+          k: v for k, v in args_to_call.items() if k in valid_params
+      }
+    return args_to_call
+
+  @override
+  async def check_require_confirmation(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> bool:
+    if callable(self._require_confirmation):
+      args_to_call = self._prepare_callable_args(
+          self._require_confirmation, args, tool_context
+      )
+      return cast(
+          bool,
+          await self._invoke_callable(self._require_confirmation, args_to_call),
+      )
+    return bool(self._require_confirmation)
+
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    if isinstance(self._require_confirmation, Callable):
-      args_to_call = args.copy()
-      try:
-        signature = inspect.signature(self._require_confirmation)
-        valid_params = set(signature.parameters.keys())
-        has_kwargs = any(
-            param.kind == inspect.Parameter.VAR_KEYWORD
-            for param in signature.parameters.values()
-        )
-
-        if "tool_context" in valid_params or has_kwargs:
-          args_to_call["tool_context"] = tool_context
-
-        # Filter args_to_call only if there's no **kwargs
-        if not has_kwargs:
-          # Add tool_context to valid_params if it was added to args_to_call
-          if "tool_context" in args_to_call:
-            valid_params.add("tool_context")
-          args_to_call = {
-              k: v for k, v in args_to_call.items() if k in valid_params
-          }
-      except ValueError:
-        args_to_call = args
-
-      require_confirmation = await self._invoke_callable(
-          self._require_confirmation, args_to_call
+    current_debug: list[dict[str, Any]] = []
+    debug_token = (
+        _http_debug_var.set(current_debug)
+        if logger.isEnabledFor(logging.DEBUG)
+        else None
+    )
+    try:
+      require_confirmation = await self.check_require_confirmation(
+          args, tool_context
       )
-    else:
-      require_confirmation = bool(self._require_confirmation)
 
-    if require_confirmation:
-      if not tool_context.tool_confirmation:
-        args_to_show = args.copy()
-        if "tool_context" in args_to_show:
-          args_to_show.pop("tool_context")
+      if require_confirmation:
+        if not tool_context.tool_confirmation:
+          tool_context.request_confirmation(
+              hint=(
+                  f"Please approve or reject the tool call {self.name}() by"
+                  " responding with a FunctionResponse with an expected"
+                  " ToolConfirmation payload."
+              ),
+          )
+          return {
+              "error": (
+                  "This tool call requires confirmation, please approve or"
+                  " reject."
+              )
+          }
+        elif not tool_context.tool_confirmation.confirmed:
+          return {"error": "This tool call is rejected."}
 
-        tool_context.request_confirmation(
-            hint=(
-                f"Please approve or reject the tool call {self.name}() by"
-                " responding with a FunctionResponse with an expected"
-                " ToolConfirmation payload."
-            ),
+      if not is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+        # Pre-fix behavior: exceptions bubble up to the agent runner.
+        return await super().run_async(args=args, tool_context=tool_context)
+
+      # New behavior: convert MCP-level and unexpected errors into a
+      # structured `{"error": "..."}` dict so the agent loop can continue
+      # gracefully instead of being killed by an unhandled exception. This
+      # is the primary fix for the 5-minute hang seen when Model Armor (or
+      # any AGW policy) returns a 403 mid-tool-call.
+      try:
+        return await super().run_async(args=args, tool_context=tool_context)
+      except McpError as e:
+        logger.warning("MCP tool execution failed with McpError: %s", e)
+        return {"error": f"MCP tool execution failed: {e}"}
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "Unexpected error during MCP tool execution: %s", e, exc_info=True
         )
-        return {
-            "error": (
-                "This tool call requires confirmation, please approve or"
-                " reject."
-            )
-        }
-      elif not tool_context.tool_confirmation.confirmed:
-        return {"error": "This tool call is rejected."}
-    return await super().run_async(args=args, tool_context=tool_context)
+        return {"error": f"Unexpected error during MCP tool execution: {e}"}
+    finally:
+      if debug_token is not None:
+        _http_debug_var.reset(debug_token)
+        if current_debug and hasattr(tool_context, "custom_metadata"):
+          debug_list = tool_context.custom_metadata.setdefault(
+              "http_debug_info", []
+          )
+          debug_list.extend(current_debug)
 
   @retry_on_errors
+  async def _create_session(
+      self, *, headers: dict[str, str] | None
+  ) -> ClientSession:
+    """Opens a session, retrying once because nothing has been sent yet.
+
+    Session setup happens before the tool call exists, so a failure here
+    provably did not run anything on the server and can be retried without
+    risking a duplicate side effect.
+    """
+    return await self._mcp_session_manager.create_session(headers=headers)
+
   @override
   async def _run_async_impl(
       self, *, args, tool_context: ToolContext, credential: AuthCredential
-  ) -> Dict[str, Any]:
+  ) -> dict[str, Any]:
     """Runs the tool asynchronously.
 
     Args:
@@ -303,34 +443,89 @@ class McpTool(BaseAuthenticatedTool):
     dynamic_headers = None
     if self._header_provider:
       dynamic_headers = self._header_provider(
-          ReadonlyContext(tool_context._invocation_context)
+          ReadonlyContext(tool_context._invocation_context)  # pylint: disable=protected-access
       )
+      if inspect.isawaitable(dynamic_headers):
+        dynamic_headers = await dynamic_headers
 
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     if auth_headers:
       headers.update(auth_headers)
     if dynamic_headers:
       headers.update(dynamic_headers)
     final_headers = headers if headers else None
 
+    # Propagate trace context in the _meta field as sprcified by MCP protocol.
+    # See https://agentclientprotocol.com/protocol/extensibility#the-meta-field
+    trace_carrier: dict[str, str] = {}
+    propagate.get_global_textmap().inject(carrier=trace_carrier)
+    meta_trace_context = trace_carrier if trace_carrier else None
+
     # Get the session from the session manager
-    session = await self._mcp_session_manager.create_session(
-        headers=final_headers
-    )
+    session = await self._create_session(headers=final_headers)
 
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
 
-    response = await session.call_tool(
+    call_coro = session.call_tool(
         self._mcp_tool.name,
         arguments=args,
         progress_callback=resolved_callback,
+        meta=meta_trace_context,
     )
-    return response.model_dump(exclude_none=True, mode="json")
+
+    if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+      # Race the tool call against the background session task so that
+      # transport crashes (e.g. non-2xx HTTP responses from an AGW with
+      # Model Armor) surface immediately instead of hanging until
+      # sse_read_timeout (default 5 minutes) expires. ConnectionError is
+      # intentionally NOT caught here. Replaying a tool call after an
+      # ambiguous transport failure could duplicate a remote side effect, so
+      # the failure surfaces to the run_async wrapper without an automatic
+      # retry.
+      #
+      # The isinstance check is intentional: tests and external subclasses
+      # may inject mock session managers whose `_get_session_context`
+      # returns a Mock instead of a real SessionContext (or None). Falling
+      # back to the direct await keeps those callers working.
+      session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
+          headers=final_headers
+      )
+      if isinstance(session_context, SessionContext):
+        response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+      else:
+        response = await call_coro
+    else:
+      # Pre-fix behavior: await the call directly. This is what causes the
+      # ~300s hang when the underlying transport crashes.
+      response = await call_coro
+
+    result = response.model_dump(exclude_none=True, mode="json")
+
+    # Push UI widget to the event actions if the tool supports it.
+    if self.mcp_app_resource_uri:
+      tool_context.render_ui_widget(
+          UiWidget(
+              id=tool_context.function_call_id,
+              provider="mcp",
+              payload={
+                  "resource_uri": self.mcp_app_resource_uri,
+                  "tool": self._mcp_tool,
+                  "tool_args": args,
+              },
+          )
+      )
+    return result
+
+  def _detect_error_in_response(self, response: Any) -> str | None:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("isError"):
+      return "MCP_TOOL_ERROR"
+    return None
 
   def _resolve_progress_callback(
       self, tool_context: ToolContext
-  ) -> Optional[ProgressFnT]:
+  ) -> ProgressFnT | None:
     """Resolve the progress callback for the current invocation.
 
     If progress_callback is a ProgressCallbackFactory, call it to create
@@ -364,7 +559,7 @@ class McpTool(BaseAuthenticatedTool):
 
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential
-  ) -> Optional[dict[str, str]]:
+  ) -> dict[str, str] | None:
     """Extracts authentication headers from credentials.
 
     Args:
@@ -378,7 +573,7 @@ class McpTool(BaseAuthenticatedTool):
         ValueError: If API key authentication is configured for non-header
         location.
     """
-    headers: Optional[dict[str, str]] = None
+    headers: dict[str, str] | None = None
     if credential:
       if credential.oauth2:
         headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
@@ -411,14 +606,16 @@ class McpTool(BaseAuthenticatedTool):
                   f" {credential.http.credentials.token}"
               )
           }
+        if credential.http.additional_headers:
+          headers = headers or {}
+          headers.update(credential.http.additional_headers)
       elif credential.api_key:
         if (
             not self._credentials_manager
             or not self._credentials_manager._auth_config
         ):
           error_msg = (
-              "Cannot find corresponding auth scheme for API key credential"
-              f" {credential}"
+              "Cannot find corresponding auth scheme for API key credential."
           )
           logger.error(error_msg)
           raise ValueError(error_msg)

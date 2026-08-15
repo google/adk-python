@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """Tests for simple_prompt_optimizer."""
-import asyncio
+
 from unittest import mock
 
 from google.adk.agents.llm_agent import Agent

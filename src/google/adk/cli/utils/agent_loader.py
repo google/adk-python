@@ -19,6 +19,7 @@ import importlib.util
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any
 from typing import Literal
@@ -37,6 +38,21 @@ from ...utils.feature_decorator import experimental
 from .base_agent_loader import BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def is_single_agent_directory(path: Path | str) -> bool:
+  """Returns True if the directory contains a single agent configuration or file."""
+  try:
+    p = Path(path).resolve()
+    if not p.is_dir():
+      return False
+    return (
+        p.joinpath("agent.py").is_file()
+        or p.joinpath("root_agent.yaml").is_file()
+    )
+  except Exception:
+    return False
+
 
 # Special agents directory for agents with names starting with double underscore
 SPECIAL_AGENTS_DIR = os.path.join(
@@ -59,9 +75,46 @@ class AgentLoader(BaseAgentLoader):
   """
 
   def __init__(self, agents_dir: str):
-    self.agents_dir = str(Path(agents_dir))
+    agents_path = Path(agents_dir).resolve()
+    self._init_agent_mode(agents_path)
     self._original_sys_path = None
     self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
+    self._root_agent_type_mismatches: list[tuple[str, str, bool]] = []
+
+  def _init_agent_mode(self, agents_path: Path) -> None:
+    if is_single_agent_directory(agents_path):
+      self._is_single_agent = True
+      self._single_agent_name = agents_path.name
+      self.agents_dir = str(agents_path.parent)
+    else:
+      self._is_single_agent = False
+      self._single_agent_name = None
+      self.agents_dir = str(agents_path)
+
+  @property
+  def is_single_agent(self) -> bool:
+    """Returns True if the loader is in single agent mode."""
+    return self._is_single_agent
+
+  @property
+  def single_agent_name(self) -> Optional[str]:
+    """Returns the name of the agent in single agent mode."""
+    return self._single_agent_name
+
+  def _set_single_agent_mode(self, name: str, agents_dir: str) -> None:
+    """Internal method to force single agent mode. Use with care."""
+    self._is_single_agent = True
+    self._single_agent_name = name
+    self.agents_dir = agents_dir
+
+  def _record_root_agent_type_mismatch(self, location: str, value: Any) -> None:
+    """Records a found `root_agent` whose type prevents loading it."""
+    value_type = type(value)
+    self._root_agent_type_mismatches.append((
+        location,
+        f"{value_type.__module__}.{value_type.__qualname__}",
+        isinstance(value, App),
+    ))
 
   def _load_from_module_or_package(
       self, agent_name: str
@@ -81,12 +134,17 @@ class AgentLoader(BaseAgentLoader):
       # Check for "root_agent" directly in "{agent_name}" module/package
       elif hasattr(module_candidate, "root_agent"):
         logger.debug("Found root_agent directly in %s", agent_name)
-        if isinstance(module_candidate.root_agent, BaseAgent):
+        from ...workflow._base_node import BaseNode
+
+        if isinstance(module_candidate.root_agent, (BaseAgent, BaseNode)):
           return module_candidate.root_agent
         else:
           logger.warning(
               "Root agent found is not an instance of BaseAgent. But a type %s",
               type(module_candidate.root_agent),
+          )
+          self._record_root_agent_type_mismatch(
+              agent_name, module_candidate.root_agent
           )
       else:
         logger.debug(
@@ -128,12 +186,17 @@ class AgentLoader(BaseAgentLoader):
         return module_candidate.app
       elif hasattr(module_candidate, "root_agent"):
         logger.info("Found root_agent in %s.agent", agent_name)
-        if isinstance(module_candidate.root_agent, BaseAgent):
+        from ...workflow._base_node import BaseNode
+
+        if isinstance(module_candidate.root_agent, (BaseAgent, BaseNode)):
           return module_candidate.root_agent
         else:
           logger.warning(
               "Root agent found is not an instance of BaseAgent. But a type %s",
               type(module_candidate.root_agent),
+          )
+          self._record_root_agent_type_mismatch(
+              f"{agent_name}.agent", module_candidate.root_agent
           )
       else:
         logger.debug(
@@ -187,8 +250,49 @@ class AgentLoader(BaseAgentLoader):
       ) + e.args[1:]
       raise e
 
+  _VALID_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+
+  def _validate_agent_name(self, agent_name: str) -> None:
+    """Validate agent name to prevent arbitrary module imports."""
+    # Strip the special agent prefix for validation
+    if agent_name.startswith("__"):
+      if not self._allow_special_agents:
+        raise PermissionError(
+            f"Loading special internal agent {agent_name!r} is disabled in this"
+            " loader configuration."
+        )
+      name_to_check = agent_name[2:]
+      check_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
+    else:
+      name_to_check = agent_name
+      check_dir = self.agents_dir
+
+    if self._is_single_agent and not agent_name.startswith("__"):
+      if agent_name != self._single_agent_name:
+        raise ValueError(
+            f"Agent not found: {agent_name!r}. In single agent mode, only "
+            f"'{self._single_agent_name}' is accessible."
+        )
+
+    if not self._VALID_AGENT_NAME_RE.match(name_to_check):
+      raise ValueError(
+          f"Invalid agent name: {agent_name!r}. Agent names must be valid"
+          " Python identifiers (letters, digits, and underscores only)."
+      )
+
+    # Verify the agent exists on disk before allowing import
+    agent_path = Path(check_dir) / name_to_check
+    agent_file = Path(check_dir) / f"{name_to_check}.py"
+    if not (agent_path.is_dir() or agent_file.is_file()):
+      raise ValueError(
+          f"Agent not found: {agent_name!r}. No matching directory or module"
+          f" exists in '{os.path.join(check_dir, name_to_check)}'."
+      )
+
   def _perform_load(self, agent_name: str) -> Union[BaseAgent, App]:
     """Internal logic to load an agent"""
+    self._root_agent_type_mismatches = []
+    self._validate_agent_name(agent_name)
     # Determine the directory to use for loading
     if agent_name.startswith("__"):
       # Special agent: use special agents directory
@@ -254,6 +358,25 @@ class AgentLoader(BaseAgentLoader):
       )
       return root_agent
 
+    # A root_agent was found but had an unusable type: surface that
+    # diagnosis instead of the generic not-found guidance.
+    if self._root_agent_type_mismatches:
+      details = "\n".join(
+          f"  - '{location}.root_agent' is of type '{type_name}'"
+          for location, type_name, _ in self._root_agent_type_mismatches
+      )
+      app_hint = ""
+      if any(is_app for _, _, is_app in self._root_agent_type_mismatches):
+        app_hint = (
+            "\n\nHINT: To serve an App, expose it under the name 'app'"
+            " instead of 'root_agent'."
+        )
+      raise ValueError(
+          f"A 'root_agent' was found for '{agent_name}' but it is not a"
+          " BaseAgent (or workflow node) instance:\n"
+          f"{details}\n\nExpose a BaseAgent instance named"
+          f" 'root_agent'.{app_hint}"
+      )
     # If no root_agent was found by any pattern
     # Check if user might be in the wrong directory
     hint = ""
@@ -315,7 +438,8 @@ class AgentLoader(BaseAgentLoader):
 
     if isinstance(loaded, App):
       _attach_metadata(loaded)
-      _attach_metadata(loaded.root_agent)
+      if loaded.root_agent is not None:
+        _attach_metadata(loaded.root_agent)
     else:
       _attach_metadata(loaded)
 
@@ -334,6 +458,8 @@ class AgentLoader(BaseAgentLoader):
   @override
   def list_agents(self) -> list[str]:
     """Lists all agents available in the agent loader (sorted alphabetically)."""
+    if self._is_single_agent:
+      return [self._single_agent_name]
     base_path = Path.cwd() / self.agents_dir
     agent_names = [
         x
@@ -391,10 +517,12 @@ class AgentLoader(BaseAgentLoader):
       return "python"
     elif (base_path / "__init__.py").exists():
       return "python"
+    elif (base_path.parent / f"{agent_name}.py").exists():
+      return "python"
 
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
-  def remove_agent_from_cache(self, agent_name: str):
+  def remove_agent_from_cache(self, agent_name: str) -> None:
     # Clear module cache for the agent and its submodules
     keys_to_delete = [
         module_name

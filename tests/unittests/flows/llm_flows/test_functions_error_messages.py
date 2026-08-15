@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Tests for enhanced error messages in function tool handling."""
+
 from google.adk.flows.llm_flows.functions import _get_tool
 from google.adk.tools import BaseTool
 from google.genai import types
@@ -68,6 +69,14 @@ def test_tool_not_found_with_different_name():
   # Verify error message contains basic information
   assert 'completely_different' in error_msg
   assert 'Available tools:' in error_msg
+
+
+def test_tool_call_without_name_is_rejected():
+  """Verify a malformed unnamed function call has a useful error."""
+  function_call = types.FunctionCall(args={})
+
+  with pytest.raises(ValueError, match="Tool 'None' not found"):
+    _get_tool(function_call, {'get_weather': MockTool(name='get_weather')})
 
 
 def test_tool_not_found_shows_all_tools():

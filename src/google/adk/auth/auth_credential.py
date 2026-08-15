@@ -15,19 +15,32 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Annotated
 from typing import Any
 from typing import Dict
+from typing import Iterator
 from typing import List
 from typing import Literal
-from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
+
+_REDACTED = "<redacted>"
 
 
-class BaseModelWithConfig(BaseModel):
+# Pydantic echoes the rejected value into ValidationError messages
+# ("input_value=..."), which would put a malformed secret straight into logs and
+# into the error strings surfaced to the LLM. The field name and error type are
+# still reported. Passed as a class keyword rather than added to `model_config`
+# below: `model_config` states what these models accept, and rewriting that
+# declaration reads as an API change to the breaking-change detector even though
+# nothing about what they accept has changed.
+class BaseModelWithConfig(BaseModel, hide_input_in_errors=True):
+  """Base model for credential types, hardened against leaking secrets."""
+
   model_config = ConfigDict(
       extra="allow",
       alias_generator=alias_generators.to_camel,
@@ -35,13 +48,31 @@ class BaseModelWithConfig(BaseModel):
   )
   """The pydantic model config."""
 
+  def __repr_args__(self) -> Iterator[tuple[str | None, Any]]:
+    """Redacts the values of extra (unmodeled) fields from repr and str.
+
+    `extra="allow"` lets callers attach arbitrary keys to these credential
+    models, and pydantic renders extras in repr unconditionally: marking a
+    declared field `repr=False` does nothing for a secret that arrives under an
+    unexpected key (e.g. a non-standard field in an OAuth2 token response).
+    Redacting the values keeps them out of logs and out of error strings that
+    reach the LLM, while still showing which keys were set.
+
+    Yields:
+      `(name, value)` pairs to render, with the values of extra fields replaced
+      by a redaction placeholder.
+    """
+    extra = self.__pydantic_extra__ or {}
+    for key, value in super().__repr_args__():
+      yield key, _REDACTED if key in extra else value
+
 
 class HttpCredentials(BaseModelWithConfig):
   """Represents the secret token value for HTTP authentication, like user name, password, oauth token, etc."""
 
-  username: Optional[str] = None
-  password: Optional[str] = None
-  token: Optional[str] = None
+  username: str | None = None
+  password: Annotated[str | None, Field(repr=False)] = None
+  token: Annotated[str | None, Field(repr=False)] = None
 
   @classmethod
   def model_validate(cls, data: Dict[str, Any]) -> "HttpCredentials":
@@ -61,35 +92,44 @@ class HttpAuth(BaseModelWithConfig):
   # Examples: 'basic', 'bearer'
   scheme: str
   credentials: HttpCredentials
-  additional_headers: Optional[Dict[str, str]] = None
+  additional_headers: Annotated[dict[str, str] | None, Field(repr=False)] = None
 
 
 class OAuth2Auth(BaseModelWithConfig):
   """Represents credential value and its metadata for a OAuth2 credential."""
 
-  client_id: Optional[str] = None
-  client_secret: Optional[str] = None
+  client_id: str | None = None
+  client_secret: Annotated[str | None, Field(repr=False)] = None
   # tool or adk can generate the auth_uri with the state info thus client
   # can verify the state
-  auth_uri: Optional[str] = None
-  state: Optional[str] = None
+  auth_uri: str | None = None
+  # A unique value generated at the start of the OAuth flow to bind the user's
+  # session to the authorization request. This value is typically stored with
+  # user session and passed to backend for validation.
+  nonce: str | None = None
+  state: str | None = None
   # tool or adk can decide the redirect_uri if they don't want client to decide
-  redirect_uri: Optional[str] = None
-  auth_response_uri: Optional[str] = None
-  auth_code: Optional[str] = None
-  access_token: Optional[str] = None
-  refresh_token: Optional[str] = None
-  expires_at: Optional[int] = None
-  expires_in: Optional[int] = None
-  audience: Optional[str] = None
-  token_endpoint_auth_method: Optional[
+  redirect_uri: str | None = None
+  auth_response_uri: Annotated[str | None, Field(repr=False)] = None
+  auth_code: Annotated[str | None, Field(repr=False)] = None
+  access_token: Annotated[str | None, Field(repr=False)] = None
+  refresh_token: Annotated[str | None, Field(repr=False)] = None
+  id_token: Annotated[str | None, Field(repr=False)] = None
+  expires_at: int | None = None
+  expires_in: int | None = None
+  audience: str | None = None
+  prompt: str | None = None
+  code_verifier: Annotated[str | None, Field(repr=False)] = None
+  code_challenge_method: str | None = None
+  token_endpoint_auth_method: (
       Literal[
           "client_secret_basic",
           "client_secret_post",
           "client_secret_jwt",
           "private_key_jwt",
       ]
-  ] = "client_secret_basic"
+      | None
+  ) = "client_secret_basic"
 
 
 class ServiceAccountCredential(BaseModelWithConfig):
@@ -132,8 +172,8 @@ class ServiceAccountCredential(BaseModelWithConfig):
 
   type_: str = Field("", alias="type")
   project_id: str
-  private_key_id: str
-  private_key: str
+  private_key_id: Annotated[str, Field(repr=False)]
+  private_key: Annotated[str, Field(repr=False)]
   client_email: str
   client_id: str
   auth_uri: str
@@ -144,11 +184,45 @@ class ServiceAccountCredential(BaseModelWithConfig):
 
 
 class ServiceAccount(BaseModelWithConfig):
-  """Represents Google Service Account configuration."""
+  """Represents Google Service Account configuration.
 
-  service_account_credential: Optional[ServiceAccountCredential] = None
-  scopes: List[str]
-  use_default_credential: Optional[bool] = False
+  Attributes:
+    service_account_credential: The service account credential (JSON key).
+    scopes: The OAuth2 scopes to request. Optional; when omitted with
+        ``use_default_credential=True``, defaults to the cloud-platform scope.
+    use_default_credential: Whether to use Application Default Credentials.
+    use_id_token: Whether to exchange for an ID token instead of an access
+        token. Required for service-to-service authentication with Cloud Run,
+        Cloud Functions, and other Google Cloud services that require identity
+        verification. When True, ``audience`` must also be set.
+    audience: The target audience for the ID token, typically the URL of the
+        receiving service (e.g. ``https://my-service-xyz.run.app``). Required
+        when ``use_id_token`` is True.
+  """
+
+  service_account_credential: ServiceAccountCredential | None = None
+  scopes: List[str] | None = None
+  use_default_credential: bool | None = False
+  use_id_token: bool | None = False
+  audience: str | None = None
+
+  @model_validator(mode="after")
+  def _validate_config(self) -> ServiceAccount:
+    if (
+        not self.use_default_credential
+        and self.service_account_credential is None
+    ):
+      raise ValueError(
+          "service_account_credential is required when"
+          " use_default_credential is False."
+      )
+    if self.use_id_token and not self.audience:
+      raise ValueError(
+          "audience is required when use_id_token is True. Set it to the"
+          " URL of the target service"
+          " (e.g. 'https://my-service.run.app')."
+      )
+    return self
 
 
 class AuthCredentialTypes(str, Enum):
@@ -235,9 +309,9 @@ class AuthCredential(BaseModelWithConfig):
   auth_type: AuthCredentialTypes
   # Resource reference for the credential.
   # This will be supported in the future.
-  resource_ref: Optional[str] = None
+  resource_ref: str | None = None
 
-  api_key: Optional[str] = None
-  http: Optional[HttpAuth] = None
-  service_account: Optional[ServiceAccount] = None
-  oauth2: Optional[OAuth2Auth] = None
+  api_key: Annotated[str | None, Field(repr=False)] = None
+  http: HttpAuth | None = None
+  service_account: ServiceAccount | None = None
+  oauth2: OAuth2Auth | None = None

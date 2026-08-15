@@ -17,7 +17,12 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import logging
+import multiprocessing
+import os
+import queue
 import re
+import signal
+import traceback
 from typing import Any
 
 from pydantic import Field
@@ -29,6 +34,81 @@ from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# How long to wait for a timed-out execution to exit after SIGTERM before
+# escalating to SIGKILL, so that the timeout itself cannot block forever.
+_TERMINATE_GRACE_SECONDS = 5
+
+
+def _execute_in_process(
+    code: str,
+    globals_: dict[str, Any],
+    result_queue: multiprocessing.Queue[tuple[str, str | None]],
+) -> None:
+  """Executes code in a separate process and puts result in queue."""
+  # Detach into a new session/process group before running anything, so that a
+  # timed-out execution can be killed together with everything it spawned.
+  if hasattr(os, 'setsid'):
+    try:
+      os.setsid()
+    except OSError:
+      logger.debug('Could not detach the execution process group.')
+
+  stdout = io.StringIO()
+  error = None
+  try:
+    with redirect_stdout(stdout):
+      exec(code, globals_, globals_)
+  except BaseException:
+    error = traceback.format_exc()
+  result_queue.put((stdout.getvalue(), error))
+
+
+def _execution_group(
+    process: multiprocessing.process.BaseProcess,
+) -> int | None:
+  """Returns the group the execution detached into, or None if it has not."""
+  if process.pid is None or not hasattr(os, 'killpg'):
+    return None
+  try:
+    group = os.getpgid(process.pid)
+    # Only report the group once the execution has detached into its own;
+    # otherwise the group is still ours and signalling it would take down the
+    # agent along with the code it is running.
+    return group if group != os.getpgid(0) else None
+  except OSError:
+    return None
+
+
+def _signal_group(group: int, sig: int) -> None:
+  """Signals every process left in a group, tolerating an empty one."""
+  try:
+    os.killpg(group, sig)
+  except OSError:
+    logger.debug('Could not signal the execution process group.')
+
+
+def _kill_execution(process: multiprocessing.process.BaseProcess) -> None:
+  """Kills a timed-out execution along with any process it spawned."""
+  # Resolved up front: once the execution process has been reaped its group can
+  # no longer be looked up through it, and the group is what holds whatever the
+  # code spawned.
+  group = _execution_group(process)
+
+  # SIGTERM first, so the code and its children get the same grace period the
+  # execution process itself gets before anything is killed outright.
+  if group is not None:
+    _signal_group(group, signal.SIGTERM)
+  process.terminate()
+  process.join(_TERMINATE_GRACE_SECONDS)
+
+  # Escalate unconditionally: the execution process exiting says nothing about
+  # a child of it that is ignoring SIGTERM.
+  if group is not None:
+    _signal_group(group, signal.SIGKILL)
+  if process.is_alive():
+    process.kill()
+    process.join()
 
 
 def _prepare_globals(code: str, globals_: dict[str, Any]) -> None:
@@ -47,7 +127,7 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
   # optimize_data_file.
   optimize_data_file: bool = Field(default=False, frozen=True, exclude=True)
 
-  def __init__(self, **data):
+  def __init__(self, **data: Any) -> None:
     """Initializes the UnsafeLocalCodeExecutor."""
     if 'stateful' in data and data['stateful']:
       raise ValueError('Cannot set `stateful=True` in UnsafeLocalCodeExecutor.')
@@ -65,19 +145,32 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
   ) -> CodeExecutionResult:
     logger.debug('Executing code:\n```\n%s\n```', code_execution_input.code)
     # Execute the code.
+    globals_: dict[str, Any] = {}
+    _prepare_globals(code_execution_input.code, globals_)
+
+    ctx = multiprocessing.get_context('spawn')
+    result_queue: multiprocessing.Queue[tuple[str, str | None]] = ctx.Queue()
+    process = ctx.Process(
+        target=_execute_in_process,
+        args=(code_execution_input.code, globals_, result_queue),
+        daemon=True,
+    )
+    process.start()
+
     output = ''
     error = ''
     try:
-      globals_ = {}
-      _prepare_globals(code_execution_input.code, globals_)
-      stdout = io.StringIO()
-      with redirect_stdout(stdout):
-        exec(code_execution_input.code, globals_, globals_)
-      output = stdout.getvalue()
-    except Exception as e:
-      error = str(e)
+      output, err = result_queue.get(timeout=self.timeout_seconds)
+      process.join()
+      if err:
+        error = err
+    except queue.Empty:
+      _kill_execution(process)
+      error = f'Code execution timed out after {self.timeout_seconds} seconds.'
 
     # Collect the final result.
+    result_queue.close()
+    result_queue.join_thread()
     return CodeExecutionResult(
         stdout=output,
         stderr=error,

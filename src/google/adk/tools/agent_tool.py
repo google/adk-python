@@ -14,20 +14,25 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from ..agents.common_configs import AgentRefConfig
+from ..events._branch_path import _BranchPath
 from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..utils._schema_utils import SchemaType
+from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
@@ -37,6 +42,17 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
+
+
+def _part_to_text(part: types.Part) -> str:
+  """Returns user-visible text from a Part, including code execution output."""
+  if part.text:
+    return part.text
+  if part.code_execution_result and part.code_execution_result.output:
+    return part.code_execution_result.output.rstrip('\n')
+  if part.executable_code and part.executable_code.code:
+    return part.executable_code.code
+  return ''
 
 
 def _get_input_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
@@ -64,7 +80,7 @@ def _get_input_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
   return None
 
 
-def _get_output_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
+def _get_output_schema(agent: BaseAgent) -> Optional[SchemaType]:
   """Extracts the output_schema from an agent.
 
   For LlmAgent, returns its output_schema directly.
@@ -96,6 +112,19 @@ class AgentTool(BaseTool):
   The agent's input schema is used to define the tool's input parameters, and
   the agent's output is returned as the tool's result.
 
+  Note:
+    To expose an agent as an inline tool of a parent ``LlmAgent``, prefer
+    setting ``mode='single_turn'`` on the sub-agent and attaching it via
+    ``sub_agents=[...]`` instead of wrapping it with ``AgentTool``. The
+    framework then exposes the sub-agent as a tool automatically and runs it
+    inline in the parent's session.
+
+    If the sub-agent needs to access parent artifacts, add
+    ``load_artifacts_tool`` directly to the sub-agent's ``tools`` list.
+
+    Direct usage of ``AgentTool`` is discouraged. See the single-turn
+    mode guide for details.
+
   Attributes:
     agent: The agent to wrap.
     skip_summarization: Whether to skip summarization of the agent output.
@@ -111,10 +140,12 @@ class AgentTool(BaseTool):
       skip_summarization: bool = False,
       *,
       include_plugins: bool = True,
+      propagate_grounding_metadata: bool = False,
   ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
     self.include_plugins = include_plugins
+    self.propagate_grounding_metadata = propagate_grounding_metadata
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -200,6 +231,8 @@ class AgentTool(BaseTool):
     input_schema = _get_input_schema(self.agent)
     if input_schema:
       input_value = input_schema.model_validate(args)
+      # The text must stay a bare JSON document: the node runtime re-validates
+      # it against this same schema, so any prose here fails that parse.
       content = types.Content(
           role='user',
           parts=[
@@ -209,9 +242,13 @@ class AgentTool(BaseTool):
           ],
       )
     else:
+      if 'request' in args:
+        request_text = args['request']
+      else:
+        request_text = json.dumps(args, ensure_ascii=False, sort_keys=True)
       content = types.Content(
           role='user',
-          parts=[types.Part.from_text(text=args['request'])],
+          parts=[types.Part.from_text(text=request_text)],
       )
     invocation_context = tool_context._invocation_context
     parent_app_name = (
@@ -232,6 +269,12 @@ class AgentTool(BaseTool):
         credential_service=tool_context._invocation_context.credential_service,
         plugins=plugins,
     )
+    # When plugins are inherited from the parent runner, the parent still owns
+    # them; tell the sub-Runner's plugin manager to skip closing them on exit
+    # so shared plugins (e.g. observability exporters) are not torn down while
+    # the parent is still using them.
+    if self.include_plugins:
+      runner.plugin_manager.set_skip_closing_plugins(True)
 
     state_dict = {
         k: v
@@ -244,35 +287,63 @@ class AgentTool(BaseTool):
         state=state_dict,
     )
 
+    # The wrapped agent runs as part of the caller's invocation, so it should
+    # obey the caller's run settings. Without this the nested run falls back to
+    # RunConfig's defaults, which means a max_llm_calls ceiling of 500 whatever
+    # the caller asked for and no custom_metadata, labels or HTTP options at
+    # all. The count itself is still per-invocation, so the ceiling bounds the
+    # nested run rather than being shared with the caller's.
+    nested_run_config = invocation_context.run_config
+    if nested_run_config is not None and nested_run_config.support_cfc:
+      # CFC describes how the caller's own model executes. Handing it to
+      # another agent replaces that agent's code executor and refuses to run it
+      # at all unless its model happens to be a Gemini 2 one.
+      nested_run_config = nested_run_config.model_copy(
+          update={'support_cfc': False}
+      )
+
     last_content = None
+    last_error_message = None
+    last_grounding_metadata = None
     async with Aclosing(
         runner.run_async(
-            user_id=session.user_id, session_id=session.id, new_message=content
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=content,
+            run_config=nested_run_config,
         )
     ) as agen:
       async for event in agen:
         # Forward state delta to parent session.
         if event.actions.state_delta:
           tool_context.state.update(event.actions.state_delta)
+        if event.error_message:
+          last_error_message = event.error_message
         if event.content:
           last_content = event.content
+          last_grounding_metadata = event.grounding_metadata
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
 
     if last_content is None or last_content.parts is None:
-      return ''
-    merged_text = '\n'.join(
-        p.text for p in last_content.parts if p.text and not p.thought
-    )
+      return last_error_message or ''
+    parts_text = (_part_to_text(p) for p in last_content.parts if not p.thought)
+    merged_text = '\n'.join(t for t in parts_text if t)
+    if not merged_text and last_error_message:
+      return last_error_message
     output_schema = _get_output_schema(self.agent)
     if output_schema:
-      tool_result = output_schema.model_validate_json(merged_text).model_dump(
-          exclude_none=True
-      )
+      tool_result = validate_schema(output_schema, merged_text)
     else:
       tool_result = merged_text
+
+    if self.propagate_grounding_metadata and last_grounding_metadata:
+      tool_context.state['temp:_adk_grounding_metadata'] = (
+          last_grounding_metadata
+      )
+
     return tool_result
 
   @override
@@ -305,3 +376,113 @@ class AgentToolConfig(BaseToolConfig):
 
   include_plugins: bool = True
   """Whether to include plugins from parent runner context."""
+
+
+class _SingleTurnAgentTool(AgentTool):
+  """A tool that wraps a single-turn agent and runs it via ctx.run_node.
+
+  This is only used in mode='chat' LlmAgent.
+  """
+
+  @override
+  async def run_async(
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> Any:
+    input_schema = _get_input_schema(self.agent)
+    if input_schema:
+      try:
+        node_input = input_schema.model_validate(args)
+      except Exception as e:
+        return f'Error validating input: {e}'
+    else:
+      node_input = args.get('request')
+
+    # Align subagent branch scoping with node execution (Node as Tool) using function_call_id.
+    fc_id = tool_context.function_call_id
+    base_branch = tool_context.get_invocation_context().branch
+    tool_branch = _BranchPath.create_sub_branch(
+        base_branch, name=self.agent.name, run_id=fc_id
+    )
+
+    try:
+      return await tool_context.run_node(
+          self.agent,
+          node_input=node_input,
+          override_branch=tool_branch,
+          use_sub_branch=False,
+      )
+    except Exception as e:
+      return f'Error running sub-agent: {e}'
+
+
+class _DefaultTaskInput(BaseModel):
+  request: str = Field(
+      description='Detailed instructions or context for the task sub-agent.'
+  )
+
+
+class _TaskAgentTool(AgentTool):
+  """A tool that wraps a task-mode agent and acts as a framework delegation marker.
+
+  This is only used in mode='chat' LlmAgent. The wrapper intercepts calls
+  to this tool to drive task sub-agent execution via ctx.run_node.
+  """
+
+  def __init__(
+      self,
+      agent: BaseAgent,
+      skip_summarization: bool = False,
+      *,
+      include_plugins: bool = True,
+      propagate_grounding_metadata: bool = False,
+  ):
+    super().__init__(
+        agent,
+        skip_summarization,
+        include_plugins=include_plugins,
+        propagate_grounding_metadata=propagate_grounding_metadata,
+    )
+    self._defers_response = True
+
+  @override
+  def _get_declaration(self) -> types.FunctionDeclaration:
+    from ..utils.variant_utils import GoogleLLMVariant
+
+    input_schema = _get_input_schema(self.agent) or _DefaultTaskInput
+
+    from . import _function_tool_declarations
+
+    result = (
+        _function_tool_declarations.build_function_declaration_with_json_schema(
+            func=input_schema
+        )
+    )
+    base_desc = self.agent.description or ''
+    suffix = (
+        '\nIMPORTANT: This tool delegates execution to a specialized agent.'
+        ' Do NOT call this tool in parallel with any other tools.'
+    )
+    result.description = f'{base_desc}{suffix}'.strip()
+    result.name = self.name
+
+    if self._api_variant != GoogleLLMVariant.GEMINI_API:
+      output_schema = _get_output_schema(self.agent)
+      if output_schema:
+        result.response_json_schema = {'type': 'object'}
+      else:
+        result.response_json_schema = {'type': 'string'}
+
+    return result
+
+  @override
+  async def run_async(
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> Any:
+    # Framework handles task delegation dispatch directly via the wrapper.
+    return None

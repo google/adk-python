@@ -12,23 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Utility functions for session service."""
+
 from __future__ import annotations
 
 from typing import Any
-from typing import Optional
-from typing import Type
 from typing import TypeVar
+
+from pydantic import BaseModel
 
 from .state import State
 
-M = TypeVar("M")
+M = TypeVar("M", bound=BaseModel)
 
 
-def decode_model(
-    data: Optional[dict[str, Any]], model_cls: Type[M]
-) -> Optional[M]:
+def decode_model(data: object | None, model_cls: type[M]) -> M | None:
   """Decodes a pydantic model object from a JSON dictionary."""
-  if data is None:
+  # Guard against primitive non-dict values (e.g. a legacy/corrupted "null" string
+  # persisted in place of SQL NULL). Passing those to model_validate would
+  # raise a ValidationError and break session replay in get_session().
+  # We allow dicts and other objects (like PydanticNamespace in tests).
+  if data is None or isinstance(
+      data, (str, int, float, bool, list, set, tuple, bytes)
+  ):
     return None
   return model_cls.model_validate(data)
 
@@ -37,7 +42,11 @@ def extract_state_delta(
     state: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
   """Extracts app, user, and session state deltas from a state dictionary."""
-  deltas = {"app": {}, "user": {}, "session": {}}
+  deltas: dict[str, dict[str, Any]] = {
+      "app": {},
+      "user": {},
+      "session": {},
+  }
   if state:
     for key in state.keys():
       if key.startswith(State.APP_PREFIX):

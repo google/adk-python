@@ -46,7 +46,6 @@ _FUNCTION_RESPONSE_PREFIX = "```tool_outputs\n"
 _FUNCTION_RESPONSE_SUFFIX = "\n```\n"
 
 
-# TODO(yaojie): Add unit tests for this function.
 def convert_examples_to_text(
     examples: list[Example], model: Optional[str]
 ) -> str:
@@ -67,11 +66,14 @@ def convert_examples_to_text(
       if role != previous_role:
         output += role
       previous_role = role
-      for part in content.parts:
+      for part in content.parts or []:
         if part.function_call:
           args = []
+          function_args = part.function_call.args
+          if not isinstance(function_args, dict):
+            function_args = {}
           # Convert function call part to python-like function call
-          for k, v in part.function_call.args.items():
+          for k, v in function_args.items():
             if isinstance(v, str):
               args.append(f"{k}='{v}'")
             else:
@@ -105,8 +107,9 @@ def _get_latest_message_from_user(session: "Session") -> str:
 
   event = events[-1]
   if event.author == "user" and not event.get_function_responses():
-    if event.content.parts and event.content.parts[0].text:
-      return event.content.parts[0].text
+    content = event.content
+    if content is not None and content.parts and content.parts[0].text:
+      return content.parts[0].text
     else:
       logger.warning("No message from user for fetching example.")
 

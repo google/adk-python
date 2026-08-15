@@ -15,15 +15,28 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 import uuid
 
 import kubernetes as k8s
 from kubernetes.watch import Watch
+from pydantic import field_validator
+from typing_extensions import Literal
+from typing_extensions import override
+from typing_extensions import TYPE_CHECKING
 
 from ..agents.invocation_context import InvocationContext
 from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
+
+try:
+  from k8s_agent_sandbox import SandboxClient
+except ImportError:
+  SandboxClient = None
+
+if TYPE_CHECKING:
+  from k8s_agent_sandbox import SandboxClient
 
 # Expose these for tests to monkeypatch.
 client = k8s.client
@@ -36,9 +49,19 @@ logger = logging.getLogger("google_adk." + __name__)
 class GkeCodeExecutor(BaseCodeExecutor):
   """Executes Python code in a secure gVisor-sandboxed Pod on GKE.
 
-  This executor securely runs code by dynamically creating a Kubernetes Job for
-  each execution request. The user's code is mounted via a ConfigMap, and the
-  Pod is hardened with a strict security context and resource limits.
+  This executor supports two modes of execution: 'job' and 'sandbox'.
+
+  Job Mode (default):
+  Securely runs code by dynamically creating a Kubernetes Job for each execution
+  request. The user's code is mounted via a ConfigMap, and the Pod is hardened
+  with a strict security context and resource limits.
+
+  Sandbox Mode:
+  Executes code using the Agent Sandbox Client. This mode requires additional
+  infrastructure to be deployed in the cluster, specifically:
+  - Agent-sandbox controller
+  - Sandbox templates (e.g., python-sandbox-template)
+  - Sandbox router and gateway
 
   Key Features:
   - Sandboxed execution using the gVisor runtime.
@@ -70,6 +93,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
   namespace: str = "default"
   image: str = "python:3.11-slim"
   timeout_seconds: int = 300
+  executor_type: Literal["job", "sandbox"] = "job"
   cpu_requested: str = "200m"
   mem_requested: str = "256Mi"
   # The maximum CPU the container can use, in "millicores". 1000m is 1 full CPU core.
@@ -79,6 +103,10 @@ class GkeCodeExecutor(BaseCodeExecutor):
   kubeconfig_path: str | None = None
   kubeconfig_context: str | None = None
 
+  # Sandbox constants
+  sandbox_gateway_name: str | None = None
+  sandbox_template: str | None = "python-sandbox-template"
+
   _batch_v1: k8s.client.BatchV1Api
   _core_v1: k8s.client.CoreV1Api
 
@@ -86,8 +114,8 @@ class GkeCodeExecutor(BaseCodeExecutor):
       self,
       kubeconfig_path: str | None = None,
       kubeconfig_context: str | None = None,
-      **data,
-  ):
+      **data: object,
+  ) -> None:
     """Initializes the executor and the Kubernetes API clients.
 
     This constructor supports multiple authentication methods:
@@ -136,10 +164,46 @@ class GkeCodeExecutor(BaseCodeExecutor):
     self._batch_v1 = client.BatchV1Api()
     self._core_v1 = client.CoreV1Api()
 
-  def execute_code(
-      self,
-      invocation_context: InvocationContext,
-      code_execution_input: CodeExecutionInput,
+  @field_validator("executor_type")
+  @classmethod
+  def _check_sandbox_dependency(cls, v: str) -> str:
+    if v == "sandbox" and SandboxClient is None:
+      raise ImportError(
+          "k8s-agent-sandbox not found. To use Agent Sandbox, please install"
+          " google-adk with the extensions extra: pip install"
+          " google-adk[extensions]"
+      )
+    return v
+
+  def _execute_in_sandbox(self, code: str) -> CodeExecutionResult:
+    """Executes code using Agent Sandbox Client."""
+    try:
+      with SandboxClient(
+          template_name=self.sandbox_template,
+          gateway_name=self.sandbox_gateway_name,
+          namespace=self.namespace,
+      ) as sandbox:
+        # Execute the code as a python script
+        sandbox.write("script.py", code)
+        result = sandbox.run("python3 script.py")
+
+        return CodeExecutionResult(stdout=result.stdout, stderr=result.stderr)
+    except RuntimeError as e:
+      logger.error(
+          "SandboxClient failed to initialize or find gateway", exc_info=True
+      )
+      raise RuntimeError(f"Sandbox infrastructure error: {e}") from e
+    except TimeoutError as e:
+      logger.error("Sandbox timed out", exc_info=True)
+      # Returning a result instead of raising allows the Agent to process
+      # the error gracefully.
+      return CodeExecutionResult(stderr=f"Sandbox timed out: {e}")
+    except Exception as e:
+      logger.error("Sandbox execution failed: %s", e, exc_info=True)
+      raise
+
+  def _execute_as_job(
+      self, code: str, invocation_context: InvocationContext
   ) -> CodeExecutionResult:
     """Orchestrates the secure execution of a code snippet on GKE."""
     job_name = f"adk-exec-{uuid.uuid4().hex[:10]}"
@@ -150,7 +214,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
       # 1. Create a ConfigMap to mount LLM-generated code into the Pod.
       # 2. Create a Job that runs the code from the ConfigMap.
       # 3. Set the Job as the ConfigMap's owner for automatic cleanup.
-      self._create_code_configmap(configmap_name, code_execution_input.code)
+      self._create_code_configmap(configmap_name, code)
       job_manifest = self._create_job_manifest(
           job_name, configmap_name, invocation_context
       )
@@ -162,7 +226,6 @@ class GkeCodeExecutor(BaseCodeExecutor):
       logger.info(
           f"Submitted Job '{job_name}' to namespace '{self.namespace}'."
       )
-      logger.debug("Executing code:\n```\n%s\n```", code_execution_input.code)
       return self._watch_job_completion(job_name)
 
     except ApiException as e:
@@ -185,6 +248,20 @@ class GkeCodeExecutor(BaseCodeExecutor):
       return CodeExecutionResult(
           stderr=f"An unexpected executor error occurred: {e}"
       )
+
+  @override
+  def execute_code(
+      self,
+      invocation_context: InvocationContext,
+      code_execution_input: CodeExecutionInput,
+  ) -> CodeExecutionResult:
+    """Overrides the base method to route execution based on executor_type."""
+    code = code_execution_input.code
+    if self.executor_type == "sandbox":
+      return self._execute_in_sandbox(code)
+    else:
+      # Fallback to existing GKE Job logic
+      return self._execute_as_job(code, invocation_context)
 
   def _create_job_manifest(
       self,
@@ -219,6 +296,9 @@ class GkeCodeExecutor(BaseCodeExecutor):
     # Use tolerations to request a gVisor node.
     pod_spec = k8s.client.V1PodSpec(
         restart_policy="Never",
+        # The pod runs model-generated code, so it must not receive a
+        # credential for the cluster it is running in.
+        automount_service_account_token=False,
         containers=[container],
         volumes=[
             k8s.client.V1Volume(
@@ -306,8 +386,11 @@ class GkeCodeExecutor(BaseCodeExecutor):
         )
 
       pod_name = pods.items[0].metadata.name
-      return self._core_v1.read_namespaced_pod_log(
-          name=pod_name, namespace=self.namespace
+      return cast(
+          str,
+          self._core_v1.read_namespaced_pod_log(
+              name=pod_name, namespace=self.namespace
+          ),
       )
     except ApiException as e:
       raise RuntimeError(

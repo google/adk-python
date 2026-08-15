@@ -28,11 +28,23 @@ if TYPE_CHECKING:
   from ..sessions.state import State
 
 try:
+  from authlib.common.security import generate_token
   from authlib.integrations.requests_client import OAuth2Session
 
   AUTHLIB_AVAILABLE = True
 except ImportError:
   AUTHLIB_AVAILABLE = False
+
+
+def _normalize_oauth_scopes(
+    scopes: dict[str, str] | list[str] | None,
+) -> list[str]:
+  """Normalize OAuth scopes into the list shape expected by authlib."""
+  if not scopes:
+    return []
+  if isinstance(scopes, dict):
+    return list(scopes.keys())
+  return list(scopes)
 
 
 class AuthHandler:
@@ -54,10 +66,13 @@ class AuthHandler:
     return exchange_result.credential
 
   async def parse_and_store_auth_response(self, state: State) -> None:
+    credential_key = self.auth_config.credential_key
+    if not credential_key:
+      raise ValueError("credential_key is empty.")
 
-    credential_key = "temp:" + self.auth_config.credential_key
+    temp_credential_key = "temp:" + credential_key
 
-    state[credential_key] = self.auth_config.exchanged_auth_credential
+    state[temp_credential_key] = self.auth_config.exchanged_auth_credential
     if not isinstance(
         self.auth_config.auth_scheme, SecurityBase
     ) or self.auth_config.auth_scheme.type_ not in (
@@ -66,15 +81,78 @@ class AuthHandler:
     ):
       return
 
-    state[credential_key] = await self.exchange_auth_token()
+    state[temp_credential_key] = await self.exchange_auth_token()
 
   def _validate(self) -> None:
-    if not self.auth_scheme:
+    if not self.auth_config.auth_scheme:
       raise ValueError("auth_scheme is empty.")
 
-  def get_auth_response(self, state: State) -> AuthCredential:
-    credential_key = "temp:" + self.auth_config.credential_key
-    return state.get(credential_key, None)
+  def get_auth_response(self, state: State) -> AuthCredential | None:
+    # 1. Try reading the temp credential key (standard ADK flow)
+    credential_key = self.auth_config.credential_key
+    if not credential_key:
+      return None
+
+    temp_credential_key = "temp:" + credential_key
+    val = state.get(temp_credential_key, None)
+    if val is not None:
+      if isinstance(val, AuthCredential):
+        return val
+      if isinstance(val, dict):
+        return AuthCredential.model_validate(val)
+      if isinstance(val, str) and val:
+        return self._build_credential_from_string(val)
+
+    # 2. Try reading the credential key without the 'temp:' prefix
+    val = state.get(credential_key, None)
+    if val is not None:
+      if isinstance(val, AuthCredential):
+        return val
+      if isinstance(val, dict):
+        return AuthCredential.model_validate(val)
+      if isinstance(val, str) and val:
+        return self._build_credential_from_string(val)
+
+    return None
+
+  def _build_credential_from_string(self, val: str) -> AuthCredential:
+    from .auth_credential import AuthCredentialTypes
+    from .auth_credential import HttpAuth
+    from .auth_credential import HttpCredentials
+    from .auth_credential import OAuth2Auth
+
+    auth_scheme = self.auth_config.auth_scheme
+    if not auth_scheme:
+      return AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(access_token=val),
+      )
+
+    scheme_type = auth_scheme.type_
+    if scheme_type == AuthSchemeType.apiKey:
+      return AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key=val,
+      )
+    elif scheme_type == AuthSchemeType.http:
+      scheme = getattr(auth_scheme, "scheme", "bearer")
+      return AuthCredential(
+          auth_type=AuthCredentialTypes.HTTP,
+          http=HttpAuth(
+              scheme=scheme,
+              credentials=HttpCredentials(token=val),
+          ),
+      )
+    elif scheme_type in (AuthSchemeType.oauth2, AuthSchemeType.openIdConnect):
+      return AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(access_token=val),
+      )
+    else:
+      return AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(access_token=val),
+      )
 
   def generate_auth_request(self) -> AuthConfig:
     if not isinstance(
@@ -158,10 +236,12 @@ class AuthHandler:
 
     auth_scheme = self.auth_config.auth_scheme
     auth_credential = self.auth_config.raw_auth_credential
+    if not auth_credential or not auth_credential.oauth2:
+      raise ValueError("raw_auth_credential or oauth2 is empty")
 
     if isinstance(auth_scheme, OpenIdConnectWithConfig):
       authorization_endpoint = auth_scheme.authorization_endpoint
-      scopes = auth_scheme.scopes
+      scopes = _normalize_oauth_scopes(auth_scheme.scopes)
     else:
       authorization_endpoint = (
           auth_scheme.flows.implicit
@@ -173,36 +253,61 @@ class AuthHandler:
           or auth_scheme.flows.password
           and auth_scheme.flows.password.tokenUrl
       )
-      scopes = (
-          auth_scheme.flows.implicit
-          and auth_scheme.flows.implicit.scopes
-          or auth_scheme.flows.authorizationCode
-          and auth_scheme.flows.authorizationCode.scopes
-          or auth_scheme.flows.clientCredentials
-          and auth_scheme.flows.clientCredentials.scopes
-          or auth_scheme.flows.password
-          and auth_scheme.flows.password.scopes
-      )
-      scopes = list(scopes.keys())
+      if auth_scheme.flows.implicit:
+        scopes = _normalize_oauth_scopes(auth_scheme.flows.implicit.scopes)
+      elif auth_scheme.flows.authorizationCode:
+        scopes = _normalize_oauth_scopes(
+            auth_scheme.flows.authorizationCode.scopes
+        )
+      elif auth_scheme.flows.clientCredentials:
+        scopes = _normalize_oauth_scopes(
+            auth_scheme.flows.clientCredentials.scopes
+        )
+      elif auth_scheme.flows.password:
+        scopes = _normalize_oauth_scopes(auth_scheme.flows.password.scopes)
+      else:
+        scopes = []
 
     client = OAuth2Session(
         auth_credential.oauth2.client_id,
         auth_credential.oauth2.client_secret,
         scope=" ".join(scopes),
         redirect_uri=auth_credential.oauth2.redirect_uri,
+        code_challenge_method=auth_credential.oauth2.code_challenge_method,
     )
     params = {
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": auth_credential.oauth2.prompt or "consent",
     }
     if auth_credential.oauth2.audience:
       params["audience"] = auth_credential.oauth2.audience
+    if auth_credential.oauth2.nonce:
+      params["nonce"] = auth_credential.oauth2.nonce
+
+    # If using PKCE with S256, ensure a code_verifier exists.
+    # If not provided in the credential, generate a cryptographically secure
+    # random token of 48 characters (OAuth2 recommends 43-128 characters).
+    code_verifier = auth_credential.oauth2.code_verifier
+    method = auth_credential.oauth2.code_challenge_method
+
+    if method:
+      if method != "S256":
+        raise ValueError(
+            f"Unsupported code_challenge_method: {method}. Only 'S256' is"
+            " supported."
+        )
+      if not code_verifier:
+        code_verifier = generate_token(48)
+
     uri, state = client.create_authorization_url(
-        url=authorization_endpoint, **params
+        url=authorization_endpoint, code_verifier=code_verifier, **params
     )
 
     exchanged_auth_credential = auth_credential.model_copy(deep=True)
-    exchanged_auth_credential.oauth2.auth_uri = uri
-    exchanged_auth_credential.oauth2.state = state
+    if exchanged_auth_credential.oauth2 is not None:
+      exchanged_auth_credential.oauth2.auth_uri = uri
+      exchanged_auth_credential.oauth2.state = state
+      if code_verifier:
+        exchanged_auth_credential.oauth2.code_verifier = code_verifier
 
     return exchanged_auth_credential

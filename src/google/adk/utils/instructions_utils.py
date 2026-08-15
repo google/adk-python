@@ -16,20 +16,35 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Awaitable
+from typing import Callable
+from typing import Union
+
+from typing_extensions import TypeAlias
 
 from ..agents.readonly_context import ReadonlyContext
 from ..sessions.state import State
 
 __all__ = [
+    'InstructionProvider',
     'inject_session_state',
 ]
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+# Type alias for agent instruction providers: a callable that receives a
+# ReadonlyContext and returns an instruction string (sync or async).
+InstructionProvider: TypeAlias = Callable[
+    [ReadonlyContext], Union[str, Awaitable[str]]
+]
+
+_TEMPLATE_VAR_PATTERN = re.compile(r'{+[^{}]*}+')
+
 
 async def inject_session_state(
     template: str,
     readonly_context: ReadonlyContext,
+    use_jinja2: bool = False,
 ) -> str:
   """Populates values in the instruction template, e.g. state, artifact, etc.
 
@@ -51,19 +66,56 @@ async def inject_session_state(
     )
 
   agent = Agent(
-      model="gemini-2.0-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=build_instruction,
   )
   ```
 
+  For more expressive templates with conditionals and loops, set
+  ``use_jinja2=True``.  Session state variables are available directly by
+  name (``{{ var_name }}``) and artifacts can be loaded with the async
+  ``artifact`` helper (``{{ artifact("file_name") }}``).
+
+  e.g.
+  ```
+  async def build_instruction(
+      readonly_context: ReadonlyContext,
+  ) -> str:
+    return await inject_session_state(
+        '{% if user_name %}Hello {{ user_name }}!{% endif %}',
+        readonly_context,
+        use_jinja2=True,
+    )
+  ```
+
   Args:
     template: The instruction template.
-    readonly_context: The read-only context
+    readonly_context: The read-only context.
+    use_jinja2: If True, render the template with Jinja2 instead of the
+      default regex-based engine.  Defaults to False for backward
+      compatibility.  Jinja2 is an optional dependency and must be installed
+      separately to use this.
 
   Returns:
     The instruction template with values populated.
   """
+  if use_jinja2:
+    return await _render_with_jinja2(template, readonly_context)
+  return await _render_with_regex(template, readonly_context)
+
+
+async def _render_with_regex(
+    template: str,
+    readonly_context: ReadonlyContext,
+) -> str:
+  """Renders *template* using the legacy regex-based substitution engine."""
+
+  # The substitution pattern requires a '{', so a template without one can
+  # never match. Return it as-is to avoid the regex scan on every LLM call,
+  # which is the common case for static instructions.
+  if '{' not in template:
+    return template
 
   invocation_context = readonly_context._invocation_context
 
@@ -79,16 +131,7 @@ async def inject_session_state(
     return ''.join(result)
 
   async def _replace_match(match) -> str:
-    matched_text = match.group()
-    if matched_text.startswith('{{') and matched_text.endswith('}}'):
-      # Preserve escaped non-placeholder literals (e.g. JSON snippets),
-      # but keep escaped placeholders as literal placeholders.
-      escaped_value = matched_text[2:-2]
-      if _is_escaped_placeholder(escaped_value):
-        return matched_text[1:-1]
-      return matched_text
-
-    var_name = matched_text.lstrip('{').rstrip('}').strip()
+    var_name = match.group().lstrip('{').rstrip('}').strip()
     optional = False
     if var_name.endswith('?'):
       optional = True
@@ -130,22 +173,66 @@ async def inject_session_state(
         else:
           raise KeyError(f'Context variable not found: `{var_name}`.')
 
-  return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
+  return await _async_sub(_TEMPLATE_VAR_PATTERN, _replace_match, template)
 
 
-def _is_escaped_placeholder(value: str) -> bool:
-  """Checks if escaped braces contain a supported placeholder pattern."""
-  var_name = value.strip()
-  if not var_name:
-    return False
+async def _render_with_jinja2(
+    template: str,
+    readonly_context: ReadonlyContext,
+) -> str:
+  """Renders *template* using a Jinja2 environment.
 
-  if var_name.endswith('?'):
-    var_name = var_name.removesuffix('?')
+  Session state variables are exposed as top-level template variables.
+  Artifacts can be loaded with the ``artifact(filename)`` async callable
+  available inside the template.
 
-  if var_name.startswith('artifact.'):
-    return True
+  Jinja2 is not a required dependency, so it is imported here rather than at
+  module scope, where it would be pulled in by every import of this package.
 
-  return _is_valid_state_name(var_name)
+  Args:
+    template: A Jinja2 template string.
+    readonly_context: The read-only context.
+
+  Returns:
+    The rendered string.
+
+  Raises:
+    ImportError: If the optional jinja2 package is not installed.
+  """
+  try:
+    import jinja2
+  except ImportError as e:
+    raise ImportError(
+        'Rendering an instruction with Jinja2 requires the optional jinja2'
+        ' package. Install it with: pip install jinja2'
+    ) from e
+
+  invocation_context = readonly_context._invocation_context
+
+  async def _load_artifact(filename: str) -> str:
+    if invocation_context.artifact_service is None:
+      raise ValueError('Artifact service is not initialized.')
+    artifact = await invocation_context.artifact_service.load_artifact(
+        app_name=invocation_context.session.app_name,
+        user_id=invocation_context.session.user_id,
+        session_id=invocation_context.session.id,
+        filename=filename,
+    )
+    if artifact is None:
+      raise KeyError(f'Artifact {filename} not found.')
+    return str(artifact)
+
+  env = jinja2.Environment(
+      enable_async=True,
+      undefined=jinja2.StrictUndefined,
+      autoescape=False,
+  )
+  jinja_template = env.from_string(template)
+
+  context_vars = dict(invocation_context.session.state)
+  context_vars['artifact'] = _load_artifact
+
+  return await jinja_template.render_async(**context_vars)
 
 
 def _is_valid_state_name(var_name):

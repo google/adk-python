@@ -15,12 +15,13 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 from typing import ClassVar
-from typing import Optional
 
 from google.genai import types as genai_types
 from pydantic import Field
 from pydantic import field_validator
+from typing_extensions import Literal
 from typing_extensions import override
 
 from ...events.event import Event
@@ -31,6 +32,8 @@ from ...utils.feature_decorator import experimental
 from .._retry_options_utils import add_default_retry_options_if_not_present
 from ..conversation_scenarios import ConversationScenario
 from ..evaluator import Evaluator
+from .llm_backed_user_simulator_prompts import get_llm_backed_user_simulator_prompt
+from .llm_backed_user_simulator_prompts import is_valid_user_simulator_template
 from .user_simulator import BaseUserSimulatorConfig
 from .user_simulator import NextUserMessage
 from .user_simulator import Status
@@ -41,66 +44,17 @@ logger = logging.getLogger("google_adk." + __name__)
 _AUTHOR_USER = "user"
 _STOP_SIGNAL = "</finished>"
 
-_DEFAULT_USER_AGENT_INSTRUCTIONS = """You are a Simulated User designed to test an AI Agent.
-
-Your single most important job is to react logically to the Agent's last message.
-The Conversation Plan is your canonical grounding, not a script; your response MUST be dictated by what the Agent just said.
-
-# Primary Operating Loop
-
-You MUST follow this three-step process while thinking:
-
-Step 1: Analyze what the Agent just said or did. Specifically, is the Agent asking you a question, reporting a successful or unsuccessful operation, or saying something incorrect or unexpected?
-
-Step 2: Choose one action based on your analysis:
-* ANSWER any questions the Agent asked.
-* ADVANCE to the next request as per the Conversation Plan if the Agent succeeds in satisfying your current request.
-* INTERVENE if the Agent is yet to complete your current request and the Conversation Plan requires you to modify it.
-* CORRECT the Agent if it is making a mistake or failing.
-* END the conversation if any of the below stopping conditions are met:
-  - The Agent has completed all your requests from the Conversation Plan.
-  - The Agent has failed to fulfill a request *more than once*.
-  - The Agent has performed an incorrect operation and informs you that it is unable to correct it.
-  - The Agent ends the conversation on its own by transferring you to a *human/live agent* (NOT another AI Agent).
-
-Step 3: Formulate a response based on the chosen action and the below Action Protocols and output it.
-
-# Action Protocols
-
-**PROTOCOL: ANSWER**
-* Only answer the Agent's questions using information from the Conversation Plan.
-* Do NOT provide any additional information the Agent did not explicitly ask for.
-* If you do not have the information requested by the Agent, inform the Agent. Do NOT make up information that is not in the Conversation Plan.
-* Do NOT advance to the next request in the Conversation Plan.
-
-**PROTOCOL: ADVANCE**
-* Make the next request from the Conversation Plan.
-* Skip redundant requests already fulfilled by the Agent.
-
-**PROTOCOL: INTERVENE**
-* Change your current request as directed by the Conversation Plan with natural phrasing.
-
-**PROTOCOL: CORRECT**
-* Challenge illogical or incorrect statements made by the Agent.
-* If the Agent did an incorrect operation, ask the Agent to fix it.
-* If this is the FIRST time the Agent failed to satisfy your request, ask the Agent to try again.
-
-**PROTOCOL: END**
-* End the conversation only when any of the stopping conditions are met; do NOT end prematurely.
-* Output `{stop_signal}` to indicate that the conversation with the AI Agents is over.
-
-# Conversation Plan
-
-{conversation_plan}
-
-# Conversation History
-
-{conversation_history}
-"""
-
 
 class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
   """Contains configurations required by an LLM backed user simulator."""
+
+  type: Literal["llm_backed"] = Field(
+      default="llm_backed",
+      description=(
+          "Discriminator tag for this config subclass. See"
+          " `BaseUserSimulatorConfig.type` for the rationale."
+      ),
+  )
 
   model: str = Field(
       default="gemini-2.5-flash",
@@ -127,35 +81,43 @@ prompt is also counted as an invocation.
 (Not recommended) If you don't want a limit, you can set the value to -1.""",
   )
 
-  custom_instructions: Optional[str] = Field(
+  custom_instructions: str | None = Field(
       default=None,
       description="""Custom instructions for the LlmBackedUserSimulator. The
-instructions must contain the following formatting placeholders:
-* {stop_signal} : text to be generated when the user simulator decides that the
+instructions must contain the following formatting placeholders following Jinja syntax:
+* {{ stop_signal }} : text to be generated when the user simulator decides that the
   conversation is over.
-* {conversation_plan} : the overall plan for the conversation that the user
+* {{ conversation_plan }} : the overall plan for the conversation that the user
   simulator must follow.
-* {conversation_history} : the conversation between the user and the agent so
-  far.""",
+* {{ conversation_history }} : the conversation between the user and the agent so
+  far.
+* {{ persona }} : Only needed if specifying user_persona in the conversation scenario.
+""",
+  )
+
+  include_function_calls: bool = Field(
+      default=False,
+      description="""Whether to include function calls and responses in the
+conversation history prompt provided to the user simulator.""",
   )
 
   @field_validator("custom_instructions")
   @classmethod
-  def validate_custom_instructions(cls, value: Optional[str]) -> Optional[str]:
+  def validate_custom_instructions(cls, value: str | None) -> str | None:
     if value is None:
       return value
-    if not all(
-        placeholder in value
-        for placeholder in [
-            "{stop_signal}",
-            "{conversation_plan}",
-            "{conversation_history}",
-        ]
+    if not is_valid_user_simulator_template(
+        value,
+        required_params=[
+            "stop_signal",
+            "conversation_plan",
+            "conversation_history",
+        ],
     ):
       raise ValueError(
           "custom_instructions must contain each of the following formatting"
-          " placeholders:"
-          " {stop_signal}, {conversation_plan}, {conversation_history}"
+          " placeholders using Jinja syntax: {{ stop_signal }}, {{"
+          " conversation_plan }}, {{ conversation_history }}"
       )
     return value
 
@@ -178,25 +140,27 @@ class LlmBackedUserSimulator(UserSimulator):
     self._conversation_scenario = conversation_scenario
     self._invocation_count = 0
     llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(self._config.model)
-    self._llm = llm_class(model=self._config.model)
-    self._instructions = (
-        self._config.custom_instructions
-        if self._config.custom_instructions
-        else _DEFAULT_USER_AGENT_INSTRUCTIONS
-    )
+    llm_class = llm_registry.resolve(self._llm_config.model)
+    self._llm = llm_class(model=self._llm_config.model)
+    self._user_persona = self._conversation_scenario.user_persona
+
+  @property
+  def _llm_config(self) -> LlmBackedUserSimulatorConfig:
+    return cast(LlmBackedUserSimulatorConfig, self._config)
 
   @classmethod
   def _summarize_conversation(
       cls,
       events: list[Event],
+      include_function_calls: bool = False,
   ) -> str:
     """Summarize the conversation to add to the prompt.
 
-    Removes tool calls, responses, and thoughts.
+    Removes responses, thoughts, optionally tool calls and tool responses.
 
     Args:
       events: The conversation history to rewrite.
+      include_function_calls: Whether to include function calls and responses.
 
     Returns:
       The summarized conversation history as a string.
@@ -209,27 +173,39 @@ class LlmBackedUserSimulator(UserSimulator):
       for part in e.content.parts:
         if part.text and not part.thought:
           rewritten_dialogue.append(f"{author}: {part.text}")
+        elif include_function_calls and part.function_call:
+          rewritten_dialogue.append(
+              f"{author} called tool '{part.function_call.name}' with args:"
+              f" {part.function_call.args}"
+          )
+        elif include_function_calls and part.function_response:
+          rewritten_dialogue.append(
+              f"Tool '{part.function_response.name}' returned:"
+              f" {part.function_response.response}"
+          )
 
     return "\n\n".join(rewritten_dialogue)
 
   async def _get_llm_response(
       self,
       rewritten_dialogue: str,
-  ) -> str:
-    """Sends a user message generation request to the LLM and returns the full response."""
+  ) -> tuple[str, str | None]:
+    """Sends a user message generation request to the LLM and returns the full response and potential error reason."""
     if self._invocation_count == 0:
       # first invocation - send the static starting prompt
-      return self._conversation_scenario.starting_prompt
+      return self._conversation_scenario.starting_prompt, None
 
-    user_agent_instructions = self._instructions.format(
-        stop_signal=_STOP_SIGNAL,
+    user_agent_instructions = get_llm_backed_user_simulator_prompt(
         conversation_plan=self._conversation_scenario.conversation_plan,
         conversation_history=rewritten_dialogue,
+        stop_signal=_STOP_SIGNAL,
+        custom_instructions=self._llm_config.custom_instructions,
+        user_persona=self._user_persona,
     )
 
     llm_request = LlmRequest(
-        model=self._config.model,
-        config=self._config.model_configuration,
+        model=self._llm_config.model,
+        config=self._llm_config.model_configuration,
         contents=[
             genai_types.Content(
                 parts=[
@@ -242,15 +218,40 @@ class LlmBackedUserSimulator(UserSimulator):
     add_default_retry_options_if_not_present(llm_request)
 
     response = ""
+    error_reason = None
+    has_thought_tokens = False
     async with Aclosing(self._llm.generate_content_async(llm_request)) as agen:
       async for llm_response in agen:
-        generated_content: genai_types.Content = llm_response.content
-        if not generated_content.parts:
+        error_code = llm_response.error_code
+        if error_code:
+          logger.warning(
+              "User simulator LLM returned error: code=%s, message=%s",
+              error_code,
+              getattr(llm_response, "error_message", ""),
+          )
+          error_reason = f"safety filters or other error (code={error_code})"
+          response = ""
+          break
+
+        generated_content = llm_response.content
+        if generated_content is None or not generated_content.parts:
           continue
+
         for part in generated_content.parts:
-          if part.text and not part.thought:
+          if part.thought:
+            has_thought_tokens = True
+          elif part.text:
             response += part.text
-    return response
+
+    if not response:
+      if error_reason:
+        pass  # Keep the error reason from error_code
+      elif has_thought_tokens:
+        error_reason = "LLM returned only thinking tokens"
+      else:
+        error_reason = "LLM returned empty response"
+
+    return response, error_reason
 
   @override
   async def get_next_user_message(
@@ -273,7 +274,7 @@ class LlmBackedUserSimulator(UserSimulator):
       NO_MESSAGE_GENERATED status.
     """
     # check invocation limit
-    invocation_limit = self._config.max_allowed_invocations
+    invocation_limit = self._llm_config.max_allowed_invocations
     if invocation_limit >= 0 and self._invocation_count >= invocation_limit:
       logger.warning(
           "LlmBackedUserSimulator invocation limit (%d) reached!",
@@ -282,14 +283,16 @@ class LlmBackedUserSimulator(UserSimulator):
       return NextUserMessage(status=Status.TURN_LIMIT_REACHED)
 
     # rewrite events for the user simulator
-    rewritten_dialogue = self._summarize_conversation(events)
+    rewritten_dialogue = self._summarize_conversation(
+        events, self._llm_config.include_function_calls
+    )
 
     # query the LLM for the next user message
-    response = await self._get_llm_response(rewritten_dialogue)
+    response, error_reason = await self._get_llm_response(rewritten_dialogue)
     self._invocation_count += 1
 
     # is the conversation over? (Has the user simulator output the stop signal?)
-    if _STOP_SIGNAL.lower() in response.lower():
+    if response and _STOP_SIGNAL.lower() in response.lower():
       logger.info(
           "Stopping user message generation as the stop signal was detected."
       )
@@ -307,11 +310,11 @@ class LlmBackedUserSimulator(UserSimulator):
 
     # if we are here, the user agent failed to generate a message, which is not
     # a valid result for the LLM backed user simulator.
-    raise RuntimeError("Failed to generate a user message")
+    raise RuntimeError(f"Failed to generate a user message: {error_reason}")
 
   @override
   def get_simulation_evaluator(
       self,
-  ) -> Optional[Evaluator]:
+  ) -> Evaluator | None:
     """Returns an Evaluator that evaluates if the simulation was successful or not."""
     raise NotImplementedError()

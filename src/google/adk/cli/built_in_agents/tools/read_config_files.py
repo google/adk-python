@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Configuration file reader tool for existing YAML configs."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -55,7 +56,7 @@ async def read_config_files(
   # Read all files using the file_manager read_files tool
   read_result = await read_files(file_paths, tool_context)
 
-  result = {
+  result: Dict[str, Any] = {
       "success": True,
       "total_files": len(file_paths),
       "successful_reads": 0,
@@ -149,7 +150,7 @@ def _extract_agent_info(content: Dict[str, Any]) -> Dict[str, Any]:
   }
 
 
-def _extract_sub_agents(content: Dict[str, Any]) -> list:
+def _extract_sub_agents(content: Dict[str, Any]) -> List[Any]:
   """Extract sub-agent references from configuration."""
   sub_agents = content.get("sub_agents", [])
 
@@ -182,7 +183,7 @@ def _extract_sub_agents(content: Dict[str, Any]) -> list:
   return extracted
 
 
-def _extract_tools(content: Dict[str, Any]) -> list:
+def _extract_tools(content: Dict[str, Any]) -> List[Any]:
   """Extract tool information from configuration."""
   tools = content.get("tools", [])
 

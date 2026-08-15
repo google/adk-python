@@ -14,26 +14,16 @@
 
 from __future__ import annotations
 
-from typing import List
+import warnings
 
-from pydantic import BaseModel
+from google.adk.tools.environment_simulation.tool_connection_map import StatefulParameter
+from google.adk.tools.environment_simulation.tool_connection_map import ToolConnectionMap
 
+warnings.warn(
+    "google.adk.tools.agent_simulator.tool_connection_map is moved to"
+    " google.adk.tools.environment_simulation.tool_connection_map",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
-class StatefulParameter(BaseModel):
-  """Represents a stateful parameter and its connections."""
-
-  parameter_name: str
-  """The name of the shared parameter (e.g., "ticket_id")."""
-
-  creating_tools: List[str]
-  """A list of tools that generate this parameter."""
-
-  consuming_tools: List[str]
-  """A list of tools that use this parameter as input."""
-
-
-class ToolConnectionMap(BaseModel):
-  """Represents the map of tool connections."""
-
-  stateful_parameters: List[StatefulParameter]
-  """A list of stateful parameters and their connections."""
+__all__ = ["StatefulParameter", "ToolConnectionMap"]

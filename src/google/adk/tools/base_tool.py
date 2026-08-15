@@ -33,13 +33,17 @@ from pydantic import BaseModel
 
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
-from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
 
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from .tool_configs import ToolArgsConfig
+
+# Re-exported for backward compatibility: existing code imports ToolContext
+# from this module and annotates tool methods with base_tool.ToolContext, which
+# ADK resolves at runtime via get_type_hints(), so it must be importable here.
+from .tool_context import ToolContext  # pylint: disable=unused-import
 
 SelfTool = TypeVar("SelfTool", bound="BaseTool")
 
@@ -56,6 +60,27 @@ class BaseTool(ABC):
   """Whether the tool is a long running operation, which typically returns a
   resource id first and finishes the operation later."""
 
+  _defers_response: bool = False
+  """⚠️ Internal — do not set this from external code.
+
+  When True, the auto FunctionResponse build is skipped whenever
+  ``run_async`` returns a falsy value (typically ``None``).  In that
+  case, some other orchestrator (e.g., the LlmAgent wrapper for task
+  delegation, or an external system for webhook-style callbacks)
+  produces the matching FR later in the conversation.
+
+  When ``run_async`` returns a non-falsy value, the FR is built
+  normally — same as for any regular tool.
+
+  Compare with ``is_long_running``, which has the same skip-on-empty
+  semantics but additionally marks the call as long-running on the
+  emitted event (``event.long_running_tool_ids``), affecting A2A
+  conversion, plugin logging, and interrupt tracking.
+
+  Currently set only by ADK-internal tools (e.g. ``_TaskAgentTool``).
+  Not part of the public API and may change without notice.
+  """
+
   custom_metadata: Optional[dict[str, Any]] = None
   """The custom metadata of the BaseTool.
 
@@ -65,6 +90,18 @@ class BaseTool(ABC):
   NOTE: the entire dict must be JSON serializable.
   """
 
+  response_scheduling: Optional[types.FunctionResponseScheduling] = None
+  """Controls when the model reacts to the tool's response (Live API only).
+
+  Applied to the emitted ``FunctionResponse`` for asynchronous function calling:
+    - ``SILENT``: feeds the response back without triggering a model turn.
+    - ``WHEN_IDLE``: defers the reaction until the model is idle.
+    - ``INTERRUPT``: reacts immediately.
+
+  Ignored by models that don't support asynchronous function calling. ``None``
+  preserves the default behavior.
+  """
+
   def __init__(
       self,
       *,
@@ -72,11 +109,14 @@ class BaseTool(ABC):
       description,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
+      response_scheduling: Optional[types.FunctionResponseScheduling] = None,
   ):
     self.name = name
     self.description = description
     self.is_long_running = is_long_running
+    self._defers_response = False
     self.custom_metadata = custom_metadata
+    self.response_scheduling = response_scheduling
 
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool in the form of a FunctionDeclaration.
@@ -127,6 +167,12 @@ class BaseTool(ABC):
     """
     # Use the consolidated logic in LlmRequest.append_tools
     llm_request.append_tools([self])
+
+  async def check_require_confirmation(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> bool:
+    """Returns whether the tool requires confirmation for the given args."""
+    return False
 
   @property
   def _api_variant(self) -> GoogleLLMVariant:

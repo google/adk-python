@@ -18,15 +18,22 @@ import importlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import traceback
+from typing import Any
+from typing import Callable
 from typing import Final
+from typing import Literal
 from typing import Optional
 import warnings
 
 import click
 from packaging.version import parse
+
+from ..version import __version__
+from .utils import _onboarding
 
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
@@ -36,8 +43,25 @@ _AGENT_ENGINE_REQUIREMENT: Final[str] = (
 )
 
 
+def _on_rm_error(func: Callable[..., Any], path: str, exc_info: Any) -> None:
+  """Error handler for shutil.rmtree to handle read-only files on Windows."""
+  os.chmod(path, stat.S_IWRITE)
+  func(path)
+
+
+def _robust_rmtree(path: str) -> None:
+  """Remove a directory tree, handling read-only files on Windows."""
+  if _IS_WINDOWS:
+    if sys.version_info >= (3, 12):
+      shutil.rmtree(path, onexc=lambda fn, p, exc: _on_rm_error(fn, p, None))
+    else:
+      shutil.rmtree(path, onerror=_on_rm_error)
+  else:
+    shutil.rmtree(path)
+
+
 def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
-  """Ensures staged requirements include Agent Engine dependencies."""
+  """Ensures staged requirements include Agent Platform dependencies."""
   if not os.path.exists(requirements_txt_path):
     raise FileNotFoundError(
         f'requirements.txt not found at: {requirements_txt_path}'
@@ -59,7 +83,8 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
   with open(requirements_txt_path, 'a', encoding='utf-8') as f:
     if requirements and not requirements.endswith('\n'):
       f.write('\n')
-    f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
+    f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
+    f.write(f'google-adk[a2a]=={__version__}\n')
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
@@ -75,21 +100,23 @@ USER myuser
 # Set up environment variables - Start
 ENV PATH="/home/myuser/.local/bin:$PATH"
 
-ENV GOOGLE_GENAI_USE_VERTEXAI=1
+ENV GOOGLE_GENAI_USE_ENTERPRISE=1
 ENV GOOGLE_CLOUD_PROJECT={gcp_project_id}
 ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 
 # Set up environment variables - End
 
 # Install ADK - Start
-RUN pip install google-adk=={adk_version}
+RUN pip install "google-adk[a2a]=={adk_version}"
+# Remove dev_server.py to ensure production-safe endpoints only (disabling dev endpoints in production)
+RUN python -c "import os, glob, google.adk.cli as cli; d = os.path.dirname(cli.__file__); [os.remove(f) for f in glob.glob(os.path.join(d, 'dev_server*'))]; [os.remove(f) for f in glob.glob(os.path.join(d, '__pycache__', 'dev_server*'))]" || true
 # Install ADK - End
 
 # Copy agent - Start
 
 # Set permission
 COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
-
+{extra_packages_copy}
 # Copy agent - End
 
 # Install Agent Deps - Start
@@ -98,33 +125,7 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
-"""
-
-_AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
-import os
-import vertexai
-from vertexai.agent_engines import AdkApp
-
-if {is_config_agent}:
-  from google.adk.agents import config_agent_utils
-  config_path = os.path.join(os.path.dirname(__file__), "root_agent.yaml")
-  root_agent = config_agent_utils.from_config(config_path)
-else:
-  from .agent import {adk_app_object}
-
-if {express_mode}: # Whether or not to use Express Mode
-  vertexai.init(api_key=os.environ.get("GOOGLE_API_KEY"))
-else:
-  vertexai.init(
-    project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
-    location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
-  )
-
-adk_app = AdkApp(
-    {adk_app_type}={adk_app_object},
-    enable_tracing={trace_to_cloud_option},
-)
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} {trigger_sources_option} {gemini_enterprise_option}{express_mode_option} "/app/agents"
 """
 
 _AGENT_ENGINE_CLASS_METHODS = [
@@ -168,6 +169,8 @@ _AGENT_ENGINE_CLASS_METHODS = [
                 'user_id': {'type': 'string'},
                 'session_id': {'type': 'string', 'nullable': True},
                 'state': {'type': 'object', 'nullable': True},
+                'ttl': {'type': 'string', 'nullable': True},
+                'expire_time': {'type': 'string', 'nullable': True},
             },
             'required': ['user_id'],
             'type': 'object',
@@ -236,19 +239,24 @@ _AGENT_ENGINE_CLASS_METHODS = [
             'Creates a new session.\n\n        Args:\n            user_id'
             ' (str):\n                Required. The ID of the user.\n          '
             '  session_id (str):\n                Optional. The ID of the'
-            ' session. If not provided, an ID\n                will be be'
+            ' session. If not provided, an ID\n                will be'
             ' generated for the session.\n            state (dict[str, Any]):\n'
             '                Optional. The initial state of the session.\n     '
-            '       **kwargs (dict[str, Any]):\n                Optional.'
-            ' Additional keyword arguments to pass to the\n               '
-            ' session service.\n\n        Returns:\n            Session: The'
-            ' newly created session instance.\n        '
+            '       ttl (str):\n                Optional. The time-to-live for'
+            ' the session.\n            expire_time (str):\n               '
+            ' Optional. The expiration time for the session.\n           '
+            ' **kwargs (dict[str, Any]):\n                Optional. Additional'
+            ' keyword arguments to pass to the\n                session'
+            ' service.\n\n        Returns:\n            Session: The newly'
+            ' created session instance.\n        '
         ),
         'parameters': {
             'properties': {
                 'user_id': {'type': 'string'},
                 'session_id': {'type': 'string', 'nullable': True},
                 'state': {'type': 'object', 'nullable': True},
+                'ttl': {'type': 'string', 'nullable': True},
+                'expire_time': {'type': 'string', 'nullable': True},
             },
             'required': ['user_id'],
             'type': 'object',
@@ -405,6 +413,13 @@ _AGENT_ENGINE_CLASS_METHODS = [
         'api_mode': 'async_stream',
     },
 ]
+
+
+def _resolve_adk_version() -> str:
+  """Returns the default ADK version."""
+  from google.adk.version import __version__
+
+  return __version__
 
 
 def _resolve_project(project_in_option: Optional[str]) -> str:
@@ -595,18 +610,12 @@ def _get_service_option_by_adk_version(
   parsed_version = parse(adk_version)
   options: list[str] = []
 
-  if parsed_version >= parse('1.3.0'):
-    if session_uri:
-      options.append(f'--session_service_uri={session_uri}')
-    if artifact_uri:
-      options.append(f'--artifact_service_uri={artifact_uri}')
-    if memory_uri:
-      options.append(f'--memory_service_uri={memory_uri}')
-  else:
-    if session_uri:
-      options.append(f'--session_db_url={session_uri}')
-    if parsed_version >= parse('1.2.0') and artifact_uri:
-      options.append(f'--artifact_storage_uri={artifact_uri}')
+  if session_uri:
+    options.append(f'--session_service_uri={session_uri}')
+  if artifact_uri:
+    options.append(f'--artifact_service_uri={artifact_uri}')
+  if memory_uri:
+    options.append(f'--memory_service_uri={memory_uri}')
 
   if use_local_storage is not None and parsed_version >= parse(
       _LOCAL_STORAGE_FLAG_MIN_VERSION
@@ -621,6 +630,36 @@ def _get_service_option_by_adk_version(
       ))
 
   return ' '.join(options)
+
+
+def _get_ignore_patterns_func(
+    agent_folder: str,
+) -> Callable[[Any, list[str]], set[str]]:
+  """Returns a shutil.ignore_patterns function with combined patterns from .gitignore, .gcloudignore and .ae_ignore."""
+  patterns = set('.adk/')
+
+  for filename in ['.gitignore', '.gcloudignore', '.ae_ignore']:
+    filepath = os.path.join(agent_folder, filename)
+    if os.path.exists(filepath):
+      click.echo(f'Reading ignore patterns from {filename}...')
+      try:
+        with open(filepath, 'r') as f:
+          for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+              # If it ends with /, remove it for fnmatch compatibility
+              if line.endswith('/'):
+                line = line[:-1]
+              # Strip leading / from root-anchored patterns; shutil.ignore_patterns
+              # matches basenames via fnmatch, so '/venv' would match nothing.
+              if line.startswith('/'):
+                line = line[1:]
+              if line:
+                patterns.add(line)
+      except Exception as e:
+        click.secho(f'Warning: Failed to read {filename}: {e}', fg='yellow')
+
+  return shutil.ignore_patterns(*patterns)
 
 
 def to_cloud_run(
@@ -644,8 +683,10 @@ def to_cloud_run(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
+    trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
-):
+    with_cloud_run_sandbox: bool = False,
+) -> None:
   """Deploys an agent to Google Cloud Run.
 
   `agent_folder` should contain the following files:
@@ -681,6 +722,8 @@ def to_cloud_run(
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
+    with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
+      execution.
   """
   app_name = app_name or os.path.basename(agent_folder)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
@@ -692,13 +735,14 @@ def to_cloud_run(
   # remove temp_folder if exists
   if os.path.exists(temp_folder):
     click.echo('Removing existing files')
-    shutil.rmtree(temp_folder)
+    _robust_rmtree(temp_folder)
 
   try:
     # copy agent source code
     click.echo('Copying agent source code...')
     agent_src_path = os.path.join(temp_folder, 'agents', app_name)
-    shutil.copytree(agent_folder, agent_src_path)
+    ignore_func = _get_ignore_patterns_func(agent_folder)
+    shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = (
         f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
@@ -714,12 +758,15 @@ def to_cloud_run(
         f'--allow_origins={",".join(allow_origins)}' if allow_origins else ''
     )
     a2a_option = '--a2a' if a2a else ''
+    trigger_sources_option = (
+        f'--trigger_sources={trigger_sources}' if trigger_sources else ''
+    )
     dockerfile_content = _DOCKERFILE_TEMPLATE.format(
         gcp_project_id=project,
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,
@@ -734,6 +781,10 @@ def to_cloud_run(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option=a2a_option,
+        trigger_sources_option=trigger_sources_option,
+        gemini_enterprise_option='',
+        express_mode_option='',
+        extra_packages_copy='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -752,13 +803,18 @@ def to_cloud_run(
     adk_managed_args = {'--source', '--project', '--port', '--verbosity'}
     if region:
       adk_managed_args.add('--region')
+    if with_cloud_run_sandbox:
+      adk_managed_args.add('--sandbox-launcher')
 
     # Validate that extra gcloud args don't conflict with ADK-managed args
     _validate_gcloud_extra_args(extra_gcloud_args, adk_managed_args)
 
     # Build the command with extra gcloud args
-    gcloud_cmd = [
-        _GCLOUD_CMD,
+    gcloud_cmd = [_GCLOUD_CMD]
+    if with_cloud_run_sandbox:
+      # --sandbox-launcher is only supported on the beta release track.
+      gcloud_cmd.append('beta')
+    gcloud_cmd += [
         'run',
         'deploy',
         service_name,
@@ -772,6 +828,8 @@ def to_cloud_run(
         '--verbosity',
         log_level.lower() if log_level else verbosity,
     ]
+    if with_cloud_run_sandbox:
+      gcloud_cmd.append('--sandbox-launcher')
 
     # Handle labels specially - merge user labels with ADK label
     user_labels = []
@@ -799,14 +857,41 @@ def to_cloud_run(
     subprocess.run(gcloud_cmd, check=True)
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
-    shutil.rmtree(temp_folder)
+    _robust_rmtree(temp_folder)
+
+
+def _print_agent_engine_url(resource_name: str) -> None:
+  """Prints the Google Cloud Console URL for the deployed agent."""
+  parts = resource_name.split('/')
+  if len(parts) >= 6 and parts[0] == 'projects' and parts[2] == 'locations':
+    project_id = parts[1]
+    region = parts[3]
+    engine_id = parts[5]
+
+    url = (
+        'https://console.cloud.google.com/vertex-ai/agents/agent-engines'
+        f'/locations/{region}/agent-engines/{engine_id}/playground'
+        f'?project={project_id}'
+    )
+    click.secho(
+        f'\n🎉 View your deployed agent here:\n{url}\n', fg='cyan', bold=True
+    )
+
+
+def _print_gemini_enterprise_hint() -> None:
+  """Prints a pointer to the Gemini Enterprise registration docs."""
+  click.secho(
+      'To make this agent available in Gemini Enterprise, register it by'
+      ' following:\nhttps://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent\n',
+      fg='cyan',
+  )
 
 
 def to_agent_engine(
     *,
     agent_folder: str,
     temp_folder: Optional[str] = None,
-    adk_app: str,
+    adk_app: Optional[str] = None,
     staging_bucket: Optional[str] = None,
     trace_to_cloud: Optional[bool] = None,
     otel_to_cloud: Optional[bool] = None,
@@ -822,84 +907,96 @@ def to_agent_engine(
     env_file: Optional[str] = None,
     agent_engine_config_file: Optional[str] = None,
     skip_agent_import_validation: bool = True,
-):
-  """Deploys an agent to Vertex AI Agent Engine.
+    trigger_sources: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    adk_version: Optional[str] = None,
+    extra_packages: Optional[list[str]] = None,
+) -> None:
+  """Deploys an agent to Gemini Enterprise Agent Platform.
 
   `agent_folder` should contain the following files:
 
   - __init__.py
   - agent.py
-  - <adk_app>.py (optional, for customization; will be autogenerated otherwise)
   - requirements.txt (optional, for additional dependencies)
   - .env (optional, for environment variables)
   - ... (other required source files)
 
-  The contents of `adk_app` should look something like:
-
-  ```
-  from agent import <adk_app_object>
-  from vertexai.agent_engines import AdkApp
-
-  adk_app = AdkApp(
-    agent=<adk_app_object>,  # or `app=<adk_app_object>`
-  )
-  ```
-
   Args:
     agent_folder (str): The folder (absolute path) containing the agent source
       code.
-    temp_folder (str): The temp folder for the generated Agent Engine source
+    temp_folder (str): The temp folder for the generated Agent Platform source
       files. It will be replaced with the generated files if it already exists.
-    adk_app (str): The name of the file (without .py) containing the AdkApp
-      instance.
+    adk_app (str): Deprecated. This argument is no longer required or used.
     staging_bucket (str): Deprecated. This argument is no longer required or
       used.
-    trace_to_cloud (bool): Whether to enable Cloud Trace.
-    otel_to_cloud (bool): Whether to enable exporting OpenTelemetry signals
-      to Google Cloud.
-    api_key (str): Optional. The API key to use for Express Mode.
-      If not provided, the API key from the GOOGLE_API_KEY environment variable
-      will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
-    adk_app_object (str): Optional. The Python object corresponding to the root
-      ADK agent or app. Defaults to `root_agent` if not specified.
-    agent_engine_id (str): Optional. The ID of the Agent Engine instance to
-      update. If not specified, a new Agent Engine instance will be created.
-    absolutize_imports (bool): Optional. Default is True. Whether to absolutize
-      imports. If True, all relative imports will be converted to absolute
-      import statements.
+    trace_to_cloud (bool): Deprecated. This argument is no longer required or
+      used.
+    otel_to_cloud (bool): Whether to enable exporting OpenTelemetry signals to
+      Google Cloud.
+    api_key (str): Optional. The API key to use for Express Mode. If not
+      provided, the API key from the GOOGLE_API_KEY environment variable will be
+      used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true.
+    adk_app_object (str): Deprecated. This argument is no longer required or
+      used.
+    agent_engine_id (str): Optional. The ID of the Agent Runtime instance to
+      update. If not specified, a new Agent Runtime instance will be created.
+    absolutize_imports (bool): Deprecated. This argument is no longer required
+      or used.
     project (str): Optional. Google Cloud project id for the deployed agent. If
       not specified, the project from the `GOOGLE_CLOUD_PROJECT` environment
       variable will be used. It will be ignored if `api_key` is specified.
     region (str): Optional. Google Cloud region for the deployed agent. If not
       specified, the region from the `GOOGLE_CLOUD_LOCATION` environment
       variable will be used. It will be ignored if `api_key` is specified.
-    display_name (str): Optional. The display name of the Agent Engine.
-    description (str): Optional. The description of the Agent Engine.
-    requirements_file (str): Optional. The filepath to the `requirements.txt`
-      file to use. If not specified, the `requirements.txt` file in the
-      `agent_folder` will be used.
+    display_name (str): Optional. The display name of the Agent Runtime.
+    description (str): Optional. The description of the Agent Runtime.
+    requirements_file (str): Deprecated. This argument is no longer required or
+      used.
     env_file (str): Optional. The filepath to the `.env` file for environment
       variables. If not specified, the `.env` file in the `agent_folder` will be
       used. The values of `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`
       will be overridden by `project` and `region` if they are specified.
-    agent_engine_config_file (str): The filepath to the agent engine config file
-      to use. If not specified, the `.agent_engine_config.json` file in the
+    agent_engine_config_file (str): The filepath to the agent platform config
+      file to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
-    skip_agent_import_validation (bool): Optional. Default is True. If True,
-      skip the pre-deployment import validation of `agent.py`. This can be
-      useful when the local environment does not have the same dependencies as
-      the deployment environment.
+    skip_agent_import_validation (bool): Deprecated. This argument is no longer
+      required or used.
+    trigger_sources (str): Optional. Comma-separated list of trigger sources to
+      enable (e.g., 'pubsub,eventarc'). Registers /trigger/* endpoints for batch
+      and event-driven agent invocations.
+    memory_service_uri (str): Optional. The URI of the memory service. If not
+      specified, the memory service will be deployed to the same parent resource
+      as the runtime.
+    session_service_uri (str): Optional. The URI of the session service. If not
+      specified, the session service will be deployed to the same parent
+      resource as the runtime.
+    artifact_service_uri (str): Optional. The URI of the artifact service.
+    adk_version (str): Optional. The ADK version to use in Agent Platform
+      deployment. If not specified, the version in the dev environment will be
+      used.
+    extra_packages (list[str]): Optional. Additional local file or directory
+      paths to stage alongside the agent and make importable in the image.
   """
   app_name = os.path.basename(agent_folder)
   display_name = display_name or app_name
   parent_folder = os.path.dirname(agent_folder)
-  adk_app_object = adk_app_object or 'root_agent'
-  if adk_app_object not in ['root_agent', 'app']:
-    click.echo(
-        f'Invalid adk_app_object: {adk_app_object}. Please use "root_agent"'
-        ' or "app".'
+  if adk_app_object:
+    warnings.warn(
+        'WARNING: `--adk_app_object` is deprecated and will be removed in the'
+        ' future. Please drop it from the list of arguments.',
+        DeprecationWarning,
+        stacklevel=2,
     )
-    return
+  if adk_app:
+    warnings.warn(
+        'WARNING: `adk_app` is deprecated and will be removed in a future'
+        ' release. Please drop it from the list of arguments.',
+        DeprecationWarning,
+        stacklevel=2,
+    )
   if staging_bucket:
     warnings.warn(
         'WARNING: `staging_bucket` is deprecated and will be removed in a'
@@ -907,93 +1004,126 @@ def to_agent_engine(
         DeprecationWarning,
         stacklevel=2,
     )
+  if not adk_version:
+    adk_version = _resolve_adk_version()
+    click.echo(f'Using default ADK version: {adk_version}')
 
   original_cwd = os.getcwd()
+  agent_folder_abs = os.path.abspath(agent_folder)
   did_change_cwd = False
   if parent_folder != original_cwd:
     click.echo(
-        'Agent Engine deployment uses relative paths; temporarily switching '
+        'Agent Runtime deployment uses relative paths; temporarily switching '
         f'working directory to: {parent_folder}'
     )
     os.chdir(parent_folder)
     did_change_cwd = True
   tmp_app_name = app_name + '_tmp' + datetime.now().strftime('%Y%m%d_%H%M%S')
   temp_folder = temp_folder or tmp_app_name
-  agent_src_path = os.path.join(parent_folder, temp_folder)
-  click.echo(f'Staging all files in: {agent_src_path}')
-  # remove agent_src_path if it exists
-  if os.path.exists(agent_src_path):
+  agent_src_path = os.path.join(parent_folder, temp_folder, 'agents', app_name)
+  temp_folder_path = os.path.join(parent_folder, temp_folder)
+  if os.path.exists(temp_folder_path):
     click.echo('Removing existing files')
-    shutil.rmtree(agent_src_path)
+    _robust_rmtree(temp_folder_path)
 
   try:
-    click.echo(f'Staging all files in: {agent_src_path}')
-    ignore_patterns = None
-    ae_ignore_path = os.path.join(agent_folder, '.ae_ignore')
-    if os.path.exists(ae_ignore_path):
-      click.echo(f'Ignoring files matching the patterns in {ae_ignore_path}')
-      with open(ae_ignore_path, 'r') as f:
-        patterns = [pattern.strip() for pattern in f.readlines()]
-        ignore_patterns = shutil.ignore_patterns(*patterns)
+    ignore_func = _get_ignore_patterns_func(agent_folder)
     click.echo('Copying agent source code...')
     shutil.copytree(
         agent_folder,
         agent_src_path,
-        ignore=ignore_patterns,
+        ignore=ignore_func,
         dirs_exist_ok=True,
     )
+    os.chdir(temp_folder_path)
     click.echo('Copying agent source code complete.')
 
     project = _resolve_project(project)
 
     click.echo('Resolving files and dependencies...')
     agent_config = {}
+    if agent_engine_config_file and not os.path.exists(
+        agent_engine_config_file
+    ):
+      raise click.ClickException(
+          'Agent Platform config file not found: '
+          f'{parent_folder}/{agent_engine_config_file}'
+      )
     if not agent_engine_config_file:
-      # Attempt to read the agent engine config from .agent_engine_config.json in the dir (if any).
+      # Attempt to read the agent platform config from .agent_engine_config.json
+      # in the dir (if any).
       agent_engine_config_file = os.path.join(
           agent_folder, '.agent_engine_config.json'
       )
     if os.path.exists(agent_engine_config_file):
-      click.echo(f'Reading agent engine config from {agent_engine_config_file}')
+      click.echo(
+          f'Reading agent platform config from {agent_engine_config_file}'
+      )
       with open(agent_engine_config_file, 'r') as f:
         agent_config = json.load(f)
     if display_name:
       if 'display_name' in agent_config:
         click.echo(
-            'Overriding display_name in agent engine config with'
+            'Overriding display_name in agent platform config with'
             f' {display_name}'
         )
       agent_config['display_name'] = display_name
     if description:
       if 'description' in agent_config:
         click.echo(
-            f'Overriding description in agent engine config with {description}'
+            'Overriding description in agent platform config with'
+            f' {description}'
         )
       agent_config['description'] = description
 
+    config_extra_packages = agent_config.pop('extra_packages', None) or []
+    # CLI entries resolve against the invocation dir; config-file entries
+    # against the agent folder that declared them.
+    requested_extra_packages = [
+        (pkg, original_cwd) for pkg in extra_packages or []
+    ] + [(pkg, agent_folder_abs) for pkg in config_extra_packages]
+    staged_extra_packages = []
+    for pkg, base_dir in requested_extra_packages:
+      pkg_src = pkg if os.path.isabs(pkg) else os.path.join(base_dir, pkg)
+      pkg_src = os.path.abspath(pkg_src)
+      if not os.path.exists(pkg_src):
+        raise click.ClickException(f'extra_packages path not found: {pkg}')
+      base = os.path.basename(os.path.normpath(pkg_src))
+      dst = os.path.join(temp_folder_path, base)
+      # The Dockerfile is written after this loop, so it is not on disk yet.
+      if os.path.exists(dst) or base == 'Dockerfile':
+        raise click.ClickException(
+            f'extra_packages entry has a conflicting name: {base}'
+        )
+      if os.path.isdir(pkg_src):
+        shutil.copytree(pkg_src, dst, dirs_exist_ok=True)
+      else:
+        shutil.copy2(pkg_src, dst)
+      staged_extra_packages.append(base)
+
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     if requirements_file:
-      if os.path.exists(requirements_txt_path):
-        click.echo(
-            f'Overwriting {requirements_txt_path} with {requirements_file}'
-        )
-      shutil.copyfile(requirements_file, requirements_txt_path)
-    elif 'requirements_file' in agent_config:
-      if os.path.exists(requirements_txt_path):
-        click.echo(
-            f'Overwriting {requirements_txt_path} with'
-            f' {agent_config["requirements_file"]}'
-        )
-      shutil.copyfile(agent_config['requirements_file'], requirements_txt_path)
-    else:
-      # Attempt to read requirements from requirements.txt in the dir (if any).
-      if not os.path.exists(requirements_txt_path):
-        click.echo(f'Creating {requirements_txt_path}...')
-        with open(requirements_txt_path, 'w', encoding='utf-8') as f:
-          f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
-        click.echo(f'Created {requirements_txt_path}')
+      warnings.warn(
+          'WARNING: `--requirements_file` is deprecated and will be removed in'
+          ' the future. Please define `requirements.txt` in the agent folder.',
+          DeprecationWarning,
+          stacklevel=2,
+      )
+    if trace_to_cloud:
+      warnings.warn(
+          'WARNING: `--trace_to_cloud` is deprecated and will be removed in the'
+          ' future. Please use `--otel_to_cloud` instead.',
+          DeprecationWarning,
+          stacklevel=2,
+      )
+    if not os.path.exists(requirements_txt_path):
+      click.echo(f'Creating {requirements_txt_path}...')
+      with open(requirements_txt_path, 'w', encoding='utf-8') as f:
+        f.write(f'{_AGENT_ENGINE_REQUIREMENT}\n')
+        f.write(f'google-adk[a2a]=={__version__}\n')
+        click.echo(f'Using google-adk[a2a]=={__version__} in requirements')
+      click.echo(f'Created {requirements_txt_path}')
     _ensure_agent_engine_dependency(requirements_txt_path)
-    agent_config['requirements_file'] = f'{temp_folder}/requirements.txt'
 
     env_vars = {}
     if not env_file:
@@ -1036,7 +1166,7 @@ def to_agent_engine(
             fg='yellow',
         )
       else:
-        env_vars['GOOGLE_GENAI_USE_VERTEXAI'] = '1'
+        env_vars['GOOGLE_GENAI_USE_ENTERPRISE'] = '1'
         env_vars['GOOGLE_API_KEY'] = api_key
     elif not project:
       if 'GOOGLE_API_KEY' in env_vars:
@@ -1050,10 +1180,22 @@ def to_agent_engine(
             fg='yellow',
         )
       env_vars['GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY'] = 'true'
+      if 'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS' not in env_vars:
+        env_vars['ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'] = 'false'
+    else:
+      enable_telemetry = env_vars.get(
+          'GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY',
+      )
+      if enable_telemetry in ['true', '1']:
+        otel_to_cloud = True
+        click.echo(
+            '`--otel_to_cloud` is set to True by'
+            f' GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY in {env_file}'
+        )
     if env_vars:
       if 'env_vars' in agent_config:
         click.echo(
-            f'Overriding env_vars in agent engine config with {env_vars}'
+            f'Overriding env_vars in agent platform config with {env_vars}'
         )
       agent_config['env_vars'] = env_vars
     # Set env_vars in agent_config to None if it is not set.
@@ -1061,84 +1203,140 @@ def to_agent_engine(
 
     import vertexai
 
+    from ..utils._google_client_headers import get_tracking_headers
+
+    if not (api_key or project or region):
+      click.echo(
+          'No api_key/project/region provided. Starting onboarding flow...'
+      )
+      auth_info = _onboarding.handle_login_with_google()
+      project = auth_info.project_id
+      region = auth_info.region
+
+    click.echo('Initializing Agent Platform client...')
     if project and region:
-      click.echo('Initializing Vertex AI...')
-      client = vertexai.Client(project=project, location=region)
+      client = vertexai.Client(
+          project=project,
+          location=region,
+          http_options={'headers': get_tracking_headers()},
+      )
+      click.echo('Agent Platform client initialized with project and region.')
     elif api_key:
-      click.echo('Initializing Vertex AI in Express Mode with API key...')
-      client = vertexai.Client(api_key=api_key)
+      client = vertexai.Client(
+          api_key=api_key,
+          http_options={'headers': get_tracking_headers()},
+      )
+      click.echo('Agent Platform client initialized with ExpressMode API Key.')
     else:
       click.echo(
-          'No project/region or api_key provided. '
-          'Please specify either project/region or api_key.'
+          'Failed to initialize Agent Platform client. Please provide an API'
+          'key or project and region.'
       )
       return
-    click.echo('Vertex AI initialized.')
 
-    is_config_agent = False
-    config_root_agent_file = os.path.join(agent_src_path, 'root_agent.yaml')
-    if os.path.exists(config_root_agent_file):
-      click.echo(f'Config agent detected: {config_root_agent_file}')
-      is_config_agent = True
-
-    # Validate that the agent module can be imported before deployment.
-    if not skip_agent_import_validation:
-      click.echo('Validating agent module...')
-      _validate_agent_import(agent_src_path, adk_app_object, is_config_agent)
-
-    adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
-    if adk_app_object == 'root_agent':
-      adk_app_type = 'agent'
-    elif adk_app_object == 'app':
-      adk_app_type = 'app'
-    else:
-      click.echo(
-          f'Invalid adk_app_object: {adk_app_object}. Please use "root_agent"'
-          ' or "app".'
+    if skip_agent_import_validation:
+      warnings.warn(
+          'WARNING: `--skip-agent-import-validation` is deprecated and will be'
+          ' removed in the future. Please drop it from the list of arguments.',
+          DeprecationWarning,
+          stacklevel=2,
       )
-      return
-    with open(adk_app_file, 'w', encoding='utf-8') as f:
-      f.write(
-          _AGENT_ENGINE_APP_TEMPLATE.format(
-              app_name=app_name,
-              trace_to_cloud_option=trace_to_cloud,
-              is_config_agent=is_config_agent,
-              agent_folder=f'./{temp_folder}',
-              adk_app_object=adk_app_object,
-              adk_app_type=adk_app_type,
-              express_mode=api_key is not None,
-          )
+
+    def create_dockerfile_for_agent_engine(resource_name: str) -> None:
+      requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
+      install_agent_deps = (
+          f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
+          if os.path.exists(requirements_txt_path)
+          else '# No requirements.txt found.'
       )
-    click.echo(f'Created {adk_app_file}')
-    click.echo('Files and dependencies resolved')
+      trigger_sources_option = (
+          f'--trigger_sources={trigger_sources}' if trigger_sources else ''
+      )
+      extra_packages_copy = ''
+      if staged_extra_packages:
+        copy_lines = [
+            f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
+            if os.path.isdir(os.path.join(temp_folder_path, base))
+            else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
+            for base in staged_extra_packages
+        ]
+        copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+        extra_packages_copy = '\n'.join(copy_lines)
+      agent_engine_uri = f'agentengine://{resource_name}'
+      dockerfile_content = _DOCKERFILE_TEMPLATE.format(
+          gcp_project_id=project,
+          gcp_region=region,
+          app_name=app_name,
+          port=8080,
+          command='api_server',
+          install_agent_deps=install_agent_deps,
+          service_option=_get_service_option_by_adk_version(
+              adk_version,
+              session_service_uri or agent_engine_uri,
+              artifact_service_uri,
+              memory_service_uri or agent_engine_uri,
+              False,  # use_local_storage
+          ),
+          trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+          otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
+          allow_origins_option='',  # Not supported for now.
+          adk_version=adk_version,
+          host_option='--host=0.0.0.0',
+          a2a_option='--a2a',
+          trigger_sources_option=trigger_sources_option,
+          gemini_enterprise_option=f'--gemini_enterprise_app_name={app_name}',
+          express_mode_option=(
+              ' --express_mode' if api_key and not project else ''
+          ),
+          extra_packages_copy=extra_packages_copy,
+      )
+      with open('Dockerfile', 'w', encoding='utf-8') as f:
+        f.write(dockerfile_content)
+
     if absolutize_imports:
-      click.echo(
-          'Agent Engine deployments have switched to source-based deployment, '
-          'so it is no longer necessary to absolutize imports.'
+      warnings.warn(
+          'WARNING: `--absolutize_imports` is deprecated and will be removed'
+          ' in the future. Please drop it from the list of arguments.',
+          DeprecationWarning,
+          stacklevel=2,
       )
-    click.echo('Deploying to agent engine...')
-    agent_config['entrypoint_module'] = f'{temp_folder}.{adk_app}'
-    agent_config['entrypoint_object'] = 'adk_app'
-    agent_config['source_packages'] = [temp_folder]
+    click.echo('Deploying to Agent Platform...')
+    agent_config['source_packages'] = [
+        f'agents/{app_name}',
+        'Dockerfile',
+        *staged_extra_packages,
+    ]
+    agent_config['image_spec'] = {}  # Use the Dockerfile
     agent_config['class_methods'] = _AGENT_ENGINE_CLASS_METHODS
     agent_config['agent_framework'] = 'google-adk'
 
-    if not agent_engine_id:
-      agent_engine = client.agent_engines.create(config=agent_config)
-      click.secho(
-          f'✅ Created agent engine: {agent_engine.api_resource.name}',
-          fg='green',
-      )
-    else:
-      if project and region and not agent_engine_id.startswith('projects/'):
-        agent_engine_id = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
-      client.agent_engines.update(name=agent_engine_id, config=agent_config)
-      click.secho(f'✅ Updated agent engine: {agent_engine_id}', fg='green')
+    resource_name = agent_engine_id
+    if not resource_name:
+      agent_engine = client.agent_engines.create()
+      resource_name = agent_engine.api_resource.name
+      click.secho(f'Created a new instance: {resource_name}', fg='green')
+    elif project and region and not resource_name.startswith('projects/'):
+      resource_name = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
+    click.echo('Creating Dockerfile...')
+    create_dockerfile_for_agent_engine(resource_name)
+    click.echo(f'Dockerfile created at {os.getcwd()}/Dockerfile.')
+    try:
+      client.agent_engines.update(name=resource_name, config=agent_config)
+      click.secho(f'Deployed to Agent Platform: {resource_name}', fg='green')
+    except Exception as e:
+      click.secho(f'Failed to deploy to Agent Platform: {e}', fg='red')
+      # Only delete the instance if it was newly created in this function.
+      if agent_engine_id is None:
+        client.agent_engines.delete(name=resource_name)
+        click.secho(f'Cleaned up the instance: {resource_name}', fg='green')
+      raise e
+    _print_agent_engine_url(resource_name)
+    _print_gemini_enterprise_hint()
   finally:
-    click.echo(f'Cleaning up the temp folder: {temp_folder}')
-    shutil.rmtree(agent_src_path)
-    if did_change_cwd:
-      os.chdir(original_cwd)
+    temp_folder_path = os.path.join(parent_folder, temp_folder)
+    click.echo(f'Cleaning up the temp folder: {temp_folder_path}')
+    os.chdir(original_cwd)
+    _robust_rmtree(temp_folder_path)
 
 
 def to_gke(
@@ -1162,7 +1360,11 @@ def to_gke(
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
     a2a: bool = False,
-):
+    trigger_sources: Optional[str] = None,
+    service_type: Literal[
+        'ClusterIP', 'NodePort', 'LoadBalancer'
+    ] = 'ClusterIP',
+) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
   Args:
@@ -1189,6 +1391,7 @@ def to_gke(
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
+    service_type: The Kubernetes Service type (default: ClusterIP).
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -1212,13 +1415,14 @@ def to_gke(
   # remove temp_folder if exists
   if os.path.exists(temp_folder):
     click.echo('  - Removing existing temporary directory...')
-    shutil.rmtree(temp_folder)
+    _robust_rmtree(temp_folder)
 
   try:
     # copy agent source code
     click.echo('  - Copying agent source code...')
     agent_src_path = os.path.join(temp_folder, 'agents', app_name)
-    shutil.copytree(agent_folder, agent_src_path)
+    ignore_func = _get_ignore_patterns_func(agent_folder)
+    shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = (
         f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
@@ -1240,7 +1444,7 @@ def to_gke(
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,
@@ -1255,6 +1459,12 @@ def to_gke(
         adk_version=adk_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',
+        trigger_sources_option=(
+            f'--trigger_sources={trigger_sources}' if trigger_sources else ''
+        ),
+        gemini_enterprise_option='',
+        express_mode_option='',
+        extra_packages_copy='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -1276,7 +1486,7 @@ def to_gke(
     image_name = f'gcr.io/{project}/{service_name}'
     subprocess.run(
         [
-            'gcloud',
+            _GCLOUD_CMD,
             'builds',
             'submit',
             '--tag',
@@ -1326,7 +1536,7 @@ kind: Service
 metadata:
   name: {service_name}
 spec:
-  type: LoadBalancer
+  type: {service_type}
   selector:
     app: {service_name}
   ports:
@@ -1346,7 +1556,7 @@ spec:
     click.echo('  - Getting cluster credentials...')
     subprocess.run(
         [
-            'gcloud',
+            _GCLOUD_CMD,
             'container',
             'clusters',
             'get-credentials',
@@ -1376,7 +1586,15 @@ spec:
   finally:
     click.secho('\nSTEP 5: Cleaning up...', bold=True)
     click.echo(f'  - Removing temporary directory: {temp_folder}')
-    shutil.rmtree(temp_folder)
+    _robust_rmtree(temp_folder)
   click.secho(
       '\n🎉 Deployment to GKE finished successfully!', fg='cyan', bold=True
   )
+  if service_type == 'ClusterIP':
+    click.echo(
+        '\nThe service is only reachable from within the cluster.'
+        ' To access it locally, run:'
+        f'\n  kubectl port-forward svc/{service_name} {port}:{port}'
+        '\n\nTo expose the service externally, add a Gateway or'
+        ' re-deploy with --service_type=LoadBalancer.'
+    )

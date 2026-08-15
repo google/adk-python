@@ -37,8 +37,8 @@ class LlmRecording(BaseModel):
   llm_request: Optional[LlmRequest] = None
   """Required. The LLM request."""
 
-  llm_response: Optional[LlmResponse] = None
-  """Required. The LLM response."""
+  llm_responses: Optional[list[LlmResponse]] = None
+  """Required. The list of LLM responses."""
 
 
 class ToolRecording(BaseModel):

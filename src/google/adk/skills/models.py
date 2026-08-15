@@ -16,31 +16,120 @@
 
 from __future__ import annotations
 
+import re
+from typing import Any
 from typing import Optional
+import unicodedata
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import Field
+from pydantic import field_validator
+
+from ..features import FeatureName
+from ..features import is_feature_enabled
+
+_KEBAB_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_SNAKE_OR_KEBAB_NAME_PATTERN = re.compile(
+    r"^([a-z0-9]+(-[a-z0-9]+)*|[a-z0-9]+(_[a-z0-9]+)*)$"
+)
 
 
 class Frontmatter(BaseModel):
-  """L1 skill content: metadata parsed from SKILL.md frontmatter for skill discovery.
+  """L1 skill content: metadata parsed from SKILL.md for skill discovery.
 
   Attributes:
-      name: Skill name in kebab-case (required).
+      name: Skill name in kebab-case or snake_case (required).
       description: What the skill does and when the model should use it
         (required).
       license: License for the skill (optional).
       compatibility: Compatibility information for the skill (optional).
-      allowed_tools: Tool patterns the skill requires (optional, experimental).
+      allowed_tools: A space-delimited list of tools that are pre-approved to
+        run (optional, experimental). Accepts both ``allowed_tools`` and the
+        YAML-friendly ``allowed-tools`` key. For more details, see
+        https://agentskills.io/specification#allowed-tools-field.
       metadata: Key-value pairs for client-specific properties (defaults to
-        empty dict).
+        empty dict). For example, to include additional tools, use the
+        ``adk_additional_tools`` key with a list of tools. Set
+        ``adk_inject_state: true`` to enable ``{var}`` interpolation in the
+        SKILL.md body when the skill is loaded via ``load_skill`` (same syntax
+        as ``LlmAgent.instruction``). Each ``{var}`` is replaced with the
+        matching value read from the invocation's session state; use ``{var?}``
+        to substitute an empty string when the key is absent (instead of
+        raising), and ``{artifact.name}`` to inject artifact contents.
   """
+
+  model_config = ConfigDict(
+      extra="allow",
+      populate_by_name=True,
+  )
 
   name: str
   description: str
   license: Optional[str] = None
   compatibility: Optional[str] = None
-  allowed_tools: Optional[str] = None
-  metadata: dict[str, str] = {}
+  allowed_tools: Optional[str] = Field(
+      default=None,
+      alias="allowed-tools",
+      serialization_alias="allowed-tools",
+  )
+  metadata: dict[str, Any] = {}
+
+  @field_validator("metadata")
+  @classmethod
+  def _validate_metadata(cls, v: dict[str, Any]) -> dict[str, Any]:
+    if "adk_additional_tools" in v:
+      tools = v["adk_additional_tools"]
+      if not isinstance(tools, list):
+        raise ValueError("adk_additional_tools must be a list of strings")
+    if "adk_inject_state" in v and not isinstance(v["adk_inject_state"], bool):
+      raise ValueError("adk_inject_state must be a bool")
+    return v
+
+  @field_validator("name")
+  @classmethod
+  def _validate_name(cls, v: str) -> str:
+    v = unicodedata.normalize("NFKC", v)
+    if len(v) > 64:
+      raise ValueError("name must be at most 64 characters")
+    if is_feature_enabled(FeatureName.SNAKE_CASE_SKILL_NAME):
+      pattern = _SNAKE_OR_KEBAB_NAME_PATTERN
+      msg = (
+          "name must be lowercase kebab-case (a-z, 0-9, hyphens) or"
+          " snake_case (a-z, 0-9, underscores), with no leading, trailing,"
+          " or consecutive delimiters. Mixing hyphens and underscores is"
+          " not allowed."
+      )
+    else:
+      pattern = _KEBAB_NAME_PATTERN
+      msg = (
+          "name must be lowercase kebab-case (a-z, 0-9,"
+          " hyphens), with no leading, trailing, or"
+          " consecutive delimiters"
+      )
+    if not pattern.match(v):
+      raise ValueError(msg)
+    return v
+
+  @field_validator("description")
+  @classmethod
+  def _validate_description(cls, v: str) -> str:
+    if not v:
+      raise ValueError("description must not be empty")
+    description_len = len(v)
+    if description_len > 1024:
+      raise ValueError(
+          "description must be at most 1024 characters. Description length:"
+          f" {description_len}"
+      )
+    return v
+
+  @field_validator("compatibility")
+  @classmethod
+  def _validate_compatibility(cls, v: Optional[str]) -> Optional[str]:
+    if v is not None and len(v) > 500:
+      raise ValueError("compatibility must be at most 500 characters")
+    return v
 
 
 class Script(BaseModel):
@@ -58,7 +147,7 @@ class Script(BaseModel):
 
 
 class Resources(BaseModel):
-  """L3 skill content: additional instructions, assets, and scripts, loaded as needed.
+  """L3 skill content: additional instructions, assets, and scripts.
 
   Attributes:
       references: Additional markdown files with instructions, workflows, or
@@ -68,29 +157,29 @@ class Resources(BaseModel):
       scripts: Executable scripts that can be run via bash.
   """
 
-  references: dict[str, str] = {}
-  assets: dict[str, str] = {}
+  references: dict[str, str | bytes] = {}
+  assets: dict[str, str | bytes] = {}
   scripts: dict[str, Script] = {}
 
-  def get_reference(self, reference_id: str) -> Optional[str]:
+  def get_reference(self, reference_id: str) -> Optional[str | bytes]:
     """Get content of a reference file.
 
     Args:
         reference_id: Unique path or name of the reference file.
 
     Returns:
-        Reference content as string, or None if not found
+        Reference content as string or bytes, or None if not found
     """
     return self.references.get(reference_id)
 
-  def get_asset(self, asset_id: str) -> Optional[str]:
+  def get_asset(self, asset_id: str) -> Optional[str | bytes]:
     """Get content of an asset file.
 
     Args:
         asset_id: Unique path or name of the asset file.
 
     Returns:
-        Asset content as string, or None if not found
+        Asset content as string or bytes, or None if not found
     """
     return self.assets.get(asset_id)
 
@@ -136,6 +225,11 @@ class Skill(BaseModel):
   frontmatter: Frontmatter
   instructions: str
   resources: Resources = Resources()
+
+  _uri: Optional[str] = None
+  """Location the skill was loaded from, used for telemetry.
+  Should be compliant with RFC 3986.
+  """
 
   @property
   def name(self) -> str:

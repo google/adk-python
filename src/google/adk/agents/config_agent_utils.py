@@ -17,12 +17,15 @@ from __future__ import annotations
 import importlib
 import inspect
 import os
+import sys
 from typing import Any
 from typing import List
 
+from typing_extensions import deprecated
 import yaml
 
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 from .agent_config import AgentConfig
 from .base_agent import BaseAgent
 from .base_agent_config import BaseAgentConfig
@@ -30,12 +33,13 @@ from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
 
 
-@experimental
+@deprecated("from_config is deprecated and will be removed in future versions.")
+@experimental(FeatureName.AGENT_CONFIG)
 def from_config(config_path: str) -> BaseAgent:
   """Build agent from a configfile path.
 
   Args:
-    config: the path to a YAML config file.
+    config_path: the path to a YAML config file.
 
   Returns:
     The created agent instance.
@@ -79,12 +83,37 @@ def _resolve_agent_class(agent_class: str) -> type[BaseAgent]:
   )
 
 
+_BLOCKED_YAML_KEYS = frozenset({"args"})
+_ENFORCE_YAML_KEY_DENYLIST = False
+
+
+def _set_enforce_yaml_key_denylist(value: bool) -> None:
+  global _ENFORCE_YAML_KEY_DENYLIST
+  _ENFORCE_YAML_KEY_DENYLIST = value
+
+
+def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
+  """Recursively check if the configuration contains any blocked keys."""
+  if isinstance(node, dict):
+    for key, value in node.items():
+      if key in _BLOCKED_YAML_KEYS:
+        raise ValueError(
+            f"Blocked key {key!r} found in {filename!r}. "
+            f"The '{key}' field is not allowed in agent configurations "
+            "because it can execute arbitrary code."
+        )
+      _check_config_for_blocked_keys(value, filename)
+  elif isinstance(node, list):
+    for item in node:
+      _check_config_for_blocked_keys(item, filename)
+
+
 def _load_config_from_path(config_path: str) -> AgentConfig:
   """Load an agent's configuration from a YAML file.
 
   Args:
-    config_path: Path to the YAML config file. Both relative and absolute
-      paths are accepted.
+    config_path: Path to the YAML config file. Both relative and absolute paths
+      are accepted.
 
   Returns:
     The loaded and validated AgentConfig object.
@@ -99,20 +128,139 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   with open(config_path, "r", encoding="utf-8") as f:
     config_data = yaml.safe_load(f)
 
+  if _ENFORCE_YAML_KEY_DENYLIST:
+    _check_config_for_blocked_keys(config_data, config_path)
+
   return AgentConfig.model_validate(config_data)
 
 
-@experimental
+_ENFORCE_DENYLIST = True
+
+# Agent configs never need the standard library: they name the agent's own
+# package, google.adk, or a third-party integration. So block all of it. Listing
+# only the scary modules does not work, because cProfile.run, timeit.timeit and
+# trace.Trace.run all execute a string you hand them, and each Python release
+# can add more.
+_STDLIB_MODULES = frozenset(sys.stdlib_module_names) | frozenset(
+    sys.builtin_module_names  # Redundant on stock CPython, not custom builds.
+)
+
+# Extra names to block. Everything above the LOAD-BEARING line below is already
+# covered by _STDLIB_MODULES and is kept only to spell out the threat model.
+_BLOCKED_MODULES = frozenset({
+    # Process / OS execution
+    "os",
+    "posix",  # Unix alias: posix.system is os.system
+    "nt",  # Windows alias: nt.system is os.system
+    "subprocess",
+    "_posixsubprocess",
+    "sys",
+    "builtins",
+    "importlib",
+    "shutil",
+    "signal",
+    "multiprocessing",
+    "threading",
+    # Dynamic code evaluation
+    "code",
+    "codeop",
+    "compileall",
+    "runpy",
+    # Native / unsafe extensions
+    "ctypes",
+    # Network access
+    "socket",
+    "_socket",
+    "http",
+    "urllib",
+    "ftplib",
+    "smtplib",
+    "poplib",
+    "imaplib",
+    "xmlrpc",
+    "asyncio",
+    # Filesystem / serialisation
+    "tempfile",
+    "pathlib",
+    "shelve",
+    "pickle",
+    "marshal",
+    # Interactive / side-effect modules
+    "webbrowser",
+    "antigravity",
+    "pty",
+    "pdb",
+    "profile",
+    # LOAD-BEARING, keep these. They are not in sys.stdlib_module_names on
+    # every Python we support, so this set is all that blocks them.
+    #
+    # Modules dropped from the standard library that you can still import:
+    # distutils comes back through setuptools' shim and its spawn() runs a
+    # subprocess, and the rest have "standard-*" packages on PyPI. commands is
+    # a Python 2 leftover.
+    "asynchat",
+    "asyncore",
+    "cgi",
+    "commands",
+    "crypt",
+    "distutils",
+    "imp",
+    "mailcap",
+    "nntplib",
+    "pipes",
+    "smtpd",
+    "telnetlib",
+    "uu",
+    # CPython's own test packages, which most installs ship. They can start a
+    # subprocess (test.support.script_helper) and execute source (_testcapi).
+    "_testcapi",
+    "_testinternalcapi",
+    "test",
+})
+
+
+def _validate_module_reference(fully_qualified_name: str) -> None:
+  """Validate that a module reference does not target a blocked module.
+
+  Args:
+    fully_qualified_name: The fully-qualified Python name to validate (e.g.
+      ``"my_package.my_module.my_func"``).
+
+  Raises:
+    ValueError: If the top-level module is part of the Python standard library
+      or is in ``_BLOCKED_MODULES``.
+  """
+  if not _ENFORCE_DENYLIST:
+    return
+  # Extract the top-level package from the fully-qualified name.
+  top_module = fully_qualified_name.split(".")[0]
+  if top_module in _BLOCKED_MODULES or top_module in _STDLIB_MODULES:
+    raise ValueError(
+        f"Blocked module reference: {fully_qualified_name!r}. Agent "
+        f"configurations cannot import from '{top_module}'. The Python "
+        "standard library is blocked in full because too much of it can "
+        "execute arbitrary code. Reference your own agent package, "
+        "'google.adk', or a third-party package instead."
+    )
+
+
+def _set_enforce_denylist(value: bool) -> None:
+  global _ENFORCE_DENYLIST
+  _ENFORCE_DENYLIST = value
+
+
+@experimental(FeatureName.AGENT_CONFIG)
 def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
+    _validate_module_reference(name)
     module = importlib.import_module(module_path)
     return getattr(module, obj_name)
   except Exception as e:
     raise ValueError(f"Invalid fully qualified name: {name}") from e
 
 
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 def resolve_agent_reference(
     ref_config: AgentRefConfig, referencing_agent_config_abs_path: str
 ) -> BaseAgent:
@@ -121,28 +269,38 @@ def resolve_agent_reference(
   Args:
     ref_config: The agent reference configuration (AgentRefConfig).
     referencing_agent_config_abs_path: The absolute path to the agent config
-    that contains the reference.
+      that contains the reference.
 
   Returns:
     The created agent instance.
   """
   if ref_config.config_path:
     if os.path.isabs(ref_config.config_path):
-      return from_config(ref_config.config_path)
-    else:
-      return from_config(
-          os.path.join(
-              os.path.dirname(referencing_agent_config_abs_path),
-              ref_config.config_path,
-          )
+      raise ValueError(
+          "Absolute paths are not allowed in AgentRefConfig config_path:"
+          f" {ref_config.config_path!r}"
       )
+    agent_dir = os.path.dirname(referencing_agent_config_abs_path)
+    resolved_path = os.path.realpath(
+        os.path.join(agent_dir, ref_config.config_path)
+    )
+    canonical_agent_dir = os.path.realpath(agent_dir)
+    if (
+        os.path.commonpath([canonical_agent_dir, resolved_path])
+        != canonical_agent_dir
+    ):
+      raise ValueError(
+          f"Path traversal detected: config_path {ref_config.config_path!r}"
+          " resolves outside the agent directory"
+      )
+    return from_config(resolved_path)
   elif ref_config.code:
     return _resolve_agent_code_reference(ref_config.code)
   else:
     raise ValueError("AgentRefConfig must have either 'code' or 'config_path'")
 
 
-def _resolve_agent_code_reference(code: str) -> Any:
+def _resolve_agent_code_reference(code: str) -> BaseAgent:
   """Resolve a code reference to an actual agent instance.
 
   Args:
@@ -157,6 +315,7 @@ def _resolve_agent_code_reference(code: str) -> Any:
   if "." not in code:
     raise ValueError(f"Invalid code reference: {code}")
 
+  _validate_module_reference(code)
   module_path, obj_name = code.rsplit(".", 1)
   module = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
@@ -170,7 +329,7 @@ def _resolve_agent_code_reference(code: str) -> Any:
   return obj
 
 
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 def resolve_code_reference(code_config: CodeConfig) -> Any:
   """Resolve a code reference to actual Python object.
 
@@ -186,20 +345,13 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
   if not code_config or not code_config.name:
     raise ValueError("Invalid CodeConfig.")
 
+  _validate_module_reference(code_config.name)
   module_path, obj_name = code_config.name.rsplit(".", 1)
   module = importlib.import_module(module_path)
-  obj = getattr(module, obj_name)
-
-  if code_config.args and callable(obj):
-    kwargs = {arg.name: arg.value for arg in code_config.args if arg.name}
-    positional_args = [arg.value for arg in code_config.args if not arg.name]
-
-    return obj(*positional_args, **kwargs)
-  else:
-    return obj
+  return getattr(module, obj_name)
 
 
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 def resolve_callbacks(callbacks_config: List[CodeConfig]) -> Any:
   """Resolve callbacks from configuration.
 

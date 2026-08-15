@@ -69,6 +69,7 @@ class TestAuthLlmRequestProcessor:
     context = Mock(spec=InvocationContext)
     context.agent = mock_llm_agent
     context.session = mock_session
+    context._get_events.side_effect = lambda **_: context.session.events
     return context
 
   @pytest.fixture
@@ -79,7 +80,9 @@ class TestAuthLlmRequestProcessor:
   @pytest.fixture
   def mock_auth_config(self):
     """Create a mock AuthConfig."""
-    return Mock(spec=AuthConfig)
+    config = Mock(spec=AuthConfig)
+    config.credential_key = None
+    return config
 
   @pytest.fixture
   def mock_function_response_with_auth(self, mock_auth_config):
@@ -163,7 +166,8 @@ class TestAuthLlmRequestProcessor:
   ):
     """Test that non-LLM agents return early."""
     mock_context = Mock(spec=InvocationContext)
-    mock_context.agent = Mock()
+    # Using spec=[] ensures hasattr(agent, 'canonical_tools') returns False.
+    mock_context.agent = Mock(spec=[])
     mock_context.agent.__class__.__name__ = 'BaseAgent'
     mock_context.session = mock_session
 
@@ -274,6 +278,38 @@ class TestAuthLlmRequestProcessor:
   @pytest.mark.asyncio
   @patch('google.adk.auth.auth_preprocessor.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
+  async def test_ignores_auth_responses_outside_current_branch(
+      self,
+      mock_auth_config_validate,
+      mock_auth_handler_class,
+      processor,
+      mock_invocation_context,
+      mock_llm_request,
+      mock_user_event_with_auth_response,
+  ):
+    """Test auth responses hidden by branch filtering are ignored."""
+    mock_invocation_context.session.events = [
+        mock_user_event_with_auth_response
+    ]
+    mock_invocation_context._get_events.side_effect = None
+    mock_invocation_context._get_events.return_value = []
+
+    result = []
+    async for event in processor.run_async(
+        mock_invocation_context, mock_llm_request
+    ):
+      result.append(event)
+
+    mock_invocation_context._get_events.assert_called_once_with(
+        current_branch=True
+    )
+    mock_auth_config_validate.assert_not_called()
+    mock_auth_handler_class.assert_not_called()
+    assert result == []
+
+  @pytest.mark.asyncio
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   async def test_processes_auth_response_successfully(
       self,
       mock_auth_config_validate,
@@ -317,7 +353,7 @@ class TestAuthLlmRequestProcessor:
   @pytest.mark.asyncio
   @patch('google.adk.auth.auth_preprocessor.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
-  @patch('google.adk.flows.llm_flows.functions.handle_function_calls_async')
+  @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
   async def test_processes_multiple_auth_responses_and_resumes_tools(
       self,
       mock_handle_function_calls,
@@ -347,10 +383,12 @@ class TestAuthLlmRequestProcessor:
         auth_response_1,
         auth_response_2,
     ]
+    user_event_with_multiple_responses.get_function_calls.return_value = []
 
     # Create system function call events
     system_function_call_1 = Mock()
     system_function_call_1.id = 'auth_id_1'
+    system_function_call_1.name = REQUEST_EUC_FUNCTION_CALL_NAME
     system_function_call_1.args = {
         'function_call_id': 'tool_id_1',
         'auth_config': mock_auth_config,
@@ -358,6 +396,7 @@ class TestAuthLlmRequestProcessor:
 
     system_function_call_2 = Mock()
     system_function_call_2.id = 'auth_id_2'
+    system_function_call_2.name = REQUEST_EUC_FUNCTION_CALL_NAME
     system_function_call_2.args = {
         'function_call_id': 'tool_id_2',
         'auth_config': mock_auth_config,
@@ -531,7 +570,8 @@ class TestAuthLlmRequestProcessor:
 
     # Create a mock that fails isinstance check
     mock_context = Mock(spec=InvocationContext)
-    mock_context.agent = Mock()  # This will fail isinstance(agent, LlmAgent)
+    # This will fail isinstance(agent, LlmAgent)
+    mock_context.agent = Mock(spec=[])
     mock_context.session = mock_session
 
     result = []

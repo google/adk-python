@@ -12,6 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.tools.agent_simulator.agent_simulator_factory import AgentSimulatorFactory
+import warnings
 
-__all__ = ["AgentSimulator"]
+from google.adk.tools.environment_simulation import EnvironmentSimulationFactory as AgentSimulatorFactory
+
+warnings.warn(
+    "google.adk.tools.agent_simulator is moved to"
+    " google.adk.tools.environment_simulation",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+__all__ = ["AgentSimulatorFactory"]

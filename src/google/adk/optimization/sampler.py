@@ -16,21 +16,27 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from typing import ClassVar
 from typing import Generic
 from typing import Literal
 from typing import Optional
 
 from ..agents.llm_agent import Agent
-from .data_types import SamplingResult
+from .data_types import SamplingResultT
+
+_ExampleSet = Literal["train", "validation"]
 
 
-class Sampler(ABC, Generic[SamplingResult]):
+class Sampler(ABC, Generic[SamplingResultT]):
   """Base class for agent optimizers to sample and score candidate agents.
 
   The developer must implement this interface for their evaluation service to
   work with the optimizer. The optimizer will call the sample_and_score method
   to get evaluation results for the candidate agent on the batch of examples.
   """
+
+  TRAIN_SET: ClassVar[Literal["train"]] = "train"
+  VALIDATION_SET: ClassVar[Literal["validation"]] = "validation"
 
   @abstractmethod
   def get_train_example_ids(self) -> list[str]:
@@ -46,10 +52,10 @@ class Sampler(ABC, Generic[SamplingResult]):
   async def sample_and_score(
       self,
       candidate: Agent,
-      example_set: Literal["train", "validation"] = "validation",
+      example_set: _ExampleSet = VALIDATION_SET,
       batch: Optional[list[str]] = None,
       capture_full_eval_data: bool = False,
-  ) -> SamplingResult:
+  ) -> SamplingResultT:
     """Evaluates the candidate agent on the batch of examples.
 
     Args:

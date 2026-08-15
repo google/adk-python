@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
+from typing import cast
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
@@ -25,6 +26,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...events.event import Event
 from ...utils import instructions_utils
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import as_llm_agent
 
 if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
@@ -72,11 +74,8 @@ async def _build_instructions(
     invocation_context: The invocation context.
     llm_request: The LlmRequest to populate with instructions.
   """
-  from ...agents.base_agent import BaseAgent
-
-  agent = invocation_context.agent
-
-  root_agent: BaseAgent = agent.root_agent
+  agent = as_llm_agent(invocation_context)
+  root_agent = cast('LlmAgent', agent.root_agent)
 
   # Handle global instructions (DEPRECATED - use GlobalInstructionPlugin instead)
   # TODO: Remove this code block when global_instruction field is removed
@@ -99,9 +98,12 @@ async def _build_instructions(
   # Handle static_instruction - add via append_instructions
   if agent.static_instruction:
     from google.genai import _transformers
+    from google.genai import types
 
     # Convert ContentUnion to Content using genai transformer
-    static_content = _transformers.t_content(agent.static_instruction)
+    static_content = _transformers.t_content(
+        cast(types.ContentOrDict, agent.static_instruction)
+    )
     llm_request.append_instructions(static_content)
 
   # Handle instruction based on whether static_instruction exists

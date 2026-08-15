@@ -26,6 +26,8 @@ from ..utils.env_utils import is_env_enabled
 class FeatureName(str, Enum):
   """Feature names."""
 
+  AGENT_CONFIG = "AGENT_CONFIG"
+  AGENT_STATE = "AGENT_STATE"
   AUTHENTICATED_FUNCTION_TOOL = "AUTHENTICATED_FUNCTION_TOOL"
   BASE_AUTHENTICATED_TOOL = "BASE_AUTHENTICATED_TOOL"
   BIG_QUERY_TOOLSET = "BIG_QUERY_TOOLSET"
@@ -35,18 +37,38 @@ class FeatureName(str, Enum):
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
+  DYNAMIC_INSTRUCTION_ROUTING = "DYNAMIC_INSTRUCTION_ROUTING"
+  DAYTONA_ENVIRONMENT = "DAYTONA_ENVIRONMENT"
+  E2B_ENVIRONMENT = "E2B_ENVIRONMENT"
+  ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
+  EVENTARC_TOOL_CONFIG = "EVENTARC_TOOL_CONFIG"
+  EVENTARC_TOOLSET = "EVENTARC_TOOLSET"
+  GCS_ADMIN_TOOLSET = "GCS_ADMIN_TOOLSET"
+  GCS_TOOL_SETTINGS = "GCS_TOOL_SETTINGS"
+  GCS_TOOLSET = "GCS_TOOLSET"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
+  MCP_AGENT_SERVER = "MCP_AGENT_SERVER"
+  # Private (leading underscore): not part of the public API surface.
+  # GE flips this on by setting the env var
+  # `ADK_ENABLE_MCP_GRACEFUL_ERROR_HANDLING=1`; nothing should import this
+  # enum member by name. Keeping it private avoids a backward-compat
+  # obligation for what is intended as a temporary, internal kill-switch.
+  _MCP_GRACEFUL_ERROR_HANDLING = "MCP_GRACEFUL_ERROR_HANDLING"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
   PUBSUB_TOOL_CONFIG = "PUBSUB_TOOL_CONFIG"
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
   SKILL_TOOLSET = "SKILL_TOOLSET"
   SPANNER_TOOLSET = "SPANNER_TOOLSET"
+  SPANNER_ADMIN_TOOLSET = "SPANNER_ADMIN_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
   TOOL_CONFIG = "TOOL_CONFIG"
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
+  PLUGGABLE_AUTH = "PLUGGABLE_AUTH"
+  SNAKE_CASE_SKILL_NAME = "SNAKE_CASE_SKILL_NAME"
+  IN_MEMORY_SESSION_SERVICE_LIGHT_COPY = "IN_MEMORY_SESSION_SERVICE_LIGHT_COPY"
 
 
 class FeatureStage(Enum):
@@ -79,6 +101,12 @@ class FeatureConfig:
 
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
+    FeatureName.AGENT_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.AGENT_STATE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.AUTHENTICATED_FUNCTION_TOOL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -86,10 +114,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.BIG_QUERY_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BIG_QUERY_TOOL_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.BIGTABLE_TOOL_SETTINGS: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -101,9 +129,36 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOL_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
+        FeatureStage.STABLE, default_on=True
+    ),
+    FeatureName.DYNAMIC_INSTRUCTION_ROUTING: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
+    ),
+    FeatureName.DAYTONA_ENVIRONMENT: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.E2B_ENVIRONMENT: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.EVENTARC_TOOL_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.EVENTARC_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GCS_ADMIN_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GCS_TOOL_SETTINGS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GCS_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
@@ -113,7 +168,13 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
-        FeatureStage.WIP, default_on=False
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.MCP_AGENT_SERVER: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName._MCP_GRACEFUL_ERROR_HANDLING: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
@@ -125,6 +186,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SKILL_TOOLSET: FeatureConfig(
+        FeatureStage.STABLE, default_on=True
+    ),
+    FeatureName.SPANNER_ADMIN_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SPANNER_TOOLSET: FeatureConfig(
@@ -141,6 +205,15 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.TOOL_CONFIRMATION: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.PLUGGABLE_AUTH: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SNAKE_CASE_SKILL_NAME: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
+    ),
+    FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY: FeatureConfig(
+        FeatureStage.WIP, default_on=False
     ),
 }
 
@@ -319,7 +392,7 @@ def temporary_feature_override(
 
   # Save the original override state
   had_override = feature_name in _FEATURE_OVERRIDES
-  original_value = _FEATURE_OVERRIDES.get(feature_name)
+  original_value = _FEATURE_OVERRIDES.get(feature_name, False)
 
   # Apply the temporary override
   _FEATURE_OVERRIDES[feature_name] = enabled

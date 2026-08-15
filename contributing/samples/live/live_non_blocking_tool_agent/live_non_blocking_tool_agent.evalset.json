@@ -1,0 +1,42 @@
+{
+  "eval_set_id": "live_non_blocking_tool_agent",
+  "name": "live_non_blocking_tool_agent",
+  "description": "Live eval cases for the non-blocking tool agent. Exercises the audio user simulator driving the live agent, then keeping the conversation going while a background task runs.",
+  "eval_cases": [
+    {
+      "eval_id": "background_task_scenario",
+      "conversation_scenario": {
+        "starting_prompt": "Hi, can you kick off a long background task for me?",
+        "conversation_plan": "Ask the agent to start a slow background task described as 'index my documents'. After it confirms the task started, keep chatting by asking what two plus two is while the task runs. End the conversation once the agent reports the background task finished.",
+        "user_persona": "NOVICE"
+      },
+      "session_input": {
+        "app_name": "live_non_blocking_tool_agent",
+        "user_id": "test_user_id",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "background_task_scripted",
+      "conversation": [
+        {
+          "user_content": {
+            "role": "user",
+            "parts": [{ "text": "Please start a slow background task to index my documents." }]
+          }
+        },
+        {
+          "user_content": {
+            "role": "user",
+            "parts": [{ "text": "While that runs, what is two plus two?" }]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "live_non_blocking_tool_agent",
+        "user_id": "test_user_id",
+        "state": {}
+      }
+    }
+  ]
+}

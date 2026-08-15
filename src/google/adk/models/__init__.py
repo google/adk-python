@@ -14,52 +14,131 @@
 
 """Defines the interface to support a model."""
 
-from .apigee_llm import ApigeeLlm
+from __future__ import annotations
+
+import importlib
+from typing import Any
+from typing import TYPE_CHECKING
+
+from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
-from .gemma_llm import Gemma
-from .google_llm import Gemini
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 from .registry import LLMRegistry
 
-__all__ = [
-    'BaseLlm',
-    'Gemini',
-    'Gemma',
-    'LLMRegistry',
-]
+if TYPE_CHECKING:
+  from google.adk.integrations.oci._oci_genai_llm import OCIGenAILlm
+  from google.adk.labs.openai import OpenAILlm
 
-
-LLMRegistry.register(Gemini)
-LLMRegistry.register(Gemma)
-LLMRegistry.register(ApigeeLlm)
-
-# Optionally register Claude if anthropic package is installed
-try:
+  from .anthropic_llm import AnthropicGenerateContentConfig
   from .anthropic_llm import Claude
-
-  LLMRegistry.register(Claude)
-  __all__.append('Claude')
-except Exception:
-  # Claude support requires: pip install google-adk[extensions]
-  pass
-
-# Optionally register LiteLlm if litellm package is installed
-try:
+  from .apigee_llm import ApigeeLlm
+  from .gemma_llm import Gemma
+  from .gemma_llm import Gemma3Ollama
+  from .google_llm import Gemini
   from .lite_llm import LiteLlm
 
-  LLMRegistry.register(LiteLlm)
-  __all__.append('LiteLlm')
-except Exception:
-  # LiteLLM support requires: pip install google-adk[extensions]
-  pass
+__all__ = [
+    'AnthropicGenerateContentConfig',
+    'ApigeeLlm',
+    'BaseLlm',
+    'Claude',
+    'Gemini',
+    'Gemma',
+    'Gemma3Ollama',
+    'LLMRegistry',
+    'LiteLlm',
+    'LlmCapabilities',
+]
 
-# Optionally register Gemma3Ollama if litellm package is installed
-try:
-  from .gemma_llm import Gemma3Ollama
+_LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
+    'Gemini': (
+        [
+            r'gemini-.*',
+            # Gemma 4+ uses Gemini natively; must precede Gemma's gemma-.* so
+            # gemma-4-* resolves to Gemini, not the Gemma 3 workaround class.
+            r'gemma-4.*',
+            r'model-optimizer-.*',
+            r'projects\/.+\/locations\/.+\/endpoints\/.+',
+            r'projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+',
+        ],
+        'google_llm',
+    ),
+    # Gemma 3 only (function-calling workarounds). Gemma 4+ resolves to Gemini.
+    'Gemma': ([r'gemma-.*'], 'gemma_llm'),
+    'ApigeeLlm': ([r'apigee\/.*'], 'apigee_llm'),
+    'Claude': (
+        [r'claude-3-.*', r'claude-.*-4.*', r'claude-.*-5.*'],
+        'anthropic_llm',
+    ),
+    'Gemma3Ollama': ([r'ollama/gemma3.*'], 'gemma_llm'),
+    'OpenAILlm': (
+        [r'gpt-.*', r'o\d+-.*'],
+        'google.adk.labs.openai',
+    ),
+    'LiteLlm': (
+        [
+            r'openai/.*',
+            r'azure/.*',
+            r'azure_ai/.*',
+            r'groq/.*',
+            r'anthropic/.*',
+            r'bedrock/.*',
+            r'ollama/(?!gemma3).*',
+            r'ollama_chat/.*',
+            r'together_ai/.*',
+            r'vertex_ai/.*',
+            r'mistral/.*',
+            r'deepseek/.*',
+            r'fireworks_ai/.*',
+            r'cohere/.*',
+            r'databricks/.*',
+            r'ai21/.*',
+        ],
+        'lite_llm',
+    ),
+    'OCIGenAILlm': (
+        [
+            r'meta\.llama-.*',
+            r'google\.gemini-.*',
+            r'google\.gemma-.*',
+            r'xai\.grok-.*',
+            r'mistralai\.mistral-.*',
+            r'mistralai\.mixtral-.*',
+            r'nvidia\..*',
+        ],
+        'google.adk.integrations.oci._oci_genai_llm',
+    ),
+}
 
-  LLMRegistry.register(Gemma3Ollama)
-  __all__.append('Gemma3Ollama')
-except Exception:
-  # Gemma3Ollama requires LiteLLM: pip install google-adk[extensions]
-  pass
+for _name, (_patterns, _module) in _LAZY_PROVIDERS.items():
+  _target_module = (
+      _module if _module.startswith('google.adk.') else f'{__name__}.{_module}'
+  )
+  LLMRegistry._register_lazy(_patterns, _target_module, _name)
+
+
+_OTHER_LAZY_IMPORTS: dict[str, str] = {
+    'AnthropicGenerateContentConfig': 'anthropic_llm',
+}
+
+
+def __getattr__(name: str) -> Any:
+  if name in _LAZY_PROVIDERS:
+    module_name = _LAZY_PROVIDERS[name][1]
+  elif name in _OTHER_LAZY_IMPORTS:
+    module_name = _OTHER_LAZY_IMPORTS[name]
+  else:
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+  try:
+    if module_name.startswith('google.adk.'):
+      module = importlib.import_module(module_name)
+    else:
+      module = importlib.import_module(f'{__name__}.{module_name}')
+  except ImportError as e:
+    raise ImportError(
+        f'`{name}` requires an optional dependency that is not installed.'
+        ' Install with: pip install google-adk[extensions]'
+    ) from e
+  return getattr(module, name)

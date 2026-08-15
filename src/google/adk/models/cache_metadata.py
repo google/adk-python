@@ -15,11 +15,11 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 
 class CacheMetadata(BaseModel):
@@ -47,7 +47,7 @@ class CacheMetadata(BaseModel):
           None when no active cache exists.
       contents_count: Number of contents. When active cache exists, this is
           the count of cached contents. When no active cache exists, this is
-          the total count of contents in the request.
+          the count of the cacheable content prefix used for fingerprinting.
       created_at: Unix timestamp when the cache was created. None when
           no active cache exists.
   """
@@ -57,14 +57,14 @@ class CacheMetadata(BaseModel):
       frozen=True,  # Cache metadata should be immutable
   )
 
-  cache_name: Optional[str] = Field(
+  cache_name: str | None = Field(
       default=None,
       description=(
           "Full resource name of the cached content (None if no active cache)"
       ),
   )
 
-  expire_time: Optional[float] = Field(
+  expire_time: float | None = Field(
       default=None,
       description="Unix timestamp when cache expires (None if no active cache)",
   )
@@ -73,7 +73,7 @@ class CacheMetadata(BaseModel):
       description="Hash of cacheable contents used to detect changes"
   )
 
-  invocations_used: Optional[int] = Field(
+  invocations_used: int | None = Field(
       default=None,
       ge=0,
       description=(
@@ -86,16 +86,26 @@ class CacheMetadata(BaseModel):
       ge=0,
       description=(
           "Number of contents (cached contents when active cache exists, "
-          "total contents in request when no active cache)"
+          "cacheable content prefix when no active cache)"
       ),
   )
 
-  created_at: Optional[float] = Field(
+  created_at: float | None = Field(
       default=None,
       description=(
           "Unix timestamp when cache was created (None if no active cache)"
       ),
   )
+
+  @model_validator(mode="after")
+  def _enforce_active_state_invariant(self) -> "CacheMetadata":
+    active = (self.cache_name, self.expire_time, self.invocations_used)
+    if len({f is not None for f in active}) > 1:
+      raise ValueError(
+          "cache_name, expire_time, and invocations_used must all be set "
+          "(active cache) or all be None (fingerprint-only state)"
+      )
+    return self
 
   @property
   def expire_soon(self) -> bool:
@@ -112,13 +122,8 @@ class CacheMetadata(BaseModel):
           f"Fingerprint-only: {self.contents_count} contents, "
           f"fingerprint={self.fingerprint[:8]}..."
       )
+    assert self.expire_time is not None and self.invocations_used is not None
     cache_id = self.cache_name.split("/")[-1]
-    if self.expire_time is None:
-      return (
-          f"Cache {cache_id}: used {self.invocations_used} invocations, "
-          f"cached {self.contents_count} contents, "
-          "expires unknown"
-      )
     time_until_expiry_minutes = (self.expire_time - time.time()) / 60
     return (
         f"Cache {cache_id}: used {self.invocations_used} invocations, "

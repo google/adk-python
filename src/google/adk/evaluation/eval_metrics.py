@@ -25,13 +25,15 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
+from pydantic import PrivateAttr
+from pydantic import SerializeAsAny
 from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
 from .common import EvalBaseModel
 from .eval_case import Invocation
-from .eval_rubrics import Rubric
-from .eval_rubrics import RubricScore
+from .eval_rubrics import Rubric as Rubric
+from .eval_rubrics import RubricScore as RubricScore
 
 
 class EvalStatus(Enum):
@@ -60,6 +62,16 @@ class PrebuiltMetrics(Enum):
   RUBRIC_BASED_TOOL_USE_QUALITY_V1 = "rubric_based_tool_use_quality_v1"
 
   PER_TURN_USER_SIMULATOR_QUALITY_V1 = "per_turn_user_simulator_quality_v1"
+
+  MULTI_TURN_TASK_SUCCESS_V1 = "multi_turn_task_success_v1"
+
+  MULTI_TURN_TRAJECTORY_QUALITY_V1 = "multi_turn_trajectory_quality_v1"
+
+  MULTI_TURN_TOOL_USE_QUALITY_V1 = "multi_turn_tool_use_quality_v1"
+
+  RUBRIC_BASED_MULTI_TURN_TRAJECTORY_QUALITY_V1 = (
+      "rubric_based_multi_turn_trajectory_quality_v1"
+  )
 
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
@@ -107,6 +119,19 @@ class BaseCriterion(BaseModel):
 
   threshold: Threshold = Field(
       description="The threshold to be used by the metric.",
+  )
+
+  include_intermediate_responses_in_final: bool = Field(
+      default=False,
+      description=(
+          "Whether to evaluate the full agent response including intermediate"
+          " natural language text (e.g. text emitted before tool calls) in"
+          " addition to the final response. By default, only the final"
+          " response text is sent to the judge. When True, text from all"
+          " intermediate invocation events is concatenated with the final"
+          " response before evaluation. This is useful for agents that emit"
+          " text both before and after tool calls within a single invocation."
+      ),
   )
 
 
@@ -267,13 +292,29 @@ class EvalMetric(EvalBaseModel):
       ),
   )
 
-  criterion: Optional[BaseCriterion] = Field(
+  criterion: Optional[SerializeAsAny[BaseCriterion]] = Field(
       default=None, description="""Evaluation criterion used by the metric."""
   )
 
   custom_function_path: Optional[str] = Field(
       default=None,
       description="""Path to custom function, if this is a custom metric.""",
+  )
+
+  # The path declared for this metric in the eval config it was built from.
+  # Private, so that a metric parsed from an inbound payload cannot carry one:
+  # the public field above is settable by whoever built that payload.
+  _config_custom_function_path: Optional[str] = PrivateAttr(default=None)
+
+
+def _get_metric_threshold(eval_metric: EvalMetric) -> float:
+  """Returns the configured threshold or rejects an incomplete metric."""
+  if eval_metric.criterion is not None:
+    return eval_metric.criterion.threshold
+  if eval_metric.threshold is not None:
+    return eval_metric.threshold
+  raise ValueError(
+      f"Evaluation metric {eval_metric.metric_name!r} requires a threshold."
   )
 
 
@@ -365,7 +406,7 @@ class MetricInfo(EvalBaseModel):
 
   metric_name: str = Field(description="The name of the metric.")
 
-  description: str = Field(
+  description: Optional[str] = Field(
       default=None, description="A 2 to 3 line description of the metric."
   )
 

@@ -122,7 +122,8 @@ class TestFilesRetrieval:
       result = _get_default_embedding_model()
 
       mock_module.GoogleGenAIEmbedding.assert_called_once_with(
-          model_name="text-embedding-004"
+          model_name="gemini-embedding-2-preview",
+          embed_batch_size=1,
       )
       assert result == mock_embedding_instance
 

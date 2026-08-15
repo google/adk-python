@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import socket
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from unittest.mock import Mock
 
 from google.adk.models.llm_request import LlmRequest
+from google.adk.tools import load_web_page
 # Use the actual ComputerEnvironment enum from the code
 from google.adk.tools.computer_use.base_computer import BaseComputer
 from google.adk.tools.computer_use.base_computer import ComputerEnvironment
@@ -32,6 +35,7 @@ class MockComputer(BaseComputer):
   def __init__(self):
     self.initialize_called = False
     self.close_called = False
+    self.navigate_calls: list[str] = []
     self._screen_size = (1920, 1080)
     self._environment = ComputerEnvironment.ENVIRONMENT_BROWSER
 
@@ -88,6 +92,7 @@ class MockComputer(BaseComputer):
     return ComputerState(screenshot=b"test", url="https://example.com")
 
   async def navigate(self, url: str) -> ComputerState:
+    self.navigate_calls.append(url)
     return ComputerState(screenshot=b"test", url=url)
 
   async def key_combination(self, keys: list[str]) -> ComputerState:
@@ -203,6 +208,23 @@ class TestComputerUseToolset:
       assert method in tool_names
 
   @pytest.mark.asyncio
+  async def test_get_tools_filters_excluded_functions(self, mock_computer):
+    """Test that get_tools filters out excluded functions."""
+    excluded_funcs = ["drag_and_drop", "key_combination"]
+    toolset = ComputerUseToolset(
+        computer=mock_computer,
+        excluded_predefined_functions=excluded_funcs,
+    )
+
+    tools = await toolset.get_tools()
+    tool_names = [tool.func.__name__ for tool in tools]
+
+    for func in excluded_funcs:
+      assert func not in tool_names
+
+    assert "click_at" in tool_names
+
+  @pytest.mark.asyncio
   async def test_get_tools_with_readonly_context(self, toolset):
     """Test get_tools with readonly_context parameter."""
     from google.adk.agents.readonly_context import ReadonlyContext
@@ -238,8 +260,8 @@ class TestComputerUseToolset:
 
     assert click_tool is not None
 
-    # The tool's function should be bound to the mock computer instance
-    assert click_tool.func.__self__ == mock_computer
+    # The tool's function should have the correct name (wrapped method)
+    assert click_tool.func.__name__ == "click_at"
 
   @pytest.mark.asyncio
   async def test_get_tools_handles_custom_screen_size(self, mock_computer):
@@ -304,9 +326,11 @@ class TestComputerUseToolset:
     """Test that tools are properly bound to the computer instance."""
     tools = await toolset.get_tools()
 
-    # All tools should be bound to the mock computer
+    # All tools should have wrapped functions with correct names
     for tool in tools:
-      assert tool.func.__self__ == mock_computer
+      # Wrapped functions preserve the original method name via functools.wraps
+      assert callable(tool.func)
+      assert not tool.func.__name__.startswith("_")
 
   @pytest.mark.asyncio
   async def test_toolset_handles_computer_initialization_failure(
@@ -330,7 +354,7 @@ class TestComputerUseToolset:
   async def test_process_llm_request(self, toolset, mock_computer):
     """Test that process_llm_request adds tools and computer use configuration."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -361,12 +385,47 @@ class TestComputerUseToolset:
     )
 
   @pytest.mark.asyncio
+  async def test_process_llm_request_with_excluded_functions(
+      self, mock_computer
+  ):
+    """Test that process_llm_request passes excluded_predefined_functions."""
+    excluded_funcs = ["drag_and_drop", "key_combination"]
+    toolset = ComputerUseToolset(
+        computer=mock_computer,
+        excluded_predefined_functions=excluded_funcs,
+    )
+
+    llm_request = LlmRequest(
+        model="gemini-2.5-flash",
+        config=types.GenerateContentConfig(),
+    )
+
+    await toolset.process_llm_request(
+        tool_context=MagicMock(), llm_request=llm_request
+    )
+
+    # Should have computer use tool
+    computer_use_tools = [
+        tool
+        for tool in llm_request.config.tools
+        if hasattr(tool, "computer_use") and tool.computer_use
+    ]
+    assert len(computer_use_tools) == 1
+
+    # Should have correct excluded functions
+    computer_use_tool = computer_use_tools[0]
+    assert (
+        computer_use_tool.computer_use.excluded_predefined_functions
+        == excluded_funcs
+    )
+
+  @pytest.mark.asyncio
   async def test_process_llm_request_with_existing_computer_use(
       self, toolset, mock_computer
   ):
     """Test that process_llm_request doesn't add duplicate computer use configuration."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(
             tools=[
                 types.Tool(
@@ -403,7 +462,7 @@ class TestComputerUseToolset:
     toolset = ComputerUseToolset(computer=mock_computer)
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -425,7 +484,7 @@ class TestComputerUseToolset:
     )
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
     llm_request.tools_dict["wait"] = original_tool
@@ -464,7 +523,7 @@ class TestComputerUseToolset:
     )
 
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
     llm_request.tools_dict["wait"] = original_tool
@@ -495,7 +554,7 @@ class TestComputerUseToolset:
   async def test_adapt_computer_use_tool_invalid_method(self):
     """Test adapt_computer_use_tool with invalid method name."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -517,7 +576,7 @@ class TestComputerUseToolset:
   async def test_adapt_computer_use_tool_excluded_method(self):
     """Test adapt_computer_use_tool with excluded method name."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -539,7 +598,7 @@ class TestComputerUseToolset:
   async def test_adapt_computer_use_tool_method_not_in_tools_dict(self):
     """Test adapt_computer_use_tool when method is not in tools_dict."""
     llm_request = LlmRequest(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         config=types.GenerateContentConfig(),
     )
 
@@ -556,3 +615,128 @@ class TestComputerUseToolset:
 
     # Should not add any tools
     assert len(llm_request.tools_dict) == 0
+
+
+class TestNavigateUrlSafety:
+  """Test cases for the navigate() url safety guard."""
+
+  @pytest.fixture
+  def mock_computer(self):
+    """Fixture providing a mock computer."""
+    return MockComputer()
+
+  @pytest.fixture
+  def resolver(self, monkeypatch) -> Mock:
+    """Records every DNS lookup, resolving whatever is asked for to a public ip.
+
+    Tests assert on this to pin down whether a url was refused before or after
+    its hostname was resolved.
+    """
+    resolver = Mock(
+        return_value=[(
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            "",
+            ("93.184.216.34", 0),
+        )]
+    )
+    monkeypatch.setattr(load_web_page.socket, "getaddrinfo", resolver)
+    return resolver
+
+  @staticmethod
+  async def _build_navigate_tool(
+      computer: MockComputer, **toolset_kwargs
+  ) -> ComputerUseTool:
+    """Returns the navigate tool of a toolset built over `computer`.
+
+    Toolset settings differ per test, so they are passed in rather than fixed
+    by a fixture.
+    """
+    toolset = ComputerUseToolset(computer=computer, **toolset_kwargs)
+    for tool in await toolset.get_tools():
+      if tool.func.__name__ == "navigate":
+        return tool
+    raise AssertionError("No navigate tool in toolset")
+
+  @pytest.mark.parametrize(
+      "url",
+      [
+          (
+              "http://169.254.169.254/computeMetadata/v1/instance/"
+              "service-accounts/default/token"
+          ),
+          # Parser-divergence regression test, not a duplicate: `urlparse`
+          # reads the host as 'example.com' while a browser reads
+          # '169.254.169.254', so the url is refused outright.
+          r"http://169.254.169.254\@example.com/",
+          "file:///etc/passwd",
+          "http://localhost:3000/",
+      ],
+      ids=["cloud_metadata", "backslash_authority", "file_scheme", "localhost"],
+  )
+  @pytest.mark.asyncio
+  async def test_navigate_refuses_unsafe_url(
+      self, url, mock_computer, resolver
+  ):
+    """Unsafe urls are refused before the driver or a resolver is touched."""
+    navigate_tool = await self._build_navigate_tool(mock_computer)
+    url_before = (await mock_computer.current_state()).url
+
+    result = await navigate_tool.func(url=url)
+
+    # The security-critical assertion: the driver was never asked to navigate.
+    assert mock_computer.navigate_calls == []
+    assert result["error"]
+    # The computer-use model rejects a function response carrying no url, so a
+    # refusal reports the page the browser is still on
+    assert result["url"] == url_before
+    # Refusal is decided from the url alone, so no case reaches DNS.
+    resolver.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_navigate_allows_public_url_unmodified(
+      self, mock_computer, resolver
+  ):
+    """A public url reaches the computer exactly as the model provided it."""
+    navigate_tool = await self._build_navigate_tool(mock_computer)
+
+    result = await navigate_tool.func(url="https://example.com/search?q=adk")
+
+    assert mock_computer.navigate_calls == ["https://example.com/search?q=adk"]
+    assert result.url == "https://example.com/search?q=adk"
+    resolver.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_navigate_allows_loopback_with_private_network_access(
+      self, mock_computer, resolver
+  ):
+    """allow_private_network_access=True lets loopback urls through."""
+    navigate_tool = await self._build_navigate_tool(
+        mock_computer, allow_private_network_access=True
+    )
+
+    result = await navigate_tool.func(url="http://127.0.0.1:8000/")
+
+    assert mock_computer.navigate_calls == ["http://127.0.0.1:8000/"]
+    assert result.url == "http://127.0.0.1:8000/"
+    # The flag short-circuits before resolution, so no lookup happens.
+    resolver.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_navigate_guard_preserves_tool_context(
+      self, mock_computer, resolver
+  ):
+    """The url guard must not cut navigate off from tool_context."""
+    mock_computer.prepare = AsyncMock()
+    tool_context = MagicMock(tool_confirmation=None)
+    navigate_tool = await self._build_navigate_tool(mock_computer)
+
+    result = await navigate_tool.run_async(
+        args={"url": "https://example.com"}, tool_context=tool_context
+    )
+
+    mock_computer.prepare.assert_awaited_once_with(tool_context)
+    assert mock_computer.navigate_calls == ["https://example.com"]
+    assert result["url"] == "https://example.com"
+    resolver.assert_called_once()

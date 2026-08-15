@@ -21,6 +21,7 @@ from pathlib import Path
 import click
 from google.genai import types
 
+from ...agents.run_config import StreamingMode
 from ...utils.yaml_utils import dump_pydantic_to_yaml
 from ..adk_web_server import RunAgentRequest
 from ._generated_file_utils import load_test_case
@@ -31,14 +32,21 @@ from .test_case import TestCase
 async def _create_conformance_test_files(
     test_case: TestCase,
     user_id: str = "adk_conformance_test_user",
+    streaming_mode: StreamingMode = StreamingMode.NONE,
 ) -> Path:
   """Generate conformance test files from TestCase."""
   # Clean existing generated files
   test_case_dir = test_case.dir
 
   # Remove existing generated files to ensure clean state
-  generated_session_file = test_case_dir / "generated-session.yaml"
-  generated_recordings_file = test_case_dir / "generated-recordings.yaml"
+  if streaming_mode == StreamingMode.SSE:
+    generated_session_file = test_case_dir / "generated-session-sse.yaml"
+    generated_recordings_file = test_case_dir / "generated-recordings-sse.yaml"
+  elif streaming_mode == StreamingMode.NONE:
+    generated_session_file = test_case_dir / "generated-session.yaml"
+    generated_recordings_file = test_case_dir / "generated-recordings.yaml"
+  else:
+    raise ValueError(f"Unsupported streaming mode: {streaming_mode}")
 
   generated_session_file.unlink(missing_ok=True)
   generated_recordings_file.unlink(missing_ok=True)
@@ -96,6 +104,7 @@ async def _create_conformance_test_files(
               session_id=session.id,
               new_message=content,
               state_delta=user_message.state_delta,
+              streaming=(streaming_mode == StreamingMode.SSE),
           ),
           mode="record",
           test_case_dir=str(test_case_dir),
@@ -133,7 +142,9 @@ async def _create_conformance_test_files(
     return generated_session_file
 
 
-async def run_conformance_record(paths: list[Path]) -> None:
+async def run_conformance_record(
+    paths: list[Path], streaming_mode: StreamingMode
+) -> None:
   """Generate conformance tests from TestCaseInput files.
 
   Args:
@@ -171,7 +182,9 @@ async def run_conformance_record(paths: list[Path]) -> None:
 
     for test_case in test_cases.values():
       try:
-        await _create_conformance_test_files(test_case)
+        await _create_conformance_test_files(
+            test_case, streaming_mode=streaming_mode
+        )
         click.secho(
             "Generated conformance test files for:"
             f" {test_case.category}/{test_case.name}",

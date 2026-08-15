@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """File writing tool for Agent Builder Assistant."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -67,7 +68,7 @@ async def write_files(
       except Exception:
         project_root = None
 
-    result = {
+    result: Dict[str, Any] = {
         "success": True,
         "files": {},
         "successful_writes": 0,
@@ -79,7 +80,7 @@ async def write_files(
       # Resolve file path using session state
       resolved_path = resolve_file_path(file_path, session_state)
       file_path_obj = resolved_path.resolve()
-      file_info = {
+      file_info: Dict[str, Any] = {
           "file_size": 0,
           "existed_before": False,
           "backup_created": False,

@@ -1,0 +1,210 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from unittest.mock import Mock
+
+from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskStatusUpdateEvent
+from google.adk.a2a import _compat
+from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
+from google.adk.events import event_actions
+from google.adk.events.event import Event
+from google.genai import types as genai_types
+import pytest
+
+
+class TestFromAdk:
+  """Test suite for from_adk functions."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.mock_event = Mock(spec=Event)
+    self.mock_event.id = "test-event-id"
+    self.mock_event.invocation_id = "test-invocation-id"
+    self.mock_event.author = "test-author"
+    self.mock_event.branch = None
+    self.mock_event.content = None
+    self.mock_event.error_code = None
+    self.mock_event.error_message = None
+    self.mock_event.grounding_metadata = None
+    self.mock_event.citation_metadata = None
+    self.mock_event.custom_metadata = None
+    self.mock_event.usage_metadata = None
+    self.mock_event.actions = None
+    self.mock_event.partial = True
+    self.mock_event.long_running_tool_ids = None
+
+  def test_convert_event_to_a2a_events_artifact_update(self):
+    """Test conversion of event to TaskArtifactUpdateEvent."""
+    # Setup event with content
+    self.mock_event.content = genai_types.Content(
+        parts=[genai_types.Part(text="hello")], role="model"
+    )
+    self.mock_event.author = "agent-1"
+
+    agents_artifacts = {}
+
+    # Mock part converter to return a standard text part
+    mock_a2a_part = _compat.make_text_part("hello")
+    mock_convert_part = Mock(return_value=[mock_a2a_part])
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+        part_converter=mock_convert_part,
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], TaskArtifactUpdateEvent)
+    assert result[0].task_id == "task-123"
+    assert result[0].context_id == "context-456"
+    assert result[0].artifact.parts == [mock_a2a_part]
+    assert "agent-1" in agents_artifacts  # Artifact ID should be stored
+
+  def test_convert_event_to_a2a_events_error(self):
+    """Test conversion of event with error to TaskStatusUpdateEvent."""
+    self.mock_event.error_code = "ERR001"
+    self.mock_event.error_message = "Something went wrong"
+
+    agents_artifacts = {}
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+    )
+
+    # Should not return any artifact events
+    assert len(result) == 0
+
+  def test_convert_event_to_a2a_events_none_event(self):
+    """Test convert_event_to_a2a_events with None event."""
+    with pytest.raises(ValueError, match="Event cannot be None"):
+      convert_event_to_a2a_events(None, {})
+
+  def test_convert_event_to_a2a_events_none_artifacts(self):
+    """Test convert_event_to_a2a_events with None agents_artifacts."""
+    with pytest.raises(ValueError, match="Agents artifacts cannot be None"):
+      convert_event_to_a2a_events(self.mock_event, None)
+
+  def test_convert_event_to_a2a_events_with_actions(self):
+    """Test conversion of event with actions to TaskStatusUpdateEvent."""
+    self.mock_event.actions = event_actions.EventActions()
+    self.mock_event.actions.artifact_delta["image"] = 0
+
+    agents_artifacts = {}
+
+    result = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], TaskStatusUpdateEvent)
+    assert result[0].task_id == "task-123"
+    assert result[0].context_id == "context-456"
+
+    metadata = result[0].status.message.metadata
+    assert "adk_actions" in metadata
+    assert metadata["adk_actions"]["artifactDelta"] == {"image": 0}
+
+
+class TestSerializeValue:
+  """Tests for _serialize_value preserving JSON-native types."""
+
+  def setup_method(self) -> None:
+    from google.adk.a2a.converters.from_adk_event import _serialize_value
+
+    self.serialize = _serialize_value
+
+  def test_dict_preserved(self) -> None:
+    value = {"key": "val", "nested": {"a": 1}}
+    result = self.serialize(value)
+    assert result == value
+    assert isinstance(result, dict)
+
+  def test_list_preserved(self) -> None:
+    value = [1, "two", {"three": 3}]
+    result = self.serialize(value)
+    assert result == value
+    assert isinstance(result, list)
+
+  def test_int_preserved(self) -> None:
+    result = self.serialize(42)
+    assert result == 42
+    assert isinstance(result, int)
+
+  def test_float_preserved(self) -> None:
+    result = self.serialize(3.14)
+    assert result == 3.14
+    assert isinstance(result, float)
+
+  def test_bool_preserved(self) -> None:
+    assert self.serialize(True) is True
+    assert self.serialize(False) is False
+
+  def test_string_preserved(self) -> None:
+    assert self.serialize("hello") == "hello"
+
+  def test_none_returns_none(self) -> None:
+    assert self.serialize(None) is None
+
+  def test_non_json_type_stringified(self) -> None:
+    """Non-JSON-native types should still be converted to str."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    result = self.serialize(dt)
+    assert isinstance(result, str)
+
+  def test_nested_non_json_value_in_dict_stringified(self) -> None:
+    """A non-JSON-native value nested in a dict is stringified."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = {"when": dt, "count": 1, "label": "x"}
+    result = self.serialize(value)
+    assert result == {"when": str(dt), "count": 1, "label": "x"}
+    assert isinstance(result["when"], str)
+    assert isinstance(result["count"], int)
+    assert isinstance(result["label"], str)
+
+  def test_nested_non_json_value_in_list_stringified(self) -> None:
+    """A non-JSON-native value nested in a list is stringified."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = [dt, 1, "x"]
+    result = self.serialize(value)
+    assert result == [str(dt), 1, "x"]
+    assert isinstance(result[0], str)
+    assert isinstance(result[1], int)
+    assert isinstance(result[2], str)
+
+  def test_non_string_dict_key_stringified(self) -> None:
+    """Non-string dict keys are stringified so the result is JSON-encodable."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = {dt: "when", 1: "one", "label": "x"}
+    result = self.serialize(value)
+    assert result == {str(dt): "when", "1": "one", "label": "x"}
+    assert all(isinstance(k, str) for k in result)

@@ -386,3 +386,80 @@ async def test_live_callback_compatibility_with_async():
   async_response = async_result.content.parts[0].function_response.response
   live_response = live_result.content.parts[0].function_response.response
   assert async_response == live_response == {"bypassed": "by_before_callback"}
+
+
+@pytest.mark.asyncio
+async def test_live_on_tool_error_callback_tool_not_found_noop():
+  """Test that on_tool_error_callback is a no-op when the tool is not found."""
+
+  def noop_on_tool_error_callback(tool, args, tool_context, error):
+    return None
+
+  def simple_fn(**kwargs) -> Dict[str, Any]:
+    return {"initial": "response"}
+
+  tool = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[tool],
+      on_tool_error_callback=noop_on_tool_error_callback,
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=""
+  )
+  function_call = types.FunctionCall(name="nonexistent_function", args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+
+  with pytest.raises(ValueError):
+    await handle_function_calls_live(invocation_context, event, tools_dict)
+
+
+@pytest.mark.asyncio
+async def test_live_on_tool_error_callback_tool_not_found_modify_tool_response():
+  """Test that on_tool_error_callback modifies tool response when tool is not found."""
+
+  def mock_on_tool_error_callback(tool, args, tool_context, error):
+    return {"result": "on_tool_error_callback_response"}
+
+  def simple_fn(**kwargs) -> Dict[str, Any]:
+    return {"initial": "response"}
+
+  tool = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[tool],
+      on_tool_error_callback=mock_on_tool_error_callback,
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=""
+  )
+  function_call = types.FunctionCall(name="nonexistent_function", args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+
+  result_event = await handle_function_calls_live(
+      invocation_context,
+      event,
+      tools_dict,
+  )
+
+  assert result_event is not None
+  part = result_event.content.parts[0]
+  assert part.function_response.response == {
+      "result": "on_tool_error_callback_response"
+  }

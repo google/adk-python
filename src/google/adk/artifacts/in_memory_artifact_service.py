@@ -16,7 +16,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 from typing import Any
+from typing import cast
 from typing import Optional
+from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
@@ -27,6 +29,7 @@ from . import artifact_util
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
+from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -83,6 +86,8 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     Returns:
         The constructed artifact path.
     """
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
@@ -90,6 +95,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
+    artifact_util.validate_path_segment(session_id, "session_id")
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   @override
@@ -99,10 +105,11 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: Union[types.Part, dict[str, Any]],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    artifact = ensure_part(artifact)
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if path not in self.artifacts:
       self.artifacts[path] = []
@@ -123,16 +130,25 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       artifact_version.mime_type = artifact.inline_data.mime_type
     elif artifact.text is not None:
       artifact_version.mime_type = "text/plain"
-    elif artifact.file_data is not None:
+    elif (file_data := artifact.file_data) is not None:
       if artifact_util.is_artifact_ref(artifact):
-        if not artifact_util.parse_artifact_uri(artifact.file_data.file_uri):
+        parsed_uri = artifact_util.parse_artifact_uri(
+            cast(str, file_data.file_uri)
+        )
+        if not parsed_uri:
           raise InputValidationError(
-              f"Invalid artifact reference URI: {artifact.file_data.file_uri}"
+              f"Invalid artifact reference URI: {file_data.file_uri}"
           )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
         # If it's a valid artifact URI, we store the artifact part as-is.
         # And we don't know the mime type until we load it.
       else:
-        artifact_version.mime_type = artifact.file_data.mime_type
+        artifact_version.mime_type = file_data.mime_type
     else:
       raise InputValidationError("Not supported artifact type.")
 
@@ -169,14 +185,21 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     # Resolve artifact reference if needed.
     artifact_data = artifact_entry.data
     if artifact_util.is_artifact_ref(artifact_data):
+      file_data = artifact_data.file_data
+      assert file_data is not None
       parsed_uri = artifact_util.parse_artifact_uri(
-          artifact_data.file_data.file_uri
+          cast(str, file_data.file_uri)
       )
       if not parsed_uri:
         raise InputValidationError(
-            "Invalid artifact reference URI:"
-            f" {artifact_data.file_data.file_uri}"
+            f"Invalid artifact reference URI: {file_data.file_uri}"
         )
+      artifact_util.validate_artifact_reference_scope(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          parsed_uri=parsed_uri,
+      )
       return await self.load_artifact(
           app_name=parsed_uri.app_name,
           user_id=parsed_uri.user_id,
@@ -197,6 +220,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
   async def list_artifact_keys(
       self, *, app_name: str, user_id: str, session_id: Optional[str] = None
   ) -> list[str]:
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
+    if session_id is not None:
+      artifact_util.validate_path_segment(session_id, "session_id")
     usernamespace_prefix = f"{app_name}/{user_id}/user/"
     session_prefix = (
         f"{app_name}/{user_id}/{session_id}/" if session_id else None

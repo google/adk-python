@@ -15,16 +15,31 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 from datetime import timezone
+import logging
+import os
+import pickle
+import time
+from unittest import mock
 
+from fastapi.openapi.models import HTTPBearer
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
+from google.adk.events.ui_widget import UiWidget
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.migration import migrate_from_sqlalchemy_pickle as mfsp
+from google.adk.sessions.migration import migrate_from_sqlalchemy_sqlite as mfss
+from google.adk.sessions.migration import migration_runner
 from google.adk.sessions.schemas import v0
 from google.adk.sessions.schemas import v1
+from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.genai import types
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 
@@ -103,6 +118,118 @@ class TestToSyncUrl:
   def test_to_sync_url_empty_string(self):
     """Test that empty string is returned unchanged."""
     assert _schema_check_utils.to_sync_url("") == ""
+
+
+class TestRedactDbUrl:
+  """Tests for the _redact_db_url function."""
+
+  def test_password_is_masked(self):
+    redacted = _schema_check_utils._redact_db_url(
+        "postgresql+asyncpg://user:sup3r-s3cret@host:5432/db"
+    )
+    assert redacted == "postgresql+asyncpg://user:***@host:5432/db"
+
+  def test_unparseable_url_falls_back_to_placeholder(self):
+    """Redaction runs while reporting an error, so it must never raise."""
+    assert (
+        _schema_check_utils._redact_db_url("definitely not a url sup3r-s3cret")
+        == "<unparseable database URL>"
+    )
+
+  def test_query_parameter_values_are_masked(self):
+    """Drivers accept secrets as query parameters, so every value is masked."""
+    redacted = _schema_check_utils._redact_db_url(
+        "postgresql://user@host:5432/db?password=sup3r-s3cret&sslmode=require"
+    )
+    assert redacted == (
+        "postgresql://user@host:5432/db?password=REDACTED&sslmode=REDACTED"
+    )
+
+  def test_schema_version_failure_warning_hides_password(self, caplog):
+    db_url = "postgresql+asyncpg://user:sup3r-s3cret@host:5432/db"
+
+    with mock.patch.object(
+        _schema_check_utils,
+        "create_sync_engine",
+        side_effect=RuntimeError("boom"),
+    ):
+      with caplog.at_level(logging.WARNING):
+        with pytest.raises(RuntimeError):
+          _schema_check_utils.get_db_schema_version(db_url)
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/db" in caplog.text
+
+
+_SOURCE_URL = "postgresql+asyncpg://user:sup3r-s3cret@host:5432/src"
+_DEST_URL = "postgresql+asyncpg://user:0ther-s3cret@host:5432/dst"
+
+
+class TestMigrationLogsHidePassword:
+  """These entry points log their URLs on every run, not only on failure."""
+
+  def test_pickle_migration_connect_logs_are_redacted(self, caplog):
+    with mock.patch.object(
+        mfsp,
+        "create_engine",
+        side_effect=[mock.MagicMock(), RuntimeError("boom")],
+    ):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError):
+          mfsp.migrate(_SOURCE_URL, _DEST_URL)
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "0ther-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/dst" in caplog.text
+
+  def test_sqlite_migration_connect_log_is_redacted(self, caplog, tmp_path):
+    with mock.patch.object(
+        mfss, "create_engine", side_effect=RuntimeError("boom")
+    ):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(SystemExit):
+          mfss.migrate(_SOURCE_URL, str(tmp_path / "dest.db"))
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+
+  def test_runner_up_to_date_log_is_redacted(self, caplog):
+    with mock.patch.object(
+        _schema_check_utils,
+        "get_db_schema_version",
+        return_value=migration_runner.LATEST_VERSION,
+    ):
+      with caplog.at_level(logging.INFO):
+        migration_runner.upgrade(_SOURCE_URL, _DEST_URL)
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+
+  def test_runner_migration_step_log_is_redacted(self, caplog):
+    mock_migrate = mock.Mock()
+    with mock.patch.object(
+        _schema_check_utils,
+        "get_db_schema_version",
+        return_value=_schema_check_utils.SCHEMA_VERSION_0_PICKLE,
+    ):
+      with mock.patch.dict(
+          migration_runner.MIGRATIONS,
+          {
+              _schema_check_utils.SCHEMA_VERSION_0_PICKLE: (
+                  _schema_check_utils.SCHEMA_VERSION_1_JSON,
+                  mock_migrate,
+              )
+          },
+      ):
+        with caplog.at_level(logging.INFO):
+          migration_runner.upgrade(_SOURCE_URL, _DEST_URL)
+
+    mock_migrate.assert_called_once_with(_SOURCE_URL, _DEST_URL)
+    assert "sup3r-s3cret" not in caplog.text
+    assert "0ther-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/dst" in caplog.text
 
 
 def test_migrate_from_sqlalchemy_pickle(tmp_path):
@@ -184,8 +311,384 @@ def test_migrate_from_sqlalchemy_pickle(tmp_path):
   dest_session.close()
 
 
+def test_migrate_from_sqlalchemy_pickle_preserves_safe_actions_pickle(tmp_path):
+  """Migration should preserve normal v0 EventActions pickle payloads."""
+  source_db_path = tmp_path / "source_pickle_safe_actions.db"
+  dest_db_path = tmp_path / "dest_json_safe_actions.db"
+  source_db_url = f"sqlite:///{source_db_path}"
+  dest_db_url = f"sqlite:///{dest_db_path}"
+
+  source_engine = create_engine(source_db_url)
+  v0.Base.metadata.create_all(source_engine)
+  SourceSession = sessionmaker(bind=source_engine)
+
+  now = datetime.now(timezone.utc)
+  with SourceSession() as source_session:
+    source_session.add(
+        v0.StorageSession(
+            app_name="app1",
+            user_id="user1",
+            id="session1",
+            state={},
+            create_time=now,
+            update_time=now,
+        )
+    )
+    source_session.commit()
+
+    actions = EventActions(
+        state_delta={"skey": "updated"},
+        artifact_delta={"artifact.txt": 2},
+    )
+    source_session.add(
+        v0.StorageEvent(
+            id="event1",
+            app_name="app1",
+            user_id="user1",
+            session_id="session1",
+            invocation_id="invoke1",
+            author="user",
+            actions=actions,
+            timestamp=now,
+        )
+    )
+    source_session.commit()
+
+  mfsp.migrate(source_db_url, dest_db_url)
+
+  dest_engine = create_engine(dest_db_url)
+  DestSession = sessionmaker(bind=dest_engine)
+  with DestSession() as dest_session:
+    event_res = dest_session.query(v1.StorageEvent).first()
+    assert event_res is not None
+    assert event_res.event_data["actions"]["state_delta"] == {"skey": "updated"}
+    assert event_res.event_data["actions"]["artifact_delta"] == {
+        "artifact.txt": 2
+    }
+
+
+def test_migrate_from_sqlalchemy_pickle_preserves_nested_safe_actions_pickle(
+    tmp_path,
+):
+  """Migration should allow standard nested EventActions models."""
+  source_db_path = tmp_path / "source_pickle_nested_actions.db"
+  dest_db_path = tmp_path / "dest_json_nested_actions.db"
+  source_db_url = f"sqlite:///{source_db_path}"
+  dest_db_url = f"sqlite:///{dest_db_path}"
+
+  source_engine = create_engine(source_db_url)
+  v0.Base.metadata.create_all(source_engine)
+  SourceSession = sessionmaker(bind=source_engine)
+
+  now = datetime.now(timezone.utc)
+  with SourceSession() as source_session:
+    source_session.add(
+        v0.StorageSession(
+            app_name="app1",
+            user_id="user1",
+            id="session1",
+            state={},
+            create_time=now,
+            update_time=now,
+        )
+    )
+    source_session.commit()
+
+    actions = EventActions(
+        requested_auth_configs={
+            "fc-auth": AuthConfig(auth_scheme=HTTPBearer())
+        },
+        requested_tool_confirmations={
+            "fc-confirm": ToolConfirmation(hint="Authorize execution?")
+        },
+        compaction=EventCompaction(
+            start_timestamp=1.0,
+            end_timestamp=2.0,
+            compacted_content=types.Content(
+                parts=[types.Part(text="summary")],
+                role="model",
+            ),
+        ),
+    )
+    source_session.add(
+        v0.StorageEvent(
+            id="event1",
+            app_name="app1",
+            user_id="user1",
+            session_id="session1",
+            invocation_id="invoke1",
+            author="user",
+            actions=actions,
+            timestamp=now,
+        )
+    )
+    source_session.commit()
+
+  mfsp.migrate(source_db_url, dest_db_url)
+
+  dest_engine = create_engine(dest_db_url)
+  DestSession = sessionmaker(bind=dest_engine)
+  with DestSession() as dest_session:
+    event_res = dest_session.query(v1.StorageEvent).first()
+    assert event_res is not None
+    actions_data = event_res.event_data["actions"]
+    assert "fc-auth" in actions_data["requested_auth_configs"]
+    assert (
+        actions_data["requested_tool_confirmations"]["fc-confirm"]["hint"]
+        == "Authorize execution?"
+    )
+    assert (
+        actions_data["compaction"]["compacted_content"]["parts"][0]["text"]
+        == "summary"
+    )
+
+
+def test_restricted_actions_unpickler_allows_datetime_state_delta():
+  """Standard timestamp objects in action deltas should migrate by default."""
+  last_seen = datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc)
+  actions = EventActions(state_delta={"last_seen": last_seen})
+
+  loaded_actions = mfsp._restricted_pickle_loads(pickle.dumps(actions))
+
+  assert isinstance(loaded_actions, EventActions)
+  assert loaded_actions.state_delta["last_seen"] == last_seen
+
+
+def test_restricted_actions_unpickler_allows_ui_widgets():
+  """Standard UI widget action metadata should migrate by default."""
+  actions = EventActions(
+      render_ui_widgets=[
+          UiWidget(
+              id="widget-1",
+              provider="mcp",
+              payload={"resource_uri": "ui://widget"},
+          )
+      ]
+  )
+
+  loaded_actions = mfsp._restricted_pickle_loads(pickle.dumps(actions))
+
+  assert isinstance(loaded_actions, EventActions)
+  assert loaded_actions.render_ui_widgets == actions.render_ui_widgets
+
+
+def test_migrate_from_sqlalchemy_pickle_ignores_non_object_json_fields():
+  """Event JSON model fields should only decode object payloads."""
+  event = mfsp._row_to_event({
+      "id": "event-list-content",
+      "invocation_id": "invoke1",
+      "author": "user",
+      "timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
+      "content": "[1, 2, 3]",
+  })
+
+  assert event.content is None
+
+
+@contextlib.contextmanager
+def _pinned_local_timezone(name: str):
+  """Pins the process timezone for the duration of the block.
+
+  ``time.tzset`` is POSIX-only, so on other platforms the block runs in the
+  host zone instead. Restoring ``TZ`` without a second ``tzset`` would leave
+  the C library pinned for the rest of the session, so both are undone.
+  """
+  if not hasattr(time, "tzset"):
+    yield
+    return
+  previous = os.environ.get("TZ")
+  os.environ["TZ"] = name
+  time.tzset()
+  try:
+    yield
+  finally:
+    if previous is None:
+      os.environ.pop("TZ", None)
+    else:
+      os.environ["TZ"] = previous
+    time.tzset()
+
+
+def test_migrate_from_sqlalchemy_pickle_reads_naive_timestamp_as_local():
+  """Naive v0 event timestamps must migrate as local time, not UTC.
+
+  The v0 schema stored the event ``timestamp`` column as a naive datetime in
+  local time (``StorageEvent.from_event`` uses ``datetime.fromtimestamp`` and
+  ``to_event`` reads it back with naive ``.timestamp()``). Forcing UTC on that
+  naive value shifted every migrated timestamp by the host's UTC offset.
+  """
+  original_epoch = 1000000.0
+
+  class NaiveLocalDatetime(datetime):
+    """Local naive datetime that rejects a timezone being forced onto it.
+
+    ``replace`` and ``astimezone`` return instances of this subclass, so a
+    migration that pins a timezone before reading the epoch back trips the
+    guard even on a host whose local zone is already UTC and where the
+    resulting epoch would be unchanged.
+    """
+
+    def timestamp(self) -> float:
+      assert (
+          self.tzinfo is None
+      ), f"migration forced {self.tzinfo} onto a naive v0 timestamp"
+      return super().timestamp()
+
+  # The pinned zone is what catches a UTC recomputation that arrives by some
+  # other route, e.g. calendar.timegm(), which the guard above cannot see.
+  with _pinned_local_timezone("Asia/Kolkata"):
+    # Exactly what v0.StorageEvent.from_event persisted: naive local time.
+    local = datetime.fromtimestamp(original_epoch)
+    naive_local_timestamp = NaiveLocalDatetime(
+        local.year,
+        local.month,
+        local.day,
+        local.hour,
+        local.minute,
+        local.second,
+        local.microsecond,
+    )
+
+    event = mfsp._row_to_event({
+        "id": "event-naive-timestamp",
+        "invocation_id": "invoke1",
+        "author": "user",
+        "actions": EventActions(),
+        "timestamp": naive_local_timestamp,
+    })
+
+    assert event.timestamp == original_epoch
+
+
+def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(
+    tmp_path, monkeypatch
+):
+  """Migration should not execute arbitrary globals from a pickled actions blob."""
+  monkeypatch.delenv("ADK_MIGRATION_PICKLE_RCE", raising=False)
+
+  source_db_path = tmp_path / "source_pickle_unsafe_actions.db"
+  dest_db_path = tmp_path / "dest_json_unsafe_actions.db"
+  source_db_url = f"sqlite:///{source_db_path}"
+  dest_db_url = f"sqlite:///{dest_db_path}"
+
+  source_engine = create_engine(source_db_url)
+  v0.Base.metadata.create_all(source_engine)
+  SourceSession = sessionmaker(bind=source_engine)
+
+  # Populate source DB with a valid session row to satisfy the FK constraint,
+  # then insert a malicious pickled actions blob directly as raw bytes.
+  now = datetime.now(timezone.utc)
+  with SourceSession() as source_session:
+    source_session.add(
+        v0.StorageSession(
+            app_name="app1",
+            user_id="user1",
+            id="session1",
+            state={},
+            create_time=now,
+            update_time=now,
+        )
+    )
+    source_session.commit()
+
+    class Evil:
+
+      def __reduce__(self):
+        # This is intentionally non-destructive: it only sets an env var.
+        return (
+            exec,
+            ("import os; os.environ['ADK_MIGRATION_PICKLE_RCE']='1'",),
+        )
+
+    source_session.execute(
+        text(
+            "INSERT INTO events (id, app_name, user_id, session_id,"
+            " invocation_id, author, actions, timestamp) VALUES (:id,"
+            " :app_name, :user_id, :session_id, :invocation_id, :author,"
+            " :actions, :timestamp)"
+        ),
+        {
+            "id": "event1",
+            "app_name": "app1",
+            "user_id": "user1",
+            "session_id": "session1",
+            "invocation_id": "invoke1",
+            "author": "user",
+            "actions": pickle.dumps(Evil()),
+            "timestamp": now,
+        },
+    )
+    source_session.commit()
+
+  mfsp.migrate(source_db_url, dest_db_url)
+
+  assert os.environ.get("ADK_MIGRATION_PICKLE_RCE") is None
+
+
+def test_migrate_from_sqlalchemy_pickle_allows_unsafe_actions_pickle_when_opted_in(
+    tmp_path, monkeypatch
+):
+  """Unsafe pickle loading should require an explicit migration opt-in."""
+  monkeypatch.delenv("ADK_MIGRATION_PICKLE_RCE", raising=False)
+
+  source_db_path = tmp_path / "source_pickle_unsafe_opt_in_actions.db"
+  dest_db_path = tmp_path / "dest_json_unsafe_opt_in_actions.db"
+  source_db_url = f"sqlite:///{source_db_path}"
+  dest_db_url = f"sqlite:///{dest_db_path}"
+
+  source_engine = create_engine(source_db_url)
+  v0.Base.metadata.create_all(source_engine)
+  SourceSession = sessionmaker(bind=source_engine)
+
+  now = datetime.now(timezone.utc)
+  with SourceSession() as source_session:
+    source_session.add(
+        v0.StorageSession(
+            app_name="app1",
+            user_id="user1",
+            id="session1",
+            state={},
+            create_time=now,
+            update_time=now,
+        )
+    )
+    source_session.commit()
+
+    class Evil:
+
+      def __reduce__(self):
+        return (
+            exec,
+            ("import os; os.environ['ADK_MIGRATION_PICKLE_RCE']='1'",),
+        )
+
+    source_session.execute(
+        text(
+            "INSERT INTO events (id, app_name, user_id, session_id,"
+            " invocation_id, author, actions, timestamp) VALUES (:id,"
+            " :app_name, :user_id, :session_id, :invocation_id, :author,"
+            " :actions, :timestamp)"
+        ),
+        {
+            "id": "event1",
+            "app_name": "app1",
+            "user_id": "user1",
+            "session_id": "session1",
+            "invocation_id": "invoke1",
+            "author": "user",
+            "actions": pickle.dumps(Evil()),
+            "timestamp": now,
+        },
+    )
+    source_session.commit()
+
+  mfsp.migrate(source_db_url, dest_db_url, allow_unsafe_unpickling=True)
+
+  assert os.environ.get("ADK_MIGRATION_PICKLE_RCE") == "1"
+
+
 def test_migrate_from_sqlalchemy_pickle_with_async_driver_urls(tmp_path):
-  """Tests that migration works with async driver URLs (fixes issue #4176).
+  """Tests that migration works with async driver URLs.
 
   Users often provide async driver URLs (e.g., postgresql+asyncpg://) since
   that's what ADK requires at runtime. The migration tool should handle these
@@ -221,7 +724,7 @@ def test_migrate_from_sqlalchemy_pickle_with_async_driver_urls(tmp_path):
   source_session.commit()
   source_session.close()
 
-  # This should NOT raise an error about async drivers (the fix for #4176)
+  # This should NOT raise an error about async drivers.
   mfsp.migrate(source_db_url, dest_db_url)
 
   # Verify destination DB
