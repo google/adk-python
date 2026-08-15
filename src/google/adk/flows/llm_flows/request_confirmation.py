@@ -72,12 +72,39 @@ def _get_original_function_call_args(
   return original_function_call
 
 
+def _compute_dynamically_requested_fc_ids(events: list[Event]) -> set[str]:
+  """Returns IDs of function calls for which a tool dynamically requested confirmation.
+
+  This accumulates over ALL events rather than keeping one event per ID: once
+  the confirmed tool is re-executed it emits a second function response with
+  the same ID and no `requested_tool_confirmations`, which would otherwise
+  shadow the original request.
+
+  Args:
+    events: Session events to scan.
+
+  Returns:
+    Set of original function call IDs that were dynamically requested to
+    require confirmation.
+  """
+  dynamically_requested_fc_ids: set[str] = set()
+  for ev in events:
+    requested_tool_confirmations = ev.actions.requested_tool_confirmations or {}
+    if not requested_tool_confirmations:
+      continue
+    for fr in ev.get_function_responses():
+      if fr.id and fr.id in requested_tool_confirmations:
+        dynamically_requested_fc_ids.add(fr.id)
+  return dynamically_requested_fc_ids
+
+
 async def _resolve_confirmation_targets(
     invocation_context: InvocationContext,
     events: list[Event],
     confirmation_fc_ids: set[str],
     confirmations_by_fc_id: dict[str, ToolConfirmation],
     tools_dict: dict[str, BaseTool],
+    dynamically_requested_fc_ids: set[str],
 ) -> tuple[dict[str, ToolConfirmation], dict[str, types.FunctionCall]]:
   """Find original function calls for confirmed tools and validate them.
 
@@ -94,6 +121,9 @@ async def _resolve_confirmation_targets(
     confirmations_by_fc_id: Mapping of confirmation FC ID ->
       ``ToolConfirmation``.
     tools_dict: Dictionary of registered tools.
+    dynamically_requested_fc_ids: IDs of original function calls for which a
+      tool dynamically requested confirmation, from
+      ``_compute_dynamically_requested_fc_ids``.
 
   Returns:
     Tuple of ``(tool_confirmation_dict, original_fcs_dict)`` where both
@@ -111,19 +141,6 @@ async def _resolve_confirmation_targets(
       for fc in ev.get_function_calls()
       if fc.id and fc.name != REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
   }
-  # IDs of function calls for which a tool dynamically requested confirmation.
-  # This accumulates over ALL events rather than keeping one event per ID: once
-  # the confirmed tool is re-executed it emits a second function response with
-  # the same ID and no `requested_tool_confirmations`, which would otherwise
-  # shadow the original request.
-  dynamically_requested_fc_ids: set[str] = set()
-  for ev in events:
-    requested_tool_confirmations = ev.actions.requested_tool_confirmations or {}
-    if not requested_tool_confirmations:
-      continue
-    for fr in ev.get_function_responses():
-      if fr.id and fr.id in requested_tool_confirmations:
-        dynamically_requested_fc_ids.add(fr.id)
 
   for event in events:
     event_function_calls = event.get_function_calls()
@@ -214,10 +231,12 @@ async def _resolve_confirmation_targets(
   return tool_confirmation_dict, original_fcs_dict
 
 
-def _get_orphaned_sibling_function_calls(
+async def _get_orphaned_sibling_function_calls(
+    invocation_context: InvocationContext,
     events: list[Event],
     original_fc_ids: set[str],
     tools_dict: dict[str, BaseTool],
+    dynamically_requested_fc_ids: set[str],
 ) -> dict[str, types.FunctionCall]:
   """Finds ungated sibling calls left without a function_response.
 
@@ -229,19 +248,32 @@ def _get_orphaned_sibling_function_calls(
   empty reply. Re-executing them here alongside the confirmed tool keeps the
   turn's function calls and responses in sync.
 
+  A sibling that itself requires confirmation (statically, or because it was
+  dynamically requested in history) and has no response yet is NOT ungated:
+  its own confirmation is simply still outstanding, and re-executing it here
+  would re-trigger `request_confirmation` bookkeeping for a confirmation that
+  was never resolved. Such siblings are left alone for their own turn through
+  this processor to handle once their confirmation arrives.
+
   Args:
+    invocation_context: Current invocation context, used to build a
+      ``ToolContext`` for each candidate's ``check_require_confirmation``.
     events: Session events to scan.
     original_fc_ids: IDs of the original function calls being resumed.
     tools_dict: Dictionary of registered tools.
+    dynamically_requested_fc_ids: IDs of original function calls for which a
+      tool dynamically requested confirmation, from
+      ``_compute_dynamically_requested_fc_ids``.
 
   Returns:
     Mapping of sibling function call ID -> ``FunctionCall``, for calls that
-    share an event with one of *original_fc_ids* but have no response yet.
+    share an event with one of *original_fc_ids*, have no response yet, and do
+    not themselves require confirmation.
   """
   responded_fc_ids = {
       fr.id for ev in events for fr in ev.get_function_responses() if fr.id
   }
-  siblings: dict[str, types.FunctionCall] = {}
+  candidates: dict[str, types.FunctionCall] = {}
   for event in events:
     event_function_calls = event.get_function_calls()
     event_fc_ids = {fc.id for fc in event_function_calls if fc.id}
@@ -254,7 +286,20 @@ def _get_orphaned_sibling_function_calls(
           and function_call.id not in responded_fc_ids
           and function_call.name in tools_dict
       ):
-        siblings[function_call.id] = function_call
+        candidates[function_call.id] = function_call
+
+  siblings: dict[str, types.FunctionCall] = {}
+  for fc_id, function_call in candidates.items():
+    tool = tools_dict[function_call.name]
+    temp_tool_context = ToolContext(
+        invocation_context=invocation_context, function_call_id=fc_id
+    )
+    requires_confirmation = await tool.check_require_confirmation(
+        function_call.args or {}, temp_tool_context
+    )
+    if requires_confirmation or fc_id in dynamically_requested_fc_ids:
+      continue
+    siblings[fc_id] = function_call
   return siblings
 
 
@@ -387,6 +432,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Step 3: Resolve confirmation targets using extracted helper.
     confirmation_fc_ids = set(confirmations_by_fc_id.keys())
+    dynamically_requested_fc_ids = _compute_dynamically_requested_fc_ids(events)
     tools_to_resume_with_confirmation, tools_to_resume_with_args = (
         await _resolve_confirmation_targets(
             invocation_context,
@@ -394,6 +440,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
             confirmation_fc_ids,
             confirmations_by_fc_id,
             tools_dict,
+            dynamically_requested_fc_ids,
         )
     )
 
@@ -402,9 +449,15 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Step 4: Also pick up any ungated sibling calls from the same turn that
     # never got a function_response, so resuming does not leave a dangling
-    # function_call in history.
-    sibling_function_calls = _get_orphaned_sibling_function_calls(
-        events, set(tools_to_resume_with_args.keys()), tools_dict
+    # function_call in history. Siblings that themselves still require
+    # confirmation are left alone; re-executing them here would re-trigger
+    # confirmation bookkeeping for a request that was never resolved.
+    sibling_function_calls = await _get_orphaned_sibling_function_calls(
+        invocation_context,
+        events,
+        set(tools_to_resume_with_args.keys()),
+        tools_dict,
+        dynamically_requested_fc_ids,
     )
     function_calls_to_execute = list(tools_to_resume_with_args.values()) + list(
         sibling_function_calls.values()
