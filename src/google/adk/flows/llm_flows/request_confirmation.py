@@ -214,6 +214,50 @@ async def _resolve_confirmation_targets(
   return tool_confirmation_dict, original_fcs_dict
 
 
+def _get_orphaned_sibling_function_calls(
+    events: list[Event],
+    original_fc_ids: set[str],
+    tools_dict: dict[str, BaseTool],
+) -> dict[str, types.FunctionCall]:
+  """Finds ungated sibling calls left without a function_response.
+
+  When a model turn contains a confirmation-gated call in parallel with
+  ungated calls, the ungated siblings' results can fail to persist across the
+  pause (e.g. a caller stops consuming the event stream at the confirmation
+  event). On resume, those siblings' `function_call`s remain in history with
+  no matching `function_response`, which makes the next LLM call return an
+  empty reply. Re-executing them here alongside the confirmed tool keeps the
+  turn's function calls and responses in sync.
+
+  Args:
+    events: Session events to scan.
+    original_fc_ids: IDs of the original function calls being resumed.
+    tools_dict: Dictionary of registered tools.
+
+  Returns:
+    Mapping of sibling function call ID -> ``FunctionCall``, for calls that
+    share an event with one of *original_fc_ids* but have no response yet.
+  """
+  responded_fc_ids = {
+      fr.id for ev in events for fr in ev.get_function_responses() if fr.id
+  }
+  siblings: dict[str, types.FunctionCall] = {}
+  for event in events:
+    event_function_calls = event.get_function_calls()
+    event_fc_ids = {fc.id for fc in event_function_calls if fc.id}
+    if not event_fc_ids & original_fc_ids:
+      continue
+    for function_call in event_function_calls:
+      if (
+          function_call.id
+          and function_call.id not in original_fc_ids
+          and function_call.id not in responded_fc_ids
+          and function_call.name in tools_dict
+      ):
+        siblings[function_call.id] = function_call
+  return siblings
+
+
 def _map_confirmation_to_original_fc_ids(
     events: list[Event],
     confirmation_fc_ids: set[str],
@@ -356,12 +400,22 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     if not tools_to_resume_with_confirmation:
       return
 
-    # Step 4: Re-execute the confirmed tools.
+    # Step 4: Also pick up any ungated sibling calls from the same turn that
+    # never got a function_response, so resuming does not leave a dangling
+    # function_call in history.
+    sibling_function_calls = _get_orphaned_sibling_function_calls(
+        events, set(tools_to_resume_with_args.keys()), tools_dict
+    )
+    function_calls_to_execute = list(tools_to_resume_with_args.values()) + list(
+        sibling_function_calls.values()
+    )
+
+    # Step 5: Re-execute the confirmed tools and any orphaned siblings.
     if function_response_event := await functions.handle_function_call_list_async(
         invocation_context,
-        list(tools_to_resume_with_args.values()),
+        function_calls_to_execute,
         tools_dict,
-        set(tools_to_resume_with_confirmation.keys()),
+        {fc.id for fc in function_calls_to_execute if fc.id},
         tools_to_resume_with_confirmation,
     ):
       yield function_response_event

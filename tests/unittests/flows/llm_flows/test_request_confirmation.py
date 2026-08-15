@@ -1320,3 +1320,118 @@ async def test_resolve_confirmation_targets_requires_adk_name():
 
   assert set(tool_confirmation_dict) == {"requested_fc_id"}
   assert set(original_fcs_dict) == {"requested_fc_id"}
+
+
+SIBLING_TOOL_NAME = "sibling_tool"
+SIBLING_FUNCTION_CALL_ID = "sibling_function_call_id"
+
+
+def sibling_tool(param2: str):
+  """Mock ungated sibling tool function."""
+  return f"Sibling tool result with {param2}"
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_reexecutes_orphaned_sibling():
+  """Regression test for #6732.
+
+  When a model turn pairs a confirmation-gated call with an ungated sibling
+  call, and the merged function_response_event for that turn was never
+  persisted (e.g. a caller stopped consuming the event stream right at the
+  confirmation-request event), the sibling's function_call is left in history
+  with no matching function_response. On resume, the processor must
+  re-execute the sibling alongside the confirmed tool instead of leaving a
+  dangling function_call, which would otherwise make the next LLM call return
+  an empty reply.
+  """
+  agent = LlmAgent(
+      name="test_agent",
+      tools=[
+          FunctionTool(mock_tool, require_confirmation=True),
+          FunctionTool(sibling_tool),
+      ],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  llm_request = LlmRequest()
+
+  original_function_call = types.FunctionCall(
+      name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
+  )
+  sibling_function_call = types.FunctionCall(
+      name=SIBLING_TOOL_NAME,
+      args={"param2": "test"},
+      id=SIBLING_FUNCTION_CALL_ID,
+  )
+
+  # Model turn with both calls in parallel. There is deliberately no
+  # function_response event for this turn: it was lost across the pause.
+  invocation_context.session.events.append(
+      Event(
+          author=agent.name,
+          content=types.Content(
+              parts=[
+                  types.Part(function_call=original_function_call),
+                  types.Part(function_call=sibling_function_call),
+              ]
+          ),
+      )
+  )
+
+  tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
+  tool_confirmation_args = {
+      "originalFunctionCall": original_function_call.model_dump(
+          exclude_none=True, by_alias=True
+      ),
+      "toolConfirmation": tool_confirmation.model_dump(
+          by_alias=True, exclude_none=True
+      ),
+  }
+
+  invocation_context.session.events.append(
+      Event(
+          author=agent.name,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  user_confirmation = ToolConfirmation(confirmed=True)
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": user_confirmation.model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  events = []
+  async for event in request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  response_names = {fr.name for fr in events[0].get_function_responses()}
+  assert response_names == {MOCK_TOOL_NAME, SIBLING_TOOL_NAME}
