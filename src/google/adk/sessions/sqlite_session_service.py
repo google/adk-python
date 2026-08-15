@@ -53,7 +53,11 @@ PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
 _MERGE_STATE_SQL = """
         SELECT json_group_object(
                  key,
-                 CASE WHEN type IN ('object','array') THEN json(value) ELSE value END)
+                 CASE
+                   WHEN type IN ('object','array') THEN json(value)
+                   WHEN type IN ('true','false') THEN json(type)
+                   ELSE value
+                 END)
         FROM (
           SELECT key, value, type FROM json_each({delta})
           UNION ALL

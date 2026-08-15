@@ -702,6 +702,29 @@ async def test_none_valued_state_delta_is_stored_not_dropped(session_service):
 
 
 @pytest.mark.asyncio
+async def test_boolean_state_survives_unrelated_state_delta(session_service):
+  """An unrelated state_delta must not corrupt a stored boolean's type."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': False}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'new_flag': True}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('new_flag') is True
+  assert reloaded.state.get('flag') is False
+  assert session.state.get('new_flag') is True
+  assert session.state.get('flag') is False
+
+
+@pytest.mark.asyncio
 async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   app_name = 'my_app'
   user_id = 'u1'
