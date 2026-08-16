@@ -62,6 +62,7 @@ from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _safe_json_serialize
 from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
+from google.adk.models.lite_llm import _strip_proxy_prefix
 from google.adk.models.lite_llm import _THOUGHT_SIGNATURE_SEPARATOR
 from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
@@ -5523,6 +5524,35 @@ def test_is_proxied_model_honors_use_litellm_proxy_flag():
     assert _is_proxied_model("openai/gpt-4o") is False
     # The explicit prefix still wins regardless of the flag.
     assert _is_proxied_model("litellm_proxy/openai/gpt-4o") is True
+
+
+def test_strip_proxy_prefix_ignores_use_litellm_proxy_flag():
+  """Stripping keys off the literal prefix, never off proxy routing.
+
+  `USE_LITELLM_PROXY` makes `_is_proxied_model` true for unprefixed models, so
+  driving the slice from it would cut `len("litellm_proxy/")` characters out of
+  a model name that never carried the prefix.
+  """
+  with patch.dict(os.environ, {"USE_LITELLM_PROXY": "true"}):
+    assert _strip_proxy_prefix("openai/gpt-4o") == "openai/gpt-4o"
+    # Names long enough to survive the slice and still hold a "/" are the ones
+    # that would silently corrupt rather than fall through.
+    assert (
+        _strip_proxy_prefix("fireworks_ai/accounts/fireworks/models/llama-v3")
+        == "fireworks_ai/accounts/fireworks/models/llama-v3"
+    )
+    assert (
+        _strip_proxy_prefix("vertex_ai/publishers/google/models/gemini-2.5-pro")
+        == "vertex_ai/publishers/google/models/gemini-2.5-pro"
+    )
+    assert _get_provider_from_model("fireworks_ai/accounts/fw/models/x") == (
+        "fireworks_ai"
+    )
+    # The literal prefix is still stripped while the flag is set.
+    assert (
+        _strip_proxy_prefix("litellm_proxy/azure/my-deployment")
+        == "azure/my-deployment"
+    )
 
 
 @pytest.mark.asyncio

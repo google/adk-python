@@ -332,8 +332,12 @@ def _strip_proxy_prefix(model: str) -> str:
   Returns:
     The model string without the ``litellm_proxy/`` prefix if nested.
   """
-  if _is_proxied_model(model):
-    remaining = model[len(_PROXY_PROVIDER) + 1 :]
+  # Strip based on the literal prefix only. `_is_proxied_model` is also true
+  # for unprefixed models under `USE_LITELLM_PROXY`, and slicing those would
+  # cut into the model name itself.
+  prefix = _PROXY_PROVIDER + "/"
+  if model and model.lower().startswith(prefix):
+    remaining = model[len(prefix) :]
     if "/" in remaining:
       return remaining
   return model
