@@ -20,9 +20,7 @@ Depending on how the agent is deployed—either as a step in a `Workflow` or as 
 
 ## 1. Single-Turn Mode as a Workflow Node
 
-When building a `Workflow` graph, any `LlmAgent` added to the graph defaults to
-`mode="single_turn"` (unless explicitly configured otherwise).
-
+“When an LlmAgent is used as a node in a workflow, its execution mode can be configured explicitly using the mode parameter.”
 ### Behavior
 
 -   **Stateless by Default**: The node does not see previous conversation turns
