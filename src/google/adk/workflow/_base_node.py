@@ -103,8 +103,8 @@ class BaseNode(BaseModel):
   generic aliases like ``list[str]``, raw ``dict`` schemas, etc.).
 
   When set to a ``BaseModel`` subclass, the node's output data is validated:
-    - dict → ``output_schema.model_validate(data).model_dump()``
-    - BaseModel instance → ``data.model_dump()`` (already converted)
+    - dict → ``output_schema.model_validate(data).model_dump(mode="json")``
+    - BaseModel instance → ``data.model_dump(mode="json")`` (already converted)
 
   ``None`` means no output validation (the default).
   """
@@ -133,9 +133,9 @@ class BaseNode(BaseModel):
 
   @staticmethod
   def _to_serializable(data: Any) -> Any:
-    """Converts BaseModel instances to dicts recursively."""
+    """Converts BaseModel instances to JSON-serializable dicts recursively."""
     if isinstance(data, BaseModel):
-      return data.model_dump()
+      return data.model_dump(mode='json')
     if isinstance(data, list):
       return [BaseNode._to_serializable(item) for item in data]
     if isinstance(data, dict):
