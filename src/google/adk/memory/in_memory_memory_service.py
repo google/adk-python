@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 
 _UNKNOWN_SESSION_ID = '__unknown_session_id__'
 
+_MAX_SEARCH_RESULTS = 10
+
 
 def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
   return (app_name, user_id)
@@ -45,7 +47,8 @@ def _extract_words_lower(text: str) -> set[str]:
 class InMemoryMemoryService(BaseMemoryService):
   """An in-memory memory service for prototyping purpose only.
 
-  Uses keyword matching instead of semantic search.
+  Uses keyword matching instead of semantic search. A search returns at most
+  ten memories, the ones sharing the most words with the query.
 
   This class is thread-safe, however, it should be used for testing and
   development only.
@@ -117,7 +120,7 @@ class InMemoryMemoryService(BaseMemoryService):
       ]
 
     words_in_query = _extract_words_lower(query)
-    response = SearchMemoryResponse()
+    scored_memories: list[tuple[int, MemoryEntry]] = []
 
     for session_events in session_event_lists:
       for event in session_events:
@@ -129,13 +132,23 @@ class InMemoryMemoryService(BaseMemoryService):
         if not words_in_event:
           continue
 
-        if any(query_word in words_in_event for query_word in words_in_query):
-          response.memories.append(
+        matched_words = len(words_in_query & words_in_event)
+        if matched_words:
+          scored_memories.append((
+              matched_words,
               MemoryEntry(
                   content=event.content,
                   author=event.author,
                   timestamp=_utils.format_timestamp(event.timestamp),
-              )
-          )
+              ),
+          ))
 
-    return response
+    # Almost any two sentences share a word, so returning every event that
+    # matches at least one query word returns most of the store, and callers
+    # such as the preload_memory tool put all of it in the prompt. Keep the
+    # events matching the most query words. The sort key reads only the count,
+    # so it is stable and events matching equally stay in insertion order.
+    scored_memories.sort(key=lambda scored_memory: -scored_memory[0])
+    return SearchMemoryResponse(
+        memories=[memory for _, memory in scored_memories[:_MAX_SEARCH_RESULTS]]
+    )

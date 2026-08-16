@@ -26,6 +26,7 @@ import pytest
 
 from . import isolated_import_utils
 from .isolated_import_utils import assert_modules_unloaded
+from .isolated_import_utils import loaded_top_level_packages
 from .isolated_import_utils import run_isolated
 
 pytestmark = pytest.mark.skipif(
@@ -41,6 +42,59 @@ _LAZY_PACKAGES = (
     'google.adk.cli.utils',
     'google.adk.workflow',
 )
+
+# The statements almost every ADK program starts with, and therefore the two
+# import graphs whose cost every user pays.
+_ENTRY_POINTS = (
+    'from google.adk.agents import Agent',
+    'from google.adk.runners import Runner',
+)
+
+# Third-party top-level packages an entry point may load. The forbidden lists
+# above pin individual deferrals on the lazy package inits; this one bounds the
+# whole graph, because the cost that reaches users arrives as a package nobody
+# noticed rather than as one somebody predicted.
+_ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
+    # Declared requirements that ADK imports at module scope.
+    'click',
+    'fastapi',
+    'google',
+    'httpx',
+    'opentelemetry',
+    'packaging',
+    'pydantic',
+    'python_multipart',
+    'starlette',
+    'tenacity',
+    'websockets',
+    # Reached through pydantic and httpx rather than through ADK.
+    'annotated_doc',
+    'annotated_types',
+    'anyio',
+    'certifi',
+    'idna',
+    'orjson',
+    'pydantic_core',
+    'pygments',
+    'rich',
+    'sniffio',
+    'typing_extensions',
+    'typing_inspection',
+    'zstandard',
+    # google.genai.types annotates optional fields with aiohttp and Pillow
+    # types and imports whichever of the two the environment happens to have.
+    # No ADK module imports either one, so these are absent in some installs.
+    'PIL',
+    'aiohappyeyeballs',
+    'aiohttp',
+    'aiosignal',
+    'attr',
+    'defusedxml',
+    'frozenlist',
+    'multidict',
+    'propcache',
+    'yarl',
+})
 
 
 @pytest.mark.parametrize(
@@ -101,6 +155,29 @@ def test_package_import_defers_unrelated_runtime(
   """Importing a lightweight package leaves unrelated runtime stacks alone."""
   assert_modules_unloaded(
       f'import importlib\nimportlib.import_module({module_name!r})', forbidden
+  )
+
+
+@pytest.mark.parametrize('statement', _ENTRY_POINTS, ids=('agent', 'runner'))
+def test_entry_point_loads_only_allowlisted_packages(statement: str) -> None:
+  """The two entry points every program uses load a reviewed set of packages.
+
+  The lazy package inits are already cheap, so a new eager dependency shows up
+  here first: as a package nobody agreed to pay for on every ADK start.
+
+  The unit is the top-level import name, so a new eager dependency arriving
+  under the `google` namespace, which ADK loads either way, does not show up
+  here.
+  """
+  unexpected = sorted(
+      loaded_top_level_packages(statement) - _ENTRY_POINT_PACKAGE_ALLOWLIST
+  )
+
+  assert not unexpected, (
+      f'{statement!r} now loads {", ".join(unexpected)}, which every ADK'
+      ' process would pay for at startup. Move the import into the function'
+      ' that needs it, or add the package to the allowlist together with the'
+      ' reason it has to be eager.'
   )
 
 
