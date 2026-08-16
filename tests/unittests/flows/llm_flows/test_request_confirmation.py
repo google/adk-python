@@ -20,6 +20,7 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import functions
 from google.adk.flows.llm_flows.request_confirmation import _compute_dynamically_requested_fc_ids
+from google.adk.flows.llm_flows.request_confirmation import _ORPHANED_SIBLING_RESPONSE_LOST_ERROR
 from google.adk.flows.llm_flows.request_confirmation import _resolve_confirmation_targets
 from google.adk.flows.llm_flows.request_confirmation import request_processor
 from google.adk.models.llm_request import LlmRequest
@@ -1330,14 +1331,18 @@ async def test_resolve_confirmation_targets_requires_adk_name():
 SIBLING_TOOL_NAME = "sibling_tool"
 SIBLING_FUNCTION_CALL_ID = "sibling_function_call_id"
 
+sibling_tool_call_count = 0
+
 
 def sibling_tool(param2: str):
   """Mock ungated sibling tool function."""
+  global sibling_tool_call_count
+  sibling_tool_call_count += 1
   return f"Sibling tool result with {param2}"
 
 
 @pytest.mark.asyncio
-async def test_request_confirmation_processor_reexecutes_orphaned_sibling():
+async def test_request_confirmation_processor_synthesizes_orphaned_sibling_response():
   """Regression test for #6732.
 
   When a model turn pairs a confirmation-gated call with an ungated sibling
@@ -1345,10 +1350,15 @@ async def test_request_confirmation_processor_reexecutes_orphaned_sibling():
   persisted (e.g. a caller stopped consuming the event stream right at the
   confirmation-request event), the sibling's function_call is left in history
   with no matching function_response. On resume, the processor must
-  re-execute the sibling alongside the confirmed tool instead of leaving a
-  dangling function_call, which would otherwise make the next LLM call return
-  an empty reply.
+  synthesize a placeholder function_response for the sibling instead of
+  leaving a dangling function_call (which would otherwise make the next LLM
+  call return an empty reply), and it must NOT re-invoke the sibling's tool:
+  the sibling already ran once before the pause, so calling it again could
+  duplicate arbitrary side effects.
   """
+  global sibling_tool_call_count
+  sibling_tool_call_count = 0
+
   agent = LlmAgent(
       name="test_agent",
       tools=[
@@ -1438,8 +1448,19 @@ async def test_request_confirmation_processor_reexecutes_orphaned_sibling():
     events.append(event)
 
   assert len(events) == 1
-  response_names = {fr.name for fr in events[0].get_function_responses()}
-  assert response_names == {MOCK_TOOL_NAME, SIBLING_TOOL_NAME}
+  responses_by_name = {
+      fr.name: fr.response for fr in events[0].get_function_responses()
+  }
+  assert set(responses_by_name) == {MOCK_TOOL_NAME, SIBLING_TOOL_NAME}
+
+  # The sibling's tool function must not have been called again: its
+  # synthesized response is an error placeholder, not a fresh result.
+  assert sibling_tool_call_count == 0
+  assert "error" in responses_by_name[SIBLING_TOOL_NAME]
+  assert (
+      responses_by_name[SIBLING_TOOL_NAME]["error"]
+      == _ORPHANED_SIBLING_RESPONSE_LOST_ERROR
+  )
 
 
 GATED_SIBLING_TOOL_NAME = "gated_sibling_tool"
@@ -1457,7 +1478,7 @@ async def test_request_confirmation_processor_leaves_gated_sibling_pending():
 
   A sibling call that itself requires confirmation and has not been answered
   is NOT an "orphaned ungated sibling": its confirmation is simply still
-  outstanding. The processor must not sweep it into re-execution, since doing
+  outstanding. The processor must not sweep it into response synthesis, since doing
   so would re-trigger `request_confirmation` bookkeeping for a confirmation
   that was never resolved by the user.
   """
