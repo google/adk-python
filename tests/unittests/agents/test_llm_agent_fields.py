@@ -675,6 +675,40 @@ class TestCanonicalTools:
     assert tools[0].name == 'connect_mcp_server'
     assert any('failed to load' in r.getMessage() for r in caplog.records)
 
+  async def test_canonical_tools_prefixes_on_tools_listing_error_fallback(
+      self, caplog
+  ):
+    """Listing-error fallback tools honor the toolset tool_name_prefix."""
+    from google.adk.tools.base_tool import BaseTool
+    from google.adk.tools.base_toolset import BaseToolset
+
+    class AuthPromptToolset(BaseToolset):
+
+      async def get_tools(self, readonly_context=None):
+        raise ConnectionError('HTTP 401 Unauthorized')
+
+      async def on_tools_listing_error(self, error, readonly_context=None):
+        del error, readonly_context
+        tool = mock.MagicMock(spec=BaseTool)
+        tool.name = 'connect_mcp_server'
+        tool.description = 'Authorize access'
+        tool._get_declaration = mock.MagicMock(return_value=None)
+        return [tool]
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[AuthPromptToolset(tool_name_prefix='books')],
+    )
+    ctx = await _create_readonly_context(agent)
+
+    with caplog.at_level(logging.ERROR, logger='google_adk'):
+      tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'books_connect_mcp_server'
+    assert any('failed to load' in r.getMessage() for r in caplog.records)
+
 
 # Tests for multi-provider model support via string model names
 @pytest.mark.parametrize(

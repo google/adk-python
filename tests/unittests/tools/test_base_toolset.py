@@ -485,3 +485,36 @@ async def test_on_tools_listing_error_can_be_overridden():
   )
   assert len(tools) == 1
   assert tools[0].name == 'connect_mcp'
+
+
+@pytest.mark.asyncio
+async def test_on_tools_listing_error_fallback_respects_tool_name_prefix():
+  """Fallback tools from the listing-error hook receive tool_name_prefix."""
+
+  class _AuthPromptToolset(_TestingToolset):
+
+    async def get_tools(
+        self, readonly_context: Optional[ReadonlyContext] = None
+    ) -> list[BaseTool]:
+      del readonly_context
+      raise ConnectionError('HTTP 401')
+
+    async def on_tools_listing_error(
+        self,
+        error: Exception,
+        readonly_context: Optional[ReadonlyContext] = None,
+    ) -> list[BaseTool]:
+      del error, readonly_context
+      return [
+          _TestingTool(
+              name='connect_mcp',
+              description='authorize MCP access',
+          )
+      ]
+
+  toolset = _AuthPromptToolset(tool_name_prefix='mcp')
+  tools = toolset._apply_tool_name_prefix(
+      await toolset.on_tools_listing_error(ConnectionError('HTTP 401'))
+  )
+  assert len(tools) == 1
+  assert tools[0].name == 'mcp_connect_mcp'

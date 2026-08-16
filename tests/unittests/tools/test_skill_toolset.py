@@ -2400,11 +2400,13 @@ async def test_skill_toolset_resolution_isolates_failing_toolset(
   failing_toolset = mock.create_autospec(
       skill_toolset.BaseToolset, instance=True
   )
+  failing_toolset.tool_name_prefix = None
   failing_toolset.get_tools_with_prefix.side_effect = RuntimeError(
       "MCP server unreachable"
   )
   # Default hook contributes nothing — same as historical skip behavior.
   failing_toolset.on_tools_listing_error = mock.AsyncMock(return_value=[])
+  failing_toolset._apply_tool_name_prefix.side_effect = lambda tools: tools
 
   toolset = skill_toolset.SkillToolset(
       [mock_skill1],
@@ -2446,11 +2448,17 @@ async def test_skill_toolset_resolution_uses_on_tools_listing_error_hook(
   failing_toolset = mock.create_autospec(
       skill_toolset.BaseToolset, instance=True
   )
+  failing_toolset.tool_name_prefix = None
   failing_toolset.get_tools_with_prefix.side_effect = ConnectionError(
       "HTTP 401 Unauthorized"
   )
   failing_toolset.on_tools_listing_error = mock.AsyncMock(
       return_value=[placeholder]
+  )
+  failing_toolset._apply_tool_name_prefix.side_effect = (
+      lambda tools: skill_toolset.BaseToolset._apply_tool_name_prefix(
+          failing_toolset, tools
+      )
   )
 
   toolset = skill_toolset.SkillToolset(
@@ -2467,6 +2475,44 @@ async def test_skill_toolset_resolution_uses_on_tools_listing_error_hook(
 
   assert "connect_mcp_server" in {t.name for t in tools}
   failing_toolset.on_tools_listing_error.assert_awaited_once()
+  assert "Skipping toolset" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_resolution_prefixes_listing_error_fallback(
+    mock_skill1, caplog
+):
+  """Skill additional-tool fallbacks from listing errors honor tool_name_prefix."""
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["oauth_connect_mcp_server"]
+  }
+  mock_skill1.name = "skill1"
+
+  class _AuthPromptToolset(skill_toolset.BaseToolset):
+
+    async def get_tools(self, readonly_context=None):
+      raise ConnectionError("HTTP 401 Unauthorized")
+
+    async def on_tools_listing_error(self, error, readonly_context=None):
+      del error, readonly_context
+      placeholder = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+      placeholder.name = "connect_mcp_server"
+      placeholder._get_declaration = mock.MagicMock(return_value=None)
+      return [placeholder]
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      additional_tools=[_AuthPromptToolset(tool_name_prefix="oauth")],
+  )
+  ctx = _make_tool_context_with_agent()
+
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  await load_tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+
+  with caplog.at_level(logging.WARNING):
+    tools = await toolset.get_tools(readonly_context=ctx)
+
+  assert "oauth_connect_mcp_server" in {t.name for t in tools}
   assert "Skipping toolset" in caplog.text
 
 

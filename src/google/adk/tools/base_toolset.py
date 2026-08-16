@@ -117,6 +117,10 @@ class BaseToolset(ABC):
     original exception; this hook is only invoked by the framework's
     isolate-and-continue paths.
 
+    Framework callers apply ``tool_name_prefix`` to the returned tools the same
+    way ``get_tools_with_prefix`` would, so overrides should return unprefixed
+    tool names.
+
     Args:
       error: The exception raised by ``get_tools`` / ``get_tools_with_prefix``.
       readonly_context: The same context passed to the failed listing call.
@@ -127,6 +131,44 @@ class BaseToolset(ABC):
     """
     del error, readonly_context
     return []
+
+  def _apply_tool_name_prefix(self, tools: list[BaseTool]) -> list[BaseTool]:
+    """Applies ``tool_name_prefix`` to tools, matching ``get_tools_with_prefix``.
+
+    Args:
+      tools: Tools with unprefixed names (as returned by ``get_tools`` or
+        ``on_tools_listing_error``).
+
+    Returns:
+      The same tools when no prefix is configured; otherwise shallow copies
+      with prefixed ``name`` / declaration names.
+    """
+    if not self.tool_name_prefix:
+      return tools
+
+    prefix = self.tool_name_prefix
+    prefixed_tools = []
+    for tool in tools:
+      tool_copy = copy.copy(tool)
+      prefixed_name = f'{prefix}_{tool.name}'
+      tool_copy.name = prefixed_name
+
+      def _create_prefixed_declaration(
+          original_get_declaration=tool._get_declaration,
+          prefixed_name=prefixed_name,
+      ):
+        def _get_prefixed_declaration():
+          declaration = original_get_declaration()
+          if declaration is not None:
+            declaration.name = prefixed_name
+            return declaration
+          return None
+
+        return _get_prefixed_declaration
+
+      tool_copy._get_declaration = _create_prefixed_declaration()
+      prefixed_tools.append(tool_copy)
+    return prefixed_tools
 
   @final
   async def get_tools_with_prefix(
@@ -154,41 +196,7 @@ class BaseToolset(ABC):
       return self._cached_prefixed_tools
 
     tools = await self.get_tools(readonly_context)
-
-    if not self.tool_name_prefix:
-      self._cached_invocation_id = invocation_id
-      self._cached_prefixed_tools = tools
-      return tools
-
-    prefix = self.tool_name_prefix
-
-    # Create copies of tools to avoid modifying original instances
-    prefixed_tools = []
-    for tool in tools:
-      # Create a shallow copy of the tool
-      tool_copy = copy.copy(tool)
-
-      # Apply prefix to the copied tool
-      prefixed_name = f"{prefix}_{tool.name}"
-      tool_copy.name = prefixed_name
-
-      # Also update the function declaration name if the tool has one
-      # Use default parameters to capture the current values in the closure
-      def _create_prefixed_declaration(
-          original_get_declaration=tool._get_declaration,
-          prefixed_name=prefixed_name,
-      ):
-        def _get_prefixed_declaration():
-          declaration = original_get_declaration()
-          if declaration is not None:
-            declaration.name = prefixed_name
-            return declaration
-          return None
-
-        return _get_prefixed_declaration
-
-      tool_copy._get_declaration = _create_prefixed_declaration()
-      prefixed_tools.append(tool_copy)
+    prefixed_tools = self._apply_tool_name_prefix(tools)
 
     self._cached_invocation_id = invocation_id
     self._cached_prefixed_tools = prefixed_tools

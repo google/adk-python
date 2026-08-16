@@ -228,7 +228,9 @@ async def _convert_tool_union_to_tools(
         e,
         exc_info=True,
     )
-    return await tool_union.on_tools_listing_error(e, ctx)
+    return tool_union._apply_tool_name_prefix(
+        await tool_union.on_tools_listing_error(e, ctx)
+    )
 
 
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to

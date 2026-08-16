@@ -1316,8 +1316,9 @@ class SkillToolset(BaseToolset):
           )
           # Let the toolset replace a failed listing (default: contribute
           # nothing) so apps can surface expected auth failures as tools.
-          ts_tools = await toolset.on_tools_listing_error(
-              ts_tools, readonly_context
+          # Apply the same prefix contract as get_tools_with_prefix.
+          ts_tools = toolset._apply_tool_name_prefix(
+              await toolset.on_tools_listing_error(ts_tools, readonly_context)
           )
         if isinstance(ts_tools, BaseException):
           raise ts_tools
