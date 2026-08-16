@@ -259,6 +259,14 @@ def _rearrange_events_for_latest_function_response(
   between the initial function_call and the latest function_response will be
   removed.
 
+  If the latest event carries function responses with no matching function
+  call in history (an orphaned FR), those responses are dropped and history
+  is rearranged from the remaining events. Raising here would permanently
+  poison the session: contents assembly runs before any user callback and
+  every later turn would replay the same fatal error. This is defense in
+  depth alongside ``_drop_orphaned_function_responses``, which only prunes
+  responses that carry an id.
+
   Args:
     events: A list of events.
 
@@ -282,9 +290,20 @@ def _rearrange_events_for_latest_function_response(
 
   if function_calls:
     for function_call in function_calls:
-      # The latest function_response is already matched
+      # The latest function_response is already matched to the previous event.
       if function_call.id in function_responses_ids:
-        return events
+        adjacent_call_ids = {
+            call.id for call in function_calls if call.id
+        }
+        # Id-less FC/FR pairs are valid for some model families that strip
+        # ids on the way out — leave them alone.
+        if not adjacent_call_ids:
+          return events
+        # Drop FR parts that do not belong to this adjacent call event so a
+        # partially matched trailing event cannot keep unpairable responses.
+        return _drop_unmatched_trailing_function_responses(
+            events, adjacent_call_ids
+        )
 
   function_call_event_idx = -1
   # look for corresponding function call event reversely
@@ -296,33 +315,36 @@ def _rearrange_events_for_latest_function_response(
         if function_call.id in function_responses_ids:
           function_call_event_idx = idx
           function_call_ids = {
-              function_call.id for function_call in function_calls
+              call.id for call in function_calls if call.id
           }
-          # last response event should only contain the responses for the
-          # function calls in the same function call event
-          if not function_responses_ids.issubset(function_call_ids):
-            raise ValueError(
-                'Last response event should only contain the responses for the'
-                ' function calls in the same function call event. Function'
-                f' call ids found : {function_call_ids}, function response'
-                f' ids provided: {function_responses_ids}'
-            )
+          if not function_call_ids:
+            # Id-less call event; keep trailing responses as-is.
+            break
+          # Keep only responses that belong to this function call event.
+          # Unmatched extras used to raise and poison the session.
+          events = _drop_unmatched_trailing_function_responses(
+              events, function_call_ids
+          )
+          if not events or not events[-1].get_function_responses():
+            return _rearrange_events_for_latest_function_response(events)
           # collect all function responses from the function call event to
           # the last response event
           function_responses_ids = function_call_ids
           break
+      if function_call_event_idx != -1:
+        break
 
   if function_call_event_idx == -1:
-    logger.debug(
-        'No function call event found for function responses ids: %s in'
-        ' event list: %s',
+    # Orphaned trailing FR (including id-less / empty-id responses skipped by
+    # the id-based prune helper): drop it and continue so contents assembly
+    # (and the session) remain usable.
+    logger.warning(
+        'Dropping orphaned function response(s) with ids %s because no'
+        ' matching function call was found in history. Continuing without'
+        ' them so the session remains usable.',
         function_responses_ids,
-        events,
     )
-    raise ValueError(
-        'No function call event found for function responses ids:'
-        f' {function_responses_ids}'
-    )
+    return _rearrange_events_for_latest_function_response(events[:-1])
 
   # collect all function response between last function response event
   # and function call event
@@ -344,6 +366,50 @@ def _rearrange_events_for_latest_function_response(
   )
 
   return result_events
+
+
+def _drop_unmatched_trailing_function_responses(
+    events: list[Event],
+    matched_call_ids: set[str],
+) -> list[Event]:
+  """Drops trailing FR parts whose ids are not in ``matched_call_ids``."""
+  if not events:
+    return events
+
+  trailing = events[-1]
+  parts = trailing.content.parts if trailing.content else None
+  if not parts or not trailing.get_function_responses():
+    return events
+
+  dropped_ids: list[str | None] = []
+  kept_parts: list[types.Part] = []
+  for part in parts:
+    response = part.function_response
+    if response is None:
+      kept_parts.append(part)
+      continue
+    if response.id and response.id in matched_call_ids:
+      kept_parts.append(part)
+      continue
+    dropped_ids.append(response.id)
+
+  if not dropped_ids:
+    return events
+
+  logger.warning(
+      'Dropping function response(s) with ids %s that are not in the matched'
+      ' function call event ids %s.',
+      dropped_ids,
+      matched_call_ids,
+  )
+
+  if not kept_parts:
+    return events[:-1]
+
+  trimmed = trailing.model_copy(deep=True)
+  if trimmed.content:
+    trimmed.content.parts = kept_parts
+  return events[:-1] + [trimmed]
 
 
 def _is_part_invisible(
