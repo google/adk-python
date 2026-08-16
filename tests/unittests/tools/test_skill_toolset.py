@@ -2403,6 +2403,8 @@ async def test_skill_toolset_resolution_isolates_failing_toolset(
   failing_toolset.get_tools_with_prefix.side_effect = RuntimeError(
       "MCP server unreachable"
   )
+  # Default hook contributes nothing — same as historical skip behavior.
+  failing_toolset.on_tools_listing_error = mock.AsyncMock(return_value=[])
 
   toolset = skill_toolset.SkillToolset(
       [mock_skill1],
@@ -2425,6 +2427,46 @@ async def test_skill_toolset_resolution_isolates_failing_toolset(
   # The failing toolset contributes nothing instead of breaking everything.
   assert "from_failing_toolset" not in tool_names
   # And the failure is surfaced via a warning, not silently swallowed.
+  assert "Skipping toolset" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_resolution_uses_on_tools_listing_error_hook(
+    mock_skill1, caplog
+):
+  """A failing toolset can contribute placeholder tools via the hook."""
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["connect_mcp_server"]
+  }
+  mock_skill1.name = "skill1"
+
+  placeholder = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  placeholder.name = "connect_mcp_server"
+
+  failing_toolset = mock.create_autospec(
+      skill_toolset.BaseToolset, instance=True
+  )
+  failing_toolset.get_tools_with_prefix.side_effect = ConnectionError(
+      "HTTP 401 Unauthorized"
+  )
+  failing_toolset.on_tools_listing_error = mock.AsyncMock(
+      return_value=[placeholder]
+  )
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      additional_tools=[failing_toolset],
+  )
+  ctx = _make_tool_context_with_agent()
+
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  await load_tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+
+  with caplog.at_level(logging.WARNING):
+    tools = await toolset.get_tools(readonly_context=ctx)
+
+  assert "connect_mcp_server" in {t.name for t in tools}
+  failing_toolset.on_tools_listing_error.assert_awaited_once()
   assert "Skipping toolset" in caplog.text
 
 

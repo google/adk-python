@@ -99,6 +99,35 @@ class BaseToolset(ABC):
       list[BaseTool]: A list of tools available under the specified context.
     """
 
+  async def on_tools_listing_error(
+      self,
+      error: Exception,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> list[BaseTool]:
+    """Decide what this toolset contributes when ``get_tools`` fails.
+
+    Framework call sites that load toolsets for an agent (or for skill
+    additional tools) catch listing failures so one broken toolset cannot take
+    down the rest. By default those call sites then contribute nothing from the
+    failed toolset. Override this hook to contribute a replacement tool list
+    instead — for example placeholder tools that prompt the user to complete
+    per-user OAuth for an MCP server that returned HTTP 401.
+
+    Direct callers of ``get_tools`` / ``get_tools_with_prefix`` still see the
+    original exception; this hook is only invoked by the framework's
+    isolate-and-continue paths.
+
+    Args:
+      error: The exception raised by ``get_tools`` / ``get_tools_with_prefix``.
+      readonly_context: The same context passed to the failed listing call.
+
+    Returns:
+      Tools to use in place of the failed listing. The default returns an
+      empty list (contribute nothing), matching historical framework behavior.
+    """
+    del error, readonly_context
+    return []
+
   @final
   async def get_tools_with_prefix(
       self,

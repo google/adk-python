@@ -448,3 +448,40 @@ async def test_get_tools_with_prefix_caching():
       readonly_context=readonly_context2
   )
   assert tools4 is not tools5
+
+
+@pytest.mark.asyncio
+async def test_on_tools_listing_error_default_contributes_nothing():
+  """Default hook returns an empty list so failed listings contribute nothing."""
+  toolset = _TestingToolset()
+  tools = await toolset.on_tools_listing_error(
+      ConnectionError('MCP unauthorized'), readonly_context=None
+  )
+  assert tools == []
+
+
+@pytest.mark.asyncio
+async def test_on_tools_listing_error_can_be_overridden():
+  """Subclasses can return placeholder tools when listing fails."""
+
+  class _AuthPromptToolset(_TestingToolset):
+
+    async def on_tools_listing_error(
+        self,
+        error: Exception,
+        readonly_context: Optional[ReadonlyContext] = None,
+    ) -> list[BaseTool]:
+      del readonly_context
+      return [
+          _TestingTool(
+              name='connect_mcp',
+              description=f'Authorize MCP access ({error})',
+          )
+      ]
+
+  toolset = _AuthPromptToolset()
+  tools = await toolset.on_tools_listing_error(
+      ConnectionError('HTTP 401'), readonly_context=None
+  )
+  assert len(tools) == 1
+  assert tools[0].name == 'connect_mcp'

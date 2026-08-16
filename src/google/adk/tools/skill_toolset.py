@@ -1314,7 +1314,11 @@ class SkillToolset(BaseToolset):
               ts_tools,
               exc_info=ts_tools,
           )
-          continue
+          # Let the toolset replace a failed listing (default: contribute
+          # nothing) so apps can surface expected auth failures as tools.
+          ts_tools = await toolset.on_tools_listing_error(
+              ts_tools, readonly_context
+          )
         if isinstance(ts_tools, BaseException):
           raise ts_tools
         for t in ts_tools:

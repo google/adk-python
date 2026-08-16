@@ -643,6 +643,38 @@ class TestCanonicalTools:
     # The traceback is what identifies where inside the toolset it broke.
     assert record.exc_info is not None
 
+  async def test_canonical_tools_uses_on_tools_listing_error_hook(self, caplog):
+    """A toolset can contribute placeholder tools after a listing failure."""
+    from google.adk.tools.base_tool import BaseTool
+    from google.adk.tools.base_toolset import BaseToolset
+
+    class AuthPromptToolset(BaseToolset):
+
+      async def get_tools(self, readonly_context=None):
+        raise ConnectionError('HTTP 401 Unauthorized')
+
+      async def on_tools_listing_error(self, error, readonly_context=None):
+        del readonly_context
+        tool = mock.MagicMock(spec=BaseTool)
+        tool.name = 'connect_mcp_server'
+        tool.description = f'Authorize access ({error})'
+        tool._get_declaration = mock.MagicMock(return_value=None)
+        return [tool]
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[AuthPromptToolset()],
+    )
+    ctx = await _create_readonly_context(agent)
+
+    with caplog.at_level(logging.ERROR, logger='google_adk'):
+      tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'connect_mcp_server'
+    assert any('failed to load' in r.getMessage() for r in caplog.records)
+
 
 # Tests for multi-provider model support via string model names
 @pytest.mark.parametrize(

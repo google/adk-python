@@ -210,11 +210,11 @@ async def _convert_tool_union_to_tools(
   try:
     return await tool_union.get_tools_with_prefix(ctx)
   except Exception as e:
-    # The agent still runs, just without this toolset's tools, and the model
-    # will answer as though it never had them. That is a lost capability
-    # rather than a degraded one, so report it at error level, name which
-    # toolset was lost, and keep the traceback: str(e) is empty for several
-    # of the exceptions raised by transport clients.
+    # The agent still runs after a listing failure. Report at error level,
+    # name which toolset was lost, and keep the traceback: str(e) is empty
+    # for several of the exceptions raised by transport clients. Then let the
+    # toolset decide what to contribute (default: nothing) so apps can return
+    # placeholder tools for expected failures such as per-user OAuth 401s.
     logger.error(
         'Agent %s will run without the tools from toolset %s%s, which failed'
         ' to load: %s',
@@ -228,7 +228,7 @@ async def _convert_tool_union_to_tools(
         e,
         exc_info=True,
     )
-    return []
+    return await tool_union.on_tools_listing_error(e, ctx)
 
 
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
