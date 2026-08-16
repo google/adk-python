@@ -394,7 +394,9 @@ def _get_upload_params(
   # does not carry one, so the upload has to follow the same fallback.
   for key, env_var in _PROXY_ENV_FALLBACKS.items():
     if not upload_params.get(key):
-      value = os.environ.get(env_var)
+      # Strip before testing: a whitespace-only value is not an endpoint, and
+      # forwarding it would override the resolution it was meant to supply.
+      value = os.environ.get(env_var, "").strip()
       if value:
         upload_params[key] = value
   return upload_params
@@ -411,10 +413,11 @@ def _is_proxied_model(model: str) -> bool:
     return False
   if model.lower().startswith(_PROXY_PROVIDER + "/"):
     return True
-  return os.environ.get("USE_LITELLM_PROXY", "").strip().lower() in (
-      "true",
-      "1",
-  )
+  # Match LiteLLM's own reading of the flag rather than inventing one. It only
+  # treats "true"/"false" as booleans, so a hand-rolled check that also
+  # accepted "1" would route the upload through the proxy while LiteLLM sent
+  # the completion straight to the provider.
+  return os.environ.get("USE_LITELLM_PROXY", "").strip().lower() == "true"
 
 
 def _get_provider_from_model(model: str) -> str:

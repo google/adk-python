@@ -5526,6 +5526,21 @@ def test_is_proxied_model_honors_use_litellm_proxy_flag():
     assert _is_proxied_model("litellm_proxy/openai/gpt-4o") is True
 
 
+def test_is_proxied_model_reads_the_flag_the_way_litellm_does():
+  """The flag must be read exactly as LiteLLM reads it.
+
+  LiteLLM's `get_secret_bool` only coerces "true"/"false", so treating "1" as
+  enabled here would send the upload to the proxy while LiteLLM sent the
+  completion straight to the provider.
+  """
+  for value in ("true", "True", "TRUE", " true "):
+    with patch.dict(os.environ, {"USE_LITELLM_PROXY": value}):
+      assert _is_proxied_model("openai/gpt-4o") is True
+  for value in ("1", "yes", "on", "false", "0", ""):
+    with patch.dict(os.environ, {"USE_LITELLM_PROXY": value}):
+      assert _is_proxied_model("openai/gpt-4o") is False, value
+
+
 def test_strip_proxy_prefix_ignores_use_litellm_proxy_flag():
   """Stripping keys off the literal prefix, never off proxy routing.
 
