@@ -512,77 +512,14 @@ class GeminiLlmConnection(BaseLlmConnection):
                   live_session_id=live_session_id,
               )
               self._output_transcription_text = ''
-          if message.server_content.turn_complete:
-            # Capture final grounding metadata before last_grounding_metadata is cleared in the next block.
-            final_grounding_metadata = (
-                grounding_metadata
-                or last_grounding_metadata
-                or (
-                    types.GroundingMetadata()
-                    if self._is_gemini_3_x_live
-                    else None
-                )
-            )
-            if (
-                final_grounding_metadata
-                and final_grounding_metadata.retrieval_queries
-                and not final_grounding_metadata.grounding_chunks
-            ):
-              logger.warning(
-                  'Incomplete grounding_metadata received: retrieval_queries=%s'
-                  ' but grounding_chunks is empty. This may indicate a'
-                  ' transient issue with the Vertex AI Search backend.',
-                  final_grounding_metadata.retrieval_queries,
-              )
-
-            if text:
-              yield self.__build_full_text_response(
-                  text,
-                  is_thought,
-                  last_grounding_metadata,
-                  bool(message.server_content.interrupted),
-              )
-              text = ''
-              is_thought = False
-              last_grounding_metadata = None
-            if tool_call_parts:
-              logger.debug('Returning aggregated tool_call_parts')
-              yield LlmResponse(
-                  content=types.Content(role='model', parts=tool_call_parts),
-                  grounding_metadata=tool_call_metadata,
-                  model_version=self._model_version,
-                  live_session_id=live_session_id,
-              )
-              tool_call_parts = []
-              if tool_call_metadata is not None:
-                last_grounding_metadata = None
-              tool_call_metadata = None
-
-            yield LlmResponse(
-                turn_complete=True,
-                interrupted=message.server_content.interrupted,
-                # If last_grounding_metadata was cleared in the full text yield,
-                # avoid duplicating it here.
-                grounding_metadata=grounding_metadata
-                or last_grounding_metadata
-                or (
-                    types.GroundingMetadata()
-                    if self._is_gemini_3_x_live
-                    else None
-                ),
-                model_version=self._model_version,
-                live_session_id=live_session_id,
-                turn_complete_reason=getattr(
-                    message.server_content, 'turn_complete_reason', None
-                ),
-            )
-            last_grounding_metadata = None  # Reset after yielding
-            break
           # in case of empty content or parts, we still surface it
           # in case it's an interrupted message, we merge the previous partial
           # text. Other we don't merge. because content can be none when model
           # safety threshold is triggered
-          if message.server_content.interrupted:
+          if (
+              message.server_content.interrupted
+              and not message.server_content.turn_complete
+          ):
             if text:
               yield self.__build_full_text_response(
                   text,
@@ -658,6 +595,72 @@ class GeminiLlmConnection(BaseLlmConnection):
               model_version=self._model_version,
               live_session_id=live_session_id,
           )
+        if message.server_content and message.server_content.turn_complete:
+          # Capture final grounding metadata before last_grounding_metadata is cleared in the next block.
+          final_grounding_metadata = (
+              message.server_content.grounding_metadata
+              or last_grounding_metadata
+              or (
+                  types.GroundingMetadata()
+                  if self._is_gemini_3_x_live
+                  else None
+              )
+          )
+          if (
+              final_grounding_metadata
+              and final_grounding_metadata.retrieval_queries
+              and not final_grounding_metadata.grounding_chunks
+          ):
+            logger.warning(
+                'Incomplete grounding_metadata received: retrieval_queries=%s'
+                ' but grounding_chunks is empty. This may indicate a'
+                ' transient issue with the Vertex AI Search backend.',
+                final_grounding_metadata.retrieval_queries,
+            )
+
+          if text:
+            yield self.__build_full_text_response(
+                text,
+                is_thought,
+                last_grounding_metadata,
+                bool(message.server_content.interrupted),
+            )
+            text = ''
+            is_thought = False
+            last_grounding_metadata = None
+          if tool_call_parts:
+            logger.debug('Returning aggregated tool_call_parts')
+            yield LlmResponse(
+                content=types.Content(role='model', parts=tool_call_parts),
+                grounding_metadata=tool_call_metadata,
+                model_version=self._model_version,
+                live_session_id=live_session_id,
+            )
+            tool_call_parts = []
+            if tool_call_metadata is not None:
+              last_grounding_metadata = None
+            tool_call_metadata = None
+
+          yield LlmResponse(
+              turn_complete=True,
+              interrupted=message.server_content.interrupted,
+              # If last_grounding_metadata was cleared in the full text yield,
+              # avoid duplicating it here.
+              grounding_metadata=message.server_content.grounding_metadata
+              or last_grounding_metadata
+              or (
+                  types.GroundingMetadata()
+                  if self._is_gemini_3_x_live
+                  else None
+              ),
+              model_version=self._model_version,
+              live_session_id=live_session_id,
+              turn_complete_reason=getattr(
+                  message.server_content, 'turn_complete_reason', None
+              ),
+          )
+          last_grounding_metadata = None  # Reset after yielding
+          break
 
       if tool_call_parts:
         logger.debug('Exited loop with pending tool_call_parts')

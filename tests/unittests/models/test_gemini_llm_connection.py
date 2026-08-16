@@ -2505,3 +2505,137 @@ async def test_receive_voice_activity(gemini_connection, mock_gemini_session):
 
   assert len(responses) == 1
   assert responses[0].voice_activity == mock_vad
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
+async def test_receive_preserves_tool_call_codelivered_with_turn_complete(
+    conn_fixture,
+    mock_gemini_session,
+    request,
+):
+  """Test that tool calls co-delivered with turn_complete are preserved."""
+  connection = request.getfixturevalue(conn_fixture)
+
+  tool_1 = types.FunctionCall(name='get_weather', args={'city': 'Tokyo'})
+  tool_2 = types.FunctionCall(name='get_time', args={'timezone': 'JST'})
+  mock_tool_call = types.LiveServerToolCall(function_calls=[tool_1, tool_2])
+
+  message = _create_mock_receive_message(
+      turn_complete=True, tool_call=mock_tool_call
+  )
+
+  async def mock_receive_generator():
+    yield message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in connection.receive()]
+
+  # Must yield tool call response first, then turn_complete response.
+  assert len(responses) == 2
+
+  # 1. Tool call response
+  tool_resp = responses[0]
+  assert tool_resp.content is not None
+  assert tool_resp.content.role == 'model'
+  assert len(tool_resp.content.parts) == 2
+  assert tool_resp.content.parts[0].function_call.name == 'get_weather'
+  assert tool_resp.content.parts[0].function_call.args == {'city': 'Tokyo'}
+  assert tool_resp.content.parts[1].function_call.name == 'get_time'
+  assert tool_resp.content.parts[1].function_call.args == {'timezone': 'JST'}
+
+  # 2. Turn complete response
+  turn_complete_resp = responses[1]
+  assert turn_complete_resp.turn_complete is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
+async def test_receive_preserves_text_and_tool_call_codelivered_with_turn_complete(
+    conn_fixture,
+    mock_gemini_session,
+    request,
+):
+  """Test message containing model_turn text, tool_call, and turn_complete."""
+  connection = request.getfixturevalue(conn_fixture)
+
+  mock_content = types.Content(
+      role='model',
+      parts=[types.Part.from_text(text='Searching for info now.')],
+  )
+  tool_call = types.FunctionCall(name='search', args={'query': 'Tokyo weather'})
+  mock_tool_call = types.LiveServerToolCall(function_calls=[tool_call])
+
+  message = _create_mock_receive_message(
+      model_turn=mock_content,
+      turn_complete=True,
+      tool_call=mock_tool_call,
+  )
+
+  async def mock_receive_generator():
+    yield message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in connection.receive()]
+
+  # Ordering must be: text -> tool call -> turn_complete
+  assert len(responses) == 3
+
+  # 1. Text response
+  text_resp = responses[0]
+  assert text_resp.content is not None
+  assert text_resp.content.parts[0].text == 'Searching for info now.'
+
+  # 2. Tool call response
+  tool_resp = responses[1]
+  assert tool_resp.content is not None
+  assert len(tool_resp.content.parts) == 1
+  assert tool_resp.content.parts[0].function_call.name == 'search'
+  assert tool_resp.content.parts[0].function_call.args == {
+      'query': 'Tokyo weather'
+  }
+
+  # 3. Turn complete response
+  turn_complete_resp = responses[2]
+  assert turn_complete_resp.turn_complete is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'conn_fixture',
+    ['gemini_api_connection', 'gemini_connection'],
+)
+async def test_receive_codelivered_tool_call_empty_function_calls(
+    conn_fixture,
+    mock_gemini_session,
+    request,
+):
+  """Test co-delivered tool_call with empty function_calls list."""
+  connection = request.getfixturevalue(conn_fixture)
+
+  mock_tool_call = types.LiveServerToolCall(function_calls=[])
+  message = _create_mock_receive_message(
+      turn_complete=True, tool_call=mock_tool_call
+  )
+
+  async def mock_receive_generator():
+    yield message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in connection.receive()]
+
+  # Only turn_complete should be yielded
+  assert len(responses) == 1
+  assert responses[0].turn_complete is True
