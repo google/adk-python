@@ -20,6 +20,7 @@ package pulls in has to happen in a process that has not already imported it.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -52,6 +53,33 @@ def run_isolated(source: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+def loaded_top_level_packages(source: str) -> frozenset[str]:
+  """Returns the third-party top-level packages source leaves imported.
+
+  Standard-library modules, private modules and the pseudo-modules the
+  interpreter injects carry no install or startup cost of their own, so they
+  are dropped and only the distributions a caller pays for remain.
+  """
+  result = run_isolated(f"""
+import json
+import sys
+{source}
+
+names = {{
+    name.partition('.')[0]
+    for name, module in sys.modules.items()
+    if getattr(module, '__spec__', None) is not None
+}}
+print(json.dumps(sorted(
+    name
+    for name in names - sys.stdlib_module_names
+    if not name.startswith('_')
+)))
+""")
+  assert result.returncode == 0, result.stderr
+  return frozenset(json.loads(result.stdout.splitlines()[-1]))
 
 
 def assert_modules_unloaded(source: str, forbidden: tuple[str, ...]) -> None:

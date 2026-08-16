@@ -393,6 +393,73 @@ async def test_search_memory_matches_non_latin_text():
   assert result.memories[0].content.parts[0].text == 'Привет мир'
 
 
+def _text_event(tag: str, text: str) -> Event:
+  return Event(
+      id=f'event-{tag}',
+      invocation_id=f'inv-{tag}',
+      author='user',
+      timestamp=1.0,
+      content=types.Content(parts=[types.Part(text=text)]),
+  )
+
+
+@pytest.mark.asyncio
+async def test_search_memory_ranks_by_number_of_matching_words():
+  """Tests that the events matching the most query words come first."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name=MOCK_APP_NAME,
+          user_id=MOCK_USER_ID,
+          id='session-ranked',
+          last_update_time=1000,
+          events=[
+              _text_event('ranked-a', 'The deploy is ready.'),
+              _text_event('ranked-b', 'Ready.'),
+              _text_event('ranked-c', 'The deploy status is ready.'),
+          ],
+      )
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='deploy status ready'
+  )
+
+  assert [memory.content.parts[0].text for memory in result.memories] == [
+      'The deploy status is ready.',
+      'The deploy is ready.',
+      'Ready.',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_search_memory_returns_at_most_ten_memories():
+  """Tests that a word shared with the whole store cannot return the store."""
+  memory_service = InMemoryMemoryService()
+  events = [_text_event(f'note-{i}', f'note {i} about work') for i in range(20)]
+  events.append(_text_event('backlog', 'the backlog note about work'))
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name=MOCK_APP_NAME,
+          user_id=MOCK_USER_ID,
+          id='session-many',
+          last_update_time=1000,
+          events=events,
+      )
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='work backlog note'
+  )
+
+  texts = [memory.content.parts[0].text for memory in result.memories]
+  # The best match is stored last but ranks first, and the rest tie, so they
+  # keep the order they were added in.
+  assert texts == ['the backlog note about work'] + [
+      f'note {i} about work' for i in range(9)
+  ]
+
+
 def _make_event(tag: str) -> Event:
   return Event(
       id=f'event-{tag}',
