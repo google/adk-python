@@ -40,6 +40,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..telemetry import _instrumentation
 from ..utils import instructions_utils
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
@@ -249,12 +250,17 @@ class LoadSkillTool(BaseTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    skill_name = args.get("skill_name")
+    skill_name: str | None = args.get("skill_name")
     if not skill_name:
       return {
           "error": "Argument 'skill_name' is required.",
           "error_code": "INVALID_ARGUMENTS",
       }
+
+    skill_telemetry = _instrumentation.record_skill_telemetry(
+        _instrumentation.SkillTelemetrySpanType.SKILL_LOAD
+    )
+    skill_telemetry.skill_name = skill_name
 
     try:
       skill = await self._toolset._get_or_fetch_skill(
@@ -271,6 +277,11 @@ class LoadSkillTool(BaseTool):
           "error": f"Skill '{skill_name}' not found.",
           "error_code": "SKILL_NOT_FOUND",
       }
+
+    skill_telemetry.skill = skill
+    skill_telemetry.additional_tools = skill.frontmatter.metadata.get(
+        "adk_additional_tools", []
+    )
 
     # Record skill activation in agent state for tool resolution.
     agent_name = tool_context.agent_name
@@ -1349,6 +1360,8 @@ class SkillToolset(BaseToolset):
       turn_cache = self._fetched_skill_cache[invocation_id]
       if skill_name in turn_cache:
         cached = turn_cache[skill_name]
+        _instrumentation.record_skill_cache_hit()
+
         if isinstance(cached, asyncio.Future):
           return await cached
         return cached

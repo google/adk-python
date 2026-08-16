@@ -37,7 +37,12 @@ Categories include `workflows`, `patterns`, `core`, `multi_agent`, `tools`,
 samples nest one level further when a single feature needs several variants, as
 `plugins/plugin_reflect_tool_retry/basic/` does.
 
-Name the sample directory in `snake_case`: `dynamic_nodes`, `fan_out_fan_in`.
+Name the sample directory in `snake_case` after the feature it demonstrates:
+`dynamic_nodes`, `fan_out_fan_in`, `streaming_tool_events`.
+
+Do not add an `_agent` suffix, and do not repeat the category as a prefix —
+every sample is an agent, and the category is already in the path. Many existing
+directories still carry both; do not copy them.
 
 ## 2. Write `agent.py`
 

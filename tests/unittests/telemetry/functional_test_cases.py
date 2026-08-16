@@ -128,6 +128,52 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         tool_fails=True,
     ),
+    # Skill telemetry scenarios.
+    FunctionalTestCase(
+        test_id="skill-telemetry-schema-v1",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=1,
+        loaded_skills=["local"],
+    ),
+    FunctionalTestCase(
+        test_id="skill-telemetry-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=2,
+        loaded_skills=["local"],
+    ),
+    FunctionalTestCase(
+        test_id="skill-registry-cache-hit-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=2,
+        loaded_skills=["registry", "registry"],
+    ),
+    FunctionalTestCase(
+        test_id="invalid-skill-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=2,
+        loaded_skills=["nonexistent"],
+    ),
+    FunctionalTestCase(
+        test_id="skill-telemetry-disabled-schema-v1",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=False,
+        capture_content="false",
+        schema_version=1,
+        loaded_skills=["local", "registry"],
+    ),
 ]
 
 # The MCP integration case: an agent whose only tool source is a (fake) MCP

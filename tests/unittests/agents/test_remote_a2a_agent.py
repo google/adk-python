@@ -44,6 +44,9 @@ from google.adk.a2a.agent.utils import execute_after_request_interceptors
 from google.adk.a2a.agent.utils import execute_before_card_request_interceptors
 from google.adk.a2a.agent.utils import execute_before_request_interceptors
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
 from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
@@ -52,6 +55,7 @@ from google.adk.events.event import Event
 from google.adk.sessions.session import Session
 from google.genai import types as genai_types
 import httpx
+from pydantic import BaseModel
 import pytest
 
 
@@ -110,6 +114,17 @@ def _make_stream_message(message: A2AMessage):
   return message
 
 
+def _make_stream_task(task: A2ATask):
+  """Wrap a Task in the shape ``send_message`` yields for the active SDK."""
+  if _compat.IS_A2A_V1:
+    from a2a.types import StreamResponse
+
+    resp = StreamResponse()
+    resp.task.CopyFrom(task)
+    return resp
+  return (task, None)
+
+
 def _make_artifact_chunk(text: str, *, append: bool, last_chunk: bool):
   """Build one streamed chunk of an artifact, version-agnostically."""
   return TaskArtifactUpdateEvent(
@@ -140,6 +155,21 @@ def _make_accumulated_task(part_texts):
               parts=[_compat.make_text_part(text) for text in part_texts],
           )
       ],
+  )
+
+
+def _make_dummy_task_trigger_event(
+    task_id: str = "task-1", agent_name: str = "test_agent"
+) -> Event:
+  """Build a dummy triggering Event containing a FunctionCall for task delegation."""
+  trigger_fc = genai_types.FunctionCall(
+      id=task_id, name=agent_name, args={"request": "start"}
+  )
+  return Event(
+      author="coordinator",
+      content=genai_types.Content(
+          role="model", parts=[genai_types.Part(function_call=trigger_fc)]
+      ),
   )
 
 
@@ -1252,43 +1282,102 @@ class TestRemoteA2aAgentMessageHandling:
     assert parts == []
     assert context_id is None
 
-  def test_construct_message_parts_from_session_stops_on_agent_reply(self):
-    """Test message parts construction stops on agent reply by default."""
+  def test_construct_message_parts_from_session_foreign_function_response_not_converted(
+      self,
+  ):
+    """Test that foreign function responses are NOT converted to text in default mode."""
+    # Mock event with a function response
+    mock_fr = genai_types.FunctionResponse(
+        id="fc-1", name="tool_1", response={"result": "done"}
+    )
+    mock_part = Mock()
+    mock_part.function_response = mock_fr
+    mock_part.text = None
+
+    mock_content = Mock()
+    mock_content.parts = [mock_part]
+
+    mock_event = Mock()
+    mock_event.author = "user"
+    mock_event.content = mock_content
+    mock_event.get_function_calls.return_value = []
+    mock_event.get_function_responses.return_value = []
+
+    self.mock_session.events = [mock_event]
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.return_value = mock_event
+
+      mock_a2a_part = _compat.make_text_part("tool_response_text")
+      self.mock_genai_part_converter.return_value = mock_a2a_part
+
+      parts, _ = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      # Should call the converter, not convert to text
+      self.mock_genai_part_converter.assert_called_once_with(mock_part)
+      assert len(parts) == 1
+      assert parts[0] == mock_a2a_part
+
+  def test_construct_message_parts_from_session_stops_on_agent_reply_when_disabled(
+      self,
+  ):
+    """Test message parts construction stops on agent reply when disabled."""
+    self.agent._full_history_when_stateless = False
     part1 = Mock()
     part1.text = "User 1"
     content1 = Mock()
     content1.parts = [part1]
-    user1 = Mock()
-    user1.content = content1
-    user1.author = "user"
-    user1.custom_metadata = None
+    user1 = Mock(
+        live_session_id=None,
+        author="user",
+        custom_metadata=None,
+        content=content1,
+    )
+    user1.get_function_calls.return_value = []
+    user1.get_function_responses.return_value = []
 
     part2 = Mock()
     part2.text = "Agent 1"
     content2 = Mock()
     content2.parts = [part2]
-    agent1 = Mock()
-    agent1.content = content2
-    agent1.author = self.agent.name
-    agent1.custom_metadata = {
-        A2A_METADATA_PREFIX + "response": True,
-    }
+    agent1 = Mock(
+        live_session_id=None,
+        author=self.agent.name,
+        content=content2,
+        custom_metadata={
+            A2A_METADATA_PREFIX + "response": True,
+        },
+    )
+    agent1.get_function_calls.return_value = []
+    agent1.get_function_responses.return_value = []
 
-    agent2 = Mock()
-    agent2.content = None
-    agent2.author = self.agent.name
-    # Just actions, no content. Not marked as a response.
-    agent2.actions = Mock()
-    agent2.custom_metadata = None
+    agent2 = Mock(
+        live_session_id=None,
+        author=self.agent.name,
+        content=None,
+        # Just actions, no content. Not marked as a response.
+        actions=Mock(),
+        custom_metadata=None,
+    )
+    agent2.get_function_calls.return_value = []
+    agent2.get_function_responses.return_value = []
 
     part3 = Mock()
     part3.text = "User 2"
     content3 = Mock()
     content3.parts = [part3]
-    user2 = Mock()
-    user2.content = content3
-    user2.author = "user"
-    user2.custom_metadata = None
+    user2 = Mock(
+        live_session_id=None,
+        author="user",
+        content=content3,
+        custom_metadata=None,
+    )
+    user2.get_function_calls.return_value = []
+    user2.get_function_responses.return_value = []
 
     self.mock_session.events = [user1, agent1, user2, agent2]
 
@@ -1308,35 +1397,51 @@ class TestRemoteA2aAgentMessageHandling:
       assert _compat.part_text(parts[0]) == "User 2"
       assert context_id is None
 
-  def test_construct_message_parts_from_session_stateless_full_history(self):
+  def test_construct_message_parts_from_session_stateless_full_history_when_enabled(
+      self,
+  ):
     """Test full history for stateless agent when enabled."""
     self.agent._full_history_when_stateless = True
     part1 = Mock()
     part1.text = "User 1"
     content1 = Mock()
     content1.parts = [part1]
-    user1 = Mock()
-    user1.content = content1
-    user1.author = "user"
-    user1.custom_metadata = None
+    user1 = Mock(
+        live_session_id=None,
+        author="user",
+        custom_metadata=None,
+        content=content1,
+    )
+    user1.get_function_calls.return_value = []
+    user1.get_function_responses.return_value = []
 
     part2 = Mock()
     part2.text = "Agent 1"
     content2 = Mock()
     content2.parts = [part2]
-    agent1 = Mock()
-    agent1.content = content2
-    agent1.author = self.agent.name
-    agent1.custom_metadata = None
+    agent1 = Mock(
+        live_session_id=None,
+        author=self.agent.name,
+        content=content2,
+        custom_metadata={
+            A2A_METADATA_PREFIX + "response": True,
+        },
+    )
+    agent1.get_function_calls.return_value = []
+    agent1.get_function_responses.return_value = []
 
     part3 = Mock()
     part3.text = "User 2"
     content3 = Mock()
     content3.parts = [part3]
-    user2 = Mock()
-    user2.content = content3
-    user2.author = "user"
-    user2.custom_metadata = None
+    user2 = Mock(
+        live_session_id=None,
+        author="user",
+        content=content3,
+        custom_metadata=None,
+    )
+    user2.get_function_calls.return_value = []
+    user2.get_function_responses.return_value = []
 
     self.mock_session.events = [user1, agent1, user2]
 
@@ -1829,6 +1934,163 @@ class TestRemoteA2aAgentMessageHandling:
     assert result is None
 
   @pytest.mark.asyncio
+  async def test_handle_a2a_response_filters_thought_parts_from_completed_task(
+      self,
+  ):
+    """Test that thought parts are filtered from completed task response.
+
+    When an A2A server returns a completed task with both thought and
+    non-thought parts, the client should only include non-thought parts
+    in the user-facing event. Fixes #4676.
+    """
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = _compat.TS_COMPLETED
+
+    # Create event with mixed thought/non-thought parts
+    thought_part = genai_types.Part(text="internal reasoning", thought=True)
+    answer_part = genai_types.Part(text="final answer")
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(
+            role="model", parts=[thought_part, answer_part]
+        ),
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+      # Only non-thought parts should remain
+      assert len(result.content.parts) == 1
+      assert result.content.parts[0].text == "final answer"
+      assert result.content.parts[0].thought is None
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_filters_thought_parts_from_status_update(
+      self,
+  ):
+    """Test that thought parts are filtered from completed status update.
+
+    Fixes #4676.
+    """
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+
+    mock_update = Mock(spec=TaskStatusUpdateEvent)
+    mock_update.status = Mock(spec=A2ATaskStatus)
+    mock_update.status.state = _compat.TS_COMPLETED
+    mock_update.status.message = Mock(spec=A2AMessage)
+
+    # Create event with mixed thought/non-thought parts
+    thought_part = genai_types.Part(text="thinking...", thought=True)
+    answer_part = genai_types.Part(text="the answer")
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(
+            role="model", parts=[thought_part, answer_part]
+        ),
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, mock_update), self.mock_context
+      )
+
+      # Only non-thought parts should remain
+      assert len(result.content.parts) == 1
+      assert result.content.parts[0].text == "the answer"
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_preserves_all_thought_parts_for_working(
+      self,
+  ):
+    """Test that working state events keep all parts as thoughts.
+
+    Intermediate events (working/submitted) should retain all parts
+    marked as thought for streaming progress display.
+    """
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = _compat.TS_WORKING
+
+    part = genai_types.Part(text="still thinking", thought=True)
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[part]),
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+      # All parts should be marked as thought and preserved
+      assert len(result.content.parts) == 1
+      assert result.content.parts[0].thought is True
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_filters_thought_from_a2a_message(self):
+    """Test thought filtering for regular A2AMessage responses.
+
+    Fixes #4676.
+    """
+    mock_a2a_message = Mock(spec=A2AMessage)
+    mock_a2a_message.context_id = "context-123"
+
+    thought_part = genai_types.Part(text="reasoning", thought=True)
+    answer_part = genai_types.Part(text="response")
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(
+            role="model", parts=[thought_part, answer_part]
+        ),
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_message_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          mock_a2a_message, self.mock_context
+      )
+
+      # Only non-thought parts should remain
+      assert len(result.content.parts) == 1
+      assert result.content.parts[0].text == "response"
+
+  @pytest.mark.asyncio
   async def test_handle_a2a_response_with_artifact_update(self):
     """Test successful A2A response handling with artifact update."""
     mock_a2a_task = Mock(spec=A2ATask)
@@ -1919,6 +2181,480 @@ class TestRemoteA2aAgentMessageHandling:
     # called and the handler produces no spurious event.
     mock_convert.assert_not_called()
     assert result is None
+
+
+class TestRemoteA2aAgentTaskModeMessageHandling:
+  """Test message handling functionality under task mode."""
+
+  def setup_method(self):
+    """Setup test fixtures."""
+    self.agent_card = create_test_agent_card()
+    self.mock_genai_part_converter = Mock()
+    self.mock_a2a_part_converter = Mock()
+    self.agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=self.agent_card,
+        genai_part_converter=self.mock_genai_part_converter,
+        a2a_part_converter=self.mock_a2a_part_converter,
+        mode="task",
+    )
+
+    # Mock session and context
+    self.mock_session = Mock(spec=Session)
+    self.mock_session.id = "session-123"
+    self.mock_session.events = []
+
+    self.mock_context = Mock(spec=InvocationContext)
+    self.mock_context.session = self.mock_session
+    self.mock_context.invocation_id = "invocation-123"
+    self.mock_context.branch = "main"
+    self.mock_context.isolation_scope = "task-1"
+
+  def test_construct_message_parts_from_session_isolates_history(self):
+    """Test history collection in task mode isolates to current scope."""
+    # 1. Event outside task (oldest)
+    event_outside_old = Mock(
+        live_session_id=None,
+        isolation_scope=None,
+        author="user",
+    )
+    event_outside_old.get_function_calls.return_value = []
+    event_outside_old.get_function_responses.return_value = []
+
+    # 2. Trigger FC event (scope=None, but contains FC with id="task-1")
+    trigger_fc = genai_types.FunctionCall(
+        id="task-1", name="test_agent", args={"request": "start"}
+    )
+    trigger_part = Mock()
+    trigger_part.text = "Trigger message"
+    trigger_part.function_response = None
+
+    trigger_event = Mock(
+        live_session_id=None,
+        isolation_scope=None,
+        author="deal_agent",
+    )
+    trigger_event.get_function_calls.return_value = [trigger_fc]
+    trigger_event.get_function_responses.return_value = []
+    trigger_event.content = Mock()
+    trigger_event.content.parts = [trigger_part]
+
+    # 3. Event inside task (remote response)
+    remote_part = Mock()
+    remote_part.text = "remote task agent output"
+    remote_part.function_response = None
+
+    event_inside_remote = Mock(
+        live_session_id=None,
+        isolation_scope="task-1",
+        author=self.agent.name,
+        custom_metadata={
+            A2A_METADATA_PREFIX + "response": True,
+            A2A_METADATA_PREFIX + "context_id": "ctx-1",
+        },
+    )
+    event_inside_remote.get_function_calls.return_value = []
+    event_inside_remote.get_function_responses.return_value = []
+    event_inside_remote.content = Mock()
+    event_inside_remote.content.parts = [remote_part]
+
+    # 4. Event inside task (user reply)
+    user_part = Mock()
+    user_part.text = "User reply"
+    user_part.function_response = None
+
+    event_inside_user = Mock(
+        live_session_id=None,
+        isolation_scope="task-1",
+        author="user",
+    )
+    event_inside_user.get_function_calls.return_value = []
+    event_inside_user.get_function_responses.return_value = []
+    event_inside_user.content = Mock()
+    event_inside_user.content.parts = [user_part]
+
+    # 5. Event outside task (newer)
+    event_outside_new = Mock(
+        live_session_id=None,
+        isolation_scope="task-2",
+        author="other_agent",
+    )
+    event_outside_new.get_function_calls.return_value = []
+    event_outside_new.get_function_responses.return_value = []
+
+    # Session events (oldest to newest)
+    self.mock_session.events = [
+        event_outside_old,
+        trigger_event,
+        event_inside_remote,
+        event_inside_user,
+        event_outside_new,
+    ]
+
+    # Mock converter to return a real text Part
+    def mock_converter(part):
+      return _compat.make_text_part(getattr(part, "text", "default"))
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      # Stateful resumption: should stop at event_inside_remote and only collect
+      # event_inside_user
+      assert len(parts) == 1
+      assert _compat.part_text(parts[0]) == "User reply"
+      assert context_id == "ctx-1"
+
+  def test_construct_message_parts_from_session_first_turn(self):
+    """Test history collection in task mode first turn (collects up to trigger FC)."""
+    # 1. Event outside task (oldest)
+    event_outside_old = Mock(
+        live_session_id=None,
+        isolation_scope=None,
+        author="user",
+    )
+    event_outside_old.get_function_calls.return_value = []
+    event_outside_old.get_function_responses.return_value = []
+
+    # 2. Trigger FC event
+    trigger_fc = genai_types.FunctionCall(
+        id="task-1", name="test_agent", args={"request": "start"}
+    )
+    trigger_part = Mock()
+    trigger_part.text = "Trigger message"
+    trigger_part.function_response = None
+
+    trigger_event = Mock(
+        live_session_id=None,
+        isolation_scope=None,
+        author="deal_agent",
+    )
+    trigger_event.get_function_calls.return_value = [trigger_fc]
+    trigger_event.get_function_responses.return_value = []
+    trigger_event.content = Mock()
+    trigger_event.content.parts = [trigger_part]
+
+    # Session events (oldest to newest)
+    self.mock_session.events = [
+        event_outside_old,
+        trigger_event,
+    ]
+
+    def mock_converter(part):
+      return _compat.make_text_part(getattr(part, "text", "default"))
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      # First turn: collects only trigger_event
+      assert len(parts) == 1
+      assert _compat.part_text(parts[0]) == "Trigger message"
+      assert context_id is None
+
+  def test_construct_message_parts_from_session_stateless_full_history(self):
+    """Test full history for stateless agent in task mode when enabled."""
+    self.agent._full_history_when_stateless = True
+
+    # 1. Event outside task (oldest)
+    event_outside_old = Mock(
+        live_session_id=None,
+        isolation_scope=None,
+        author="user",
+    )
+    event_outside_old.get_function_calls.return_value = []
+    event_outside_old.get_function_responses.return_value = []
+
+    # 2. Trigger FC event
+    trigger_fc = genai_types.FunctionCall(
+        id="task-1", name="test_agent", args={"request": "start"}
+    )
+    trigger_part = Mock()
+    trigger_part.text = "Trigger message"
+    trigger_part.function_response = None
+
+    trigger_event = Mock(
+        live_session_id=None,
+        isolation_scope=None,
+        author="deal_agent",
+    )
+    trigger_event.get_function_calls.return_value = [trigger_fc]
+    trigger_event.get_function_responses.return_value = []
+    trigger_event.content = Mock()
+    trigger_event.content.parts = [trigger_part]
+
+    # 3. Event inside task (remote response) - STATELESS (no context_id)
+    remote_part = Mock()
+    remote_part.text = "remote task agent output"
+    remote_part.function_response = None
+
+    event_inside_remote = Mock(
+        live_session_id=None,
+        isolation_scope="task-1",
+        author=self.agent.name,
+        custom_metadata={
+            A2A_METADATA_PREFIX + "response": True,
+            # NO context_id
+        },
+    )
+    event_inside_remote.get_function_calls.return_value = []
+    event_inside_remote.get_function_responses.return_value = []
+    event_inside_remote.content = Mock()
+    event_inside_remote.content.parts = [remote_part]
+
+    # 4. Event inside task (user reply)
+    user_part = Mock()
+    user_part.text = "User reply"
+    user_part.function_response = None
+
+    event_inside_user = Mock(
+        live_session_id=None,
+        isolation_scope="task-1",
+        author="user",
+    )
+    event_inside_user.get_function_calls.return_value = []
+    event_inside_user.get_function_responses.return_value = []
+    event_inside_user.content = Mock()
+    event_inside_user.content.parts = [user_part]
+
+    # Session events (oldest to newest)
+    self.mock_session.events = [
+        event_outside_old,
+        trigger_event,
+        event_inside_remote,
+        event_inside_user,
+    ]
+
+    def mock_converter(part):
+      return _compat.make_text_part(getattr(part, "text", "default"))
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      # Stateless resumption with full history enabled:
+      # Should NOT stop at event_inside_remote.
+      # Should collect: event_inside_user, event_inside_remote, trigger_event.
+      assert len(parts) == 3
+      assert _compat.part_text(parts[0]) == "Trigger message"
+      assert _compat.part_text(parts[1]) == "remote task agent output"
+      assert _compat.part_text(parts[2]) == "User reply"
+      assert context_id is None
+
+  def test_construct_message_parts_from_session_filters_sibling_fcs(self):
+    """Test that sibling FunctionCalls from the coordinator are filtered out."""
+    trigger_fc = genai_types.FunctionCall(
+        id="task-1", name="test_agent", args={"request": "start"}
+    )
+    sibling_fc = genai_types.FunctionCall(
+        id="sibling-2", name="other_tool", args={"other": "data"}
+    )
+
+    trigger_part = Mock()
+    trigger_part.function_call = trigger_fc
+    trigger_part.function_response = None
+    trigger_part.text = None
+
+    sibling_part = Mock()
+    sibling_part.function_call = sibling_fc
+    sibling_part.function_response = None
+    sibling_part.text = None
+
+    trigger_event = Mock(
+        live_session_id=None,
+        isolation_scope=None,
+        author="coordinator",
+    )
+    trigger_event.get_function_calls.return_value = [trigger_fc, sibling_fc]
+    trigger_event.get_function_responses.return_value = []
+    trigger_event.content = Mock()
+    trigger_event.content.parts = [trigger_part, sibling_part]
+
+    self.mock_session.events = [trigger_event]
+
+    def mock_converter(part):
+      return _compat.make_text_part(f"FC:{part.function_call.id}")
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      assert len(parts) == 1
+      assert _compat.part_text(parts[0]) == "FC:task-1"
+      assert context_id is None
+
+  def test_construct_message_parts_from_session_foreign_function_response_converted(
+      self,
+  ):
+    """Test that foreign function responses ARE converted to text in task mode."""
+    # Mock event with a function response
+    mock_fr = genai_types.FunctionResponse(
+        id="fc-1", name="tool_1", response={"result": "done"}
+    )
+    mock_part = Mock()
+    mock_part.function_response = mock_fr
+    mock_part.text = None
+
+    mock_content = Mock()
+    mock_content.parts = [mock_part]
+
+    mock_event = Mock()
+    mock_event.isolation_scope = "task-1"
+    mock_event.author = "user"
+    mock_event.content = mock_content
+    mock_event.get_function_calls.return_value = []
+    mock_event.get_function_responses.return_value = []
+
+    # Trigger event
+    trigger_fc = genai_types.FunctionCall(
+        id="task-1", name="test_agent", args={"request": "start"}
+    )
+    trigger_part = Mock()
+    trigger_part.text = "Trigger message"
+    trigger_part.function_response = None
+    trigger_event = Mock(
+        live_session_id=None,
+        isolation_scope=None,
+        author="deal_agent",
+    )
+    trigger_event.get_function_calls.return_value = [trigger_fc]
+    trigger_event.get_function_responses.return_value = []
+    trigger_event.content = Mock()
+    trigger_event.content.parts = [trigger_part]
+
+    self.mock_session.events = [trigger_event, mock_event]
+
+    # Setup converter to return distinguishable parts
+    def mock_converter(part):
+      return _compat.make_text_part(getattr(part, "text", "default"))
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+
+      parts, _ = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      assert len(parts) == 2
+      assert _compat.part_text(parts[0]) == "Trigger message"
+      # The foreign FR should be converted to text
+      expected_text = 'Tool tool_1 returned: {"result": "done"}'
+      assert _compat.part_text(parts[1]) == expected_text
+      # Check that converter was not called for the foreign FR
+      self.mock_genai_part_converter.assert_called_once_with(trigger_part)
+
+  def test_construct_message_parts_from_session_non_foreign_fr_not_converted_when_fc_before_break(
+      self,
+  ):
+    """Test that non-foreign FR is NOT converted to text even if its FC was before context_id break."""
+    # 1. Trigger event (matching task-1)
+    trigger_fc = genai_types.FunctionCall(
+        id="task-1", name="test_agent", args={"request": "start"}
+    )
+    trigger_part = Mock()
+    trigger_part.text = "Trigger message"
+    trigger_part.function_response = None
+    trigger_event = Mock(
+        live_session_id=None, isolation_scope=None, author="deal_agent"
+    )
+    trigger_event.get_function_calls.return_value = [trigger_fc]
+    trigger_event.get_function_responses.return_value = []
+    trigger_event.content = Mock()
+    trigger_event.content.parts = [trigger_part]
+
+    # 2. Remote agent event (FC: input request) - this will be before the break
+    remote_fc = genai_types.FunctionCall(
+        id="fc-input-req",
+        name="user_input_tool",
+        args={"prompt": "enter value"},
+    )
+    remote_part = Mock()
+    remote_part.function_call = remote_fc
+    remote_part.text = "Please enter value"
+    remote_event = Mock(
+        live_session_id=None, isolation_scope="task-1", author="test_agent"
+    )
+    remote_event.get_function_calls.return_value = [remote_fc]
+    remote_event.get_function_responses.return_value = []
+    remote_event.content = Mock()
+    remote_event.content.parts = [remote_part]
+    # This event has context_id, so it will trigger the break in history walk
+    remote_event.metadata = {A2A_METADATA_PREFIX + "context_id": "context-old"}
+
+    # 3. User event (FR: user input response) - this will be after the break
+    user_fr = genai_types.FunctionResponse(
+        id="fc-input-req", name="user_input_tool", response={"result": "my-val"}
+    )
+    user_part = Mock()
+    user_part.function_response = user_fr
+    user_part.text = None
+    user_event = Mock(
+        live_session_id=None, isolation_scope="task-1", author="user"
+    )
+    user_event.get_function_calls.return_value = []
+    user_event.get_function_responses.return_value = [user_fr]
+    user_event.content = Mock()
+    user_event.content.parts = [user_part]
+
+    # Session events order (chronological): trigger, remote (break), user
+    self.mock_session.events = [trigger_event, remote_event, user_event]
+
+    # Setup converter to return distinguishable parts
+    mock_a2a_part = Mock()
+    self.mock_genai_part_converter.return_value = [mock_a2a_part]
+
+    with (
+        patch(
+            "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+        ) as mock_present,
+        patch(
+            "google.adk.agents.remote_a2a_agent._compat.part_metadata"
+        ) as mock_part_metadata,
+    ):
+      mock_present.side_effect = lambda event: event
+      mock_part_metadata.return_value = {}
+
+      parts, _ = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      # We expect the FR to NOT be converted to text, so the converter is called
+      # and we get the mock_a2a_part back.
+      assert len(parts) == 1
+      assert parts[0] == mock_a2a_part
+      self.mock_genai_part_converter.assert_called_once_with(user_part)
 
 
 class TestRemoteA2aAgentStreamingArtifactChunks:
@@ -3092,6 +3828,192 @@ class TestRemoteA2aAgentExecution:
             assert "A2A request failed" in events[0].error_message
 
   @pytest.mark.asyncio
+  async def test_run_async_impl_task_mode_rejects_missing_trigger_fc(self):
+    """Test _run_async_impl raises ValueError when isolation_scope has no matching trigger FC."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=self.agent_card,
+        mode="task",
+    )
+    self.mock_context.isolation_scope = "workflow_path/node@run1"
+    self.mock_session.events = []
+
+    with pytest.raises(
+        ValueError, match="could not find the triggering FunctionCall"
+    ):
+      _ = [e async for e in agent._run_async_impl(self.mock_context)]
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_task_mode_releases_control_on_init_failure(
+      self,
+  ):
+    """Test _run_async_impl in task mode releases control on initialization failure."""
+    from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
+
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=self.agent_card,
+        mode="task",
+    )
+    self.mock_context.agent_states = {}
+    self.mock_context.end_of_agents = {}
+    self.mock_context.isolation_scope = "task-1"
+    self.mock_session.events = [_make_dummy_task_trigger_event()]
+
+    def set_agent_state_side_effect(agent_name, **kwargs):
+      if kwargs.get("end_of_agent"):
+        self.mock_context.end_of_agents[agent_name] = True
+      else:
+        self.mock_context.end_of_agents.pop(agent_name, None)
+
+    self.mock_context.set_agent_state.side_effect = set_agent_state_side_effect
+
+    with patch.object(agent, "_ensure_resolved") as mock_ensure:
+      mock_ensure.side_effect = Exception("Init failed")
+      events = []
+      async for event in agent._run_async_impl(self.mock_context):
+        events.append(event)
+
+      assert len(events) == 3
+      assert "Failed to initialize remote A2A agent" in events[0].error_message
+      assert (
+          events[1].content.parts[0].function_response.name
+          == FINISH_TASK_TOOL_NAME
+      )
+      assert events[2].actions.end_of_agent is True
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_task_mode_releases_control_on_empty_parts(self):
+    """Test _run_async_impl in task mode releases control when message parts are empty."""
+    from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
+
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=self.agent_card,
+        mode="task",
+    )
+    self.mock_context.agent_states = {}
+    self.mock_context.end_of_agents = {}
+    self.mock_context.isolation_scope = "task-1"
+    self.mock_session.events = [_make_dummy_task_trigger_event()]
+
+    def set_agent_state_side_effect(agent_name, **kwargs):
+      if kwargs.get("end_of_agent"):
+        self.mock_context.end_of_agents[agent_name] = True
+      else:
+        self.mock_context.end_of_agents.pop(agent_name, None)
+
+    self.mock_context.set_agent_state.side_effect = set_agent_state_side_effect
+
+    with patch.object(agent, "_ensure_resolved"):
+      with patch.object(
+          agent, "_create_a2a_request_for_user_function_response"
+      ) as mock_create_func:
+        mock_create_func.return_value = None
+        with patch.object(
+            agent, "_construct_message_parts_from_session"
+        ) as mock_construct:
+          mock_construct.return_value = ([], None)
+
+          events = []
+          async for event in agent._run_async_impl(self.mock_context):
+            events.append(event)
+
+          assert len(events) == 3
+          assert events[0].content is not None
+          assert (
+              events[1].content.parts[0].function_response.name
+              == FINISH_TASK_TOOL_NAME
+          )
+          assert events[2].actions.end_of_agent is True
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_a2a_http_error_in_task_mode(self):
+    """Test _run_async_impl task mode hand-back when A2A send_message raises HTTP error."""
+    from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
+    from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
+
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=self.agent_card,
+        genai_part_converter=self.mock_genai_part_converter,
+        a2a_part_converter=self.mock_a2a_part_converter,
+        mode="task",
+    )
+
+    HTTPErrorClass = _compat.A2A_HTTP_ERRORS[0]
+    if _compat.IS_A2A_V1:
+      error_instance = HTTPErrorClass("HTTP Error 500")
+    else:
+      error_instance = HTTPErrorClass(
+          status_code=500, message="Internal Server Error"
+      )
+
+    self.mock_context.agent_states = {}
+    self.mock_context.end_of_agents = {}
+    self.mock_context.isolation_scope = "task-1"
+    self.mock_session.events = [_make_dummy_task_trigger_event()]
+
+    def set_agent_state_side_effect(agent_name, **kwargs):
+      if kwargs.get("end_of_agent"):
+        self.mock_context.end_of_agents[agent_name] = True
+      else:
+        self.mock_context.end_of_agents.pop(agent_name, None)
+
+    self.mock_context.set_agent_state.side_effect = set_agent_state_side_effect
+
+    # Mock _ensure_resolved to return mock client
+    mock_a2a_client = Mock()
+    mock_send_message = AsyncMock()
+    mock_send_message.__aiter__.side_effect = error_instance
+    mock_a2a_client.send_message.return_value = mock_send_message
+    mock_ensure_resolved = AsyncMock(return_value=mock_a2a_client)
+
+    with patch.object(agent, "_ensure_resolved", mock_ensure_resolved):
+      with patch.object(
+          agent, "_create_a2a_request_for_user_function_response"
+      ) as mock_create_func:
+        mock_create_func.return_value = None
+
+        with patch.object(
+            agent, "_construct_message_parts_from_session"
+        ) as mock_construct:
+          mock_a2a_part = _compat.make_text_part("test")
+          mock_construct.return_value = (
+              [mock_a2a_part],
+              "context-123",
+          )
+
+          agent._a2a_client = mock_a2a_client
+
+          with patch(
+              "google.adk.agents.remote_a2a_agent.build_a2a_request_log"
+          ) as mock_req_log:
+            mock_req_log.return_value = "Mock request log"
+
+            events = []
+            async for event in agent._run_async_impl(self.mock_context):
+              events.append(event)
+
+            # In task mode, it should yield:
+            # 1. The initial error event (Event with error_message)
+            # 2. The finish_task error event (Event with user role and finish_task FR)
+            # 3. The agent state event (Event with end_of_agent=True)
+            assert len(events) == 3
+
+            assert "A2A request failed" in events[0].error_message
+
+            # The second event should be the finish_task error event
+            assert events[1].content is not None
+            fr = events[1].content.parts[0].function_response
+            assert fr is not None
+            assert fr.name == FINISH_TASK_TOOL_NAME
+            assert fr.response == {"result": FINISH_TASK_ERROR_RESULT}
+
+            # The third event should be the agent state event
+            assert self.mock_context.end_of_agents[agent.name] is True
+
+  @pytest.mark.asyncio
   async def test_run_live_impl_not_implemented(self):
     """Test that _run_live_impl raises NotImplementedError."""
     with pytest.raises(
@@ -3959,6 +4881,552 @@ class TestRemoteA2aAgentDeepcopy:
     )
 
 
+class TestFindFinishTaskArgsFromHistory:
+  """Test _find_finish_task_args_from_history helper function."""
+
+  def test_find_finish_task_args_no_filtering(self):
+    # Session with multiple events
+    event1 = Mock(spec=Event)
+    event1.isolation_scope = "task-1"
+    event1.get_function_calls.return_value = [
+        genai_types.FunctionCall(
+            id="fc-1", name="finish_task", args={"result": "task-1-done"}
+        )
+    ]
+
+    event2 = Mock(spec=Event)
+    event2.isolation_scope = "task-2"
+    event2.get_function_calls.return_value = [
+        genai_types.FunctionCall(
+            id="fc-2", name="finish_task", args={"result": "task-2-done"}
+        )
+    ]
+
+    session = Mock(spec=Session)
+    session.events = [event1, event2]
+
+    # Without isolation_scope, it should return the latest (event2)
+    args = remote_a2a_agent._find_finish_task_args_from_history(session)
+    assert args == {"result": "task-2-done"}
+
+  def test_find_finish_task_args_with_filtering(self):
+    # Session with multiple events
+    event1 = Mock(spec=Event)
+    event1.isolation_scope = "task-1"
+    event1.get_function_calls.return_value = [
+        genai_types.FunctionCall(
+            id="fc-1", name="finish_task", args={"result": "task-1-done"}
+        )
+    ]
+
+    event2 = Mock(spec=Event)
+    event2.isolation_scope = "task-2"
+    event2.get_function_calls.return_value = [
+        genai_types.FunctionCall(
+            id="fc-2", name="finish_task", args={"result": "task-2-done"}
+        )
+    ]
+
+    session = Mock(spec=Session)
+    session.events = [event1, event2]
+
+    # With isolation_scope="task-1", it should return event1's args
+    args = remote_a2a_agent._find_finish_task_args_from_history(
+        session, "task-1"
+    )
+    assert args == {"result": "task-1-done"}
+
+    # With isolation_scope="task-3", it should return None
+    args = remote_a2a_agent._find_finish_task_args_from_history(
+        session, "task-3"
+    )
+    assert args is None
+
+  def test_find_finish_task_args_with_matching_fr_id(self):
+    # Session with multiple finish_task FCs in the same scope
+    event1 = Mock(spec=Event)
+    event1.isolation_scope = "task-1"
+    event1.get_function_calls.return_value = [
+        genai_types.FunctionCall(
+            id="fc-1", name="finish_task", args={"result": "first-attempt"}
+        )
+    ]
+
+    event2 = Mock(spec=Event)
+    event2.isolation_scope = "task-1"
+    event2.get_function_calls.return_value = [
+        genai_types.FunctionCall(
+            id="fc-2", name="finish_task", args={"result": "second-attempt"}
+        )
+    ]
+
+    session = Mock(spec=Session)
+    session.events = [event1, event2]
+
+    # Create a FR event with matching ID "fc-1" (the older one)
+    fr_event = Mock(spec=Event)
+    fr_event.get_function_responses.return_value = [
+        genai_types.FunctionResponse(
+            id="fc-1", name="finish_task", response={"result": "SUCCESS"}
+        )
+    ]
+
+    # Should return event1's args because it matches fc-1, even though event2 is
+    # newer
+    args = remote_a2a_agent._find_finish_task_args_from_history(
+        session, "task-1", completed_fr_event=fr_event
+    )
+    assert args == {"result": "first-attempt"}
+
+  def test_find_finish_task_args_with_non_matching_fr_id(self):
+    # Session with a finish_task FC
+    event1 = Mock(spec=Event)
+    event1.isolation_scope = "task-1"
+    event1.get_function_calls.return_value = [
+        genai_types.FunctionCall(
+            id="fc-1", name="finish_task", args={"result": "done"}
+        )
+    ]
+
+    session = Mock(spec=Session)
+    session.events = [event1]
+
+    # Create a FR event with a non-matching ID "fc-different"
+    fr_event = Mock(spec=Event)
+    fr_event.get_function_responses.return_value = [
+        genai_types.FunctionResponse(
+            id="fc-different",
+            name="finish_task",
+            response={"result": "SUCCESS"},
+        )
+    ]
+
+    # Should return None because ID doesn't match
+    args = remote_a2a_agent._find_finish_task_args_from_history(
+        session, "task-1", completed_fr_event=fr_event
+    )
+    assert args is None
+
+
+class _TestSingleFieldOutput(BaseModel):
+  result: str
+
+
+class TestRemoteA2aAgentTaskModeOutputUnwrapping:
+  """Test that RemoteA2aAgent correctly unwraps task output based on schema."""
+
+  @pytest.mark.parametrize(
+      "output_schema, args, expected_output",
+      [
+          # Case 1: output_schema is None (default). Should NOT unwrap.
+          (None, {"result": "hello"}, {"result": "hello"}),
+          # Case 2: output_schema is primitive (str). Should unwrap.
+          (str, {"result": "hello"}, "hello"),
+          # Case 3: output_schema is BaseModel with 'result' field. Should NOT unwrap.
+          (_TestSingleFieldOutput, {"result": "hello"}, {"result": "hello"}),
+          # Case 4: output_schema is primitive (int). Should unwrap.
+          (int, {"result": 42}, 42),
+          # Case 5: Custom schema with multiple fields. Should NOT unwrap.
+          (
+              dict,
+              {"result": "hello", "other": "world"},
+              {"result": "hello", "other": "world"},
+          ),
+      ],
+      ids=[
+          "default_schema_no_unwrap",
+          "primitive_str_unwrap",
+          "basemodel_single_field_no_unwrap",
+          "primitive_int_unwrap",
+          "dict_no_unwrap",
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_output_unwrapping(self, output_schema, args, expected_output):
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=agent_card,
+        mode="task",
+        output_schema=output_schema,
+    )
+
+    mock_context = Mock(spec=InvocationContext)
+    mock_context.session = Mock(spec=Session)
+    mock_context.session.events = [_make_dummy_task_trigger_event()]
+    mock_context.session.state = {}
+    mock_context.agent_states = {}
+    mock_context.end_of_agents = {}
+    mock_context.isolation_scope = "task-1"
+    mock_context.invocation_id = "invocation-123"
+    mock_context.branch = "main"
+
+    # Mock a2a client as regular Mock
+    mock_a2a_client = Mock()
+    mock_send_message = AsyncMock()
+    mock_ensure_resolved = AsyncMock(return_value=mock_a2a_client)
+
+    # Mock _ensure_resolved to return our mock client
+    with patch.object(agent, "_ensure_resolved", mock_ensure_resolved):
+      # Mock _construct_message_parts_from_session to avoid early exit
+      with patch.object(
+          agent, "_construct_message_parts_from_session"
+      ) as mock_construct:
+        mock_a2a_part = _compat.make_text_part("test_message")
+        mock_construct.return_value = ([mock_a2a_part], "context-123")
+
+        # Use a real A2AMessage wrapped in StreamResponse for the mock stream
+        mock_a2a_message = A2AMessage(
+            message_id="m1",
+            role=_compat.ROLE_USER,
+            parts=[mock_a2a_part],
+            context_id="context-123",
+        )
+        mock_response = _make_stream_message(mock_a2a_message)
+        mock_send_message.__aiter__.return_value = [mock_response]
+        mock_a2a_client.send_message.return_value = mock_send_message
+        agent._a2a_client = mock_a2a_client
+
+        # Mock _handle_a2a_response to return a success finish_task FR event
+        mock_event = Mock(spec=Event)
+        mock_event.custom_metadata = {}
+        mock_fr = genai_types.FunctionResponse(
+            id="ft-1",
+            name="finish_task",
+            response={"result": "Task completed."},
+        )
+        mock_event.get_function_responses.return_value = [mock_fr]
+        mock_event.get_function_calls.return_value = []
+
+        with patch.object(
+            agent, "_handle_a2a_response", new_callable=AsyncMock
+        ) as mock_handle:
+          mock_handle.return_value = mock_event
+
+          # Mock _find_finish_task_args_from_history to return our test args
+          with patch(
+              "google.adk.agents.remote_a2a_agent._find_finish_task_args_from_history"
+          ) as mock_find_args:
+            mock_find_args.return_value = args
+
+            events = []
+            async for ev in agent._run_async_impl(mock_context):
+              events.append(ev)
+
+            # We expect at least the success event
+            assert len(events) >= 1
+            # The first yielded event should be the one modified with output
+            success_event = events[0]
+            assert success_event.output == expected_output
+
+  @pytest.mark.asyncio
+  async def test_output_unwrapping_integration_with_history(self):
+    """Test that output unwrapping works when driving real events through the stream.
+
+    This verifies that the finish_task FunctionCall event is correctly
+    placed in history before the FunctionResponse event is processed,
+    allowing _find_finish_task_args_from_history to find it.
+    """
+    output_schema = str
+    expected_output = "hello"
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=agent_card,
+        mode="task",
+        output_schema=output_schema,
+    )
+
+    mock_context = Mock(spec=InvocationContext)
+    mock_context.session = Mock(spec=Session)
+    mock_context.session.events = [_make_dummy_task_trigger_event()]
+    mock_context.session.state = {}
+    mock_context.agent_states = {}
+    mock_context.end_of_agents = {}
+    mock_context.isolation_scope = "task-1"
+    mock_context.invocation_id = "invocation-123"
+    mock_context.branch = "main"
+
+    # Mock a2a client
+    mock_a2a_client = Mock()
+    mock_send_message = AsyncMock()
+    mock_ensure_resolved = AsyncMock(return_value=mock_a2a_client)
+
+    # Prepare real A2A messages for FC and FR
+    # 1. FunctionCall for finish_task
+    fc_data = {
+        "name": "finish_task",
+        "args": {"result": expected_output},
+        "id": "ft-1",
+    }
+    fc_meta = {
+        "adk_type": "function_call",
+    }
+    fc_part = _compat.make_data_part(data=fc_data, metadata=fc_meta)
+    fc_message = A2AMessage(
+        message_id="m-fc",
+        role=_compat.ROLE_AGENT,
+        parts=[fc_part],
+        context_id="context-123",
+    )
+
+    # 2. FunctionResponse for finish_task
+    fr_data = {
+        "name": "finish_task",
+        "response": {"result": FINISH_TASK_SUCCESS_RESULT},
+        "id": "ft-1",
+    }
+    fr_meta = {
+        "adk_type": "function_response",
+    }
+    fr_part = _compat.make_data_part(data=fr_data, metadata=fr_meta)
+    fr_message = A2AMessage(
+        message_id="m-fr",
+        role=_compat.ROLE_USER,
+        parts=[fr_part],
+        context_id="context-123",
+    )
+
+    # Mock the stream to yield FC then FR
+    stream_fc = _make_stream_message(fc_message)
+    stream_fr = _make_stream_message(fr_message)
+    mock_send_message.__aiter__.return_value = [stream_fc, stream_fr]
+    mock_a2a_client.send_message.return_value = mock_send_message
+    agent._a2a_client = mock_a2a_client
+
+    with patch.object(agent, "_ensure_resolved", mock_ensure_resolved):
+      # We do NOT mock _handle_a2a_response or _find_finish_task_args_from
+      # history
+      with patch.object(
+          agent, "_construct_message_parts_from_session"
+      ) as mock_construct:
+        mock_dummy_part = _compat.make_text_part("dummy_input")
+        mock_construct.return_value = ([mock_dummy_part], "context-123")
+
+        events = []
+        async for ev in agent._run_async_impl(mock_context):
+          events.append(ev)
+          # Simulate the runner setting isolation_scope and appending to history
+          if ev.isolation_scope is None:
+            ev.isolation_scope = mock_context.isolation_scope
+          mock_context.session.events.append(ev)
+
+        # We expect at least the FC event and the FR event
+        assert len(events) >= 2
+
+        # Find the FR event (it should have output populated)
+        fr_event = None
+        for ev in events:
+          if ev.get_function_responses():
+            fr_event = ev
+            break
+
+        assert fr_event is not None
+        assert fr_event.output == expected_output
+
+
+class TestRemoteA2aAgentTaskModeFailurePropagation:
+  """Test that RemoteA2aAgent propagates task failures in task mode."""
+
+  @pytest.mark.asyncio
+  async def test_fails_on_task_state_failed(self):
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=agent_card,
+        mode="task",
+    )
+
+    mock_context = Mock(spec=InvocationContext)
+    mock_context.session = Mock(spec=Session)
+    mock_context.session.events = [_make_dummy_task_trigger_event()]
+    mock_context.session.state = {}
+    mock_context.agent_states = {}
+    mock_context.end_of_agents = {}
+    mock_context.isolation_scope = "task-1"
+    mock_context.invocation_id = "invocation-123"
+    mock_context.branch = "main"
+
+    def set_agent_state_side_effect(agent_name, **kwargs):
+      if kwargs.get("end_of_agent"):
+        mock_context.end_of_agents[agent_name] = True
+      else:
+        mock_context.end_of_agents.pop(agent_name, None)
+
+    mock_context.set_agent_state.side_effect = set_agent_state_side_effect
+
+    # Mock a2a client as regular Mock
+    mock_a2a_client = Mock()
+    mock_send_message = AsyncMock()
+    mock_ensure_resolved = AsyncMock(return_value=mock_a2a_client)
+
+    with patch.object(agent, "_ensure_resolved", mock_ensure_resolved):
+      with patch.object(
+          agent, "_construct_message_parts_from_session"
+      ) as mock_construct:
+        mock_a2a_part = _compat.make_text_part("test_message")
+        mock_construct.return_value = ([mock_a2a_part], "context-123")
+
+        error_message = A2AMessage(
+            message_id="err-msg-1",
+            role=_compat.ROLE_AGENT,
+            parts=[_compat.make_text_part("Simulated remote task failure")],
+            context_id="context-123",
+        )
+        task_status = A2ATaskStatus(
+            state=_compat.TS_FAILED,
+            message=error_message,
+        )
+        failed_task = A2ATask(
+            id="task-1",
+            context_id="context-123",
+            status=task_status,
+        )
+
+        mock_response = _make_stream_task(failed_task)
+        mock_send_message.__aiter__.return_value = [mock_response]
+        mock_a2a_client.send_message.return_value = mock_send_message
+        agent._a2a_client = mock_a2a_client
+
+        mock_event = Event(
+            author=agent.name,
+            invocation_id=mock_context.invocation_id,
+            branch=mock_context.branch,
+            content=genai_types.Content(
+                role="model",
+                parts=[
+                    genai_types.Part.from_text(
+                        text="Simulated remote task failure"
+                    )
+                ],
+            ),
+        )
+
+        with patch.object(
+            agent, "_handle_a2a_response", new_callable=AsyncMock
+        ) as mock_handle:
+          mock_handle.return_value = mock_event
+
+          events = []
+          async for ev in agent._run_async_impl(mock_context):
+            events.append(ev)
+
+          assert len(events) == 4
+          assert events[0] == mock_event
+          assert (
+              events[1].error_message
+              == "Remote A2A task failed: Simulated remote task failure"
+          )
+          # Verify finish_task event
+          assert (
+              events[2].content.parts[0].function_response.name
+              == FINISH_TASK_TOOL_NAME
+          )
+          assert events[2].content.parts[0].function_response.response == {
+              "result": FINISH_TASK_ERROR_RESULT
+          }
+          assert events[3].actions.end_of_agent is True
+
+          mock_context.set_agent_state.assert_called_once_with(
+              agent.name, end_of_agent=True
+          )
+
+  @pytest.mark.asyncio
+  async def test_completes_on_task_state_canceled(self):
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=agent_card,
+        mode="task",
+    )
+
+    mock_context = Mock(spec=InvocationContext)
+    mock_context.session = Mock(spec=Session)
+    mock_context.session.events = [_make_dummy_task_trigger_event()]
+    mock_context.session.state = {}
+    mock_context.agent_states = {}
+    mock_context.end_of_agents = {}
+    mock_context.isolation_scope = "task-1"
+    mock_context.invocation_id = "invocation-123"
+    mock_context.branch = "main"
+
+    def set_agent_state_side_effect(agent_name, **kwargs):
+      if kwargs.get("end_of_agent"):
+        mock_context.end_of_agents[agent_name] = True
+      else:
+        mock_context.end_of_agents.pop(agent_name, None)
+
+    mock_context.set_agent_state.side_effect = set_agent_state_side_effect
+
+    mock_a2a_client = Mock()
+    mock_send_message = AsyncMock()
+    mock_ensure_resolved = AsyncMock(return_value=mock_a2a_client)
+
+    with patch.object(agent, "_ensure_resolved", mock_ensure_resolved):
+      with patch.object(
+          agent, "_construct_message_parts_from_session"
+      ) as mock_construct:
+        mock_a2a_part = _compat.make_text_part("test_message")
+        mock_construct.return_value = ([mock_a2a_part], "context-123")
+
+        task_status = A2ATaskStatus(
+            state=_compat.TS_CANCELED,
+            message=None,
+        )
+        canceled_task = A2ATask(
+            id="task-1",
+            context_id="context-123",
+            status=task_status,
+        )
+
+        mock_response = _make_stream_task(canceled_task)
+        mock_send_message.__aiter__.return_value = [mock_response]
+        mock_a2a_client.send_message.return_value = mock_send_message
+        agent._a2a_client = mock_a2a_client
+
+        mock_event = Event(
+            author=agent.name,
+            invocation_id=mock_context.invocation_id,
+            branch=mock_context.branch,
+            content=genai_types.Content(
+                role="model",
+                parts=[genai_types.Part.from_text(text="Some progress")],
+            ),
+        )
+
+        with patch.object(
+            agent, "_handle_a2a_response", new_callable=AsyncMock
+        ) as mock_handle:
+          mock_handle.return_value = mock_event
+
+          events = []
+          async for ev in agent._run_async_impl(mock_context):
+            events.append(ev)
+
+          assert len(events) == 4
+          assert events[0] == mock_event
+          assert (
+              events[1].error_message == "Remote A2A task failed: Task canceled"
+          )
+          # Verify finish_task event
+          assert (
+              events[2].content.parts[0].function_response.name
+              == FINISH_TASK_TOOL_NAME
+          )
+          assert events[2].content.parts[0].function_response.response == {
+              "result": FINISH_TASK_ERROR_RESULT
+          }
+          assert events[2].output is None
+          assert (
+              events[2].error_message == "Remote A2A task failed: Task canceled"
+          )
+          assert events[3].actions.end_of_agent is True
+          assert mock_context.end_of_agents[agent.name] is True
+          mock_context.set_agent_state.assert_called_once_with(
+              agent.name, end_of_agent=True
+          )
+
+
 class TestRemoteA2aAgentWorkflowOutput:
   """Tests that RemoteA2aAgent surfaces a workflow-node output value.
 
@@ -4286,6 +5754,79 @@ class TestRemoteA2aAgentWorkflowOutput:
     ]
     assert join_outputs, "JoinNode should emit an aggregated output event"
     assert join_outputs[0].output == {"remote_agent": "agent reply"}
+
+  @pytest.mark.asyncio
+  async def test_run_impl_task_mode_failure_does_not_raise_output_already_set(
+      self,
+  ):
+    """Guards against ``ValueError: Output already set`` during task failure.
+
+    In task mode, the output must not be dynamically promoted from the
+    original message chunk if it was already/will be set by the task
+    termination finish_task event.
+    """
+    server_error_event = self._make_text_event(
+        text="Simulated error", task_state="failed"
+    )
+    error_event = Event(
+        author="remote_agent",
+        error_message="Remote A2A task failed: Simulated error",
+    )
+    finish_event = Event(
+        author="remote_agent",
+        content=genai_types.Content(
+            role="user",
+            parts=[
+                genai_types.Part(
+                    function_response=genai_types.FunctionResponse(
+                        name=FINISH_TASK_TOOL_NAME,
+                        response={"result": FINISH_TASK_ERROR_RESULT},
+                    )
+                )
+            ],
+        ),
+        output="Simulated error",
+    )
+
+    class _StubRemoteAgent(RemoteA2aAgent):
+
+      async def _run_async_impl(self, ctx):
+        yield server_error_event
+        yield error_event
+        yield finish_event
+
+    agent = _StubRemoteAgent(
+        name="remote_agent",
+        agent_card=create_test_agent_card(),
+        mode="task",
+    )
+    agent.parent_agent = Mock()
+
+    from google.adk.apps.app import App
+    from google.adk.workflow._join_node import JoinNode
+    from google.adk.workflow._workflow import Workflow
+
+    from tests.unittests import testing_utils
+
+    workflow = Workflow(
+        name="wf",
+        edges=[("START", agent, JoinNode(name="join"))],
+    )
+    app_instance = App(name="t", root_agent=workflow)
+    runner = testing_utils.InMemoryRunner(app=app_instance)
+
+    # Should run successfully without raising "Output already set"
+    events = await runner.run_async(testing_utils.get_user_content("start"))
+
+    join_outputs = [
+        e
+        for e in events
+        if isinstance(e, Event)
+        and e.output is not None
+        and "join" in (e.node_info.path or "")
+    ]
+    assert join_outputs
+    assert join_outputs[0].output == {"remote_agent": "Simulated error"}
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from mcp import ClientSession
 from mcp.shared.exceptions import McpError
 from mcp.shared.session import ProgressFnT
 from mcp.types import Tool as McpBaseTool
@@ -413,6 +414,17 @@ class McpTool(BaseAuthenticatedTool):
           debug_list.extend(current_debug)
 
   @retry_on_errors
+  async def _create_session(
+      self, *, headers: dict[str, str] | None
+  ) -> ClientSession:
+    """Opens a session, retrying once because nothing has been sent yet.
+
+    Session setup happens before the tool call exists, so a failure here
+    provably did not run anything on the server and can be retried without
+    risking a duplicate side effect.
+    """
+    return await self._mcp_session_manager.create_session(headers=headers)
+
   @override
   async def _run_async_impl(
       self, *, args, tool_context: ToolContext, credential: AuthCredential
@@ -450,9 +462,7 @@ class McpTool(BaseAuthenticatedTool):
     meta_trace_context = trace_carrier if trace_carrier else None
 
     # Get the session from the session manager
-    session = await self._mcp_session_manager.create_session(
-        headers=final_headers
-    )
+    session = await self._create_session(headers=final_headers)
 
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
@@ -469,10 +479,10 @@ class McpTool(BaseAuthenticatedTool):
       # transport crashes (e.g. non-2xx HTTP responses from an AGW with
       # Model Armor) surface immediately instead of hanging until
       # sse_read_timeout (default 5 minutes) expires. ConnectionError is
-      # intentionally NOT caught here; it propagates to retry_on_errors,
-      # which will create a fresh session and retry once before finally
-      # surfacing the failure to the agent (where the run_async wrapper
-      # converts it into an `{"error": ...}` dict).
+      # intentionally NOT caught here. Replaying a tool call after an
+      # ambiguous transport failure could duplicate a remote side effect, so
+      # the failure surfaces to the run_async wrapper without an automatic
+      # retry.
       #
       # The isinstance check is intentional: tests and external subclasses
       # may inject mock session managers whose `_get_session_context`

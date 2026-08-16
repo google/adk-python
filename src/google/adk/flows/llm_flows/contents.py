@@ -1112,11 +1112,17 @@ def _present_other_agent_message(
           types.Part(text=f'[{event.author}] said: {part.text}')
       )
     elif part.function_call:
+      # Sort args by key so the rendered dict is deterministic across runs.
+      args = (
+          dict(sorted(part.function_call.args.items()))
+          if part.function_call.args
+          else part.function_call.args
+      )
       content.parts.append(
           types.Part(
               text=(
                   f'[{event.author}] called tool `{part.function_call.name}`'
-                  f' with parameters: {part.function_call.args}'
+                  f' with parameters: {args}'
               )
           )
       )
