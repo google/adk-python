@@ -34,17 +34,15 @@ _REDACTED = "<redacted>"
 # Pydantic echoes the rejected value into ValidationError messages
 # ("input_value=..."), which would put a malformed secret straight into logs and
 # into the error strings surfaced to the LLM. The field name and error type are
-# still reported. Passed as a class keyword rather than added to `model_config`
-# below: `model_config` states what these models accept, and rewriting that
-# declaration reads as an API change to the breaking-change detector even though
-# nothing about what they accept has changed.
-class BaseModelWithConfig(BaseModel, hide_input_in_errors=True):
+# still reported.
+class BaseModelWithConfig(BaseModel):
   """Base model for credential types, hardened against leaking secrets."""
 
   model_config = ConfigDict(
       extra="allow",
       alias_generator=alias_generators.to_camel,
       populate_by_name=True,
+      hide_input_in_errors=True,
   )
   """The pydantic model config."""
 

@@ -14,6 +14,7 @@
 
 """Unit tests for BaseLlmFlow toolset integration."""
 
+import logging
 from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -704,6 +705,69 @@ async def _mock_preprocess_with_history(ctx, req):
   _build_basic_request(ctx, req)
   if False:  # pylint: disable=using-constant-test
     yield
+
+
+@pytest.mark.asyncio
+async def test_run_live_does_not_log_http_options_headers(caplog):
+  """run_live must not log http_options headers, which can carry secrets."""
+
+  sentinel = 'do-not-log-this-live-credential'
+  # `flows/llm_flows/basic.py` deep-copies the agent's generate config onto
+  # `llm_request.config`, so this is how a caller's headers reach the flow.
+  agent = Agent(
+      name='test_agent',
+      model=Gemini(),
+      generate_content_config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              headers={'Authorization': f'Bearer {sentinel}'}
+          )
+      ),
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  # We need a way to break the infinite loop in run_live for testing.
+  class StopError(Exception):
+    pass
+
+  async def mock_receive():
+    if False:  # pylint: disable=using-constant-test
+      yield
+    raise StopError('stop')
+
+  mock_connection = mock.AsyncMock()
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  with caplog.at_level(logging.DEBUG, logger='google_adk'):
+    with mock.patch.object(
+        flow, '_preprocess_async', side_effect=_mock_preprocess_basic
+    ):
+      with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+        with mock.patch(
+            'google.adk.models.google_llm.Gemini.connect'
+        ) as mock_connect:
+          mock_connect.return_value.__aenter__.return_value = mock_connection
+
+          try:
+            async for _ in flow.run_live(invocation_context):
+              pass
+          except StopError:
+            pass
+
+  # The header reached the request the flow logged from, so the log line had
+  # access to it.
+  connect_request = mock_connect.call_args[0][0]
+  assert (
+      connect_request.config.http_options.headers['Authorization']
+      == f'Bearer {sentinel}'
+  )
+  assert sentinel not in caplog.text
+  # The log line is still there and still useful.
+  assert 'Establishing live connection for agent: test_agent' in caplog.text
 
 
 @pytest.mark.asyncio
