@@ -5852,6 +5852,8 @@ def _resume_events(
     responses,
     user_text=None,
     task_id="task-123",
+    pause_author="agent",
+    extra_call_metadata=None,
 ):
   """Builds the ``[pause_event, user_response_event]`` sequence seen on resume.
 
@@ -5863,6 +5865,10 @@ def _resume_events(
       parallel real-tool + human-input case.
     user_text: optional sibling text part appended to the response event.
     task_id: value stamped into the pausing event's a2a metadata.
+    pause_author: author of the pausing function-call event. Local workflow
+      pauses use the caller (default ``agent``). Relayed A2A pauses use the
+      remote peer's agent name.
+    extra_call_metadata: extra keys merged into the pausing event metadata.
 
   Returns:
     ``[pause_event, user_response_event]``.
@@ -5873,16 +5879,19 @@ def _resume_events(
       )
       for name, cid in calls
   ]
+  call_metadata = {
+      A2A_METADATA_PREFIX + "task_id": task_id,
+      A2A_METADATA_PREFIX + "context_id": "context-123",
+  }
+  if extra_call_metadata:
+    call_metadata.update(extra_call_metadata)
   call_event = Event(
       invocation_id="inv-1",
-      author="agent",
+      author=pause_author,
       id="e_call",
       content=genai_types.Content(role="model", parts=call_parts),
       long_running_tool_ids={cid for _, cid in calls if cid},
-      custom_metadata={
-          A2A_METADATA_PREFIX + "task_id": task_id,
-          A2A_METADATA_PREFIX + "context_id": "context-123",
-      },
+      custom_metadata=call_metadata,
   )
   response_parts = [
       genai_types.Part(
@@ -6008,6 +6017,96 @@ class TestHitlResumeRewrite:
     )
     assert parts
     assert "data" not in _kinds(parts)
+
+  def test_relayed_request_confirmation_stays_a_function_response(self):
+    """A confirmation the remote peer raised is forwarded as data, not text."""
+    agent = _make_agent()
+    parts = _forwarded_parts(
+        agent,
+        _resume_events(
+            calls=[("adk_request_confirmation", "fc-1")],
+            responses=[(
+                "adk_request_confirmation",
+                "fc-1",
+                {
+                    "confirmed": True,
+                    "hint": "Approve publish_result()?",
+                },
+            )],
+            pause_author=agent.name,
+            extra_call_metadata={
+                A2A_METADATA_PREFIX + "response": True,
+            },
+        ),
+    )
+    assert _kinds(parts) == ["data"]
+    dumped = _data(parts[0])
+    assert dumped.get("id") == "fc-1"
+    assert dumped.get("name") == "adk_request_confirmation"
+
+  def test_relayed_confirmation_without_response_metadata_still_resumes(self):
+    """Origin is the peer author even when a2a:response is not stamped."""
+    agent = _make_agent()
+    parts = _forwarded_parts(
+        agent,
+        _resume_events(
+            calls=[("adk_request_confirmation", "fc-1")],
+            responses=[
+                ("adk_request_confirmation", "fc-1", {"confirmed": True})
+            ],
+            pause_author=agent.name,
+        ),
+    )
+    assert _kinds(parts) == ["data"]
+    assert _data(parts[0]).get("name") == "adk_request_confirmation"
+
+  def test_relayed_request_input_stays_a_function_response(self):
+    """A request-input pause the remote peer raised is forwarded as data."""
+    agent = _make_agent()
+    parts = _forwarded_parts(
+        agent,
+        _resume_events(
+            calls=[("adk_request_input", "fc-1")],
+            responses=[("adk_request_input", "fc-1", {"company_name": "Okta"})],
+            pause_author=agent.name,
+            extra_call_metadata={
+                A2A_METADATA_PREFIX + "response": True,
+            },
+        ),
+    )
+    assert _kinds(parts) == ["data"]
+    assert _data(parts[0]).get("id") == "fc-1"
+    assert _data(parts[0]).get("name") == "adk_request_input"
+
+  def test_relayed_confirmation_still_drops_credentials(self):
+    """Credential material is dropped even on a relayed confirmation resume."""
+    agent = _make_agent()
+    parts = _forwarded_parts(
+        agent,
+        _resume_events(
+            calls=[
+                ("adk_request_confirmation", "fc-1"),
+                ("adk_request_credential", "fc-auth"),
+            ],
+            responses=[
+                ("adk_request_confirmation", "fc-1", {"confirmed": True}),
+                ("adk_request_credential", "fc-auth", _AUTH_PAYLOAD),
+            ],
+            pause_author=agent.name,
+            extra_call_metadata={
+                A2A_METADATA_PREFIX + "response": True,
+            },
+        ),
+    )
+    assert _SECRET not in _dump(parts)
+    assert any(
+        _kind(part) == "data" and _data(part).get("id") == "fc-1"
+        for part in parts
+    )
+    assert not any(
+        _kind(part) == "data" and _data(part).get("id") == "fc-auth"
+        for part in parts
+    )
 
   def test_real_long_running_tool_response_is_preserved(self):
     """A real remote long-running tool response is preserved id-for-id."""
