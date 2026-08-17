@@ -645,6 +645,302 @@ bigquery_agent_analytics:
     assert getattr(runner.app, "_is_visual_builder_app", False) is True
 
 
+def _create_adk_web_server(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Helper to build an AdkWebServer backed by the mock service fixtures."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  return AdkWebServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+
+def test_get_runner_async_rejects_internal_special_agent_name(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  adk_web_server = _create_adk_web_server(
+      tmp_path,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  from fastapi import HTTPException
+
+  with pytest.raises(HTTPException) as exc_info:
+    asyncio.run(
+        adk_web_server.get_runner_async("__adk_agent_builder_assistant")
+    )
+
+  assert exc_info.value.status_code == 403
+  assert (
+      "Access to internal special agents is disabled in API server mode"
+      in exc_info.value.detail
+  )
+
+
+def test_get_runner_async_accepts_internal_special_agent_name_when_enabled(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  adk_web_server = _create_adk_web_server(
+      tmp_path,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  adk_web_server._allow_special_agents = True
+
+  runner = asyncio.run(
+      adk_web_server.get_runner_async("__adk_agent_builder_assistant")
+  )
+
+  assert runner.app.name == "__adk_agent_builder_assistant"
+
+
+def test_app_info_rejects_internal_special_agent_name_without_web(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+      web=False,
+  )
+
+  response = client.get("/apps/__adk_agent_builder_assistant/app-info")
+
+  assert response.status_code == 403
+  assert (
+      "Access to internal special agents is disabled in API server mode"
+      in response.json()["detail"]
+  )
+
+
+def test_app_info_allows_internal_special_agent_name_with_web(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  special_agent = LlmAgent(name="agent_builder_assistant")
+  mock_agent_loader.load_agent = lambda app_name: special_agent
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+      web=True,
+  )
+
+  response = client.get("/apps/__adk_agent_builder_assistant/app-info")
+
+  assert response.status_code == 200
+  assert response.json()["rootAgentName"] == "agent_builder_assistant"
+
+
+def test_agent_loader_allows_special_agents_only_when_web_is_enabled(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  def build(web: bool) -> None:
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        agents_dir=str(tmp_path),
+        web=web,
+    )
+
+  build(web=False)
+  assert mock_agent_loader._allow_special_agents is False
+
+  build(web=True)
+  assert mock_agent_loader._allow_special_agents is True
+
+
+_SPECIAL_APP_NAME = "__adk_agent_builder_assistant"
+
+
+class _FlagIgnoringLoader:
+  """A caller-supplied loader that does not honour _allow_special_agents."""
+
+  def __init__(self):
+    self.requested = []
+
+  def load_agent(self, app_name):
+    self.requested.append(app_name)
+    return DummyAgent(name="agent_builder_assistant")
+
+  def list_agents(self):
+    return []
+
+
+def _create_api_server_client(loader, **overrides):
+  """Builds a TestClient over an AdkWebServer left in API server mode."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  kwargs = dict(
+      agent_loader=loader,
+      session_service=InMemorySessionService(),
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=InMemoryEvalSetsManager(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+  kwargs.update(overrides)
+  adk_web_server = AdkWebServer(**kwargs)
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+  return TestClient(fast_api_app)
+
+
+def test_dev_graph_rejects_internal_special_agent_name():
+  loader = _FlagIgnoringLoader()
+  client = _create_api_server_client(loader)
+
+  response = client.get(f"/dev/{_SPECIAL_APP_NAME}/graph")
+
+  assert response.status_code == 403
+  assert loader.requested == []
+
+
+def test_run_eval_rejects_internal_special_agent_name():
+  loader = _FlagIgnoringLoader()
+  eval_sets_manager = InMemoryEvalSetsManager()
+  eval_sets_manager.create_eval_set(_SPECIAL_APP_NAME, "eval_set_id")
+  client = _create_api_server_client(
+      loader, eval_sets_manager=eval_sets_manager
+  )
+
+  response = client.post(
+      f"/apps/{_SPECIAL_APP_NAME}/eval-sets/eval_set_id/run",
+      json={"evalMetrics": []},
+  )
+
+  assert response.status_code == 403
+  assert loader.requested == []
+
+
+def test_add_session_to_eval_set_rejects_internal_special_agent_name():
+  loader = _FlagIgnoringLoader()
+  session_service = InMemorySessionService()
+  asyncio.run(
+      session_service.create_session(
+          app_name=_SPECIAL_APP_NAME, user_id="user", session_id="session_id"
+      )
+  )
+  eval_sets_manager = InMemoryEvalSetsManager()
+  eval_sets_manager.create_eval_set(_SPECIAL_APP_NAME, "eval_set_id")
+  client = _create_api_server_client(
+      loader,
+      session_service=session_service,
+      eval_sets_manager=eval_sets_manager,
+  )
+
+  response = client.post(
+      f"/apps/{_SPECIAL_APP_NAME}/eval_sets/eval_set_id/add_session",
+      json={"evalId": "eval_id", "sessionId": "session_id", "userId": "user"},
+  )
+
+  assert response.status_code == 403
+  assert loader.requested == []
+
+
+def test_event_graph_rejects_internal_special_agent_name():
+  loader = _FlagIgnoringLoader()
+  session_service = AsyncMock()
+  session = Session(
+      id="session_id",
+      app_name=_SPECIAL_APP_NAME,
+      user_id="user",
+      state={},
+      events=[Event(author="dummy_agent")],
+  )
+  session_service.get_session.return_value = session
+  client = _create_api_server_client(loader, session_service=session_service)
+
+  response = client.get(
+      f"/apps/{_SPECIAL_APP_NAME}/users/user/sessions/session_id/events/"
+      f"{session.events[0].id}/graph"
+  )
+
+  assert response.status_code == 403
+  assert loader.requested == []
+
+
+def test_dev_graph_rejects_special_agent_before_the_loader_raises(tmp_path):
+  """The default loader's PermissionError must never reach the client."""
+  from google.adk.cli.utils.agent_loader import AgentLoader
+
+  client = _create_api_server_client(
+      AgentLoader(str(tmp_path)), agents_dir=str(tmp_path)
+  )
+
+  response = client.get(f"/dev/{_SPECIAL_APP_NAME}/graph")
+
+  assert response.status_code == 403
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,

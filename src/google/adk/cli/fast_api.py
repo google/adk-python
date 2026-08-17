@@ -172,6 +172,9 @@ def get_fast_api_app(
   # initialize Agent Loader if not passed as argument
   if agent_loader is None:
     agent_loader = AgentLoader(agents_dir)
+  # Special internal agents back the dev UI only, so they stay unloadable
+  # unless the UI is being served.
+  agent_loader._allow_special_agents = web
 
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
@@ -223,6 +226,9 @@ def get_fast_api_app(
       auto_create_session=auto_create_session,
       trigger_sources=trigger_sources,
   )
+  # The loader flag stops the import; this one turns the rejection into a 403
+  # rather than an uncaught error, and also covers a custom agent_loader.
+  adk_web_server._allow_special_agents = web
 
   # Callbacks & other optional args for when constructing the FastAPI instance
   extra_fast_api_args = {}
