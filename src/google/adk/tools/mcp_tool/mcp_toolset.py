@@ -43,6 +43,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...utils.env_utils import is_env_enabled
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
@@ -58,6 +59,13 @@ from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
 
 logger = logging.getLogger("google_adk." + __name__)
+
+ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR = "ADK_ALLOW_CONFIG_STDIO_MCP_SERVERS"
+
+
+def _allow_config_stdio_servers_enabled() -> bool:
+  """Returns whether agent configs may declare stdio MCP servers."""
+  return is_env_enabled(ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR)
 
 
 T = TypeVar("T")
@@ -455,6 +463,21 @@ class McpToolset(BaseToolset):
   ) -> McpToolset:
     """Creates an McpToolset from a configuration object."""
     mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
+
+    if (
+        mcp_toolset_config.stdio_server_params
+        or mcp_toolset_config.stdio_connection_params
+    ) and not _allow_config_stdio_servers_enabled():
+      raise ValueError(
+          "Stdio MCP servers are not allowed in agent configs: the"
+          " config-supplied 'command' is launched as a local process when the"
+          " agent starts, so an untrusted config would be able to run"
+          " arbitrary code. Construct the McpToolset in Python code instead,"
+          " use a remote transport (sse_connection_params or"
+          " streamable_http_connection_params), or set"
+          f" {ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR}=1 if this application only"
+          " loads agent configs it trusts."
+      )
 
     if mcp_toolset_config.stdio_server_params:
       connection_params = mcp_toolset_config.stdio_server_params
