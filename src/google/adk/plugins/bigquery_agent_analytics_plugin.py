@@ -1484,9 +1484,36 @@ class HybridContentParser:
     )
 
   async def _parse_content_object(
-      self, content: types.Content | types.Part
+      self,
+      content: types.Content | types.Part,
+      *,
+      trace_id: Optional[str] = None,
+      span_id: Optional[str] = None,
+      parse_uid: str = "",
+      content_ordinal: int = 0,
   ) -> tuple[str, list[dict[str, Any]], bool]:
-    """Parses a Content or Part object into summary text and content parts."""
+    """Parses a Content or Part object into summary text and content parts.
+
+    Args:
+        content: The Content or Part to parse.
+        trace_id: Trace id of the calling event. GCS object paths are built
+            from this argument rather than the instance field, because the
+            parser is shared across concurrent events and an await inside this
+            method can resume under another event's identity. Falls back to
+            the instance field.
+        span_id: Span id of the calling event, with the same rationale.
+        parse_uid: Unique per parse() call. Disambiguates object names across
+            concurrent events. Generated here when not supplied.
+        content_ordinal: Index of this Content within the calling request. The
+            part index restarts at zero for each Content, so without this two
+            messages in one request collide on the same object name.
+
+    Returns:
+        A tuple of (summary_text, content_parts, is_truncated).
+    """
+    trace_id = trace_id if trace_id is not None else self.trace_id
+    span_id = span_id if span_id is not None else self.span_id
+    parse_uid = parse_uid or uuid.uuid4().hex
     content_parts = []
     is_truncated = False
     summary_text = []
@@ -1518,7 +1545,10 @@ class HybridContentParser:
       elif hasattr(part, "inline_data") and part.inline_data:
         if self.offloader:
           ext = mimetypes.guess_extension(part.inline_data.mime_type) or ".bin"
-          path = f"{datetime.now().date()}/{self.trace_id}/{self.span_id}_p{idx}{ext}"
+          path = (
+              f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
+              f"_c{content_ordinal}_p{idx}{ext}"
+          )
           try:
             uri = await self.offloader.upload_content(
                 part.inline_data.data, part.inline_data.mime_type, path
@@ -1557,7 +1587,10 @@ class HybridContentParser:
 
         if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
           # Text is too big, treat as file
-          path = f"{datetime.now().date()}/{self.trace_id}/{self.span_id}_p{idx}.txt"
+          path = (
+              f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
+              f"_c{content_ordinal}_p{idx}.txt"
+          )
           try:
             uri = await self.offloader.upload_content(
                 part.text, "text/plain", path
@@ -1605,8 +1638,32 @@ class HybridContentParser:
 
     return summary_str, content_parts, is_truncated
 
-  async def parse(self, content: Any) -> tuple[Any, list[dict[str, Any]], bool]:
-    """Parses content into JSON payload and content parts, potentially offloading to GCS."""
+  async def parse(
+      self,
+      content: Any,
+      *,
+      trace_id: Optional[str] = None,
+      span_id: Optional[str] = None,
+  ) -> tuple[Any, list[dict[str, Any]], bool]:
+    """Parses content into JSON payload and content parts, potentially offloading to GCS.
+
+    Args:
+        content: The content to parse.
+        trace_id: Trace id of the calling event, used to build GCS object
+            paths. Pass it per call: the parser instance is shared across
+            concurrent events, so a path built from the mutable instance field
+            can pick up another event's identity across an await. Falls back
+            to the instance field.
+        span_id: Span id of the calling event, with the same rationale.
+
+    Returns:
+        A tuple of (json_payload, content_parts, is_truncated).
+    """
+    trace_id = trace_id if trace_id is not None else self.trace_id
+    span_id = span_id if span_id is not None else self.span_id
+    # Unique per parse() call, so two events offloading at the same time
+    # cannot produce the same object name.
+    parse_uid = uuid.uuid4().hex
     json_payload = {}
     content_parts = []
     is_truncated = False
@@ -1622,9 +1679,15 @@ class HybridContentParser:
           if isinstance(content.contents, list)
           else [content.contents]
       )
-      for c in contents:
+      for content_idx, c in enumerate(contents):
         role = getattr(c, "role", "unknown")
-        summary, parts, trunc = await self._parse_content_object(c)
+        summary, parts, trunc = await self._parse_content_object(
+            c,
+            trace_id=trace_id,
+            span_id=span_id,
+            parse_uid=parse_uid,
+            content_ordinal=content_idx,
+        )
         if trunc:
           is_truncated = True
         content_parts.extend(parts)
@@ -1642,14 +1705,25 @@ class HybridContentParser:
             is_truncated = True
           json_payload["system_prompt"] = truncated_si
         else:
-          summary, parts, trunc = await self._parse_content_object(si)
+          summary, parts, trunc = await self._parse_content_object(
+              si,
+              trace_id=trace_id,
+              span_id=span_id,
+              parse_uid=parse_uid,
+              content_ordinal=len(contents),
+          )
           if trunc:
             is_truncated = True
           content_parts.extend(parts)
           json_payload["system_prompt"] = summary
 
     elif isinstance(content, (types.Content, types.Part)):
-      summary, parts, trunc = await self._parse_content_object(content)
+      summary, parts, trunc = await self._parse_content_object(
+          content,
+          trace_id=trace_id,
+          span_id=span_id,
+          parse_uid=parse_uid,
+      )
       return {"text_summary": summary}, parts, trunc
 
     elif isinstance(content, (dict, list)):
@@ -3020,11 +3094,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Parser not initialized; skipping event %s.", event_type)
       return
 
-    # Update parser's trace/span IDs for GCS pathing (reuse instance)
-    self.parser.trace_id = trace_id or "no_trace"
-    self.parser.span_id = span_id or "no_span"
+    # Pass the ids per call rather than assigning them to the shared parser:
+    # two events in flight at once would otherwise overwrite each other's
+    # identity between the assignment and the offload that follows an await.
     content_json, content_parts, parser_truncated = await self.parser.parse(
-        raw_content
+        raw_content,
+        trace_id=trace_id or "no_trace",
+        span_id=span_id or "no_span",
     )
     is_truncated = is_truncated or parser_truncated
 

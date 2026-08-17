@@ -2919,27 +2919,34 @@ class TestParserReuse:
     assert bq_plugin_inst.parser is parser_after_init
 
   @pytest.mark.asyncio
-  async def test_parser_trace_id_updated_per_call(
+  async def test_parser_ids_are_not_mutated_per_call(
       self,
       bq_plugin_inst,
       mock_write_client,
       invocation_context,
       dummy_arrow_schema,
   ):
-    """trace_id and span_id on the parser should update per _log_event."""
+    """_log_event passes the ids per call instead of writing them on the
+
+    shared parser.
+    """
     parser = bq_plugin_inst.parser
     original_trace_id = parser.trace_id
+    original_span_id = parser.span_id
 
-    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
-    await bq_plugin_inst.on_user_message_callback(
-        invocation_context=invocation_context,
-        user_message=types.Content(parts=[types.Part(text="Test")]),
-    )
-    await asyncio.sleep(0.01)
+    with mock.patch.object(parser, "parse", wraps=parser.parse) as mock_parse:
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await bq_plugin_inst.on_user_message_callback(
+          invocation_context=invocation_context,
+          user_message=types.Content(parts=[types.Part(text="Test")]),
+      )
+      await asyncio.sleep(0.01)
 
-    # After logging, trace_id/span_id should have been updated
-    # (they're derived from TraceManager, not the initial empty strings)
-    assert parser.span_id != ""
+    assert parser.trace_id == original_trace_id
+    assert parser.span_id == original_span_id
+    _, kwargs = mock_parse.call_args
+    assert kwargs["span_id"] != ""
+    assert kwargs["span_id"] != original_span_id
 
   @pytest.mark.asyncio
   async def test_parser_not_recreated_with_constructor(
@@ -7831,6 +7838,82 @@ class TestExternalUriSanitization:
 
     assert safe_uri == "[REDACTED_SENSITIVE_URI]"
     assert removed
+
+
+# ================================================================
+# TEST CLASS: GCS offload path identity
+# ================================================================
+class TestOffloadPathIdentity:
+  """Tests that offload paths come from the call, not shared parser state."""
+
+  @pytest.mark.asyncio
+  async def test_concurrent_parses_keep_their_own_identity(self):
+    """Two parses in flight at once do not write under each other's prefix."""
+    paths = []
+    first_upload_started = asyncio.Event()
+
+    async def upload_content(data, mime_type, path):
+      paths.append(path)
+      if len(paths) == 1:
+        # Hold the first upload open until the second has begun, so both
+        # parses are suspended inside _parse_content_object at once.
+        first_upload_started.set()
+        await asyncio.sleep(0.05)
+      return f"gs://bucket/{path}"
+
+    offloader = mock.MagicMock()
+    offloader.upload_content = upload_content
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=offloader,
+        trace_id="",
+        span_id="",
+        max_length=10,
+    )
+    content = types.Content(parts=[types.Part(text="X" * 200)])
+
+    async def parse_as(trace_id, span_id):
+      return await parser.parse(content, trace_id=trace_id, span_id=span_id)
+
+    task_a = asyncio.create_task(parse_as("trace-a", "span-a"))
+    await asyncio.wait_for(first_upload_started.wait(), timeout=5)
+    task_b = asyncio.create_task(parse_as("trace-b", "span-b"))
+    await asyncio.gather(task_a, task_b)
+
+    assert len(paths) == 2
+    assert sum("trace-a/span-a" in p for p in paths) == 1
+    assert sum("trace-b/span-b" in p for p in paths) == 1
+    assert parser.trace_id == ""
+    assert parser.span_id == ""
+
+  @pytest.mark.asyncio
+  async def test_same_part_index_in_two_messages_does_not_collide(self):
+    """Two messages in one request get distinct object names."""
+    paths = []
+
+    async def upload_content(data, mime_type, path):
+      paths.append(path)
+      return f"gs://bucket/{path}"
+
+    offloader = mock.MagicMock()
+    offloader.upload_content = upload_content
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=10,
+    )
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[
+            types.Content(parts=[types.Part(text="A" * 200)]),
+            types.Content(parts=[types.Part(text="B" * 200)]),
+        ],
+    )
+
+    await parser.parse(llm_request, trace_id="t1", span_id="s1")
+
+    assert len(paths) == 2
+    assert paths[0] != paths[1]
 
 
 # ================================================================
