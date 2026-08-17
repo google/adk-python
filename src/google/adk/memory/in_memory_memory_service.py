@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 _UNKNOWN_SESSION_ID = '__unknown_session_id__'
 _MAX_SEARCH_RESULTS = 10
+_SCRIPT_RUN_PATTERN = re.compile(r'[\x00-\x7f]+|[^\x00-\x7f]+')
 
 
 def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
@@ -41,6 +42,25 @@ def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
 def _extract_words_lower(text: str) -> set[str]:
   """Extracts Unicode-aware tokens from a string in lowercase."""
   return set(word.lower() for word in re.findall(r'\w+', text))
+
+
+def _extract_searchable_words(text: str) -> set[str]:
+  """Extracts the words an event can be matched on, in lowercase.
+
+  The tokens of _extract_words_lower, plus, for a token that mixes scripts,
+  each of its ASCII and non-ASCII runs. Japanese and Chinese are written
+  without spaces, so 私はPythonを使う is a single \\w+ token and a query for
+  Python matches nothing. Splitting on the boundary between scripts makes the
+  embedded Latin word a token of its own, while still keeping a partial word
+  such as thon from matching.
+
+  Args:
+    text: The text of an event.
+  """
+  words = _extract_words_lower(text)
+  for word in [word for word in words if not word.isascii()]:
+    words.update(_SCRIPT_RUN_PATTERN.findall(word))
+  return words
 
 
 class InMemoryMemoryService(BaseMemoryService):
@@ -128,7 +148,7 @@ class InMemoryMemoryService(BaseMemoryService):
         event_text = ' '.join(
             [part.text for part in event.content.parts if part.text]
         )
-        words_in_event = _extract_words_lower(event_text)
+        words_in_event = _extract_searchable_words(event_text)
         if not words_in_event:
           continue
 
