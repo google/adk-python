@@ -24,10 +24,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from collections.abc import Callable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
+from contextlib import ExitStack
 import logging
 import re
 from typing import Final
@@ -702,12 +704,19 @@ async def use_inference_span(
   if invocation_context.session.user_id is not None:
     log_only_common_attributes[USER_ID] = invocation_context.session.user_id
   if _should_emit_native_telemetry(invocation_context.agent):
-    async with _use_native_generate_content_span(
-        llm_request=llm_request,
-        common_attributes=common_attributes,
-        log_only_common_attributes=log_only_common_attributes,
-        telemetry_config=telemetry_config,
-    ) as gc_span:
+    # Unwound through an ExitStack rather than a nested `with`, so that
+    # `GenerateContentSpan.end()` can close the span (and emit its completion
+    # details) as soon as the inference is done, instead of when the caller is
+    # done with the response.
+    with ExitStack() as stack:
+      gc_span = stack.enter_context(
+          _use_native_generate_content_span(
+              llm_request=llm_request,
+              common_attributes=common_attributes,
+              log_only_common_attributes=log_only_common_attributes,
+              telemetry_config=telemetry_config,
+          )
+      )
       if telemetry_config.should_use_experimental_genai_semconv:
         set_operation_details_common_attributes(
             gc_span.operation_details_common_attributes,
@@ -715,16 +724,20 @@ async def use_inference_span(
             common_attributes,
             log_only_attributes=log_only_common_attributes,
         )
-      try:
-        yield gc_span
-      finally:
-        maybe_log_completion_details(
-            gc_span.span,
-            otel_logger,
-            gc_span.operation_details_attributes,
-            gc_span.operation_details_common_attributes,
-            telemetry_config,
-        )
+      # Registered last, so it unwinds first: while the span is still open.
+      stack.callback(
+          lambda: maybe_log_completion_details(
+              gc_span.span,
+              otel_logger,
+              gc_span.operation_details_attributes,
+              gc_span.operation_details_common_attributes,
+              telemetry_config,
+          )
+      )
+      # `ExitStack.close()` empties the stack, so calling it again (here on
+      # exit, after `_end()` already did) is a no-op.
+      gc_span._close = stack.close  # pyright: ignore[reportPrivateUsage]
+      yield gc_span
   else:
     with _use_extra_generate_content_attributes(
         common_attributes,
@@ -857,13 +870,13 @@ def _use_native_generate_content_span_stable_semconv(
     yield gc_span
 
 
-@asynccontextmanager
-async def _use_native_generate_content_span(
+@contextmanager
+def _use_native_generate_content_span(
     llm_request: LlmRequest,
     common_attributes: Mapping[str, AttributeValue],
     telemetry_config: TelemetryConfig,
     log_only_common_attributes: Mapping[str, AttributeValue] | None = None,
-) -> AsyncIterator[GenerateContentSpan]:
+) -> Iterator[GenerateContentSpan]:
   if not telemetry_config.should_use_experimental_genai_semconv:
     with _use_native_generate_content_span_stable_semconv(
         llm_request,
@@ -899,6 +912,13 @@ class GenerateContentSpan:
     self.span: Final = span
     self.operation_details_attributes: dict[str, AttributeValue] = {}
     self.operation_details_common_attributes: dict[str, AttributeValue] = {}
+    # Ends the span, idempotently, without waiting for `use_inference_span` to
+    # exit. Installed by span, which owns it. Calling it as soon as the
+    # inference is done keeps what the caller then does with the response
+    # (running the tool it asked for) out of the span, like
+    # opentelemetry-instrumentation-google-genai, whose span ends when the SDK
+    # call returns.
+    self._close: Callable[[], None] = lambda: None
 
 
 @deprecated(

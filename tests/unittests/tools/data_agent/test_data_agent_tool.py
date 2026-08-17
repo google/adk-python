@@ -1062,3 +1062,235 @@ async def test_create_data_agent_invalid_path_segment():
   )
   assert result["status"] == "ERROR"
   assert "Invalid project_id format" in result["error_details"]
+
+
+@pytest.mark.asyncio
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+async def test_update_data_agent_success(mock_get_session):
+  """Tests update_data_agent success path."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_response = mock.Mock(ok=True)
+  mock_response.json.return_value = {"name": "operations/op-1", "done": True}
+  mock_session.patch.return_value = mock_response
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+  mock_settings = mock.Mock(
+      enable_data_agent_modification=True,
+      data_agent_modification_timeout_seconds=60,
+      data_agent_modification_poll_interval_seconds=2,
+  )
+
+  result = await data_agent_tool.update_data_agent(
+      "projects/p/locations/g/dataAgents/agent-1",
+      '{"displayName": "updated"}',
+      "displayName",
+      credentials=mock_creds,
+      settings=mock_settings,
+  )
+  assert result["status"] == "SUCCESS"
+  mock_get_session.assert_called_once_with(mock_creds, location="g")
+  mock_session.patch.assert_called_once_with(
+      "https://geminidataanalytics.googleapis.com/v1/projects/p/locations/g/dataAgents/agent-1",
+      params={"updateMask": "displayName"},
+      json={"displayName": "updated"},
+      headers=mock.ANY,
+      timeout=mock.ANY,
+  )
+
+
+@pytest.mark.asyncio
+async def test_update_data_agent_disabled():
+  """Tests update_data_agent when disabled."""
+  mock_creds = mock.Mock()
+  mock_settings = mock.Mock(enable_data_agent_modification=False)
+  result = await data_agent_tool.update_data_agent(
+      "projects/p/locations/g/dataAgents/agent-1",
+      '{"displayName": "updated"}',
+      "displayName",
+      credentials=mock_creds,
+      settings=mock_settings,
+  )
+  assert result["status"] == "ERROR"
+  assert "mutation is disabled" in result["error_details"]
+
+
+@pytest.mark.asyncio
+async def test_update_data_agent_missing_mask_field_rejected():
+  """Tests update_data_agent rejects update_mask fields absent from agent_config."""
+  mock_creds = mock.Mock()
+  mock_settings = mock.Mock(enable_data_agent_modification=True)
+  result = await data_agent_tool.update_data_agent(
+      "projects/p/locations/g/dataAgents/agent-1",
+      '{"displayName": "updated"}',
+      "displayName,description",
+      credentials=mock_creds,
+      settings=mock_settings,
+  )
+  assert result["status"] == "ERROR"
+  assert (
+      "update_mask fields ['description'] are not present"
+      in result["error_details"]
+  )
+
+
+@pytest.mark.asyncio
+async def test_update_data_agent_missing_nested_mask_field_rejected():
+  """Tests update_data_agent rejects nested update_mask fields absent from agent_config."""
+  mock_creds = mock.Mock()
+  mock_settings = mock.Mock(enable_data_agent_modification=True)
+  result = await data_agent_tool.update_data_agent(
+      "projects/p/locations/g/dataAgents/agent-1",
+      '{"dataAnalyticsAgent": {}}',
+      "dataAnalyticsAgent.publishedContext.systemInstruction",
+      credentials=mock_creds,
+      settings=mock_settings,
+  )
+  assert result["status"] == "ERROR"
+  assert (
+      "update_mask fields"
+      " ['dataAnalyticsAgent.publishedContext.systemInstruction'] are not"
+      " present"
+      in result["error_details"]
+  )
+
+
+@pytest.mark.asyncio
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+async def test_update_data_agent_nested_mask_field_success(mock_get_session):
+  """Tests update_data_agent succeeds when nested update_mask fields are present."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_response = mock.Mock(ok=True)
+  mock_response.json.return_value = {"name": "operations/op-1", "done": True}
+  mock_session.patch.return_value = mock_response
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+  mock_settings = mock.Mock(
+      enable_data_agent_modification=True,
+      data_agent_modification_timeout_seconds=60,
+      data_agent_modification_poll_interval_seconds=2,
+  )
+
+  result = await data_agent_tool.update_data_agent(
+      "projects/p/locations/g/dataAgents/agent-1",
+      '{"dataAnalyticsAgent": {"publishedContext": {"systemInstruction":'
+      ' "test"}}}',
+      "dataAnalyticsAgent.publishedContext.systemInstruction",
+      credentials=mock_creds,
+      settings=mock_settings,
+  )
+  assert result["status"] == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_update_data_agent_empty_mask_error():
+  """Tests update_data_agent with an empty update_mask."""
+  result = await data_agent_tool.update_data_agent(
+      "projects/p/locations/g/dataAgents/agent-1",
+      '{"displayName": "New"}',
+      "   ",
+      credentials=mock.Mock(),
+      settings=mock.Mock(enable_data_agent_modification=True),
+  )
+  assert result["status"] == "ERROR"
+  assert (
+      "update_mask must be a non-empty comma-separated list"
+      in result["error_details"]
+  )
+
+
+@pytest.mark.asyncio
+async def test_update_data_agent_invalid_name_error():
+  """Tests update_data_agent with an invalid data_agent_name."""
+  result = await data_agent_tool.update_data_agent(
+      "invalid-name",
+      '{"displayName": "New"}',
+      "displayName",
+      credentials=mock.Mock(),
+      settings=mock.Mock(enable_data_agent_modification=True),
+  )
+  assert "Invalid data_agent_name format" in result["error_details"]
+
+
+@pytest.mark.asyncio
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+async def test_update_data_agent_accepts_dict_from_programmatic_caller(
+    mock_get_session,
+):
+  """Tests update_data_agent accepts dict for agent_config from Python callers."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_response = mock.Mock(ok=True)
+  mock_response.json.return_value = {"name": "op-1", "done": True}
+  mock_session.patch.return_value = mock_response
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+  mock_settings = mock.Mock(
+      enable_data_agent_modification=True,
+      data_agent_modification_timeout_seconds=60,
+      data_agent_modification_poll_interval_seconds=2,
+  )
+
+  result = await data_agent_tool.update_data_agent(
+      "projects/p/locations/g/dataAgents/agent-1",
+      {"displayName": "dict-config"},
+      "displayName",
+      credentials=mock_creds,
+      settings=mock_settings,
+  )
+  assert result["status"] == "SUCCESS"
+  mock_session.patch.assert_called_once_with(
+      "https://geminidataanalytics.googleapis.com/v1/projects/p/locations/g/dataAgents/agent-1",
+      params={"updateMask": "displayName"},
+      json={"displayName": "dict-config"},
+      headers=mock.ANY,
+      timeout=mock.ANY,
+  )
+
+
+@pytest.mark.asyncio
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+async def test_update_data_agent_endpoint_matches_resource_name(
+    mock_get_session,
+):
+  """Tests update_data_agent resource name location overrides settings.location."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_response = mock.Mock(ok=True)
+  mock_response.json.return_value = {"name": "op-1", "done": True}
+  mock_session.patch.return_value = mock_response
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.googleapis.com",
+  )
+  mock_settings = mock.Mock(
+      enable_data_agent_modification=True,
+      data_agent_modification_timeout_seconds=60,
+      data_agent_modification_poll_interval_seconds=2,
+      location="eu",
+  )
+
+  result = await data_agent_tool.update_data_agent(
+      "projects/p/locations/us/dataAgents/agent-1",
+      '{"displayName": "New"}',
+      "displayName",
+      credentials=mock_creds,
+      settings=mock_settings,
+  )
+  assert result["status"] == "SUCCESS"
+  mock_get_session.assert_called_once_with(mock_creds, location="us")

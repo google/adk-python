@@ -44,6 +44,9 @@ questions in the same session, and the agent will maintain context.
 - `delete_data_agent`: Deletes a Data Agent given its full resource name
   (requires setting `enable_data_agent_modification=True` in
   `DataAgentToolConfig`). This tool is experimental.
+- `update_data_agent`: Updates an existing Data Agent given its full resource
+  name (requires setting `enable_data_agent_modification=True` in
+  `DataAgentToolConfig`). This tool is experimental.
 
 ## How to Run
 

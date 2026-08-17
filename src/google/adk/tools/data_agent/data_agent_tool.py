@@ -121,6 +121,16 @@ def _parse_agent_config(
   return parsed_config, None
 
 
+def _mask_field_present(config: dict[str, Any], field: str) -> bool:
+  """Checks if a dot-separated field path is present in config."""
+  node: Any = config
+  for part in field.split("."):
+    if not isinstance(node, dict) or part not in node:
+      return False
+    node = node[part]
+  return True
+
+
 async def _await_lro(
     *,
     session: requests.Session,
@@ -801,6 +811,115 @@ async def create_data_agent(
         credentials=credentials,
         settings=settings,
         params={"dataAgentId": data_agent_id},
+        json_body=parsed_config,
+    )
+  except Exception as ex:  # pylint: disable=broad-except
+    return {
+        "status": "ERROR",
+        "error_details": str(ex),
+    }
+
+
+async def update_data_agent(
+    data_agent_name: str,
+    agent_config: str,
+    update_mask: str,
+    *,
+    credentials: Credentials,
+    settings: DataAgentToolConfig,
+) -> dict[str, Any]:
+  r"""Updates an existing data agent.
+
+  Args:
+      data_agent_name: The name of the data agent to update, in format
+        projects/{project}/locations/{location}/dataAgents/{agent}.
+      agent_config: A JSON string representing the DataAgent resource. For
+        detailed REST resource schema and patch documentation, see:
+        https://docs.cloud.google.com/gemini/data-agents/reference/rest/v1/projects.locations.dataAgents#DataAgent
+        https://docs.cloud.google.com/gemini/data-agents/reference/rest/v1/projects.locations.dataAgents/patch
+      update_mask: Comma-separated list of fields to update, using the API's
+        camelCase JSON field names (e.g. "displayName,description" or
+        "dataAnalyticsAgent.publishedContext.systemInstruction"). Every field
+        listed here MUST also be present in agent_config; fields listed in
+        update_mask but absent from agent_config are rejected to prevent
+        accidental data loss.
+      credentials: The credentials to use for the request.
+      settings: The configuration for the tool.
+
+  Returns:
+      A dictionary containing the status and the updated data agent's details,
+      or error details if the request fails.
+      The tool waits for the update operation to finish, polling for up to
+      `DataAgentToolConfig.data_agent_modification_timeout_seconds` (60s by
+      default) in total.
+      Note that a polling timeout does not necessarily mean the update
+      failed; the operation may still be completing in the background.
+
+  Examples:
+      >>> update_data_agent(
+      ...     "projects/my-project/locations/global/dataAgents/my-agent",
+      ...     agent_config='{"displayName": "Updated Agent"}',
+      ...     update_mask="displayName",
+      ...     credentials=creds,
+      ...     settings=settings,
+      ... )
+      {'status': 'SUCCESS', 'response': {'name':
+      'projects/my-project/locations/global/dataAgents/my-agent', 'displayName':
+      'Updated Agent'}}
+  """
+  try:
+    disabled_error = _modification_disabled_error(settings)
+    if disabled_error:
+      return disabled_error
+
+    invalid_name_error = _validate_data_agent_name(data_agent_name)
+    if invalid_name_error:
+      return invalid_name_error
+
+    fields = [f.strip() for f in update_mask.split(",") if f.strip()]
+    if not fields:
+      return {
+          "status": "ERROR",
+          "error_details": (
+              "update_mask must be a non-empty comma-separated list of fields,"
+              ' e.g. "displayName,description".'
+          ),
+      }
+    update_mask = ",".join(fields)
+
+    parsed_config, config_error = _parse_agent_config(agent_config)
+    if config_error or parsed_config is None:
+      return config_error or {
+          "status": "ERROR",
+          "error_details": "Failed to parse agent_config.",
+      }
+
+    # Check that every field in the update_mask exists in the provided agent_config.
+    # Example Pass: update_mask="displayName", agent_config={"displayName": "New"}
+    # Example Fail: update_mask="displayName,description", agent_config={"displayName": "New"}
+    # This prevents the API from wiping out fields that the user forgot to include in agent_config.
+    missing_fields = [
+        f for f in fields if not _mask_field_present(parsed_config, f)
+    ]
+
+    if missing_fields:
+      return {
+          "status": "ERROR",
+          "error_details": (
+              f"update_mask fields {missing_fields} are not present in"
+              " agent_config. Fields listed in update_mask but absent from"
+              " agent_config will be cleared; include them explicitly or remove"
+              " them from the mask."
+          ),
+      }
+
+    return await _mutate_data_agent(
+        lambda base_url: f"{base_url}/{data_agent_name}",
+        "patch",
+        credentials=credentials,
+        settings=settings,
+        location=_extract_location_from_resource_name(data_agent_name),
+        params={"updateMask": update_mask},
         json_body=parsed_config,
     )
   except Exception as ex:  # pylint: disable=broad-except
