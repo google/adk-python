@@ -32,6 +32,7 @@ from typing import Union
 from google.genai import types
 from typing_extensions import override
 
+from . import artifact_util
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
@@ -161,6 +162,8 @@ class GcsArtifactService(BaseArtifactService):
       session_id: Optional[str] = None,
   ) -> str:
     """Constructs the blob name prefix in GCS for a given artifact."""
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
@@ -168,6 +171,7 @@ class GcsArtifactService(BaseArtifactService):
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
+    artifact_util.validate_path_segment(session_id, "session_id")
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   def _get_blob_name(
@@ -276,6 +280,10 @@ class GcsArtifactService(BaseArtifactService):
   def _list_artifact_keys(
       self, app_name: str, user_id: str, session_id: Optional[str]
   ) -> list[str]:
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
+    if session_id is not None:
+      artifact_util.validate_path_segment(session_id, "session_id")
     filenames = set()
 
     if session_id:

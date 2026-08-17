@@ -14,6 +14,8 @@
 
 """Tests for artifact_util."""
 
+from unittest import mock
+
 from google.adk.artifacts import artifact_util
 from google.adk.errors.input_validation_error import InputValidationError
 from google.genai import types
@@ -108,6 +110,58 @@ def test_is_artifact_ref_true():
 def test_is_artifact_ref_false(part):
   """Tests is_artifact_ref with non-reference parts."""
   assert artifact_util.is_artifact_ref(part) is False
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["user_id", "app_name", "session_id"],
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        "user123",
+        "myapp",
+        "sess123",
+        "group/user123",
+        "has/slash",
+        "back\\slash",
+        mock.MagicMock(),
+    ],
+)
+def test_validate_path_segment_valid(value, field_name):
+  """Normal and namespaced segments should pass validation."""
+  artifact_util.validate_path_segment(value, field_name)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["user_id", "app_name", "session_id"],
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        "../escape",
+        "../../etc",
+        "foo/../../bar",
+        "mixed/..\\separators",
+        "./..\\",
+        ".\\../",
+        "..",
+        ".",
+        "null\x00byte",
+        "",
+        "/etc/passwd",
+        "/leading/slash",
+        "\\leading\\backslash",
+        "C:\\absolute",
+        "C:/absolute",
+        "C:drive-relative",
+    ],
+)
+def test_validate_path_segment_invalid(value, field_name):
+  """Traversal segments, null bytes, and absolute paths should raise InputValidationError."""
+  with pytest.raises(InputValidationError):
+    artifact_util.validate_path_segment(value, field_name)
 
 
 @pytest.mark.parametrize(
@@ -212,3 +266,22 @@ def test_validate_artifact_reference_scope_session_uri_without_caller_session_ra
     )
 
   assert "same session scope" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("C:", True),
+        ("c:/data", True),
+        ("Z:relative", True),
+        ("1:x", False),
+        ("_:x", False),
+        ("é:x", False),
+        (":x", False),
+        ("user:profile.txt", False),
+        ("plain", False),
+    ],
+)
+def test_is_drive_qualified_matches_only_drive_letters(value, expected):
+  """Only a single ASCII letter followed by a colon counts as a drive."""
+  assert artifact_util._is_drive_qualified(value) is expected

@@ -259,7 +259,7 @@ class FileArtifactService(BaseArtifactService):
     base = self._base_root(user_id)
     if _is_user_scoped(session_id, filename):
       return _user_artifacts_dir(base)
-    if not session_id:
+    if session_id is None:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
@@ -524,7 +524,7 @@ class FileArtifactService(BaseArtifactService):
 
     base_root = self._base_root(user_id)
 
-    if session_id:
+    if session_id is not None:
       session_root = _session_artifacts_dir(base_root, session_id)
       for artifact_dir in _iter_artifact_dirs(session_root):
         metadata = self._latest_metadata(artifact_dir)
