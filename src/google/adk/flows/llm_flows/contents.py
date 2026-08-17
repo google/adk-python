@@ -144,15 +144,25 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
-  function_call_id_to_response_events_index: dict[str | None, int] = {}
+  # Pair responses to calls on (id, name), not id alone. Model-supplied function
+  # call ids are not guaranteed unique: Vertex Gemini mints ``call_<n>`` ids from
+  # a small space that can repeat within one session, and ADK preserves such ids
+  # (only ``adk-`` prefixed ids are generated/stripped by the framework). Keying
+  # on id alone lets a repeated id pair a ``function_call`` for one tool with the
+  # ``function_response`` of another, which the model rejects with a bare
+  # ``400 INVALID_ARGUMENT``. Including the tool name keeps a collision from
+  # resolving across different tools. See issue #6761.
+  function_call_key_to_response_events_index: dict[
+      tuple[str | None, str | None], int
+  ] = {}
   for i, event in enumerate(events):
     function_responses = event.get_function_responses()
     if function_responses:
       for function_response in function_responses:
-        function_call_id = function_response.id
-        function_call_id_to_response_events_index[function_call_id] = i
+        function_call_key = (function_response.id, function_response.name)
+        function_call_key_to_response_events_index[function_call_key] = i
 
-  if not function_call_id_to_response_events_index:
+  if not function_call_key_to_response_events_index:
     return events
 
   result_events: list[Event] = []
@@ -164,10 +174,10 @@ def _rearrange_events_for_async_function_responses_in_history(
 
       function_response_events_indices = set()
       for function_call in event.get_function_calls():
-        function_call_id = function_call.id
-        if function_call_id in function_call_id_to_response_events_index:
+        function_call_key = (function_call.id, function_call.name)
+        if function_call_key in function_call_key_to_response_events_index:
           function_response_events_indices.add(
-              function_call_id_to_response_events_index[function_call_id]
+              function_call_key_to_response_events_index[function_call_key]
           )
       result_events.append(event)
       if not function_response_events_indices:

@@ -1964,6 +1964,67 @@ def test_rearrange_async_function_responses_early_returns_when_no_responses():
   assert result is events
 
 
+def test_rearrange_async_function_responses_pairs_on_id_and_name():
+  """A reused function-call id must not pair a call with another tool's response.
+
+  Model-supplied ids (e.g. Vertex Gemini's ``call_<n>``) can repeat within a
+  session. Keying only on id let the newest response for a duplicated id attach
+  to the oldest call carrying that id, mismatching the tool name and producing a
+  ``400 INVALID_ARGUMENT`` on the next request. See issue #6761.
+  """
+
+  def _call_event(invocation_id: str, call_id: str, name: str) -> Event:
+    return Event(
+        invocation_id=invocation_id,
+        author="test_agent",
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        id=call_id, name=name, args={}
+                    )
+                )
+            ],
+        ),
+    )
+
+  def _response_event(invocation_id: str, call_id: str, name: str) -> Event:
+    return Event(
+        invocation_id=invocation_id,
+        author="user",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id=call_id, name=name, response={"tool": name}
+                    )
+                )
+            ],
+        ),
+    )
+
+  # Both calls reuse id "call_807" for two different tools, interleaved with
+  # their responses, mirroring the collision captured in the bug report.
+  call_a = _call_event("inv1", "call_807", "site_security_posture")
+  response_a = _response_event("inv1", "call_807", "site_security_posture")
+  call_b = _call_event("inv2", "call_807", "fleet_security_summary")
+  response_b = _response_event("inv2", "call_807", "fleet_security_summary")
+  events = [call_a, response_a, call_b, response_b]
+
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+
+  # Each call must be immediately followed by the response for the SAME tool.
+  assert len(result) == 4
+  assert result[0] is call_a
+  assert result[1].get_function_responses()[0].name == "site_security_posture"
+  assert result[2] is call_b
+  assert result[3].get_function_responses()[0].name == "fleet_security_summary"
+
+
 def _long_running_call_event() -> Event:
   return Event(
       invocation_id="inv2",
