@@ -268,6 +268,10 @@ _SENSITIVE_KEYS = frozenset({
     "password",
 })
 
+# Written to the content column in place of the payload when the configured
+# content_formatter raises.
+_FORMATTER_FAILED_SENTINEL = "[FORMATTER_FAILED]"
+
 
 def _recursive_smart_truncate(
     obj: Any, max_len: int, seen: Optional[set[int]] = None
@@ -2886,8 +2890,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self.config.content_formatter:
       try:
         raw_content = self.config.content_formatter(raw_content, event_type)
-      except Exception as e:
-        logger.warning("Content formatter failed: %s", e)
+      except Exception:
+        # Fail closed. The formatter is the operator's redaction boundary, so
+        # a failure must not fall back to the unformatted payload. The message
+        # is constant on purpose: an exception's own text or traceback can
+        # quote the content the formatter exists to remove.
+        logger.warning(
+            "Content formatter failed for event %s; writing a sentinel"
+            " instead of the original content.",
+            event_type,
+        )
+        raw_content = _FORMATTER_FAILED_SENTINEL
 
     trace_id, span_id, parent_span_id = self._resolve_ids(
         event_data, callback_context

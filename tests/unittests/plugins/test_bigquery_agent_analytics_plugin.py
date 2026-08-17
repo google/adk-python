@@ -685,7 +685,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       dummy_arrow_schema,
       mock_asyncio_to_thread,
   ):
-    """Test content formatter error handling."""
+    """A formatter that raises must not let the original content through."""
     _ = mock_auth_default
     _ = mock_bq_client
 
@@ -710,8 +710,9 @@ class TestBigQueryAgentAnalyticsPlugin:
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
       )
-      # If formatter fails, it logs a warning and continues with original content.
-      assert log_entry["content"] == '{"text_summary": "Secret message"}'
+      # The formatter is the redaction boundary, so its failure fails closed:
+      # a sentinel is written and the payload never reaches the row.
+      assert log_entry["content"] == "[FORMATTER_FAILED]"
 
   @pytest.mark.asyncio
   async def test_max_content_length(
