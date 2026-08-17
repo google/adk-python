@@ -36,7 +36,6 @@ from pydantic import BaseModel
 from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
-from pydantic import PrivateAttr
 from typing_extensions import override
 from typing_extensions import TypeAlias
 
@@ -255,14 +254,6 @@ class LlmAgent(BaseAgent, abc.ABC):
   ancestor provides a model, the agent uses the default model configured via
   LlmAgent.set_default_model. The built-in default is gemini-3.5-flash.
   """
-
-  _resolved_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(default=None)
-  """The model name last resolved by canonical_model, with its BaseLlm."""
-
-  _resolved_live_model: Optional[tuple[str, BaseLlm]] = PrivateAttr(
-      default=None
-  )
-  """The model name last resolved by canonical_live_model, with its BaseLlm."""
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent.
@@ -640,11 +631,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      resolved = self._resolved_model
-      if resolved is None or resolved[0] != self.model:
-        resolved = (self.model, LLMRegistry.new_llm(self.model))
-        self._resolved_model = resolved
-      return resolved[1]
+      return LLMRegistry.new_llm(self.model)
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
@@ -662,11 +649,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     if isinstance(self.model, BaseLlm):
       return self.model
     elif self.model:  # model is non-empty str
-      resolved = self._resolved_live_model
-      if resolved is None or resolved[0] != self.model:
-        resolved = (self.model, LLMRegistry.new_llm(self.model))
-        self._resolved_live_model = resolved
-      return resolved[1]
+      return LLMRegistry.new_llm(self.model)
     else:  # find model from ancestors.
       ancestor_agent = self.parent_agent
       while ancestor_agent is not None:
