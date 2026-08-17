@@ -26,17 +26,12 @@ from typing import get_args
 from typing import get_origin
 from typing import Iterator
 from typing import Optional
-from typing import TYPE_CHECKING
 from typing import Union
-
-if TYPE_CHECKING:
-  from ..agents.invocation_context import InvocationContext
 
 from google.genai import types
 import pydantic
 from typing_extensions import override
 
-from ..utils.context_utils import Aclosing
 from ..utils.context_utils import find_context_parameter
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
@@ -197,6 +192,19 @@ class FunctionTool(BaseTool):
     valid_params = set(signature.parameters.keys())
     if self._context_param_name in valid_params:
       args_to_call[self._context_param_name] = tool_context
+    # In live mode (bidirectional streaming), tools may accept an 'input_stream'
+    # parameter (e.g., LiveRequestQueue) to receive real-time streaming data.
+    # When registered in _process_function_live_helper, the framework attaches
+    # the dedicated stream to invocation_context.active_streaming_tools[name].
+    # If the tool signature expects 'input_stream', we inject that active stream.
+    if 'input_stream' in valid_params:
+      active_tools = tool_context._invocation_context.active_streaming_tools
+      if (
+          active_tools is not None
+          and self.name in active_tools
+          and active_tools[self.name].stream is not None
+      ):
+        args_to_call['input_stream'] = active_tools[self.name].stream
     return {k: v for k, v in args_to_call.items() if k in valid_params}
 
   @override
@@ -283,35 +291,6 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       return await runner(target, args_to_call)
     return target(**args_to_call)
 
-  # TODO(hangfei): fix call live for function stream.
-  async def _call_live(
-      self,
-      *,
-      args: dict[str, Any],
-      tool_context: ToolContext,
-      invocation_context: InvocationContext,
-  ) -> Any:
-    args_to_call = args.copy()
-    signature = inspect.signature(self.func)
-    # For input-streaming tools, the stream is created during
-    # registration in _process_function_live_helper. Pass it here.
-    if (
-        invocation_context.active_streaming_tools is not None
-        and self.name in invocation_context.active_streaming_tools
-        and invocation_context.active_streaming_tools[self.name].stream
-        is not None
-    ):
-      args_to_call['input_stream'] = invocation_context.active_streaming_tools[
-          self.name
-      ].stream
-    if self._context_param_name in signature.parameters:
-      args_to_call[self._context_param_name] = tool_context
-
-    # TODO: support tool confirmation for live mode.
-    async with Aclosing(self.func(**args_to_call)) as agen:
-      async for item in agen:
-        yield item
-
   def _get_mandatory_args(
       self,
   ) -> list[str]:
@@ -327,11 +306,17 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       # A parameter is mandatory if:
       # 1. It has no default value (param.default is inspect.Parameter.empty)
       # 2. It's not a variable positional (*args) or variable keyword (**kwargs) parameter
+      # 3. It's not an internal parameter to ignore (e.g. tool_context, input_stream)
       #
       # For more refer to: https://docs.python.org/3/library/inspect.html#inspect.Parameter.kind
-      if param.default == inspect.Parameter.empty and param.kind not in (
-          inspect.Parameter.VAR_POSITIONAL,
-          inspect.Parameter.VAR_KEYWORD,
+      if (
+          param.default == inspect.Parameter.empty
+          and name not in self._ignore_params
+          and param.kind
+          not in (
+              inspect.Parameter.VAR_POSITIONAL,
+              inspect.Parameter.VAR_KEYWORD,
+          )
       ):
         mandatory_params.append(name)
 

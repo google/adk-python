@@ -26,7 +26,6 @@ import inspect
 import logging
 import threading
 from typing import Any
-from typing import AsyncGenerator
 from typing import Callable
 from typing import cast
 from typing import Dict
@@ -712,6 +711,9 @@ async def _execute_single_function_call_live(
       copy.deepcopy(function_call.args) if function_call.args else {}
   )
 
+  # TODO: thread a ToolConfirmation through here so an approved tool can be
+  # re-executed in live mode. `tool_confirmation` is always None on this path,
+  # so a confirmation-gated tool can only ever be refused, never resumed.
   tool_context = _create_tool_context(invocation_context, function_call)
 
   try:
@@ -955,23 +957,58 @@ async def _process_function_live_helper(
     # for streaming tool use case
     # we require the function to be an async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
+      live_request_queue = invocation_context.live_request_queue
+      if live_request_queue is None:
+        raise RuntimeError('Streaming tools require a live request queue.')
       try:
-        async with Aclosing(
-            __call_tool_live(
-                tool=tool,
-                args=function_args,
-                tool_context=tool_context,
-                invocation_context=invocation_context,
-            )
-        ) as agen:
-          async for result in agen:
-            updated_content = _build_function_response_content(
-                tool, result, tool_context.function_call_id
-            )
-            invocation_context.live_request_queue.send_content(updated_content)
+        res = await __call_tool_async(
+            tool=tool,
+            args=function_args,
+            tool_context=tool_context,
+        )
+        if inspect.isasyncgen(res):
+          async with Aclosing(res) as agen:
+            async for result in agen:
+              updated_content = _build_function_response_content(
+                  tool, result, tool_context.function_call_id
+              )
+              live_request_queue.send_content(updated_content)
+        else:
+          # `res` is a single terminal payload (e.g. the error dict returned
+          # when confirmation is required/rejected or a mandatory argument is
+          # missing), not a chunk of a stream.
+          # TODO: for the confirmation-required case, hold the call pending
+          # (as long-running tools do) instead of relaying the error. Relaying
+          # it closes the call id with the model, so a later approval would
+          # have to send a second response reusing that same id.
+          updated_content = _build_function_response_content(
+              tool, res, tool_context.function_call_id
+          )
+          live_request_queue.send_content(updated_content)
       except asyncio.CancelledError:
         raise  # Re-raise to properly propagate the cancellation
+      except Exception:  # pylint: disable=broad-except
+        # The model already got a `pending` response for this call, so it waits
+        # for a follow-up FunctionResponse. Swallowing the exception here would
+        # leave the live session hanging, so report the failure to the model.
+        # The exception text is deliberately not forwarded to the model: it can
+        # carry internal detail that is irrelevant to it. It is logged instead.
+        logger.exception('Error executing streaming tool %s.', tool.name)
+        error_content = _build_function_response_content(
+            tool,
+            {
+                'error': (
+                    f'Invoking `{tool.name}()` failed with an internal error.'
+                )
+            },
+            tool_context.function_call_id,
+        )
+        live_request_queue.send_content(error_content)
 
+    # TODO: resolve `require_confirmation` before spawning the task. The
+    # confirmation request is recorded on `tool_context.actions` by the
+    # background task while the caller builds the response event, and nothing
+    # orders the two, so the request can be missing from the emitted event.
     task = asyncio.create_task(
         run_tool_and_update_queue(tool, function_args, tool_context)
     )
@@ -1120,24 +1157,6 @@ def _try_decode_computer_use_image(
   except (binascii.Error, ValueError):
     logger.exception('Failed to decode image from computer use tool')
     return None
-
-
-async def __call_tool_live(
-    tool: BaseTool,
-    args: dict[str, object],
-    tool_context: ToolContext,
-    invocation_context: InvocationContext,
-) -> AsyncGenerator[Event, None]:
-  """Calls the tool asynchronously (awaiting the coroutine)."""
-  async with Aclosing(
-      tool._call_live(
-          args=args,
-          tool_context=tool_context,
-          invocation_context=invocation_context,
-      )
-  ) as agen:
-    async for item in agen:
-      yield item
 
 
 async def __call_tool_async(
