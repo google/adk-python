@@ -43,6 +43,8 @@ from typing import Awaitable
 from typing import Callable
 from typing import Optional
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 import uuid
 import weakref
 
@@ -271,6 +273,12 @@ _SENSITIVE_KEYS = frozenset({
 # Written to the content column in place of the payload when the configured
 # content_formatter raises.
 _FORMATTER_FAILED_SENTINEL = "[FORMATTER_FAILED]"
+
+# Written in place of an external URI that cannot be stored safely.
+_REDACTED_URI = "[REDACTED_SENSITIVE_URI]"
+
+# A URI longer than this is replaced wholesale rather than parsed.
+_MAX_URI_LENGTH = 8192
 
 
 def _recursive_smart_truncate(
@@ -1378,6 +1386,44 @@ class HybridContentParser:
       )
     return text, False
 
+  def _sanitize_external_uri(
+      self, uri: Optional[str]
+  ) -> tuple[Optional[str], bool]:
+    """Removes credential-bearing components from a caller-supplied URI.
+
+    A signed GCS or HTTP URL carries its signature in the query string, and any
+    URI may carry ``user:password@`` userinfo. Both are bearer credentials, so
+    neither belongs in a stored analytics row. The scheme, host and path are
+    kept, which is what identifies the object.
+
+    Args:
+        uri: The URI to sanitize, or None.
+
+    Returns:
+        A tuple of (sanitized_uri, content_removed).
+    """
+    if uri is None:
+      return None, False
+    if not isinstance(uri, str):
+      return _REDACTED_URI, True
+    if len(uri) > _MAX_URI_LENGTH:
+      return _REDACTED_URI, True
+    try:
+      parsed = urlsplit(uri)
+      has_userinfo = parsed.username is not None or parsed.password is not None
+    except ValueError:
+      return _REDACTED_URI, True
+    if has_userinfo:
+      # Userinfo is a credential-bearing surface by definition; do not try to
+      # keep the username while guessing whether it is sensitive.
+      return _REDACTED_URI, True
+    if not parsed.query and not parsed.fragment:
+      return uri, False
+    return (
+        urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")),
+        True,
+    )
+
   async def _parse_content_object(
       self, content: types.Content | types.Part
   ) -> tuple[str, list[dict[str, Any]], bool]:
@@ -1401,7 +1447,12 @@ class HybridContentParser:
       # CASE A: It is already a URI (e.g. from user input)
       if hasattr(part, "file_data") and part.file_data:
         part_data["storage_mode"] = "EXTERNAL_URI"
-        part_data["uri"] = part.file_data.file_uri
+        safe_uri, uri_content_removed = self._sanitize_external_uri(
+            part.file_data.file_uri
+        )
+        part_data["uri"] = safe_uri
+        if uri_content_removed:
+          is_truncated = True
         part_data["mime_type"] = part.file_data.mime_type
 
       # CASE B: It is Binary/Inline Data (Image/Blob)

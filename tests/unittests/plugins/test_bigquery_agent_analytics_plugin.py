@@ -7597,6 +7597,103 @@ class TestOffloadUnitSeparation:
 
 
 # ================================================================
+# TEST CLASS: external URI sanitization
+# ================================================================
+class TestExternalUriSanitization:
+  """Tests that credentials are removed from stored external URIs."""
+
+  def _parser(self):
+    return bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+
+  @pytest.mark.asyncio
+  async def test_signed_gcs_uri_loses_its_signature(self):
+    """A signed GCS URL is stored without its query string."""
+    signed = (
+        "https://storage.googleapis.com/bucket/report.pdf"
+        "?X-Goog-Algorithm=GOOG4-RSA-SHA256"
+        "&X-Goog-Signature=deadbeefcafe"
+    )
+    content = types.Content(
+        parts=[
+            types.Part(
+                file_data=types.FileData(
+                    file_uri=signed, mime_type="application/pdf"
+                )
+            )
+        ]
+    )
+
+    _, parts, is_truncated = await self._parser()._parse_content_object(content)
+
+    assert parts[0]["storage_mode"] == "EXTERNAL_URI"
+    assert parts[0]["uri"] == "https://storage.googleapis.com/bucket/report.pdf"
+    assert "X-Goog-Signature" not in parts[0]["uri"]
+    assert "deadbeefcafe" not in parts[0]["uri"]
+    assert is_truncated
+
+  @pytest.mark.asyncio
+  async def test_uri_with_userinfo_is_replaced(self):
+    """A URI carrying user:password@ is replaced wholesale."""
+    content = types.Content(
+        parts=[
+            types.Part(
+                file_data=types.FileData(
+                    file_uri="https://alice:hunter2@example.com/a.png",
+                    mime_type="image/png",
+                )
+            )
+        ]
+    )
+
+    _, parts, _ = await self._parser()._parse_content_object(content)
+
+    assert parts[0]["uri"] == "[REDACTED_SENSITIVE_URI]"
+
+  @pytest.mark.asyncio
+  async def test_plain_uri_is_unchanged(self):
+    """A URI with no query, fragment or userinfo is stored verbatim."""
+    content = types.Content(
+        parts=[
+            types.Part(
+                file_data=types.FileData(
+                    file_uri="gs://bucket/photo.png", mime_type="image/png"
+                )
+            )
+        ]
+    )
+
+    _, parts, is_truncated = await self._parser()._parse_content_object(content)
+
+    assert parts[0]["uri"] == "gs://bucket/photo.png"
+    assert not is_truncated
+
+  @pytest.mark.asyncio
+  async def test_missing_uri_stays_none(self):
+    """file_data with no file_uri still records None, not a sentinel."""
+    content = types.Content(
+        parts=[types.Part(file_data=types.FileData(mime_type="image/png"))]
+    )
+
+    _, parts, _ = await self._parser()._parse_content_object(content)
+
+    assert parts[0]["uri"] is None
+
+  def test_overlong_uri_is_replaced(self):
+    """A URI beyond the inspection bound is not parsed at all."""
+    long_uri = "https://example.com/" + "a" * 9000
+
+    safe_uri, removed = self._parser()._sanitize_external_uri(long_uri)
+
+    assert safe_uri == "[REDACTED_SENSITIVE_URI]"
+    assert removed
+
+
+# ================================================================
 # TEST CLASS: AGENT_RESPONSE logging (Issue #87)
 # ================================================================
 class TestAgentResponseLogging:
