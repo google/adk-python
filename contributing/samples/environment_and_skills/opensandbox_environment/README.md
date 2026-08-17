@@ -8,8 +8,8 @@ workspace. The default environment creates a `python:3.11` sandbox, keeps its
 five-minute lifetime active while the agent uses it, and destroys it when the
 toolset closes.
 
-OpenSandbox can run locally on Docker or behind a remote lifecycle service. See
-the [OpenSandbox documentation](https://open-sandbox.ai) for server setup.
+OpenSandbox can run locally on Docker or as a self-hosted remote deployment.
+See the [OpenSandbox documentation](https://open-sandbox.ai) for server setup.
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ the [OpenSandbox documentation](https://open-sandbox.ai) for server setup.
    ```
 
 1. Start an OpenSandbox server. A local server uses `localhost:8080` by
-   default. For a remote service, configure its domain and API key:
+   default. For a remote deployment, configure its domain and API key:
 
    ```bash
    export OPEN_SANDBOX_DOMAIN="https://sandbox.example.com"
@@ -73,7 +73,3 @@ without destroying the remote sandbox:
 ```python
 environment = OpenSandboxEnvironment(sandbox_id="existing-sandbox-id")
 ```
-
-## Related Guides
-
-- [OpenSandboxEnvironment guide](../../../../docs/guides/integrations/opensandbox/opensandbox_environment/index.md) - Configure lifecycle, execution, file operations, and remote connections.
