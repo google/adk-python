@@ -1031,7 +1031,7 @@ class ApiServer:
     )
     runtime_config = {}
     try:
-      with open(runtime_config_path, "r") as f:
+      with open(runtime_config_path, "r", encoding="utf-8") as f:
         runtime_config = json.load(f)
     except FileNotFoundError:
       logger.info(
@@ -1066,7 +1066,7 @@ class ApiServer:
     # Write the runtime config file.
     try:
       os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
-      with open(runtime_config_path, "w") as f:
+      with open(runtime_config_path, "w", encoding="utf-8") as f:
         json.dump(runtime_config, f, indent=2)
         f.write("\n")
     except IOError as e:

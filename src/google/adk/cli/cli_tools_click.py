@@ -1612,10 +1612,10 @@ def cli_add_eval_case(
   eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
 
   try:
-    with open(session_input_file, "r") as f:
+    with open(session_input_file, "r", encoding="utf-8") as f:
       session_input = SessionInput.model_validate_json(f.read())
 
-    with open(scenarios_file, "r") as f:
+    with open(scenarios_file, "r", encoding="utf-8") as f:
       conversation_scenarios = ConversationScenarios.model_validate_json(
           f.read()
       )
@@ -1726,7 +1726,7 @@ def cli_generate_eval_cases(
     else:
       click.echo(f"Eval set '{eval_set_id}' already exists.")
 
-    with open(user_simulation_config_file, "r") as f:
+    with open(user_simulation_config_file, "r", encoding="utf-8") as f:
       config = ConversationGenerationConfig.model_validate_json(f.read())
 
     generator = ScenarioGenerator()
