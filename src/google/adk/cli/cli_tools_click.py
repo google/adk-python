@@ -930,8 +930,8 @@ def cli_eval(
               metric_name=metric_name, description=config.description
           )
 
-        metric_evaluator_registry.register_evaluator(
-            metric_info, _CustomMetricEvaluator
+        metric_evaluator_registry._register(  # pylint: disable=protected-access
+            metric_info, _CustomMetricEvaluator, config.code_config.name
         )
 
     eval_service = LocalEvalService(
