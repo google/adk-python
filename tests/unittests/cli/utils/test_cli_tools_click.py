@@ -596,6 +596,56 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
 
 
+@pytest.mark.parametrize("command", ["web", "api_server"])
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
+def test_cli_arms_rebinding_guard_with_the_address_it_binds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, host: str
+) -> None:
+  """The DNS-rebinding guard is off unless the CLI names the address it binds.
+
+  Every other test of the guard supplies ``bind_host`` itself, so only this one
+  fails if the CLI stops passing it and serves `adk web` unguarded again.
+  """
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+
+  app_kwargs: Dict[str, Any] = {}
+  uvicorn_kwargs: Dict[str, Any] = {}
+
+  def _record_get_fast_api_app(**kwargs: Any) -> object:
+    app_kwargs.update(kwargs)
+    return object()
+
+  def _record_uvicorn_config(*_a: Any, **kwargs: Any) -> object:
+    uvicorn_kwargs.update(kwargs)
+    return object()
+
+  class _DummyServer:
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+      ...
+
+    def run(self) -> None:
+      ...
+
+  monkeypatch.setattr(
+      cli_tools_click, "get_fast_api_app", _record_get_fast_api_app
+  )
+  monkeypatch.setattr(cli_tools_click.uvicorn, "Config", _record_uvicorn_config)
+  monkeypatch.setattr(
+      cli_tools_click.uvicorn, "Server", lambda *_a, **_k: _DummyServer()
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, [command, "--host", host, str(agents_dir)]
+  )
+
+  assert result.exit_code == 0
+  assert uvicorn_kwargs.get("host") == host, "the CLI binds --host"
+  assert app_kwargs.get("bind_host") == host
+
+
 def test_cli_eval_with_eval_set_file_path(
     mock_load_eval_set_from_file,
     mock_get_root_agent,
