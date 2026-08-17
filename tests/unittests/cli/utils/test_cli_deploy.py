@@ -1195,7 +1195,6 @@ class TestRobustRmtree:
 
   def test_removes_readonly_files(self, tmp_path: Path) -> None:
     """It should remove a tree containing read-only files."""
-    import os
     import stat
 
     d = tmp_path / "ro_dir"
