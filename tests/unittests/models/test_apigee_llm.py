@@ -611,6 +611,70 @@ async def test_generate_content_async_dispatch_to_completions_client(
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_honors_request_timeout():
+  """Chat completions use the timeout configured on the LLM request."""
+  request = LlmRequest(
+      model='apigee/openai/gpt-4o',
+      contents=[],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(timeout=1500)
+      ),
+  )
+  response = mock.MagicMock()
+  response.json.return_value = {
+      'choices': [{
+          'message': {'role': 'assistant', 'content': 'Done'},
+          'finish_reason': 'stop',
+      }]
+  }
+  http_client = mock.MagicMock()
+  http_client.post = AsyncMock(return_value=response)
+
+  with mock.patch(
+      'google.adk.models.apigee_llm.httpx.AsyncClient',
+      return_value=http_client,
+  ):
+    client = CompletionsHTTPClient(base_url=PROXY_URL)
+    _ = [item async for item in client.generate_content_async(request, False)]
+
+  _, call_kwargs = http_client.post.await_args
+  assert call_kwargs['timeout'] == 1.5
+
+
+@pytest.mark.asyncio
+async def test_streaming_chat_completions_honors_request_timeout():
+  """Streaming chat completions use the configured request timeout."""
+  request = LlmRequest(
+      model='apigee/openai/gpt-4o',
+      contents=[],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(timeout=2500)
+      ),
+  )
+
+  async def stream_lines():
+    yield 'data: [DONE]'
+
+  response = mock.MagicMock()
+  response.aiter_lines = stream_lines
+  stream_context = mock.MagicMock()
+  stream_context.__aenter__ = AsyncMock(return_value=response)
+  stream_context.__aexit__ = AsyncMock(return_value=None)
+  http_client = mock.MagicMock()
+  http_client.stream.return_value = stream_context
+
+  with mock.patch(
+      'google.adk.models.apigee_llm.httpx.AsyncClient',
+      return_value=http_client,
+  ):
+    client = CompletionsHTTPClient(base_url=PROXY_URL)
+    _ = [item async for item in client.generate_content_async(request, True)]
+
+  _, call_kwargs = http_client.stream.call_args
+  assert call_kwargs['timeout'] == 2.5
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'model',
     [
