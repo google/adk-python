@@ -209,35 +209,48 @@ class AntigravityAgent(BaseAgent):
         ctx.run_config and ctx.run_config.streaming_mode == StreamingMode.SSE
     )
 
-    async with self._sdk_agent_cls(config) as active_agent:
-      await active_agent.conversation.send(prompt)
+    harness_conversation_id: str | None = None
 
-      async for step in active_agent.conversation.receive_steps():
-        if step.step_index <= resume_step_index:
-          continue
-        max_step_index = max(max_step_index, step.step_index)
-        for event in _event_converter.convert_step_to_events(
-            step,
-            ctx=ctx,
-            author=self.name,
-            seen_tool_calls=seen_tool_calls,
-            seen_tool_results=seen_tool_results,
-            streaming=streaming,
-        ):
-          yield event
+    try:
+      async with self._sdk_agent_cls(config) as active_agent:
+        await active_agent.conversation.send(prompt)
+        # Read before the step loop rather than after it: a turn that ends early
+        # still has to rename the trajectory the harness has by then created.
+        harness_conversation_id = active_agent.conversation_id
 
-      harness_conversation_id = active_agent.conversation_id
-
-    # On a fresh turn the harness wrote traj-<random> (flushed when the session
-    # exits above); rename it. No id under single-turn, so that case skips.
-    if save_dir and conversation_id:
-      if not resumed and harness_conversation_id:
-        _trajectory_files.rename_trajectory(
-            save_dir, conversation_id, harness_conversation_id
+        async for step in active_agent.conversation.receive_steps():
+          if step.step_index <= resume_step_index:
+            continue
+          max_step_index = max(max_step_index, step.step_index)
+          for event in _event_converter.convert_step_to_events(
+              step,
+              ctx=ctx,
+              author=self.name,
+              seen_tool_calls=seen_tool_calls,
+              seen_tool_results=seen_tool_results,
+              streaming=streaming,
+          ):
+            yield event
+    finally:
+      # In a finally because a turn does not have to run to completion. The
+      # runner wraps this generator in `aclosing`, so a caller that stops
+      # reading - a disconnected client, a cancelled run - closes it at a
+      # `yield`, and the harness itself can fail mid-stream. Every event
+      # yielded above is already recorded in the session either way, so
+      # leaving this out replays them on the next turn, and leaving the rename
+      # out orphans the trajectory and silently starts a fresh conversation.
+      #
+      # On a fresh turn the harness wrote traj-<random>, flushed when the
+      # session exits above; rename it. No id under single-turn, so that case
+      # skips, as does a turn that never reached the harness at all.
+      if save_dir and conversation_id and (resumed or harness_conversation_id):
+        if not resumed and harness_conversation_id:
+          _trajectory_files.rename_trajectory(
+              save_dir, conversation_id, harness_conversation_id
+          )
+        _trajectory_files.save_resume_step_index(
+            save_dir, conversation_id, max_step_index
         )
-      _trajectory_files.save_resume_step_index(
-          save_dir, conversation_id, max_step_index
-      )
 
   @override
   async def _run_impl(

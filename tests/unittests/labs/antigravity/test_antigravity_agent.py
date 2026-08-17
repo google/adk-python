@@ -449,6 +449,102 @@ async def test_resumed_replayed_steps_are_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_trajectory_is_claimed_when_the_caller_stops_reading(tmp_path):
+  """A turn closed early still renames the trajectory and records its index.
+
+  The runner wraps agent generators in `aclosing`, so a caller that stops
+  reading - a disconnected client, a cancelled run - closes this one at a
+  yield. Without the rename the next turn finds no trajectory under the
+  derived id, so it starts a fresh conversation and abandons this one's file.
+  """
+
+  async def _receive_steps():
+    yield _text_step(0, 'one')
+    yield _text_step(1, 'two')
+
+  active_agent = _fake_active_agent(
+      _receive_steps, conversation_id='harness-random'
+  )
+  # The harness has already created its trajectory under its own random id.
+  (tmp_path / 'traj-harness-random').write_bytes(b'data')
+  agent = AntigravityAgent(
+      name='agy', config=_make_config(save_dir=str(tmp_path))
+  )
+  conversation_id = _antigravity_agent._derive_conversation_id(
+      'sess_456', 'agy'
+  )
+
+  with patch.object(_antigravity_agent, 'Agent', return_value=active_agent):
+    agen = agent._run_async_impl(_mock_run_ctx())
+    async for _ in agen:
+      break
+    await agen.aclose()
+
+  assert (tmp_path / f'traj-{conversation_id}').exists()
+  assert not (tmp_path / 'traj-harness-random').exists()
+  # Step 0 was emitted and recorded, so the next turn must not replay it.
+  assert (tmp_path / f'traj-{conversation_id}.resume').read_text() == '0'
+
+
+@pytest.mark.asyncio
+async def test_resume_index_survives_a_harness_error_mid_turn(tmp_path):
+  """Steps emitted before a mid-turn failure are not replayed on the next turn.
+
+  The events are in the session as soon as they are yielded, so a step whose
+  turn later failed still has to count as emitted.
+  """
+
+  async def _receive_steps():
+    yield _text_step(0, 'old-1')
+    yield _text_step(1, 'old-2')
+    yield _text_step(2, 'new')
+    raise RuntimeError('harness died mid-turn')
+
+  conversation_id = _antigravity_agent._derive_conversation_id(
+      'sess_456', 'agy'
+  )
+  active_agent = _fake_active_agent(
+      _receive_steps, conversation_id=conversation_id
+  )
+  (tmp_path / f'traj-{conversation_id}').write_bytes(b'data')
+  (tmp_path / f'traj-{conversation_id}.resume').write_text('1')
+  agent = AntigravityAgent(
+      name='agy', config=_make_config(save_dir=str(tmp_path))
+  )
+
+  emitted = []
+  with patch.object(_antigravity_agent, 'Agent', return_value=active_agent):
+    with pytest.raises(RuntimeError, match='harness died mid-turn'):
+      async for event in agent._run_async_impl(_mock_run_ctx()):
+        emitted.append(event.content.parts[0].text)
+
+  assert emitted == ['new']
+  assert (tmp_path / f'traj-{conversation_id}.resume').read_text() == '2'
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_never_reaches_the_harness_records_nothing(tmp_path):
+  """A failure before the conversation exists leaves save_dir untouched.
+
+  There is no trajectory to rename and no step to remember, so writing a
+  resume index would only leave a file for a conversation that never began.
+  """
+  agent = AntigravityAgent(
+      name='agy', config=_make_config(save_dir=str(tmp_path))
+  )
+
+  def _refuse(_config):
+    raise RuntimeError('harness unavailable')
+
+  with patch.object(_antigravity_agent, 'Agent', _refuse):
+    with pytest.raises(RuntimeError, match='harness unavailable'):
+      async for _ in agent._run_async_impl(_mock_run_ctx()):
+        pass
+
+  assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_node_input_becomes_the_prompt(tmp_path):
   """The parent's composed request wins over the original user message.
 
