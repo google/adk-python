@@ -81,12 +81,12 @@ def _resolve_agent_class(agent_class: str) -> type[BaseAgent]:
 
 
 _BLOCKED_YAML_KEYS = frozenset({"args"})
-_ENFORCE_DENYLIST = False
+_ENFORCE_YAML_KEY_DENYLIST = False
 
 
-def _set_enforce_denylist(value: bool) -> None:
-  global _ENFORCE_DENYLIST
-  _ENFORCE_DENYLIST = value
+def _set_enforce_yaml_key_denylist(value: bool) -> None:
+  global _ENFORCE_YAML_KEY_DENYLIST
+  _ENFORCE_YAML_KEY_DENYLIST = value
 
 
 def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
@@ -125,7 +125,7 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   with open(config_path, "r", encoding="utf-8") as f:
     config_data = yaml.safe_load(f)
 
-  if _ENFORCE_DENYLIST:
+  if _ENFORCE_YAML_KEY_DENYLIST:
     _check_config_for_blocked_keys(config_data, config_path)
 
   return AgentConfig.model_validate(config_data)

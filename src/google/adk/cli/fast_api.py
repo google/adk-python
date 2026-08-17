@@ -152,11 +152,11 @@ def get_fast_api_app(
     The configured FastAPI application instance.
   """
 
-  # Enable denylist enforcement for config loads if web UI is enabled.
+  # Enable YAML key denylist enforcement for config loads if web UI is enabled.
   if web:
     from ..agents import config_agent_utils
 
-    config_agent_utils._set_enforce_denylist(True)
+    config_agent_utils._set_enforce_yaml_key_denylist(True)
 
   # Set up eval managers.
   if eval_storage_uri:
