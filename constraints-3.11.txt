@@ -1168,6 +1168,7 @@ openai==2.46.0
 openpyxl==3.1.5
     # via
     #   -c constraints-3.11.txt.stable.tmp
+    #   google-adk (pyproject.toml)
     #   crewai
 opentelemetry-api==1.42.1
     # via
@@ -2227,6 +2228,10 @@ wsproto==1.3.2
     #   daytona
     #   httpx-ws
     #   simple-websocket
+xlrd==2.0.2
+    # via
+    #   -c constraints-3.11.txt.stable.tmp
+    #   google-adk (pyproject.toml)
 xxhash==3.8.1
     # via
     #   -c constraints-3.11.txt.stable.tmp

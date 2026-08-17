@@ -329,3 +329,25 @@ class TestTaskResultAggregator:
     assert (
         self.aggregator.task_status_message == auth_message
     )  # Message unchanged because task state is not working
+
+  def test_process_final_non_working_event_mutates_final_and_state(self):
+    """Test that a final=True non-working event is mutated to final=False and state=TS_WORKING."""
+    status_message = create_test_message("Failed")
+    event = _compat.make_task_status_update_event(
+        task_id="test-task",
+        context_id="test-context",
+        status=_compat.make_task_status(
+            _compat.TS_FAILED, message=status_message
+        ),
+        final=True,
+    )
+
+    self.aggregator.process_event(event)
+
+    # Aggregator should record the true state
+    assert self.aggregator.task_state == _compat.TS_FAILED
+
+    # Event itself must be mutated for the wire protocol
+    assert event.status.state == _compat.TS_WORKING
+    if hasattr(event, "final"):
+      assert event.final is False

@@ -679,7 +679,10 @@ class LlmAgent(BaseAgent, abc.ABC):
   def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
     """Overrides the default model used when an agent has no model set."""
     if not isinstance(model, (str, BaseLlm)):
-      raise TypeError('Default model must be a model name or BaseLlm.')
+      raise TypeError(
+          'Default model must be a model name (str) or BaseLlm instance,'
+          f' got {type(model).__name__}.'
+      )
     if isinstance(model, str) and not model:
       raise ValueError('Default model must be a non-empty string.')
     cls._default_model = model
@@ -696,7 +699,10 @@ class LlmAgent(BaseAgent, abc.ABC):
   def set_default_live_model(cls, model: Union[str, BaseLlm]) -> None:
     """Overrides the default model used for live mode when an agent has no model set."""
     if not isinstance(model, (str, BaseLlm)):
-      raise TypeError('Default live model must be a model name or BaseLlm.')
+      raise TypeError(
+          'Default live model must be a model name (str) or BaseLlm'
+          f' instance, got {type(model).__name__}.'
+      )
     if isinstance(model, str) and not model:
       raise ValueError('Default live model must be a non-empty string.')
     cls._default_live_model = model
@@ -1118,22 +1124,31 @@ class LlmAgent(BaseAgent, abc.ABC):
     if not generate_content_config:
       return types.GenerateContentConfig()
     if generate_content_config.tools:
-      raise ValueError('All tools must be set via LlmAgent.tools.')
+      raise ValueError(
+          'All tools must be set via LlmAgent.tools, not via'
+          ' generate_content_config.tools. Move your tools to the'
+          ' LlmAgent(tools=[...]) parameter.'
+      )
     if generate_content_config.system_instruction:
       raise ValueError(
-          'System instruction must be set via LlmAgent.instruction.'
+          'System instruction must be set via LlmAgent.instruction, not'
+          ' via generate_content_config.system_instruction. Move your'
+          ' instruction to LlmAgent(instruction="...").'
       )
     if generate_content_config.response_schema:
       raise ValueError(
-          'Response schema must be set via LlmAgent.output_schema.'
+          'Response schema must be set via LlmAgent.output_schema, not'
+          ' via generate_content_config.response_schema. Move your'
+          ' schema to LlmAgent(output_schema=...).'
       )
     if (
         generate_content_config.http_options
         and generate_content_config.http_options.base_url
     ):
       raise ValueError(
-          'Base URL is a transport setting and must be set on the model or'
-          ' its client, not via LlmAgent.generate_content_config.'
+          'Base URL is a transport setting and must be set on the model'
+          ' or its client, not via'
+          ' LlmAgent.generate_content_config.http_options.base_url.'
       )
     return generate_content_config
 
