@@ -891,6 +891,14 @@ class LlmAgent(BaseAgent):
       raise ValueError(
           'Response schema must be set via LlmAgent.output_schema.'
       )
+    if (
+        generate_content_config.http_options
+        and generate_content_config.http_options.base_url
+    ):
+      raise ValueError(
+          'Base URL is a transport setting and must be set on the model or'
+          ' its client, not via LlmAgent.generate_content_config.'
+      )
     return generate_content_config
 
   @override
