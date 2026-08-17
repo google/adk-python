@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.7.1](https://github.com/google/adk-python/compare/v2.7.0...v2.7.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* **deps:** restore the OpenTelemetry 1.42.1 ceiling ([8e6f361](https://github.com/google/adk-python/commit/8e6f3613acb6ec07568a75461b964b311f404132))
+* validate session initialization events ([e2b8ace](https://github.com/google/adk-python/commit/e2b8acefa2580b566b6fd9863dda203534294536)), closes [#5290](https://github.com/google/adk-python/issues/5290)
+
 ## [2.7.0](https://github.com/google/adk-python/compare/v2.6.3...v2.7.0) (2026-08-13)
 
 ### Highlights
