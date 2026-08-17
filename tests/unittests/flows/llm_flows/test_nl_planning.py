@@ -36,8 +36,8 @@ from ... import testing_utils
 
 
 @pytest.mark.asyncio
-async def test_built_in_planner_only_drops_the_display_thought():
-  """Test that BuiltInPlanner leaves everything but the display thought alone."""
+async def test_built_in_planner_content_list_unchanged():
+  """Test that BuiltInPlanner doesn't modify LlmRequest content list."""
   planner = BuiltInPlanner(thinking_config=types.ThinkingConfig())
   agent = Agent(name='test_agent', planner=planner)
   invocation_context = await testing_utils.create_invocation_context(
@@ -56,15 +56,12 @@ async def test_built_in_planner_only_drops_the_display_thought():
           types.UserContent(parts=[types.Part(text='Follow up')]),
       ]
   )
+  original_contents = llm_request.contents.copy()
 
   async for _ in request_processor.run_async(invocation_context, llm_request):
     pass
 
-  assert llm_request.contents == [
-      types.UserContent(parts=[types.Part(text='Hello')]),
-      types.ModelContent(parts=[types.Part(text='Here is my response')]),
-      types.UserContent(parts=[types.Part(text='Follow up')]),
-  ]
+  assert llm_request.contents == original_contents
 
 
 @pytest.mark.asyncio
@@ -287,161 +284,3 @@ async def test_custom_planner_removes_thought_from_request():
   for content in llm_request.contents:
     for part in content.parts or []:
       assert part.thought is None
-
-
-def _request_text(llm_request: LlmRequest) -> str:
-  return '\n'.join(
-      part.text or ''
-      for content in llm_request.contents or []
-      for part in content.parts or []
-  )
-
-
-@pytest.mark.asyncio
-async def test_plan_re_act_reasoning_survives_a_later_request():
-  """PlanReActPlanner's own reasoning has to stay in the conversation history.
-
-  The planner marks its reasoning as a thought so a caller can hide it, then
-  relies on this processor clearing the marker so the text stays in context.
-  Dropping thought parts anywhere earlier in the flow deletes that reasoning
-  instead, which is what this test is here to catch.
-  """
-  reasoning = '/*PLANNING*/ Look the account up, then read the orders.\n'
-  model = testing_utils.MockModel.create(
-      responses=[
-          types.Part(text=reasoning + '/*FINAL_ANSWER*/ You have two orders.'),
-          'Both shipped yesterday.',
-      ]
-  )
-  agent = Agent(name='test_agent', model=model, planner=PlanReActPlanner())
-  runner = testing_utils.InMemoryRunner(agent)
-
-  runner.run('How many orders do I have?')
-  runner.run('When did they ship?')
-
-  history = _request_text(model.requests[-1])
-  assert reasoning in history
-  assert 'You have two orders.' in history
-
-
-@pytest.mark.asyncio
-async def test_display_thought_is_not_resent_in_a_later_request():
-  """A thought summary is for display, so it is not handed back to the model."""
-  summary = 'The user is asking about orders, so I should look the account up.'
-  model = testing_utils.MockModel.create(
-      responses=[
-          [
-              types.Part(text=summary, thought=True),
-              types.Part(text='You have two orders.'),
-          ],
-          'Both shipped yesterday.',
-      ]
-  )
-  agent = Agent(
-      name='test_agent',
-      model=model,
-      planner=BuiltInPlanner(
-          thinking_config=types.ThinkingConfig(include_thoughts=True)
-      ),
-  )
-  runner = testing_utils.InMemoryRunner(agent)
-
-  runner.run('How many orders do I have?')
-  runner.run('When did they ship?')
-
-  history = _request_text(model.requests[-1])
-  assert summary not in history
-  assert 'You have two orders.' in history
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'kept_part',
-    [
-        types.Part(
-            text='A summary the model wants back verbatim.',
-            thought=True,
-            thought_signature=b'opaque-thought-signature',
-        ),
-        types.Part(
-            function_call=types.FunctionCall(name='get_orders', args={}),
-            thought=True,
-        ),
-        types.Part(
-            function_response=types.FunctionResponse(
-                name='get_orders', response={'orders': []}
-            ),
-            thought=True,
-        ),
-    ],
-    ids=['thought_signature', 'function_call', 'function_response'],
-)
-async def test_thought_part_the_model_needs_back_is_kept(kept_part):
-  """A thought that carries state the model needs back is not a display thought."""
-  agent = Agent(
-      name='test_agent',
-      planner=BuiltInPlanner(thinking_config=types.ThinkingConfig()),
-  )
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent, user_content='test message'
-  )
-  llm_request = LlmRequest(
-      contents=[
-          types.ModelContent(
-              parts=[kept_part, types.Part(text='You have two orders.')]
-          )
-      ]
-  )
-
-  async for _ in request_processor.run_async(invocation_context, llm_request):
-    pass
-
-  assert llm_request.contents[0].parts == [
-      kept_part,
-      types.Part(text='You have two orders.'),
-  ]
-
-
-@pytest.mark.asyncio
-async def test_content_of_only_thoughts_is_left_alone():
-  """An empty content is not a valid turn, so the drop backs off."""
-  agent = Agent(
-      name='test_agent',
-      planner=BuiltInPlanner(thinking_config=types.ThinkingConfig()),
-  )
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent, user_content='test message'
-  )
-  only_thought = types.Part(text='Thinking about it.', thought=True)
-  llm_request = LlmRequest(contents=[types.ModelContent(parts=[only_thought])])
-
-  async for _ in request_processor.run_async(invocation_context, llm_request):
-    pass
-
-  assert llm_request.contents[0].parts == [only_thought]
-
-
-@pytest.mark.asyncio
-async def test_display_thought_is_dropped_without_a_planner():
-  """An agent with no planner gets the same treatment as a built-in planner."""
-  agent = Agent(name='test_agent')
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent, user_content='test message'
-  )
-  llm_request = LlmRequest(
-      contents=[
-          types.ModelContent(
-              parts=[
-                  types.Part(text='Thinking about it.', thought=True),
-                  types.Part(text='You have two orders.'),
-              ]
-          )
-      ]
-  )
-
-  async for _ in request_processor.run_async(invocation_context, llm_request):
-    pass
-
-  assert llm_request.contents[0].parts == [
-      types.Part(text='You have two orders.')
-  ]

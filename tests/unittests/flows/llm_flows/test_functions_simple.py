@@ -1949,6 +1949,200 @@ async def test_streaming_tool_without_scheduling_emits_function_response():
   assert function_response.scheduling is None
 
 
+@pytest.mark.asyncio
+async def test_streaming_tool_per_yield_scheduling_overrides_tool_default():
+  """A yielded FunctionResponse sets the scheduling for that chunk alone.
+
+  A raw payload yielded from the same tool keeps falling back to the tool-wide
+  response_scheduling, so the override is scoped to the chunk that asked for
+  it.
+  """
+
+  async def streaming_fn():
+    yield types.FunctionResponse(
+        response={'status': 'fetching data...'},
+        scheduling=types.FunctionResponseScheduling.SILENT,
+    )
+    yield types.FunctionResponse(
+        response={'alert': 'threshold exceeded'},
+        scheduling=types.FunctionResponseScheduling.INTERRUPT,
+    )
+    yield {'final_summary': 'done'}
+
+  tool = FunctionTool(streaming_fn)
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=3
+  )
+
+  responses = [content.parts[0].function_response for content in contents]
+  # The wrapper is unwrapped: the model sees the payload, not the envelope.
+  assert [r.response for r in responses] == [
+      {'status': 'fetching data...'},
+      {'alert': 'threshold exceeded'},
+      {'final_summary': 'done'},
+  ]
+  assert [r.scheduling for r in responses] == [
+      types.FunctionResponseScheduling.SILENT,
+      types.FunctionResponseScheduling.INTERRUPT,
+      types.FunctionResponseScheduling.WHEN_IDLE,
+  ]
+  assert all(r.id == 'fc_stream' for r in responses)
+  assert all(r.name == tool.name for r in responses)
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_per_yield_scheduling_without_tool_default():
+  """Per-yield scheduling works on a tool that declares no default.
+
+  A streaming tool is already marked NON_BLOCKING for Live regardless of
+  response_scheduling, so a chunk may name a scheduling even when the tool
+  itself never set one. Chunks that name none leave it unset.
+  """
+
+  async def streaming_fn():
+    yield types.FunctionResponse(
+        response={'alert': 'threshold exceeded'},
+        scheduling=types.FunctionResponseScheduling.INTERRUPT,
+    )
+    yield {'note': 'no override'}
+
+  tool = FunctionTool(streaming_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=2
+  )
+
+  responses = [content.parts[0].function_response for content in contents]
+  assert [r.response for r in responses] == [
+      {'alert': 'threshold exceeded'},
+      {'note': 'no override'},
+  ]
+  assert [r.scheduling for r in responses] == [
+      types.FunctionResponseScheduling.INTERRUPT,
+      None,
+  ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_yielded_function_response_identity_is_adk_owned():
+  """id and name on a yielded FunctionResponse are replaced, not trusted.
+
+  They have to address the function call actually being answered; a tool
+  cannot know the call id, so anything it puts there is overwritten.
+  """
+
+  async def streaming_fn():
+    yield types.FunctionResponse(
+        id='tool_invented_id',
+        name='tool_invented_name',
+        response={'value': 1},
+        scheduling=types.FunctionResponseScheduling.SILENT,
+    )
+
+  tool = FunctionTool(streaming_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=1
+  )
+
+  function_response = contents[0].parts[0].function_response
+  assert function_response.id == 'fc_stream'
+  assert function_response.name == tool.name
+  assert function_response.response == {'value': 1}
+  assert function_response.scheduling is types.FunctionResponseScheduling.SILENT
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_yielded_function_response_extracts_media():
+  """Media inside a yielded FunctionResponse payload still becomes parts.
+
+  The unwrapping has to happen before media extraction, otherwise a tool that
+  wants per-chunk scheduling would lose the ability to return media.
+  """
+
+  async def streaming_fn():
+    yield types.FunctionResponse(
+        response={
+            'caption': 'a chart',
+            'image': types.Part.from_bytes(
+                data=b'chart-bytes', mime_type='image/png'
+            ),
+        },
+        scheduling=types.FunctionResponseScheduling.SILENT,
+    )
+
+  tool = FunctionTool(streaming_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(name='test_agent', model=model, tools=[tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(name=tool.name, args={}, id='fc_stream')
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  await handle_function_calls_live(invocation_context, event, {tool.name: tool})
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=1
+  )
+
+  function_response = contents[0].parts[0].function_response
+  assert function_response.response == {'caption': 'a chart'}
+  assert function_response.scheduling is types.FunctionResponseScheduling.SILENT
+  assert function_response.parts is not None
+  assert len(function_response.parts) == 1
+  assert function_response.parts[0].inline_data.data == b'chart-bytes'
+
+
 async def test_non_blocking_tool_handled_asynchronously():
   """Tests that a NON_BLOCKING tool returns None inline and pushes to live request queue."""
   import asyncio

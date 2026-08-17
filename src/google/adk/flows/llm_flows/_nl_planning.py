@@ -31,7 +31,6 @@ from ._base_llm_processor import BaseLlmRequestProcessor
 from ._base_llm_processor import BaseLlmResponseProcessor
 from ._invocation_utils import as_llm_agent
 from ._invocation_utils import require_agent_name
-from .contents import _is_part_invisible
 
 if TYPE_CHECKING:
   from ...models.llm_request import LlmRequest
@@ -48,22 +47,18 @@ class _NlPlanningRequestProcessor(BaseLlmRequestProcessor):
     from ...planners.built_in_planner import BuiltInPlanner
 
     planner = _get_planner(invocation_context)
+    if not planner:
+      return
 
-    if planner and not isinstance(planner, BuiltInPlanner):
-      # This planner marks its own reasoning as a thought so a caller can hide
-      # it, and needs that reasoning kept in context, so the marker is cleared
-      # rather than the part dropped.
+    if isinstance(planner, BuiltInPlanner):
+      planner.apply_thinking_config(llm_request)
+    else:
       if planning_instruction := planner.build_planning_instruction(
           ReadonlyContext(invocation_context), llm_request
       ):
         llm_request.append_instructions([planning_instruction])
 
       _remove_thought_from_request(llm_request)
-    else:
-      if isinstance(planner, BuiltInPlanner):
-        planner.apply_thinking_config(llm_request)
-
-      _drop_display_thoughts_from_request(llm_request)
 
     # Maintain async generator behavior
     if False:  # Ensures it behaves as a generator
@@ -140,28 +135,3 @@ def _remove_thought_from_request(llm_request: LlmRequest) -> None:
       continue
     for part in content.parts:
       part.thought = None
-
-
-def _drop_display_thoughts_from_request(llm_request: LlmRequest) -> None:
-  """Drops the thought parts the model returned only for display.
-
-  A thought summary is something the caller shows a user, not context the model
-  needs handed back. History is re-sent whole on every call, so a summary left
-  in the request is billed again on each remaining call of the session.
-
-  Which thoughts are safe to drop is already decided by ``_is_part_invisible``,
-  so this reuses it. A part that carries a thought signature, a function call or
-  response, or a server-side tool call stays, because the model expects those
-  back. A content whose parts are all thoughts is left alone rather than
-  emptied, since an empty content is not a valid turn.
-  """
-  for content in llm_request.contents or []:
-    if not content.parts:
-      continue
-    kept = [
-        part
-        for part in content.parts
-        if not (part.thought and _is_part_invisible(part))
-    ]
-    if kept and len(kept) != len(content.parts):
-      content.parts = kept
