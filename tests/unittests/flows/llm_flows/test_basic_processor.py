@@ -485,6 +485,34 @@ class TestBasicLlmRequestProcessor:
     assert 'Injected' not in run_config_http_options.headers
 
   @pytest.mark.asyncio
+  async def test_run_config_live_session_objects_are_not_aliased(self):
+    """The request must not hold the RunConfig's own live session objects."""
+    agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+
+    invocation_context = await _create_invocation_context(agent)
+    session_resumption = types.SessionResumptionConfig(handle='caller_handle')
+    history_config = types.HistoryConfig()
+    invocation_context.run_config = RunConfig(
+        session_resumption=session_resumption, history_config=history_config
+    )
+    llm_request = LlmRequest()
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    # What the connect loop in `run_live` writes as a session goes on.
+    live_config = llm_request.live_connect_config
+    live_config.session_resumption.handle = 'server_handle'
+    live_config.session_resumption.transparent = True
+    live_config.history_config.initial_history_in_client_content = True
+
+    assert session_resumption == types.SessionResumptionConfig(
+        handle='caller_handle'
+    )
+    assert history_config == types.HistoryConfig()
+
+  @pytest.mark.asyncio
   async def test_http_options_carrying_an_unpicklable_client_are_copied(self):
     """http_options can hold a live client, which no deep copy survives."""
     agent = LlmAgent(

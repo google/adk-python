@@ -183,10 +183,21 @@ def _build_basic_request(
   llm_request.live_connect_config.proactivity = (
       None if is_gemini_3_x else run_config.proactivity
   )
+  # Copied in rather than aliased, for the same reason as http_options above:
+  # the connect loop in `BaseLlmFlow.run_live` writes the newest resumption
+  # handle, the Vertex-only `transparent` default and
+  # `initial_history_in_client_content` onto whatever object it finds here, and
+  # the RunConfig belongs to the caller, who may reuse it for the next run.
   llm_request.live_connect_config.session_resumption = (
-      run_config.session_resumption
+      run_config.session_resumption.model_copy()
+      if run_config.session_resumption
+      else None
   )
-  llm_request.live_connect_config.history_config = run_config.history_config
+  llm_request.live_connect_config.history_config = (
+      run_config.history_config.model_copy()
+      if run_config.history_config
+      else None
+  )
   llm_request.live_connect_config.context_window_compression = (
       run_config.context_window_compression
   )

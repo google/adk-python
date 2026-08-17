@@ -1286,6 +1286,145 @@ async def test_run_live_server_handle_supersedes_run_config_handle():
 
 
 @pytest.mark.asyncio
+async def test_run_live_does_not_write_the_session_handle_onto_the_run_config():
+  """The newest handle must not be written back onto the caller's RunConfig.
+
+  The RunConfig belongs to the caller and may be reused for the next run. A
+  handle written back onto it points at the session that just ended, so the
+  next run would try to resume a dead session instead of starting a new one.
+  """
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  async def mock_receive():
+    yield LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle='server_handle'
+        )
+    )
+    raise ConnectionClosed(None, None)
+
+  mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+  agent = Agent(name='test_agent', model=real_model)
+  run_config = RunConfig(
+      session_resumption=types.SessionResumptionConfig(handle='caller_handle')
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, run_config=run_config
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  with (
+      mock.patch.object(
+          flow, '_preprocess_async', side_effect=_mock_preprocess_basic
+      ),
+      mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock),
+  ):
+    mock_connection_2 = mock.AsyncMock()
+
+    class NonRetryableError(Exception):
+      pass
+
+    async def mock_receive_2():
+      yield LlmResponse(
+          content=types.Content(parts=[types.Part.from_text(text='hi')])
+      )
+      raise NonRetryableError('stop')
+
+    mock_connection_2.receive = mock.Mock(side_effect=mock_receive_2)
+
+    mock_aenter = mock.AsyncMock()
+    mock_aenter.side_effect = [mock_connection, mock_connection_2]
+
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__ = mock_aenter
+
+      with mock.patch.object(
+          Gemini,
+          '_api_backend',
+          new_callable=mock.PropertyMock,
+          return_value=GoogleLLMVariant.VERTEX_AI,
+      ):
+        try:
+          async for _ in flow.run_live(invocation_context):
+            pass
+        except NonRetryableError:
+          pass
+
+      # The reconnect did use the server handle.
+      second_request = mock_connect.call_args_list[1][0][0]
+      assert (
+          second_request.live_connect_config.session_resumption.handle
+          == 'server_handle'
+      )
+      # ...without that, or the Vertex-only transparent default, reaching the
+      # caller's config.
+      assert run_config.session_resumption == types.SessionResumptionConfig(
+          handle='caller_handle'
+      )
+
+
+@pytest.mark.asyncio
+async def test_run_live_does_not_write_initial_history_onto_the_run_config():
+  """The initial-history flag must not be written onto the caller's RunConfig."""
+
+  real_model = Gemini()
+  mock_connection = mock.AsyncMock()
+
+  agent = Agent(name='test_agent', model=real_model)
+  run_config = RunConfig(history_config=types.HistoryConfig())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, run_config=run_config
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  with (
+      mock.patch.object(
+          flow, '_preprocess_async', side_effect=_mock_preprocess_with_history
+      ),
+      mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock),
+  ):
+
+    class StopError(Exception):
+      pass
+
+    async def mock_receive():
+      yield LlmResponse(
+          content=types.Content(parts=[types.Part.from_text(text='hi')])
+      )
+      raise StopError('stop')
+
+    mock_connection.receive = mock.Mock(side_effect=mock_receive)
+
+    with mock.patch(
+        'google.adk.models.google_llm.Gemini.connect'
+    ) as mock_connect:
+      mock_connect.return_value.__aenter__.return_value = mock_connection
+
+      try:
+        async for _ in flow.run_live(invocation_context):
+          pass
+      except StopError:
+        pass
+
+  # The request declares the replayed history as client-provided...
+  connect_request = mock_connect.call_args[0][0]
+  assert (
+      connect_request.live_connect_config.history_config.initial_history_in_client_content
+  )
+  # ...while the caller's config keeps saying nothing about it.
+  assert run_config.history_config == types.HistoryConfig()
+
+
+@pytest.mark.asyncio
 async def test_run_live_does_not_log_http_options_headers(caplog):
   """run_live must not log http_options headers, which can carry secrets."""
 
