@@ -56,7 +56,22 @@ class GCPSkillRegistry(SkillRegistry):
 
     Returns:
       A Skill object.
+
+    Raises:
+      ValueError: If the name is not a valid skill name.
     """
+    # The name reaches here straight from a model-issued tool call, so it must
+    # be a single path segment before it is interpolated into the resource
+    # path. Accept the same character set skill names are already held to; the
+    # snake-or-kebab pattern is the superset of the two accepted spellings.
+    # pylint: disable-next=protected-access
+    if not models._SNAKE_OR_KEBAB_NAME_PATTERN.match(name):
+      raise ValueError(
+          f"Invalid skill name {name!r}: name must be lowercase kebab-case"
+          " (a-z, 0-9, hyphens) or snake_case (a-z, 0-9, underscores), with"
+          " no leading, trailing, or consecutive delimiters."
+      )
+
     full_name = (
         f"projects/{self.project_id}/locations/{self.location}/skills/{name}"
     )

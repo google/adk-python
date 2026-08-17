@@ -56,8 +56,9 @@ def _create_fake_zip_bytes():
   return zip_buffer.getvalue()
 
 
+@pytest.mark.parametrize("valid_name", ["my-skill", "my_skill", "skill2"])
 @pytest.mark.asyncio
-async def test_get_skill_success(mock_vertex_client):
+async def test_get_skill_success(mock_vertex_client, valid_name):
   """Verifies that get_skill successfully fetches and loads a skill in memory."""
   registry = GCPSkillRegistry()
 
@@ -71,13 +72,13 @@ async def test_get_skill_success(mock_vertex_client):
       return_value=mock_skill_resource
   )
 
-  skill = await registry.get_skill(name="my-skill")
+  skill = await registry.get_skill(name=valid_name)
 
   assert skill.frontmatter.name == "my-skill"
   assert skill.frontmatter.description == "test"
   assert skill.instructions == "# My Skill"
   mock_vertex_client.aio.skills.get.assert_called_once_with(
-      name="projects/test-project/locations/us-central1/skills/my-skill"
+      name=f"projects/test-project/locations/us-central1/skills/{valid_name}"
   )
 
 
@@ -182,3 +183,29 @@ async def test_get_skill_raises_on_invalid_skill_name(mock_vertex_client):
 
   with pytest.raises(ValueError, match="Invalid skill name in SKILL.md"):
     await registry.get_skill(name="my-skill")
+
+
+@pytest.mark.parametrize(
+    "unsafe_name",
+    [
+        "../../../projects/victim/locations/us-central1/skills/secret",
+        "my-skill/../other-skill",
+        "..%2f..%2fsecret",
+        "my-skill?alt=media",
+        "my-skill#fragment",
+        "my-skill/revisions/rev-123",
+        "My-Skill",
+        "",
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_skill_rejects_unsafe_name_before_any_request(
+    mock_vertex_client, unsafe_name
+):
+  """Verifies that a name that is not a single safe path segment is rejected."""
+  registry = GCPSkillRegistry()
+
+  with pytest.raises(ValueError, match="Invalid skill name"):
+    await registry.get_skill(name=unsafe_name)
+
+  mock_vertex_client.aio.skills.get.assert_not_called()
