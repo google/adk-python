@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 from typing import Dict
 from typing import List
@@ -391,12 +392,23 @@ def credential_to_param(
         and auth_credential.http
         and auth_credential.http.credentials
         and (
-            auth_credential.http.credentials.username
-            or auth_credential.http.credentials.password
+            auth_credential.http.credentials.username is not None
+            or auth_credential.http.credentials.password is not None
         )
     ):
-      # Basic Auth is explicitly NOT supported
-      raise NotImplementedError("Basic Authentication is not supported.")
+      username = auth_credential.http.credentials.username or ""
+      password = auth_credential.http.credentials.password or ""
+      encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
+      py_name = INTERNAL_AUTH_PREFIX + "Authorization"
+      param = ApiParameter(
+          original_name="Authorization",
+          param_location="header",
+          param_schema=Schema(type="string"),
+          description=auth_scheme.description or "Basic auth",
+          py_name=py_name,
+      )
+      kwargs = {py_name: f"Basic {encoded}"}
+      return param, kwargs
     else:
       raise ValueError("Invalid HTTP auth credentials")
 
