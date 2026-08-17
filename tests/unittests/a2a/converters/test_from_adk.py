@@ -37,6 +37,7 @@ class TestFromAdk:
     self.mock_event.author = "test-author"
     self.mock_event.branch = None
     self.mock_event.content = None
+    self.mock_event.output = None
     self.mock_event.error_code = None
     self.mock_event.error_message = None
     self.mock_event.grounding_metadata = None
@@ -125,6 +126,52 @@ class TestFromAdk:
     metadata = result[0].status.message.metadata
     assert "adk_actions" in metadata
     assert metadata["adk_actions"]["artifactDelta"] == {"image": 0}
+
+  def test_convert_event_prefers_structured_output_over_content(self):
+    """Workflow output_schema results must become the A2A artifact (#6762).
+
+    When a later Event carries structured ``output`` (and no content), that
+    value must be published as a DataPart artifact — not dropped in favor of
+    earlier agent text left in the task history.
+    """
+    from pydantic import BaseModel
+
+    class Report(BaseModel):
+      title: str
+      note: str
+
+    agents_artifacts: dict[str, str] = {}
+    text_event = Event(
+        author="last_agent",
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text="note-only")]
+        ),
+        partial=False,
+    )
+    workflow_event = Event(
+        author="wf",
+        output=Report(title="T", note="note-only"),
+        partial=False,
+    )
+
+    text_a2a = convert_event_to_a2a_events(
+        text_event, agents_artifacts, task_id="t", context_id="c"
+    )
+    assert len(text_a2a) == 1
+    assert isinstance(text_a2a[0], TaskArtifactUpdateEvent)
+
+    output_a2a = convert_event_to_a2a_events(
+        workflow_event, agents_artifacts, task_id="t", context_id="c"
+    )
+    assert len(output_a2a) == 1
+    assert isinstance(output_a2a[0], TaskArtifactUpdateEvent)
+    parts = output_a2a[0].artifact.parts
+    assert len(parts) == 1
+    assert _compat.is_data_part(parts[0])
+    assert _compat.data_part_dict(parts[0]) == {
+        "title": "T",
+        "note": "note-only",
+    }
 
 
 class TestSerializeValue:
