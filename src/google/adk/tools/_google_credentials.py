@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import List
 from typing import Optional
 
@@ -87,6 +86,8 @@ class BaseGoogleCredentialsConfig(BaseModel):
   """the oauth client secret to use."""
   scopes: Optional[List[str]] = None
   """the scopes to use."""
+  kms_key_name: Optional[str] = None
+  """The KMS key name to encrypt sensitive credentials fields."""
 
   _token_cache_key: Optional[str] = None
   """The key to cache the token in the tool context."""
@@ -94,6 +95,11 @@ class BaseGoogleCredentialsConfig(BaseModel):
   @model_validator(mode="after")
   def __post_init__(self) -> BaseGoogleCredentialsConfig:
     """Validate that only one of credentials, external_access_token_key or client_id/secret are provided."""
+    import os
+
+    if not self.kms_key_name:
+      self.kms_key_name = os.environ.get("GOOGLE_CREDENTIAL_KMS_KEY")
+
     if self.credentials:
       if (
           self.external_access_token_key
@@ -176,13 +182,25 @@ class GoogleCredentialsManager:
         if self.credentials_config._token_cache_key
         else None
     )
-    creds = (
-        google.oauth2.credentials.Credentials.from_authorized_user_info(
-            json.loads(creds_json), self.credentials_config.scopes
+    if creds_json:
+      import json
+
+      from ..auth.auth_credential import KmsEncryptedCredentials
+
+      creds_data = json.loads(creds_json)
+      kms_key = (
+          creds_data.get("kms_key_name") or self.credentials_config.kms_key_name
+      )
+      if kms_key:
+        creds = KmsEncryptedCredentials.from_authorized_user_info(
+            creds_data, self.credentials_config.scopes
         )
-        if creds_json
-        else None
-    )
+      else:
+        creds = google.oauth2.credentials.Credentials.from_authorized_user_info(
+            creds_data, self.credentials_config.scopes
+        )
+    else:
+      creds = None
 
     # If credentials are empty use the default credential
     if not creds:
@@ -211,6 +229,22 @@ class GoogleCredentialsManager:
         if creds.valid:
           # Cache the refreshed credentials if token cache key is set
           if self.credentials_config._token_cache_key:
+            if self.credentials_config.kms_key_name and not isinstance(
+                creds, KmsEncryptedCredentials
+            ):
+              from ..auth.auth_credential import KmsEncryptedCredentials
+
+              creds = KmsEncryptedCredentials(
+                  token=creds.token,
+                  refresh_token=creds.refresh_token,
+                  id_token=creds.id_token,
+                  token_uri=creds.token_uri,
+                  client_id=creds.client_id,
+                  client_secret=creds.client_secret,
+                  scopes=creds.scopes,
+                  expiry=creds.expiry,
+                  kms_key_name=self.credentials_config.kms_key_name,
+              )
             tool_context.state[self.credentials_config._token_cache_key] = (
                 creds.to_json()
             )
@@ -263,14 +297,27 @@ class GoogleCredentialsManager:
 
     if auth_response:
       # OAuth flow completed, create credentials
-      creds = google.oauth2.credentials.Credentials(
-          token=auth_response.oauth2.access_token,
-          refresh_token=auth_response.oauth2.refresh_token,
-          token_uri=auth_scheme.flows.authorizationCode.tokenUrl,
-          client_id=self.credentials_config.client_id,
-          client_secret=self.credentials_config.client_secret,
-          scopes=list(self.credentials_config.scopes),
-      )
+      if self.credentials_config.kms_key_name:
+        from ..auth.auth_credential import KmsEncryptedCredentials
+
+        creds = KmsEncryptedCredentials(
+            token=auth_response.oauth2.access_token,
+            refresh_token=auth_response.oauth2.refresh_token,
+            token_uri=auth_scheme.flows.authorizationCode.tokenUrl,
+            client_id=self.credentials_config.client_id,
+            client_secret=self.credentials_config.client_secret,
+            scopes=list(self.credentials_config.scopes),
+            kms_key_name=self.credentials_config.kms_key_name,
+        )
+      else:
+        creds = google.oauth2.credentials.Credentials(
+            token=auth_response.oauth2.access_token,
+            refresh_token=auth_response.oauth2.refresh_token,
+            token_uri=auth_scheme.flows.authorizationCode.tokenUrl,
+            client_id=self.credentials_config.client_id,
+            client_secret=self.credentials_config.client_secret,
+            scopes=list(self.credentials_config.scopes),
+        )
 
       # Cache the new credentials if token cache key is set
       if self.credentials_config._token_cache_key:
