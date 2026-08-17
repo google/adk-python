@@ -1387,6 +1387,68 @@ def test_trace_tool_call_with_standard_error(
   )
 
 
+def test_build_llm_request_for_trace_excludes_live_http_clients():
+  """Tracing must not crash when config.http_options holds live SDK clients.
+
+  HttpOptions.{httpx_client, httpx_async_client, aiohttp_client} are live
+  transport objects that pydantic cannot serialize; they must be excluded so
+  the trace serialization does not raise PydanticSerializationError.
+  """
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+  import httpx
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      config=types.GenerateContentConfig(
+          temperature=0.1,
+          http_options=types.HttpOptions(
+              httpx_async_client=httpx.AsyncClient()
+          ),
+      ),
+  )
+
+  result = _build_llm_request_for_trace(llm_request)
+
+  # Must be JSON-serializable (raised PydanticSerializationError before the fix).
+  json.dumps(result)
+  assert 'httpx_async_client' not in result['config'].get('http_options', {})
+  assert result['config']['temperature'] == 0.1
+
+
+def test_build_llm_request_for_trace_excludes_http_option_credentials():
+  """Credential-bearing http_options fields must never reach a span attribute.
+
+  `http_options` is a documented place for callers to put custom headers
+  (including `Authorization`), and the agent's generate config is copied onto
+  `llm_request.config`. Serializing it verbatim would export the caller's
+  credentials to the tracing backend on every model call.
+  """
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      config=types.GenerateContentConfig(
+          temperature=0.1,
+          http_options=types.HttpOptions(
+              base_url='https://example.test',
+              headers={'Authorization': 'Bearer sentinel-secret-token'},
+              extra_body={'api_key': 'sentinel-secret-token'},
+              client_args={'auth': 'sentinel-secret-token'},
+              async_client_args={'auth': 'sentinel-secret-token'},
+          ),
+      ),
+  )
+
+  result = _build_llm_request_for_trace(llm_request)
+
+  assert 'sentinel-secret-token' not in json.dumps(result)
+  http_options = result['config'].get('http_options', {})
+  for field in ('headers', 'extra_body', 'client_args', 'async_client_args'):
+    assert field not in http_options
+  # Non-sensitive http_options fields are still traced.
+  assert http_options['base_url'] == 'https://example.test'
+
+
 def test_safe_json_serialize_circular_dict_returns_not_serializable():
   obj = {}
   obj['self'] = obj

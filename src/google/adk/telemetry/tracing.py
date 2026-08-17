@@ -514,7 +514,25 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
   result = {
       'model': llm_request.model,
       'config': llm_request.config.model_dump(
-          exclude_none=True, exclude='response_schema', mode='json'
+          exclude_none=True,
+          exclude={
+              'response_schema': True,
+              # `http_options` carries caller-supplied credentials: `headers`
+              # commonly holds an Authorization bearer token, and
+              # `extra_body` / `*client_args` are free-form passthroughs that
+              # can hold auth material too. None of it may reach an exported
+              # span attribute. The client fields are also unserializable.
+              'http_options': {
+                  'httpx_client': True,
+                  'httpx_async_client': True,
+                  'aiohttp_client': True,
+                  'headers': True,
+                  'extra_body': True,
+                  'client_args': True,
+                  'async_client_args': True,
+              },
+          },
+          mode='json',
       ),
       'contents': [],
   }
