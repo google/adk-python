@@ -267,21 +267,31 @@ def resolve_agent_reference(
   Args:
     ref_config: The agent reference configuration (AgentRefConfig).
     referencing_agent_config_abs_path: The absolute path to the agent config
-    that contains the reference.
+      that contains the reference.
 
   Returns:
     The created agent instance.
   """
   if ref_config.config_path:
     if os.path.isabs(ref_config.config_path):
-      return from_config(ref_config.config_path)
-    else:
-      return from_config(
-          os.path.join(
-              os.path.dirname(referencing_agent_config_abs_path),
-              ref_config.config_path,
-          )
+      raise ValueError(
+          "Absolute paths are not allowed in AgentRefConfig config_path:"
+          f" {ref_config.config_path!r}"
       )
+    agent_dir = os.path.dirname(referencing_agent_config_abs_path)
+    resolved_path = os.path.realpath(
+        os.path.join(agent_dir, ref_config.config_path)
+    )
+    canonical_agent_dir = os.path.realpath(agent_dir)
+    if (
+        os.path.commonpath([canonical_agent_dir, resolved_path])
+        != canonical_agent_dir
+    ):
+      raise ValueError(
+          f"Path traversal detected: config_path {ref_config.config_path!r}"
+          " resolves outside the agent directory"
+      )
+    return from_config(resolved_path)
   elif ref_config.code:
     return _resolve_agent_code_reference(ref_config.code)
   else:
