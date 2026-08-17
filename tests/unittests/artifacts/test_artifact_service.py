@@ -28,6 +28,7 @@ from unittest.mock import patch
 from urllib.parse import unquote
 from urllib.parse import urlparse
 
+from google.adk.artifacts import file_artifact_service
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.base_artifact_service import ensure_part
 from google.adk.artifacts.file_artifact_service import FileArtifactService
@@ -599,6 +600,194 @@ async def test_get_artifact_version_out_of_index(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "session_id"),
+    [("report.txt", "session"), ("user:profile.txt", None)],
+)
+async def test_file_artifacts_are_isolated_by_app(
+    tmp_path: Path,
+    filename: str,
+    session_id: Optional[str],
+):
+  """Every file-artifact operation stays within its application."""
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  scope = {
+      "user_id": "user",
+      "session_id": session_id,
+      "filename": filename,
+  }
+
+  assert (
+      await service.save_artifact(
+          app_name="app-a", artifact=types.Part(text="secret-a"), **scope
+      )
+      == 0
+  )
+
+  assert await service.load_artifact(app_name="app-b", **scope) is None
+  assert (
+      await service.list_artifact_keys(
+          app_name="app-b",
+          user_id="user",
+          session_id=session_id,
+      )
+      == []
+  )
+  assert await service.list_versions(app_name="app-b", **scope) == []
+  assert await service.list_artifact_versions(app_name="app-b", **scope) == []
+  assert await service.get_artifact_version(app_name="app-b", **scope) is None
+
+  assert (
+      await service.save_artifact(
+          app_name="app-b", artifact=types.Part(text="secret-b"), **scope
+      )
+      == 0
+  )
+  assert await service.load_artifact(app_name="app-a", **scope) == types.Part(
+      text="secret-a"
+  )
+
+  await service.delete_artifact(app_name="app-b", **scope)
+  assert await service.load_artifact(app_name="app-b", **scope) is None
+  assert await service.load_artifact(app_name="app-a", **scope) == types.Part(
+      text="secret-a"
+  )
+
+
+def _write_unscoped_artifact(root: Path, *texts: str) -> None:
+  """Writes an artifact in the layout used before storage was app-scoped."""
+  versions_dir = (
+      root
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / "report.txt"
+      / "versions"
+  )
+  for version, text in enumerate(texts):
+    version_dir = versions_dir / str(version)
+    version_dir.mkdir(parents=True)
+    payload_path = version_dir / "report.txt"
+    payload_path.write_text(text, encoding="utf-8")
+    file_artifact_service._write_metadata(
+        version_dir / "metadata.json",
+        filename="report.txt",
+        mime_type=None,
+        version=version,
+        canonical_uri=payload_path.resolve().as_uri(),
+        custom_metadata=None,
+    )
+
+
+_UNSCOPED_SCOPE = {
+    "user_id": "user",
+    "session_id": "session",
+    "filename": "report.txt",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("app_name", ["app-a", "app-b"])
+async def test_file_artifact_reads_never_serve_the_unscoped_layout(
+    tmp_path: Path,
+    app_name: str,
+):
+  """A root can be shared, so no app may read the pre-app-scoped tree."""
+  root = tmp_path / "artifacts"
+  _write_unscoped_artifact(root, "older", "legacy")
+  service = FileArtifactService(root_dir=root)
+
+  assert (
+      await service.load_artifact(app_name=app_name, **_UNSCOPED_SCOPE) is None
+  )
+  assert await service.list_versions(app_name=app_name, **_UNSCOPED_SCOPE) == []
+  assert (
+      await service.list_artifact_versions(app_name=app_name, **_UNSCOPED_SCOPE)
+      == []
+  )
+  assert (
+      await service.get_artifact_version(app_name=app_name, **_UNSCOPED_SCOPE)
+      is None
+  )
+  assert (
+      await service.list_artifact_keys(
+          app_name=app_name, user_id="user", session_id="session"
+      )
+      == []
+  )
+
+
+@pytest.mark.asyncio
+async def test_file_artifact_saves_never_reuse_unscoped_layout(
+    tmp_path: Path,
+):
+  """Saving after the upgrade writes app-scoped and ignores the older copy."""
+  root = tmp_path / "artifacts"
+  _write_unscoped_artifact(root, "older", "legacy")
+  service = FileArtifactService(root_dir=root)
+
+  assert (
+      await service.save_artifact(
+          app_name="app-a",
+          artifact=types.Part(text="current"),
+          **_UNSCOPED_SCOPE,
+      )
+      == 0
+  )
+  assert (root / "apps" / "app-a" / "users" / "user").is_dir()
+  assert await service.load_artifact(
+      app_name="app-a", **_UNSCOPED_SCOPE
+  ) == types.Part(text="current")
+  # Version numbering restarts and the older versions stop being served.
+  assert await service.list_versions(app_name="app-a", **_UNSCOPED_SCOPE) == [0]
+  assert (
+      await service.load_artifact(
+          version=1, app_name="app-a", **_UNSCOPED_SCOPE
+      )
+      is None
+  )
+
+  await service.delete_artifact(app_name="app-a", **_UNSCOPED_SCOPE)
+  assert (
+      await service.load_artifact(app_name="app-a", **_UNSCOPED_SCOPE) is None
+  )
+
+
+@pytest.mark.asyncio
+async def test_file_artifact_delete_only_removes_the_calling_apps_copy(
+    tmp_path: Path,
+):
+  """A delete on a shared root never reaches data outside the calling app."""
+  root = tmp_path / "artifacts"
+  _write_unscoped_artifact(root, "legacy")
+  unscoped_dir = (
+      root
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / "report.txt"
+  )
+  service = FileArtifactService(root_dir=root)
+  await service.save_artifact(
+      app_name="app-a",
+      artifact=types.Part(text="secret-a"),
+      **_UNSCOPED_SCOPE,
+  )
+
+  await service.delete_artifact(app_name="app-b", **_UNSCOPED_SCOPE)
+
+  assert unscoped_dir.is_dir()
+  assert await service.load_artifact(
+      app_name="app-a", **_UNSCOPED_SCOPE
+  ) == types.Part(text="secret-a")
+  assert await service.list_versions(app_name="app-a", **_UNSCOPED_SCOPE) == [0]
+
+
+@pytest.mark.asyncio
 async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   """Ensures FileArtifactService writes camelCase metadata without newlines."""
   artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
@@ -616,6 +805,8 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   metadata_path = (
       tmp_path
       / "artifacts"
+      / "apps"
+      / "myapp"
       / "users"
       / "user123"
       / "sessions"
@@ -677,6 +868,8 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   version_payload_path = (
       tmp_path
       / "artifacts"
+      / "apps"
+      / "myapp"
       / "users"
       / "user123"
       / "sessions"
@@ -740,6 +933,38 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
         user_id="user123",
         session_id=session_id,
         filename=filename,
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "app_name",
+    [
+        "../escape",
+        "../../etc",
+        "foo/../../bar",
+        "valid/../..",
+        "..",
+        ".",
+        "has/slash",
+        "back\\slash",
+        "null\x00byte",
+        "",
+    ],
+)
+async def test_file_save_artifact_rejects_traversal_in_app_name(
+    tmp_path, app_name
+):
+  """FileArtifactService rejects app_name values that escape root_dir."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name=app_name,
+        user_id="user123",
+        session_id="sess123",
+        filename="safe.txt",
         artifact=part,
     )
 
