@@ -144,8 +144,16 @@ class ReplayManager:
     # Top-level user text prompts live under root key ("").
     # Merge them so multi-turn turn inputs remain visible during state reconstruction.
     root_events = self._events_by_parent.get("", [])
+    # Membership is by identity, matching the `id()` set used below: both lists
+    # are views onto `session.events`, so an event is already indexed under this
+    # node only if it is the same object. `e not in node_events` would instead
+    # invoke `Event.__eq__` per probe, deep-comparing whole events and making
+    # this loop quadratic in the session size.
+    node_event_ids = {id(e) for e in node_events}
     user_prompts = [
-        e for e in root_events if e.author == "user" and e not in node_events
+        e
+        for e in root_events
+        if e.author == "user" and id(e) not in node_event_ids
     ]
 
     if not user_prompts:
@@ -153,7 +161,7 @@ class ReplayManager:
 
     # Retain exact chronological ordering of session events.
     session_events = ctx._invocation_context.session.events
-    event_ids = {id(e) for e in node_events}.union(id(e) for e in user_prompts)
+    event_ids = node_event_ids.union(id(e) for e in user_prompts)
     return [e for e in session_events if id(e) in event_ids]
 
   def _add_event_to_index(self, parent_path: str, event: Event) -> None:

@@ -372,6 +372,42 @@ def _mock_run_ctx(session_id='sess_456'):
   return ctx
 
 
+def test_sdk_agent_cls_defaults_to_the_sdk_agent():
+  """The seam names the public SDK Agent class by default."""
+  agent = AntigravityAgent(name='agy', config=_make_config())
+
+  assert agent._sdk_agent_cls is _antigravity_agent.Agent
+
+
+@pytest.mark.asyncio
+async def test_subclass_overrides_the_sdk_agent_class():
+  """A subclass overriding _sdk_agent_cls runs the turn on its own class.
+
+  Guards the seam against being inlined back to the module global.
+  """
+
+  async def _receive_steps():
+    yield _text_step(0, 'done')
+
+  active_agent = _fake_active_agent(_receive_steps)
+
+  def _refuse(config):
+    raise AssertionError('the module global Agent was used')
+
+  class _Swapped(AntigravityAgent):
+
+    @property
+    def _sdk_agent_cls(self):
+      return lambda config: active_agent
+
+  agent = _Swapped(name='agy', config=_make_config(), mode='single_turn')
+
+  with patch.object(_antigravity_agent, 'Agent', _refuse):
+    events = [event async for event in agent._run_async_impl(_mock_run_ctx())]
+
+  assert [event.content.parts[0].text for event in events] == ['done']
+
+
 @pytest.mark.asyncio
 async def test_resumed_replayed_steps_are_skipped(tmp_path):
   """On resume, steps at or below the resume index are not re-emitted.

@@ -294,6 +294,31 @@ class TestConvertEventsToEvalInvocation:
     assert intermediate_events[0].author == "agent1"
     assert intermediate_events[0].content.parts[0].text == "First response"
 
+  def test_convert_preserves_grounding_metadata_from_final_response(
+      self,
+  ):
+    """Tests final grounding metadata is available to evaluators."""
+    grounding_metadata = types.GroundingMetadata(
+        web_search_queries=["recent AI news"]
+    )
+    events = [
+        _build_event("user", [types.Part(text="What's new in AI?")], "inv1"),
+        Event(
+            author="agent",
+            content=types.Content(parts=[types.Part(text="Here are sources.")]),
+            invocation_id="inv1",
+            grounding_metadata=grounding_metadata,
+        ),
+    ]
+
+    invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+    assert len(invocations) == 1
+    invocation_events = invocations[0].intermediate_data.invocation_events
+    assert len(invocation_events) == 1
+    assert invocation_events[0].content is None
+    assert invocation_events[0].grounding_metadata == grounding_metadata
+
 
 class TestNormalizeLiveTranscriptions:
   """Test cases for EvaluationGenerator._normalize_live_transcriptions method."""

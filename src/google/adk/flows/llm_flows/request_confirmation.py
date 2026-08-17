@@ -133,6 +133,8 @@ async def _resolve_confirmation_targets(
     for function_call in event_function_calls:
       if not function_call.id or function_call.id not in confirmation_fc_ids:
         continue
+      if function_call.name != REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
+        continue
 
       original_function_call_args = _get_original_function_call_args(
           function_call

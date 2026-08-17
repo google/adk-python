@@ -612,6 +612,37 @@ class TestCanonicalTools:
     assert tools[0].name == '_regular_tool'
     assert tools[1].name == 'working_tool'
 
+  async def test_canonical_tools_reports_the_toolset_it_dropped(self, caplog):
+    """A toolset that fails to load is reported at error level, with context."""
+    from google.adk.tools.base_toolset import BaseToolset
+
+    class FailingToolset(BaseToolset):
+
+      async def get_tools(self, readonly_context=None):
+        raise ConnectionError('MCP server unavailable')
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[FailingToolset(tool_name_prefix='books')],
+    )
+    ctx = await _create_readonly_context(agent)
+
+    with caplog.at_level(logging.ERROR, logger='google_adk'):
+      tools = await agent.canonical_tools(ctx)
+
+    assert tools == []
+    record = next(
+        r for r in caplog.records if 'failed to load' in r.getMessage()
+    )
+    message = record.getMessage()
+    assert 'test_agent' in message
+    assert 'FailingToolset' in message
+    assert 'books' in message
+    assert 'MCP server unavailable' in message
+    # The traceback is what identifies where inside the toolset it broke.
+    assert record.exc_info is not None
+
 
 # Tests for multi-provider model support via string model names
 @pytest.mark.parametrize(

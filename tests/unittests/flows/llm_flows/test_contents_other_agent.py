@@ -226,6 +226,39 @@ async def test_other_agent_function_calls():
 
 
 @pytest.mark.asyncio
+async def test_other_agent_function_call_args_are_sorted():
+  """Function call args are rendered in sorted key order for determinism."""
+  agent = Agent(model="gemini-2.5-flash", name="current_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  # Provide args in non-sorted insertion order (z, a, m) to prove the
+  # rendered dict is re-ordered by key.
+  function_call = types.FunctionCall(
+      id="func_sort",
+      name="tool",
+      args={"z_key": "z_val", "a_key": "a_val", "m_key": "m_val"},
+  )
+  other_agent_event = Event(
+      invocation_id="test_inv",
+      author="other_agent",
+      content=types.ModelContent([types.Part(function_call=function_call)]),
+  )
+  invocation_context.session.events = [other_agent_event]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert llm_request.contents[0].parts[1] == types.Part(
+      text=(
+          "[other_agent] called tool `tool` with parameters:"
+          " {'a_key': 'a_val', 'm_key': 'm_val', 'z_key': 'z_val'}"
+      )
+  )
+
+
+@pytest.mark.asyncio
 async def test_other_agent_function_responses():
   """Test that function responses from other agents are properly formatted."""
   agent = Agent(model="gemini-2.5-flash", name="current_agent")

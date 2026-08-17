@@ -210,10 +210,23 @@ async def _convert_tool_union_to_tools(
   try:
     return await tool_union.get_tools_with_prefix(ctx)
   except Exception as e:
-    logger.warning(
-        'Failed to get tools from toolset %s: %s',
+    # The agent still runs, just without this toolset's tools, and the model
+    # will answer as though it never had them. That is a lost capability
+    # rather than a degraded one, so report it at error level, name which
+    # toolset was lost, and keep the traceback: str(e) is empty for several
+    # of the exceptions raised by transport clients.
+    logger.error(
+        'Agent %s will run without the tools from toolset %s%s, which failed'
+        ' to load: %s',
+        ctx.agent_name if ctx else '<unknown>',
         type(tool_union).__name__,
+        (
+            f' (prefix {tool_union.tool_name_prefix!r})'
+            if tool_union.tool_name_prefix
+            else ''
+        ),
         e,
+        exc_info=True,
     )
     return []
 
@@ -666,7 +679,10 @@ class LlmAgent(BaseAgent, abc.ABC):
   def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
     """Overrides the default model used when an agent has no model set."""
     if not isinstance(model, (str, BaseLlm)):
-      raise TypeError('Default model must be a model name or BaseLlm.')
+      raise TypeError(
+          'Default model must be a model name (str) or BaseLlm instance,'
+          f' got {type(model).__name__}.'
+      )
     if isinstance(model, str) and not model:
       raise ValueError('Default model must be a non-empty string.')
     cls._default_model = model
@@ -683,7 +699,10 @@ class LlmAgent(BaseAgent, abc.ABC):
   def set_default_live_model(cls, model: Union[str, BaseLlm]) -> None:
     """Overrides the default model used for live mode when an agent has no model set."""
     if not isinstance(model, (str, BaseLlm)):
-      raise TypeError('Default live model must be a model name or BaseLlm.')
+      raise TypeError(
+          'Default live model must be a model name (str) or BaseLlm'
+          f' instance, got {type(model).__name__}.'
+      )
     if isinstance(model, str) and not model:
       raise ValueError('Default live model must be a non-empty string.')
     cls._default_live_model = model
@@ -1105,22 +1124,31 @@ class LlmAgent(BaseAgent, abc.ABC):
     if not generate_content_config:
       return types.GenerateContentConfig()
     if generate_content_config.tools:
-      raise ValueError('All tools must be set via LlmAgent.tools.')
+      raise ValueError(
+          'All tools must be set via LlmAgent.tools, not via'
+          ' generate_content_config.tools. Move your tools to the'
+          ' LlmAgent(tools=[...]) parameter.'
+      )
     if generate_content_config.system_instruction:
       raise ValueError(
-          'System instruction must be set via LlmAgent.instruction.'
+          'System instruction must be set via LlmAgent.instruction, not'
+          ' via generate_content_config.system_instruction. Move your'
+          ' instruction to LlmAgent(instruction="...").'
       )
     if generate_content_config.response_schema:
       raise ValueError(
-          'Response schema must be set via LlmAgent.output_schema.'
+          'Response schema must be set via LlmAgent.output_schema, not'
+          ' via generate_content_config.response_schema. Move your'
+          ' schema to LlmAgent(output_schema=...).'
       )
     if (
         generate_content_config.http_options
         and generate_content_config.http_options.base_url
     ):
       raise ValueError(
-          'Base URL is a transport setting and must be set on the model or'
-          ' its client, not via LlmAgent.generate_content_config.'
+          'Base URL is a transport setting and must be set on the model'
+          ' or its client, not via'
+          ' LlmAgent.generate_content_config.http_options.base_url.'
       )
     return generate_content_config
 

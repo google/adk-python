@@ -21,6 +21,7 @@ from google.adk.events.event_actions import EventCompaction
 from google.adk.sessions.schemas.shared import DEFAULT_MAX_VARCHAR_LENGTH
 from google.adk.sessions.schemas.v0 import _truncate_str
 from google.adk.sessions.schemas.v0 import StorageEvent
+from google.adk.sessions.schemas.v1 import StorageEvent as V1StorageEvent
 from google.adk.sessions.session import Session
 from google.genai import types
 
@@ -125,3 +126,23 @@ def test_from_event_preserves_short_error_message():
   storage_event = StorageEvent.from_event(session, event)
 
   assert storage_event.error_message == short_error
+
+
+def test_storage_event_v0_timestamp_round_trip_uses_utc():
+  session = Session(app_name="app", user_id="user", id="session")
+  event = Event(author="agent", timestamp=1.0)
+
+  storage_event = StorageEvent.from_event(session, event)
+
+  assert storage_event.timestamp == datetime(1970, 1, 1, 0, 0, 1)
+  assert storage_event.to_event().timestamp == 1.0
+
+
+def test_storage_event_v1_timestamp_round_trip_uses_utc():
+  session = Session(app_name="app", user_id="user", id="session")
+  event = Event(author="agent", timestamp=1.0)
+
+  storage_event = V1StorageEvent.from_event(session, event)
+
+  assert storage_event.timestamp == datetime(1970, 1, 1, 0, 0, 1)
+  assert storage_event.to_event().timestamp == 1.0

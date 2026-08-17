@@ -17,6 +17,7 @@ import textwrap
 import uuid
 
 from google.adk.agents import llm_agent
+from google.adk.agents.context import Context
 from google.adk.auth import auth_credential
 from google.adk.integrations.eventarc import AgentProvided
 from google.adk.integrations.eventarc import CloudEventAttributesBinding
@@ -104,9 +105,14 @@ complete_outreach_dynamic_tool = toolset.create_publish_tool(
 
 
 # Example C: Lambda Execution & Mixed Custom Attributes
-# The developer uses Python callables to generate IDs dynamically at runtime.
+# The developer uses Python callables to generate attributes dynamically at runtime.
+# Callables can inspect the event payload, the runtime Context, or both.
 def get_custom_trace_id(payload: OutreachContext) -> str:
   return f"trace-{payload.customer_id}-{uuid.uuid4().hex[:8]}"
+
+
+def get_source_from_session(ctx: Context) -> str:
+  return f"//my-agent/outreach/{ctx.session_id}"
 
 
 complete_outreach_lambda_tool = toolset.create_publish_tool(
@@ -119,7 +125,7 @@ complete_outreach_lambda_tool = toolset.create_publish_tool(
     bus=f"projects/{PROJECT_ID}/locations/us-central1/messageBuses/{BUS_NAME}",
     ce_attributes_binding=CloudEventAttributesBinding(
         type="vendor_outreach.completed",
-        source="//my-agent/outreach",
+        source=get_source_from_session,
         id=get_custom_trace_id,
         custom_attributes={
             "environment": "production",
@@ -145,6 +151,7 @@ ping_system_tool = toolset.create_publish_tool(
     ce_attributes_binding=CloudEventAttributesBinding(
         type="system.ping",
         source="//my-agent/ping",
+        time=OMIT,  # Omits time attribute from event
         custom_attributes={
             "retry": AgentProvided(
                 "Whether to retry on failure", default="false"
