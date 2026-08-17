@@ -74,6 +74,9 @@ def mock_agent():
   # Mock the 'name' property
   type(mock_a).name = mock.PropertyMock(return_value="MyTestAgent")
   type(mock_a).instruction = mock.PropertyMock(return_value="Test Instruction")
+  # root_agent returns itself (no parent), so root_agent.name is a real name
+  # rather than a bare mock.
+  mock_a.root_agent = mock_a
   return mock_a
 
 
@@ -424,6 +427,105 @@ def test_recursive_smart_truncate_redaction():
   assert truncated["temp:auth_state"] == "[REDACTED]"
   assert truncated["nested"]["CLIENT_SECRET"] == "[REDACTED]"
   assert truncated["nested"]["normal"] == "value"
+
+
+def test_recursive_smart_truncate_bounds_self_generating_objects():
+  """An object that makes a fresh wrapper on each access stops at the cap."""
+
+  class Endless:
+    """to_dict() hands back a new object every time, so ids never repeat."""
+
+    def to_dict(self):
+      return {"next": Endless()}
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(
+          {"root": Endless()}, 1000
+      )
+  )
+
+  assert is_truncated
+  flattened = json.dumps(truncated)
+  assert "[MAX_DEPTH_EXCEEDED]" in flattened
+
+
+def test_recursive_smart_truncate_bounds_branching_self_generating_objects():
+  """The depth cap alone does not bound an object that branches.
+
+  Every access hands back two fresh children, so ids never repeat and the
+  50-level cap still leaves tens of millions of nodes below it. The node
+  budget is what stops the walk.
+  """
+  max_nodes = bigquery_agent_analytics_plugin._MAX_SANITIZE_NODES
+  # Stop manufacturing children well past the budget, so a walk that is not
+  # bounded fails this test in a second or two rather than the minute-plus
+  # it takes to exhaust the depth cap on its own.
+  safety_limit = 5 * max_nodes
+  visited = 0
+
+  class Branching:
+    """to_dict() hands back two new objects every time."""
+
+    def to_dict(self):
+      nonlocal visited
+      visited += 1
+      if visited > safety_limit:
+        return {"left": "stopped", "right": "stopped"}
+      return {"left": Branching(), "right": Branching()}
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(
+          {"root": Branching()}, 1000
+      )
+  )
+
+  assert is_truncated
+  assert visited <= max_nodes
+  assert "[SANITIZE_BUDGET_EXCEEDED]" in json.dumps(truncated)
+
+
+def test_recursive_smart_truncate_elides_the_remainder_of_a_wide_value():
+  """A wide value stops at the budget and leaves one remainder sentinel."""
+  max_nodes = bigquery_agent_analytics_plugin._MAX_SANITIZE_NODES
+  wide = list(range(max_nodes * 2))
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(
+          {"wide": wide}, 1000
+      )
+  )
+
+  assert is_truncated
+  assert truncated["wide"][-1] == "[SANITIZE_BUDGET_EXCEEDED]"
+  assert truncated["wide"].count("[SANITIZE_BUDGET_EXCEEDED]") == 1
+  # Bounded output: budget entries plus the single remainder sentinel.
+  assert len(truncated["wide"]) <= max_nodes + 1
+
+
+def test_recursive_smart_truncate_charges_directly_redacted_keys():
+  """Redacted keys cost budget, so a wide temp: mapping cannot bypass it."""
+  max_nodes = bigquery_agent_analytics_plugin._MAX_SANITIZE_NODES
+  wide_temp = {f"temp:{i}": i for i in range(max_nodes * 2)}
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(wide_temp, 1000)
+  )
+
+  assert is_truncated
+  assert len(truncated) <= max_nodes + 1
+  assert "[SANITIZE_BUDGET_EXCEEDED]" in truncated
+
+
+def test_recursive_smart_truncate_keeps_ordinary_nesting():
+  """Nesting well inside the cap is copied through untouched."""
+  obj = {"a": {"b": {"c": {"d": "leaf"}}}}
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(obj, 1000)
+  )
+
+  assert not is_truncated
+  assert truncated == obj
 
 
 class TestBigQueryAgentAnalyticsPlugin:
@@ -1753,6 +1855,44 @@ class TestBigQueryAgentAnalyticsPlugin:
 
     attributes = json.loads(log_entry["attributes"])
     assert attributes["custom_tags"] == custom_tags
+
+  @pytest.mark.asyncio
+  async def test_custom_tags_and_extra_attributes_are_redacted(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Sensitive keys are redacted wherever they sit in the attributes tree."""
+    bq_plugin_inst.config.custom_tags = {
+        "env": "prod",
+        "api_key": "sk-live-should-not-be-stored",
+    }
+
+    await bq_plugin_inst._log_event(
+        "TEST_EVENT",
+        callback_context,
+        raw_content="test content",
+        event_data=bigquery_agent_analytics_plugin.EventData(
+            extra_attributes={
+                "tool": "search",
+                "nested": {"refresh_token": "rt-should-not-be-stored"},
+            }
+        ),
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+    attributes_json = log_entry["attributes"]
+    assert "should-not-be-stored" not in attributes_json
+    attributes = json.loads(attributes_json)
+    assert attributes["custom_tags"]["api_key"] == "[REDACTED]"
+    assert attributes["custom_tags"]["env"] == "prod"
+    assert attributes["nested"]["refresh_token"] == "[REDACTED]"
+    assert attributes["tool"] == "search"
 
   @pytest.mark.asyncio
   async def test_on_model_error_callback_logs_correctly(

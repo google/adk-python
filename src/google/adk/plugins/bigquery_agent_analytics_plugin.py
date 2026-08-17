@@ -280,9 +280,23 @@ _REDACTED_URI = "[REDACTED_SENSITIVE_URI]"
 # A URI longer than this is replaced wholesale rather than parsed.
 _MAX_URI_LENGTH = 8192
 
+# Deepest nesting _recursive_smart_truncate walks before replacing a value.
+_MAX_SANITIZE_DEPTH = 50
+
+# Total nodes one sanitizer invocation may visit. Depth and per-string size
+# are bounded, but width was not: a million-element list, or an object that
+# manufactures two fresh children per access, walks tens of millions of
+# nodes inside the depth cap. The remainder is replaced with a sentinel and
+# the row is flagged truncated.
+_MAX_SANITIZE_NODES = 100_000
+
 
 def _recursive_smart_truncate(
-    obj: Any, max_len: int, seen: Optional[set[int]] = None
+    obj: Any,
+    max_len: int,
+    seen: Optional[set[int]] = None,
+    depth: int = 0,
+    budget: Optional[list[int]] = None,
 ) -> tuple[Any, bool]:
   """Recursively truncates string values within a dict or list.
 
@@ -293,12 +307,29 @@ def _recursive_smart_truncate(
       obj: The object to truncate.
       max_len: Maximum length for string values.
       seen: Set of object IDs visited in the current recursion stack.
+      depth: Current recursion depth.
+      budget: Single-element list holding the nodes left in the shared work
+        budget for this invocation.
 
   Returns:
       A tuple of (truncated_object, is_truncated).
   """
   if seen is None:
     seen = set()
+  if budget is None:
+    budget = [_MAX_SANITIZE_NODES]
+  budget[0] -= 1
+  if budget[0] < 0:
+    return "[SANITIZE_BUDGET_EXCEEDED]", True
+
+  # The id()-based cycle detection below cannot catch an object graph that
+  # manufactures a new object on every duck-typed access, which is what any
+  # object whose model_dump()/dict()/to_dict() returns a fresh wrapper does.
+  # Such a graph recurses until the interpreter's own limit. The replacement
+  # discards real data, so unlike "[CIRCULAR_REFERENCE]" it reports
+  # truncation.
+  if depth >= _MAX_SANITIZE_DEPTH:
+    return "[MAX_DEPTH_EXCEEDED]", True
 
   obj_id = id(obj)
   if obj_id in seen:
@@ -327,13 +358,26 @@ def _recursive_smart_truncate(
       # but explicit loop is fine for clarity given recursive nature.
       new_dict = {}
       for k, v in obj.items():
+        # Stop iterating once the budget is exhausted. Recursing on every
+        # remaining entry still did work proportional to the input and
+        # produced one sentinel per entry; a single remainder sentinel
+        # stands in for everything dropped.
+        if budget[0] <= 0:
+          new_dict["[SANITIZE_BUDGET_EXCEEDED]"] = "[SANITIZE_BUDGET_EXCEEDED]"
+          truncated_any = True
+          break
         if isinstance(k, str):
           k_lower = k.lower()
           if k_lower in _SENSITIVE_KEYS or k_lower.startswith("temp:"):
+            # A directly redacted entry costs budget too, otherwise a wide
+            # "temp:" mapping bypasses the bound entirely.
+            budget[0] -= 1
             new_dict[k] = "[REDACTED]"
             continue
 
-        val, trunc = _recursive_smart_truncate(v, max_len, seen)
+        val, trunc = _recursive_smart_truncate(
+            v, max_len, seen, depth + 1, budget
+        )
         if trunc:
           truncated_any = True
         new_dict[k] = val
@@ -343,7 +387,14 @@ def _recursive_smart_truncate(
       new_list = []
       # Explicit loop to handle flag propagation
       for i in obj:
-        val, trunc = _recursive_smart_truncate(i, max_len, seen)
+        # Same bound as the mapping loop.
+        if budget[0] <= 0:
+          new_list.append("[SANITIZE_BUDGET_EXCEEDED]")
+          truncated_any = True
+          break
+        val, trunc = _recursive_smart_truncate(
+            i, max_len, seen, depth + 1, budget
+        )
         if trunc:
           truncated_any = True
         new_list.append(val)
@@ -351,23 +402,31 @@ def _recursive_smart_truncate(
     elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
       # Manually iterate fields to preserve 'seen' context, avoiding dataclasses.asdict recursion
       as_dict = {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
-      return _recursive_smart_truncate(as_dict, max_len, seen)
+      return _recursive_smart_truncate(
+          as_dict, max_len, seen, depth + 1, budget
+      )
     elif hasattr(obj, "model_dump") and callable(obj.model_dump):
       # Pydantic v2
       try:
-        return _recursive_smart_truncate(obj.model_dump(), max_len, seen)
+        return _recursive_smart_truncate(
+            obj.model_dump(), max_len, seen, depth + 1, budget
+        )
       except Exception:
         pass
     elif hasattr(obj, "dict") and callable(obj.dict):
       # Pydantic v1
       try:
-        return _recursive_smart_truncate(obj.dict(), max_len, seen)
+        return _recursive_smart_truncate(
+            obj.dict(), max_len, seen, depth + 1, budget
+        )
       except Exception:
         pass
     elif hasattr(obj, "to_dict") and callable(obj.to_dict):
       # Common pattern for custom objects
       try:
-        return _recursive_smart_truncate(obj.to_dict(), max_len, seen)
+        return _recursive_smart_truncate(
+            obj.to_dict(), max_len, seen, depth + 1, budget
+        )
       except Exception:
         pass
     elif obj is None or isinstance(obj, (int, float, bool)):
@@ -2971,6 +3030,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     latency_json = self._extract_latency(event_data)
     attributes = self._enrich_attributes(event_data, callback_context)
+
+    # Final pass over the complete assembled tree. _enrich_attributes copies
+    # extra_attributes (which carries session state deltas) and custom_tags in
+    # untouched, so this is the only point at which every value is guaranteed
+    # to have seen the sensitive-key redaction.
+    attributes, attrs_truncated = _recursive_smart_truncate(
+        attributes, self.config.max_content_length
+    )
+    is_truncated = is_truncated or attrs_truncated
 
     # Serialize attributes to JSON string
     try:
