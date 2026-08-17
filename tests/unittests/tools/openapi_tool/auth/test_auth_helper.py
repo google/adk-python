@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 from unittest.mock import patch
 
 from fastapi.openapi.models import APIKey
@@ -411,7 +412,7 @@ def test_credential_to_param_http_bearer():
   assert kwargs == {INTERNAL_AUTH_PREFIX + "Authorization": "Bearer test_token"}
 
 
-def test_credential_to_param_http_basic_not_supported():
+def test_credential_to_param_http_basic():
   auth_scheme = HTTPBase(scheme="basic")
   auth_credential = AuthCredential(
       auth_type=AuthCredentialTypes.HTTP,
@@ -421,9 +422,27 @@ def test_credential_to_param_http_basic_not_supported():
       ),
   )
 
-  with pytest.raises(
-      NotImplementedError, match="Basic Authentication is not supported."
-  ):
+  param, kwargs = credential_to_param(auth_scheme, auth_credential)
+
+  expected_credentials = base64.b64encode(b"user:password").decode("ascii")
+  assert param.original_name == "Authorization"
+  assert param.param_location == "header"
+  assert kwargs == {
+      INTERNAL_AUTH_PREFIX + "Authorization": f"Basic {expected_credentials}"
+  }
+
+
+def test_credential_to_param_http_basic_missing_password():
+  auth_scheme = HTTPBase(scheme="basic")
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(username="user"),
+      ),
+  )
+
+  with pytest.raises(ValueError, match="Invalid HTTP auth credentials"):
     credential_to_param(auth_scheme, auth_credential)
 
 
