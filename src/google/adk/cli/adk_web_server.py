@@ -88,6 +88,10 @@ from ..evaluation.eval_set import EvalSet
 from ..evaluation.eval_set_results_manager import EvalSetResultsManager
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..events.event import Event
+from ..events.event_actions import EventActions
+from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
@@ -388,6 +392,50 @@ class CreateSessionRequest(common.BaseModel):
       default=None,
       description="A list of events to initialize the session with.",
   )
+
+
+# Function calls ADK generates itself to drive human-in-the-loop flows.
+_ADK_RESERVED_FUNCTION_NAMES = frozenset({
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+    REQUEST_INPUT_FUNCTION_CALL_NAME,
+})
+
+
+def _is_adk_reserved_function_name(name: Optional[str]) -> bool:
+  """Returns whether a function name belongs to ADK rather than to a tool."""
+  return name is not None and name in _ADK_RESERVED_FUNCTION_NAMES
+
+
+def _invalid_event_error(event_index: int, disallowed: str) -> HTTPException:
+  """Builds the error for an initialization event ADK will not accept."""
+  return HTTPException(
+      status_code=400,
+      detail=(
+          f"Session initialization event {event_index} cannot include"
+          f" {disallowed}."
+      ),
+  )
+
+
+def _validate_session_initialization_events(events: list[Event]) -> None:
+  """Rejects client-supplied events that claim to be ADK-generated.
+
+  Ordinary tool calls and responses are allowed on purpose, so a conversation
+  that used tools can be restored. `EventActions` is compared against a
+  default instance rather than field by field, so it stays correct as fields
+  are added.
+  """
+  for event_index, event in enumerate(events):
+    if event.long_running_tool_ids:
+      raise _invalid_event_error(event_index, "long-running tool IDs")
+    if event.actions != EventActions():
+      raise _invalid_event_error(event_index, "event actions")
+    function_names: list[Optional[str]] = []
+    function_names.extend(fc.name for fc in event.get_function_calls())
+    function_names.extend(fr.name for fr in event.get_function_responses())
+    if any(_is_adk_reserved_function_name(name) for name in function_names):
+      raise _invalid_event_error(event_index, "ADK protocol function calls")
 
 
 class SaveArtifactRequest(common.BaseModel):
@@ -1199,6 +1247,9 @@ class AdkWebServer:
     ) -> Session:
       if not req:
         return await self._create_session(app_name=app_name, user_id=user_id)
+
+      if req.events:
+        _validate_session_initialization_events(req.events)
 
       session = await self._create_session(
           app_name=app_name,
