@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import os
+import sys
 from typing import Any
 from typing import List
 
@@ -131,10 +132,126 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   return AgentConfig.model_validate(config_data)
 
 
+_ENFORCE_DENYLIST = True
+
+# Agent configs never need the standard library: they name the agent's own
+# package, google.adk, or a third-party integration. So block all of it. Listing
+# only the scary modules does not work, because cProfile.run, timeit.timeit and
+# trace.Trace.run all execute a string you hand them, and each Python release
+# can add more.
+_STDLIB_MODULES = frozenset(sys.stdlib_module_names) | frozenset(
+    sys.builtin_module_names  # Redundant on stock CPython, not custom builds.
+)
+
+# Extra names to block. Everything above the LOAD-BEARING line below is already
+# covered by _STDLIB_MODULES and is kept only to spell out the threat model.
+_BLOCKED_MODULES = frozenset({
+    # Process / OS execution
+    "os",
+    "posix",  # Unix alias: posix.system is os.system
+    "nt",  # Windows alias: nt.system is os.system
+    "subprocess",
+    "_posixsubprocess",
+    "sys",
+    "builtins",
+    "importlib",
+    "shutil",
+    "signal",
+    "multiprocessing",
+    "threading",
+    # Dynamic code evaluation
+    "code",
+    "codeop",
+    "compileall",
+    "runpy",
+    # Native / unsafe extensions
+    "ctypes",
+    # Network access
+    "socket",
+    "_socket",
+    "http",
+    "urllib",
+    "ftplib",
+    "smtplib",
+    "poplib",
+    "imaplib",
+    "xmlrpc",
+    "asyncio",
+    # Filesystem / serialisation
+    "tempfile",
+    "pathlib",
+    "shelve",
+    "pickle",
+    "marshal",
+    # Interactive / side-effect modules
+    "webbrowser",
+    "antigravity",
+    "pty",
+    "pdb",
+    "profile",
+    # LOAD-BEARING, keep these. They are not in sys.stdlib_module_names on
+    # every Python we support, so this set is all that blocks them.
+    #
+    # Modules dropped from the standard library that you can still import:
+    # distutils comes back through setuptools' shim and its spawn() runs a
+    # subprocess, and the rest have "standard-*" packages on PyPI. commands is
+    # a Python 2 leftover.
+    "asynchat",
+    "asyncore",
+    "cgi",
+    "commands",
+    "crypt",
+    "distutils",
+    "imp",
+    "mailcap",
+    "nntplib",
+    "pipes",
+    "smtpd",
+    "telnetlib",
+    "uu",
+    # CPython's own test packages, which most installs ship. They can start a
+    # subprocess (test.support.script_helper) and execute source (_testcapi).
+    "_testcapi",
+    "_testinternalcapi",
+    "test",
+})
+
+
+def _validate_module_reference(fully_qualified_name: str) -> None:
+  """Validate that a module reference does not target a blocked module.
+
+  Args:
+    fully_qualified_name: The fully-qualified Python name to validate (e.g.
+      ``"my_package.my_module.my_func"``).
+
+  Raises:
+    ValueError: If the top-level module is part of the Python standard library
+      or is in ``_BLOCKED_MODULES``.
+  """
+  if not _ENFORCE_DENYLIST:
+    return
+  # Extract the top-level package from the fully-qualified name.
+  top_module = fully_qualified_name.split(".")[0]
+  if top_module in _BLOCKED_MODULES or top_module in _STDLIB_MODULES:
+    raise ValueError(
+        f"Blocked module reference: {fully_qualified_name!r}. Agent "
+        f"configurations cannot import from '{top_module}'. The Python "
+        "standard library is blocked in full because too much of it can "
+        "execute arbitrary code. Reference your own agent package, "
+        "'google.adk', or a third-party package instead."
+    )
+
+
+def _set_enforce_denylist(value: bool) -> None:
+  global _ENFORCE_DENYLIST
+  _ENFORCE_DENYLIST = value
+
+
 @experimental(FeatureName.AGENT_CONFIG)
 def resolve_fully_qualified_name(name: str) -> Any:
   try:
     module_path, obj_name = name.rsplit(".", 1)
+    _validate_module_reference(name)
     module = importlib.import_module(module_path)
     return getattr(module, obj_name)
   except Exception as e:
@@ -171,7 +288,7 @@ def resolve_agent_reference(
     raise ValueError("AgentRefConfig must have either 'code' or 'config_path'")
 
 
-def _resolve_agent_code_reference(code: str) -> Any:
+def _resolve_agent_code_reference(code: str) -> BaseAgent:
   """Resolve a code reference to an actual agent instance.
 
   Args:
@@ -186,6 +303,7 @@ def _resolve_agent_code_reference(code: str) -> Any:
   if "." not in code:
     raise ValueError(f"Invalid code reference: {code}")
 
+  _validate_module_reference(code)
   module_path, obj_name = code.rsplit(".", 1)
   module = importlib.import_module(module_path)
   obj = getattr(module, obj_name)
@@ -215,6 +333,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
   if not code_config or not code_config.name:
     raise ValueError("Invalid CodeConfig.")
 
+  _validate_module_reference(code_config.name)
   module_path, obj_name = code_config.name.rsplit(".", 1)
   module = importlib.import_module(module_path)
   obj = getattr(module, obj_name)

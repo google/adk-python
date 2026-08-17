@@ -25,11 +25,13 @@ from google.adk.agents.agent_config import AgentConfig
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent_config import BaseAgentConfig
 from google.adk.agents.common_configs import AgentRefConfig
+from google.adk.agents.common_configs import CodeConfig
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.models.lite_llm import LiteLlm
+from pydantic import BaseModel
 import pytest
 import yaml
 
@@ -421,6 +423,221 @@ def test_resolve_agent_reference_uses_windows_dirname():
   )
   assert result == "sentinel"
   assert recorded["path"] == expected_path
+
+
+# --- Security tests: module blocklist for YAML agent config code references ---
+
+
+def test_resolve_code_reference_blocks_os_when_enforced():
+  """Verify resolve_code_reference blocks os module directly."""
+  from google.adk.agents.common_configs import CodeConfig
+
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name="os.system"))
+
+
+def test_resolve_fully_qualified_name_blocks_subprocess_when_enforced():
+  """Verify resolve_fully_qualified_name blocks subprocess module.
+
+  resolve_fully_qualified_name wraps all exceptions in
+  ValueError("Invalid fully qualified name: ..."), so we check the wrapper
+  and verify the __cause__ carries the blocklist message.
+  """
+  with pytest.raises(
+      ValueError, match="Invalid fully qualified name"
+  ) as exc_info:
+    config_agent_utils.resolve_fully_qualified_name("subprocess.Popen")
+  assert "Blocked module reference" in str(exc_info.value.__cause__)
+
+
+def test_allowed_module_passes_when_enforced(tmp_path: Path):
+  """Verify that google.adk modules are NOT blocked by the module denylist."""
+  # This should NOT raise — google.adk modules must remain allowed
+  result = config_agent_utils.resolve_fully_qualified_name(
+      "google.adk.agents.llm_agent.LlmAgent"
+  )
+  assert result is LlmAgent
+
+
+@pytest.mark.parametrize(
+    "blocked_module",
+    [
+        "os.system",
+        "posix.system",
+        "nt.system",
+        "subprocess.call",
+        "_posixsubprocess.fork_exec",
+        "socket.socket",
+        "_socket.socket",
+        "builtins.exec",
+    ],
+)
+def test_resolve_agent_code_reference_blocks_when_enforced(
+    blocked_module: str,
+):
+  """Verify _resolve_agent_code_reference blocks dangerous modules."""
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils._resolve_agent_code_reference(blocked_module)
+
+
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        "os.system",
+        "posix.system",
+        "nt.system",
+        "subprocess.call",
+        "_posixsubprocess.fork_exec",
+        "socket.socket",
+        "_socket.socket",
+        "builtins.exec",
+        "pickle.loads",
+    ],
+)
+def test_resolve_tools_blocks_dangerous_modules(blocked_ref: str):
+  """Verify _resolve_tools blocks dangerous modules for user-defined tools."""
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.tools.tool_configs import ToolConfig
+
+  tool_config = ToolConfig(name=blocked_ref)
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+
+
+def test_resolve_tools_allows_builtin_adk_tools():
+  """Verify _resolve_tools allows ADK built-in tools (no dot in name)."""
+  from google.adk.agents.llm_agent import LlmAgent
+  from google.adk.tools.tool_configs import ToolConfig
+
+  # Built-in tools have no dot — they import from google.adk.tools
+  tool_config = ToolConfig(name="google_search")
+  # Should NOT raise — this is a safe, hardcoded import path
+  resolved = LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+  assert len(resolved) == 1
+
+
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        "ftplib.FTP",
+        "smtplib.SMTP",
+        "xmlrpc.client",
+        "telnetlib.Telnet",
+        "poplib.POP3",
+        "imaplib.IMAP4",
+        "asyncio.run",
+        "pathlib.Path",
+    ],
+)
+def test_newly_blocked_network_modules_are_rejected(blocked_ref: str):
+  """Verify newly added network-capable modules are blocked.
+
+  resolve_fully_qualified_name wraps errors, so we check the cause.
+  """
+  with pytest.raises(
+      ValueError, match="Invalid fully qualified name"
+  ) as exc_info:
+    config_agent_utils.resolve_fully_qualified_name(blocked_ref)
+  assert "Blocked module reference" in str(exc_info.value.__cause__)
+
+
+# Standard library functions that will run whatever code you hand them. The old
+# denylist happened to list profile but not cProfile, and missed all the rest.
+# One entry per module, since the check only looks at the top-level name.
+_EXEC_CAPABLE_STDLIB_REFS = [
+    "cProfile.run",
+    "profile.run",
+    "timeit.timeit",
+    "pydoc.pipepager",
+    "trace.Trace",
+    "doctest.testmod",
+    "bdb.Bdb",
+    "py_compile.compile",
+]
+
+# These are not in sys.stdlib_module_names on every Python we support, so
+# _BLOCKED_MODULES is the only thing rejecting them.
+_LOAD_BEARING_NON_STDLIB_REFS = [
+    "distutils.spawn.spawn",
+    "test.support.script_helper.spawn_python",
+    "_testcapi.run_stringflags",
+    "pipes.quote",
+    "telnetlib.Telnet",
+]
+
+
+@pytest.mark.parametrize("blocked_ref", _EXEC_CAPABLE_STDLIB_REFS)
+def test_resolve_code_reference_blocks_exec_capable_stdlib(blocked_ref: str):
+  """Exec-capable stdlib modules are rejected as code references."""
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+
+@pytest.mark.parametrize("blocked_ref", _EXEC_CAPABLE_STDLIB_REFS)
+def test_resolve_tools_blocks_exec_capable_stdlib(blocked_ref: str):
+  """Exec-capable stdlib modules are rejected as user-defined tools.
+
+  This is the path the reported exploit takes: upload an agent YAML whose only
+  tool is `cProfile.run`, then replay a saved test session, which dispatches a
+  recorded functionCall straight to the resolved tool.
+  """
+  from google.adk.tools.tool_configs import ToolConfig
+
+  tool_config = ToolConfig(name=blocked_ref)
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+
+
+@pytest.mark.parametrize(
+    "blocked_ref",
+    [
+        "json.loads",
+        "base64.b64decode",
+        "string.capwords",
+        "gc.collect",
+        "operator.attrgetter",
+    ],
+)
+def test_harmless_looking_stdlib_modules_are_also_blocked(blocked_ref: str):
+  """The whole standard library is off-limits, not just the scary parts.
+
+  Blocking all of it is what keeps this closed against ways to run code that
+  future Python releases add.
+  """
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+
+@pytest.mark.parametrize("blocked_ref", _LOAD_BEARING_NON_STDLIB_REFS)
+def test_modules_dropped_from_the_stdlib_are_still_blocked(blocked_ref: str):
+  """Covers the modules the standard library rule misses.
+
+  They stay importable from a shim or a PyPI backport, so without the explicit
+  denylist they come back as a way to run code.
+  """
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+
+def test_third_party_module_reference_is_not_blocked():
+  """Non-stdlib packages stay resolvable so integrations keep working.
+
+  A compatibility guarantee for integrations like langchain, not a security
+  assertion: third-party packages are still resolvable by name.
+  """
+  result = config_agent_utils.resolve_fully_qualified_name("pydantic.BaseModel")
+  assert result is BaseModel
+
+
+def test_denylist_can_be_disabled():
+  """Verify _set_enforce_denylist(False) disables module blocking."""
+  config_agent_utils._set_enforce_denylist(False)
+  try:
+    # os.getcwd is a real, importable reference — should succeed
+    result = config_agent_utils.resolve_fully_qualified_name("os.getcwd")
+    assert callable(result)
+  finally:
+    config_agent_utils._set_enforce_denylist(True)
 
 
 def test_load_config_from_path_blocks_args_when_enforced(tmp_path):
