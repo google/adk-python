@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.39.0](https://github.com/google/adk-python/compare/v1.38.0...v1.39.0) (2026-08-17)
+
+
+### Features
+
+* **live:** use RunConfig.session_resumption.handle when opening a live session ([#6770](https://github.com/google/adk-python/issues/6770)) ([090869b](https://github.com/google/adk-python/commit/090869b9ba2953a29530ece68714fa973e80a151))
+* support audio_stream_end for realtime input ([#6699](https://github.com/google/adk-python/issues/6699)) ([5e3b997](https://github.com/google/adk-python/commit/5e3b997f931292ef8b1c36e75bedb576f86645e1))
+
+
+### Bug Fixes
+
+* **live:** stop background tool tasks when a live agent run ends ([#6769](https://github.com/google/adk-python/issues/6769)) ([5fb5ff1](https://github.com/google/adk-python/commit/5fb5ff11ce6c727595c6f426ebbea676af0fe095))
+* validate session initialization events (v1) ([#6771](https://github.com/google/adk-python/issues/6771)) ([e7dba7a](https://github.com/google/adk-python/commit/e7dba7a4641b7b97c6b35c9fdc99e4b2d065cdef))
+
 ## [1.38.0](https://github.com/google/adk-python/compare/v1.37.0...v1.38.0) (2026-08-07)
 
 
