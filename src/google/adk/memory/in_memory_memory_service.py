@@ -31,7 +31,6 @@ if TYPE_CHECKING:
   from ..sessions.session import Session
 
 _UNKNOWN_SESSION_ID = '__unknown_session_id__'
-
 _MAX_SEARCH_RESULTS = 10
 
 
@@ -40,8 +39,8 @@ def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
 
 
 def _extract_words_lower(text: str) -> set[str]:
-  """Extracts words from a string and converts them to lowercase."""
-  return set([word.lower() for word in re.findall(r'\w+', text, re.UNICODE)])
+  """Extracts Unicode-aware tokens from a string in lowercase."""
+  return set(word.lower() for word in re.findall(r'\w+', text))
 
 
 class InMemoryMemoryService(BaseMemoryService):
@@ -126,13 +125,20 @@ class InMemoryMemoryService(BaseMemoryService):
       for event in session_events:
         if not event.content or not event.content.parts:
           continue
-        words_in_event = _extract_words_lower(
-            ' '.join([part.text for part in event.content.parts if part.text])
+        event_text = ' '.join(
+            [part.text for part in event.content.parts if part.text]
         )
+        words_in_event = _extract_words_lower(event_text)
         if not words_in_event:
           continue
 
-        matched_words = len(words_in_query & words_in_event)
+        event_text_lower = event_text.lower()
+        matched_words = sum(
+            1
+            for query_word in words_in_query
+            if query_word in words_in_event
+            or (not query_word.isascii() and query_word in event_text_lower)
+        )
         if matched_words:
           scored_memories.append((
               matched_words,
