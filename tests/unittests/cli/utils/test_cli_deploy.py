@@ -1219,3 +1219,55 @@ class TestRobustRmtree:
 
     cli_deploy._on_rm_error(os.remove, str(ro_file), None)
     assert not ro_file.exists()
+
+
+# _validate_agent_folder_name tests
+
+
+class TestValidateAgentFolderName:
+  """Tests for the _validate_agent_folder_name helper."""
+
+  def test_valid_identifier_succeeds(self) -> None:
+    """A valid identifier folder name should succeed and return basename."""
+    assert (
+        cli_deploy._validate_agent_folder_name("/path/to/my_agent")
+        == "my_agent"
+    )
+    assert cli_deploy._validate_agent_folder_name("agent123") == "agent123"
+    assert (
+        cli_deploy._validate_agent_folder_name("/path/to/my_agent/")
+        == "my_agent"
+    )
+
+  def test_invalid_folder_name_with_dashes_raises(self) -> None:
+    """A folder name with dashes should raise ClickException with suggestions."""
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_agent_folder_name("my-agent-app")
+    assert "not a valid Python identifier" in str(exc_info.value)
+    assert "my_agent_app" in str(exc_info.value)
+
+  def test_invalid_folder_name_starting_with_number_raises(self) -> None:
+    """A folder name starting with a number should raise ClickException."""
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_agent_folder_name("123agent")
+    assert "not a valid Python identifier" in str(exc_info.value)
+    assert "_123agent" in str(exc_info.value)
+
+  def test_to_agent_engine_raises_on_dashed_folder_name(
+      self, tmp_path: Path
+  ) -> None:
+    """to_agent_engine should fail early when agent directory contains dashes."""
+    dashed_agent = tmp_path / "dashed-agent-name"
+    dashed_agent.mkdir()
+    (dashed_agent / "agent.py").write_text("root_agent = 'test'\n")
+    (dashed_agent / "__init__.py").touch()
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_agent_engine(
+          agent_folder=str(dashed_agent),
+          project="test-project",
+          region="us-central1",
+      )
+    assert "not a valid Python identifier" in str(exc_info.value)
+    assert "dashed_agent_name" in str(exc_info.value)
+

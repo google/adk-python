@@ -17,6 +17,7 @@ from datetime import datetime
 import importlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -481,6 +482,36 @@ def _validate_gcloud_extra_args(
           ' configuration. ADK will set these arguments automatically, so'
           ' please remove them from your command.'
       )
+
+
+def _validate_agent_folder_name(agent_folder: str) -> str:
+  """Validates that the agent directory name is a valid Python identifier.
+
+  Agent Engine requires the agent folder to be importable as a Python module.
+  Directory names containing hyphens (-) or other non-identifier characters
+  lead to syntax and import errors at deployment runtime.
+
+  Args:
+    agent_folder: Path to the agent directory.
+
+  Returns:
+    The validated folder name.
+
+  Raises:
+    click.ClickException: If the folder name is not a valid Python identifier.
+  """
+  folder_name = os.path.basename(os.path.normpath(agent_folder))
+  if not folder_name.isidentifier():
+    suggested = re.sub(r'\W|^(?=\d)', '_', folder_name)
+    if not suggested.isidentifier():
+      suggested = f'_{suggested}'
+    raise click.ClickException(
+        f"Agent directory name '{folder_name}' is not a valid Python"
+        " identifier (cannot contain dashes '-' or special characters)."
+        " Agent Engine requires the directory name to be a valid Python"
+        f" module name. Please rename your agent folder (e.g., '{suggested}')."
+    )
+  return folder_name
 
 
 def _validate_agent_import(
@@ -980,7 +1011,7 @@ def to_agent_engine(
     extra_packages (list[str]): Optional. Additional local file or directory
       paths to stage alongside the agent and make importable in the image.
   """
-  app_name = os.path.basename(agent_folder)
+  app_name = _validate_agent_folder_name(agent_folder)
   display_name = display_name or app_name
   parent_folder = os.path.dirname(agent_folder)
   if adk_app_object:
