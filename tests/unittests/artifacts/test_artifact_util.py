@@ -15,6 +15,7 @@
 """Tests for artifact_util."""
 
 from google.adk.artifacts import artifact_util
+from google.adk.errors.input_validation_error import InputValidationError
 from google.genai import types
 import pytest
 
@@ -107,3 +108,107 @@ def test_is_artifact_ref_true():
 def test_is_artifact_ref_false(part):
   """Tests is_artifact_ref with non-reference parts."""
   assert artifact_util.is_artifact_ref(part) is False
+
+
+@pytest.mark.parametrize(
+    "caller_session_id, uri_session_id",
+    [
+        # Session-scoped reference read from the session that owns it.
+        ("session1", "session1"),
+        # User-scoped reference (no session in the URI) is readable from any
+        # session of the same user, including outside of a session.
+        ("session1", None),
+        (None, None),
+    ],
+)
+def test_validate_artifact_reference_scope_within_scope_is_allowed(
+    caller_session_id, uri_session_id
+):
+  """References that stay inside the caller's app/user/session scope pass."""
+  parsed = artifact_util.ParsedArtifactUri(
+      app_name="app1",
+      user_id="user1",
+      session_id=uri_session_id,
+      filename="file1",
+      version=1,
+  )
+
+  artifact_util.validate_artifact_reference_scope(
+      app_name="app1",
+      user_id="user1",
+      session_id=caller_session_id,
+      parsed_uri=parsed,
+  )
+
+
+@pytest.mark.parametrize(
+    "uri_app_name, uri_user_id",
+    [
+        ("other_app", "user1"),
+        ("app1", "other_user"),
+        ("other_app", "other_user"),
+    ],
+)
+def test_validate_artifact_reference_scope_other_app_or_user_raises(
+    uri_app_name, uri_user_id
+):
+  """A reference owned by another app or user must be rejected."""
+  parsed = artifact_util.ParsedArtifactUri(
+      app_name=uri_app_name,
+      user_id=uri_user_id,
+      session_id="session1",
+      filename="file1",
+      version=1,
+  )
+
+  with pytest.raises(InputValidationError) as exc_info:
+    artifact_util.validate_artifact_reference_scope(
+        app_name="app1",
+        user_id="user1",
+        session_id="session1",
+        parsed_uri=parsed,
+    )
+
+  assert "same app and user scope" in str(exc_info.value)
+
+
+def test_validate_artifact_reference_scope_other_session_raises():
+  """A session-scoped reference from another session must be rejected."""
+  parsed = artifact_util.ParsedArtifactUri(
+      app_name="app1",
+      user_id="user1",
+      session_id="other_session",
+      filename="file1",
+      version=1,
+  )
+
+  with pytest.raises(InputValidationError) as exc_info:
+    artifact_util.validate_artifact_reference_scope(
+        app_name="app1",
+        user_id="user1",
+        session_id="session1",
+        parsed_uri=parsed,
+    )
+
+  assert "same session scope" in str(exc_info.value)
+
+
+def test_validate_artifact_reference_scope_session_uri_without_caller_session_raises():
+  """A session-scoped reference cannot be used outside of any session."""
+  parsed = artifact_util.ParsedArtifactUri(
+      app_name="app1",
+      user_id="user1",
+      session_id="session1",
+      filename="file1",
+      version=1,
+  )
+
+  with pytest.raises(InputValidationError) as exc_info:
+    artifact_util.validate_artifact_reference_scope(
+        app_name="app1",
+        user_id="user1",
+        session_id=None,
+        parsed_uri=parsed,
+    )
+
+  assert "same session scope" in str(exc_info.value)

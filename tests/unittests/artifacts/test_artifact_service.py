@@ -832,6 +832,213 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
     )
 
 
+@pytest.mark.asyncio
+async def test_artifact_reference_allows_same_session_scope(
+    artifact_service_factory,
+):
+  """InMemoryArtifactService allows references inside the same session scope."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="source.txt",
+      artifact=types.Part(text="hello"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app0/users/user0/sessions/sess0/"
+              "artifacts/source.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="ref.txt",
+      artifact=ref,
+  )
+
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="ref.txt",
+  )
+  assert loaded == types.Part(text="hello")
+
+
+@pytest.mark.asyncio
+async def test_artifact_reference_allows_same_user_user_scope(
+    artifact_service_factory,
+):
+  """InMemoryArtifactService allows user-scoped references from same user."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="user:profile.txt",
+      artifact=types.Part(text="profile"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app0/users/user0/artifacts/"
+              "user:profile.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess1",
+      filename="ref.txt",
+      artifact=ref,
+  )
+
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess1",
+      filename="ref.txt",
+  )
+  assert loaded == types.Part(text="profile")
+
+
+@pytest.mark.asyncio
+async def test_artifact_reference_rejects_cross_user_on_save(
+    artifact_service_factory,
+):
+  """InMemoryArtifactService rejects references to different users on save."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="victim",
+      session_id="victim-sess",
+      filename="user:secret.txt",
+      artifact=types.Part(text="secret"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app0/users/victim/artifacts/"
+              "user:secret.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  with pytest.raises(InputValidationError, match="same app and user scope"):
+    await artifact_service.save_artifact(
+        app_name="app0",
+        user_id="attacker",
+        session_id="attacker-sess",
+        filename="ref.txt",
+        artifact=ref,
+    )
+
+
+@pytest.mark.asyncio
+async def test_artifact_reference_rejects_cross_app_on_save(
+    artifact_service_factory,
+):
+  """InMemoryArtifactService rejects references to different apps on save."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="victim-app",
+      user_id="user0",
+      session_id="sess0",
+      filename="user:secret.txt",
+      artifact=types.Part(text="secret"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/victim-app/users/user0/artifacts/"
+              "user:secret.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  with pytest.raises(InputValidationError, match="same app and user scope"):
+    await artifact_service.save_artifact(
+        app_name="attacker-app",
+        user_id="user0",
+        session_id="sess0",
+        filename="ref.txt",
+        artifact=ref,
+    )
+
+
+@pytest.mark.asyncio
+async def test_artifact_reference_rejects_cross_session_on_load(
+    artifact_service_factory,
+):
+  """A stored reference retargeted at another session is rejected on load."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="source.txt",
+      artifact=types.Part(text="source"),
+  )
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess1",
+      filename="source.txt",
+      artifact=types.Part(text="other-session"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app0/users/user0/sessions/sess0/"
+              "artifacts/source.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="ref.txt",
+      artifact=ref,
+  )
+
+  # Manually retarget the stored reference URI at a different session.
+  ref_path = artifact_service._artifact_path(
+      "app0", "user0", "ref.txt", "sess0"
+  )
+  artifact_service.artifacts[ref_path][0].data.file_data.file_uri = (
+      "artifact://apps/app0/users/user0/sessions/sess1/"
+      "artifacts/source.txt/versions/0"
+  )
+
+  with pytest.raises(InputValidationError, match="same session scope"):
+    await artifact_service.load_artifact(
+        app_name="app0",
+        user_id="user0",
+        session_id="sess0",
+        filename="ref.txt",
+    )
+
+
 class TestEnsurePart:
   """Tests for the ensure_part normalization helper."""
 
