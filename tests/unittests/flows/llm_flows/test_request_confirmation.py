@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import json
+from unittest import mock
 from unittest.mock import patch
 
+from a2a.server.agent_execution import RequestContext
+from google.adk.a2a.converters.request_converter import convert_a2a_request_to_agent_run_request
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -1320,3 +1323,95 @@ async def test_resolve_confirmation_targets_requires_adk_name():
 
   assert set(tool_confirmation_dict) == {"requested_fc_id"}
   assert set(original_fcs_dict) == {"requested_fc_id"}
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_ignores_a2a_confirmation():
+  """A confirmation arriving over A2A must not satisfy the HITL gate."""
+  await _assert_a2a_confirmation_ignored({"a2a:task_id": "t1"})
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_ignores_a2a_without_metadata():
+  """The guard must hold when the peer sends no protocol metadata.
+
+  Regression test for #6461: the A2A marker used to be set only when
+  request.metadata was non-empty, so a peer that sent none produced an empty
+  custom_metadata and slipped past the guard.
+  """
+  await _assert_a2a_confirmation_ignored(None)
+
+
+async def _assert_a2a_confirmation_ignored(request_metadata):
+  """Asserts that a confirmation arriving over A2A is ignored."""
+  request = mock.Mock(spec=RequestContext)
+  request.message = mock.Mock()
+  request.message.parts = []
+  request.metadata = request_metadata
+  request.context_id = "ctx"
+  request.call_context = None
+  run_config = convert_a2a_request_to_agent_run_request(
+      request, mock.Mock()
+  ).run_config
+  assert "a2a_metadata" in run_config.custom_metadata
+
+  agent = LlmAgent(name="test_agent", tools=[mock_tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, run_config=run_config
+  )
+
+  original_function_call = types.FunctionCall(
+      name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
+  )
+  tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
+  tool_confirmation_args = {
+      "originalFunctionCall": original_function_call.model_dump(
+          exclude_none=True, by_alias=True
+      ),
+      "toolConfirmation": tool_confirmation.model_dump(
+          by_alias=True, exclude_none=True
+      ),
+  }
+  invocation_context.session.events.append(
+      Event(
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+  user_confirmation = ToolConfirmation(confirmed=True)
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": user_confirmation.model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  events = []
+  async for event in request_processor.run_async(
+      invocation_context, LlmRequest()
+  ):
+    events.append(event)
+
+  assert not events
