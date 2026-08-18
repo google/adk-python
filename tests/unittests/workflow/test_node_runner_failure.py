@@ -20,6 +20,7 @@ from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
 
+from google.adk import platform as adk_platform
 from google.adk.agents.context import Context
 from google.adk.events.event import Event
 from google.adk.runners import Runner
@@ -29,8 +30,8 @@ from google.adk.workflow import Edge
 from google.adk.workflow import START
 from google.adk.workflow._errors import NodeTimeoutError
 from google.adk.workflow._graph import Graph
-from google.adk.workflow._node import node
 from google.adk.workflow._node import Node
+from google.adk.workflow._node import node
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
@@ -715,20 +716,23 @@ async def test_retry_applies_random_jitter(request: pytest.FixtureRequest):
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
 
-  with (
-      mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep,
-      mock.patch('random.uniform', return_value=-1.0) as mock_random,
-  ):
-    events = []
-    async for event in runner.run_async(
-        user_id='u', session_id=session.id, new_message=msg
-    ):
-      events.append(event)
+  mock_random = mock.Mock()
+  mock_random.uniform = mock.Mock(return_value=-1.0)
+  adk_platform.set_random_provider(lambda: mock_random)
+  try:
+    with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
+      events = []
+      async for event in runner.run_async(
+          user_id='u', session_id=session.id, new_message=msg
+      ):
+        events.append(event)
 
-    # 4.0 + (-1.0) = 3.0
-    mock_sleep.assert_any_await(3.0)
-    # Called with -0.5 * 4.0, 0.5 * 4.0
-    mock_random.assert_called_once_with(-2.0, 2.0)
+      # 4.0 + (-1.0) = 3.0
+      mock_sleep.assert_any_await(3.0)
+      # Called with -0.5 * 4.0, 0.5 * 4.0
+      mock_random.uniform.assert_called_once_with(-2.0, 2.0)
+  finally:
+    adk_platform.reset_random_provider()
 
   results = simplify_events_with_node(events)
   filtered_results = [

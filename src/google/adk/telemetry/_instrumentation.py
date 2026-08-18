@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import enum
 import logging
 import sys
 import time
@@ -26,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
+from typing_extensions import assert_never
 
 from . import _adk_attributes
 from . import _metrics
@@ -35,6 +35,8 @@ from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 
 # pylint: disable=g-import-not-at-top
 if TYPE_CHECKING:
+  from opentelemetry.util.types import AttributeValue
+
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
   from ..events import event as event_lib
@@ -91,35 +93,54 @@ def record_invocation(
     yield
 
 
-class SkillTelemetrySpanType(enum.Enum):
-  """Skill telemetry type."""
-
-  SKILL_LOAD = enum.auto()
-
-
 @dataclasses.dataclass
-class SkillTelemetry:
-  """Skill related telemetry.
+class _SkillTelemetryCommon:
+  """Common attributes for skill related telemetry.
 
-  Added to the enclosing tool execution via :func:`record_skill_telemetry`,
+  Added to the enclosing tool execution via :func:`track_*` functions,
   which is what turns it into attributes on the skill related spans.
 
   Attributes:
-    span_type: The type of skill telemetry being recorded.
-    skill_name: The name of the skill.
+    skill_name: The name of the skill, stored in case the skill is not loaded
+      properly.
     skill: The loaded skill, or None if the load did not produce one (unknown
       skill name, registry failure). Nothing is recorded in that case; the
       failure itself is already reported as the span's ``error.type``.
-    cache_hit: Whether the skill came from the per-invocation fetch cache
-      instead of the registry. Only meaningful for registry-sourced skills.
+  """
+
+  skill_name: str | None = None
+  skill: Skill | None = None
+
+
+@dataclasses.dataclass
+class SkillLoadTelemetry(_SkillTelemetryCommon):
+  """Skill telemetry extension for skill load.
+
+  Attributes:
     additional_tools: The list of additional tools reported by the skill.
   """
 
-  span_type: SkillTelemetrySpanType
-  skill_name: str | None = None
-  skill: Skill | None = None
-  cache_hit: bool = False
-  additional_tools: list[str] = dataclasses.field(default_factory=list)
+  @property
+  def additional_tools(self) -> list[str] | None:
+    if self.skill is None:
+      return None
+    return self.skill.frontmatter.metadata.get("adk_additional_tools", None)
+
+
+@dataclasses.dataclass
+class SkillResourceLoadTelemetry(_SkillTelemetryCommon):
+  """Skill telemetry extension for skill resource load.
+
+  See :class:`_SkillTelemetryCommon`, for more information.
+
+  Attributes:
+    resource_path: Path of resource being loaded from skill.
+  """
+
+  resource_path: str | None = None
+
+
+SkillTelemetry = SkillLoadTelemetry | SkillResourceLoadTelemetry
 
 
 @dataclasses.dataclass
@@ -168,10 +189,12 @@ class TelemetryContext:
     # the response is handed back to the caller, so what the caller does with
     # it (running the tool the model asked for) is not nested inside the
     # inference span. Partial chunks keep it open until the final one arrives.
-    if not response.partial and isinstance(
-        self.span, tracing.GenerateContentSpan
+    if (
+        not response.partial
+        and isinstance(self.span, tracing.GenerateContentSpan)
+        and (exit_stack := self.span._exit_stack) is not None  # pylint: disable=protected-access
     ):
-      self.span._close()  # pylint: disable=protected-access
+      exit_stack.close()
       self._inference_span_ended = True
 
 
@@ -226,9 +249,27 @@ def _active_tool_execution_tel_ctx() -> TelemetryContext | None:
   return value if isinstance(value, TelemetryContext) else None
 
 
-def record_skill_telemetry(
-    telemetry_type: SkillTelemetrySpanType,
-) -> SkillTelemetry:
+def track_skill_load(skill_name: str) -> SkillLoadTelemetry:
+  """Creates a SkillLoadTelemetry for the given skill name, and attaches it to the enclosing tool execution span."""
+  skill_telemetry = SkillLoadTelemetry(skill_name=skill_name)
+  attach_skill_telemetry(skill_telemetry)
+  return skill_telemetry
+
+
+def track_skill_resource_load(
+    skill_name: str, resource_path: str
+) -> SkillResourceLoadTelemetry:
+  """Creates a SkillResourceLoadTelemetry for the given skill name and resource path, and attaches it to the enclosing tool execution span."""
+  skill_telemetry = SkillResourceLoadTelemetry(
+      skill_name=skill_name, resource_path=resource_path
+  )
+  attach_skill_telemetry(skill_telemetry)
+  return skill_telemetry
+
+
+def attach_skill_telemetry(
+    skill_telemetry: SkillTelemetry,
+) -> None:
   """Attaches skill telemetry to the enclosing tool execution.
 
   The attributes are written by :func:`record_tool_execution`, which owns the
@@ -240,11 +281,8 @@ def record_skill_telemetry(
   tool execution replaces the first.
 
   Args:
-    telemetry_type: The type of skill telemetry being recorded.
-
-  Returns:
-    skill_telemetry: Skill telemetry reference to record against the active tool
-    call.
+    skill_telemetry: Skill telemetry reference to attach to the active tool
+      execution context.
   """
   tel_ctx = _active_tool_execution_tel_ctx()
   if tel_ctx is None:
@@ -252,75 +290,12 @@ def record_skill_telemetry(
         "No tool execution is being recorded, skill telemetry will not be"
         " attached to current span."
     )
-    return SkillTelemetry(span_type=telemetry_type)
+    return
   if tel_ctx.skill_telemetry is not None:
     logger.warning(
         "Tool execution already has attached skill telemetry, overwriting."
     )
-  tel_ctx.skill_telemetry = SkillTelemetry(span_type=telemetry_type)
-  return tel_ctx.skill_telemetry
-
-
-def record_skill_cache_hit() -> None:
-  """Records a skill cache hit against the enclosing tool execution."""
-  tel_ctx = _active_tool_execution_tel_ctx()
-  if tel_ctx is None:
-    logger.debug(
-        "Skipping skill cache hit: no tool execution is being recorded."
-    )
-    return
-  if tel_ctx.skill_telemetry is None:
-    logger.warning(
-        "Tool execution has no attached skill telemetry, skipping cache hit."
-    )
-    return
-  tel_ctx.skill_telemetry.cache_hit = True
-
-
-def _trace_skill_load(
-    span: trace.Span,
-    skill_telemetry: SkillTelemetry | None,
-    invocation_context: InvocationContext,
-) -> None:
-  """Stamps the skill load attributes onto the ``execute_tool`` span."""
-  if skill_telemetry is None:
-    return
-
-  telemetry_config = tracing._telemetry_config_from_invocation_context(
-      invocation_context
-  )
-  if not telemetry_config.should_emit_experimental_telemetry:
-    return
-
-  if skill_telemetry.skill_name is not None:
-    span.set_attribute(
-        _adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME, skill_telemetry.skill_name
-    )
-
-  skill = skill_telemetry.skill
-  if skill is None:
-    return
-
-  span.set_attribute(
-      _adk_attributes.ADK_EXPERIMENTAL_SKILL_DESCRIPTION, skill.description
-  )
-
-  if skill._uri is not None:
-    span.set_attribute(
-        _adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI, skill._uri
-    )
-
-    if skill._uri.startswith(("http", "https")):
-      # Only meaningful if skill is from registry.
-      span.set_attribute(
-          _adk_attributes.ADK_EXPERIMENTAL_SKILL_CACHE_HIT,
-          skill_telemetry.cache_hit,
-      )
-
-  span.set_attribute(
-      _adk_attributes.ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS,
-      skill_telemetry.additional_tools,
-  )
+  tel_ctx.skill_telemetry = skill_telemetry
 
 
 @contextlib.asynccontextmanager
@@ -397,12 +372,10 @@ async def record_tool_execution(
             invocation_context=invocation_context,
             error_type=tel_ctx.error_type,
         )
-        if (
-            tel_ctx.skill_telemetry is not None
-            and tel_ctx.skill_telemetry.span_type
-            == SkillTelemetrySpanType.SKILL_LOAD
-        ):
-          _trace_skill_load(span, tel_ctx.skill_telemetry, invocation_context)
+        if tel_ctx.skill_telemetry is not None:
+          _dispatch_skill_telemetry(
+              span, tel_ctx.skill_telemetry, invocation_context
+          )
   finally:
     _accumulate_invoke_agent_tool_call()
     try:
@@ -465,3 +438,75 @@ async def record_inference_telemetry(
           "Failed to record inference metrics for agent %s",
           agent.name if agent is not None else "<unknown>",
       )
+
+
+def _dispatch_skill_telemetry(
+    span: trace.Span,
+    skill_telemetry: SkillTelemetry,
+    invocation_context: InvocationContext,
+) -> None:
+  """Selects and attaches the correct skill telemetry to the enclosing tool execution span."""
+  telemetry_config = tracing._telemetry_config_from_invocation_context(
+      invocation_context
+  )
+  if not telemetry_config.should_emit_experimental_telemetry:
+    return
+
+  match skill_telemetry:
+    case SkillLoadTelemetry():
+      _trace_skill_load(span, skill_telemetry)
+    case SkillResourceLoadTelemetry():
+      _trace_skill_resource_load(span, skill_telemetry)
+    case _:
+      assert_never(skill_telemetry)
+
+
+def _trace_skill_load(
+    span: trace.Span,
+    skill_telemetry: SkillLoadTelemetry,
+) -> None:
+  """Stamps the skill load attributes onto the ``execute_tool`` span."""
+  attributes: dict[str, AttributeValue] = {}
+
+  if (skill_name := skill_telemetry.skill_name) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = skill_name
+
+  skill = skill_telemetry.skill
+
+  if skill is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_DESCRIPTION] = (
+        skill.description
+    )
+
+    if (uri := skill._uri) is not None:
+      attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
+
+    if (additional_tools := skill_telemetry.additional_tools) is not None:
+      attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS] = (
+          additional_tools
+      )
+
+  span.set_attributes(attributes)
+
+
+def _trace_skill_resource_load(
+    span: trace.Span,
+    skill_telemetry: SkillResourceLoadTelemetry,
+) -> None:
+  """Stamps the skill resource loading information in the ``execute_tool load_skill_resource`` span."""
+  attributes: dict[str, AttributeValue] = {}
+
+  if (skill_name := skill_telemetry.skill_name) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = skill_name
+
+  if (skill := skill_telemetry.skill) is not None and (
+      uri := skill._uri
+  ) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
+
+  if (resource_path := skill_telemetry.resource_path) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_RESOURCE_PATH] = (
+        resource_path
+    )
+
+  span.set_attributes(attributes)

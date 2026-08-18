@@ -98,6 +98,11 @@ class BaseTool(ABC):
     - ``WHEN_IDLE``: defers the reaction until the model is idle.
     - ``INTERRUPT``: reacts immediately.
 
+  This is the tool-wide default. A streaming tool can choose a different mode
+  for one chunk by yielding a ``types.FunctionResponse`` carrying that chunk's
+  payload in ``response`` and the mode in ``scheduling``; anything it yields
+  plainly falls back to this setting.
+
   Ignored by models that don't support asynchronous function calling. ``None``
   preserves the default behavior.
   """

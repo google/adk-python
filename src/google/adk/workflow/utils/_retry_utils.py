@@ -16,8 +16,7 @@ from __future__ import annotations
 
 """Utility functions for retrying nodes in a workflow."""
 
-import random
-
+from ...platform import _random as platform_random
 from .._node_state import NodeState
 from .._retry_config import RetryConfig
 
@@ -86,7 +85,9 @@ def _get_retry_delay(
     # bound but collapse every overshooting draw onto exactly max_delay,
     # firing the retries jitter exists to spread out at the same instant.
     delay = min(delay, max_delay / (1.0 + jitter))
-    random_offset = random.uniform(-jitter * delay, jitter * delay)
+    random_offset = platform_random.get_random().uniform(
+        -jitter * delay, jitter * delay
+    )
     delay = max(0.0, delay + random_offset)
 
   return min(delay, max_delay)

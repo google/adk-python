@@ -28,6 +28,9 @@ from ...events.event import Event
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._fencing import elide_quote_markers
+from ._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
+from ._fencing import quote_untrusted
 from ._invocation_utils import as_llm_agent
 from .functions import AF_FUNCTION_CALL_ID_PREFIX
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
@@ -1085,10 +1088,15 @@ def _present_other_agent_message(
   Reformats the event with role='user' and adds '[agent_name] said:' prefix
   to provide context without confusion about authorship.
 
+  The relayed text is attacker-reachable: whoever talks to the other agent
+  steers what it says, and its tool results carry whatever the tool read. Each
+  relayed text payload is therefore fenced by `_fencing`, and the leading part
+  states that fenced content is data, so a payload has to be believed rather
+  than merely obeyed.
+
   Args:
     event: The event from another agent to present as context.
-    include_thoughts: Whether to include thought parts as explicit text
-      context.
+    include_thoughts: Whether to include thought parts as explicit text context.
 
   Returns:
     Event reformatted as user-role context with agent attribution, or None
@@ -1099,17 +1107,21 @@ def _present_other_agent_message(
 
   content = types.Content()
   content.role = 'user'
-  content.parts = [types.Part(text='For context:')]
+  content.parts = [types.Part(text=OTHER_AGENT_CONTEXT_PREAMBLE)]
   for part in event.content.parts:
     if part.thought:
       if include_thoughts and part.text is not None and part.text.strip():
         content.parts.append(
-            types.Part(text=f'[{event.author}] thought: {part.text}')
+            types.Part(
+                text=f'[{event.author}] thought:\n{quote_untrusted(part.text)}'
+            )
         )
       continue
     elif part.text is not None and part.text.strip():
       content.parts.append(
-          types.Part(text=f'[{event.author}] said: {part.text}')
+          types.Part(
+              text=f'[{event.author}] said:\n{quote_untrusted(part.text)}'
+          )
       )
     elif part.function_call:
       # Sort args by key so the rendered dict is deterministic across runs.
@@ -1118,11 +1130,16 @@ def _present_other_agent_message(
           if part.function_call.args
           else part.function_call.args
       )
+      # The tool name is model-chosen too, so it is elided but left unfenced:
+      # it reads as part of the sentence and a fence there would obscure which
+      # tool ran.
       content.parts.append(
           types.Part(
               text=(
-                  f'[{event.author}] called tool `{part.function_call.name}`'
-                  f' with parameters: {args}'
+                  f'[{event.author}] called tool'
+                  f' `{elide_quote_markers(str(part.function_call.name))}`'
+                  ' with parameters:\n'
+                  + quote_untrusted(str(args))
               )
           )
       )
@@ -1131,8 +1148,10 @@ def _present_other_agent_message(
       content.parts.append(
           types.Part(
               text=(
-                  f'[{event.author}] `{part.function_response.name}` tool'
-                  f' returned result: {part.function_response.response}'
+                  f'[{event.author}]'
+                  f' `{elide_quote_markers(str(part.function_response.name))}`'
+                  ' tool returned result:\n'
+                  + quote_untrusted(str(part.function_response.response))
               )
           )
       )
@@ -1142,11 +1161,17 @@ def _present_other_agent_message(
         or part.executable_code
         or part.code_execution_result
     ):
+      # Relayed on their own part types rather than fenced. Fencing means
+      # flattening a part into the text channel, which is what created the
+      # ambiguity here in the first place; blobs cannot be flattened at all, and
+      # doing it to code and its output would drop the pairing the model reads
+      # them by. They stay attacker-reachable, and the preamble frames the whole
+      # message rather than each of them.
       content.parts.append(part)
     else:
       continue
 
-  # Return None when only "For context:" remains.
+  # Return None when only the preamble remains.
   if len(content.parts) == 1:
     return None
 

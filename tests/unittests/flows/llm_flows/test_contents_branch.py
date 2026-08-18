@@ -82,8 +82,10 @@ async def test_branch_filtering_child_sees_parent():
   assert llm_request.contents[0] == types.UserContent("User message")
   assert llm_request.contents[1].role == "user"
   assert llm_request.contents[1].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[parent_agent] said: Parent agent response"),
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part(
+          "[parent_agent] said:", "Parent agent response"
+      ),
   ]
   assert llm_request.contents[2] == types.ModelContent("Child agent response")
 
@@ -136,8 +138,8 @@ async def test_branch_filtering_excludes_sibling_agents():
   assert llm_request.contents[0] == types.UserContent("User message")
   assert llm_request.contents[1].role == "user"
   assert llm_request.contents[1].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[parent_agent] said: Parent response"),
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part("[parent_agent] said:", "Parent response"),
   ]
   assert llm_request.contents[2] == types.ModelContent("Child1 response")
 
@@ -185,8 +187,8 @@ async def test_branch_filtering_no_branch_allows_all():
   assert llm_request.contents[0] == types.UserContent("No branch message")
   assert llm_request.contents[1].role == "user"
   assert llm_request.contents[1].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[agent1] said: Agent with branch"),
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part("[agent1] said:", "Agent with branch"),
   ]
   assert llm_request.contents[2] == types.UserContent("Another no branch")
 
@@ -239,13 +241,15 @@ async def test_branch_filtering_grandchild_sees_grandparent():
   assert len(llm_request.contents) == 3
   assert llm_request.contents[0].role == "user"
   assert llm_request.contents[0].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[grandparent_agent] said: Grandparent response"),
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part(
+          "[grandparent_agent] said:", "Grandparent response"
+      ),
   ]
   assert llm_request.contents[1].role == "user"
   assert llm_request.contents[1].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[parent_agent] said: Parent response"),
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part("[parent_agent] said:", "Parent response"),
   ]
   assert llm_request.contents[2] == types.ModelContent("Grandchild response")
 

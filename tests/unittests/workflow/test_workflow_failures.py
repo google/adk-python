@@ -19,6 +19,7 @@ from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
 
+from google.adk import platform as adk_platform
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.events.event import Event
@@ -29,8 +30,8 @@ from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
 from google.adk.workflow import START
 from google.adk.workflow._graph import Graph
-from google.adk.workflow._node import node
 from google.adk.workflow._node import Node
+from google.adk.workflow._node import node
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
@@ -586,13 +587,16 @@ async def test_retry_with_jitter(request: pytest.FixtureRequest):
   app = App(name=request.function.__name__, root_agent=agent)
   runner = testing_utils.InMemoryRunner(app=app)
 
-  with (
-      mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep,
-      mock.patch('random.uniform', return_value=-1.0) as mock_random,
-  ):
-    events = await runner.run_async(testing_utils.get_user_content('start'))
-    mock_sleep.assert_any_await(3.0)
-    mock_random.assert_called_once_with(-2.0, 2.0)
+  mock_random = mock.Mock()
+  mock_random.uniform = mock.Mock(return_value=-1.0)
+  adk_platform.set_random_provider(lambda: mock_random)
+  try:
+    with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
+      events = await runner.run_async(testing_utils.get_user_content('start'))
+      mock_sleep.assert_any_await(3.0)
+      mock_random.uniform.assert_called_once_with(-2.0, 2.0)
+  finally:
+    adk_platform.reset_random_provider()
 
   assert simplify_events_with_node(events) == [
       (

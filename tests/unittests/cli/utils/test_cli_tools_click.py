@@ -102,6 +102,15 @@ def _mute_click(request, monkeypatch: pytest.MonkeyPatch) -> None:
   # monkeypatch.setattr(click, "secho", lambda *a, **k: None)
 
 
+def test_main_disables_click_windows_glob_expansion() -> None:
+  """Verifies the ADK CLI disables Click's Windows glob expansion."""
+  with mock.patch.object(click.Group, "main", return_value=None) as mock_main:
+    from google.adk.cli import main
+
+    main(args=["web", ".", "--allow_origins", "*"])
+  assert mock_main.call_args.kwargs["windows_expand_args"] is False
+
+
 # validate_exclusive
 def test_validate_exclusive_allows_single() -> None:
   """Providing exactly one exclusive option should pass."""

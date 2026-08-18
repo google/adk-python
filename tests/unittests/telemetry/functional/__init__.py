@@ -21,4 +21,5 @@ what they are built out of:
 * ``_digests``: the recorded telemetry, as comparable values.
 * ``_recording``: one case, and replaying it.
 * ``_aclosing``: the async-generator assertions.
+* ``_divergences``: where the two inference instrumentations disagree.
 """

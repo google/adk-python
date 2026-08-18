@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Asserting that every async generator a scenario iterates is closed.
+"""Asserts that every async generator a scenario iterates is closed.
 
-Necessary because instrumentation utilizes contextvars, which run into
-"ContextVar was created in a different Context" errors when a given
-coroutine gets indeterminately suspended.
+ADK's instrumentation stores state in contextvars, which raise "ContextVar was
+created in a different Context" if a generator is left suspended, so every
+iteration has to go through ``contextlib.aclosing``.
 """
 
 from __future__ import annotations
@@ -29,10 +29,6 @@ import gc
 import inspect
 import sys
 from types import CodeType
-
-# ---------------------------------------------------------------------------
-# aclosing wrapping assertions.
-# ---------------------------------------------------------------------------
 
 
 @contextmanager

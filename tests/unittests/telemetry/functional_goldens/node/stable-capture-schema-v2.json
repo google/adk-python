@@ -9,6 +9,30 @@
     "status": "UNSET",
     "children": [
       {
+        "name": "invoke_workflow my_nested_workflow",
+        "attributes": {
+          "gen_ai.operation.name": "invoke_workflow",
+          "gen_ai.conversation.id": "PRESENT",
+          "gen_ai.workflow.nested": true,
+          "gen_ai.workflow.name": "my_nested_workflow"
+        },
+        "status": "UNSET",
+        "children": [
+          {
+            "name": "invoke_node some_node",
+            "attributes": {
+              "gen_ai.operation.name": "invoke_node",
+              "gen_ai.conversation.id": "PRESENT",
+              "gcp.vertex.agent.associated_event_ids": "PRESENT"
+            },
+            "status": "UNSET",
+            "children": [],
+            "logs": []
+          }
+        ],
+        "logs": []
+      },
+      {
         "name": "invoke_agent some_root_agent",
         "attributes": {
           "gen_ai.operation.name": "invoke_agent",
@@ -22,7 +46,7 @@
             "name": "call_llm",
             "attributes": {
               "gen_ai.system": "gcp.vertex.agent",
-              "gen_ai.request.model": "mock",
+              "gen_ai.request.model": "gemini-2.5-flash",
               "gcp.vertex.agent.invocation_id": "PRESENT",
               "gcp.vertex.agent.session_id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
@@ -39,30 +63,11 @@
             "status": "UNSET",
             "children": [
               {
-                "name": "execute_tool some_tool",
-                "attributes": {
-                  "gen_ai.operation.name": "execute_tool",
-                  "gen_ai.tool.description": "A sample tool.",
-                  "gen_ai.tool.name": "some_tool",
-                  "gen_ai.tool.type": "FunctionTool",
-                  "gen_ai.agent.name": "some_root_agent",
-                  "gcp.vertex.agent.llm_request": "{}",
-                  "gcp.vertex.agent.llm_response": "{}",
-                  "gcp.vertex.agent.tool_call_args": "{}",
-                  "gen_ai.tool.call.id": "PRESENT",
-                  "gcp.vertex.agent.event_id": "PRESENT",
-                  "gcp.vertex.agent.tool_response": "{}"
-                },
-                "status": "UNSET",
-                "children": [],
-                "logs": []
-              },
-              {
-                "name": "generate_content mock",
+                "name": "generate_content gemini-2.5-flash",
                 "attributes": {
                   "gen_ai.system": "gemini",
                   "gen_ai.operation.name": "generate_content",
-                  "gen_ai.request.model": "mock",
+                  "gen_ai.request.model": "gemini-2.5-flash",
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
@@ -78,29 +83,6 @@
                 "status": "UNSET",
                 "children": [],
                 "logs": [
-                  {
-                    "event_name": "gen_ai.choice",
-                    "body": {
-                      "content": {
-                        "parts": [
-                          {
-                            "function_call": {
-                              "args": {
-                                "arg1": "val1"
-                              },
-                              "name": "some_tool"
-                            }
-                          }
-                        ],
-                        "role": "model"
-                      },
-                      "index": 0,
-                      "finish_reason": "STOP"
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
                   {
                     "event_name": "gen_ai.system.message",
                     "body": {
@@ -126,8 +108,51 @@
                       "gen_ai.system": "gemini",
                       "user.id": "some_user"
                     }
+                  },
+                  {
+                    "event_name": "gen_ai.choice",
+                    "body": {
+                      "content": {
+                        "parts": [
+                          {
+                            "function_call": {
+                              "id": "PRESENT",
+                              "args": {
+                                "arg1": "val1"
+                              },
+                              "name": "some_tool"
+                            }
+                          }
+                        ],
+                        "role": "model"
+                      },
+                      "index": 0,
+                      "finish_reason": "STOP"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
                   }
                 ]
+              },
+              {
+                "name": "execute_tool some_tool",
+                "attributes": {
+                  "gen_ai.operation.name": "execute_tool",
+                  "gen_ai.tool.description": "A sample tool.",
+                  "gen_ai.tool.name": "some_tool",
+                  "gen_ai.tool.type": "FunctionTool",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gcp.vertex.agent.llm_request": "{}",
+                  "gcp.vertex.agent.llm_response": "{}",
+                  "gcp.vertex.agent.tool_call_args": "{}",
+                  "gen_ai.tool.call.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.tool_response": "{}"
+                },
+                "status": "UNSET",
+                "children": [],
+                "logs": []
               }
             ],
             "logs": []
@@ -136,7 +161,7 @@
             "name": "call_llm",
             "attributes": {
               "gen_ai.system": "gcp.vertex.agent",
-              "gen_ai.request.model": "mock",
+              "gen_ai.request.model": "gemini-2.5-flash",
               "gcp.vertex.agent.invocation_id": "PRESENT",
               "gcp.vertex.agent.session_id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
@@ -153,11 +178,11 @@
             "status": "UNSET",
             "children": [
               {
-                "name": "generate_content mock",
+                "name": "generate_content gemini-2.5-flash",
                 "attributes": {
                   "gen_ai.system": "gemini",
                   "gen_ai.operation.name": "generate_content",
-                  "gen_ai.request.model": "mock",
+                  "gen_ai.request.model": "gemini-2.5-flash",
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
@@ -174,30 +199,29 @@
                 "children": [],
                 "logs": [
                   {
-                    "event_name": "gen_ai.choice",
-                    "body": {
-                      "content": {
-                        "parts": [
-                          {
-                            "text": "text response"
-                          }
-                        ],
-                        "role": "model"
-                      },
-                      "index": 0,
-                      "finish_reason": "STOP"
-                    },
-                    "attributes": {
-                      "gen_ai.system": "gemini"
-                    }
-                  },
-                  {
                     "event_name": "gen_ai.system.message",
                     "body": {
                       "content": "you are helpful"
                     },
                     "attributes": {
                       "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": {
+                        "parts": [
+                          {
+                            "text": "some result"
+                          }
+                        ],
+                        "role": "user"
+                      }
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini",
+                      "user.id": "some_user"
                     }
                   },
                   {
@@ -245,49 +269,26 @@
                     }
                   },
                   {
-                    "event_name": "gen_ai.user.message",
+                    "event_name": "gen_ai.choice",
                     "body": {
                       "content": {
                         "parts": [
                           {
-                            "text": "some result"
+                            "text": "text response"
                           }
                         ],
-                        "role": "user"
-                      }
+                        "role": "model"
+                      },
+                      "index": 0,
+                      "finish_reason": "STOP"
                     },
                     "attributes": {
-                      "gen_ai.system": "gemini",
-                      "user.id": "some_user"
+                      "gen_ai.system": "gemini"
                     }
                   }
                 ]
               }
             ],
-            "logs": []
-          }
-        ],
-        "logs": []
-      },
-      {
-        "name": "invoke_workflow my_nested_workflow",
-        "attributes": {
-          "gen_ai.operation.name": "invoke_workflow",
-          "gen_ai.conversation.id": "PRESENT",
-          "gen_ai.workflow.nested": true,
-          "gen_ai.workflow.name": "my_nested_workflow"
-        },
-        "status": "UNSET",
-        "children": [
-          {
-            "name": "invoke_node some_node",
-            "attributes": {
-              "gen_ai.operation.name": "invoke_node",
-              "gen_ai.conversation.id": "PRESENT",
-              "gcp.vertex.agent.associated_event_ids": "PRESENT"
-            },
-            "status": "UNSET",
-            "children": [],
             "logs": []
           }
         ],
@@ -303,8 +304,8 @@
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
           "gen_ai.provider.name": "gemini",
-          "gen_ai.request.model": "mock",
-          "gen_ai.response.model": "mock"
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash"
         },
         "value": "PRESENT"
       }
@@ -315,8 +316,8 @@
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
           "gen_ai.provider.name": "gemini",
-          "gen_ai.request.model": "mock",
-          "gen_ai.response.model": "mock",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
           "gen_ai.token.type": "input"
         },
         "value": 250
@@ -326,8 +327,8 @@
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
           "gen_ai.provider.name": "gemini",
-          "gen_ai.request.model": "mock",
-          "gen_ai.response.model": "mock",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
           "gen_ai.token.type": "output"
         },
         "value": 75

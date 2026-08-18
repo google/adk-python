@@ -20,6 +20,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.run_config import RunConfig
+from google.adk.events.event import Event
 from google.adk.flows.llm_flows import instructions
 from google.adk.flows.llm_flows.contents import _add_instructions_to_user_content
 from google.adk.flows.llm_flows.contents import request_processor as contents_processor
@@ -1160,3 +1161,206 @@ async def test_static_instruction_only_non_text_parts():
   # Each non-text part gets its own content object with 2 parts (text description + actual part)
   for content in llm_request.contents:
     assert len(content.parts) == 2
+
+
+@pytest.mark.asyncio
+async def test_static_instruction_file_precedes_multi_turn_history():
+  """Non-text static_instruction content must stay a stable request prefix.
+
+  On turns after the first, the static content must not be pushed behind
+  earlier conversation history, or it stops being a stable prefix for
+  provider-side context caching.
+  """
+  file_uri = "gs://test-bucket/reference.pdf"
+  agent = LlmAgent(
+      name="test_agent",
+      instruction="Dynamic instruction",
+      static_instruction=types.Content(
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri=file_uri,
+                      mime_type="application/pdf",
+                  )
+              )
+          ]
+      ),
+  )
+  invocation_context = await _create_invocation_context(agent)
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+  ]
+  llm_request = LlmRequest()
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+  async for _ in contents_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert len(llm_request.contents) == 5
+
+  static_content = llm_request.contents[0]
+  assert static_content.role == "user"
+  assert static_content.parts[0].text == "Referenced file data: file_data_0"
+  assert static_content.parts[1].file_data
+  assert static_content.parts[1].file_data.file_uri == file_uri
+
+  dynamic_content = llm_request.contents[1]
+  assert dynamic_content.role == "user"
+  assert dynamic_content.parts[0].text == "Dynamic instruction"
+
+  assert llm_request.contents[2] == types.UserContent("First message")
+  assert llm_request.contents[3] == types.ModelContent("First response")
+  assert llm_request.contents[4] == types.UserContent("Second message")
+
+
+@pytest.mark.asyncio
+async def test_static_instruction_file_stays_prefix_after_tool_dynamic_instruction():
+  """The static prefix must survive a later, tool-triggered instruction insert.
+
+  With DYNAMIC_INSTRUCTION_ROUTING enabled, tools (e.g. preload_memory_tool)
+  call ``_append_dynamic_instructions`` and
+  ``_finalize_dynamic_instructions`` (base_llm_flow.py) later routes that
+  through the same ``_add_instructions_to_user_content`` helper used by the
+  main contents processor. That second call must not re-insert at index 0, or
+  it would push the tool's dynamic content in front of the static content
+  that the first call already placed there.
+  """
+  file_uri = "gs://test-bucket/reference.pdf"
+  agent = LlmAgent(
+      name="test_agent",
+      instruction="Dynamic instruction",
+      static_instruction=types.Content(
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri=file_uri,
+                      mime_type="application/pdf",
+                  )
+              )
+          ]
+      ),
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+  async for _ in contents_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert len(llm_request.contents) == 2
+  assert (
+      llm_request.contents[0].parts[0].text
+      == "Referenced file data: file_data_0"
+  )
+  assert llm_request.contents[1].parts[0].text == "Dynamic instruction"
+
+  # Simulate a tool contributing a dynamic instruction, finalized the same
+  # way `_finalize_dynamic_instructions` does when DYNAMIC_INSTRUCTION_ROUTING
+  # is enabled: a second call to the same helper, after the first call above
+  # already placed the static prefix.
+  tool_instruction_content = types.Content(
+      role="user",
+      parts=[types.Part.from_text(text="Relevant memory: user likes pizza")],
+  )
+  await _add_instructions_to_user_content(
+      invocation_context, llm_request, [tool_instruction_content]
+  )
+
+  assert len(llm_request.contents) == 3
+  static_content = llm_request.contents[0]
+  assert static_content.parts[0].text == "Referenced file data: file_data_0"
+  assert static_content.parts[1].file_data
+  assert static_content.parts[1].file_data.file_uri == file_uri
+
+
+@pytest.mark.asyncio
+async def test_tool_instruction_does_not_precede_history():
+  """Tool instructions must be inserted before the current user turn, not at start.
+
+  Even when static_instruction is present, tool-added instructions should not
+  be pushed ahead of the whole history (e.g. before Turn 1 messages), they
+  should stay before the active turn.
+  """
+  file_uri = "gs://test-bucket/reference.pdf"
+  agent = LlmAgent(
+      name="test_agent",
+      instruction="Dynamic instruction",
+      static_instruction=types.Content(
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri=file_uri,
+                      mime_type="application/pdf",
+                  )
+              )
+          ]
+      ),
+  )
+  invocation_context = await _create_invocation_context(agent)
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+  ]
+  llm_request = LlmRequest()
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+  async for _ in contents_processor.run_async(invocation_context, llm_request):
+    pass
+
+  # Initial state: [Static, Dynamic, User1, Model1, User2]
+  assert len(llm_request.contents) == 5
+
+  # Simulate a tool contributing a dynamic instruction
+  tool_instruction_content = types.Content(
+      role="user",
+      parts=[types.Part.from_text(text="Relevant memory: user likes pizza")],
+  )
+  await _add_instructions_to_user_content(
+      invocation_context, llm_request, [tool_instruction_content]
+  )
+
+  # Expected state: [Static, Dynamic, User1, Model1, Tool, User2]
+  # Tool should be inserted before User2 (index 4), not before User1 (index 2).
+  assert len(llm_request.contents) == 6
+  assert (
+      llm_request.contents[0].parts[0].text
+      == "Referenced file data: file_data_0"
+  )
+  assert llm_request.contents[1].parts[0].text == "Dynamic instruction"
+  assert llm_request.contents[2] == types.UserContent("First message")
+  assert llm_request.contents[3] == types.ModelContent("First response")
+  assert (
+      llm_request.contents[4].parts[0].text
+      == "Relevant memory: user likes pizza"
+  )
+  assert llm_request.contents[5] == types.UserContent("Second message")
