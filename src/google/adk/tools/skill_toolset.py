@@ -257,15 +257,13 @@ class LoadSkillTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
 
-    skill_telemetry = _instrumentation.record_skill_telemetry(
-        _instrumentation.SkillTelemetrySpanType.SKILL_LOAD
-    )
-    skill_telemetry.skill_name = skill_name
+    skill_telemetry = _instrumentation.track_skill_load(skill_name)
 
     try:
       skill = await self._toolset._get_or_fetch_skill(
           skill_name, tool_context.invocation_id
       )
+      skill_telemetry.skill = skill
     except Exception as e:
       return {
           "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
@@ -277,11 +275,6 @@ class LoadSkillTool(BaseTool):
           "error": f"Skill '{skill_name}' not found.",
           "error_code": "SKILL_NOT_FOUND",
       }
-
-    skill_telemetry.skill = skill
-    skill_telemetry.additional_tools = skill.frontmatter.metadata.get(
-        "adk_additional_tools", []
-    )
 
     # Record skill activation in agent state for tool resolution.
     agent_name = tool_context.agent_name
@@ -367,10 +360,15 @@ class LoadSkillResourceTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
 
+    skill_telemetry = _instrumentation.track_skill_resource_load(
+        skill_name, file_path
+    )
+
     try:
       skill = await self._toolset._get_or_fetch_skill(
           skill_name, tool_context.invocation_id
       )
+      skill_telemetry.skill = skill
     except Exception as e:
       return {
           "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
@@ -1360,8 +1358,6 @@ class SkillToolset(BaseToolset):
       turn_cache = self._fetched_skill_cache[invocation_id]
       if skill_name in turn_cache:
         cached = turn_cache[skill_name]
-        _instrumentation.record_skill_cache_hit()
-
         if isinstance(cached, asyncio.Future):
           return await cached
         return cached

@@ -44,6 +44,7 @@ from ._scenarios import OTEL_OPT_IN
 from ._scenarios import run_agent_scenario
 from ._scenarios import run_node_scenario
 from ._scenarios import Scenario
+from ._scenarios import SkillResourceType
 from ._scenarios import SkillType
 
 if TYPE_CHECKING:
@@ -73,6 +74,7 @@ class FunctionalTestCase:
   tool_fails: bool = False
   experimental_telemetry: bool = False
   loaded_skills: list[SkillType] = field(default_factory=list)
+  loaded_resources: list[SkillResourceType] = field(default_factory=list)
 
   @property
   def expects_failure(self) -> bool:
@@ -173,7 +175,12 @@ async def _run_scenario(
     )
     return []
   elif case.scenario == "skill":
-    await run_agent_scenario(build_skill_test_runner(skills=case.loaded_skills))
+    await run_agent_scenario(
+        build_skill_test_runner(
+            skills=case.loaded_skills,
+            resources=case.loaded_resources,
+        )
+    )
     return []
   else:
     assert_never(case.scenario)

@@ -238,7 +238,12 @@ class CredentialManager:
       return raw_auth_credential.model_copy(deep=True)
 
     # Step 3: Try to load existing processed credential
-    credential = await self._load_existing_credential(context)
+    credential = None
+    if not (
+        raw_auth_credential
+        and raw_auth_credential.auth_type == AuthCredentialTypes.SERVICE_ACCOUNT
+    ):
+      credential = await self._load_existing_credential(context)
 
     # Step 4: If no existing credential, load from auth response
     # TODO instead of load from auth response, we can store auth response in
@@ -269,7 +274,12 @@ class CredentialManager:
 
     # Step 8: Save credential if it was modified
     if was_from_auth_response or was_exchanged or was_refreshed:
-      await self._save_credential(context, credential)
+      if not (
+          raw_auth_credential
+          and raw_auth_credential.auth_type
+          == AuthCredentialTypes.SERVICE_ACCOUNT
+      ):
+        await self._save_credential(context, credential)
 
     return credential
 

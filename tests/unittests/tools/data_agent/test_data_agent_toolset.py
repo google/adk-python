@@ -68,12 +68,14 @@ async def test_data_agent_toolset_tools_with_mutation_enabled():
   tools = await toolset.get_tools()
   assert tools is not None
 
-  assert len(tools) == 4
+  assert len(tools) == 6
   expected_tool_names = set([
       "list_accessible_data_agents",
       "get_data_agent_info",
       "ask_data_agent",
       "create_data_agent",
+      "delete_data_agent",
+      "update_data_agent",
   ])
   actual_tool_names = {tool.name for tool in tools}
   assert actual_tool_names == expected_tool_names
@@ -89,6 +91,8 @@ async def test_data_agent_toolset_tools_with_mutation_enabled():
         ),
         pytest.param(["ask_data_agent"], id="ask"),
         pytest.param(["create_data_agent"], id="create"),
+        pytest.param(["update_data_agent"], id="update"),
+        pytest.param(["delete_data_agent"], id="delete"),
     ],
 )
 @pytest.mark.asyncio

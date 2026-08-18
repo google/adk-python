@@ -94,6 +94,11 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
     'multidict',
     'propcache',
     'yarl',
+    # Stand-ins the packages above import below Python 3.11, where the
+    # standard library has no equivalent yet: aiohttp takes async_timeout for
+    # asyncio.timeout, and anyio takes exceptiongroup for ExceptionGroup.
+    'async_timeout',
+    'exceptiongroup',
 })
 
 

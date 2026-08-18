@@ -61,6 +61,11 @@ def loaded_top_level_packages(source: str) -> frozenset[str]:
   Standard-library modules, private modules and the pseudo-modules the
   interpreter injects carry no install or startup cost of their own, so they
   are dropped and only the distributions a caller pays for remain.
+
+  An empty namespace portion is dropped for the same reason: it holds no code
+  to run, and a failed probe for one of its submodules leaves it behind even
+  though nothing was loaded. A namespace whose submodule did load still counts,
+  because that submodule reports the same top-level name.
   """
   result = run_isolated(f"""
 import json
@@ -71,6 +76,7 @@ names = {{
     name.partition('.')[0]
     for name, module in sys.modules.items()
     if getattr(module, '__spec__', None) is not None
+    and module.__spec__.origin is not None
 }}
 print(json.dumps(sorted(
     name

@@ -2579,7 +2579,11 @@ def test_list_sessions_sync_unknown_app_or_user_returns_empty_response():
     ids=['in_memory'],
 )
 async def test_append_event_is_idempotent_for_same_event_id(session_service):
-  """Appending the same event ID twice must not duplicate entries or state."""
+  """Re-delivering an event must not duplicate entries or double-apply state.
+
+  A broadcast can re-deliver the same event either as the same object or as
+  an equal copy, so both must be deduplicated.
+  """
   app_name = 'test_app'
   user_id = 'user_dup'
   session = await session_service.create_session(
@@ -2592,9 +2596,13 @@ async def test_append_event_is_idempotent_for_same_event_id(session_service):
       actions=EventActions(state_delta={'session:counter': 1}),
   )
 
-  # Append the same event object twice (simulates a duplicate broadcast).
+  # Re-deliver as the same object and again as an equal copy (a broadcast
+  # to several concurrent session references can produce either).
   await session_service.append_event(session=session, event=event)
   await session_service.append_event(session=session, event=event)
+  await session_service.append_event(
+      session=session, event=event.model_copy(deep=True)
+  )
 
   # The storage session must contain the event exactly once.
   retrieved = await session_service.get_session(
@@ -2618,15 +2626,24 @@ async def test_append_event_is_idempotent_for_same_event_id(session_service):
     ids=['in_memory'],
 )
 async def test_append_different_events_not_deduplicated(session_service):
-  """Events with distinct IDs must both be stored."""
+  """Distinct events must both be stored, even when they share an event id.
+
+  Deduplication is keyed on object identity, not event id: a caller can
+  legitimately reuse an id across genuinely different events (e.g. a test
+  that patches uuid4 to a constant), and keying on id alone would silently
+  drop the later events.
+  """
   app_name = 'test_app'
   user_id = 'user_multi'
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id, session_id='session_multi'
   )
 
-  e1 = Event(invocation_id='inv_a', author='user')
-  e2 = Event(invocation_id='inv_b', author='agent')
+  # Two genuinely different events that share an id, as happens when a test
+  # patches uuid generation to a fixed value.
+  shared_id = 'shared-event-id'
+  e1 = Event(id=shared_id, invocation_id='inv_a', author='user')
+  e2 = Event(id=shared_id, invocation_id='inv_b', author='agent')
 
   await session_service.append_event(session=session, event=e1)
   await session_service.append_event(session=session, event=e2)
@@ -2637,3 +2654,4 @@ async def test_append_different_events_not_deduplicated(session_service):
   assert (
       len(retrieved.events) == 2
   ), f'Expected 2 distinct events, got {len(retrieved.events)}'
+  assert [e.author for e in retrieved.events] == ['user', 'agent']

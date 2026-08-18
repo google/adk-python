@@ -40,7 +40,6 @@ _EXCLUDED_FROM_MTLS = {
     'src/google/adk/tools/_google_credentials.py',
     'src/google/adk/tools/apihub_tool/clients/apihub_client.py',
     'src/google/adk/tools/google_api_tool/google_api_toolset.py',
-    'src/google/adk/tools/openapi_tool/auth/auth_helpers.py',
     'tests/unittests/auth/test_credential_manager.py',
     'tests/unittests/flows/llm_flows/test_functions_request_euc.py',
     'tests/unittests/tools/application_integration_tool/test_application_integration_toolset.py',

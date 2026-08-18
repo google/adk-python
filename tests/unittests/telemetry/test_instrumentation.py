@@ -140,21 +140,45 @@ async def test_record_skill_load_reaches_the_enclosing_tool_execution():
       function_args={},
       invocation_context=mock.MagicMock(),
   ) as tel_ctx:
-    skill_telemetry = _instrumentation.record_skill_telemetry(
-        _instrumentation.SkillTelemetrySpanType.SKILL_LOAD
-    )
+    skill_telemetry = _instrumentation.track_skill_load("sample_skill")
     skill_telemetry.skill_name = "sample_skill"
     skill_telemetry.skill = mock.MagicMock()
     skill_telemetry.cache_hit = True
 
-  assert tel_ctx.skill_telemetry is skill_telemetry
+  assert isinstance(
+      tel_ctx.skill_telemetry, _instrumentation.SkillLoadTelemetry
+  )
+  assert tel_ctx.skill_telemetry == skill_telemetry
+
+
+@pytest.mark.asyncio
+async def test_record_skill_resource_load_reaches_the_enclosing_tool_execution():
+  """A skill resource load is reported to the tool execution that wraps it."""
+  tool = mock.MagicMock()
+  tool.name = "load_skill_resource"
+  agent = mock.MagicMock()
+  agent.name = "sample_agent"
+
+  async with _instrumentation.record_tool_execution(
+      tool=tool,
+      agent=agent,
+      function_args={},
+      invocation_context=mock.MagicMock(),
+  ) as tel_ctx:
+    skill_telemetry = _instrumentation.track_skill_resource_load(
+        "sample_skill", "sample_path"
+    )
+    skill_telemetry.resource_path = "sample_path"
+
+  assert isinstance(
+      tel_ctx.skill_telemetry, _instrumentation.SkillResourceLoadTelemetry
+  )
+  assert tel_ctx.skill_telemetry == skill_telemetry
 
 
 def test_record_skill_load_outside_tool_execution_is_a_noop():
   """Callers never depend on a tool execution (and thus a span) being open."""
-  _instrumentation.record_skill_telemetry(
-      _instrumentation.SkillTelemetrySpanType.SKILL_LOAD,
-  )
+  _instrumentation.track_skill_load("sample_skill")
 
   assert _instrumentation._active_tool_execution_tel_ctx() is None
 

@@ -130,6 +130,25 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
     ),
     # Skill telemetry scenarios.
     FunctionalTestCase(
+        test_id="skill-telemetry-disabled-schema-v1",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=False,
+        capture_content="false",
+        schema_version=1,
+        loaded_skills=["local", "registry"],
+    ),
+    FunctionalTestCase(
+        test_id="skill-telemetry-disabled-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=False,
+        capture_content="false",
+        schema_version=2,
+        loaded_skills=["local", "registry"],
+    ),
+    ## Skill loading scenarios.
+    FunctionalTestCase(
         test_id="skill-telemetry-schema-v1",
         scenario="skill",
         semconv_opt_in=None,
@@ -165,14 +184,42 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         loaded_skills=["nonexistent"],
     ),
+    ## Skill resource telemetry scenarios.
     FunctionalTestCase(
-        test_id="skill-telemetry-disabled-schema-v1",
+        test_id="skill-resource-telemetry-schema-v1",
         scenario="skill",
         semconv_opt_in=None,
-        experimental_telemetry=False,
+        experimental_telemetry=True,
         capture_content="false",
         schema_version=1,
-        loaded_skills=["local", "registry"],
+        loaded_resources=["references", "assets", "scripts"],
+    ),
+    FunctionalTestCase(
+        test_id="skill-resource-telemetry-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=2,
+        loaded_resources=["references", "assets", "scripts"],
+    ),
+    FunctionalTestCase(
+        test_id="invalid-skill-resource-schema-v1",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=1,
+        loaded_resources=["wrong_type", "wrong_name"],
+    ),
+    FunctionalTestCase(
+        test_id="invalid-skill-resource-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=2,
+        loaded_resources=["wrong_type", "wrong_name"],
     ),
 ]
 

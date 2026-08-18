@@ -31,6 +31,8 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import InMemoryRunner
 from google.adk.skills.models import Frontmatter
+from google.adk.skills.models import Resources
+from google.adk.skills.models import Script
 from google.adk.skills.models import Skill
 from google.adk.skills.skill_registry import SkillRegistry
 from google.adk.telemetry import _metrics
@@ -91,6 +93,9 @@ Scenario = Literal["agent", "node", "mcp", "skill"]
 
 # The type of skill being used in a test case.
 SkillType = Literal["local", "registry", "nonexistent"]
+SkillResourceType = Literal[
+    "references", "assets", "scripts", "wrong_type", "wrong_name"
+]
 
 # ---------------------------------------------------------------------------
 # Telemetry plumbing.
@@ -530,6 +535,11 @@ def _make_skill(
           metadata={"adk_additional_tools": additional_tools},
       ),
       instructions="skill instructions",
+      resources=Resources(
+          references={"ref1": "ref1_content"},
+          assets={"deeply/hidden/asset1": "asset1_content"},
+          scripts={"script1": Script(src="script1_content")},
+      ),
   )
   if source == "registry":
     skill._uri = f"https://fake-registry.com/skill/{name}"
@@ -558,12 +568,15 @@ class _FakeSkillRegistry(SkillRegistry):
 
 
 def build_skill_test_runner(
-    *, skills: Sequence[SkillType] | None = None
+    *,
+    skills: Sequence[SkillType] | None = None,
+    resources: Sequence[SkillResourceType] | None = None,
 ) -> TestInMemoryRunner:
   """Builds a runner whose model calls ``load_skill`` then answers."""
   skills = skills or []
+  resources = resources or []
 
-  part_map: dict[SkillType, Part] = {
+  skill_part_map: dict[SkillType, Part] = {
       "local": Part.from_function_call(
           name="load_skill", args={"skill_name": LOCAL_SKILL_NAME}
       ),
@@ -574,10 +587,48 @@ def build_skill_test_runner(
           name="load_skill", args={"skill_name": NONEXISTENT_SKILL_NAME}
       ),
   }
+  resource_part_map: dict[SkillResourceType, Part] = {
+      "references": Part.from_function_call(
+          name="load_skill_resource",
+          args={
+              "skill_name": REGISTRY_SKILL_NAME,
+              "file_path": "references/ref1",
+          },
+      ),
+      "assets": Part.from_function_call(
+          name="load_skill_resource",
+          args={
+              "skill_name": REGISTRY_SKILL_NAME,
+              "file_path": "assets/deeply/hidden/asset1",
+          },
+      ),
+      "scripts": Part.from_function_call(
+          name="load_skill_resource",
+          args={
+              "skill_name": REGISTRY_SKILL_NAME,
+              "file_path": "scripts/script1",
+          },
+      ),
+      "wrong_type": Part.from_function_call(
+          name="load_skill_resource",
+          args={
+              "skill_name": REGISTRY_SKILL_NAME,
+              "file_path": "fake/file/not/existing",
+          },
+      ),
+      "wrong_name": Part.from_function_call(
+          name="load_skill_resource",
+          args={
+              "skill_name": REGISTRY_SKILL_NAME,
+              "file_path": "references/nope/never",
+          },
+      ),
+  }
 
   mock_model = MockModel.create(
       responses=[
-          *(part_map[skill] for skill in skills),
+          *(skill_part_map[skill] for skill in skills),
+          *(resource_part_map[resource] for resource in resources),
           Part.from_text(text=FINAL_TEXT),
       ]
   )
