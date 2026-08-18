@@ -235,8 +235,10 @@ async def test_include_contents_none_multi_agent_current_turn():
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == "user"
   assert llm_request.contents[0].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[another_agent] said: Another agent responds"),
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part(
+          "[another_agent] said:", "Another agent responds"
+      ),
   ]
   assert llm_request.contents[1] == types.ModelContent("Current agent in turn")
 
@@ -288,8 +290,10 @@ async def test_include_contents_none_multi_branch_current_turn():
   assert len(llm_request.contents) == 1
   assert llm_request.contents[0].role == "user"
   assert llm_request.contents[0].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[sibling_agent] said: Sibling agent response"),
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part(
+          "[sibling_agent] said:", "Sibling agent response"
+      ),
   ]
 
 
@@ -361,24 +365,20 @@ async def test_events_with_transfer_to_agent_are_included():
       types.UserContent("First user message"),
       types.Content(
           parts=[
-              types.Part(text="For context:"),
-              types.Part(
-                  text=(
-                      "[parent] called tool `transfer_to_agent` with"
-                      " parameters: {'agent_name': 'test_agent'}"
-                  )
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part(
+                  "[parent] called tool `transfer_to_agent` with parameters:",
+                  "{'agent_name': 'test_agent'}",
               ),
           ],
           role="user",
       ),
       types.Content(
           parts=[
-              types.Part(text="For context:"),
-              types.Part(
-                  text=(
-                      "[parent] `transfer_to_agent` tool returned result:"
-                      " {'result': None}"
-                  )
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part(
+                  "[parent] `transfer_to_agent` tool returned result:",
+                  "{'result': None}",
               ),
           ],
           role="user",
