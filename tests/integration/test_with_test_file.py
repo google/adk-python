@@ -27,6 +27,18 @@ async def test_with_single_test_file():
 
 
 @pytest.mark.asyncio
+async def test_with_custom_metric():
+  """Test eval with a custom metric."""
+  await AgentEvaluator.evaluate(
+      agent_module="tests.integration.fixture.home_automation_agent",
+      eval_dataset_file_path_or_dir=(
+          "tests/integration/fixture/home_automation_agent/test_files/custom_metrics/simple_custom_metric.test.json"
+      ),
+      num_runs=1,
+  )
+
+
+@pytest.mark.asyncio
 async def test_with_folder_of_test_files_long_running():
   """Test the agent's basic ability via a folder of session files."""
   await AgentEvaluator.evaluate(

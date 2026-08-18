@@ -59,6 +59,9 @@ from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
+from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
+from .metric_evaluator_registry import MetricEvaluatorRegistry
+from .metric_evaluator_registry import register_custom_metrics_from_config
 from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -198,6 +201,16 @@ class AgentEvaluator:
     # `app_name` is fine here.
     app_name = app_name or "test_app"
 
+    # A fork, not the default registry itself: the custom metrics of this eval
+    # config belong to this run only. Forking (rather than starting from a bare
+    # `MetricEvaluatorRegistry()`) keeps evaluators that the caller registered
+    # on the default registry resolvable, which is the only way to plug in a
+    # custom `Evaluator` subclass since an eval config can only name a scoring
+    # function.
+    metric_evaluator_registry = register_custom_metrics_from_config(
+        eval_config, DEFAULT_METRIC_EVALUATOR_REGISTRY.fork()
+    )
+
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
         agent_for_eval=agent_for_eval,
@@ -210,6 +223,7 @@ class AgentEvaluator:
         artifact_service=artifact_service,
         app=app,
         eval_set_results_manager=eval_set_results_manager,
+        metric_evaluator_registry=metric_evaluator_registry,
     )
 
     # Step 2: Post-process the results!
@@ -679,6 +693,7 @@ class AgentEvaluator:
       *,
       app_name: str,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
+      metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -704,6 +719,7 @@ class AgentEvaluator:
         artifact_service=artifact_service,
         app=app,
         eval_set_results_manager=eval_set_results_manager,
+        metric_evaluator_registry=metric_evaluator_registry,
     )
 
     if live_model_config:
