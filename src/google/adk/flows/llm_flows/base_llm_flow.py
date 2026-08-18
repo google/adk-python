@@ -615,6 +615,26 @@ class BaseLlmFlow(ABC):
           llm_request.live_connect_config.response_modalities,
       )
 
+      # A caller can resume an earlier live session by handing the flow a
+      # handle it obtained from a previous run, which request assembly has by
+      # now put on the connect config (from `RunConfig.session_resumption`).
+      # Seed the invocation with it so the very first connection is treated as
+      # a resumption like any mid-session reconnect: the history the server
+      # already holds is not replayed, and if this connection drops before the
+      # server has pushed its first `session_resumption_update`, the reconnect
+      # path still has the caller's handle to retry with instead of failing the
+      # run. Without this the handle only reached the connect config while the
+      # rest of the run still behaved as if the session were new.
+      session_resumption = llm_request.live_connect_config.session_resumption
+      if (
+          not invocation_context.live_session_resumption_handle
+          and session_resumption is not None
+          and session_resumption.handle
+      ):
+        invocation_context.live_session_resumption_handle = (
+            session_resumption.handle
+        )
+
       attempt = 1
       while True:
         try:

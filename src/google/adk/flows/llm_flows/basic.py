@@ -17,8 +17,11 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
+from typing import Optional
+from typing import TypeVar
 
 from google.genai import types
+from pydantic import BaseModel
 from typing_extensions import override
 
 from ...agents.invocation_context import InvocationContext
@@ -71,6 +74,14 @@ def _copy_http_options(
       if http_options.headers is not None
       else {}
   )
+
+
+_ModelT = TypeVar('_ModelT', bound=BaseModel)
+
+
+def _copy_or_none(model: Optional[_ModelT]) -> Optional[_ModelT]:
+  """Returns a deep copy of a RunConfig sub-model that assembly then mutates."""
+  return None if model is None else model.model_copy(deep=True)
 
 
 def _copy_request_scoped_fields(
@@ -183,10 +194,20 @@ def _build_basic_request(
   llm_request.live_connect_config.proactivity = (
       None if is_gemini_3_x else run_config.proactivity
   )
-  llm_request.live_connect_config.session_resumption = (
+  # Copied rather than aliased: live request assembly writes into both of these
+  # while the session runs. `BaseLlmFlow.run_live` stamps each server-issued
+  # resumption handle onto `session_resumption`, and sets
+  # `initial_history_in_client_content` on `history_config` when it seeds a
+  # fresh connection with history. Aliasing the RunConfig's own objects makes
+  # those writes outlive the invocation, so a RunConfig reused for a later run
+  # would carry a stale handle into it. This mirrors what
+  # `_copy_request_scoped_fields` already does for `llm_request.config`.
+  llm_request.live_connect_config.session_resumption = _copy_or_none(
       run_config.session_resumption
   )
-  llm_request.live_connect_config.history_config = run_config.history_config
+  llm_request.live_connect_config.history_config = _copy_or_none(
+      run_config.history_config
+  )
   llm_request.live_connect_config.context_window_compression = (
       run_config.context_window_compression
   )

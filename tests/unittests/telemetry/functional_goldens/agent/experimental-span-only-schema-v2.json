@@ -39,6 +39,25 @@
             "status": "UNSET",
             "children": [
               {
+                "name": "execute_tool some_tool",
+                "attributes": {
+                  "gen_ai.operation.name": "execute_tool",
+                  "gen_ai.tool.description": "A sample tool.",
+                  "gen_ai.tool.name": "some_tool",
+                  "gen_ai.tool.type": "FunctionTool",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gcp.vertex.agent.llm_request": "{}",
+                  "gcp.vertex.agent.llm_response": "{}",
+                  "gcp.vertex.agent.tool_call_args": "{}",
+                  "gen_ai.tool.call.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.tool_response": "{}"
+                },
+                "status": "UNSET",
+                "children": [],
+                "logs": []
+              },
+              {
                 "name": "generate_content mock",
                 "attributes": {
                   "gen_ai.operation.name": "generate_content",
@@ -109,27 +128,7 @@
                   ]
                 },
                 "status": "UNSET",
-                "children": [
-                  {
-                    "name": "execute_tool some_tool",
-                    "attributes": {
-                      "gen_ai.operation.name": "execute_tool",
-                      "gen_ai.tool.description": "A sample tool.",
-                      "gen_ai.tool.name": "some_tool",
-                      "gen_ai.tool.type": "FunctionTool",
-                      "gen_ai.agent.name": "some_root_agent",
-                      "gcp.vertex.agent.llm_request": "{}",
-                      "gcp.vertex.agent.llm_response": "{}",
-                      "gcp.vertex.agent.tool_call_args": "{}",
-                      "gen_ai.tool.call.id": "PRESENT",
-                      "gcp.vertex.agent.event_id": "PRESENT",
-                      "gcp.vertex.agent.tool_response": "{}"
-                    },
-                    "status": "UNSET",
-                    "children": [],
-                    "logs": []
-                  }
-                ],
+                "children": [],
                 "logs": [
                   {
                     "event_name": "gen_ai.client.inference.operation.details",

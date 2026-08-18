@@ -1874,7 +1874,15 @@ class Runner:
     run_config = run_config or RunConfig()
     # Some native audio models requires the modality to be set. So we set it to
     # AUDIO by default.
+    #
+    # The default goes on a copy rather than on the caller's own RunConfig: a
+    # config that asked for nothing in particular would otherwise come back out
+    # of the run pinned to AUDIO, and a config reused for a later run would
+    # carry that choice into it. The copy is shallow on purpose. Deep copying a
+    # RunConfig raises `TypeError: cannot pickle` when `http_options` holds a
+    # live httpx client, and nothing here writes through into a sub-model.
     if run_config.response_modalities is None:
+      run_config = run_config.model_copy()
       run_config.response_modalities = [types.Modality.AUDIO]
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
