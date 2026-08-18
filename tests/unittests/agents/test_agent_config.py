@@ -814,7 +814,12 @@ def test_agent_ref_config_accepts_exactly_one_source(
 def test_llm_agent_config_rejects_model_and_model_code_together():
   """`model` and `model_code` are two ways to say the same thing."""
   with pytest.raises(
-      ValueError, match="Only one of `model` or `model_code` should be set."
+      ValueError,
+      match=(
+          r"Only one of `model` or `model_code` should be set, but both were"
+          r" provided\. Got model='gemini-2\.5-flash' and"
+          r" model_code=CodeConfig\(name='my_library\.clients\.my_litellm'\)\."
+      ),
   ):
     LlmAgentConfig(
         name="my_agent",

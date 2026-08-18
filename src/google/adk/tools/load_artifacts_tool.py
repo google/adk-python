@@ -66,6 +66,10 @@ _TEXT_LIKE_MIME_TYPES = frozenset({
     'image/svg+xml',
     'image/xml',
 })
+_SPREADSHEET_MIME_TYPES = frozenset({
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+})
 
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
@@ -140,8 +144,78 @@ def _try_extract_docx_text(data: bytes) -> str | None:
     return None
 
 
+def _parse_spreadsheet(data: bytes) -> str:
+  """Parses a spreadsheet into a markdown representation.
+
+  Args:
+    data: The bytes content of the spreadsheet file (e.g., XLSX).
+
+  Returns:
+    A markdown string representing the spreadsheet, capped at 100 rows.
+    Each sheet is rendered as a separate markdown table with a heading.
+    Returns "[Empty Spreadsheet]" if the spreadsheet contains no data.
+    Returns "[Error parsing spreadsheet: {e}]" if an error occurs during
+    parsing, including details of the exception.
+  """
+  try:
+    import pandas as pd
+
+    with pd.ExcelFile(io.BytesIO(data)) as xl:
+      output = []
+
+      # Process each sheet
+      for sheet_name in xl.sheet_names:
+        df = xl.parse(sheet_name)
+        if df.empty:
+          continue
+        # Cap rows to avoid exceeding context window limits
+        max_rows = 100
+        total_rows = len(df)
+
+        if total_rows > max_rows:
+          df_display = df.head(max_rows)
+          truncation_notice = (
+              f'\n\n[Output is limited to the first {max_rows} rows. Total '
+              f'rows: {total_rows}]'
+          )
+        else:
+          df_display = df
+          truncation_notice = ''
+
+        # Convert to markdown table
+        markdown_table = df_display.to_markdown(
+            index=False, numalign='left', stralign='left'
+        )
+
+        if markdown_table:
+          markdown_table += truncation_notice
+
+        output.append(f'### Sheet: {sheet_name}\n\n{markdown_table}')
+
+      if not output:
+        return '[Empty Spreadsheet]'
+
+      return '\n\n'.join(output)
+
+  except ImportError as e:
+    logger.warning(f'Missing dependency for spreadsheet parsing: {e!r}')
+    return (
+        f'[Missing dependency: {e!r}. Pandas and its support libraries are'
+        ' required to parse spreadsheets. Please install them using `pip'
+        ' install pandas openpyxl tabulate xlrd`.]'
+    )
+  except ValueError as e:
+    logger.warning(f'Invalid spreadsheet format or data: {e!r}')
+    return f'[Invalid spreadsheet format: {e!r}]'
+  except Exception as e:
+    logger.warning(f'Failed to parse spreadsheet: {e!r}')
+    return f'[Error parsing spreadsheet: {e!r}]'
+
+
 def as_safe_part_for_llm(
-    artifact: types.Part, artifact_name: str
+    artifact: types.Part,
+    artifact_name: str,
+    enable_spreadsheet_parsing: bool = False,
 ) -> types.Part:
   """Returns a Part that is safe to send to an LLM.
 
@@ -201,6 +275,12 @@ def as_safe_part_for_llm(
     except UnicodeDecodeError:
       return types.Part.from_text(text=data.decode('utf-8', errors='replace'))
 
+  if enable_spreadsheet_parsing and (
+      mime_type in _SPREADSHEET_MIME_TYPES
+      or artifact_name.lower().endswith(('.xlsx', '.xls'))
+  ):
+    return types.Part.from_text(text=_parse_spreadsheet(data))
+
   size_kb = len(data) / 1024
   return types.Part.from_text(
       text=(
@@ -224,6 +304,7 @@ class LoadArtifactsTool(BaseTool):
       self,
       *,
       process_artifact: ProcessArtifactCallback | None = None,
+      enable_spreadsheet_parsing: bool = False,
   ):
     """Initializes the tool.
 
@@ -239,6 +320,8 @@ class LoadArtifactsTool(BaseTool):
         returning `None` skips the artifact so it is omitted from the request.
         If a custom callback raises an exception, the error is logged and the
         artifact is skipped.
+      enable_spreadsheet_parsing: Whether to enable spreadsheet parsing
+        files (e.g., .xlsx, .xls) into text. Defaults to False.
     """
     super().__init__(
         name='load_artifacts',
@@ -248,6 +331,7 @@ NOTE: Call when you need access to artifacts (for example, uploads saved by the
 web UI)."""),
     )
     self._process_artifact: ProcessArtifactCallback | None = process_artifact
+    self._enable_spreadsheet_parsing: bool = enable_spreadsheet_parsing
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
@@ -355,7 +439,9 @@ web UI)."""),
               )
               continue
           else:
-            artifact_part = as_safe_part_for_llm(artifact, artifact_name)
+            artifact_part = as_safe_part_for_llm(
+                artifact, artifact_name, self._enable_spreadsheet_parsing
+            )
 
           if artifact_part is None:
             continue

@@ -250,6 +250,19 @@ def test_print_agent_engine_url() -> None:
     assert "playground" in call_args
 
 
+def test_print_gemini_enterprise_hint() -> None:
+  """It should print a pointer to the Gemini Enterprise registration docs."""
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy._print_gemini_enterprise_hint()
+    mocked_secho.assert_called_once()
+    call_args = mocked_secho.call_args[0][0]
+    assert "Gemini Enterprise" in call_args
+    assert (
+        "https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent"
+        in call_args
+    )
+
+
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_to_agent_engine_happy_path(
     monkeypatch: pytest.MonkeyPatch,

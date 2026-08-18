@@ -854,6 +854,62 @@ class TestRestApiTool:
         request_params["url"] == "https://example.com/test/123"
     )  # Path param replaced
 
+  def test_prepare_request_params_path_param_is_percent_encoded(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    """A path parameter value must not be able to introduce new path
+    segments, a query string, or a fragment into the constructed URL.
+
+    This ensures security by escaping user-controlled values.
+
+    Path parameter values ultimately come from the model's tool-call
+    arguments. Without percent-encoding, a value such as '../../admin'
+    could redirect the request -- along with this tool's configured auth
+    credentials -- to an endpoint the OpenAPI spec never declared.
+    """
+    mock_operation = Operation(operationId="test_op")
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="user_id",
+            py_name="user_id",
+            param_location="path",
+            param_schema=OpenAPISchema(type="string"),
+        )
+    ]
+    endpoint_with_path = OperationEndpoint(
+        base_url="https://example.com",
+        path="/users/{user_id}/messages",
+        method="get",
+    )
+    tool.endpoint = endpoint_with_path
+
+    # Path traversal attempt: '/' must be escaped so this cannot leave the
+    # {user_id} path segment.
+    request_params = tool._prepare_request_params(
+        params, {"user_id": "../../admin/v1/tenants"}
+    )
+    assert request_params["url"] == (
+        "https://example.com/users/..%2F..%2Fadmin%2Fv1%2Ftenants/messages"
+    )
+
+    # Query/fragment smuggling attempt: '?' and '#' must be escaped so a
+    # path parameter value cannot introduce a query string or fragment.
+    request_params = tool._prepare_request_params(
+        params, {"user_id": "me?impersonate=other-user#"}
+    )
+    assert request_params["url"] == (
+        "https://example.com/users/me%3Fimpersonate%3Dother-user%23/messages"
+    )
+    assert request_params["params"] == {}  # nothing smuggled into query params
+
   def test_prepare_request_params_header_param(
       self,
       sample_endpoint,

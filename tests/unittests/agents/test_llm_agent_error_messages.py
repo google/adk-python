@@ -15,6 +15,7 @@
 """Tests for enhanced error messages in agent handling."""
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.genai import types
 import pytest
 
 
@@ -88,3 +89,60 @@ def test_agent_not_found_shows_all_agents():
   assert 'agent_0' in error_msg  # First agent shown
   assert 'agent_99' in error_msg  # Last agent also shown
   assert 'showing first 20 of' not in error_msg  # No truncation message
+
+
+class TestSetDefaultModelErrors:
+  """Tests for LlmAgent.set_default_model error messages."""
+
+  def test_wrong_type_shows_actual_type(self):
+    """TypeError should include the actual type that was passed."""
+    with pytest.raises(TypeError, match=r'got int'):
+      LlmAgent.set_default_model(123)
+
+  def test_wrong_type_list_shows_actual_type(self):
+    """TypeError should show 'list' when a list is passed."""
+    with pytest.raises(TypeError, match=r'got list'):
+      LlmAgent.set_default_model(['gemini-2.5-flash'])
+
+  def test_empty_string_still_raises_value_error(self):
+    """Empty string should still raise ValueError (not changed)."""
+    with pytest.raises(ValueError, match=r'non-empty string'):
+      LlmAgent.set_default_model('')
+
+
+class TestSetDefaultLiveModelErrors:
+  """Tests for LlmAgent.set_default_live_model error messages."""
+
+  def test_wrong_type_shows_actual_type(self):
+    """TypeError should include the actual type that was passed."""
+    with pytest.raises(TypeError, match=r'got dict'):
+      LlmAgent.set_default_live_model({})
+
+  def test_empty_string_still_raises_value_error(self):
+    """Empty string should still raise ValueError (not changed)."""
+    with pytest.raises(ValueError, match=r'non-empty string'):
+      LlmAgent.set_default_live_model('')
+
+
+class TestValidateGenerateContentConfigErrors:
+  """Tests for LlmAgent.validate_generate_content_config error messages."""
+
+  def test_tools_error_includes_move_guidance(self):
+    """Error should tell users to move tools to LlmAgent(tools=[...])."""
+    config = types.GenerateContentConfig(
+        tools=[types.Tool(function_declarations=[])]
+    )
+    with pytest.raises(ValueError, match=r'Move your tools'):
+      LlmAgent.validate_generate_content_config(config)
+
+  def test_system_instruction_error_includes_move_guidance(self):
+    """Error should tell users to move instruction to LlmAgent(instruction=...)."""
+    config = types.GenerateContentConfig(system_instruction='You are helpful.')
+    with pytest.raises(ValueError, match=r'Move your instruction'):
+      LlmAgent.validate_generate_content_config(config)
+
+  def test_response_schema_error_includes_move_guidance(self):
+    """Error should tell users to move schema to LlmAgent(output_schema=...)."""
+    config = types.GenerateContentConfig(response_schema={'type': 'string'})
+    with pytest.raises(ValueError, match=r'Move your schema'):
+      LlmAgent.validate_generate_content_config(config)

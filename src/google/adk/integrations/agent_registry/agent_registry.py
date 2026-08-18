@@ -337,6 +337,43 @@ class AgentRegistry:
 
     return None, None, None
 
+  def _resolve_auth_provider_scheme(
+      self,
+      resource_id: str | None,
+      resource_name: str,
+      *,
+      continue_uri: str | None = None,
+  ) -> GcpAuthProviderScheme | None:
+    """Resolves the auth scheme a registered resource is bound to.
+
+    Args:
+      resource_id: The stable identifier of the resource (for example an
+        `agentId` or an `mcpServerId`), matched against the binding targets.
+      resource_name: The resource name, only used for logging.
+      continue_uri: Optional continue URI to override what is in the auth
+        provider.
+
+    Returns:
+      The scheme for the bound auth provider, or None if the resource is not
+      bound to one or the bindings could not be read.
+    """
+    if not resource_id:
+      return None
+    try:
+      bindings_data = self._make_request("bindings")
+      for b in bindings_data.get("bindings", []):
+        target_id = b.get("target", {}).get("identifier", "")
+        if not target_id.endswith(resource_id):
+          continue
+        auth_provider = b.get("authProviderBinding", {}).get("authProvider")
+        if auth_provider:
+          return GcpAuthProviderScheme(
+              name=auth_provider, continue_uri=continue_uri
+          )
+    except Exception as e:  # pylint: disable=broad-except
+      logger.warning("Failed to fetch bindings for %s: %s", resource_name, e)
+    return None
+
   def _clean_name(self, name: str) -> str:
     """Cleans a string to be a valid Python identifier for agent names."""
     clean = re.sub(r"[^a-zA-Z0-9_]", "_", name)
@@ -430,22 +467,10 @@ class AgentRegistry:
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
       )
 
-    if mcp_server_id and not auth_scheme:
-      try:
-        bindings_data = self._make_request("bindings")
-        for b in bindings_data.get("bindings", []):
-          target_id = b.get("target", {}).get("identifier", "")
-          if target_id.endswith(mcp_server_id):
-            auth_provider = b.get("authProviderBinding", {}).get("authProvider")
-            if auth_provider:
-              auth_scheme = GcpAuthProviderScheme(
-                  name=auth_provider, continue_uri=continue_uri
-              )
-              break
-      except Exception as e:
-        logger.warning(
-            f"Failed to fetch bindings for MCP Server {mcp_server_name}: {e}"
-        )
+    if not auth_scheme:
+      auth_scheme = self._resolve_auth_provider_scheme(
+          mcp_server_id, mcp_server_name, continue_uri=continue_uri
+      )
 
     connection_params = StreamableHTTPConnectionParams(
         url=endpoint_uri,

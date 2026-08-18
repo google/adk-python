@@ -132,6 +132,7 @@ class TelemetryContext:
   span: tracing.GenerateContentSpan | trace.Span | None = None
   skill_telemetry: SkillTelemetry | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
+  _inference_span_ended: bool = False
   _inference_call_count: int = 0
   _tool_call_count: int = 0
 
@@ -157,7 +158,21 @@ class TelemetryContext:
       self, invocation_context: InvocationContext, response: LlmResponse
   ) -> None:
     self._llm_responses.append(response)
+    # Anything after the span ended (a second complete response for the same
+    # call) can no longer be recorded on it, but still counts for the metrics.
+    if self._inference_span_ended:
+      return
+
     tracing.trace_inference_result(invocation_context, self.span, response)
+    # A non-partial response is the end of the inference: end the span before
+    # the response is handed back to the caller, so what the caller does with
+    # it (running the tool the model asked for) is not nested inside the
+    # inference span. Partial chunks keep it open until the final one arrives.
+    if not response.partial and isinstance(
+        self.span, tracing.GenerateContentSpan
+    ):
+      self.span._close()  # pylint: disable=protected-access
+      self._inference_span_ended = True
 
 
 def _record_agent_metrics(
