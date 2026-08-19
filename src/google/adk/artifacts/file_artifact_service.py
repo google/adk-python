@@ -362,7 +362,14 @@ class FileArtifactService(BaseArtifactService):
 
   def _base_root(self, app_name: str, user_id: str) -> Path:
     """Returns the app-scoped root holding a user's artifacts."""
-    _validate_path_segment(app_name, "app_name")
+    # An app name is allowed to nest. Vertex-managed sessions address an app by
+    # its full `projects/{p}/locations/{l}/reasoningEngines/{id}` resource name,
+    # so rejecting interior separators here would make every artifact call from
+    # those deployments fail. The shared validator still rejects a leading
+    # separator, traversal segments, null bytes and drive-qualified values, so
+    # the name cannot escape the root. `user_id` keeps the stricter rule below,
+    # which admits no separators at all.
+    artifact_util.validate_path_segment(app_name, "app_name")
     _validate_path_segment(user_id, "user_id")
     return self.root_dir / "apps" / app_name / "users" / user_id
 

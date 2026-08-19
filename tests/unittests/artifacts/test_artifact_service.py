@@ -960,8 +960,9 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
         "valid/../..",
         "..",
         ".",
-        "has/slash",
-        "back\\slash",
+        "/leading/slash",
+        "\\leading\\backslash",
+        r"C:\absolute",
         "null\x00byte",
         "",
     ],
@@ -980,6 +981,31 @@ async def test_file_save_artifact_rejects_traversal_in_app_name(
         filename="safe.txt",
         artifact=part,
     )
+
+
+@pytest.mark.asyncio
+async def test_file_artifact_service_accepts_nested_app_name(tmp_path):
+  """A Vertex-style resource name is addressable as an app name."""
+  app_name = "projects/p1/locations/us-central1/reasoningEngines/12345"
+  root_dir = tmp_path / "artifacts"
+  artifact_service = FileArtifactService(root_dir=root_dir)
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id="user123",
+      session_id="sess123",
+      filename="report.txt",
+      artifact=types.Part(text="content"),
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id="user123",
+      session_id="sess123",
+      filename="report.txt",
+  )
+
+  assert loaded.text == "content"
+  assert (root_dir / "apps" / app_name).is_dir()
 
 
 @pytest.mark.asyncio
