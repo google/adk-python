@@ -537,7 +537,7 @@ def convert_a2a_task_to_event(
         _compat.TS_COMPLETED,
         _compat.TS_FAILED,
         _compat.TS_CANCELED,
-    ):
+    ) and output_parts:
      event_actions.skip_summarization = True
 
     return _create_event(
