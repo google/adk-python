@@ -24,6 +24,7 @@ The blob name format used depends on whether the filename has a user namespace:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 from typing import Any
 from typing import Optional
@@ -604,4 +605,148 @@ class GcsArtifactService(BaseArtifactService):
         session_id,
         filename,
         version,
+    )
+
+  def _get_authenticated_url_sync(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      filename: str,
+      version: Optional[int] = None,
+  ) -> Optional[str]:
+    """Generates an authenticated browser URL for an artifact."""
+    if version is None:
+      versions = self._list_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      if not versions:
+        return None
+      version = max(versions)
+
+    blob_name = self._get_blob_name(
+        app_name, user_id, filename, version, session_id
+    )
+    blob = self.bucket.get_blob(blob_name)
+    if not blob:
+      return None
+
+    return f"https://storage.cloud.google.com/{self.bucket_name}/{blob_name}"
+
+  async def get_authenticated_url(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+      version: Optional[int] = None,
+  ) -> Optional[str]:
+    """Generates an authenticated browser URL for an artifact.
+
+    The URL returned requires the user to be authenticated with a Google
+    Account that has read permission for the object.
+
+    Args:
+        app_name: The name of the application.
+        user_id: The ID of the user who owns the artifact.
+        filename: The name of the artifact file.
+        session_id: The ID of the session (ignored for user-namespaced files).
+        version: The version of the artifact. If None, the latest version will be used.
+
+    Returns:
+        The authenticated GCS URL (https://storage.cloud.google.com/...), or None if the artifact does not exist.
+    """
+    return await asyncio.to_thread(
+        self._get_authenticated_url_sync,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+        version,
+    )
+
+  def _get_signed_url_sync(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      filename: str,
+      version: Optional[int] = None,
+      expiration: Optional[
+          Union[datetime.datetime, datetime.timedelta, int]
+      ] = None,
+      method: str = "GET",
+      kwargs: Optional[dict[str, Any]] = None,
+  ) -> Optional[str]:
+    """Generates a time-limited signed URL for an artifact."""
+    if version is None:
+      versions = self._list_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      if not versions:
+        return None
+      version = max(versions)
+
+    blob_name = self._get_blob_name(
+        app_name, user_id, filename, version, session_id
+    )
+    blob = self.bucket.get_blob(blob_name)
+    if not blob:
+      return None
+
+    if expiration is None:
+      expiration = datetime.timedelta(hours=1)
+
+    return blob.generate_signed_url(
+        expiration=expiration,
+        method=method,
+        **(kwargs or {}),
+    )
+
+  async def get_signed_url(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+      version: Optional[int] = None,
+      expiration: Optional[
+          Union[datetime.datetime, datetime.timedelta, int]
+      ] = None,
+      method: str = "GET",
+      **kwargs: Any,
+  ) -> Optional[str]:
+    """Generates a time-limited signed URL for an artifact.
+
+    Args:
+        app_name: The name of the application.
+        user_id: The ID of the user who owns the artifact.
+        filename: The name of the artifact file.
+        session_id: The ID of the session (ignored for user-namespaced files).
+        version: The version of the artifact. If None, the latest version will be used.
+        expiration: Time when the signed URL expires (datetime, timedelta, or epoch seconds). Defaults to 1 hour if not specified.
+        method: HTTP method allowed for the signed URL (default: "GET").
+        **kwargs: Additional keyword arguments forwarded to `Blob.generate_signed_url`.
+
+    Returns:
+        The signed URL string, or None if the artifact does not exist.
+    """
+    return await asyncio.to_thread(
+        self._get_signed_url_sync,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+        version,
+        expiration,
+        method,
+        kwargs,
     )

@@ -17,6 +17,7 @@
 """Tests for the artifact service."""
 
 from datetime import datetime
+from datetime import timedelta
 import enum
 import json
 from pathlib import Path
@@ -110,6 +111,15 @@ class MockBlob:
     """Mocks deleting a blob."""
     self.content = None
     self.content_type = None
+
+  def generate_signed_url(
+      self,
+      expiration: Any = None,
+      method: str = "GET",
+      **kwargs: Any,
+  ) -> str:
+    """Mocks generating a signed URL for the blob."""
+    return f"https://storage.googleapis.com/test_bucket/{self.name}?signed=true&method={method}"
 
 
 class MockBucket:
@@ -2123,6 +2133,92 @@ async def test_gcs_load_artifact_returns_none_for_missing_version() -> None:
   assert (
       await service.load_artifact(**scope, filename="notes.txt", version=7)
       is None
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_latest_version() -> None:
+  """GcsArtifactService generates an authenticated URL for latest version."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v0")
+  )
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v1")
+  )
+
+  url = await service.get_authenticated_url(**scope, filename="notes.txt")
+  assert (
+      url
+      == "https://storage.cloud.google.com/test_bucket/app/user1/sess1/notes.txt/1"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_specific_version() -> None:
+  """GcsArtifactService generates an authenticated URL for a specific version."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v0")
+  )
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v1")
+  )
+
+  url = await service.get_authenticated_url(
+      **scope, filename="notes.txt", version=0
+  )
+  assert (
+      url
+      == "https://storage.cloud.google.com/test_bucket/app/user1/sess1/notes.txt/0"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_returns_none_for_missing() -> None:
+  """GcsArtifactService returns None for authenticated URL of missing artifact."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  assert (
+      await service.get_authenticated_url(**scope, filename="nonexistent.txt")
+      is None
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_signed_url_latest_version() -> None:
+  """GcsArtifactService generates a signed URL for latest version."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v0")
+  )
+
+  url = await service.get_signed_url(
+      **scope,
+      filename="notes.txt",
+      expiration=timedelta(hours=2),
+  )
+  assert (
+      url
+      == "https://storage.googleapis.com/test_bucket/app/user1/sess1/notes.txt/0?signed=true&method=GET"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_signed_url_returns_none_for_missing() -> None:
+  """GcsArtifactService returns None for signed URL of missing artifact."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  assert (
+      await service.get_signed_url(**scope, filename="nonexistent.txt") is None
   )
 
 
