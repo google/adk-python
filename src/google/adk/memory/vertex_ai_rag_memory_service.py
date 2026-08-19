@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 from collections import OrderedDict
@@ -118,48 +119,67 @@ class VertexAiRagMemoryService(BaseMemoryService):
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, suffix=".txt"
-    ) as temp_file:
+    rag_resources = self._vertex_rag_store.rag_resources or ()
+    corpus_names = tuple(
+        resource.rag_corpus for resource in rag_resources if resource.rag_corpus
+    )
+    if not corpus_names or len(corpus_names) != len(rag_resources):
+      raise ValueError("rag_corpus must be set on every RAG resource.")
 
-      output_lines = []
-      for event in session.events:
-        if not event.content or not event.content.parts:
-          continue
-        text_parts = [
-            part.text.replace("\n", " ")
-            for part in event.content.parts
-            if part.text
-        ]
-        if text_parts:
-          output_lines.append(
-              json.dumps({
-                  "author": event.author,
-                  "timestamp": event.timestamp,
-                  "text": ".".join(text_parts),
-              })
-          )
-      output_string = "\n".join(output_lines)
-      temp_file.write(output_string)
-      temp_file_path = temp_file.name
-
-    if not self._vertex_rag_store.rag_resources:
-      raise ValueError("Rag resources must be set.")
+    output_lines = []
+    for event in session.events:
+      if not event.content or not event.content.parts:
+        continue
+      text_parts = [
+          part.text.replace("\n", " ")
+          for part in event.content.parts
+          if part.text
+      ]
+      if text_parts:
+        output_lines.append(
+            json.dumps({
+                "author": event.author,
+                "timestamp": event.timestamp,
+                "text": ".".join(text_parts),
+            })
+        )
+    output_string = "\n".join(output_lines)
 
     from ..dependencies.vertexai import rag
 
-    for rag_resource in self._vertex_rag_store.rag_resources:
-      rag.upload_file(
-          corpus_name=rag_resource.rag_corpus,
-          path=temp_file_path,
-          # this is the temp workaround as upload file does not support
-          # adding metadata, thus use display_name to store the session info.
-          display_name=_build_source_display_name(
-              session.app_name, session.user_id, session.id
-          ),
-      )
+    temp_file_path: str | None = None
+    try:
+      with tempfile.NamedTemporaryFile(
+          mode="w",
+          delete=False,
+          encoding="utf-8",
+          suffix=".txt",
+      ) as temp_file:
+        temp_file_path = temp_file.name
+        temp_file.write(output_string)
 
-    os.remove(temp_file_path)
+      # Fails fast: the RAG API cannot roll back corpora already written.
+      for corpus_name in corpus_names:
+        # The SDK call is synchronous, so it runs on a worker thread rather
+        # than blocking the event loop for the whole HTTP round trip.
+        await asyncio.to_thread(
+            rag.upload_file,
+            corpus_name=corpus_name,
+            path=temp_file_path,
+            # this is the temp workaround as upload file does not support
+            # adding metadata, thus use display_name to store the session info.
+            display_name=_build_source_display_name(
+                session.app_name, session.user_id, session.id
+            ),
+        )
+    finally:
+      # The transcript is plaintext, so it is removed on failure and
+      # cancellation as well as on success.
+      if temp_file_path:
+        try:
+          os.remove(temp_file_path)
+        except FileNotFoundError:
+          pass
 
   @override
   async def search_memory(
@@ -169,7 +189,10 @@ class VertexAiRagMemoryService(BaseMemoryService):
     from ..dependencies.vertexai import rag
     from ..events.event import Event
 
-    response = rag.retrieval_query(
+    # The SDK call is synchronous, so it runs on a worker thread rather than
+    # blocking the event loop for the whole HTTP round trip.
+    response = await asyncio.to_thread(
+        rag.retrieval_query,
         text=query,
         rag_resources=self._vertex_rag_store.rag_resources,
         rag_corpora=self._vertex_rag_store.rag_corpora,
