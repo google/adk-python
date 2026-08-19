@@ -2086,6 +2086,23 @@ async def test_content_to_message_param_user_message():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_user_message_without_parts(parts):
+  # parts must not raise.
+  content = types.Content(role="user", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_assistant_message_without_parts(parts):
+  content = types.Content(role="assistant", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
 async def test_content_to_message_param_user_message_with_file_uri(
     file_uri, mime_type

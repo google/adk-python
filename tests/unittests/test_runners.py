@@ -2681,5 +2681,307 @@ async def test_runner_picks_coordinator_when_has_remote_a2a_task_subagent():
     assert called_node == coordinator
 
 
+@pytest.mark.asyncio
+async def test_run_async_does_not_leak_context_base_node():
+  """Caller OpenTelemetry context is preserved during run_async iteration for BaseNode."""
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow._base_node import BaseNode
+  from opentelemetry import context as otel_context
+
+  class _TestEchoNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield "echo"
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      node=_TestEchoNode(name="test_node"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  test_key = otel_context.create_key("test_key_node")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_node")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_node"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_run_async_does_not_leak_context_base_agent():
+  """Caller OpenTelemetry context is preserved during run_async iteration for BaseAgent."""
+  from opentelemetry import context as otel_context
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  test_key = otel_context.create_key("test_key_agent")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_agent")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_agent"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_run_node_async_does_not_leak_context():
+  """Caller OpenTelemetry context is preserved during _run_node_async iteration."""
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow._base_node import BaseNode
+  from opentelemetry import context as otel_context
+
+  class _TestEchoNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield "echo"
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      node=_TestEchoNode(name="test_node"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  test_key = otel_context.create_key("test_key_run_node_async")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_run_node_async")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner._run_node_async(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+            yield_user_message=True,
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_run_node_async"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_run_async_does_not_leak_context_llm_agent():
+  """Caller OpenTelemetry context is preserved during run_async iteration for LlmAgent."""
+  from opentelemetry import context as otel_context
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockLlmAgent("test_llm_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  test_key = otel_context.create_key("test_key_llm")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_llm")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_llm"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_run_live_does_not_leak_context():
+  """Caller OpenTelemetry context is preserved during run_live iteration."""
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+  from opentelemetry import context as otel_context
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockLiveAgent("test_live_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  live_queue = LiveRequestQueue()
+  test_key = otel_context.create_key("test_key_live")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_live")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner.run_live(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            live_request_queue=live_queue,
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_live"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_base_agent_run_async_does_not_leak_context():
+  """Caller OpenTelemetry context is preserved during BaseAgent.run_async iteration."""
+  from google.adk.plugins.plugin_manager import PluginManager
+  from opentelemetry import context as otel_context
+
+  agent = MockAgent("test_agent")
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  inv_ctx = InvocationContext(
+      session=session,
+      session_service=session_service,
+      plugin_manager=PluginManager(),
+      agent=agent,
+      invocation_id="inv_test",
+  )
+
+  test_key = otel_context.create_key("test_key_base_agent_run_async")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_base_agent_run_async")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(agent.run_async(parent_context=inv_ctx)) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert (
+            otel_context.get_value(test_key)
+            == "caller_val_base_agent_run_async"
+        )
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_base_agent_run_live_does_not_leak_context():
+  """Caller OpenTelemetry context is preserved during BaseAgent.run_live iteration."""
+  from google.adk.plugins.plugin_manager import PluginManager
+  from opentelemetry import context as otel_context
+
+  agent = MockLiveAgent("test_live_agent")
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  inv_ctx = InvocationContext(
+      session=session,
+      session_service=session_service,
+      plugin_manager=PluginManager(),
+      agent=agent,
+      invocation_id="inv_test_live",
+  )
+
+  test_key = otel_context.create_key("test_key_base_agent_run_live")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_base_agent_run_live")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(agent.run_live(parent_context=inv_ctx)) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert (
+            otel_context.get_value(test_key) == "caller_val_base_agent_run_live"
+        )
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
 if __name__ == "__main__":
   pytest.main([__file__])

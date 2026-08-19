@@ -4617,10 +4617,6 @@ def test_get_eval_result_returns_saved_eval_set_result(
   assert data["evalSetId"] == "my_eval_set"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="legacy create-eval-set route references an undefined name",
-)
 def test_create_eval_set_legacy_route_creates_eval_set(
     test_app, mock_eval_sets_manager
 ):
