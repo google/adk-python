@@ -13,12 +13,20 @@
 # limitations under the License.
 """Tests for edge cases of resuming invocations."""
 
+import asyncio
 import copy
+from typing import AsyncGenerator
 
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.genai import types
 from google.genai.types import FunctionResponse
 from google.genai.types import Part
 import pytest
@@ -40,6 +48,9 @@ TRANSFER_RESPONSE_PART = Part.from_function_response(
 def test_tool():
   """A test tool; returns None to simulate a pending long-running operation."""
   return None
+
+
+test_tool.__test__ = False
 
 
 @pytest.mark.xfail(
@@ -315,3 +326,103 @@ async def test_resume_any_invocation():
       ),
       (root_agent.name, testing_utils.END_OF_AGENT),
   ]
+
+
+@pytest.mark.asyncio
+async def test_resumable_parallel_agent_escalation_short_circuits_persisted_run():
+  """Runner persists fast+escalating events and marks the parent run complete."""
+
+  class _ParallelEscalationTestingAgent(BaseAgent):
+    """A testing agent that emits a single event after a delay."""
+
+    delay: float = 0
+    response_text: str = ""
+    escalate: bool = False
+    emit_follow_up_after_first_event: bool = False
+
+    def _create_event(
+        self,
+        ctx: InvocationContext,
+        text: str,
+        *,
+        escalate: bool = False,
+    ) -> Event:
+      return Event(
+          author=self.name,
+          branch=ctx.branch,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(role="model", parts=[types.Part(text=text)]),
+          actions=EventActions(escalate=True) if escalate else EventActions(),
+      )
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      await asyncio.sleep(self.delay)
+      yield self._create_event(ctx, self.response_text, escalate=self.escalate)
+      if self.emit_follow_up_after_first_event:
+        yield self._create_event(ctx, "This event should not be emitted.")
+
+  fast_agent = _ParallelEscalationTestingAgent(
+      name="fast_agent",
+      delay=0.05,
+      response_text="fast response",
+  )
+  escalating_agent = _ParallelEscalationTestingAgent(
+      name="escalating_agent",
+      delay=0.1,
+      response_text="escalating response",
+      escalate=True,
+      emit_follow_up_after_first_event=True,
+  )
+  slow_agent = _ParallelEscalationTestingAgent(
+      name="slow_agent",
+      delay=0.5,
+      response_text="slow response",
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_app",
+          root_agent=ParallelAgent(
+              name="root_agent",
+              sub_agents=[fast_agent, escalating_agent, slow_agent],
+          ),
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
+
+  invocation_events = await runner.run_async("test user query")
+  simplified_events = testing_utils.simplify_resumable_app_events(
+      copy.deepcopy(invocation_events)
+  )
+
+  assert simplified_events == [
+      ("root_agent", {}),
+      ("fast_agent", "fast response"),
+      ("escalating_agent", "escalating response"),
+      ("root_agent", testing_utils.END_OF_AGENT),
+  ]
+
+  session = await runner.runner.session_service.get_session(
+      app_name=runner.app_name,
+      user_id="test_user",
+      session_id=runner.session_id,
+  )
+  persisted_events = [
+      event
+      for event in session.events
+      if event.invocation_id == invocation_events[0].invocation_id
+      and event.author != "user"
+  ]
+  assert (
+      testing_utils.simplify_resumable_app_events(
+          copy.deepcopy(persisted_events)
+      )
+      == simplified_events
+  )
+  assert all(event.author != "slow_agent" for event in persisted_events)
+
+  # A completed resumable invocation should not restart cancelled siblings.
+  assert not await runner.run_async(
+      invocation_id=invocation_events[0].invocation_id
+  )

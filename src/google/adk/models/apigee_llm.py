@@ -35,6 +35,7 @@ import httpx
 import tenacity
 from typing_extensions import override
 
+from ..utils import _json_utils
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -646,11 +647,12 @@ class CompletionsHTTPClient:
         if line == '[DONE]':
           break
         try:
-          for res in self._parse_streaming_line(line, accumulator):
-            yield res
-        except json.JSONDecodeError:
+          chunk = _json_utils.safe_json_loads(line, context='streaming chunk')
+        except ValueError:
           logger.warning('Failed to parse JSON chunk: %s', line)
           continue
+        for res in self._parse_streaming_line(chunk, accumulator):
+          yield res
 
   def _construct_payload(
       self, llm_request: LlmRequest, stream: bool
@@ -934,21 +936,19 @@ class CompletionsHTTPClient:
 
   def _parse_streaming_line(
       self,
-      line: str,
+      chunk: dict[str, Any],
       accumulator: ChatCompletionsResponseHandler,
   ) -> Generator[LlmResponse]:
     """Parses a single line from the streaming response.
 
     Args:
-      line: A single line from the streaming response, expected to be a JSON
-        string.
+      chunk: The parsed JSON chunk.
       accumulator: An accumulator to manage partial chat completion choices
         across multiple chunks.
 
     Yields:
       An LlmResponse object parsed from the streaming line.
     """
-    chunk = json.loads(line)
     for response in accumulator.process_chunk(chunk):
       yield response
 
@@ -1264,15 +1264,14 @@ class ChatCompletionsResponseHandler:
     func = tool_call.get('function', {})
     args_delta = func.get('arguments', '')
     if args_delta:
-      try:
-        args = json.loads(args_delta)
-        chunk_function_call.args = args
-        if not function_call.args:
-          function_call.args = dict(args)
-        else:
-          function_call.args.update(args)
-      except json.JSONDecodeError as e:
-        raise ValueError(f'Failed to parse arguments: {args_delta}') from e
+      args = _json_utils.safe_json_loads(
+          args_delta, context=f'tool call arguments: {args_delta}'
+      )
+      chunk_function_call.args = args
+      if not function_call.args:
+        function_call.args = dict(args)
+      else:
+        function_call.args.update(args)
 
     func_name = func.get('name')
     if func_name:

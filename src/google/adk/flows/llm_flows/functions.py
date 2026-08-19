@@ -337,7 +337,17 @@ def build_auth_request_event(
   parts: list[types.Part] = []
   long_running_tool_ids: set[str] = set()
 
+  deduplicated_requests: dict[str, AuthConfig] = {}
+  seen_keys = set()
   for function_call_id, auth_config in auth_requests.items():
+    key = auth_config.credential_key
+    if not key:
+      deduplicated_requests[function_call_id] = auth_config
+    elif key not in seen_keys:
+      seen_keys.add(key)
+      deduplicated_requests[function_call_id] = auth_config
+
+  for function_call_id, auth_config in deduplicated_requests.items():
     request_id = generate_client_function_call_id()
     request_euc_function_call = types.FunctionCall(
         name=REQUEST_EUC_FUNCTION_CALL_NAME,

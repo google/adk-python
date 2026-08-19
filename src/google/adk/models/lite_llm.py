@@ -246,6 +246,19 @@ _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 # payload must still be shaped for the provider named in the next segment.
 _PROXY_PROVIDER = "litellm_proxy"
 
+_MIME_TYPE_TO_EXTENSION = {
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        ".docx"
+    ),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
+        ".pptx"
+    ),
+    "application/json": ".json",
+    "application/x-sh": ".sh",
+}
+
 _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
@@ -1526,8 +1539,14 @@ async def _get_content(
               if model.lower().startswith(_PROXY_PROVIDER + "/")
               else provider
           )
+          ext = (
+              mimetypes.guess_extension(mime_type)
+              or _MIME_TYPE_TO_EXTENSION.get(mime_type)
+              or ".bin"
+          )
+          filename = f"document{ext}"
           file_response = await litellm.acreate_file(
-              file=part.inline_data.data,
+              file=(filename, part.inline_data.data, mime_type),
               purpose="assistants",
               custom_llm_provider=upload_provider,
           )
