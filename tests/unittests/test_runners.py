@@ -883,6 +883,58 @@ def test_run_reports_agent_cancellation_as_runtime_error():
 
 
 @pytest.mark.asyncio
+async def test_run_async_applies_state_delta_when_resuming_without_new_message():
+  """Resuming by invocation_id should still apply a caller-supplied delta."""
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+  runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+  # Seed the session with an invocation to resume.
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  invocation_id = session.events[0].invocation_id
+
+  state_delta = {"resumed_key": "resumed_value"}
+
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          invocation_id=invocation_id,
+          state_delta=state_delta,
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  assert session.state["resumed_key"] == "resumed_value"
+
+
+@pytest.mark.asyncio
 async def test_run_async_propagates_invocation_id():
   """run_async should propagate invocation_id to the invocation context and events."""
 
