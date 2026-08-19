@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -32,9 +33,11 @@ from click.testing import CliRunner
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.cli import cli_tools_click
 from google.adk.evaluation.eval_case import EvalCase
+from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
+from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from pydantic import BaseModel
 import pytest
 
@@ -713,6 +716,56 @@ def test_cli_eval_with_eval_set_id(
       app_name=app_name
   )
   assert len(eval_set_results) == 2
+
+
+def test_cli_eval_registers_the_custom_metric_path_from_the_config(
+    mock_load_eval_set_from_file,
+    mock_get_root_agent,
+    tmp_path,
+):
+  """A custom metric declared in the config resolves without a metric path."""
+  metric_name = "custom_metric_from_cli_config"
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_set_file = tmp_path / "my_evals.json"
+  eval_set_file.write_text("{}")
+  mock_load_eval_set_from_file.return_value = EvalSet(
+      eval_set_id="my_evals",
+      eval_cases=[EvalCase(eval_id="case1", conversation=[])],
+  )
+
+  config_file = tmp_path / "eval_config.json"
+  config_file.write_text(
+      json.dumps({
+          "criteria": {"tool_trajectory_avg_score": 1.0},
+          "customMetrics": {metric_name: {"codeConfig": {"name": "math.sqrt"}}},
+      })
+  )
+
+  try:
+    result = CliRunner().invoke(
+        cli_tools_click.cli_eval,
+        [
+            str(agent_path),
+            str(eval_set_file),
+            "--config_file_path",
+            str(config_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    # The metric carries no path of its own; the config's path is the one used.
+    evaluator = DEFAULT_METRIC_EVALUATOR_REGISTRY.get_evaluator(
+        EvalMetric(metric_name=metric_name, threshold=0.5)
+    )
+    assert evaluator._metric_function is math.sqrt
+  finally:
+    DEFAULT_METRIC_EVALUATOR_REGISTRY._registry.pop(metric_name, None)
+    DEFAULT_METRIC_EVALUATOR_REGISTRY._custom_function_paths.pop(
+        metric_name, None
+    )
 
 
 def test_cli_create_eval_set(tmp_path: Path):
