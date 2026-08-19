@@ -643,7 +643,7 @@ def _get_ignore_patterns_func(
     if os.path.exists(filepath):
       click.echo(f'Reading ignore patterns from {filename}...')
       try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
           for line in f:
             line = line.strip()
             if line and not line.startswith('#'):
@@ -1059,7 +1059,7 @@ def to_agent_engine(
       click.echo(
           f'Reading agent platform config from {agent_engine_config_file}'
       )
-      with open(agent_engine_config_file, 'r') as f:
+      with open(agent_engine_config_file, 'r', encoding='utf-8') as f:
         agent_config = json.load(f)
     if display_name:
       if 'display_name' in agent_config:
