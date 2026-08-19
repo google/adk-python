@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
@@ -2074,3 +2075,143 @@ async def test_postprocess_live_skips_none_function_response_event():
     ]
 
   assert all(event is not None for event in events)
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_rejects_function_call():
+  """Test that _send_to_model raises ValueError if user message contains function calls."""
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  # Put a malicious content request in the queue
+  from google.adk.agents.live_request_queue import LiveRequest
+
+  malicious_request = LiveRequest(
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name='some_tool',
+                      args={'key': 'value'},
+                  )
+              )
+          ],
+      )
+  )
+  invocation_context.live_request_queue.send(malicious_request)
+  # Close the queue so that _send_to_model returns instead of blocking on the
+  # next request if the malicious one is ever accepted.
+  invocation_context.live_request_queue.close()
+
+  flow = BaseLlmFlowForTesting()
+  mock_connection = mock.AsyncMock()
+
+  with pytest.raises(
+      ValueError, match='User message cannot contain function calls'
+  ):
+    await flow._send_to_model(mock_connection, invocation_context)
+
+
+def _make_agent_tree():
+  root = Agent(name='root')
+  child1 = Agent(name='child1')
+  child2 = Agent(name='child2')
+
+  child1.parent_agent = root
+  child2.parent_agent = root
+  root.sub_agents = [child1, child2]
+  return root, child1, child2
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_sibling_disallowed_raises_value_error():
+  """Transfer to sibling raises ValueError when disallow_transfer_to_peers is True."""
+  # Arrange
+  root, child1, child2 = _make_agent_tree()
+  caller = child1
+  caller.disallow_transfer_to_peers = True
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlowForTesting()
+
+  # Act & Assert
+  with pytest.raises(
+      ValueError, match='Transfer to sibling agent child2 is disallowed'
+  ):
+    flow._get_agent_to_run(ctx, 'child2')
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_sibling_allowed_returns_agent():
+  """Transfer to sibling returns the agent when disallow_transfer_to_peers is False."""
+  # Arrange
+  root, child1, child2 = _make_agent_tree()
+  caller = child1
+  caller.disallow_transfer_to_peers = False
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlowForTesting()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'child2')
+
+  # Assert
+  assert agent is not None
+  assert agent.name == 'child2'
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_unknown_agent_raises_value_error():
+  """Transfer to unknown agent name raises ValueError."""
+  # Arrange
+  root, child1, child2 = _make_agent_tree()
+  caller = child1
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlowForTesting()
+
+  # Act & Assert
+  with pytest.raises(ValueError, match='not found in the agent tree'):
+    flow._get_agent_to_run(ctx, 'not_in_tree')
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_self_allowed_when_peers_disallowed():
+  """Transfer to self is allowed even when disallow_transfer_to_peers is True."""
+  # Arrange
+  root, child1, child2 = _make_agent_tree()
+  caller = child1
+  caller.disallow_transfer_to_peers = True
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlowForTesting()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'child1')
+
+  # Assert
+  assert agent is not None
+  assert agent.name == 'child1'
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_sibling_from_non_llm_agent_allowed():
+  """Transfer to sibling is allowed when the caller is not an LlmAgent."""
+  # Arrange
+  root = Agent(name='root')
+  child1 = LoopAgent(name='child1')
+  child2 = Agent(name='child2')
+
+  child1.parent_agent = root
+  child2.parent_agent = root
+  root.sub_agents = [child1, child2]
+
+  ctx = await testing_utils.create_invocation_context(child1)
+  flow = BaseLlmFlowForTesting()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'child2')
+
+  # Assert
+  assert agent is not None
+  assert agent.name == 'child2'

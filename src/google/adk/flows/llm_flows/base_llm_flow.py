@@ -898,6 +898,8 @@ class BaseLlmFlow(ABC):
 
       if live_request.content:
         content = live_request.content
+        if content.parts and any(p.function_call for p in content.parts):
+          raise ValueError('User message cannot contain function calls.')
         # Persist user text content to session (similar to non-live mode)
         # Skip function responses - they are already handled separately
         is_function_response = content.parts and any(
@@ -1367,6 +1369,16 @@ class BaseLlmFlow(ABC):
     agent_to_run = root_agent.find_agent(agent_name)
     if not agent_to_run:
       raise ValueError(f'Agent {agent_name} not found in the agent tree.')
+
+    from ...agents.llm_agent import LlmAgent
+
+    if (
+        isinstance(invocation_context.agent, LlmAgent)
+        and invocation_context.agent.disallow_transfer_to_peers
+        and agent_to_run.parent_agent == invocation_context.agent.parent_agent
+        and agent_to_run != invocation_context.agent
+    ):
+      raise ValueError(f'Transfer to sibling agent {agent_name} is disallowed.')
     return agent_to_run
 
   async def _call_llm_async(

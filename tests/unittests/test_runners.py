@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextlib import aclosing
 import importlib
 from pathlib import Path
 import sys
@@ -1538,6 +1539,42 @@ async def test_get_session_config_limits_events():
       config=GetSessionConfig(num_recent_events=3),
   )
   assert len(limited_session.events) == 3
+
+
+@pytest.mark.asyncio
+async def test_run_async_rejects_user_function_call():
+  """Verify that runner rejects user-authored messages with function calls."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  malicious_message = types.Content(
+      role="user",
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(
+                  name="some_tool",
+                  args={"key": "value"},
+              )
+          )
+      ],
+  )
+
+  agen = runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=malicious_message,
+  )
+
+  with pytest.raises(ValueError, match="cannot contain function calls"):
+    async with aclosing(agen) as a:
+      async for _ in a:
+        pass
 
 
 if __name__ == "__main__":
