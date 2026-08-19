@@ -51,6 +51,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket
 from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
+import nh3
 from opentelemetry import trace
 import opentelemetry.sdk.environment_variables as otel_env
 from opentelemetry.sdk.trace import export as export_lib
@@ -103,6 +104,21 @@ from .utils.shared_value import SharedValue
 logger = logging.getLogger("google_adk." + __name__)
 
 _REGEX_PREFIX = "regex:"
+
+
+def _sanitize_html_artifact(artifact: types.Part) -> types.Part:
+  """Sanitize HTML artifact data before returning it to a browser."""
+  inline_data = artifact.inline_data
+  if not inline_data or inline_data.mime_type != "text/html":
+    return artifact
+
+  try:
+    html = inline_data.data.decode("utf-8")
+  except UnicodeDecodeError as exc:
+    raise HTTPException(status_code=422, detail="Invalid HTML encoding") from exc
+
+  inline_data.data = nh3.clean(html).encode("utf-8")
+  return artifact
 
 
 def _parse_cors_origins(
@@ -1684,7 +1700,7 @@ class ApiServer:
       )
       if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
-      return artifact
+      return _sanitize_html_artifact(artifact)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
@@ -1734,7 +1750,7 @@ class ApiServer:
       )
       if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
-      return artifact
+      return _sanitize_html_artifact(artifact)
 
     @app.delete(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}",
