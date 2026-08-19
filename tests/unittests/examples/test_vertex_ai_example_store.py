@@ -15,24 +15,17 @@
 """Tests for vertex_ai_example_store."""
 
 from types import SimpleNamespace
-from unittest import mock
 
 from google.adk.examples.vertex_ai_example_store import VertexAiExampleStore
+from google.genai import types
 import pytest
+from pytest_mock import MockerFixture
 
 _STORE_NAME = "projects/p/locations/l/exampleStores/s"
 
 
-def _part(*, text=None, function_call=None, function_response=None):
-  return SimpleNamespace(
-      text=text,
-      function_call=function_call,
-      function_response=function_response,
-  )
-
-
 def _expected_content(*, role, parts):
-  return SimpleNamespace(content=SimpleNamespace(role=role, parts=parts))
+  return SimpleNamespace(content=types.Content(role=role, parts=parts))
 
 
 def _result(*, search_key="search key", expected_contents=(), score=1.0):
@@ -50,30 +43,21 @@ def _result(*, search_key="search key", expected_contents=(), score=1.0):
 
 
 @pytest.fixture
-def mock_example_stores():
-  with mock.patch(
-      "google.adk.dependencies.vertexai.example_stores"
-  ) as example_stores:
-    yield example_stores
+def search_examples(mocker: MockerFixture):
+  """Patches agentplatform.Client and returns its search_examples mock."""
+  client = mocker.Mock()
+  mocker.patch("agentplatform.Client", return_value=client)
+  return client.example_stores.search_examples
 
 
-@pytest.fixture
-def search_examples(mock_example_stores):
-  return (
-      mock_example_stores.ExampleStore.return_value.api_client.search_examples
-  )
-
-
-def test_get_examples_searches_the_configured_store(
-    mock_example_stores, search_examples
-):
+def test_get_examples_searches_the_configured_store(search_examples):
   search_examples.return_value = SimpleNamespace(results=[])
 
   VertexAiExampleStore(_STORE_NAME).get_examples("what is the weather?")
 
-  mock_example_stores.ExampleStore.assert_called_once_with(_STORE_NAME)
-  search_examples.assert_called_once_with({
-      "stored_contents_example_parameters": {
+  search_examples.assert_called_once_with(
+      name=_STORE_NAME,
+      stored_contents_example_parameters={
           "content_search_key": {
               "contents": [{
                   "role": "user",
@@ -82,13 +66,70 @@ def test_get_examples_searches_the_configured_store(
               "search_key_generation_method": {"last_entry": {}},
           }
       },
-      "top_k": 10,
-      "example_store": _STORE_NAME,
-  })
+      config={"top_k": 10},
+  )
+
+
+def test_get_examples_derives_project_and_location_from_the_store_name(
+    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+):
+  # The suite's conftest exports both, so the fallback is only reachable once
+  # they are unset.
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+  client_factory = mocker.patch("agentplatform.Client")
+  client_factory.return_value.example_stores.search_examples.return_value = (
+      SimpleNamespace(results=[])
+  )
+
+  VertexAiExampleStore(_STORE_NAME).get_examples("query")
+
+  client_factory.assert_called_once_with(project="p", location="l")
+
+
+def test_get_examples_prefers_the_environment_over_the_store_name(
+    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+):
+  monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "env-project")
+  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "env-location")
+  client_factory = mocker.patch("agentplatform.Client")
+  client_factory.return_value.example_stores.search_examples.return_value = (
+      SimpleNamespace(results=[])
+  )
+
+  VertexAiExampleStore(_STORE_NAME).get_examples("query")
+
+  client_factory.assert_called_once_with(
+      project="env-project", location="env-location"
+  )
+
+
+def test_get_examples_prefers_explicit_project_and_location(
+    mocker: MockerFixture,
+):
+  client_factory = mocker.patch("agentplatform.Client")
+  client_factory.return_value.example_stores.search_examples.return_value = (
+      SimpleNamespace(results=[])
+  )
+
+  VertexAiExampleStore(
+      _STORE_NAME, project="other-project", location="other-location"
+  ).get_examples("query")
+
+  client_factory.assert_called_once_with(
+      project="other-project", location="other-location"
+  )
 
 
 def test_get_examples_returns_empty_list_without_results(search_examples):
   search_examples.return_value = SimpleNamespace(results=[])
+
+  assert VertexAiExampleStore(_STORE_NAME).get_examples("query") == []
+
+
+def test_get_examples_tolerates_unset_results(search_examples):
+  # The response field is optional, so an empty search omits it entirely.
+  search_examples.return_value = SimpleNamespace(results=None)
 
   assert VertexAiExampleStore(_STORE_NAME).get_examples("query") == []
 
@@ -100,7 +141,8 @@ def test_get_examples_converts_text_part(search_examples):
               search_key="what is the weather?",
               expected_contents=[
                   _expected_content(
-                      role="model", parts=[_part(text="it is sunny")]
+                      role="model",
+                      parts=[types.Part.from_text(text="it is sunny")],
                   )
               ],
           )
@@ -144,10 +186,8 @@ def test_get_examples_converts_function_call_part(search_examples):
                   _expected_content(
                       role="model",
                       parts=[
-                          _part(
-                              function_call=SimpleNamespace(
-                                  name="get_weather", args={"city": "London"}
-                              )
+                          types.Part.from_function_call(
+                              name="get_weather", args={"city": "London"}
                           )
                       ],
                   )
@@ -171,11 +211,9 @@ def test_get_examples_converts_function_response_part(search_examples):
                   _expected_content(
                       role="user",
                       parts=[
-                          _part(
-                              function_response=SimpleNamespace(
-                                  name="get_weather",
-                                  response={"temperature": 12},
-                              )
+                          types.Part.from_function_response(
+                              name="get_weather",
+                              response={"temperature": 12},
                           )
                       ],
                   )
@@ -189,3 +227,48 @@ def test_get_examples_converts_function_response_part(search_examples):
   function_response = examples[0].output[0].parts[0].function_response
   assert function_response.name == "get_weather"
   assert function_response.response == {"temperature": 12}
+
+
+def test_get_examples_preserves_multi_step_expected_output(search_examples):
+  # expected_contents is repeated to represent iterative reasoning steps; all
+  # of them belong in the example's output, in order.
+  search_examples.return_value = SimpleNamespace(
+      results=[
+          _result(
+              expected_contents=[
+                  _expected_content(
+                      role="model", parts=[types.Part.from_text(text="step 1")]
+                  ),
+                  _expected_content(
+                      role="model", parts=[types.Part.from_text(text="step 2")]
+                  ),
+              ],
+          )
+      ]
+  )
+
+  examples = VertexAiExampleStore(_STORE_NAME).get_examples("query")
+
+  assert [content.parts[0].text for content in examples[0].output] == [
+      "step 1",
+      "step 2",
+  ]
+
+
+def test_get_examples_skips_expected_contents_without_content(search_examples):
+  search_examples.return_value = SimpleNamespace(
+      results=[
+          _result(
+              expected_contents=[
+                  SimpleNamespace(content=None),
+                  _expected_content(
+                      role="model", parts=[types.Part.from_text(text="kept")]
+                  ),
+              ],
+          )
+      ]
+  )
+
+  examples = VertexAiExampleStore(_STORE_NAME).get_examples("query")
+
+  assert [content.parts[0].text for content in examples[0].output] == ["kept"]
