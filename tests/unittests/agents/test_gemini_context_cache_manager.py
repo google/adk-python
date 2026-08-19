@@ -344,6 +344,53 @@ class TestGeminiContextCacheManager:
     assert create_config.contents == [first_user, first_model]
     assert next_request.contents == [next_user]
 
+  async def test_vertex_ai_skips_cache_below_32768_token_minimum(self):
+    """Vertex AI skips an explicit cache below its 32,768-token floor even for Gemini 3.5."""
+    mock_client = AsyncMock(spec=Client)
+    mock_client.vertexai = True
+    manager = GeminiContextCacheManager(mock_client)
+
+    llm_request = self.create_llm_request(contents_count=0)
+    llm_request.model = "gemini-3.5-flash-lite"
+    llm_request.config.system_instruction = "x" * 32_000
+    llm_request.cacheable_contents_token_count = 8_000
+    llm_request.cache_metadata = CacheMetadata(
+        fingerprint=manager._generate_cache_fingerprint(llm_request, 0),
+        contents_count=0,
+    )
+
+    result = await manager.handle_context_caching(llm_request)
+
+    assert result is not None
+    assert result.cache_name is None
+    manager.genai_client.aio.caches.create.assert_not_called()
+
+  async def test_vertex_ai_creates_cache_above_32768_token_minimum(self):
+    """Vertex AI creates an explicit cache above its 32,768-token floor for Gemini 3.5."""
+    mock_client = AsyncMock(spec=Client)
+    mock_client.vertexai = True
+    manager = GeminiContextCacheManager(mock_client)
+
+    llm_request = self.create_llm_request(contents_count=0)
+    llm_request.model = "gemini-3.5-flash-lite"
+    llm_request.config.system_instruction = "x" * 140_000
+    llm_request.cacheable_contents_token_count = 35_000
+    llm_request.cache_metadata = CacheMetadata(
+        fingerprint=manager._generate_cache_fingerprint(llm_request, 0),
+        contents_count=0,
+    )
+    cached_content = AsyncMock()
+    cached_content.name = "projects/test/locations/us/cachedContents/vertex-35"
+    manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=cached_content
+    )
+
+    result = await manager.handle_context_caching(llm_request)
+
+    assert result is not None
+    assert result.cache_name == "projects/test/locations/us/cachedContents/vertex-35"
+    manager.genai_client.aio.caches.create.assert_awaited_once()
+
   async def test_gemini_25_creates_cache_above_2048_token_minimum(self):
     """Gemini 2.5 creates an explicit cache above its 2,048-token floor."""
     llm_request = self.create_llm_request(contents_count=0)
