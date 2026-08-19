@@ -688,7 +688,6 @@ def cli_conformance_test(
     ),
     default="CODE",
     show_default=True,
-    hidden=True,  # Won't show in --help output. Not ready for use.
 )
 @click.argument("app_name", type=str, required=True)
 def cli_create_cmd(
