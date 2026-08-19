@@ -1711,6 +1711,88 @@ def test_function_declaration_to_tool_param_with_parameters_json_schema():
   assert _function_declaration_to_tool_param(func_decl) == expected
 
 
+def test_function_declaration_to_tool_param_with_response_json_schema():
+  """Ensure a raw response_json_schema is rendered into the description."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_output",
+      description="desc",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {"a": {"type": "string"}},
+      },
+      response_json_schema={
+          "type": "object",
+          "properties": {"result": {"type": "string"}},
+      },
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"properties": {"result": {"type": "string"}}, "type": "object"}'
+  )
+  assert tool_param["function"]["parameters"] == {
+      "type": "object",
+      "properties": {"a": {"type": "string"}},
+  }
+
+
+def test_function_declaration_to_tool_param_with_response_schema():
+  """Ensure a types.Schema response is rendered into the description."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_output_schema",
+      description="desc",
+      response=types.Schema(
+          type=types.Type.OBJECT,
+          properties={"result": types.Schema(type=types.Type.STRING)},
+      ),
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"properties": {"result": {"type": "string"}}, "type": "object"}'
+  )
+
+
+def test_function_declaration_to_tool_param_without_response_schema():
+  """Ensure the description is unchanged when no output schema is declared."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_without_output",
+      description="desc",
+      parameters_json_schema={"type": "object", "properties": {}},
+  )
+
+  assert (
+      _function_declaration_to_tool_param(func_decl)["function"]["description"]
+      == "desc"
+  )
+
+
+def test_function_declaration_to_tool_param_response_schema_without_description():
+  """Ensure an empty description yields only the rendered output schema."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_no_description",
+      response_json_schema={
+          "type": "object",
+          "properties": {"result": {"type": "string"}},
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "Returns a JSON object conforming to this schema:"
+      ' {"properties": {"result": {"type": "string"}}, "type": "object"}'
+  )
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async_with_system_instruction(
     lite_llm_instance, mock_acompletion

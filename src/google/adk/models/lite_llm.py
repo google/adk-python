@@ -2092,6 +2092,39 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   return schema_dict
 
 
+def _append_response_schema_to_description(
+    description: str,
+    function_declaration: types.FunctionDeclaration,
+) -> str:
+  """Appends a rendering of the function's output schema to its description.
+
+  OpenAI-compatible chat completions tool definitions have no standard field
+  for declaring the schema of a tool's result, so the schema is rendered into
+  the tool description, which is forwarded to the model. The description is
+  returned unchanged when the function declaration has no output schema.
+
+  Args:
+    description: The original tool description.
+    function_declaration: The function declaration to read the output schema
+      from. `response_json_schema` takes precedence over `response`.
+
+  Returns:
+    The description, with the rendered output schema appended when one exists.
+  """
+  response_schema: Optional[dict[str, Any]] = None
+  if function_declaration.response_json_schema:
+    response_schema = dict(function_declaration.response_json_schema)
+  elif function_declaration.response:
+    response_schema = _schema_to_dict(function_declaration.response)
+
+  if not response_schema:
+    return description
+
+  rendered_schema = json.dumps(response_schema, sort_keys=True)
+  suffix = f"Returns a JSON object conforming to this schema: {rendered_schema}"
+  return f"{description}\n{suffix}" if description else suffix
+
+
 def _function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
 ) -> dict[str, Any]:
@@ -2129,7 +2162,9 @@ def _function_declaration_to_tool_param(
       "type": "function",
       "function": {
           "name": function_declaration.name,
-          "description": function_declaration.description or "",
+          "description": _append_response_schema_to_description(
+              function_declaration.description or "", function_declaration
+          ),
           "parameters": parameters,
       },
   }
