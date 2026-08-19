@@ -360,7 +360,12 @@ def trace_call_llm(
 
   if _should_add_request_response_to_spans():
     try:
-      llm_response_json = llm_response.model_dump_json(exclude_none=True)
+      response_for_trace = llm_response
+      if llm_response.content is not None:
+        response_for_trace = llm_response.model_copy(
+            update={'content': _summarize_inline_data(llm_response.content)}
+        )
+      llm_response_json = response_for_trace.model_dump_json(exclude_none=True)
     except Exception:  # pylint: disable=broad-exception-caught
       llm_response_json = '<not serializable>'
 
@@ -409,6 +414,37 @@ def trace_call_llm(
     )
 
 
+def _summarize_inline_data(content: types.Content) -> types.Content:
+  """Returns ``content`` with inline binary parts reduced to a description.
+
+  Serializing a part in JSON mode base64-encodes its ``inline_data``, so a
+  live session's audio chunks would otherwise be copied wholesale onto a span
+  attribute. Only the mime type and byte count are kept.
+
+  Args:
+    content: The content to summarize.
+
+  Returns:
+    A copy of ``content`` whose inline binary parts carry a text description
+    instead of the bytes.
+  """
+  parts: list[types.Part] = []
+  for part in content.parts or []:
+    blob = part.inline_data
+    if blob is None:
+      parts.append(part)
+      continue
+    parts.append(
+        types.Part(
+            text=(
+                f"<inline_data: {blob.mime_type or 'unknown'},"
+                f" {len(blob.data or b'')} bytes>"
+            )
+        )
+    )
+  return types.Content(role=content.role, parts=parts)
+
+
 def trace_send_data(
     invocation_context: InvocationContext,
     event_id: str,
@@ -435,7 +471,7 @@ def trace_send_data(
     span.set_attribute(
         'gcp.vertex.agent.data',
         _safe_json_serialize([
-            types.Content(role=content.role, parts=content.parts).model_dump(
+            _summarize_inline_data(content).model_dump(
                 exclude_none=True, mode='json'
             )
             for content in data
@@ -514,7 +550,25 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
   result = {
       'model': llm_request.model,
       'config': llm_request.config.model_dump(
-          exclude_none=True, exclude='response_schema', mode='json'
+          exclude_none=True,
+          exclude={
+              'response_schema': True,
+              # `http_options` carries caller-supplied credentials: `headers`
+              # commonly holds an Authorization bearer token, and
+              # `extra_body` / `*client_args` are free-form passthroughs that
+              # can hold auth material too. None of it may reach an exported
+              # span attribute. The client fields are also unserializable.
+              'http_options': {
+                  'httpx_client': True,
+                  'httpx_async_client': True,
+                  'aiohttp_client': True,
+                  'headers': True,
+                  'extra_body': True,
+                  'client_args': True,
+                  'async_client_args': True,
+              },
+          },
+          mode='json',
       ),
       'contents': [],
   }
