@@ -24,7 +24,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from collections.abc import Callable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
@@ -704,10 +703,6 @@ async def use_inference_span(
   if invocation_context.session.user_id is not None:
     log_only_common_attributes[USER_ID] = invocation_context.session.user_id
   if _should_emit_native_telemetry(invocation_context.agent):
-    # Unwound through an ExitStack rather than a nested `with`, so that
-    # `GenerateContentSpan.end()` can close the span (and emit its completion
-    # details) as soon as the inference is done, instead of when the caller is
-    # done with the response.
     with ExitStack() as stack:
       gc_span = stack.enter_context(
           _use_native_generate_content_span(
@@ -717,6 +712,7 @@ async def use_inference_span(
               telemetry_config=telemetry_config,
           )
       )
+      gc_span._exit_stack = stack  # pylint: disable=protected-access
       if telemetry_config.should_use_experimental_genai_semconv:
         set_operation_details_common_attributes(
             gc_span.operation_details_common_attributes,
@@ -725,7 +721,7 @@ async def use_inference_span(
             log_only_attributes=log_only_common_attributes,
         )
       # Registered last, so it unwinds first: while the span is still open.
-      stack.callback(
+      _ = gc_span._exit_stack.callback(
           lambda: maybe_log_completion_details(
               gc_span.span,
               otel_logger,
@@ -733,10 +729,7 @@ async def use_inference_span(
               gc_span.operation_details_common_attributes,
               telemetry_config,
           )
-      )
-      # `ExitStack.close()` empties the stack, so calling it again (here on
-      # exit, after `_end()` already did) is a no-op.
-      gc_span._close = stack.close  # pyright: ignore[reportPrivateUsage]
+      )  # pylint: disable=protected-access
       yield gc_span
   else:
     with _use_extra_generate_content_attributes(
@@ -912,13 +905,11 @@ class GenerateContentSpan:
     self.span: Final = span
     self.operation_details_attributes: dict[str, AttributeValue] = {}
     self.operation_details_common_attributes: dict[str, AttributeValue] = {}
-    # Ends the span, idempotently, without waiting for `use_inference_span` to
-    # exit. Installed by span, which owns it. Calling it as soon as the
-    # inference is done keeps what the caller then does with the response
-    # (running the tool it asked for) out of the span, like
-    # opentelemetry-instrumentation-google-genai, whose span ends when the SDK
-    # call returns.
-    self._close: Callable[[], None] = lambda: None
+    # Ends underlying span and records completion details log record.
+    # Used over contextmanager to end the underlying span as soon as the
+    # inference is done, instead of when the caller is done with the response.
+    # Matches opentelemetry-instrumentation-google-genai behavior.
+    self._exit_stack: ExitStack | None = None
 
 
 @deprecated(

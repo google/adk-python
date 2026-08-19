@@ -113,6 +113,27 @@ class LlmRequest(BaseModel):
   server-side without a Gemini model.
   """
 
+  _has_static_instruction: bool = PrivateAttr(default=False)
+  """Whether the request has non-text static_instruction content.
+
+  These must stay a stable request prefix across turns so that provider-side
+  context caching can key off of them, so the contents processor tracks them
+  separately from other instruction-related contents.
+  """
+
+  _static_instruction_prefix_end_index: int | None = PrivateAttr(default=None)
+  """Index in ``contents`` immediately after the static-instruction prefix,
+  once it has been placed at the front of the request.
+
+  ``_add_instructions_to_user_content`` (contents.py) is called once per
+  turn for the main instruction/dynamic-instruction bundle, and again by
+  ``_finalize_dynamic_instructions`` (base_llm_flow.py) whenever a tool
+  contributes a dynamic instruction. Only the first call should insert at
+  index 0; later calls must insert right after the tracked prefix instead,
+  or they would push tool-triggered content in front of it and break the
+  stable-prefix guarantee.
+  """
+
   def _append_dynamic_instructions(self, instructions: list[str]) -> None:
     """Appends dynamic instructions to the request."""
     self._dynamic_instructions.extend(instructions)
@@ -232,6 +253,7 @@ class LlmRequest(BaseModel):
       # Add user contents directly to llm_request.contents
       if user_contents:
         self.contents.extend(user_contents)
+        self._has_static_instruction = True
 
       return user_contents
 
@@ -315,6 +337,21 @@ class LlmRequest(BaseModel):
     if not contents:
       return
 
+    if (
+        self._has_static_instruction
+        and self._static_instruction_prefix_end_index is None
+    ):
+      # Non-text static_instruction content must remain a stable request
+      # prefix across turns (for provider-side context caching). The first
+      # call for this request places it at the very beginning, followed by
+      # the rest of the instruction contents (e.g. the dynamic instruction),
+      # ahead of conversation history rather than just ahead of the latest
+      # user turn.
+      insert_index = 0
+      self.contents[insert_index:insert_index] = contents
+      self._static_instruction_prefix_end_index = len(contents)
+      return
+
     insert_index = len(self.contents)
     for i in range(len(self.contents) - 1, -1, -1):
       content = self.contents[i]
@@ -325,6 +362,13 @@ class LlmRequest(BaseModel):
         insert_index = i + 1
         break
       insert_index = i
+
+    # Clamp if we have a static prefix
+    if self._has_static_instruction:
+      assert self._static_instruction_prefix_end_index is not None
+      insert_index = max(
+          insert_index, self._static_instruction_prefix_end_index
+      )
 
     self.contents[insert_index:insert_index] = contents
 

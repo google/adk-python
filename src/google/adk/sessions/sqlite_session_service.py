@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 import aiosqlite
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
+from google.adk.utils import _json_utils
 from typing_extensions import override
 
 from . import _session_util
@@ -134,9 +135,13 @@ def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
   return normalized_path, normalized_path, False
 
 
-def _decode_state(value: object) -> dict[str, Any]:
+def _decode_state(
+    value: object, context: str = "persisted state"
+) -> dict[str, Any]:
   """Decode a persisted state object and require string JSON keys."""
-  decoded: object = json.loads(cast("str | bytes | bytearray", value))
+  decoded: object = _json_utils.safe_json_loads(
+      cast("str | bytes | bytearray", value), context=context
+  )
   if not isinstance(decoded, dict):
     raise ValueError("Persisted session state must be a JSON object.")
 
@@ -265,7 +270,9 @@ class SqliteSessionService(BaseSessionService):
         session_row = await cursor.fetchone()
         if session_row is None:
           return None
-        session_state = _decode_state(session_row["state"])
+        session_state = _decode_state(
+            session_row["state"], context="session state"
+        )
         last_update_time = session_row["update_time"]
 
       # Build events query
@@ -351,12 +358,14 @@ class SqliteSessionService(BaseSessionService):
             (app_name,),
         ) as cursor:
           async for row in cursor:
-            user_states_map[row["user_id"]] = _decode_state(row["state"])
+            user_states_map[row["user_id"]] = _decode_state(
+                row["state"], context="user state"
+            )
 
       # Build session list
       for row in session_rows:
         session_user_id = row["user_id"]
-        session_state = json.loads(row["state"])
+        session_state = _decode_state(row["state"], context="session state")
         user_state = user_states_map.get(session_user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
         sessions_list.append(

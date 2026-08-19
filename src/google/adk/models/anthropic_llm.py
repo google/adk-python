@@ -48,6 +48,7 @@ from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import override
 
+from ..utils import _json_utils
 from ..utils._google_client_headers import get_tracking_headers
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
@@ -1099,7 +1100,11 @@ class AnthropicLlm(BaseLlm):
         all_parts.append(types.Part.from_text(text=text_blocks[idx]))
       if idx in tool_use_blocks:
         tool_acc = tool_use_blocks[idx]
-        args = json.loads(tool_acc.args_json) if tool_acc.args_json else {}
+        args = (
+            _json_utils.safe_json_loads(tool_acc.args_json)
+            if tool_acc.args_json
+            else {}
+        )
         part = types.Part.from_function_call(name=tool_acc.name, args=args)
         function_call = part.function_call
         if function_call is None:
