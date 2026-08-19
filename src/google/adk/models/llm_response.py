@@ -112,6 +112,22 @@ class LlmResponse(BaseModel):
   usage_metadata: Optional[types.GenerateContentResponseUsageMetadata] = None
   """The usage metadata of the LlmResponse"""
 
+  cache_creation_token_count: Optional[int] = None
+  """Number of prompt tokens written to the prompt cache for this response.
+
+  The cache-*write* counterpart to
+  ``usage_metadata.cached_content_token_count`` (cache-*read*); both are a
+  breakdown of ``usage_metadata.prompt_token_count``.
+
+  The model backends also attach this value to ``usage_metadata`` as
+  ``cache_creation_input_tokens`` for OpenTelemetry, but ``google.genai``'s
+  usage type forbids extra fields, so that attribute is dropped on
+  serialization. This field surfaces the same count on the (serializable)
+  ``LlmResponse`` / ``Event`` so it is visible to the dev UI, persisted
+  sessions, and other event consumers -- not only telemetry. Only populated
+  for providers/turns that report cache writes; ``None`` otherwise.
+  """
+
   live_session_resumption_update: Optional[
       types.LiveServerSessionResumptionUpdate
   ] = None

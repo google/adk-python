@@ -710,6 +710,7 @@ def message_to_generate_content_response(
           parts=parts,
       ),
       usage_metadata=usage_metadata,
+      cache_creation_token_count=cache_creation,
       finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
 
@@ -1145,6 +1146,7 @@ class AnthropicLlm(BaseLlm):
     yield LlmResponse(
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=usage_metadata,
+        cache_creation_token_count=cache_creation_tokens,
         finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
     )
