@@ -58,7 +58,20 @@ def _build_fixture_module() -> types.ModuleType:
 
   _method.__module__ = _FIXTURE_MODULE_NAME
   _async_method.__module__ = _FIXTURE_MODULE_NAME
-  cls = type("C", (), {"method": _method, "async_method": _async_method})
+
+  def _static(a, b=None):
+    return ("static", a, b)
+
+  _static.__module__ = _FIXTURE_MODULE_NAME
+  cls = type(
+      "C",
+      (),
+      {
+          "method": _method,
+          "async_method": _async_method,
+          "static": staticmethod(_static),
+      },
+  )
   cls.__module__ = _FIXTURE_MODULE_NAME
 
   module.sync_fn = _sync_fn
@@ -143,6 +156,12 @@ def _instrument(
   )
   asyncio.run(plugin.before_run_callback(invocation_context=None))
   return plugin
+
+
+def test_staticmethod_does_not_bind_instance(fixture):
+  _instrument(fixture.tracer)
+  assert fixture.module.C.static(a=1) == ("static", 1, None)
+  assert fixture.module.C().static(a=1) == ("static", 1, None)
 
 
 @pytest.mark.parametrize(
