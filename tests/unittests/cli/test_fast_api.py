@@ -57,6 +57,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("google_adk." + __name__)
 
+# An app told it binds 127.0.0.1 rejects requests addressed to any other host,
+# so its client cannot use TestClient's default "http://testserver".
+_LOOPBACK_BASE_URL = "http://127.0.0.1:8000"
+
+# What a browser addresses when a hosted dev environment forwards its port to a
+# loopback bind.
+_PROXY_ORIGIN = "https://8000-my-workstation.example.dev"
+
 
 # Here we create a dummy agent module that get_fast_api_app expects
 class DummyAgent(BaseAgent):
@@ -724,9 +732,10 @@ def builder_test_client(
         allow_origins=None,
         a2a=False,
         host="127.0.0.1",
+        bind_host="127.0.0.1",
         port=8000,
     )
-    return TestClient(app)
+    return TestClient(app, base_url=_LOOPBACK_BASE_URL)
 
 
 @pytest.fixture
@@ -2358,7 +2367,7 @@ def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
 def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   response = builder_test_client.post(
       "/builder/save?tmp=true",
-      headers={"origin": "http://testserver"},
+      headers={"origin": _LOOPBACK_BASE_URL},
       files=[(
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
@@ -2370,14 +2379,91 @@ def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
 
 
-def test_builder_get_allows_cross_origin_get(builder_test_client):
+def test_builder_get_rejects_cross_origin_get(builder_test_client):
+  """Reads expose agent config and session data, so they are guarded too."""
   response = builder_test_client.get(
       "/builder/app/missing?tmp=true",
       headers={"origin": "https://evil.com"},
   )
 
+  assert response.status_code == 403
+  assert response.text == "Forbidden: origin not allowed"
+
+
+def test_builder_get_allows_same_origin_get(builder_test_client):
+  """The dev UI reads its own agent config from the same origin."""
+  response = builder_test_client.get(
+      "/builder/app/missing?tmp=true",
+      headers={"origin": _LOOPBACK_BASE_URL},
+  )
+
   assert response.status_code == 200
-  assert response.text == ""
+  assert not response.text
+
+
+def test_builder_get_allows_request_without_origin(builder_test_client):
+  """Browsers omit Origin on same-origin reads, and CLI clients never send it."""
+  response = builder_test_client.get("/builder/app/missing?tmp=true")
+
+  assert response.status_code == 200
+  assert not response.text
+
+
+def test_proxied_host_named_in_allow_origins_is_served(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """A hosted dev environment forwards the browser's own hostname in Host.
+
+  The server still binds loopback there, so the page it serves is reachable
+  only by naming that hostname in allow_origins.
+  """
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=[_PROXY_ORIGIN],
+      bind_host="127.0.0.1",
+  )
+
+  assert client.get(f"{_PROXY_ORIGIN}/health").status_code == 200
+  # The index page is behind the same middleware, so it would 403 too, and the
+  # dev UI would not load at all.
+  index = client.get(f"{_PROXY_ORIGIN}/", follow_redirects=False)
+  assert index.status_code == 307
+
+
+def test_proxied_host_absent_from_allow_origins_is_rejected(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Nothing distinguishes an unnamed proxy hostname from a rebound one."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=None,
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(f"{_PROXY_ORIGIN}/health")
+
+  assert response.status_code == 403
+  assert response.text == "Forbidden: host not allowed"
 
 
 def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
