@@ -20,9 +20,16 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_preprocessor import _AuthLlmRequestProcessor
+from google.adk.auth.auth_preprocessor import _store_auth_and_collect_resume_targets
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.events.event import Event
@@ -82,6 +89,8 @@ class TestAuthLlmRequestProcessor:
     """Create a mock AuthConfig."""
     config = Mock(spec=AuthConfig)
     config.credential_key = None
+    config.raw_auth_credential = None
+    config.exchanged_auth_credential = None
     return config
 
   @pytest.fixture
@@ -579,3 +588,430 @@ class TestAuthLlmRequestProcessor:
       result.append(event)
 
     assert result == []
+
+  @pytest.mark.asyncio
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
+  @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
+  async def test_resumes_tools_by_credential_key(
+      self,
+      mock_handle_function_calls,
+      mock_auth_config_validate,
+      mock_auth_handler_class,
+      processor,
+      mock_invocation_context,
+      mock_llm_request,
+  ):
+    """Test that tools are resumed by credential key matching."""
+    # Setup auth response
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.credential_key = 'test_cred_key'
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+    mock_auth_config_validate.return_value = auth_config
+
+    auth_response = Mock()
+    auth_response.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    auth_response.id = 'auth_fc_id'
+    auth_response.response = auth_config
+
+    user_event = Mock(spec=Event)
+    user_event.author = 'user'
+    user_event.content = Mock()
+    user_event.get_function_responses.return_value = [auth_response]
+    user_event.get_function_calls.return_value = []
+
+    # Setup system event (the one that requested auth)
+    system_function_call = Mock()
+    system_function_call.id = 'auth_fc_id'
+    system_function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    requested_auth_config = Mock(spec=AuthConfig)
+    requested_auth_config.credential_key = 'test_cred_key'
+    requested_auth_config.raw_auth_credential = None
+    requested_auth_config.exchanged_auth_credential = None
+
+    system_function_call.args = {
+        'function_call_id': 'original_fc_id_1',
+        'auth_config': requested_auth_config,
+    }
+
+    system_event = Mock(spec=Event)
+    system_event.content = Mock()
+    system_event.get_function_calls.return_value = [system_function_call]
+
+    # Setup an event with actions.requested_auth_configs
+    event_with_actions = Mock(spec=Event)
+    event_with_actions.content = Mock()
+    event_with_actions.get_function_calls.return_value = []
+
+    actions = Mock()
+    action_config = Mock()
+    action_config.credential_key = 'test_cred_key'
+    actions.requested_auth_configs = {
+        'original_fc_id_1': action_config,
+        'original_fc_id_2': action_config,
+    }
+    event_with_actions.actions = actions
+
+    # Setup original function call events
+    original_fc_1 = Mock()
+    original_fc_1.id = 'original_fc_id_1'
+    original_fc_2 = Mock()
+    original_fc_2.id = 'original_fc_id_2'
+
+    original_event = Mock(spec=Event)
+    original_event.content = Mock()
+    original_event.get_function_calls.return_value = [
+        original_fc_1,
+        original_fc_2,
+    ]
+
+    # Events in order: original -> event_with_actions -> system_event -> user_event
+    mock_invocation_context.session.events = [
+        original_event,
+        event_with_actions,
+        system_event,
+        user_event,
+    ]
+
+    mock_auth_handler = Mock(spec=AuthHandler)
+    mock_auth_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_auth_handler
+
+    mock_function_response_event = Mock(spec=Event)
+    mock_handle_function_calls.return_value = mock_function_response_event
+
+    with patch(
+        'google.adk.auth.auth_tool.AuthToolArguments.model_validate'
+    ) as mock_auth_tool_args_validate:
+      mock_args = Mock(spec=AuthToolArguments)
+      mock_args.auth_config = requested_auth_config
+      mock_args.function_call_id = 'original_fc_id_1'
+      mock_auth_tool_args_validate.return_value = mock_args
+
+      result = []
+      async for event in processor.run_async(
+          mock_invocation_context, mock_llm_request
+      ):
+        result.append(event)
+
+    mock_handle_function_calls.assert_called_once()
+    call_args = mock_handle_function_calls.call_args
+    assert call_args[0][1] == original_event
+    assert call_args[0][3] == {'original_fc_id_1', 'original_fc_id_2'}
+    assert result == [mock_function_response_event]
+
+  @pytest.mark.asyncio
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
+  @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
+  async def test_does_not_resume_stale_tools_from_older_events(
+      self,
+      mock_handle_function_calls,
+      mock_auth_config_validate,
+      mock_auth_handler_class,
+      processor,
+      mock_invocation_context,
+      mock_llm_request,
+  ):
+    """Test that tools from older events with matching cred key are NOT resumed."""
+    # Setup auth response
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.credential_key = 'test_cred_key'
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+    mock_auth_config_validate.return_value = auth_config
+
+    auth_response = Mock()
+    auth_response.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    auth_response.id = 'auth_fc_id'
+    auth_response.response = auth_config
+
+    user_event = Mock(spec=Event)
+    user_event.author = 'user'
+    user_event.content = Mock()
+    user_event.get_function_responses.return_value = [auth_response]
+    user_event.get_function_calls.return_value = []
+
+    # Setup system event (the one that requested auth)
+    system_function_call = Mock()
+    system_function_call.id = 'auth_fc_id'
+    system_function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    requested_auth_config = Mock(spec=AuthConfig)
+    requested_auth_config.credential_key = 'test_cred_key'
+    requested_auth_config.raw_auth_credential = None
+    requested_auth_config.exchanged_auth_credential = None
+
+    system_function_call.args = {
+        'function_call_id': 'original_fc_id_1',
+        'auth_config': requested_auth_config,
+    }
+
+    system_event = Mock(spec=Event)
+    system_event.content = Mock()
+    system_event.get_function_calls.return_value = [system_function_call]
+
+    # Setup a fresh event with actions.requested_auth_configs
+    fresh_event_with_actions = Mock(spec=Event)
+    fresh_event_with_actions.content = Mock()
+    fresh_event_with_actions.get_function_calls.return_value = []
+    actions_fresh = Mock()
+    action_config_fresh = Mock()
+    action_config_fresh.credential_key = 'test_cred_key'
+    actions_fresh.requested_auth_configs = {
+        'original_fc_id_1': action_config_fresh,
+    }
+    fresh_event_with_actions.actions = actions_fresh
+
+    # Setup an OLD event with actions.requested_auth_configs that also used test_cred_key
+    old_event_with_actions = Mock(spec=Event)
+    old_event_with_actions.content = Mock()
+    old_event_with_actions.get_function_calls.return_value = []
+    actions_old = Mock()
+    action_config_old = Mock()
+    action_config_old.credential_key = 'test_cred_key'
+    actions_old.requested_auth_configs = {'stale_fc_id': action_config_old}
+    old_event_with_actions.actions = actions_old
+
+    # Setup original function call events
+    original_fc_1 = Mock()
+    original_fc_1.id = 'original_fc_id_1'
+    original_fc_stale = Mock()
+    original_fc_stale.id = 'stale_fc_id'
+
+    original_event = Mock(spec=Event)
+    original_event.content = Mock()
+    original_event.get_function_calls.return_value = [
+        original_fc_1,
+        original_fc_stale,
+    ]
+
+    # Events in order: old_event -> original -> fresh_event -> system -> user
+    mock_invocation_context.session.events = [
+        old_event_with_actions,
+        original_event,
+        fresh_event_with_actions,
+        system_event,
+        user_event,
+    ]
+
+    mock_auth_handler = Mock(spec=AuthHandler)
+    mock_auth_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_auth_handler
+
+    mock_function_response_event = Mock(spec=Event)
+    mock_handle_function_calls.return_value = mock_function_response_event
+
+    with patch(
+        'google.adk.auth.auth_tool.AuthToolArguments.model_validate'
+    ) as mock_auth_tool_args_validate:
+      mock_args = Mock(spec=AuthToolArguments)
+      mock_args.auth_config = requested_auth_config
+      mock_args.function_call_id = 'original_fc_id_1'
+      mock_auth_tool_args_validate.return_value = mock_args
+
+      result = []
+      async for event in processor.run_async(
+          mock_invocation_context, mock_llm_request
+      ):
+        result.append(event)
+
+    mock_handle_function_calls.assert_called_once()
+    call_args = mock_handle_function_calls.call_args
+    assert call_args[0][1] == original_event
+    # Should only resume original_fc_id_1, NOT stale_fc_id
+    assert call_args[0][3] == {'original_fc_id_1'}
+    assert result == [mock_function_response_event]
+
+  @pytest.mark.asyncio
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  async def test_store_auth_merges_oauth2_fields(
+      self,
+      mock_auth_handler_class,
+  ):
+    """Test that OAuth2 fields are merged from requested to stored config."""
+    # Setup AuthHandler mock
+    mock_auth_handler = Mock(spec=AuthHandler)
+    mock_auth_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_auth_handler
+
+    # Create requested auth config (the one in the event history)
+    # It has all OAuth2 fields populated.
+    requested_oauth2 = OAuth2Auth(
+        client_id='expected_client_id',
+        client_secret='expected_client_secret',
+        redirect_uri='expected_redirect_uri',
+        code_verifier='expected_code_verifier',
+        code_challenge_method='S256',
+        token_endpoint_auth_method='client_secret_post',
+    )
+    requested_auth_config = AuthConfig(
+        auth_scheme=OAuth2(
+            flows=OAuthFlows(
+                authorizationCode=OAuthFlowAuthorizationCode(
+                    authorizationUrl='https://example.com/auth',
+                    tokenUrl='https://example.com/token',
+                )
+            )
+        ),
+        raw_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=requested_oauth2,
+        ),
+        exchanged_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=requested_oauth2,
+        ),
+        credential_key='test_cred_key',
+    )
+
+    # Create the auth response (the one returned by the client)
+    # It has some missing OAuth2 fields that should be merged.
+    stored_oauth2_raw = OAuth2Auth(
+        client_id=None,
+        client_secret=None,
+        redirect_uri=None,
+        code_verifier=None,
+        code_challenge_method=None,
+        access_token='some_access_token',
+    )
+    stored_oauth2_exchanged = OAuth2Auth(
+        client_id=None,
+        client_secret=None,
+        redirect_uri=None,
+        code_verifier=None,
+        code_challenge_method=None,
+        access_token='some_exchanged_token',
+    )
+    stored_auth_config = AuthConfig(
+        auth_scheme=OAuth2(
+            flows=OAuthFlows(
+                authorizationCode=OAuthFlowAuthorizationCode(
+                    authorizationUrl='https://example.com/auth',
+                    tokenUrl='https://example.com/token',
+                )
+            )
+        ),
+        raw_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=stored_oauth2_raw,
+        ),
+        exchanged_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=stored_oauth2_exchanged,
+        ),
+        credential_key='test_cred_key',
+    )
+
+    # Setup function call in history that requested auth
+    system_function_call = Mock()
+    system_function_call.id = 'auth_fc_id'
+    system_function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    system_function_call.args = {
+        'function_call_id': 'original_fc_id',
+        'auth_config': requested_auth_config,
+    }
+
+    system_event = Mock(spec=Event)
+    system_event.content = Mock()
+    system_event.get_function_calls.return_value = [system_function_call]
+
+    # Setup state
+    mock_state = Mock()
+
+    # Call _store_auth_and_collect_resume_targets
+    await _store_auth_and_collect_resume_targets(
+        events=[system_event],
+        auth_fc_ids={'auth_fc_id'},
+        auth_responses={
+            'auth_fc_id': stored_auth_config.model_dump(
+                mode='json', exclude_defaults=True
+            )
+        },
+        state=mock_state,
+    )
+
+    # Verify AuthHandler was called with merged config
+    mock_auth_handler_class.assert_called_once()
+    called_config = mock_auth_handler_class.call_args.kwargs['auth_config']
+
+    # Check raw_auth_credential fields
+    assert (
+        called_config.raw_auth_credential.oauth2.client_id
+        == 'expected_client_id'
+    )
+    assert (
+        called_config.raw_auth_credential.oauth2.client_secret
+        == 'expected_client_secret'
+    )
+    assert (
+        called_config.raw_auth_credential.oauth2.redirect_uri
+        == 'expected_redirect_uri'
+    )
+    assert (
+        called_config.raw_auth_credential.oauth2.code_verifier
+        == 'expected_code_verifier'
+    )
+    assert (
+        called_config.raw_auth_credential.oauth2.code_challenge_method == 'S256'
+    )
+    assert (
+        called_config.raw_auth_credential.oauth2.token_endpoint_auth_method
+        == 'client_secret_post'
+    )
+    assert (
+        called_config.raw_auth_credential.oauth2.access_token
+        == 'some_access_token'
+    )
+
+    # Check exchanged_auth_credential fields
+    assert (
+        called_config.exchanged_auth_credential.oauth2.client_id
+        == 'expected_client_id'
+    )
+    assert (
+        called_config.exchanged_auth_credential.oauth2.client_secret
+        == 'expected_client_secret'
+    )
+    assert (
+        called_config.exchanged_auth_credential.oauth2.redirect_uri
+        == 'expected_redirect_uri'
+    )
+    assert (
+        called_config.exchanged_auth_credential.oauth2.code_verifier
+        == 'expected_code_verifier'
+    )
+    assert (
+        called_config.exchanged_auth_credential.oauth2.code_challenge_method
+        == 'S256'
+    )
+    assert (
+        called_config.exchanged_auth_credential.oauth2.token_endpoint_auth_method
+        == 'client_secret_post'
+    )
+    assert (
+        called_config.exchanged_auth_credential.oauth2.access_token
+        == 'some_exchanged_token'
+    )
+
+  def test_merge_credential_oauth2_fields_when_target_oauth2_is_none(self):
+    """Test merging fields into a target credential where target.oauth2 is None."""
+    from google.adk.auth.auth_preprocessor import _merge_credential_oauth2_fields
+
+    target = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=None,
+    )
+    source = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id='expected_client_id',
+            client_secret='expected_client_secret',
+        ),
+    )
+
+    merged = _merge_credential_oauth2_fields(target, source)
+    assert merged is not None
+    assert merged.oauth2 is not None
+    assert merged.oauth2.client_id == 'expected_client_id'
+    assert merged.oauth2.client_secret == 'expected_client_secret'

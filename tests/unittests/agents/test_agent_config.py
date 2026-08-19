@@ -697,6 +697,71 @@ def test_third_party_module_reference_is_not_blocked():
   assert result is BaseModel
 
 
+# yaml is a hard, always-installed dependency of adk-python itself (not an
+# optional integration), and ruamel is a common transitive dependency.
+# Both ship exec-capable deserialization entry points.
+_YAML_UNSAFE_LOADER_REFS = [
+    "yaml.unsafe_load",
+    "yaml.load",
+    "yaml.full_load",
+]
+
+_RUAMEL_UNSAFE_LOADER_REFS = [
+    "ruamel.yaml.round_trip_load",
+]
+
+
+@pytest.mark.parametrize(
+    "blocked_ref", _YAML_UNSAFE_LOADER_REFS + _RUAMEL_UNSAFE_LOADER_REFS
+)
+def test_resolve_code_reference_blocks_yaml_and_ruamel_deserialization(
+    blocked_ref: str,
+):
+  """yaml and ruamel's unsafe/full loaders are rejected as code references."""
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+
+@pytest.mark.parametrize(
+    "blocked_ref", _YAML_UNSAFE_LOADER_REFS + _RUAMEL_UNSAFE_LOADER_REFS
+)
+def test_resolve_tools_blocks_yaml_and_ruamel_deserialization(blocked_ref: str):
+  """yaml and ruamel's unsafe/full loaders are rejected as user-defined tools."""
+  from google.adk.tools.tool_configs import ToolConfig
+
+  tool_config = ToolConfig(name=blocked_ref)
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+
+
+_YAML_SAFE_LOOKING_REFS = [
+    "yaml.safe_load",
+    "yaml.dump",
+    "yaml.SafeLoader",
+]
+
+_RUAMEL_SAFE_LOOKING_REFS = [
+    "ruamel.yaml.safe_load",
+    "ruamel.yaml.dump",
+]
+
+
+@pytest.mark.parametrize(
+    "blocked_ref", _YAML_SAFE_LOOKING_REFS + _RUAMEL_SAFE_LOOKING_REFS
+)
+def test_harmless_looking_yaml_and_ruamel_references_are_also_blocked(
+    blocked_ref: str,
+):
+  """The whole yaml and ruamel modules are off-limits, not just the scary parts.
+
+  Blocking them in full locks in the module-wide intent and prevents
+  future bypasses if new unsafe loaders are added or if safe-looking names
+  are refactored to resolve differently.
+  """
+  with pytest.raises(ValueError, match="Blocked module reference"):
+    config_agent_utils.resolve_code_reference(CodeConfig(name=blocked_ref))
+
+
 def test_denylist_can_be_disabled():
   """Verify _set_enforce_denylist(False) disables module blocking."""
   config_agent_utils._set_enforce_denylist(False)
