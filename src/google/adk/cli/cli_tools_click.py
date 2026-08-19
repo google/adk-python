@@ -930,8 +930,8 @@ def cli_eval(
               metric_name=metric_name, description=config.description
           )
 
-        metric_evaluator_registry.register_evaluator(
-            metric_info, _CustomMetricEvaluator
+        metric_evaluator_registry._register(  # pylint: disable=protected-access
+            metric_info, _CustomMetricEvaluator, config.code_config.name
         )
 
     eval_service = LocalEvalService(
@@ -2005,15 +2005,33 @@ def migrate():
     default="INFO",
     help="Optional. Set the logging level",
 )
+@click.option(  # type: ignore[untyped-decorator]
+    "--allow-unsafe-unpickling",
+    "--allow_unsafe_unpickling",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Allow unsafe pickle loading for trusted legacy session"
+        " databases."
+    ),
+)
 def cli_migrate_session(
-    *, source_db_url: str, dest_db_url: str, log_level: str
+    *,
+    source_db_url: str,
+    dest_db_url: str,
+    log_level: str,
+    allow_unsafe_unpickling: bool,
 ):
   """Migrates a session database to the latest schema version."""
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
   try:
     from ..sessions.migration import migration_runner
 
-    migration_runner.upgrade(source_db_url, dest_db_url)
+    migration_runner.upgrade(
+        source_db_url,
+        dest_db_url,
+        allow_unsafe_unpickling=allow_unsafe_unpickling,
+    )
     click.secho("Migration check and upgrade process finished.", fg="green")
   except Exception as e:
     click.secho(f"Migration failed: {e}", fg="red", err=True)

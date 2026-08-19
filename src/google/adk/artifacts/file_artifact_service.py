@@ -32,6 +32,7 @@ from pydantic import Field
 from pydantic import ValidationError
 from typing_extensions import override
 
+from . import artifact_util
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
@@ -159,14 +160,32 @@ def _to_posix_path(path_value: str) -> PurePosixPath:
   return PurePosixPath(path_value)
 
 
+def _is_rooted_or_drive_qualified(path_value: str) -> bool:
+  """Checks POSIX and Windows rooted or drive-qualified path forms."""
+  # A Windows root covers POSIX absolute paths, UNC and device prefixes alike;
+  # only the drive-relative form (`C:name`) has no root of its own.
+  if artifact_util._is_drive_qualified(path_value):
+    return True
+  return bool(PureWindowsPath(path_value).root)
+
+
+def _has_parent_reference(path_value: str) -> bool:
+  """Checks parent traversal using either platform's separators."""
+  return (
+      ".." in PurePosixPath(path_value).parts
+      or ".." in PureWindowsPath(path_value).parts
+  )
+
+
 def _resolve_scoped_artifact_path(
     scope_root: Path, filename: str
 ) -> tuple[Path, Path]:
   """Returns the absolute artifact directory and its relative path.
 
   The caller is expected to pass the scope root directory (user or session).
-  This helper joins the filename under that root, resolves traversal segments,
-  and guards against paths that escape the scope root.
+  Filenames that are rooted, drive-qualified, or contain a parent reference are
+  rejected outright, including parent references that would resolve back inside
+  the scope root. Whatever remains is joined under the scope root.
 
   Args:
     scope_root: Directory that defines the storage scope.
@@ -177,17 +196,23 @@ def _resolve_scoped_artifact_path(
     to `scope_root`.
 
   Raises:
-    InputValidationError: If `filename` resolves outside of `scope_root`.
+    InputValidationError: If `filename` is rooted, drive-qualified, contains a
+      parent reference, or otherwise resolves outside of `scope_root`.
   """
   stripped = _strip_user_namespace(filename).strip()
-  pure_path = _to_posix_path(stripped)
+
+  if _is_rooted_or_drive_qualified(stripped):
+    raise InputValidationError(
+        f"Rooted or drive-qualified artifact filename {filename!r} is not "
+        "permitted; provide a path relative to the storage scope."
+    )
+  if _has_parent_reference(stripped):
+    raise InputValidationError(
+        f"Artifact filename {filename!r} must not contain parent traversal."
+    )
 
   scope_root_resolved = scope_root.resolve(strict=False)
-  if pure_path.is_absolute():
-    raise InputValidationError(
-        f"Absolute artifact filename {filename!r} is not permitted; "
-        "provide a path relative to the storage scope."
-    )
+  pure_path = _to_posix_path(stripped)
   candidate = scope_root_resolved / Path(pure_path)
 
   candidate = candidate.resolve(strict=False)
@@ -221,7 +246,7 @@ def _validate_path_segment(value: str, field_name: str) -> None:
 
   Raises:
     InputValidationError: If the value contains path separators, traversal
-      segments, or null bytes.
+      segments, null bytes, or is drive-qualified.
   """
   if not value:
     raise InputValidationError(f"{field_name} must not be empty.")
@@ -230,6 +255,10 @@ def _validate_path_segment(value: str, field_name: str) -> None:
   if "/" in value or "\\" in value:
     raise InputValidationError(
         f"{field_name} {value!r} must not contain path separators."
+    )
+  if artifact_util._is_drive_qualified(value):
+    raise InputValidationError(
+        f"{field_name} {value!r} must not be drive-qualified."
     )
   if value in (".", "..") or ".." in value.split("/"):
     raise InputValidationError(
@@ -346,7 +375,7 @@ class FileArtifactService(BaseArtifactService):
     """Returns the directory that represents the artifact scope."""
     if _is_user_scoped(session_id, filename):
       return _user_artifacts_dir(base_root)
-    if not session_id:
+    if session_id is None:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
@@ -607,7 +636,7 @@ class FileArtifactService(BaseArtifactService):
 
     base_root = self._base_root(app_name, user_id)
 
-    if session_id:
+    if session_id is not None:
       session_root = _session_artifacts_dir(base_root, session_id)
       for artifact_dir in _iter_artifact_dirs(session_root):
         metadata = self._latest_metadata(artifact_dir)

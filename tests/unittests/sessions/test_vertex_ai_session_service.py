@@ -727,6 +727,45 @@ async def test_get_and_delete_session():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_delete_session_rejects_other_users_session():
+  """delete_session must not delete a session owned by a different user."""
+  session_service = mock_vertex_ai_session_service()
+
+  # session '1' belongs to 'user'; 'user2' must not be allowed to delete it.
+  with pytest.raises(ValueError) as excinfo:
+    await session_service.delete_session(
+        app_name='123', user_id='user2', session_id='1'
+    )
+  assert 'does not belong to user user2' in str(excinfo.value)
+
+  # Session must still exist.
+  assert (
+      await session_service.get_session(
+          app_name='123', user_id='user', session_id='1'
+      )
+      == MOCK_SESSION
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_session_id_path_traversal_rejected():
+  """Session IDs containing path-traversal characters must be rejected."""
+  session_service = mock_vertex_ai_session_service()
+
+  for bad_id in ['..', '../foo', '..?force=true', 'a/b', '']:
+    with pytest.raises(ValueError):
+      await session_service.delete_session(
+          app_name='123', user_id='user', session_id=bad_id
+      )
+    with pytest.raises(ValueError):
+      await session_service.get_session(
+          app_name='123', user_id='user', session_id=bad_id
+      )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_with_page_token():
   session_service = mock_vertex_ai_session_service()
 
