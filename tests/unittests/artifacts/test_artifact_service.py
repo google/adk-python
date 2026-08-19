@@ -723,9 +723,21 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
     ("filename", "session_id"),
     [
         ("../escape.txt", "sess123"),
+        (r"..\escape.txt", "sess123"),
+        ("folder/../alias.txt", "sess123"),
+        (r"folder\..\alias.txt", "sess123"),
+        (r"folder/..\alias.txt", "sess123"),
         ("user:../escape.txt", "sess123"),
+        (r"user:..\escape.txt", "sess123"),
+        (r"user:folder\..\alias.txt", "sess123"),
         ("/absolute/path.txt", "sess123"),
         ("user:/absolute/path.txt", None),
+        (r"C:\absolute\path.txt", "sess123"),
+        ("C:/absolute/path.txt", "sess123"),
+        ("C:drive-relative.txt", "sess123"),
+        (r"\\server\share\file.txt", "sess123"),
+        ("//server/share/file.txt", "sess123"),
+        (r"\rooted\file.txt", "sess123"),
     ],
 )
 async def test_file_save_artifact_rejects_out_of_scope_paths(
@@ -756,6 +768,8 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
         ".",
         "has/slash",
         "back\\slash",
+        "C:evil",
+        "C:",
         "null\x00byte",
         "",
     ],
@@ -787,6 +801,8 @@ async def test_file_save_artifact_rejects_traversal_in_user_id(
         ".",
         "has/slash",
         "back\\slash",
+        "C:evil",
+        "C:",
         "null\x00byte",
         "",
     ],
@@ -829,6 +845,483 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
         session_id=None,
         filename=str(absolute_in_scope),
         artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_empty_session_id_is_rejected(tmp_path):
+  """An empty session_id is an error rather than meaning "no session"."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  with pytest.raises(InputValidationError, match="must not be empty"):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id="user123",
+        session_id="",
+        filename="safe.txt",
+        artifact=types.Part(text="content"),
+    )
+  with pytest.raises(InputValidationError, match="must not be empty"):
+    await artifact_service.list_artifact_keys(
+        app_name="myapp",
+        user_id="user123",
+        session_id="",
+    )
+
+
+INVALID_PATH_SEGMENT_CASES = (
+    ("../escape", "must not contain traversal segments"),
+    ("../../etc", "must not contain traversal segments"),
+    ("foo/../../bar", "must not contain traversal segments"),
+    ("..", "must not contain traversal segments"),
+    (".", "must not contain traversal segments"),
+    ("null\x00byte", "must not contain null bytes"),
+    ("", "must not be empty"),
+    ("/etc/passwd", "must not be an absolute path or start with a slash"),
+    ("/leading/slash", "must not be an absolute path or start with a slash"),
+    (
+        "\\leading\\backslash",
+        "must not be an absolute path or start with a slash",
+    ),
+    (r"C:\absolute", "must not be drive-qualified"),
+    ("C:/absolute", "must not be drive-qualified"),
+    ("C:drive-relative", "must not be drive-qualified"),
+)
+
+# FileArtifactService keeps its own stricter validator, which additionally
+# rejects embedded path separators, so it is not covered by these cases.
+SHARED_VALIDATOR_SERVICE_TYPES = [
+    ArtifactServiceType.IN_MEMORY,
+    ArtifactServiceType.GCS,
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+async def test_save_and_load_namespaced_user_id_succeeds(
+    service_type, artifact_service_factory
+):
+  """The in-memory and GCS services permit namespaced user IDs."""
+  service = artifact_service_factory(service_type)
+  artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+  await service.save_artifact(
+      app_name="myapp",
+      user_id="group/user123",
+      session_id="sess123",
+      filename="safe.txt",
+      artifact=artifact,
+  )
+  loaded = await service.load_artifact(
+      app_name="myapp",
+      user_id="group/user123",
+      session_id="sess123",
+      filename="safe.txt",
+  )
+  assert loaded.inline_data.data == b"data"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
+async def test_save_artifact_rejects_traversal_in_app_name(
+    service_type, app_name, match, artifact_service_factory
+):
+  """Saving rejects app_name values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+  with pytest.raises(InputValidationError, match=match):
+    await service.save_artifact(
+        app_name=app_name,
+        user_id="user123",
+        filename="user:safe.txt",
+        artifact=artifact,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("user_id,match", INVALID_PATH_SEGMENT_CASES)
+async def test_save_artifact_rejects_traversal_in_user_id(
+    service_type, user_id, match, artifact_service_factory
+):
+  """Saving rejects user_id values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+  with pytest.raises(InputValidationError, match=match):
+    await service.save_artifact(
+        app_name="myapp",
+        user_id=user_id,
+        filename="user:safe.txt",
+        artifact=artifact,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("session_id,match", INVALID_PATH_SEGMENT_CASES)
+async def test_save_artifact_rejects_traversal_in_session_id(
+    service_type, session_id, match, artifact_service_factory
+):
+  """Saving rejects session_id values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+  with pytest.raises(InputValidationError, match=match):
+    await service.save_artifact(
+        app_name="myapp",
+        user_id="user123",
+        session_id=session_id,
+        filename="safe.txt",
+        artifact=artifact,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
+async def test_load_artifact_rejects_traversal_in_app_name(
+    service_type, app_name, match, artifact_service_factory
+):
+  """Loading rejects app_name values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match=match):
+    await service.load_artifact(
+        app_name=app_name,
+        user_id="user123",
+        filename="user:safe.txt",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("user_id,match", INVALID_PATH_SEGMENT_CASES)
+async def test_load_artifact_rejects_traversal_in_user_id(
+    service_type, user_id, match, artifact_service_factory
+):
+  """Loading rejects user_id values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match=match):
+    await service.load_artifact(
+        app_name="myapp",
+        user_id=user_id,
+        filename="user:safe.txt",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("session_id,match", INVALID_PATH_SEGMENT_CASES)
+async def test_load_artifact_rejects_traversal_in_session_id(
+    service_type, session_id, match, artifact_service_factory
+):
+  """Loading rejects session_id values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match=match):
+    await service.load_artifact(
+        app_name="myapp",
+        user_id="user123",
+        session_id=session_id,
+        filename="safe.txt",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
+async def test_delete_artifact_rejects_traversal_in_app_name(
+    service_type, app_name, match, artifact_service_factory
+):
+  """Deleting rejects app_name values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match=match):
+    await service.delete_artifact(
+        app_name=app_name,
+        user_id="user123",
+        filename="user:safe.txt",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("user_id,match", INVALID_PATH_SEGMENT_CASES)
+async def test_delete_artifact_rejects_traversal_in_user_id(
+    service_type, user_id, match, artifact_service_factory
+):
+  """Deleting rejects user_id values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match=match):
+    await service.delete_artifact(
+        app_name="myapp",
+        user_id=user_id,
+        filename="user:safe.txt",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("session_id,match", INVALID_PATH_SEGMENT_CASES)
+async def test_delete_artifact_rejects_traversal_in_session_id(
+    service_type, session_id, match, artifact_service_factory
+):
+  """Deleting rejects session_id values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match=match):
+    await service.delete_artifact(
+        app_name="myapp",
+        user_id="user123",
+        session_id=session_id,
+        filename="safe.txt",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("app_name,match", INVALID_PATH_SEGMENT_CASES)
+async def test_list_artifact_keys_rejects_traversal_in_app_name(
+    service_type, app_name, match, artifact_service_factory
+):
+  """Listing rejects app_name values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match=match):
+    await service.list_artifact_keys(
+        app_name=app_name,
+        user_id="user123",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("user_id,match", INVALID_PATH_SEGMENT_CASES)
+async def test_list_artifact_keys_rejects_traversal_in_user_id(
+    service_type, user_id, match, artifact_service_factory
+):
+  """Listing rejects user_id values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match=match):
+    await service.list_artifact_keys(
+        app_name="myapp",
+        user_id=user_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_type", SHARED_VALIDATOR_SERVICE_TYPES)
+@pytest.mark.parametrize("session_id,match", INVALID_PATH_SEGMENT_CASES)
+async def test_list_artifact_keys_rejects_traversal_in_session_id(
+    service_type, session_id, match, artifact_service_factory
+):
+  """Listing rejects session_id values that could alter the storage key."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match=match):
+    await service.list_artifact_keys(
+        app_name="myapp",
+        user_id="user123",
+        session_id=session_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_artifact_reference_allows_same_session_scope(
+    artifact_service_factory,
+):
+  """InMemoryArtifactService allows references inside the same session scope."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="source.txt",
+      artifact=types.Part(text="hello"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app0/users/user0/sessions/sess0/"
+              "artifacts/source.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="ref.txt",
+      artifact=ref,
+  )
+
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="ref.txt",
+  )
+  assert loaded == types.Part(text="hello")
+
+
+@pytest.mark.asyncio
+async def test_artifact_reference_allows_same_user_user_scope(
+    artifact_service_factory,
+):
+  """InMemoryArtifactService allows user-scoped references from same user."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="user:profile.txt",
+      artifact=types.Part(text="profile"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app0/users/user0/artifacts/"
+              "user:profile.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess1",
+      filename="ref.txt",
+      artifact=ref,
+  )
+
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess1",
+      filename="ref.txt",
+  )
+  assert loaded == types.Part(text="profile")
+
+
+@pytest.mark.asyncio
+async def test_artifact_reference_rejects_cross_user_on_save(
+    artifact_service_factory,
+):
+  """InMemoryArtifactService rejects references to different users on save."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="victim",
+      session_id="victim-sess",
+      filename="user:secret.txt",
+      artifact=types.Part(text="secret"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app0/users/victim/artifacts/"
+              "user:secret.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  with pytest.raises(InputValidationError, match="same app and user scope"):
+    await artifact_service.save_artifact(
+        app_name="app0",
+        user_id="attacker",
+        session_id="attacker-sess",
+        filename="ref.txt",
+        artifact=ref,
+    )
+
+
+@pytest.mark.asyncio
+async def test_artifact_reference_rejects_cross_app_on_save(
+    artifact_service_factory,
+):
+  """InMemoryArtifactService rejects references to different apps on save."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="victim-app",
+      user_id="user0",
+      session_id="sess0",
+      filename="user:secret.txt",
+      artifact=types.Part(text="secret"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/victim-app/users/user0/artifacts/"
+              "user:secret.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  with pytest.raises(InputValidationError, match="same app and user scope"):
+    await artifact_service.save_artifact(
+        app_name="attacker-app",
+        user_id="user0",
+        session_id="sess0",
+        filename="ref.txt",
+        artifact=ref,
+    )
+
+
+@pytest.mark.asyncio
+async def test_artifact_reference_rejects_cross_session_on_load(
+    artifact_service_factory,
+):
+  """A stored reference retargeted at another session is rejected on load."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.IN_MEMORY)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="source.txt",
+      artifact=types.Part(text="source"),
+  )
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess1",
+      filename="source.txt",
+      artifact=types.Part(text="other-session"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app0/users/user0/sessions/sess0/"
+              "artifacts/source.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="ref.txt",
+      artifact=ref,
+  )
+
+  # Manually retarget the stored reference URI at a different session.
+  ref_path = artifact_service._artifact_path(
+      "app0", "user0", "ref.txt", "sess0"
+  )
+  artifact_service.artifacts[ref_path][0].data.file_data.file_uri = (
+      "artifact://apps/app0/users/user0/sessions/sess1/"
+      "artifacts/source.txt/versions/0"
+  )
+
+  with pytest.raises(InputValidationError, match="same session scope"):
+    await artifact_service.load_artifact(
+        app_name="app0",
+        user_id="user0",
+        session_id="sess0",
+        filename="ref.txt",
     )
 
 
