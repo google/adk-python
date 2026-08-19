@@ -226,10 +226,29 @@ def _parse_adk_metadata_value(value: Any) -> Any:
     return value
 
 
+_PEER_SETTABLE_ACTION_FIELDS = frozenset({
+    "escalate",
+    "skip_summarization",
+    "skipSummarization",
+})
+"""EventActions fields a remote A2A peer may set on the event we emit for it.
+
+Every other field either mutates the caller's own session (state and artifact
+deltas, requested auth configs and tool confirmations) or drives the caller's
+control flow and persistence (agent transfer, agent state, compaction, rewind),
+so it must never be rebuilt from metadata the peer controls. Serialized
+metadata uses the camelCase aliases, so both spellings are listed.
+"""
+
+
 def _extract_event_actions(
     metadata: Optional[dict[str, Any]],
 ) -> EventActions:
-  """Extracts ADK event actions from A2A metadata."""
+  """Extracts ADK event actions from A2A metadata.
+
+  The metadata is supplied by the remote peer, so only the inert fields in
+  ``_PEER_SETTABLE_ACTION_FIELDS`` are honored; anything else is dropped.
+  """
   if not metadata:
     return EventActions()
 
@@ -245,8 +264,19 @@ def _extract_event_actions(
     )
     return EventActions()
 
+  peer_actions = {
+      key: value
+      for key, value in parsed_actions.items()
+      if key in _PEER_SETTABLE_ACTION_FIELDS
+  }
+  if len(peer_actions) != len(parsed_actions):
+    logger.debug(
+        "Dropping ADK actions metadata fields that a peer may not set: %s",
+        sorted(set(parsed_actions) - set(peer_actions)),
+    )
+
   try:
-    return EventActions.model_validate(parsed_actions)
+    return EventActions.model_validate(peer_actions)
   except ValidationError as error:
     logger.warning("Ignoring invalid ADK actions metadata: %s", error)
     return EventActions()
