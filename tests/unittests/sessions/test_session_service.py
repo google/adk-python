@@ -725,6 +725,62 @@ async def test_boolean_state_survives_unrelated_state_delta(session_service):
 
 
 @pytest.mark.asyncio
+async def test_app_state_dict_valued_delta_replaces_stored_value(
+    session_service,
+):
+  """A dict-valued delta to app: state replaces it, it is not deep-merged."""
+  app_name = 'my_app'
+  session1 = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'app:cfg': {'name': 'ada', 'role': 'admin'}},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'app:cfg': {'name': 'bob'}}),
+  )
+  await session_service.append_event(session=session1, event=event)
+
+  # A different user's session should see the replaced, not merged, value.
+  session2 = await session_service.create_session(
+      app_name=app_name, user_id='u2', session_id='s2'
+  )
+  assert session2.state.get('app:cfg') == {'name': 'bob'}
+  assert session1.state.get('app:cfg') == {'name': 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_user_state_none_valued_delta_is_stored_not_dropped(
+    session_service,
+):
+  """A None-valued delta to user: state stores null, it does not delete it."""
+  app_name = 'my_app'
+  session1 = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'user:pref': 'dark_mode'},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'user:pref': None}),
+  )
+  await session_service.append_event(session=session1, event=event)
+
+  # Another session for the same user should see the null, not a dropped key.
+  session1b = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1b'
+  )
+  assert 'user:pref' in session1b.state
+  assert session1b.state.get('user:pref') is None
+  assert 'user:pref' in session1.state
+  assert session1.state.get('user:pref') is None
+
+
+@pytest.mark.asyncio
 async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   app_name = 'my_app'
   user_id = 'u1'
