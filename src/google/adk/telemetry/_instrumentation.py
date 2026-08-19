@@ -189,10 +189,12 @@ class TelemetryContext:
     # the response is handed back to the caller, so what the caller does with
     # it (running the tool the model asked for) is not nested inside the
     # inference span. Partial chunks keep it open until the final one arrives.
-    if not response.partial and isinstance(
-        self.span, tracing.GenerateContentSpan
+    if (
+        not response.partial
+        and isinstance(self.span, tracing.GenerateContentSpan)
+        and (exit_stack := self.span._exit_stack) is not None  # pylint: disable=protected-access
     ):
-      self.span._close()  # pylint: disable=protected-access
+      exit_stack.close()
       self._inference_span_ended = True
 
 

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from ...features import experimental
 from ...features import FeatureName
+from ...utils import _json_utils
 
 if TYPE_CHECKING:
   import vertexai
@@ -129,10 +130,10 @@ class SandboxClient:
     Returns:
       The parsed JSON response as a dict.
     """
-    import json
-
     if hasattr(response, "body") and response.body:
-      return json.loads(response.body)
+      return _json_utils.safe_json_loads(
+          response.body, context="sandbox response"
+      )
     return {}
 
   def update_access_token(self, access_token: str) -> None:

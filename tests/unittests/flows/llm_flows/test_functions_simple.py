@@ -2642,8 +2642,12 @@ async def test_generate_auth_event_emits_one_long_running_call_per_request():
   function_response_event = _tool_response_event(
       invocation_context,
       {
-          'orig_call_1': AuthConfig(auth_scheme=HTTPBearer()),
-          'orig_call_2': AuthConfig(auth_scheme=HTTPBearer()),
+          'orig_call_1': AuthConfig(
+              auth_scheme=HTTPBearer(), credential_key='key1'
+          ),
+          'orig_call_2': AuthConfig(
+              auth_scheme=HTTPBearer(), credential_key='key2'
+          ),
       },
   )
 
@@ -2662,6 +2666,34 @@ async def test_generate_auth_event_emits_one_long_running_call_per_request():
       AuthToolArguments.model_validate(call.args).function_call_id
       for call in calls
   ] == ['orig_call_1', 'orig_call_2']
+
+
+@pytest.mark.asyncio
+async def test_generate_auth_event_deduplicates_requests():
+  """Duplicate requests for the same credential only emit one client-side call."""
+  _, invocation_context = await _auth_invocation_context()
+  function_response_event = _tool_response_event(
+      invocation_context,
+      {
+          'orig_call_1': AuthConfig(
+              auth_scheme=HTTPBearer(), credential_key='key1'
+          ),
+          'orig_call_2': AuthConfig(
+              auth_scheme=HTTPBearer(), credential_key='key1'
+          ),
+      },
+  )
+
+  auth_event = generate_auth_event(invocation_context, function_response_event)
+
+  assert auth_event is not None
+  calls = auth_event.get_function_calls()
+  assert [call.name for call in calls] == [REQUEST_EUC_FUNCTION_CALL_NAME]
+  assert len(calls) == 1
+  assert (
+      AuthToolArguments.model_validate(calls[0].args).function_call_id
+      == 'orig_call_1'
+  )
 
 
 @pytest.mark.asyncio

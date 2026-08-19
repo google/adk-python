@@ -38,6 +38,7 @@ from pydantic import ValidationError
 from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..utils import _json_utils
 from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .eval_case import get_all_tool_calls
@@ -439,7 +440,9 @@ class AgentEvaluator:
     initial_session: dict[str, Any] = {}
     if initial_session_file:
       with open(initial_session_file, "r", encoding="utf-8") as f:
-        initial_session = json.loads(f.read())
+        initial_session = _json_utils.safe_json_loads(
+            f.read(), context=f"initial session file {initial_session_file}"
+        )
     return initial_session
 
   @staticmethod

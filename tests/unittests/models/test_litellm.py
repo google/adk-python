@@ -5387,7 +5387,7 @@ async def test_get_content_pdf_openai_uses_file_id(mocker):
   assert "file_data" not in content[0]["file"]
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="openai",
   )
@@ -5419,7 +5419,7 @@ async def test_get_content_pdf_proxied_azure_uses_file_id(mocker):
   assert "file_data" not in content[0]["file"]
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="openai",
   )
@@ -5459,9 +5459,44 @@ async def test_get_content_pdf_azure_uses_file_id(mocker):
   assert content[0]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="azure",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_guess_extension_fallback(mocker):
+  """Test that guess_extension fallback is used when guess_extension returns None."""
+  import mimetypes
+
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-docx123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  # Mock mimetypes.guess_extension to simulate environment without mime db
+  mocker.patch.object(mimetypes, "guess_extension", return_value=None)
+
+  parts = [
+      types.Part.from_bytes(
+          data=b"test_docx_data",
+          mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      )
+  ]
+  content = await _get_content(parts, provider="openai")
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-docx123"
+
+  mock_acreate_file.assert_called_once_with(
+      file=(
+          "document.docx",
+          b"test_docx_data",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ),
+      purpose="assistants",
+      custom_llm_provider="openai",
   )
 
 
@@ -5504,7 +5539,11 @@ async def test_get_completion_inputs_openai_file_upload(mocker):
   assert content[1]["file"]["file_id"] == "file-uploaded123"
   assert content[1]["file"]["format"] == "application/pdf"
 
-  mock_acreate_file.assert_called_once()
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_content", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+  )
 
 
 @pytest.mark.asyncio
