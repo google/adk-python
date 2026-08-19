@@ -31,6 +31,8 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import TypeAdapter
 
+from . import _json_utils
+
 # Use SchemaUnion from google.genai.types to support all schema types
 # that the underlying API supports.
 SchemaType = types.SchemaUnion
@@ -145,7 +147,7 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
     return [item.model_dump(exclude_none=True) for item in validated]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
-    return json.loads(json_text)
+    return _json_utils.safe_json_loads(json_text, context="schema value")
 
 
 def validate_node_data(
@@ -191,6 +193,8 @@ def validate_node_data(
     else:
       # Try to parse text as JSON first
       try:
+        # Kept as json.loads: the surrounding except json.JSONDecodeError
+        # distinguishes decode failure from schema validation failure.
         parsed_json = json.loads(text_str)
         validated_payload = _validate_python_object(parsed_json)
       except json.JSONDecodeError:

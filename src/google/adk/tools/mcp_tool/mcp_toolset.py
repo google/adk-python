@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import collections
 import dataclasses
 import inspect
@@ -45,6 +44,7 @@ from pydantic import model_validator
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
+from ...auth._auth_headers import build_auth_headers
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
@@ -299,67 +299,7 @@ class McpToolset(BaseToolset):
     if not credential:
       credential = self._auth_config.exchanged_auth_credential
 
-    if not credential:
-      return None
-    headers: Optional[Dict[str, str]] = None
-
-    if credential.oauth2:
-      headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
-    elif credential.http:
-      # Handle HTTP authentication schemes
-      if (
-          credential.http.scheme.lower() == "bearer"
-          and credential.http.credentials
-          and credential.http.credentials.token
-      ):
-        headers = {
-            "Authorization": f"Bearer {credential.http.credentials.token}"
-        }
-      elif credential.http.scheme.lower() == "basic":
-        # Handle basic auth
-        if (
-            credential.http.credentials
-            and credential.http.credentials.username
-            and credential.http.credentials.password
-        ):
-          credentials_str = (
-              f"{credential.http.credentials.username}"
-              f":{credential.http.credentials.password}"
-          )
-          encoded_credentials = base64.b64encode(
-              credentials_str.encode()
-          ).decode()
-          headers = {"Authorization": f"Basic {encoded_credentials}"}
-      elif credential.http.credentials and credential.http.credentials.token:
-        # Handle other HTTP schemes with token
-        headers = {
-            "Authorization": (
-                f"{credential.http.scheme} {credential.http.credentials.token}"
-            )
-        }
-
-      if credential.http.additional_headers:
-        headers = headers or {}
-        headers.update(credential.http.additional_headers)
-    elif credential.api_key:
-      # For API key, use the auth scheme to determine header name
-      if self._auth_config.auth_scheme:
-        from fastapi.openapi.models import APIKeyIn
-
-        if hasattr(self._auth_config.auth_scheme, "in_"):
-          if self._auth_config.auth_scheme.in_ == APIKeyIn.header:
-            headers = {self._auth_config.auth_scheme.name: credential.api_key}
-          else:
-            logger.warning(
-                "McpToolset only supports header-based API key authentication."
-                " Configured location: %s",
-                self._auth_config.auth_scheme.in_,
-            )
-        else:
-          # Default to using scheme name as header
-          headers = {self._auth_config.auth_scheme.name: credential.api_key}
-
-    return headers
+    return build_auth_headers(credential, self._auth_config.auth_scheme)
 
   @property
   def connection_params(self) -> Union[
