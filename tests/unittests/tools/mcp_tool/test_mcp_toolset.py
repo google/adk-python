@@ -30,6 +30,7 @@ from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
+from google.adk.tools.mcp_tool import mcp_toolset as mcp_toolset_module
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
@@ -176,8 +177,11 @@ class TestMcpToolset:
     assert toolset._auth_credential == auth_credential
     assert toolset._auth_config.credential_key == "my_custom_key"
 
-  def test_from_config_with_credential_key(self):
+  def test_from_config_with_credential_key(self, monkeypatch):
     """Test that from_config correctly parses credential_key."""
+    monkeypatch.setenv(
+        mcp_toolset_module.ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR, "1"
+    )
 
     auth_scheme = OAuth2(flows={})
 
@@ -190,6 +194,54 @@ class TestMcpToolset:
 
     assert isinstance(toolset._auth_scheme, OAuth2)
     assert toolset._auth_config.credential_key == "my_custom_key"
+
+  def test_from_config_rejects_stdio_server_params(self):
+    """Config-supplied stdio servers are rejected by default."""
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+
+    with pytest.raises(ValueError, match="not allowed in agent configs"):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_rejects_stdio_connection_params(self):
+    """The stdio_connection_params spelling is rejected the same way."""
+    config = ToolArgsConfig(
+        stdio_connection_params=StdioConnectionParams(
+            server_params=self.mock_stdio_params
+        )
+    )
+
+    with pytest.raises(ValueError, match="not allowed in agent configs"):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_rejection_names_the_env_var(self):
+    """The error tells the operator how to opt in."""
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+
+    with pytest.raises(
+        ValueError, match=mcp_toolset_module.ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR
+    ):
+      McpToolset.from_config(config, "")
+
+  def test_from_config_allows_stdio_when_env_var_set(self, monkeypatch):
+    """The environment variable opts a whole process in."""
+    monkeypatch.setenv(
+        mcp_toolset_module.ALLOW_CONFIG_STDIO_SERVERS_ENV_VAR, "1"
+    )
+    config = ToolArgsConfig(stdio_server_params=self.mock_stdio_params)
+
+    toolset = McpToolset.from_config(config, "")
+
+    assert isinstance(toolset, McpToolset)
+
+  def test_from_config_allows_remote_connection_params(self):
+    """Remote MCP servers are unaffected: they launch no local process."""
+    config = ToolArgsConfig(
+        sse_connection_params=SseConnectionParams(url="https://example.com/sse")
+    )
+
+    toolset = McpToolset.from_config(config, "")
+
+    assert isinstance(toolset, McpToolset)
 
   def test_init_missing_connection_params(self):
     """Test initialization with missing connection params raises error."""
@@ -224,6 +276,27 @@ class TestMcpToolset:
     assert tools[1].name == "tool2"
     assert tools[2].name == "tool3"
     assert tools[3].name == "load_mcp_resource"
+
+  @pytest.mark.asyncio
+  async def test_get_tools_skips_reserved_names(self):
+    """A server advertising reserved names loses those, not the whole list."""
+    mock_tools = [
+        MockMCPTool("valid_tool"),
+        MockMCPTool("transfer_to_agent"),
+        MockMCPTool("adk_request_credential"),
+        MockMCPTool("adk_request_confirmation"),
+        MockMCPTool("adk_request_input"),
+    ]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["valid_tool"]
 
   @pytest.mark.asyncio
   async def test_get_tools_with_list_filter(self):
