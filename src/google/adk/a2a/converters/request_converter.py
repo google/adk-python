@@ -22,10 +22,13 @@ from a2a.server.agent_execution import RequestContext
 from google.genai import types as genai_types
 from pydantic import BaseModel
 
-from ...runners import RunConfig
+from .. import _compat
+from ...agents.run_config import RunConfig
 from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
+
+A2A_METADATA_KEY = 'a2a_metadata'
 
 
 @a2a_experimental
@@ -95,9 +98,12 @@ def convert_a2a_request_to_agent_run_request(
   if not request.message:
     raise ValueError('Request message cannot be None')
 
-  custom_metadata = {}
-  if request.metadata:
-    custom_metadata['a2a_metadata'] = request.metadata
+  # Always mark the invocation as A2A-originated, even when the peer sent no
+  # protocol metadata. Trust decisions downstream (e.g. refusing a
+  # human-in-the-loop tool confirmation that arrived from a remote peer) key
+  # off the PRESENCE of this marker, so it must not depend on the peer
+  # choosing to send metadata.
+  custom_metadata = {A2A_METADATA_KEY: _compat.meta_to_dict(request.metadata)}
 
   output_parts = []
   for a2a_part in request.message.parts:

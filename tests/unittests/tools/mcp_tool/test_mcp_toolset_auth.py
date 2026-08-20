@@ -267,3 +267,32 @@ class TestMcpToolsetGetAuthHeaders:
 
     # Should return None for non-header API key
     assert headers is None
+
+  def test_get_auth_headers_reads_from_readonly_context(
+      self, toolset_with_oauth2
+  ):
+    """Test that _get_auth_headers reads from ReadonlyContext first."""
+    from google.adk.agents.readonly_context import ReadonlyContext
+
+    mock_readonly_context = Mock(spec=ReadonlyContext)
+    mock_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(access_token="token-from-context"),
+    )
+    mock_readonly_context.get_credential.return_value = mock_credential
+
+    # Even if exchanged_auth_credential has a different value
+    toolset_with_oauth2._auth_config.exchanged_auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(access_token="token-from-config"),
+    )
+
+    headers = toolset_with_oauth2._get_auth_headers(
+        readonly_context=mock_readonly_context
+    )
+
+    assert headers is not None
+    assert headers["Authorization"] == "Bearer token-from-context"
+    mock_readonly_context.get_credential.assert_called_once_with(
+        toolset_with_oauth2._auth_config.credential_key
+    )

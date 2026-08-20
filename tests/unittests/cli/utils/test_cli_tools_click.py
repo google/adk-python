@@ -17,8 +17,12 @@
 from __future__ import annotations
 
 import builtins
+import hashlib
 import json
+import logging
+import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import Any
 from typing import Dict
@@ -30,11 +34,14 @@ from unittest import mock
 import click
 from click.testing import CliRunner
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
+from google.adk.cli.utils import gcp_utils
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
+from google.adk.events.event import Event
 from pydantic import BaseModel
 import pytest
 
@@ -59,8 +66,17 @@ def mock_load_eval_set_from_file():
 
 @pytest.fixture
 def mock_get_root_agent():
-  with mock.patch("google.adk.cli.cli_eval.get_root_agent") as mock_func:
-    mock_func.return_value = root_agent
+  """Patches the agent resolver used by the eval CLI.
+
+  `cli_eval` resolves agents via `get_app_or_root_agent` (which returns
+  `(app, root_agent)`); the eval-set tests don't exercise the App path,
+  so we yield `(None, root_agent)`.
+  """
+  with mock.patch(
+      "google.adk.cli.cli_eval.get_app_or_root_agent",
+      new_callable=mock.AsyncMock,
+  ) as mock_func:
+    mock_func.return_value = (None, root_agent)
     yield mock_func
 
 
@@ -84,6 +100,15 @@ def _mute_click(request, monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.setattr(click, "echo", lambda *a, **k: None)
   # Keep secho for error messages
   # monkeypatch.setattr(click, "secho", lambda *a, **k: None)
+
+
+def test_main_disables_click_windows_glob_expansion() -> None:
+  """Verifies the ADK CLI disables Click's Windows glob expansion."""
+  with mock.patch.object(click.Group, "main", return_value=None) as mock_main:
+    from google.adk.cli import main
+
+    main(args=["web", ".", "--allow_origins", "*"])
+  assert mock_main.call_args.kwargs["windows_expand_args"] is False
 
 
 # validate_exclusive
@@ -110,13 +135,70 @@ def test_validate_exclusive_blocks_multiple() -> None:
     cli_tools_click.validate_exclusive(ctx, param2, "resume.json")
 
 
+def test_resolve_eval_config_file_path_prefers_explicit_path(
+    tmp_path: Path,
+) -> None:
+  eval_set_file = tmp_path / "sample.test.json"
+  eval_set_file.touch()
+  explicit_config = tmp_path / "explicit_config.json"
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=str(explicit_config),
+      eval_set_file_or_id_to_evals={str(eval_set_file): []},
+  )
+
+  assert resolved_path == str(explicit_config)
+
+
+def test_resolve_eval_config_file_path_uses_test_config_next_to_eval_file(
+    tmp_path: Path,
+) -> None:
+  eval_set_file = tmp_path / "sample.test.json"
+  eval_set_file.touch()
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={str(eval_set_file): []},
+  )
+
+  assert resolved_path == str(tmp_path / "test_config.json")
+
+
+def test_resolve_eval_config_file_path_returns_none_for_eval_set_id() -> None:
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={"eval_set_id": []},
+  )
+
+  assert resolved_path is None
+
+
+def test_resolve_eval_config_file_path_returns_none_for_multiple_eval_files(
+    tmp_path: Path,
+) -> None:
+  eval_set_file_1 = tmp_path / "sample_1.test.json"
+  eval_set_file_2 = tmp_path / "sample_2.test.json"
+  eval_set_file_1.touch()
+  eval_set_file_2.touch()
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={
+          str(eval_set_file_1): [],
+          str(eval_set_file_2): [],
+      },
+  )
+
+  assert resolved_path is None
+
+
 # cli create
 def test_cli_create_cmd_invokes_run_cmd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """`adk create` should forward arguments to cli_create.run_cmd."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_create, "run_cmd", rec)
+  monkeypatch.setattr("google.adk.cli.cli_create.run_cmd", rec)
 
   app_dir = tmp_path / "my_app"
   runner = CliRunner()
@@ -126,6 +208,308 @@ def test_cli_create_cmd_invokes_run_cmd(
   )
   assert result.exit_code == 0, (result.output, repr(result.exception))
   assert rec.calls, "cli_create.run_cmd must be called"
+
+
+def test_cli_telemetry_captures_subcommand_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should preserve subcommand context to record flags."""
+  monkeypatch.setattr("google.adk.cli.cli_create.run_cmd", lambda *a, **k: None)
+
+  # Mock telemetry consent to True so collector gets initialized
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  # Prevent rate limit checks during shutdown/execution
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._metrics_collector"
+      ".MetricsCollector._is_rate_limited",
+      lambda: True,
+  )
+
+  # Redirect metrics queue to temporary path
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  # Redirect sessions dir to temporary path
+  temp_sessions = tmp_path / "telemetry_sessions"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.TELEMETRY_SESSIONS_DIR",
+      str(temp_sessions),
+  )
+
+  app_dir = tmp_path / "new_app"
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "create",
+          "--model",
+          "gemini-2.0",
+          "--api_key",
+          "dummy",
+          str(app_dir),
+      ],
+  )
+  assert result.exit_code == 0
+
+  # Check that context-reconstruction captured details correctly
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "create"
+    # Ensure options flags are captured properly
+    assert "--model" in source["command_run"]["flags"]
+    assert "--api_key" in source["command_run"]["flags"]
+    # Ensure sanitized positional placeholder is logged
+    assert "<app_name>" in source["command_run"]["flags"]
+
+
+def test_cli_telemetry_records_express_mode_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """An onboarding choice must reach the logged command_run.
+
+  This is the only test covering the hand-off as a whole: `_onboarding` writes
+  the action into the Click context and `TelemetryGroup` reads it back out. A
+  typo in the meta key on either side passes every other test in the suite.
+  """
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._metrics_collector"
+      ".MetricsCollector._is_rate_limited",
+      lambda: True,
+  )
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.TELEMETRY_SESSIONS_DIR",
+      str(tmp_path / "telemetry_sessions"),
+  )
+
+  # Drive `create` into the "3. Login with Google" branch, which finds an
+  # existing Express project and records EXISTING_EXPRESS.
+  monkeypatch.setattr(gcp_utils, "check_adc", lambda: True)
+  monkeypatch.setattr(
+      gcp_utils,
+      "retrieve_express_project",
+      lambda: {"api_key": "key", "project_id": "proj", "region": "us-central1"},
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["create", "--model", "gemini-2.0", str(tmp_path / "new_app")],
+      input="3\n",
+  )
+  assert result.exit_code == 0
+
+  event = json.loads(temp_queue.read_text().splitlines()[0])
+  source = json.loads(event["source_extension_json"])
+  assert source["command_run"]["express_mode_action"] == "EXISTING_EXPRESS"
+
+
+def test_cli_telemetry_skips_when_already_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should skip recording if telemetry_recorded is set in context metadata."""
+
+  # Mock telemetry consent to True
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  # Redirect metrics queue to temporary path
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  # Create a dummy command that manually sets the telemetry_recorded flag
+  @click.command("dummy_web")
+  @click.pass_context
+  def dummy_web_cmd(ctx):
+    # Simulate what adk web does in its lifespan
+    start_time = ctx.meta.get("telemetry_start_time", 0)
+
+    from google.adk.cli._telemetry._metrics_collector import MetricsCollector
+
+    collector = MetricsCollector()
+    collector.record_command_run(
+        command="dummy_web",
+        exit_code=0,
+        duration_ms=100,
+        exception_type="",
+    )
+    ctx.meta["telemetry_recorded"] = True
+
+  # Attach it to a new group that uses TelemetryGroup
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_cmd)
+
+  runner = CliRunner()
+  result = runner.invoke(test_group, ["dummy_web"])
+  assert result.exit_code == 0
+
+  # Ensure only ONE record is in the metrics queue
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web"
+    assert source["command_run"]["duration_ms"] == 100
+    assert source["command_run"]["exit_code"] == 0
+
+
+def test_cli_telemetry_records_early_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should record an exception if telemetry_recorded is not set."""
+
+  # Mock telemetry consent to True
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  # Redirect metrics queue to temporary path
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  # Create a dummy command that throws before setting the telemetry_recorded flag
+  @click.command("dummy_web_crash")
+  @click.pass_context
+  def dummy_web_crash_cmd(ctx):
+    raise KeyboardInterrupt()
+
+  # Attach it to a new group that uses TelemetryGroup
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_crash_cmd)
+
+  runner = CliRunner()
+  result = runner.invoke(test_group, ["dummy_web_crash"])
+
+  # Ensure the interrupt was logged by the wrapper
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web_crash"
+    assert source["command_run"]["exit_code"] == 1
+    assert source["command_run"]["exception_type"] == "KeyboardInterrupt"
+
+
+def test_cli_telemetry_records_clean_shutdown_on_keyboard_interrupt_after_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should record clean exit on KeyboardInterrupt after server startup."""
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  @click.command("dummy_web_running")
+  @click.pass_context
+  def dummy_web_running_cmd(ctx):
+    ctx.meta["server_started"] = True
+    raise KeyboardInterrupt()
+
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_running_cmd)
+
+  runner = CliRunner()
+  runner.invoke(test_group, ["dummy_web_running"])
+
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web_running"
+    assert source["command_run"]["exit_code"] == 0
+    assert "exception_type" not in source["command_run"]
+
+
+def test_cli_telemetry_records_error_after_startup_on_non_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """TelemetryGroup invoke should record an error for non-KeyboardInterrupt exceptions after server startup."""
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: True,
+  )
+
+  temp_queue = tmp_path / "telemetry_queue.jsonl"
+  monkeypatch.setattr(
+      "google.adk.cli._telemetry._constants.QUEUE_FILE",
+      str(temp_queue),
+  )
+
+  @click.command("dummy_web_runtime_error")
+  @click.pass_context
+  def dummy_web_runtime_error_cmd(ctx):
+    ctx.meta["server_started"] = True
+    raise RuntimeError("Server crashed")
+
+  @click.group(cls=cli_tools_click.TelemetryGroup)
+  def test_group():
+    pass
+
+  test_group.add_command(dummy_web_runtime_error_cmd)
+
+  runner = CliRunner()
+  runner.invoke(test_group, ["dummy_web_runtime_error"])
+
+  assert temp_queue.exists()
+  with open(temp_queue, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    source = json.loads(event["source_extension_json"])
+    assert source["command_run"]["command"] == "dummy_web_runtime_error"
+    assert source["command_run"]["exit_code"] == 1
+    assert source["command_run"]["exception_type"] == "RuntimeError"
 
 
 # cli run
@@ -196,13 +580,609 @@ def test_cli_run_service_uris(
   assert coro_locals["agent_folder_name"] == "agent"
 
 
+def test_cli_run_basic_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should invoke run_once_cli."""
+  # Arrange
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "hello"],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("query") == "hello"
+  assert called_kwargs.get("agent_folder_name") == "agent"
+
+
+def test_cli_run_interactive_with_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` in interactive mode should pass state to run_cli."""
+  # Arrange
+  agent_dir = tmp_path / "agent_interactive"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  mock_run_cli = mock.AsyncMock()
+  monkeypatch.setattr("google.adk.cli.cli.run_cli", mock_run_cli)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "--state", '{"x": 1}'],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_cli.called
+  called_kwargs = mock_run_cli.call_args.kwargs
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+
+
+def test_cli_run_options_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query and options should forward options correctly."""
+  # Arrange
+  agent_dir = tmp_path / "agent_opts"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "hello",
+          "--state",
+          '{"x": 1}',
+          "--in_memory",
+          "--jsonl",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("query") == "hello"
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+  assert called_kwargs.get("in_memory") is True
+  assert called_kwargs.get("jsonl") is True
+
+
+def test_cli_run_auto_resume_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should auto-resume if session has active interrupts."""
+  # Arrange
+  agent_dir = tmp_path / "agent_resume"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock session service
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume"
+
+  # Create a mock event with long_running_tool_ids
+  mock_event = Event(
+      invocation_id="invocation_123",
+      long_running_tool_ids={"interrupt_123"},
+      author="agent",
+  )
+  mock_session.events = [mock_event]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  # Mock AgentLoader to avoid loading real files
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(name="agent_resume")
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  # Mock Runner
+  mock_runner_instance = mock.Mock()
+
+  # Create an async generator for run_async
+  async def mock_run_async(*args, **kwargs):
+    # Yield a mock event to simulate engine output
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    # Add model_dump method as it's called in _print_event
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+
+  # Mock _to_app to return a mock app
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume")),
+  )
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "approve",
+          "--session_id",
+          "s123",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+
+  # Verify run_async was called with FunctionResponse
+  called_args = mock_runner_instance.run_async.call_args
+  assert called_args is not None
+  kwargs = called_args.kwargs
+  new_message = kwargs.get("new_message")
+  assert new_message is not None
+  assert len(new_message.parts) == 1
+  part = new_message.parts[0]
+  assert part.function_response is not None
+  assert part.function_response.id == "interrupt_123"
+  assert part.function_response.response == {"result": "approve"}
+
+
+def test_cli_run_auto_resume_with_query_confirmation_yes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should auto-resume with confirmation=True if query is positive."""
+  # Arrange
+  agent_dir = tmp_path / "agent_resume_confirm_yes"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock session service
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume_confirm_yes"
+
+  # Create a mock event with long_running_tool_ids
+  mock_event = mock.Mock()
+  mock_event.long_running_tool_ids = ["interrupt_123"]
+  mock_event.invocation_id = "invocation_123"
+
+  # Mock get_function_calls to return adk_request_confirmation
+  fc = mock.Mock()
+  fc.id = "interrupt_123"
+  fc.name = "adk_request_confirmation"
+  mock_event.get_function_calls.return_value = [fc]
+
+  mock_session.events = [mock_event]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  # Mock AgentLoader to avoid loading real files
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(
+      name="agent_resume_confirm_yes"
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  # Mock Runner
+  mock_runner_instance = mock.Mock()
+
+  # Create an async generator for run_async
+  async def mock_run_async(*args, **kwargs):
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+
+  # Mock _to_app to return a mock app
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume_confirm_yes")),
+  )
+
+  runner = CliRunner()
+
+  # Act: Query is "yes" -> confirmed=True
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "yes",
+          "--session_id",
+          "s123",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  called_args = mock_runner_instance.run_async.call_args
+  assert called_args is not None
+  kwargs = called_args.kwargs
+  assert kwargs.get("invocation_id") == "invocation_123"
+  new_message = kwargs.get("new_message")
+  assert new_message is not None
+  assert len(new_message.parts) == 1
+  part = new_message.parts[0]
+  assert part.function_response is not None
+  assert part.function_response.id == "interrupt_123"
+  assert part.function_response.name == "adk_request_confirmation"
+  assert part.function_response.response == {"confirmed": True}
+
+
+def test_cli_run_auto_resume_with_query_confirmation_no(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should auto-resume with confirmation=False if query is negative."""
+  # Arrange
+  agent_dir = tmp_path / "agent_resume_confirm_no"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock session service
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume_confirm_no"
+
+  # Create a mock event with long_running_tool_ids
+  mock_event = mock.Mock()
+  mock_event.long_running_tool_ids = ["interrupt_123"]
+
+  # Mock get_function_calls to return adk_request_confirmation
+  fc = mock.Mock()
+  fc.id = "interrupt_123"
+  fc.name = "adk_request_confirmation"
+  mock_event.get_function_calls.return_value = [fc]
+
+  mock_session.events = [mock_event]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  # Mock AgentLoader to avoid loading real files
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(
+      name="agent_resume_confirm_no"
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  # Mock Runner
+  mock_runner_instance = mock.Mock()
+
+  # Create an async generator for run_async
+  async def mock_run_async(*args, **kwargs):
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+
+  # Mock _to_app to return a mock app
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume_confirm_no")),
+  )
+
+  runner = CliRunner()
+
+  # Act: Query is "no" -> confirmed=False
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "no",
+          "--session_id",
+          "s123",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  called_args = mock_runner_instance.run_async.call_args
+  assert called_args is not None
+  kwargs = called_args.kwargs
+  new_message = kwargs.get("new_message")
+  assert new_message is not None
+  assert len(new_message.parts) == 1
+  part = new_message.parts[0]
+  assert part.function_response is not None
+  assert part.function_response.id == "interrupt_123"
+  assert part.function_response.name == "adk_request_confirmation"
+  assert part.function_response.response == {"confirmed": False}
+
+
+def test_cli_run_auto_resume_with_query_confirmation_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should auto-resume with JSON response if query is valid JSON."""
+  # Arrange
+  agent_dir = tmp_path / "agent_resume_confirm_json"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock session service
+  mock_session = mock.Mock()
+  mock_session.id = "s123"
+  mock_session.user_id = "u123"
+  mock_session.app_name = "agent_resume_confirm_json"
+
+  # Create a mock event with long_running_tool_ids
+  mock_event = mock.Mock()
+  mock_event.long_running_tool_ids = ["interrupt_123"]
+
+  # Mock get_function_calls to return adk_request_confirmation
+  fc = mock.Mock()
+  fc.id = "interrupt_123"
+  fc.name = "adk_request_confirmation"
+  mock_event.get_function_calls.return_value = [fc]
+
+  mock_session.events = [mock_event]
+
+  mock_session_service = mock.AsyncMock()
+  mock_session_service.get_session.return_value = mock_session
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.create_session_service_from_options",
+      mock.Mock(return_value=mock_session_service),
+  )
+
+  # Mock AgentLoader to avoid loading real files
+  mock_agent_loader = mock.Mock()
+  mock_agent_loader.load_agent.return_value = mock.Mock(
+      name="agent_resume_confirm_json"
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli.AgentLoader",
+      mock.Mock(return_value=mock_agent_loader),
+  )
+
+  # Mock Runner
+  mock_runner_instance = mock.Mock()
+
+  # Create an async generator for run_async
+  async def mock_run_async(*args, **kwargs):
+    ev = mock.Mock()
+    ev.author = "agent"
+    ev.node_info = mock.Mock(path="node")
+    ev.content = None
+    ev.long_running_tool_ids = []
+    ev.model_dump.return_value = {"author": "agent", "node_path": "node"}
+    yield ev
+
+  mock_runner_instance.run_async.side_effect = mock_run_async
+  mock_runner_instance.close = mock.AsyncMock()
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli.Runner",
+      mock.Mock(return_value=mock_runner_instance),
+  )
+
+  # Mock _to_app to return a mock app
+  monkeypatch.setattr(
+      "google.adk.cli.cli._to_app",
+      mock.Mock(return_value=mock.Mock(name="agent_resume_confirm_json")),
+  )
+
+  runner = CliRunner()
+
+  # Act: Query is a JSON string
+  json_query = '{"confirmed": true, "payload": {"amount": 100}}'
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          json_query,
+          "--session_id",
+          "s123",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  called_args = mock_runner_instance.run_async.call_args
+  assert called_args is not None
+  kwargs = called_args.kwargs
+  new_message = kwargs.get("new_message")
+  assert new_message is not None
+  assert len(new_message.parts) == 1
+  part = new_message.parts[0]
+  assert part.function_response is not None
+  assert part.function_response.id == "interrupt_123"
+  assert part.function_response.name == "adk_request_confirmation"
+  assert part.function_response.response == {
+      "confirmed": True,
+      "payload": {"amount": 100},
+  }
+
+
+def test_cli_run_all_options_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should forward all options correctly."""
+  # Arrange
+  agent_dir = tmp_path / "agent_all_opts"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  replay_file = tmp_path / "replay.json"
+  replay_file.write_text('{"queries": ["hello"], "state": {}}')
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "hello",
+          "--state",
+          '{"x": 1}',
+          "--session_id",
+          "s123",
+          "--replay",
+          str(replay_file),
+          "--timeout",
+          "30s",
+          "--in_memory",
+          "--session_service_uri",
+          "memory://",
+          "--artifact_service_uri",
+          "memory://",
+          "--memory_service_uri",
+          "memory://",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0, f"Output: {result.output}"
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("query") == "hello"
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+  assert called_kwargs.get("session_id") == "s123"
+  assert called_kwargs.get("replay") == str(replay_file)
+  assert called_kwargs.get("timeout") == "30s"
+  assert called_kwargs.get("in_memory") is True
+  assert called_kwargs.get("session_service_uri") == "memory://"
+  assert called_kwargs.get("artifact_service_uri") == "memory://"
+  assert called_kwargs.get("memory_service_uri") == "memory://"
+  assert called_kwargs.get("use_local_storage") is True
+
+
+def test_cli_run_no_use_local_storage_with_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should forward --no_use_local_storage correctly."""
+  # Arrange
+  agent_dir = tmp_path / "agent_no_local"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "hello",
+          "--no_use_local_storage",
+      ],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("use_local_storage") is False
+
+
 # cli deploy cloud_run
 def test_cli_deploy_cloud_run_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """Successful path should call cli_deploy.to_cloud_run once."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
 
   agent_dir = tmp_path / "agent2"
   agent_dir.mkdir()
@@ -231,7 +1211,7 @@ def test_cli_deploy_cloud_run_failure(
   def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
     raise RuntimeError("boom")
 
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", _boom)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", _boom)
 
   agent_dir = tmp_path / "agent3"
   agent_dir.mkdir()
@@ -249,7 +1229,7 @@ def test_cli_deploy_cloud_run_passthrough_args(
 ) -> None:
   """Extra args after '--' should be passed through to the gcloud command."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
 
   agent_dir = tmp_path / "agent_passthrough"
   agent_dir.mkdir()
@@ -288,76 +1268,12 @@ def test_cli_deploy_cloud_run_passthrough_args(
   assert "--cpu=1" in extra_args
 
 
-def test_cli_deploy_cloud_run_rejects_args_without_separator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-  """Args without '--' separator should be rejected with helpful error message."""
-  rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
-
-  agent_dir = tmp_path / "agent_no_sep"
-  agent_dir.mkdir()
-  runner = CliRunner()
-  result = runner.invoke(
-      cli_tools_click.main,
-      [
-          "deploy",
-          "cloud_run",
-          "--project",
-          "test-project",
-          "--region",
-          "us-central1",
-          str(agent_dir),
-          "--labels=test-label=test",  # This should be rejected
-      ],
-  )
-
-  assert result.exit_code == 2
-  assert "Unexpected arguments:" in result.output
-  assert "Use '--' to separate gcloud arguments" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
-
-
-def test_cli_deploy_cloud_run_rejects_args_before_separator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-  """Args before '--' separator should be rejected."""
-  rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
-
-  agent_dir = tmp_path / "agent_before_sep"
-  agent_dir.mkdir()
-  runner = CliRunner()
-  result = runner.invoke(
-      cli_tools_click.main,
-      [
-          "deploy",
-          "cloud_run",
-          "--project",
-          "test-project",
-          "--region",
-          "us-central1",
-          str(agent_dir),
-          "unexpected_arg",  # This should be rejected
-          "--",
-          "--labels=test-label=test",
-      ],
-  )
-
-  assert result.exit_code == 2
-  assert (
-      "Unexpected arguments after agent path and before '--':" in result.output
-  )
-  assert "unexpected_arg" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
-
-
 def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """No gcloud args after '--' should be allowed."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
 
   agent_dir = tmp_path / "agent_empty_gcloud"
   agent_dir.mkdir()
@@ -386,13 +1302,124 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
   assert extra_args == ()
 
 
+@pytest.mark.parametrize("with_sandbox", [True, False])
+def test_cli_deploy_cloud_run_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_sandbox: bool
+) -> None:
+  """Verify --with_cloud_run_sandbox parameter gets forwarded to to_cloud_run."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_sandbox"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  args = ["deploy", "cloud_run", str(agent_dir)]
+  if with_sandbox:
+    args.append("--with_cloud_run_sandbox")
+  result = runner.invoke(
+      cli_tools_click.main,
+      args,
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls[0][1].get("with_cloud_run_sandbox") == with_sandbox
+
+
+def test_cli_deploy_cloud_run_interspersed_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Options placed after the positional argument should be parsed correctly."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_interspersed"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          str(agent_dir),
+          "--project",
+          "test-project",
+          "--region",
+          "us-central1",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+
+  called_kwargs = rec.calls[0][1]
+  assert called_kwargs.get("project") == "test-project"
+  assert called_kwargs.get("region") == "us-central1"
+
+
+def test_cli_deploy_cloud_run_rejects_unknown_option_before_separator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Unknown option placed before '--' separator should be rejected by Click."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_bad_order"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--project",
+          "test-project",
+          str(agent_dir),
+          "--labels=test-label=test",
+          "--",
+      ],
+  )
+
+  assert result.exit_code == 2
+  assert "No such option" in result.output
+  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
+
+
+def test_cli_deploy_cloud_run_forwards_extra_positional_arg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Extra positional argument before '--' is forwarded to the deployment runner."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+
+  agent_dir = tmp_path / "agent_extra_pos"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--project",
+          "test-project",
+          str(agent_dir),
+          "unexpected_arg",
+          "--",
+          "--labels=test-label=test",
+      ],
+  )
+
+  assert result.exit_code == 0
+  extra_args = rec.calls[0][1].get("extra_gcloud_args")
+  assert extra_args == ("unexpected_arg", "--labels=test-label=test")
+
+
 # cli deploy agent_engine
 def test_cli_deploy_agent_engine_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """Successful path should call cli_deploy.to_agent_engine."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_agent_engine", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", rec)
 
   agent_dir = tmp_path / "agent_ae"
   agent_dir.mkdir()
@@ -422,7 +1449,7 @@ def test_cli_deploy_agent_engine_otel_to_cloud_success(
 ) -> None:
   """Successful path should call cli_deploy.to_agent_engine with --otel_to_cloud."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_agent_engine", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", rec)
 
   agent_dir = tmp_path / "agent_ae"
   agent_dir.mkdir()
@@ -454,7 +1481,7 @@ def test_cli_deploy_gke_success(
 ) -> None:
   """Successful path should call cli_deploy.to_gke."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_gke", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_gke", rec)
 
   agent_dir = tmp_path / "agent_gke"
   agent_dir.mkdir()
@@ -508,7 +1535,9 @@ def test_cli_eval_missing_deps_raises(
   )
   assert result.exit_code != 0
   assert isinstance(result.exception, SystemExit)
-  assert cli_tools_click.MISSING_EVAL_DEPENDENCIES_MESSAGE in result.output
+  from google.adk.evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+
+  assert MISSING_EVAL_DEPENDENCIES_MESSAGE in result.output
 
 
 # cli web & api_server (uvicorn patched)
@@ -525,12 +1554,8 @@ def _patch_uvicorn(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     def run(self) -> None:
       rec()
 
-  monkeypatch.setattr(
-      cli_tools_click.uvicorn, "Config", lambda *a, **k: object()
-  )
-  monkeypatch.setattr(
-      cli_tools_click.uvicorn, "Server", lambda *_a, **_k: _DummyServer()
-  )
+  monkeypatch.setattr("uvicorn.Config", lambda *a, **k: object())
+  monkeypatch.setattr("uvicorn.Server", lambda *_a, **_k: _DummyServer())
   return rec
 
 
@@ -541,7 +1566,7 @@ def test_cli_web_invokes_uvicorn(
   agents_dir = tmp_path / "agents"
   agents_dir.mkdir()
   monkeypatch.setattr(
-      cli_tools_click, "get_fast_api_app", lambda **_k: object()
+      "google.adk.cli.fast_api.get_fast_api_app", lambda **_k: object()
   )
   runner = CliRunner()
   result = runner.invoke(cli_tools_click.main, ["web", str(agents_dir)])
@@ -556,7 +1581,7 @@ def test_cli_api_server_invokes_uvicorn(
   agents_dir = tmp_path / "agents_api"
   agents_dir.mkdir()
   monkeypatch.setattr(
-      cli_tools_click, "get_fast_api_app", lambda **_k: object()
+      "google.adk.cli.fast_api.get_fast_api_app", lambda **_k: object()
   )
   runner = CliRunner()
   result = runner.invoke(cli_tools_click.main, ["api_server", str(agents_dir)])
@@ -572,7 +1597,7 @@ def test_cli_web_passes_service_uris(
   agents_dir.mkdir()
 
   mock_get_app = _Recorder()
-  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
 
   runner = CliRunner()
   result = runner.invoke(
@@ -596,39 +1621,99 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
 
 
-@pytest.mark.unmute_click
-def test_cli_web_warns_and_maps_deprecated_uris(
-    tmp_path: Path,
-    _patch_uvicorn: _Recorder,
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("command", ["web", "api_server"])
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
+def test_cli_arms_rebinding_guard_with_the_address_it_binds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, host: str
 ) -> None:
-  """`adk web` should accept deprecated URI flags with warnings."""
+  """The DNS-rebinding guard is off unless the CLI names the address it binds.
+
+  Every other test of the guard supplies ``bind_host`` itself, so only this one
+  fails if the CLI stops passing it and serves `adk web` unguarded again.
+  """
   agents_dir = tmp_path / "agents"
   agents_dir.mkdir()
 
-  mock_get_app = _Recorder()
-  monkeypatch.setattr(cli_tools_click, "get_fast_api_app", mock_get_app)
+  app_kwargs: Dict[str, Any] = {}
+  uvicorn_kwargs: Dict[str, Any] = {}
+
+  def _record_get_fast_api_app(**kwargs: Any) -> object:
+    app_kwargs.update(kwargs)
+    return object()
+
+  def _record_uvicorn_config(*_a: Any, **kwargs: Any) -> object:
+    uvicorn_kwargs.update(kwargs)
+    return object()
+
+  class _DummyServer:
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+      ...
+
+    def run(self) -> None:
+      ...
+
+  monkeypatch.setattr(
+      "google.adk.cli.fast_api.get_fast_api_app", _record_get_fast_api_app
+  )
+  monkeypatch.setattr("uvicorn.Config", _record_uvicorn_config)
+  monkeypatch.setattr("uvicorn.Server", lambda *_a, **_k: _DummyServer())
 
   runner = CliRunner()
   result = runner.invoke(
-      cli_tools_click.main,
-      [
-          "web",
-          str(agents_dir),
-          "--session_db_url",
-          "sqlite:///deprecated.db",
-          "--artifact_storage_uri",
-          "gs://deprecated",
-      ],
+      cli_tools_click.main, [command, "--host", host, str(agents_dir)]
   )
 
   assert result.exit_code == 0
-  called_kwargs = mock_get_app.calls[0][1]
-  assert called_kwargs.get("session_service_uri") == "sqlite:///deprecated.db"
-  assert called_kwargs.get("artifact_service_uri") == "gs://deprecated"
-  # Check output for deprecation warnings (CliRunner captures both stdout and stderr)
-  assert "--session_db_url" in result.output
-  assert "--artifact_storage_uri" in result.output
+  assert uvicorn_kwargs.get("host") == host, "the CLI binds --host"
+  assert app_kwargs.get("bind_host") == host
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["--allow-unsafe-unpickling", "--allow_unsafe_unpickling"],
+)
+def test_cli_migrate_session_allows_unsafe_unpickling_flag(
+    monkeypatch: pytest.MonkeyPatch, flag: str
+) -> None:
+  calls: list[dict[str, Any]] = []
+
+  def fake_upgrade(
+      source_db_url: str,
+      dest_db_url: str,
+      *,
+      allow_unsafe_unpickling: bool = False,
+  ) -> None:
+    calls.append({
+        "source_db_url": source_db_url,
+        "dest_db_url": dest_db_url,
+        "allow_unsafe_unpickling": allow_unsafe_unpickling,
+    })
+
+  monkeypatch.setattr(
+      "google.adk.sessions.migration.migration_runner.upgrade",
+      fake_upgrade,
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "migrate",
+          "session",
+          "--source_db_url",
+          "sqlite:///source.db",
+          "--dest_db_url",
+          "sqlite:///dest.db",
+          flag,
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert calls == [{
+      "source_db_url": "sqlite:///source.db",
+      "dest_db_url": "sqlite:///dest.db",
+      "allow_unsafe_unpickling": True,
+  }]
 
 
 def test_cli_eval_with_eval_set_file_path(
@@ -700,7 +1785,7 @@ def test_cli_eval_with_eval_set_id(
   eval_set_results = eval_set_results_manager.list_eval_set_results(
       app_name=app_name
   )
-  assert len(eval_set_results) == 2
+  assert len(eval_set_results) == 1
 
 
 def test_cli_create_eval_set(tmp_path: Path):
@@ -856,7 +1941,7 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
     )
 
   monkeypatch.setattr(
-      cli_tools_click.cli_deploy, "to_cloud_run", _mock_to_cloud_run
+      "google.adk.cli.cli_deploy.to_cloud_run", _mock_to_cloud_run
   )
 
   agent_dir = tmp_path / "agent_conflict"
@@ -929,3 +2014,1063 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
       " command."
   )
   assert expected_msg in result.output
+
+
+@pytest.mark.parametrize(
+    "cli_args,expected_log_level",
+    [
+        pytest.param(
+            [],
+            "INFO",
+            id="default_info",
+        ),
+        pytest.param(
+            ["--log_level", "DEBUG"],
+            "DEBUG",
+            id="explicit_debug",
+        ),
+        pytest.param(
+            ["--log_level", "WARNING"],
+            "WARNING",
+            id="explicit_warning",
+        ),
+        pytest.param(
+            ["-v"],
+            "DEBUG",
+            id="verbose_flag",
+        ),
+        pytest.param(
+            ["--verbose"],
+            "DEBUG",
+            id="verbose_long_flag",
+        ),
+        pytest.param(
+            ["-v", "--log_level", "WARNING"],
+            "WARNING",
+            id="both_verbose_and_explicit_warning",
+        ),
+    ],
+)
+def test_cli_run_log_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cli_args: list[str],
+    expected_log_level: str,
+) -> None:
+  """`adk run` should configure log level correctly based on flags."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  # Mock logs.log_to_tmp_folder
+  mock_log_to_tmp_folder = mock.Mock()
+  monkeypatch.setattr(
+      cli_tools_click.logs, "log_to_tmp_folder", mock_log_to_tmp_folder
+  )
+
+  # Mock asyncio.run to do nothing, preventing full run
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", *cli_args, str(agent_dir)],
+  )
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+
+  # Check if log_to_tmp_folder was called with the correct log level object from `logging` module
+  expected_logging_level = getattr(logging, expected_log_level)
+  mock_log_to_tmp_folder.assert_called_once()
+  kwargs = mock_log_to_tmp_folder.call_args[1]
+  assert kwargs.get("level") == expected_logging_level
+
+
+@pytest.mark.unmute_click
+def test_telemetry_cli_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Test adk telemetry commands."""
+  consent_store = {"val": None}
+
+  def mock_read():
+    return consent_store["val"]
+
+  def mock_write(val):
+    consent_store["val"] = val
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent", mock_read
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent", mock_write
+  )
+
+  runner = CliRunner()
+
+  # Test running without subcommand shows help. A group invoked without a
+  # subcommand exits 0 on click 8.1.x but 2 (usage error) on click >= 8.2, and
+  # pyproject.toml allows both, so assert on the help output rather than the
+  # exit code.
+  result = runner.invoke(cli_tools_click.main, ["telemetry"])
+  assert result.exit_code in (0, 2)
+  assert "Usage:" in result.output
+
+  # Test status subcommand
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "status"])
+  assert result.exit_code == 0
+  assert (
+      "Telemetry collection is not configured (defaults to OFF)"
+      in result.output
+  )
+
+  # Test enable
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "enable"])
+  assert result.exit_code == 0
+  assert "Telemetry collection has been enabled" in result.output
+  assert consent_store["val"] is True
+
+  # Test status is updated to enabled
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "status"])
+  assert result.exit_code == 0
+  assert "Telemetry collection is enabled" in result.output
+
+  # Test disable
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "disable"])
+  assert result.exit_code == 0
+  assert "Telemetry collection has been disabled" in result.output
+  assert consent_store["val"] is False
+
+  # Test status is disabled again
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "status"])
+  assert result.exit_code == 0
+  assert "Telemetry collection is disabled" in result.output
+
+
+@pytest.mark.unmute_click
+def test_telemetry_first_run_prompt_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that first-run CLI prompts user and opts-in on 'y'."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      lambda v: consent_store.update({"val": v}),
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["run", str(agent_dir)], input="y\n"
+  )
+  assert result.exit_code == 0
+  assert "Help improve the ADK" in result.output
+  assert "Enable telemetry? [Y/n]:" in result.output
+  assert consent_store["val"] is True
+
+
+@pytest.mark.unmute_click
+def test_telemetry_first_run_prompt_default_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that hitting Enter prompts opts-in by default."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      lambda v: consent_store.update({"val": v}),
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["run", str(agent_dir)], input="\n"
+  )
+  assert result.exit_code == 0
+  assert consent_store["val"] is True
+
+
+@pytest.mark.unmute_click
+def test_telemetry_first_run_prompt_opt_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that user can opt-out by typing 'n'."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      lambda v: consent_store.update({"val": v}),
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["run", str(agent_dir)], input="n\n"
+  )
+  assert result.exit_code == 0
+  assert consent_store["val"] is False
+
+
+@pytest.mark.unmute_click
+def test_telemetry_no_prompt_if_already_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that no prompt is shown if configuration already exists."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": False}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  mock_write = mock.Mock()
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent", mock_write
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  mock_input = mock.Mock(return_value="y")
+  monkeypatch.setattr("builtins.input", mock_input)
+
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["run", str(agent_dir)])
+  assert result.exit_code == 0
+  assert "Help improve the ADK" not in result.output
+  mock_input.assert_not_called()
+  mock_write.assert_not_called()
+
+
+@pytest.mark.unmute_click
+def test_telemetry_no_prompt_when_managing_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Test that running the telemetry command group itself does not prompt."""
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  mock_write = mock.Mock()
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent", mock_write
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  mock_input = mock.Mock(return_value="y")
+  monkeypatch.setattr("builtins.input", mock_input)
+
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "status"])
+  assert result.exit_code == 0
+  assert "Help improve the ADK" not in result.output
+  mock_input.assert_not_called()
+  mock_write.assert_not_called()
+
+
+@pytest.mark.unmute_click
+@pytest.mark.parametrize(
+    "exception_to_raise",
+    [EOFError, KeyboardInterrupt],
+)
+def test_telemetry_first_run_prompt_interrupt_option_a(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exception_to_raise
+) -> None:
+  """Test that prompt handles standard interrupts gracefully, falling back to option A."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  consent_store = {"val": None}
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: consent_store["val"],
+  )
+  mock_write = mock.Mock()
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent", mock_write
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  def raise_error(prompt):
+    raise exception_to_raise()
+
+  monkeypatch.setattr("builtins.input", raise_error)
+
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["run", str(agent_dir)])
+  # Verify exit code remains 0 (no abrupt crash traceback)
+  assert result.exit_code == 0
+  # Verify consent preference doesn't get written/stored to disk
+  mock_write.assert_not_called()
+  assert consent_store["val"] is None
+
+
+@pytest.mark.unmute_click
+def test_telemetry_first_run_prompt_write_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Test that prompt handles write exceptions gracefully."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", mock.Mock())
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.read_telemetry_consent",
+      lambda: None,
+  )
+
+  def raise_error(val):
+    raise OSError("Failed filesystem write simulator")
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      raise_error,
+  )
+
+  monkeypatch.setattr(
+      "click.testing._NamedTextIOWrapper.isatty", lambda self: True
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["run", str(agent_dir)], input="y\n"
+  )
+  # Verify no abrupt crash tracebacks (exit code is 0)
+  assert result.exit_code == 0
+  assert "Error: Failed to save telemetry settings" in result.output
+
+
+@pytest.mark.unmute_click
+def test_telemetry_commands_write_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Test that enable and disable commands handle write exceptions gracefully."""
+
+  def raise_error(val):
+    raise OSError("Failed filesystem write simulator")
+
+  monkeypatch.setattr(
+      "google.adk.cli.cli_tools_click.write_telemetry_consent",
+      raise_error,
+  )
+
+  runner = CliRunner()
+
+  # Test enable command throws ClickException (exit code 1)
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "enable"])
+  assert result.exit_code == 1
+  assert "Error: Failed to enable telemetry" in result.output
+
+  # Test disable command throws ClickException (exit code 1)
+  result = runner.invoke(cli_tools_click.main, ["telemetry", "disable"])
+  assert result.exit_code == 1
+  assert "Error: Failed to disable telemetry" in result.output
+
+
+# HelpfulCommand
+@pytest.mark.unmute_click
+def test_helpful_command_missing_argument_prints_full_help_and_exits_2() -> (
+    None
+):
+  """A missing argument yields the whole help text, then the error, exit 2."""
+
+  @click.command(cls=cli_tools_click.HelpfulCommand)
+  @click.option("--flavour", help="Which flavour of widget to build.")
+  @click.argument("target_path")
+  def build(target_path: str, flavour: str) -> None:
+    """Builds a widget."""
+
+  result = CliRunner().invoke(build, [])
+
+  assert result.exit_code == 2
+  # Plain click prints only the usage line and a "try --help" hint. The whole
+  # point of HelpfulCommand is that the full help body is shown instead.
+  assert "Usage:" in result.output
+  assert "Builds a widget." in result.output
+  assert "Which flavour of widget to build." in result.output
+  assert "Error: Missing required argument: TARGET_PATH" in result.output
+
+
+@pytest.mark.unmute_click
+def test_helpful_command_missing_option_error_names_uppercased_param() -> None:
+  """The error names the parameter, upper-cased, not the '--dashed' option."""
+
+  @click.command(cls=cli_tools_click.HelpfulCommand)
+  @click.option("--out_file", required=True, help="Where results are written.")
+  def build(out_file: str) -> None:
+    """Builds a widget."""
+
+  result = CliRunner().invoke(build, [])
+
+  assert result.exit_code == 2
+  assert "Error: Missing required argument: OUT_FILE" in result.output
+  # click's own wording for this would be: Missing option '--out_file'.
+  assert "Missing option" not in result.output
+
+
+def test_helpful_command_parse_args_defers_to_click_when_complete() -> None:
+  """With every required parameter supplied, parse_args behaves like click."""
+
+  @click.command(cls=cli_tools_click.HelpfulCommand)
+  @click.argument("target_path")
+  def build(target_path: str) -> None:
+    """Builds a widget."""
+
+  ctx = click.Context(build)
+  leftover = build.parse_args(ctx, ["some/path"])
+
+  assert leftover == []
+  assert ctx.params == {"target_path": "some/path"}
+
+
+# adk_services_options
+def _services_command(*, default_use_local_storage: bool = True):
+  """Builds a throwaway command wired up with adk_services_options."""
+  captured: Dict[str, Any] = {}
+
+  @click.command()
+  @cli_tools_click.adk_services_options(
+      default_use_local_storage=default_use_local_storage
+  )
+  def _cmd(**kwargs: Any) -> None:
+    captured.update(kwargs)
+
+  return _cmd, captured
+
+
+def test_adk_services_options_rejects_local_storage_with_session_uri() -> None:
+  """An explicit storage flag plus a session URI is a usage error."""
+  command, captured = _services_command()
+
+  result = CliRunner().invoke(
+      command, ["--use_local_storage", "--session_service_uri", "memory://"]
+  )
+
+  assert result.exit_code == 2
+  assert (
+      "--use_local_storage/--no_use_local_storage cannot be used with"
+      in result.output
+  )
+  assert not captured
+
+
+def test_adk_services_options_rejects_no_local_storage_with_artifact_uri() -> (
+    None
+):
+  """The negative form of the flag conflicts with an artifact URI too."""
+  command, captured = _services_command()
+
+  result = CliRunner().invoke(
+      command,
+      ["--no_use_local_storage", "--artifact_service_uri", "gs://a-bucket"],
+  )
+
+  assert result.exit_code == 2
+  assert "cannot be used with" in result.output
+  assert not captured
+
+
+def test_adk_services_options_allows_memory_uri_with_local_storage() -> None:
+  """Only the session and artifact URIs conflict; memory is unaffected."""
+  command, captured = _services_command()
+
+  result = CliRunner().invoke(
+      command, ["--use_local_storage", "--memory_service_uri", "memory://"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["memory_service_uri"] == "memory://"
+  assert captured["use_local_storage"] is True
+
+
+def test_adk_services_options_allows_service_uri_when_flag_defaulted() -> None:
+  """An unset storage flag is not a conflict, even though it has a value."""
+  command, captured = _services_command()
+
+  result = CliRunner().invoke(
+      command, ["--session_service_uri", "sqlite:///sessions.db"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["session_service_uri"] == "sqlite:///sessions.db"
+  assert captured["use_local_storage"] is True
+
+
+def test_adk_services_options_honours_default_use_local_storage_false() -> None:
+  """The decorator argument picks the default the command sees."""
+  command, captured = _services_command(default_use_local_storage=False)
+
+  result = CliRunner().invoke(command, [])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["use_local_storage"] is False
+  assert captured["session_service_uri"] is None
+  assert captured["artifact_service_uri"] is None
+
+
+# fast_api_common_options
+def _fast_api_command():
+  """Builds a throwaway command wired up with fast_api_common_options."""
+  captured: Dict[str, Any] = {}
+
+  @click.command()
+  @cli_tools_click.fast_api_common_options()
+  def _cmd(**kwargs: Any) -> None:
+    captured.update(kwargs)
+
+  return _cmd, captured
+
+
+def test_fast_api_common_options_splits_trigger_sources_into_list() -> None:
+  """Trigger sources arrive as a stripped list; blank entries are dropped."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(
+      command, ["--trigger_sources", " pubsub , eventarc ,"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_sources"] == ["pubsub", "eventarc"]
+
+
+def test_fast_api_common_options_leaves_trigger_sources_none_when_unset() -> (
+    None
+):
+  """Unset stays None: an empty list would mean "triggers on, none enabled"."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, [])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_sources"] is None
+
+
+def test_fast_api_common_options_verbose_only_overrides_default_log_level() -> (
+    None
+):
+  """-v implies DEBUG, but an explicitly passed --log_level still wins."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, ["-v"])
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["log_level"] == "DEBUG"
+
+  captured.clear()
+  result = CliRunner().invoke(command, ["-v", "--log_level", "ERROR"])
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["log_level"] == "ERROR"
+
+
+def test_fast_api_common_options_documented_defaults() -> None:
+  """The server defaults to loopback:8000 with reload on and A2A off."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, [])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["host"] == "127.0.0.1"
+  assert captured["port"] == 8000
+  assert captured["reload"] is True
+  assert captured["a2a"] is False
+  assert captured["allow_origins"] == ()
+  assert captured["log_level"] == "INFO"
+  # --verbose is consumed while folding it into log_level.
+  assert "verbose" not in captured
+
+
+# adk test
+@pytest.fixture
+def fake_pytest_run(monkeypatch: pytest.MonkeyPatch):
+  """Captures the argv that `adk test` hands to its pytest subprocess."""
+  runs: List[List[str]] = []
+  returncode = {"value": 0}
+
+  def _fake_run(cmd, *args: Any, **kwargs: Any):
+    runs.append(list(cmd))
+    return SimpleNamespace(returncode=returncode["value"])
+
+  monkeypatch.setattr("subprocess.run", _fake_run)
+  return SimpleNamespace(runs=runs, returncode=returncode)
+
+
+def test_cli_test_forwards_extra_args_to_the_pytest_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pytest_run
+) -> None:
+  """Unrecognised args are appended to the pytest command line verbatim."""
+  monkeypatch.setenv("ADK_TEST_FOLDER", "not-yet-set")
+
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["test", str(tmp_path), "-k", "smoke"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert len(fake_pytest_run.runs) == 1
+  command = fake_pytest_run.runs[0]
+  assert command[:3] == [sys.executable, "-m", "pytest"]
+  assert command[3].endswith(os.path.join("cli", "agent_test_runner.py"))
+  assert command[4:] == ["-v", "-s", "-k", "smoke"]
+  # The runner discovers the folder through the environment, not argv.
+  assert os.environ["ADK_TEST_FOLDER"] == os.path.realpath(tmp_path)
+
+
+def test_cli_test_defaults_the_folder_to_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pytest_run
+) -> None:
+  """Omitting FOLDER means "." -- the directory the command was run from."""
+  monkeypatch.setenv("ADK_TEST_FOLDER", "not-yet-set")
+  monkeypatch.chdir(tmp_path)
+
+  result = CliRunner().invoke(cli_tools_click.main, ["test"])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert os.environ["ADK_TEST_FOLDER"] == os.path.realpath(tmp_path)
+
+
+def test_cli_test_exits_with_the_pytest_return_code(
+    tmp_path: Path, fake_pytest_run
+) -> None:
+  """A failing pytest run must not be reported to the shell as success."""
+  fake_pytest_run.returncode["value"] = 3
+
+  result = CliRunner().invoke(cli_tools_click.main, ["test", str(tmp_path)])
+
+  assert result.exit_code == 3
+
+
+def test_cli_test_rebuild_skips_the_pytest_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pytest_run
+) -> None:
+  """--rebuild regenerates the fixtures and stops; it does not run tests."""
+  rebuilt: List[str] = []
+  monkeypatch.setattr(
+      "google.adk.cli.agent_test_runner.rebuild_tests", rebuilt.append
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["test", str(tmp_path), "--rebuild"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert rebuilt == [os.path.realpath(tmp_path)]
+  assert fake_pytest_run.runs == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="click consumes '--' before the guard sees it, so it never fires",
+)
+def test_cli_test_rejects_args_between_folder_and_double_dash(
+    tmp_path: Path, fake_pytest_run
+) -> None:
+  """Args before '--' are meant to be rejected rather than sent to pytest."""
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["test", str(tmp_path), "stray", "--", "-k", "smoke"],
+  )
+
+  assert result.exit_code == 2
+  assert "Only arguments after '--' are passed" in result.output
+  assert fake_pytest_run.runs == []
+
+
+# adk conformance
+@pytest.fixture
+def fake_conformance_record(monkeypatch: pytest.MonkeyPatch):
+  """Captures the (paths, streaming_mode) the record command dispatches."""
+  calls: List[Tuple[Any, Any]] = []
+
+  async def _fake_record(paths, streaming_mode):
+    calls.append((paths, streaming_mode))
+
+  monkeypatch.setattr(
+      "google.adk.cli.conformance.cli_record.run_conformance_record",
+      _fake_record,
+  )
+  return calls
+
+
+@pytest.fixture
+def fake_conformance_test(monkeypatch: pytest.MonkeyPatch):
+  """Captures the kwargs the conformance test command dispatches."""
+  calls: List[Dict[str, Any]] = []
+
+  async def _fake_test(**kwargs: Any):
+    calls.append(kwargs)
+
+  monkeypatch.setattr(
+      "google.adk.cli.conformance.cli_test.run_conformance_test", _fake_test
+  )
+  return calls
+
+
+def test_cli_conformance_record_defaults_to_the_tests_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_conformance_record
+) -> None:
+  """With no PATHS, record resolves ./tests against the working directory."""
+  monkeypatch.chdir(tmp_path)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["conformance", "record", "sse"]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_record == [
+      ([Path(os.path.realpath(tmp_path)) / "tests"], StreamingMode.SSE)
+  ]
+
+
+@pytest.mark.parametrize(
+    "argument,expected",
+    [
+        ("sse", StreamingMode.SSE),
+        ("BIDI", StreamingMode.BIDI),
+        ("None", StreamingMode.NONE),
+    ],
+)
+def test_cli_conformance_record_converts_streaming_mode_to_enum(
+    tmp_path: Path,
+    fake_conformance_record,
+    argument: str,
+    expected: StreamingMode,
+) -> None:
+  """The positional mode is matched case-insensitively and passed as an enum."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main, ["conformance", "record", str(case_dir), argument]
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  paths, streaming_mode = fake_conformance_record[0]
+  assert streaming_mode is expected
+  assert paths == [Path(os.path.realpath(case_dir))]
+
+
+def test_cli_conformance_test_documented_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_conformance_test
+) -> None:
+  """Bare `conformance test` replays ./tests with no report and no override."""
+  monkeypatch.chdir(tmp_path)
+
+  result = CliRunner().invoke(cli_tools_click.main, ["conformance", "test"])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [Path(os.path.realpath(tmp_path)) / "tests"],
+      "mode": "replay",
+      "generate_report": False,
+      "report_dir": None,
+      "streaming_mode": None,
+  }]
+
+
+def test_cli_conformance_test_forwards_mode_and_report_options(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """Every option reaches the runner, with paths and report dir resolved."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+  report_dir = tmp_path / "reports"
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "conformance",
+          "test",
+          str(case_dir),
+          "--mode",
+          "REPLAY",
+          "--generate_report",
+          "--report_dir",
+          str(report_dir),
+          "--streaming-mode",
+          "sse",
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [Path(os.path.realpath(case_dir))],
+      "mode": "replay",
+      "generate_report": True,
+      "report_dir": os.path.realpath(report_dir),
+      "streaming_mode": StreamingMode.SSE,
+  }]
+
+
+# adk eval_set create
+def test_cli_create_eval_set_surfaces_duplicate_id_as_click_exception(
+    tmp_path: Path,
+) -> None:
+  """Re-creating an eval set reports the manager's complaint, exit code 1."""
+  agent_path = tmp_path / "dup_app"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  runner = CliRunner()
+  first = runner.invoke(
+      cli_tools_click.main, ["eval_set", "create", str(agent_path), "dup_set"]
+  )
+  assert first.exit_code == 0, (first.output, repr(first.exception))
+
+  second = runner.invoke(
+      cli_tools_click.main, ["eval_set", "create", str(agent_path), "dup_set"]
+  )
+
+  assert second.exit_code == 1
+  assert "dup_set" in second.output
+  assert "already exists" in second.output
+
+
+# adk eval_set generate_eval_cases
+def _write_generation_config(path: Path) -> None:
+  path.write_text(json.dumps({"count": 1, "model_name": "a-model"}))
+
+
+def test_cli_generate_eval_cases_creates_eval_set_and_skips_duplicates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_get_root_agent
+) -> None:
+  """The eval set is created on demand, and identical scenarios collapse."""
+  from google.adk.evaluation.conversation_scenarios import ConversationScenario
+
+  agent_path = tmp_path / "gen_app"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  config_file = tmp_path / "simulation.json"
+  _write_generation_config(config_file)
+
+  scenario = ConversationScenario(
+      starting_prompt="hello", conversation_plan="say hello back"
+  )
+
+  class _FakeScenarioGenerator:
+
+    def generate_scenarios(self, root_agent, config):
+      return [scenario, scenario]
+
+  monkeypatch.setattr(
+      "google.adk.evaluation._vertex_ai_scenario_generation_facade"
+      ".ScenarioGenerator",
+      _FakeScenarioGenerator,
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval_set",
+          "generate_eval_cases",
+          str(agent_path),
+          "gen_set",
+          "--user_simulation_config_file",
+          str(config_file),
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  eval_set_data = json.loads((agent_path / "gen_set.evalset.json").read_text())
+  # The eval id is the first 8 hex digits of the scenario's canonical digest,
+  # so the same scenario twice must yield one case, not two.
+  expected_id = hashlib.sha256(
+      json.dumps(scenario.model_dump(), sort_keys=True).encode("utf-8")
+  ).hexdigest()[:8]
+  assert [case["eval_id"] for case in eval_set_data["eval_cases"]] == [
+      expected_id
+  ]
+  session_input = eval_set_data["eval_cases"][0]["session_input"]
+  assert session_input["app_name"] == "gen_app"
+  assert session_input["user_id"] == "test_user_id"
+
+
+@pytest.mark.unmute_click
+def test_cli_generate_eval_cases_wraps_generator_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_get_root_agent
+) -> None:
+  """A generator blow-up becomes a ClickException naming the cause."""
+  agent_path = tmp_path / "gen_fail_app"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  config_file = tmp_path / "simulation.json"
+  _write_generation_config(config_file)
+
+  class _ExplodingScenarioGenerator:
+
+    def generate_scenarios(self, root_agent, config):
+      raise RuntimeError("scenario quota exhausted")
+
+  monkeypatch.setattr(
+      "google.adk.evaluation._vertex_ai_scenario_generation_facade"
+      ".ScenarioGenerator",
+      _ExplodingScenarioGenerator,
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "eval_set",
+          "generate_eval_cases",
+          str(agent_path),
+          "gen_fail_set",
+          "--user_simulation_config_file",
+          str(config_file),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert (
+      "Failed to generate eval case(s): scenario quota exhausted"
+      in result.output
+  )
+
+
+# adk optimize
+def test_cli_optimize_rejects_sampler_config_for_a_different_app(
+    tmp_path: Path, mock_get_root_agent
+) -> None:
+  """The agent folder name must match the sampler config's app_name."""
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+  sampler_config_file = tmp_path / "sampler.json"
+  sampler_config_file.write_text(
+      json.dumps({
+          "eval_config": {"criteria": {}},
+          "app_name": "some_other_agent",
+          "train_eval_set": "train_set",
+      })
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "optimize",
+          str(agent_path),
+          "--sampler_config_file_path",
+          str(sampler_config_file),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "my_agent" in result.output
+  assert "some_other_agent" in result.output
+
+
+# adk migrate session
+def test_cli_migrate_session_defaults_to_safe_unpickling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Unsafe pickle loading must be opt-in, never the default."""
+  seen: List[bool] = []
+
+  def fake_upgrade(
+      source_db_url: str,
+      dest_db_url: str,
+      *,
+      allow_unsafe_unpickling: bool = True,
+  ) -> None:
+    seen.append(allow_unsafe_unpickling)
+
+  monkeypatch.setattr(
+      "google.adk.sessions.migration.migration_runner.upgrade", fake_upgrade
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "migrate",
+          "session",
+          "--source_db_url",
+          "sqlite:///source.db",
+          "--dest_db_url",
+          "sqlite:///dest.db",
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert seen == [False]
+
+
+@pytest.mark.unmute_click
+def test_cli_migrate_session_reports_the_underlying_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A failed migration is reported to the user rather than raised."""
+
+  def explode(*args: Any, **kwargs: Any) -> None:
+    raise RuntimeError("destination schema is newer")
+
+  monkeypatch.setattr(
+      "google.adk.sessions.migration.migration_runner.upgrade", explode
+  )
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "migrate",
+          "session",
+          "--source_db_url",
+          "sqlite:///source.db",
+          "--dest_db_url",
+          "sqlite:///dest.db",
+      ],
+  )
+
+  assert "Migration failed: destination schema is newer" in result.output

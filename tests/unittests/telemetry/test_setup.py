@@ -79,7 +79,7 @@ def test_maybe_set_otel_providers(
   """
   # Arrange.
   for k, v in env_vars.items():
-    os.environ[k] = v
+    monkeypatch.setenv(k, v)
   trace_provider_mock = mock.MagicMock()
   monkeypatch.setattr(
       "opentelemetry.trace.set_tracer_provider",
@@ -94,6 +94,18 @@ def test_maybe_set_otel_providers(
   monkeypatch.setattr(
       "opentelemetry._logs.set_logger_provider",
       logs_provider_mock,
+  )
+  monkeypatch.setattr(
+      "google.adk.telemetry.setup._get_otel_span_exporter",
+      lambda: mock.MagicMock(),
+  )
+  monkeypatch.setattr(
+      "google.adk.telemetry.setup._get_otel_metrics_exporter",
+      lambda: mock.MagicMock(),
+  )
+  monkeypatch.setattr(
+      "google.adk.telemetry.setup._get_otel_logs_exporter",
+      lambda: mock.MagicMock(),
   )
 
   # Act.

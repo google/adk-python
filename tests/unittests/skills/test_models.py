@@ -14,6 +14,8 @@
 
 """Unit tests for skill models."""
 
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.skills import models
 from pydantic import ValidationError
 import pytest
@@ -63,6 +65,7 @@ def test_skill_properties():
   skill = models.Skill(frontmatter=frontmatter, instructions="do this")
   assert skill.name == "my-skill"
   assert skill.description == "my description"
+  assert skill._uri is None
 
 
 def test_script_to_string():
@@ -99,14 +102,37 @@ def test_name_consecutive_hyphens():
     models.Frontmatter(name="my--skill", description="desc")
 
 
-def test_name_invalid_chars_underscore():
+def test_name_underscore_rejected_by_default():
   with pytest.raises(ValidationError, match="lowercase kebab-case"):
     models.Frontmatter(name="my_skill", description="desc")
 
 
+def test_name_valid_underscore_preserved_with_flag():
+  with temporary_feature_override(FeatureName.SNAKE_CASE_SKILL_NAME, True):
+    fm = models.Frontmatter(name="my_skill", description="desc")
+    assert fm.name == "my_skill"
+
+
 def test_name_invalid_chars_ampersand():
-  with pytest.raises(ValidationError, match="lowercase kebab-case"):
+  with pytest.raises(
+      ValidationError, match="name must be lowercase kebab-case"
+  ):
     models.Frontmatter(name="skill&name", description="desc")
+
+
+def test_name_mixed_delimiters_rejected_by_default():
+  with pytest.raises(
+      ValidationError, match="name must be lowercase kebab-case"
+  ):
+    models.Frontmatter(name="my-skill_1", description="desc")
+
+
+def test_name_mixed_delimiters_rejected_with_flag():
+  with temporary_feature_override(FeatureName.SNAKE_CASE_SKILL_NAME, True):
+    with pytest.raises(
+        ValidationError, match="Mixing hyphens and underscores is not allowed"
+    ):
+      models.Frontmatter(name="my-skill_1", description="desc")
 
 
 def test_name_valid_passes():
@@ -128,7 +154,10 @@ def test_description_empty():
 
 
 def test_description_too_long():
-  with pytest.raises(ValidationError, match="at most 1024 characters"):
+  with pytest.raises(
+      ValidationError,
+      match="at most 1024 characters. Description length: 1025",
+  ):
     models.Frontmatter(name="my-skill", description="x" * 1025)
 
 
@@ -203,4 +232,22 @@ def test_metadata_adk_additional_tools_invalid_type():
         "name": "my-skill",
         "description": "desc",
         "metadata": {"adk_additional_tools": 123},
+    })
+
+
+def test_metadata_adk_inject_state_bool():
+  fm = models.Frontmatter.model_validate({
+      "name": "my-skill",
+      "description": "desc",
+      "metadata": {"adk_inject_state": True},
+  })
+  assert fm.metadata["adk_inject_state"] is True
+
+
+def test_metadata_adk_inject_state_rejected_as_string():
+  with pytest.raises(ValidationError, match="adk_inject_state must be a bool"):
+    models.Frontmatter.model_validate({
+        "name": "my-skill",
+        "description": "desc",
+        "metadata": {"adk_inject_state": "true"},
     })

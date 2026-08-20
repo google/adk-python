@@ -14,16 +14,17 @@
 
 
 import json
+import threading
 from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.integrations.bigquery.bigquery_credentials import BIGQUERY_TOKEN_CACHE_KEY
+from google.adk.integrations.bigquery.bigquery_credentials import BigQueryCredentialsConfig
 from google.adk.tools import _google_credentials
 from google.adk.tools._google_credentials import BaseGoogleCredentialsConfig
 from google.adk.tools._google_credentials import GoogleCredentialsManager
-from google.adk.tools.bigquery.bigquery_credentials import BIGQUERY_TOKEN_CACHE_KEY
-from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
 from google.adk.tools.tool_context import ToolContext
 from google.auth.credentials import Credentials as AuthCredentials
 from google.auth.exceptions import RefreshError
@@ -105,15 +106,16 @@ class TestGoogleCredentialsManager:
       ],
   )
   @pytest.mark.asyncio
+  @patch.object(_google_credentials, "Request", autospec=True)
   async def test_get_valid_credentials_with_existing_non_oauth_creds(
-      self, manager, mock_tool_context, valid
+      self, mock_request_class, manager, mock_tool_context, valid
   ):
-    """Test that existing non-oauth credentials are returned immediately.
+    """Test that existing non-oauth credentials handle refresh logic correctly.
 
-    When credentials are of non-oauth type, no refresh or OAuth flow
-    is triggered irrespective of whether or not it is valid.
+    When credentials are of non-oauth type, a refresh is triggered if they
+    are invalid. No OAuth flow is ever triggered.
     """
-    # Create mock credentials that are already valid
+    # Create mock credentials with the specified validity
     mock_creds = create_autospec(AuthCredentials, instance=True)
     mock_creds.valid = valid
     manager.credentials_config.credentials = mock_creds
@@ -121,9 +123,65 @@ class TestGoogleCredentialsManager:
     result = await manager.get_valid_credentials(mock_tool_context)
 
     assert result == mock_creds
+    # Verify refresh behavior
+    if valid:
+      mock_creds.refresh.assert_not_called()
+    else:
+      mock_creds.refresh.assert_called_once_with(
+          mock_request_class.return_value
+      )
+
     # Verify no OAuth flow was triggered
     mock_tool_context.get_auth_response.assert_not_called()
     mock_tool_context.request_credential.assert_not_called()
+
+  @pytest.mark.asyncio
+  @patch.object(_google_credentials, "Request", autospec=True)
+  async def test_get_valid_credentials_with_non_oauth_refresh_failure(
+      self, mock_request_class, manager, mock_tool_context
+  ):
+    """Test that non-oauth refresh failures are caught gracefully.
+
+    Even if refresh fails, we should still return the credentials as they
+    might work for some downstream libraries.
+    """
+    mock_creds = create_autospec(AuthCredentials, instance=True)
+    mock_creds.valid = False
+    mock_creds.refresh.side_effect = Exception("Refresh failed")
+    manager.credentials_config.credentials = mock_creds
+
+    result = await manager.get_valid_credentials(mock_tool_context)
+
+    # Credentials should still be returned
+    assert result == mock_creds
+    mock_creds.refresh.assert_called_once_with(mock_request_class.return_value)
+
+  @pytest.mark.asyncio
+  @patch.object(_google_credentials, "Request", autospec=True)
+  async def test_non_oauth_refresh_runs_off_event_loop(
+      self, mock_request_class, manager, mock_tool_context
+  ):
+    """Test that the non-oauth refresh does not run on the event loop.
+
+    The refresh is a blocking token endpoint round trip, so it must be
+    dispatched to a worker thread rather than stalling every other coroutine.
+    """
+    refresh_thread_ids = []
+
+    mock_creds = create_autospec(AuthCredentials, instance=True)
+    mock_creds.valid = False
+
+    def mock_refresh(request):
+      refresh_thread_ids.append(threading.get_ident())
+
+    mock_creds.refresh.side_effect = mock_refresh
+    manager.credentials_config.credentials = mock_creds
+
+    result = await manager.get_valid_credentials(mock_tool_context)
+
+    assert result == mock_creds
+    assert len(refresh_thread_ids) == 1
+    assert refresh_thread_ids[0] != threading.get_ident()
 
   @pytest.mark.asyncio
   async def test_get_credentials_from_cache_when_none_in_manager(
@@ -313,6 +371,50 @@ class TestGoogleCredentialsManager:
     # Should trigger OAuth flow and return None (flow in progress)
     assert result is None
     mock_tool_context.request_credential.assert_called_once()
+
+  @pytest.mark.asyncio
+  @patch.object(requests, "Request", autospec=True)
+  async def test_expired_credentials_refresh_runs_off_event_loop(
+      self, mock_request_class, manager, mock_tool_context
+  ):
+    """Test that refreshing expired credentials stays off the event loop."""
+    refresh_thread_ids = []
+
+    mock_creds = create_autospec(OAuthCredentials, instance=True)
+    mock_creds.valid = False
+    mock_creds.expired = True
+    mock_creds.refresh_token = "refresh_token"
+
+    def mock_refresh(request):
+      refresh_thread_ids.append(threading.get_ident())
+      mock_creds.valid = True
+
+    mock_creds.refresh.side_effect = mock_refresh
+    manager.credentials_config.credentials = mock_creds
+
+    result = await manager.get_valid_credentials(mock_tool_context)
+
+    assert result == mock_creds
+    assert len(refresh_thread_ids) == 1
+    assert refresh_thread_ids[0] != threading.get_ident()
+
+  @pytest.mark.asyncio
+  @patch.object(requests, "Request", autospec=True)
+  async def test_unexpected_refresh_error_propagates_to_caller(
+      self, mock_request_class, manager, mock_tool_context
+  ):
+    """Test that an error other than RefreshError still reaches the caller."""
+    mock_creds = create_autospec(OAuthCredentials, instance=True)
+    mock_creds.valid = False
+    mock_creds.expired = True
+    mock_creds.refresh_token = "refresh_token"
+    mock_creds.refresh.side_effect = ValueError("token endpoint unreachable")
+    manager.credentials_config.credentials = mock_creds
+
+    with pytest.raises(ValueError, match="token endpoint unreachable"):
+      await manager.get_valid_credentials(mock_tool_context)
+
+    mock_tool_context.request_credential.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_oauth_flow_completion_with_caching(

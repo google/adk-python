@@ -20,6 +20,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.run_config import RunConfig
+from google.adk.events.event import Event
 from google.adk.flows.llm_flows import instructions
 from google.adk.flows.llm_flows.contents import _add_instructions_to_user_content
 from google.adk.flows.llm_flows.contents import request_processor as contents_processor
@@ -54,11 +55,11 @@ async def _create_invocation_context(
 @pytest.mark.asyncio
 async def test_build_system_instruction():
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=("""Use the echo_info tool to echo { customerId }, \
 {{customer_int  }, {  non-identifier-float}}, \
@@ -97,11 +98,11 @@ async def test_function_system_instruction():
     )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=build_function_instruction,
   )
@@ -142,11 +143,11 @@ async def test_async_function_system_instruction():
     )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=build_function_instruction,
   )
@@ -177,18 +178,18 @@ async def test_async_function_system_instruction():
 @pytest.mark.asyncio
 async def test_global_system_instruction():
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction="This is the sub agent instruction.",
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction="This is the global instruction.",
       sub_agents=[sub_agent],
   )
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   invocation_context = await testing_utils.create_invocation_context(
@@ -221,18 +222,18 @@ async def test_function_global_system_instruction():
     return "This is the global instruction."
 
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction=sub_agent_si,
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction=root_agent_gi,
       sub_agents=[sub_agent],
   )
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   invocation_context = await testing_utils.create_invocation_context(
@@ -265,18 +266,18 @@ async def test_async_function_global_system_instruction():
     return "This is the global instruction."
 
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction=sub_agent_si,
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction=root_agent_gi,
       sub_agents=[sub_agent],
   )
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   invocation_context = await testing_utils.create_invocation_context(
@@ -303,11 +304,11 @@ async def test_async_function_global_system_instruction():
 @pytest.mark.asyncio
 async def test_build_system_instruction_with_namespace():
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="agent",
       instruction=(
           """Use the echo_info tool to echo { customerId }, {app:key}, {user:key}, {a:key}."""
@@ -348,13 +349,13 @@ async def test_instruction_processor_respects_bypass_state_injection():
     return f'instruction with state: {ctx.state["test_var"]}'
 
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="test_agent",
       instruction=_instruction_provider,
   )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 
@@ -393,13 +394,13 @@ async def test_string_instruction_respects_bypass_state_injection():
   """Test that string instructions get state injection (bypass_state_injection=False)."""
 
   agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="test_agent",
       instruction="Base instruction with {test_var}",  # String instruction
   )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 
@@ -440,19 +441,19 @@ async def test_global_instruction_processor_respects_bypass_state_injection():
     return f'global instruction with state: {ctx.state["test_var"]}'
 
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction="Sub agent instruction",
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction=_global_instruction_provider,
       sub_agents=[sub_agent],
   )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 
@@ -492,19 +493,19 @@ async def test_string_global_instruction_respects_bypass_state_injection():
   """Test that string global instructions get state injection (bypass_state_injection=False)."""
 
   sub_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="sub_agent",
       instruction="Sub agent instruction",
   )
   root_agent = Agent(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       name="root_agent",
       global_instruction="Global instruction with {test_var}",  # String instruction
       sub_agents=[sub_agent],
   )
 
   request = LlmRequest(
-      model="gemini-1.5-flash",
+      model="gemini-2.5-flash",
       config=types.GenerateContentConfig(system_instruction=""),
   )
 
@@ -541,8 +542,7 @@ async def test_string_global_instruction_respects_bypass_state_injection():
 # Static Instruction Tests (moved from test_static_instructions.py)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_field_exists(llm_backend):
+def test_static_instruction_field_exists():
   """Test that static_instruction field exists and works with types.Content."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="This is a static instruction")]
@@ -551,8 +551,7 @@ def test_static_instruction_field_exists(llm_backend):
   assert agent.static_instruction == static_content
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_string(llm_backend):
+def test_static_instruction_supports_string():
   """Test that static_instruction field supports simple strings."""
   static_str = "This is a static instruction as a string"
   agent = LlmAgent(name="test_agent", static_instruction=static_str)
@@ -560,8 +559,7 @@ def test_static_instruction_supports_string(llm_backend):
   assert isinstance(agent.static_instruction, str)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_part(llm_backend):
+def test_static_instruction_supports_part():
   """Test that static_instruction field supports types.Part."""
   static_part = types.Part(text="This is a static instruction as Part")
   agent = LlmAgent(name="test_agent", static_instruction=static_part)
@@ -569,8 +567,7 @@ def test_static_instruction_supports_part(llm_backend):
   assert isinstance(agent.static_instruction, types.Part)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_file(llm_backend):
+def test_static_instruction_supports_file():
   """Test that static_instruction field supports types.File."""
   static_file = types.File(uri="gs://bucket/file.txt", mime_type="text/plain")
   agent = LlmAgent(name="test_agent", static_instruction=static_file)
@@ -578,8 +575,7 @@ def test_static_instruction_supports_file(llm_backend):
   assert isinstance(agent.static_instruction, types.File)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_list_of_parts(llm_backend):
+def test_static_instruction_supports_list_of_parts():
   """Test that static_instruction field supports list[PartUnion]."""
   static_parts_list = [
       types.Part(text="First part"),
@@ -591,8 +587,7 @@ def test_static_instruction_supports_list_of_parts(llm_backend):
   assert len(agent.static_instruction) == 2
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_list_of_strings(llm_backend):
+def test_static_instruction_supports_list_of_strings():
   """Test that static_instruction field supports list of strings."""
   static_strings_list = ["First instruction", "Second instruction"]
   agent = LlmAgent(name="test_agent", static_instruction=static_strings_list)
@@ -601,8 +596,7 @@ def test_static_instruction_supports_list_of_strings(llm_backend):
   assert all(isinstance(s, str) for s in agent.static_instruction)
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_supports_multiple_parts(llm_backend):
+def test_static_instruction_supports_multiple_parts():
   """Test that static_instruction supports multiple parts including files."""
   static_content = types.Content(
       role="user",
@@ -621,8 +615,7 @@ def test_static_instruction_supports_multiple_parts(llm_backend):
   assert len(agent.static_instruction.parts) == 3
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
-def test_static_instruction_outputs_placeholders_literally(llm_backend):
+def test_static_instruction_outputs_placeholders_literally():
   """Test that static instructions output placeholders literally without processing."""
   static_content = types.Content(
       role="user",
@@ -635,9 +628,8 @@ def test_static_instruction_outputs_placeholders_literally(llm_backend):
   assert "{count}" in agent.static_instruction.parts[0].text
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_added_to_contents(llm_backend):
+async def test_static_instruction_added_to_contents():
   """Test that static instructions are added to llm_request.config.system_instruction."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="Static instruction content")]
@@ -657,9 +649,8 @@ async def test_static_instruction_added_to_contents(llm_backend):
   assert llm_request.config.system_instruction == "Static instruction content"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_string_added_to_system(llm_backend):
+async def test_static_instruction_string_added_to_system():
   """Test that string static instructions are added to system_instruction."""
   agent = LlmAgent(
       name="test_agent", static_instruction="Static instruction as string"
@@ -678,9 +669,8 @@ async def test_static_instruction_string_added_to_system(llm_backend):
   assert llm_request.config.system_instruction == "Static instruction as string"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_part_converted_to_system(llm_backend):
+async def test_static_instruction_part_converted_to_system():
   """Test that Part static instructions are converted and added to system_instruction."""
   static_part = types.Part(text="Static instruction from Part")
   agent = LlmAgent(name="test_agent", static_instruction=static_part)
@@ -696,11 +686,8 @@ async def test_static_instruction_part_converted_to_system(llm_backend):
   assert llm_request.config.system_instruction == "Static instruction from Part"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_list_of_parts_converted_to_system(
-    llm_backend,
-):
+async def test_static_instruction_list_of_parts_converted_to_system():
   """Test that list of Parts is converted and added to system_instruction."""
   static_parts_list = [
       types.Part(text="First part"),
@@ -719,11 +706,8 @@ async def test_static_instruction_list_of_parts_converted_to_system(
   assert llm_request.config.system_instruction == "First part\n\nSecond part"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_list_of_strings_converted_to_system(
-    llm_backend,
-):
+async def test_static_instruction_list_of_strings_converted_to_system():
   """Test that list of strings is converted and added to system_instruction."""
   static_strings_list = ["First instruction", "Second instruction"]
   agent = LlmAgent(name="test_agent", static_instruction=static_strings_list)
@@ -742,9 +726,8 @@ async def test_static_instruction_list_of_strings_converted_to_system(
   )
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instruction_without_static_goes_to_system(llm_backend):
+async def test_dynamic_instruction_without_static_goes_to_system():
   """Test that dynamic instructions go to system when no static instruction exists."""
   agent = LlmAgent(name="test_agent", instruction="Dynamic instruction content")
 
@@ -761,9 +744,8 @@ async def test_dynamic_instruction_without_static_goes_to_system(llm_backend):
   assert len(llm_request.contents) == 0
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instruction_with_static_not_in_system(llm_backend):
+async def test_dynamic_instruction_with_static_not_in_system():
   """Test that dynamic instructions don't go to system when static instruction exists."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="Static instruction content")]
@@ -793,11 +775,8 @@ async def test_dynamic_instruction_with_static_not_in_system(llm_backend):
   assert llm_request.contents[0].parts[0].text == "Dynamic instruction content"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instruction_with_string_static_not_in_system(
-    llm_backend,
-):
+async def test_dynamic_instruction_with_string_static_not_in_system():
   """Test that dynamic instructions go to user content when string static_instruction exists."""
   agent = LlmAgent(
       name="test_agent",
@@ -823,9 +802,8 @@ async def test_dynamic_instruction_with_string_static_not_in_system(
   assert llm_request.contents[0].parts[0].text == "Dynamic instruction content"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instructions_added_to_user_content(llm_backend):
+async def test_dynamic_instructions_added_to_user_content():
   """Test that dynamic instructions are added to user content when static exists."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="Static instruction")]
@@ -863,11 +841,8 @@ async def test_dynamic_instructions_added_to_user_content(llm_backend):
   assert llm_request.contents[1].parts[0].text == "Hello world"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_dynamic_instructions_create_user_content_when_none_exists(
-    llm_backend,
-):
+async def test_dynamic_instructions_create_user_content_when_none_exists():
   """Test that dynamic instructions create user content when none exists."""
   static_content = types.Content(
       role="user", parts=[types.Part(text="Static instruction")]
@@ -898,9 +873,8 @@ async def test_dynamic_instructions_create_user_content_when_none_exists(
   assert llm_request.contents[0].parts[0].text == "Dynamic instruction"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_no_dynamic_instructions_when_no_static(llm_backend):
+async def test_no_dynamic_instructions_when_no_static():
   """Test that no dynamic instructions are added to content when no static instructions exist."""
   agent = LlmAgent(name="test_agent", instruction="Dynamic instruction only")
 
@@ -958,9 +932,8 @@ async def test_instructions_insert_after_function_response():
   assert llm_request.contents[2].parts[0].text == "Dynamic instruction"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_with_files_and_text(llm_backend):
+async def test_static_instruction_with_files_and_text():
   """Test that static instruction can contain files and text together."""
   static_content = types.Content(
       role="user",
@@ -1002,11 +975,8 @@ async def test_static_instruction_with_files_and_text(llm_backend):
   assert llm_request.contents[0].parts[1].inline_data.data == b"fake_image_data"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_non_text_parts_moved_to_user_content(
-    llm_backend,
-):
+async def test_static_instruction_non_text_parts_moved_to_user_content():
   """Test that non-text parts from static instruction are moved to user content."""
   static_content = types.Content(
       role="user",
@@ -1075,9 +1045,8 @@ async def test_static_instruction_non_text_parts_moved_to_user_content(
   assert file_content.parts[1].file_data.display_name == "test_file.txt"
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_reference_id_generation(llm_backend):
+async def test_static_instruction_reference_id_generation():
   """Test that reference IDs are generated correctly for non-text parts."""
   static_content = types.Content(
       role="user",
@@ -1125,9 +1094,8 @@ async def test_static_instruction_reference_id_generation(llm_backend):
     assert len(content.parts) == 2
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_only_text_parts(llm_backend):
+async def test_static_instruction_only_text_parts():
   """Test that static instruction with only text parts works normally."""
   static_content = types.Content(
       role="user",
@@ -1151,9 +1119,8 @@ async def test_static_instruction_only_text_parts(llm_backend):
   assert len(llm_request.contents) == 0
 
 
-@pytest.mark.parametrize("llm_backend", ["GOOGLE_AI", "VERTEX"])
 @pytest.mark.asyncio
-async def test_static_instruction_only_non_text_parts(llm_backend):
+async def test_static_instruction_only_non_text_parts():
   """Test that static instruction with only non-text parts works correctly."""
   static_content = types.Content(
       role="user",
@@ -1194,3 +1161,206 @@ async def test_static_instruction_only_non_text_parts(llm_backend):
   # Each non-text part gets its own content object with 2 parts (text description + actual part)
   for content in llm_request.contents:
     assert len(content.parts) == 2
+
+
+@pytest.mark.asyncio
+async def test_static_instruction_file_precedes_multi_turn_history():
+  """Non-text static_instruction content must stay a stable request prefix.
+
+  On turns after the first, the static content must not be pushed behind
+  earlier conversation history, or it stops being a stable prefix for
+  provider-side context caching.
+  """
+  file_uri = "gs://test-bucket/reference.pdf"
+  agent = LlmAgent(
+      name="test_agent",
+      instruction="Dynamic instruction",
+      static_instruction=types.Content(
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri=file_uri,
+                      mime_type="application/pdf",
+                  )
+              )
+          ]
+      ),
+  )
+  invocation_context = await _create_invocation_context(agent)
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+  ]
+  llm_request = LlmRequest()
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+  async for _ in contents_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert len(llm_request.contents) == 5
+
+  static_content = llm_request.contents[0]
+  assert static_content.role == "user"
+  assert static_content.parts[0].text == "Referenced file data: file_data_0"
+  assert static_content.parts[1].file_data
+  assert static_content.parts[1].file_data.file_uri == file_uri
+
+  dynamic_content = llm_request.contents[1]
+  assert dynamic_content.role == "user"
+  assert dynamic_content.parts[0].text == "Dynamic instruction"
+
+  assert llm_request.contents[2] == types.UserContent("First message")
+  assert llm_request.contents[3] == types.ModelContent("First response")
+  assert llm_request.contents[4] == types.UserContent("Second message")
+
+
+@pytest.mark.asyncio
+async def test_static_instruction_file_stays_prefix_after_tool_dynamic_instruction():
+  """The static prefix must survive a later, tool-triggered instruction insert.
+
+  With DYNAMIC_INSTRUCTION_ROUTING enabled, tools (e.g. preload_memory_tool)
+  call ``_append_dynamic_instructions`` and
+  ``_finalize_dynamic_instructions`` (base_llm_flow.py) later routes that
+  through the same ``_add_instructions_to_user_content`` helper used by the
+  main contents processor. That second call must not re-insert at index 0, or
+  it would push the tool's dynamic content in front of the static content
+  that the first call already placed there.
+  """
+  file_uri = "gs://test-bucket/reference.pdf"
+  agent = LlmAgent(
+      name="test_agent",
+      instruction="Dynamic instruction",
+      static_instruction=types.Content(
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri=file_uri,
+                      mime_type="application/pdf",
+                  )
+              )
+          ]
+      ),
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+  async for _ in contents_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert len(llm_request.contents) == 2
+  assert (
+      llm_request.contents[0].parts[0].text
+      == "Referenced file data: file_data_0"
+  )
+  assert llm_request.contents[1].parts[0].text == "Dynamic instruction"
+
+  # Simulate a tool contributing a dynamic instruction, finalized the same
+  # way `_finalize_dynamic_instructions` does when DYNAMIC_INSTRUCTION_ROUTING
+  # is enabled: a second call to the same helper, after the first call above
+  # already placed the static prefix.
+  tool_instruction_content = types.Content(
+      role="user",
+      parts=[types.Part.from_text(text="Relevant memory: user likes pizza")],
+  )
+  await _add_instructions_to_user_content(
+      invocation_context, llm_request, [tool_instruction_content]
+  )
+
+  assert len(llm_request.contents) == 3
+  static_content = llm_request.contents[0]
+  assert static_content.parts[0].text == "Referenced file data: file_data_0"
+  assert static_content.parts[1].file_data
+  assert static_content.parts[1].file_data.file_uri == file_uri
+
+
+@pytest.mark.asyncio
+async def test_tool_instruction_does_not_precede_history():
+  """Tool instructions must be inserted before the current user turn, not at start.
+
+  Even when static_instruction is present, tool-added instructions should not
+  be pushed ahead of the whole history (e.g. before Turn 1 messages), they
+  should stay before the active turn.
+  """
+  file_uri = "gs://test-bucket/reference.pdf"
+  agent = LlmAgent(
+      name="test_agent",
+      instruction="Dynamic instruction",
+      static_instruction=types.Content(
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri=file_uri,
+                      mime_type="application/pdf",
+                  )
+              )
+          ]
+      ),
+  )
+  invocation_context = await _create_invocation_context(agent)
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+  ]
+  llm_request = LlmRequest()
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+  async for _ in contents_processor.run_async(invocation_context, llm_request):
+    pass
+
+  # Initial state: [Static, Dynamic, User1, Model1, User2]
+  assert len(llm_request.contents) == 5
+
+  # Simulate a tool contributing a dynamic instruction
+  tool_instruction_content = types.Content(
+      role="user",
+      parts=[types.Part.from_text(text="Relevant memory: user likes pizza")],
+  )
+  await _add_instructions_to_user_content(
+      invocation_context, llm_request, [tool_instruction_content]
+  )
+
+  # Expected state: [Static, Dynamic, User1, Model1, Tool, User2]
+  # Tool should be inserted before User2 (index 4), not before User1 (index 2).
+  assert len(llm_request.contents) == 6
+  assert (
+      llm_request.contents[0].parts[0].text
+      == "Referenced file data: file_data_0"
+  )
+  assert llm_request.contents[1].parts[0].text == "Dynamic instruction"
+  assert llm_request.contents[2] == types.UserContent("First message")
+  assert llm_request.contents[3] == types.ModelContent("First response")
+  assert (
+      llm_request.contents[4].parts[0].text
+      == "Relevant memory: user likes pizza"
+  )
+  assert llm_request.contents[5] == types.UserContent("Second message")

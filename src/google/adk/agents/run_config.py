@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-from enum import Enum
 import logging
 import sys
 from typing import Any
@@ -29,6 +28,8 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from ..sessions.base_session_service import GetSessionConfig
+from ..telemetry.context import TelemetryConfig
+from ._streaming_mode import StreamingMode
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -51,136 +52,6 @@ class ToolThreadPoolConfig(BaseModel):
   )
 
 
-class StreamingMode(Enum):
-  """Streaming modes for agent execution.
-
-  This enum defines different streaming behaviors for how the agent returns
-  events as model response.
-  """
-
-  NONE = None
-  """Non-streaming mode (default).
-
-  In this mode:
-  - The runner returns one single content in a turn (one user / model
-    interaction).
-  - No partial/intermediate events are produced
-  - Suitable for: CLI tools, batch processing, synchronous workflows
-
-  Example:
-    ```python
-    config = RunConfig(streaming_mode=StreamingMode.NONE)
-    async for event in runner.run_async(..., run_config=config):
-      # event.partial is always False
-      # Only final responses are yielded
-      if event.content:
-        print(event.content.parts[0].text)
-    ```
-  """
-
-  SSE = 'sse'
-  """Server-Sent Events (SSE) streaming mode.
-
-  In this mode:
-  - The runner yields events progressively as the LLM generates responses
-  - Both partial events (streaming chunks) and aggregated events are yielded
-  - Suitable for: real-time display with typewriter effects in Web UIs, chat
-    applications, interactive displays
-
-  Event Types in SSE Mode:
-  - **Partial text events** (event.partial=True, contains text):
-    Streaming text chunks for typewriter effect. These should typically be
-    displayed to users in real-time.
-
-  - **Partial function call events** (event.partial=True, contains function_call):
-    Internal streaming chunks used to progressively build function call
-    arguments. These are typically NOT displayed to end users.
-
-  - **Aggregated events** (event.partial=False):
-    The complete, aggregated response after all streaming chunks. Contains
-    the full text or complete function call with all arguments.
-
-  Important Considerations:
-  1. **Duplicate text issue**: With Progressive SSE Streaming enabled
-     (default), you will receive both partial text chunks AND a final
-     aggregated text event. To avoid displaying text twice:
-     - Option A: Only display partial text events, skip final text events
-     - Option B: Only display final events, skip all partial events
-     - Option C: Track what's been displayed and skip duplicates
-
-  2. **Event filtering**: Applications should filter events based on their
-     needs. Common patterns:
-
-     # Pattern 1: Display only partial text + final function calls
-     async for event in runner.run_async(...):
-       if event.partial and event.content and event.content.parts:
-         # Check if it's text (not function call)
-         if any(part.text for part in event.content.parts):
-           if not any(part.function_call for part in event.content.parts):
-             # Display partial text for typewriter effect
-             text = ''.join(p.text or '' for p in event.content.parts)
-             print(text, end='', flush=True)
-       elif not event.partial and event.get_function_calls():
-         # Display final function calls
-         for fc in event.get_function_calls():
-           print(f"Calling {fc.name}({fc.args})")
-
-     # Pattern 2: Display only final events (no streaming effect)
-     async for event in runner.run_async(...):
-       if not event.partial:
-         # Only process final responses
-         if event.content:
-           text = ''.join(p.text or '' for p in event.content.parts)
-           print(text)
-
-  3. **Progressive SSE Streaming feature**: Controlled by the
-     ADK_ENABLE_PROGRESSIVE_SSE_STREAMING environment variable (default: ON).
-     - When ON: Preserves original part ordering, supports function call
-       argument streaming, produces partial events + final aggregated event
-     - When OFF: Simple text accumulation, may lose some information
-
-  Example:
-    ```python
-    config = RunConfig(streaming_mode=StreamingMode.SSE)
-    displayed_text = ""
-
-    async for event in runner.run_async(..., run_config=config):
-      if event.partial:
-        # Partial streaming event
-        if event.content and event.content.parts:
-          # Check if this is text (not a function call)
-          has_text = any(part.text for part in event.content.parts)
-          has_fc = any(part.function_call for part in event.content.parts)
-
-          if has_text and not has_fc:
-            # Display partial text chunks for typewriter effect
-            text = ''.join(p.text or '' for p in event.content.parts)
-            print(text, end='', flush=True)
-            displayed_text += text
-      else:
-        # Final event - check if we already displayed this content
-        if event.content:
-          final_text = ''.join(p.text or '' for p in event.content.parts)
-          if final_text != displayed_text:
-            # New content not yet displayed
-            print(final_text)
-    ```
-
-  See Also:
-  - Event.is_final_response() for identifying final responses
-  """
-
-  BIDI = 'bidi'
-  """Bidirectional streaming mode.
-
-  So far this mode is not used in the standard execution path. The actual
-  bidirectional streaming behavior via runner.run_live() uses a completely
-  different code path that doesn't rely on streaming_mode.
-
-  For bidirectional streaming, use runner.run_live() instead of run_async().
-  """
-
-
 class RunConfig(BaseModel):
   """Configs for runtime behavior of agents.
 
@@ -195,8 +66,17 @@ class RunConfig(BaseModel):
   speech_config: Optional[types.SpeechConfig] = None
   """Speech configuration for the live agent."""
 
-  response_modalities: Optional[list[str]] = None
+  http_options: Optional[types.HttpOptions] = None
+  """HTTP options for the agent execution (e.g. custom headers)."""
+
+  labels: Optional[dict[str, str]] = None
+  """User labels for the current invocation (e.g. for billing/attribution)."""
+
+  response_modalities: Optional[list[types.Modality]] = None
   """The output modalities. If not set, it's default to AUDIO."""
+
+  avatar_config: Optional[types.AvatarConfig] = None
+  """Avatar configuration for the live agent."""
 
   save_input_blobs_as_artifacts: bool = Field(
       default=False,
@@ -235,6 +115,16 @@ class RunConfig(BaseModel):
   realtime_input_config: Optional[types.RealtimeInputConfig] = None
   """Realtime input config for live agents with audio input from user."""
 
+  explicit_vad_signal: Optional[bool] = None
+  """Whether to enable explicit voice activity detection (VAD) signals from the model."""
+
+  translation_config: Optional[types.TranslationConfig] = None
+  """Configures real-time speech-to-speech translation.
+
+  Only supported by translation models such as
+  `gemini-3.5-live-translate-preview`.
+  """
+
   enable_affective_dialog: Optional[bool] = None
   """If enabled, the model will detect emotions and adapt its responses accordingly."""
 
@@ -243,6 +133,9 @@ class RunConfig(BaseModel):
 
   session_resumption: Optional[types.SessionResumptionConfig] = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
+
+  history_config: Optional[types.HistoryConfig] = None
+  """Configures the exchange of history between the client and the server."""
 
   context_window_compression: Optional[types.ContextWindowCompressionConfig] = (
       None
@@ -257,7 +150,9 @@ class RunConfig(BaseModel):
 
   When set, tool executions will run in a separate thread pool executor
   instead of the main event loop. When None (default), tools run in the
-  main event loop.
+  main event loop. One pool serves every invocation running on the same event
+  loop and is shut down once that loop is gone, so its worker threads do not
+  outlive it.
 
   This helps keep the event loop responsive for:
   - User interruptions to be processed immediately
@@ -277,6 +172,10 @@ class RunConfig(BaseModel):
   Thread pool does NOT help with (GIL is held):
   - Pure Python CPU-bound code: loops, calculations, recursive algorithms
   - The GIL prevents true parallel execution for Python bytecode
+
+  Cancelling an invocation drops a tool call that has not started yet, but
+  Python cannot stop a thread that is already running, so a started call keeps
+  its worker thread until it returns.
 
   For CPU-intensive Python code, consider alternatives:
   - Use C extensions that release the GIL
@@ -321,6 +220,19 @@ class RunConfig(BaseModel):
   custom_metadata: Optional[dict[str, Any]] = None
   """Custom metadata for the current invocation."""
 
+  telemetry: TelemetryConfig | None = None
+  """Per-request OpenTelemetry configuration.
+
+  Overrides the process-global telemetry env vars for the duration of this
+  invocation. Each ``None`` field on the
+  :class:`~google.adk.telemetry.TelemetryConfig` falls back to its
+  corresponding env var. Lets multi-tenant hosts toggle telemetry knobs per
+  request without leaking configuration across concurrent invocations.
+
+  .. warning::
+      Experimental; API may change.
+  """
+
   get_session_config: Optional[GetSessionConfig] = None
   """Configuration for controlling which events are fetched when loading
   a session.
@@ -339,6 +251,22 @@ class RunConfig(BaseModel):
       run_config = RunConfig(
           get_session_config=GetSessionConfig(num_recent_events=50),
       )
+  """
+
+  model_input_context: list[types.Content] | None = None
+  """Transient context to include in the model input for this invocation.
+
+  The Runner does not persist these contents to the session. They are only
+  added to the LLM request assembled for the current invocation, which lets
+  callers provide per-turn context without changing the conversation history.
+  """
+
+  include_thoughts_from_other_agents: bool = False
+  """Whether to include other agents' thought parts in LLM context.
+
+  By default, thoughts from other agents are excluded when their messages are
+  reformatted as user context for the current agent. Enable this only when
+  agents are expected to share internal reasoning with one another.
   """
 
   @model_validator(mode='before')

@@ -19,12 +19,14 @@ import json
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.eval_case import IntermediateData
+from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.llm_as_judge_utils import get_average_rubric_score
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
+from google.adk.evaluation.llm_as_judge_utils import get_grounding_metadata_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.evaluation.llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from google.adk.evaluation.llm_as_judge_utils import get_tool_declarations_as_json_str
@@ -86,6 +88,79 @@ def test_get_text_from_content_with_mixed_parts():
       ]
   )
   assert get_text_from_content(content) == "Hello\nWorld"
+
+
+def test_get_text_from_content_with_invocation_include_intermediate_responses_in_final():
+  """Tests get_text_from_content on an Invocation with and without the flag."""
+  intermediate_text = "Let me check."
+  final_response_text = "Done."
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="user")]),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="agent",
+                  content=genai_types.Content(
+                      parts=[genai_types.Part(text=intermediate_text)]
+                  ),
+              ),
+              InvocationEvent(
+                  author="tool",
+                  content=genai_types.Content(
+                      parts=[
+                          genai_types.Part(
+                              function_call=genai_types.FunctionCall(name="t")
+                          )
+                      ]
+                  ),
+              ),
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text=final_response_text)]
+      ),
+  )
+
+  # Flag off (default): only the final response text is returned.
+  assert get_text_from_content(invocation) == final_response_text
+
+  # Flag on: intermediate text is concatenated before the final response.
+  assert (
+      get_text_from_content(
+          invocation, include_intermediate_responses_in_final=True
+      )
+      == f"{intermediate_text}\n{final_response_text}"
+  )
+
+
+def test_get_text_from_content_with_intermediate_data_full_response():
+  invocation = Invocation(
+      user_content=genai_types.Content(parts=[genai_types.Part(text="user")]),
+      intermediate_data=IntermediateData(
+          intermediate_responses=[
+              ("agent", [genai_types.Part(text="legacy intro")]),
+              (
+                  "tool",
+                  [
+                      genai_types.Part(
+                          function_call=genai_types.FunctionCall(name="lookup")
+                      )
+                  ],
+              ),
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="final answer")]
+      ),
+  )
+
+  assert get_text_from_content(invocation) == "final answer"
+  assert (
+      get_text_from_content(
+          invocation, include_intermediate_responses_in_final=True
+      )
+      == "legacy intro\nfinal answer"
+  )
 
 
 def test_get_eval_status_with_none_score():
@@ -288,3 +363,36 @@ def test_get_tool_calls_and_responses_as_json_str_with_invocation_events_multipl
       ]
   }
   assert json.loads(json_str) == expected_json
+
+
+def test_get_grounding_metadata_as_json_str_with_invocation_events():
+  """Tests grounding metadata is serialized for LLM-as-judge prompts."""
+  grounding_metadata = genai_types.GroundingMetadata(
+      web_search_queries=["recent AI news"]
+  )
+  intermediate_data = InvocationEvents(
+      invocation_events=[
+          InvocationEvent(
+              author="agent",
+              content=None,
+              grounding_metadata=grounding_metadata,
+          )
+      ]
+  )
+
+  json_str = get_grounding_metadata_as_json_str(intermediate_data)
+  parsed = json.loads(json_str)
+
+  assert parsed["grounding_metadata"][0]["step"] == 0
+  assert parsed["grounding_metadata"][0]["author"] == "agent"
+  assert parsed["grounding_metadata"][0]["grounding_metadata"][
+      "web_search_queries"
+  ] == ["recent AI news"]
+
+
+def test_get_grounding_metadata_as_json_str_without_metadata():
+  """Tests empty grounding metadata serialization."""
+  assert (
+      get_grounding_metadata_as_json_str(InvocationEvents())
+      == "No grounding metadata was provided."
+  )

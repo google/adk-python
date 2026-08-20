@@ -35,11 +35,13 @@ import httpx
 import tenacity
 from typing_extensions import override
 
-from ..utils.env_utils import is_env_enabled
+from ..utils import _json_utils
+from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
+  from google.auth.credentials import Credentials
   from google.genai import Client
 
   from .llm_request import LlmRequest
@@ -48,7 +50,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 _APIGEE_PROXY_URL_ENV_VARIABLE_NAME = 'APIGEE_PROXY_URL'
-_GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_USE_VERTEXAI'
 _PROJECT_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_PROJECT'
 _LOCATION_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_LOCATION'
 
@@ -59,6 +60,30 @@ _CUSTOM_METADATA_FIELDS = (
     'service_tier',
     'object',
 )
+
+_REFUSAL_PREFIX = '[[REFUSAL]]: '
+
+# Timeouts, in seconds, for the completions HTTP client. httpx applies no
+# timeout at all unless one is given, so a stalled proxy would otherwise hold
+# the connection and the streaming loop open indefinitely.
+_CONNECT_TIMEOUT_SECONDS = 30.0
+_REQUEST_TIMEOUT_SECONDS = 600.0
+
+
+def _httpx_timeout(timeout_seconds: Optional[float] = None) -> httpx.Timeout:
+  """Returns the httpx timeout budget for a completions request.
+
+  A bare float would spend the caller's whole budget on the connect phase too,
+  so the connect budget is always kept short enough to fail fast on an
+  unreachable proxy.
+
+  Args:
+    timeout_seconds: The total budget for the request, or None for the default.
+  """
+  return httpx.Timeout(
+      _REQUEST_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds,
+      connect=_CONNECT_TIMEOUT_SECONDS,
+  )
 
 
 class ApigeeLlm(Gemini):
@@ -76,7 +101,7 @@ class ApigeeLlm(Gemini):
     GENAI = 'genai'
 
     @classmethod
-    def _missing_(cls, value):
+    def _missing_(cls, value: object) -> Any:
       # Empty string or None should return UNKNOWN.
       if not value:
         return cls.UNKNOWN
@@ -90,7 +115,8 @@ class ApigeeLlm(Gemini):
       custom_headers: dict[str, str] | None = None,
       retry_options: Optional[types.HttpRetryOptions] = None,
       api_type: ApiType | str = ApiType.UNKNOWN,
-  ):
+      credentials: Credentials | None = None,
+  ) -> None:
     """Initializes the Apigee LLM backend.
 
     Args:
@@ -100,9 +126,9 @@ class ApigeeLlm(Gemini):
 
         Components
           `provider` (optional): `vertex_ai` or `gemini`. If omitted, behavior
-            depends on the `GOOGLE_GENAI_USE_VERTEXAI` environment variable. If
+            depends on the `GOOGLE_GENAI_USE_ENTERPRISE` environment variable. If
             that is not set to TRUE or 1, it defaults to `gemini`. `provider`
-            takes precedence over `GOOGLE_GENAI_USE_VERTEXAI`.
+            takes precedence over `GOOGLE_GENAI_USE_ENTERPRISE`.
           `version` (optional): The API version (e.g., `v1`, `v1beta`). If
             omitted, the default version for the provider is used.
           `model_id` (required): The model identifier (e.g.,
@@ -121,6 +147,11 @@ class ApigeeLlm(Gemini):
         authorization headers in Vertex AI and Gemini API calls.
       retry_options: Allow google-genai to retry failed responses.
       api_type: The type of API to use. One of `ApiType` or string.
+      credentials: Optional google-auth credentials passed through to the
+        underlying `genai.Client`. Use this when the Apigee proxy requires
+        additional OAuth scopes (e.g., `userinfo.email` for tokeninfo-based
+        caller identification). When omitted, the default `genai.Client`
+        authentication flow is used.
     """  # fmt: skip
 
     super().__init__(model=model, retry_options=retry_options)
@@ -139,23 +170,27 @@ class ApigeeLlm(Gemini):
     else:
       self._api_type = ApigeeLlm.ApiType.GENAI
     self._isvertexai = _identify_vertexai(model, self._api_type)
+    self._project: str | None = None
+    self._location: str | None = None
 
     # Set the project and location for Vertex AI.
     if self._isvertexai:
-      self._project = os.environ.get(_PROJECT_ENV_VARIABLE_NAME)
-      self._location = os.environ.get(_LOCATION_ENV_VARIABLE_NAME)
+      project = os.environ.get(_PROJECT_ENV_VARIABLE_NAME)
+      location = os.environ.get(_LOCATION_ENV_VARIABLE_NAME)
 
-      if not self._project:
+      if not project:
         raise ValueError(
             f'The {_PROJECT_ENV_VARIABLE_NAME} environment variable must be'
             ' set.'
         )
 
-      if not self._location:
+      if not location:
         raise ValueError(
             f'The {_LOCATION_ENV_VARIABLE_NAME} environment variable must be'
             ' set.'
         )
+      self._project = project
+      self._location = location
 
     self._api_version = _identify_api_version(model)
     self._proxy_url = proxy_url or os.environ.get(
@@ -163,6 +198,7 @@ class ApigeeLlm(Gemini):
     )
     self._custom_headers = custom_headers or {}
     self._user_agent = f'google-adk/{adk_version.__version__}'
+    self._credentials = credentials
 
   @classmethod
   @override
@@ -181,10 +217,18 @@ class ApigeeLlm(Gemini):
   def _completions_http_client(self) -> CompletionsHTTPClient:
     """Provides the completions HTTP client."""
     return CompletionsHTTPClient(
-        base_url=self._proxy_url,
+        base_url=self._require_proxy_url(),
         headers=self._merge_tracking_headers(self._custom_headers),
         retry_options=self.retry_options,
     )
+
+  def _require_proxy_url(self) -> str:
+    if not self._proxy_url:
+      raise ValueError(
+          'Apigee proxy URL is not set. Pass proxy_url or set '
+          f'{_APIGEE_PROXY_URL_ENV_VARIABLE_NAME}.'
+      )
+    return self._proxy_url
 
   @override
   async def generate_content_async(
@@ -222,21 +266,22 @@ class ApigeeLlm(Gemini):
     """
     from google.genai import Client
 
-    kwargs_for_http_options = {}
-    if self._api_version:
-      kwargs_for_http_options['api_version'] = self._api_version
     http_options = types.HttpOptions(
-        base_url=self._proxy_url,
+        api_version=self._api_version or None,
+        base_url=self._require_proxy_url(),
         headers=self._merge_tracking_headers(self._custom_headers),
         retry_options=self.retry_options,
-        **kwargs_for_http_options,
     )
 
-    kwargs_for_client = {}
-    kwargs_for_client['vertexai'] = self._isvertexai
+    # Built conditionally: passing project/location/credentials as explicit
+    # Nones is not equivalent to omitting them.
+    kwargs_for_client: dict[str, Any] = {}
+    kwargs_for_client['enterprise'] = self._isvertexai
     if self._isvertexai:
       kwargs_for_client['project'] = self._project
       kwargs_for_client['location'] = self._location
+    if self._credentials is not None:
+      kwargs_for_client['credentials'] = self._credentials
 
     return Client(
         http_options=http_options,
@@ -253,8 +298,8 @@ def _identify_vertexai(model: str, api_type: ApigeeLlm.ApiType) -> bool:
   """Returns if a model is Vertex AI.
 
   1. The api_type is GENAI or UNKNOWN.
-  2. The model is provider is Vertex AI model or the
-    GOOGLE_GENAI_USE_VERTEXAI environment variable is set to TRUE or 1.
+  2. The model provider is a Vertex AI model or the
+    enterprise mode is enabled.
 
   Args:
     model: The model string.
@@ -266,9 +311,7 @@ def _identify_vertexai(model: str, api_type: ApigeeLlm.ApiType) -> bool:
     return False
   if model.startswith('apigee/openai/'):
     return False
-  return model.startswith('apigee/vertex_ai/') or is_env_enabled(
-      _GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME
-  )
+  return model.startswith('apigee/vertex_ai/') or is_enterprise_mode_enabled()
 
 
 def _identify_api_version(model: str) -> str:
@@ -290,8 +333,10 @@ def _identify_api_version(model: str) -> str:
   return ''
 
 
-def _get_model_id(model: str) -> str:
+def _get_model_id(model: str | None) -> str:
   """Returns the model ID for the model spec."""
+  if not model:
+    raise ValueError('Model is not set.')
   model = model.removeprefix('apigee/')
   components = model.split('/')
 
@@ -336,6 +381,23 @@ def _parse_logprobs(
   return types.LogprobsResult(
       chosen_candidates=chosen_candidates, top_candidates=top_candidates
   )
+
+
+def _function_response_media_content_parts(
+    function_response: types.FunctionResponse,
+) -> list[dict[str, Any]]:
+  """Converts media a tool attached to its response into content parts."""
+  media_content_parts: list[dict[str, Any]] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    if blob is None or blob.data is None or not blob.mime_type:
+      continue
+    data = base64.b64encode(blob.data).decode('utf-8')
+    media_content_parts.append({
+        'type': 'image_url',
+        'image_url': {'url': f'data:{blob.mime_type};base64,{data}'},
+    })
+  return media_content_parts
 
 
 def _validate_model_string(model: str) -> bool:
@@ -415,8 +477,8 @@ class CompletionsHTTPClient:
     client = httpx.AsyncClient(
         base_url=self._base_url,
         headers=self._headers,
-        timeout=None,
-        follow_redirects=True,
+        timeout=_httpx_timeout(),
+        follow_redirects=False,
     )
     atexit.register(self._cleanup_client, client)
     return client
@@ -473,7 +535,7 @@ class CompletionsHTTPClient:
 
     retry_network = tenacity.retry_if_exception_type(httpx.NetworkError)
 
-    def is_retriable(e: Exception) -> bool:
+    def is_retriable(e: BaseException) -> bool:
       if isinstance(e, httpx.HTTPStatusError):
         return e.response.status_code in retriable_codes
       return False
@@ -507,6 +569,7 @@ class CompletionsHTTPClient:
   ) -> AsyncGenerator[LlmResponse, None]:
     """Generates content using the OpenAI-compatible HTTP API."""
     payload = self._construct_payload(llm_request, stream)
+    timeout = self._get_request_timeout_seconds(llm_request)
     headers = self._headers.copy()
     headers['Content-Type'] = 'application/json'
 
@@ -518,26 +581,51 @@ class CompletionsHTTPClient:
       url = f"{url.rstrip('/')}/chat/completions"
 
     if stream:
-      async for stream_res in self._handle_streaming(url, payload, headers):
+      async for stream_res in self._handle_streaming(
+          url, payload, headers, timeout=timeout
+      ):
         yield stream_res
     else:
-      response = await self._httpx_post_with_retry(url, payload, headers)
+      response = await self._httpx_post_with_retry(
+          url, payload, headers, timeout=timeout
+      )
       data = response.json()
       yield self._parse_response(data)
 
+  @staticmethod
+  def _get_request_timeout_seconds(llm_request: LlmRequest) -> float | None:
+    """Returns the request timeout converted from milliseconds to seconds."""
+    if not llm_request.config or not llm_request.config.http_options:
+      return None
+    timeout_ms = llm_request.config.http_options.timeout
+    return timeout_ms / 1000 if timeout_ms is not None else None
+
   async def _httpx_post_with_retry(
-      self, url: str, payload: dict[str, Any], headers: dict[str, str]
+      self,
+      url: str,
+      payload: dict[str, Any],
+      headers: dict[str, str],
+      *,
+      timeout: float | None,
   ) -> httpx.Response:
     """Sends a POST request and handles retries."""
     retry_kwargs = self._get_retry_kwargs()
     async for attempt in tenacity.AsyncRetrying(**retry_kwargs):
       with attempt:
-        response = await self._client.post(url, json=payload, headers=headers)
+        response = await self._client.post(
+            url, json=payload, headers=headers, timeout=_httpx_timeout(timeout)
+        )
         response.raise_for_status()
         return response
+    raise RuntimeError('HTTP retry loop completed without making an attempt')
 
   async def _handle_streaming(
-      self, url: str, payload: dict[str, Any], headers: dict[str, str]
+      self,
+      url: str,
+      payload: dict[str, Any],
+      headers: dict[str, str],
+      *,
+      timeout: float | None,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming response from OpenAI-compatible API."""
     accumulator = ChatCompletionsResponseHandler()
@@ -546,6 +634,7 @@ class CompletionsHTTPClient:
         url,
         json=payload,
         headers=headers,
+        timeout=_httpx_timeout(timeout),
     ) as resp:
       resp.raise_for_status()
       async for line in resp.aiter_lines():
@@ -558,25 +647,26 @@ class CompletionsHTTPClient:
         if line == '[DONE]':
           break
         try:
-          for res in self._parse_streaming_line(line, accumulator):
-            yield res
-        except json.JSONDecodeError:
+          chunk = _json_utils.safe_json_loads(line, context='streaming chunk')
+        except ValueError:
           logger.warning('Failed to parse JSON chunk: %s', line)
           continue
+        for res in self._parse_streaming_line(chunk, accumulator):
+          yield res
 
   def _construct_payload(
       self, llm_request: LlmRequest, stream: bool
   ) -> dict[str, Any]:
     """Constructs the payload from the LlmRequest."""
-    messages = []
+    messages: list[dict[str, Any]] = []
     if llm_request.config and llm_request.config.system_instruction:
-      content = self._serialize_system_instruction(
+      system_content = self._serialize_system_instruction(
           llm_request.config.system_instruction
       )
-      if content:
+      if system_content:
         messages.append({
             'role': 'system',
-            'content': content,
+            'content': system_content,
         })
 
     for content in llm_request.contents:
@@ -632,8 +722,13 @@ class CompletionsHTTPClient:
   ) -> None:
     """Maps tools and tool configuration to the payload."""
     if config.tools:
-      tools = []
+      tools: list[dict[str, Any]] = []
       for tool in config.tools:
+        if not isinstance(tool, types.Tool):
+          raise TypeError(
+              'OpenAI-compatible Apigee requests require '
+              'google.genai.types.Tool values.'
+          )
         if tool.function_declarations:
           for func in tool.function_declarations:
             tools.append(self._function_declaration_to_tool(func))
@@ -656,23 +751,39 @@ class CompletionsHTTPClient:
     if role == 'model':
       role = 'assistant'
 
-    tool_calls = []
-    content_parts = []
+    tool_calls: list[dict[str, Any]] = []
+    content_parts: list[dict[str, Any]] = []
+    refusals: list[str] = []
 
-    function_responses = []
+    function_responses: list[dict[str, Any]] = []
+    # A tool can attach media alongside the serializable part of its result.
+    # A tool-role message carries text only, so the media has to follow the
+    # tool results as its own message.
+    response_media_parts: list[dict[str, Any]] = []
 
     for part in content.parts or []:
-      self._process_content_part(content, part, tool_calls, content_parts)
+      self._process_content_part(
+          content, part, tool_calls, content_parts, refusals
+      )
       if part.function_response:
         function_responses.append({
             'role': 'tool',
             'tool_call_id': part.function_response.id,
             'content': json.dumps(part.function_response.response),
         })
+        response_media_parts.extend(
+            _function_response_media_content_parts(part.function_response)
+        )
     if function_responses:
+      if response_media_parts:
+        function_responses.append(
+            {'role': 'user', 'content': response_media_parts}
+        )
       return function_responses
 
-    message = {'role': role}
+    message: dict[str, Any] = {'role': role}
+    if refusals:
+      message['refusal'] = '\n'.join(refusals)
     if tool_calls:
       message['tool_calls'] = tool_calls
       if not content_parts:
@@ -691,6 +802,7 @@ class CompletionsHTTPClient:
       part: types.Part,
       tool_calls: list[dict[str, Any]],
       content_parts: list[dict[str, Any]],
+      refusals: list[str],
   ) -> None:
     """Processes a single Part and updates tool_calls or content_parts."""
     if content.role != 'user' and (
@@ -705,11 +817,14 @@ class CompletionsHTTPClient:
       return
 
     if part.function_call:
+      function_name = part.function_call.name
+      if not function_name:
+        raise ValueError('Function calls must include a name.')
       tool_call = {
-          'id': part.function_call.id or 'call_' + part.function_call.name,
+          'id': part.function_call.id or f'call_{function_name}',
           'type': 'function',
           'function': {
-              'name': part.function_call.name,
+              'name': function_name,
               'arguments': (
                   json.dumps(part.function_call.args)
                   if part.function_call.args
@@ -718,7 +833,7 @@ class CompletionsHTTPClient:
           },
       }
       if part.thought_signature:
-        sig = part.thought_signature
+        sig: str | bytes = part.thought_signature
         if isinstance(sig, bytes):
           sig = base64.b64encode(sig).decode('utf-8')
         tool_call['extra_content'] = {
@@ -731,10 +846,22 @@ class CompletionsHTTPClient:
       # Handled in the loop to return immediately
       pass
     elif part.text:
-      content_parts.append({'type': 'text', 'text': part.text})
+      if part.text.startswith(_REFUSAL_PREFIX):
+        refusals.append(part.text.removeprefix(_REFUSAL_PREFIX))
+      else:
+        before, sep, after = part.text.partition('\n' + _REFUSAL_PREFIX)
+        if sep:
+          refusals.append(after)
+        if before:
+          content_parts.append({'type': 'text', 'text': before})
     elif part.inline_data:
       mime_type = part.inline_data.mime_type
-      data = base64.b64encode(part.inline_data.data).decode('utf-8')
+      if not mime_type:
+        raise ValueError('Inline data must include a MIME type.')
+      inline_data = part.inline_data.data
+      if inline_data is None:
+        raise ValueError('Inline data must include data.')
+      data = base64.b64encode(inline_data).decode('utf-8')
       url = f'data:{mime_type};base64,{data}'
       content_parts.append({'type': 'image_url', 'image_url': {'url': url}})
     elif part.file_data:
@@ -785,7 +912,7 @@ class CompletionsHTTPClient:
       return system_instruction.text
     if isinstance(system_instruction, types.Content):
       return ''.join(
-          part.text for part in system_instruction.parts if part.text
+          part.text for part in system_instruction.parts or [] if part.text
       )
     if isinstance(system_instruction, dict):
       part = types.Part(**system_instruction)
@@ -809,21 +936,19 @@ class CompletionsHTTPClient:
 
   def _parse_streaming_line(
       self,
-      line: str,
+      chunk: dict[str, Any],
       accumulator: ChatCompletionsResponseHandler,
   ) -> Generator[LlmResponse]:
     """Parses a single line from the streaming response.
 
     Args:
-      line: A single line from the streaming response, expected to be a JSON
-        string.
+      chunk: The parsed JSON chunk.
       accumulator: An accumulator to manage partial chat completion choices
         across multiple chunks.
 
     Yields:
       An LlmResponse object parsed from the streaming line.
     """
-    chunk = json.loads(line)
     for response in accumulator.process_chunk(chunk):
       yield response
 
@@ -834,15 +959,16 @@ class ChatCompletionsResponseHandler:
   Useful for both streaming and non-streaming responses.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self.content_parts = ''
-    self.tool_call_parts = {}
+    self.tool_call_parts: dict[int, types.Part] = {}
     self.role = ''
     self.streaming_complete = False
     self.model = ''
-    self.usage = {}
-    self.logprobs = {}
-    self.custom_metadata = {}
+    self.usage: dict[str, Any] = {}
+    self.logprobs: dict[str, Any] = {}
+    self.custom_metadata: dict[str, Any] = {}
+    self._refusal_started = False
 
   def process_response(self, response: dict[str, Any]) -> LlmResponse:
     """Processes a complete non-streaming response."""
@@ -989,19 +1115,49 @@ class ChatCompletionsResponseHandler:
         self.logprobs['refusal'] = []
       self.logprobs['refusal'].extend(logprobs_chunk['refusal'])
 
-  def _append_content(self, content: str, refusal: str) -> str:
-    if content and refusal:
-      content += '\n'
-      content += refusal
-    elif refusal:
-      content = refusal
+  def _accumulate_content(self, choice: dict[str, Any]) -> str:
+    """Processes a message or delta chunk to accumulate content and refusals.
+
+    This method extracts 'content' and 'refusal' from the chunk, updates the
+    accumulated state (self.content_parts), and returns the text content for
+    this chunk (handling prefixes and newlines if it's a refusal).
+
+    Args:
+      choice: A dictionary representing a message choice or a streaming delta.
+
+    Returns:
+      The text content to be appended or yielded for this chunk.
+    """
+    content = choice.get('content', '')
+    refusal = choice.get('refusal', '')
+
+    if content and self._refusal_started:
+      logging.warning(
+          'Received content after refusal has started. Dropping content.'
+      )
+      content = ''
+
+    chunk_text = ''
     if content:
-      self.content_parts += content
-    return content
+      chunk_text += content
+
+    if refusal and not self._refusal_started:
+      self._refusal_started = True
+      if self.content_parts or chunk_text:
+        chunk_text += '\n'
+      chunk_text += _REFUSAL_PREFIX
+
+    if refusal:
+      chunk_text += refusal
+
+    if chunk_text:
+      self.content_parts += chunk_text
+
+    return chunk_text
 
   def _add_chat_completion_chunk_delta(
       self, delta: dict[str, Any]
-  ) -> (list[types.Part], str):
+  ) -> tuple[list[types.Part], str]:
     """Adds a chunk delta from a streaming chat completions response.
 
     This method processes a single delta chunk from a streaming chat completions
@@ -1021,9 +1177,7 @@ class ChatCompletionsResponseHandler:
     for tool_call in delta.get('tool_calls', []):
       chunk_part = self._upsert_tool_call(tool_call)
       parts.append(chunk_part)
-    content = delta.get('content')
-    refusal = delta.get('refusal')
-    merged_content = self._append_content(content, refusal)
+    merged_content = self._accumulate_content(delta)
     if merged_content:
       parts.append(types.Part.from_text(text=merged_content))
 
@@ -1032,7 +1186,7 @@ class ChatCompletionsResponseHandler:
 
   def _add_chat_completion_message(
       self, message: dict[str, Any]
-  ) -> (list[types.Part], str):
+  ) -> tuple[list[types.Part], str]:
     """Adds a complete chat completion message to the accumulator.
 
     This method processes a single message from a non-streaming chat completions
@@ -1057,9 +1211,7 @@ class ChatCompletionsResponseHandler:
           'type': 'function',
           'function': function_call,
       })
-    content = message.get('content')
-    refusal = message.get('refusal')
-    self._append_content(content, refusal)
+    self._accumulate_content(message)
 
     self._get_or_create_role(message.get('role', 'model'))
     return self._get_content_parts(), self.role
@@ -1099,6 +1251,10 @@ class ChatCompletionsResponseHandler:
       )
     part = self.tool_call_parts[index]
     chunk_part = types.Part(function_call=types.FunctionCall())
+    function_call = part.function_call
+    chunk_function_call = chunk_part.function_call
+    if function_call is None or chunk_function_call is None:
+      raise RuntimeError('Tool-call parts must contain a function call.')
     call_type = tool_call.get('type')
     # TODO: Add support for 'custom' type.
     if call_type is not None and call_type != 'function':
@@ -1108,24 +1264,23 @@ class ChatCompletionsResponseHandler:
     func = tool_call.get('function', {})
     args_delta = func.get('arguments', '')
     if args_delta:
-      try:
-        args = json.loads(args_delta)
-        chunk_part.function_call.args = args
-        if not part.function_call.args:
-          part.function_call.args = dict(args)
-        else:
-          part.function_call.args.update(args)
-      except json.JSONDecodeError as e:
-        raise ValueError(f'Failed to parse arguments: {args_delta}') from e
+      args = _json_utils.safe_json_loads(
+          args_delta, context=f'tool call arguments: {args_delta}'
+      )
+      chunk_function_call.args = args
+      if not function_call.args:
+        function_call.args = dict(args)
+      else:
+        function_call.args.update(args)
 
     func_name = func.get('name')
     if func_name:
-      part.function_call.name = func_name
-      chunk_part.function_call.name = func_name
+      function_call.name = func_name
+      chunk_function_call.name = func_name
     tool_call_id = tool_call.get('id')
     if tool_call_id:
-      part.function_call.id = tool_call_id
-      chunk_part.function_call.id = tool_call_id
+      function_call.id = tool_call_id
+      chunk_function_call.id = tool_call_id
 
     # Add support for gemini's thought_signature.
     thought_signature = (

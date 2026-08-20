@@ -26,14 +26,20 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 
-_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+from ..features import FeatureName
+from ..features import is_feature_enabled
+
+_KEBAB_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_SNAKE_OR_KEBAB_NAME_PATTERN = re.compile(
+    r"^([a-z0-9]+(-[a-z0-9]+)*|[a-z0-9]+(_[a-z0-9]+)*)$"
+)
 
 
 class Frontmatter(BaseModel):
   """L1 skill content: metadata parsed from SKILL.md for skill discovery.
 
   Attributes:
-      name: Skill name in kebab-case (required).
+      name: Skill name in kebab-case or snake_case (required).
       description: What the skill does and when the model should use it
         (required).
       license: License for the skill (optional).
@@ -44,7 +50,13 @@ class Frontmatter(BaseModel):
         https://agentskills.io/specification#allowed-tools-field.
       metadata: Key-value pairs for client-specific properties (defaults to
         empty dict). For example, to include additional tools, use the
-        ``adk_additional_tools`` key with a list of tools.
+        ``adk_additional_tools`` key with a list of tools. Set
+        ``adk_inject_state: true`` to enable ``{var}`` interpolation in the
+        SKILL.md body when the skill is loaded via ``load_skill`` (same syntax
+        as ``LlmAgent.instruction``). Each ``{var}`` is replaced with the
+        matching value read from the invocation's session state; use ``{var?}``
+        to substitute an empty string when the key is absent (instead of
+        raising), and ``{artifact.name}`` to inject artifact contents.
   """
 
   model_config = ConfigDict(
@@ -70,6 +82,8 @@ class Frontmatter(BaseModel):
       tools = v["adk_additional_tools"]
       if not isinstance(tools, list):
         raise ValueError("adk_additional_tools must be a list of strings")
+    if "adk_inject_state" in v and not isinstance(v["adk_inject_state"], bool):
+      raise ValueError("adk_inject_state must be a bool")
     return v
 
   @field_validator("name")
@@ -78,11 +92,23 @@ class Frontmatter(BaseModel):
     v = unicodedata.normalize("NFKC", v)
     if len(v) > 64:
       raise ValueError("name must be at most 64 characters")
-    if not _NAME_PATTERN.match(v):
-      raise ValueError(
-          "name must be lowercase kebab-case (a-z, 0-9, hyphens),"
-          " with no leading, trailing, or consecutive hyphens"
+    if is_feature_enabled(FeatureName.SNAKE_CASE_SKILL_NAME):
+      pattern = _SNAKE_OR_KEBAB_NAME_PATTERN
+      msg = (
+          "name must be lowercase kebab-case (a-z, 0-9, hyphens) or"
+          " snake_case (a-z, 0-9, underscores), with no leading, trailing,"
+          " or consecutive delimiters. Mixing hyphens and underscores is"
+          " not allowed."
       )
+    else:
+      pattern = _KEBAB_NAME_PATTERN
+      msg = (
+          "name must be lowercase kebab-case (a-z, 0-9,"
+          " hyphens), with no leading, trailing, or"
+          " consecutive delimiters"
+      )
+    if not pattern.match(v):
+      raise ValueError(msg)
     return v
 
   @field_validator("description")
@@ -90,8 +116,12 @@ class Frontmatter(BaseModel):
   def _validate_description(cls, v: str) -> str:
     if not v:
       raise ValueError("description must not be empty")
-    if len(v) > 1024:
-      raise ValueError("description must be at most 1024 characters")
+    description_len = len(v)
+    if description_len > 1024:
+      raise ValueError(
+          "description must be at most 1024 characters. Description length:"
+          f" {description_len}"
+      )
     return v
 
   @field_validator("compatibility")
@@ -195,6 +225,11 @@ class Skill(BaseModel):
   frontmatter: Frontmatter
   instructions: str
   resources: Resources = Resources()
+
+  _uri: Optional[str] = None
+  """Location the skill was loaded from, used for telemetry.
+  Should be compliant with RFC 3986.
+  """
 
   @property
   def name(self) -> str:

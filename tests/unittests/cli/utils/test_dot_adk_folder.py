@@ -45,3 +45,25 @@ def test_for_agent_validates_app_name(tmp_path: Path):
 
   expected_dir = (agents_root / "valid_agent").resolve()
   assert folder.agent_dir == expected_dir
+
+
+def test_for_agent_rejects_prefix_sibling_escape(tmp_path: Path):
+  agents_root = tmp_path / "agents"
+  agents_root.mkdir()
+
+  # Sibling whose path shares the agents_root string prefix ("agents" ->
+  # "agents_evil"); a startswith() check would wrongly accept this.
+  with pytest.raises(ValueError):
+    dot_adk_folder_for_agent(agents_root=agents_root, app_name="../agents_evil")
+
+
+def test_for_agent_resolves_nested_agent(tmp_path: Path):
+  agents_root = tmp_path / "agents"
+  nested_agent = agents_root / "multi_agent" / "hello_world_ma"
+  nested_agent.mkdir(parents=True)
+
+  folder = dot_adk_folder_for_agent(
+      agents_root=agents_root, app_name="multi_agent.hello_world_ma"
+  )
+
+  assert folder.agent_dir == nested_agent.resolve()

@@ -1,3 +1,17 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: Copybara PR Handler
 
 on:
@@ -17,6 +31,7 @@ on:
 
 jobs:
   close-imported-pr:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -25,7 +40,7 @@ jobs:
 
     steps:
       - name: Check for Copybara commits and close PRs
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.ADK_TRIAGE_AGENT }}
           script: |
@@ -57,15 +72,21 @@ jobs:
                 console.log(`\n--- Processing commit ${sha.substring(0, 7)} ---`);
                 console.log(`Committer: ${committer}`);
 
-                // Check if this is a Copybara commit
-                if (committer !== 'Copybara-Service') {
+                // Check if this is a Copybara commit or has a pull request reference
+                const prRegex = /Merges?:?\s+(?:https:\/\/github\.com\/google\/adk-python\/pull\/|#)(\d+)/i;
+                const isCopybara = committer === 'Copybara-Service' ||
+                                   commit.author?.email === 'genai-sdk-bot@google.com' ||
+                                   message.includes('GitOrigin-RevId:') ||
+                                   message.includes('PiperOrigin-RevId:') ||
+                                   prRegex.test(message);
+
+                if (!isCopybara) {
                   console.log('Not a Copybara commit, skipping');
                   continue;
                 }
 
                 // Extract PR number from commit message
-                // Pattern: "Merge https://github.com/google/adk-python/pull/3333"
-                const prMatch = message.match(/Merge https:\/\/github\.com\/google\/adk-python\/pull\/(\d+)/);
+                const prMatch = message.match(prRegex);
 
                 if (!prMatch) {
                   console.log('No PR number found in Copybara commit message');
@@ -96,13 +117,17 @@ jobs:
                 continue;
               }
 
-              // Only close if PR is still open
-              if (pr.data.state !== 'open') {
-                console.log(`PR #${prNumber} is already ${pr.data.state}, skipping`);
+              const author = pr.data.user.login;
+              const isOpen = pr.data.state === 'open';
+
+              if (pr.data.labels.some(label => label.name === 'merged')) {
+                console.log(`PR #${prNumber} is already marked merged, skipping`);
                 continue;
               }
 
-              const author = pr.data.user.login;
+              const closingLine = isOpen
+                ? 'Closing this PR as the changes are now in the main branch.'
+                : 'This PR was already closed; the changes are now in the main branch.';
 
               try {
                 // Add comment with commit reference
@@ -110,20 +135,31 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: prNumber,
-                  body: `Thank you @${author} for your contribution! 🎉\n\nYour changes have been successfully imported and merged via Copybara in commit ${commitSha}.\n\nClosing this PR as the changes are now in the main branch.`
+                  body: `Thank you @${author} for your contribution! 🎉\n\nYour changes have been successfully imported and merged via Copybara in commit ${commitSha}.\n\n${closingLine}`
                 });
 
-                // Close the PR
-                await github.rest.pulls.update({
+                // Add 'merged' label to the PR
+                await github.rest.issues.addLabels({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  pull_number: prNumber,
-                  state: 'closed'
+                  issue_number: prNumber,
+                  labels: ['merged']
                 });
 
-                console.log(`Successfully closed PR #${prNumber}`);
+                // A PR closed before its import still gets the comment and the
+                // label; only the close itself depends on the current state.
+                if (isOpen) {
+                  await github.rest.pulls.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: prNumber,
+                    state: 'closed'
+                  });
+                }
+
+                console.log(`Marked PR #${prNumber} as merged (was ${pr.data.state})`);
               } catch (error) {
-                console.log(`Error closing PR #${prNumber}:`, error.message);
+                console.log(`Error marking PR #${prNumber} as merged:`, error.message);
               }
             }
 

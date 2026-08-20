@@ -14,6 +14,7 @@
 
 import asyncio
 import contextlib
+from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
 from typing import Optional
@@ -27,7 +28,11 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.flows.llm_flows._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
+from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_BEGIN
+from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_END
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.models import LlmCapabilities
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.llm_request import LlmRequest
@@ -142,6 +147,9 @@ def simplify_resumable_app_events(
   for event in events:
     if event.content:
       results.append((event.author, simplify_content(event.content)))
+    elif event.output and isinstance(event.output, (str, dict)):
+      # Single_turn agents strip event.content and set event.output instead.
+      results.append((event.author, event.output))
     elif event.actions.end_of_agent:
       results.append((event.author, END_OF_AGENT))
     elif event.actions.agent_state is not None:
@@ -177,6 +185,33 @@ def simplify_content(
 
 def get_user_content(message: types.ContentUnion) -> types.Content:
   return message if isinstance(message, types.Content) else UserContent(message)
+
+
+def other_agent_preamble_part() -> types.Part:
+  """Returns the leading part of another agent's message relayed as context."""
+  return types.Part(text=OTHER_AGENT_CONTEXT_PREAMBLE)
+
+
+def other_agent_part(attribution: str, payload: str) -> types.Part:
+  """Builds a relayed part: an attribution line plus the fenced payload.
+
+  Args:
+    attribution: The line naming the speaker, e.g. ``[other_agent] said:``.
+    payload: The relayed text, as it should appear inside the fence.
+
+  Returns:
+    The part the contents processor is expected to produce. The fence is
+    assembled here rather than by calling the code under test, so a change to
+    how relayed content is quoted has to be made deliberately in both places.
+  """
+  return types.Part(
+      text=(
+          f'{attribution}\n'
+          f'{QUOTED_CONTENT_BEGIN}\n'
+          f'{payload}\n'
+          f'{QUOTED_CONTENT_END}'
+      )
+  )
 
 
 class TestInMemoryRunner(AfInMemoryRunner):
@@ -220,6 +255,7 @@ class InMemoryRunner:
       response_modalities: list[str] = None,
       plugins: list[BasePlugin] = [],
       app: Optional[App] = None,
+      node: Any = None,
   ):
     """Initializes the InMemoryRunner.
 
@@ -229,8 +265,19 @@ class InMemoryRunner:
       plugins: The plugins to use in the runner, won't be used if app is
         provided.
       app: The app to use in the runner.
+      node: The root node to run.
     """
-    if not app:
+    if node:
+      self.app_name = node.name
+      self.root_agent = None
+      self.runner = Runner(
+          node=node,
+          artifact_service=InMemoryArtifactService(),
+          session_service=InMemorySessionService(),
+          memory_service=InMemoryMemoryService(),
+          plugins=plugins,
+      )
+    elif not app:
       self.app_name = 'test_app'
       self.root_agent = root_agent
       self.runner = Runner(
@@ -300,11 +347,12 @@ class InMemoryRunner:
           run_config=run_config or RunConfig(),
       )
 
-      async for response in run_res:
-        collected_responses.append(response)
-        # When we have enough response, we should return
-        if len(collected_responses) >= 1:
-          return
+      async with Aclosing(run_res) as agen:
+        async for response in agen:
+          collected_responses.append(response)
+          # When we have enough response, we should return
+          if len(collected_responses) >= 1:
+            return
 
     try:
       session = self.session
@@ -313,6 +361,28 @@ class InMemoryRunner:
       print('Returning any partial results collected so far.')
 
     return collected_responses
+
+
+class ModelWithCapabilities(BaseLlm):
+  """A model that self-reports fixed capabilities.
+
+  For exercising flows that branch on ``BaseLlm.capabilities``, without
+  depending on which model ids happen to satisfy ADK's detection today.
+  """
+
+  model: str = 'mock'
+  output_schema_and_tools: bool = False
+
+  @property
+  @override
+  def capabilities(self) -> LlmCapabilities:
+    return LlmCapabilities(output_schema_and_tools=self.output_schema_and_tools)
+
+  @override
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    yield LlmResponse()
 
 
 class MockModel(BaseLlm):
@@ -330,6 +400,9 @@ class MockModel(BaseLlm):
           list[types.Part], list[LlmResponse], list[str], list[list[types.Part]]
       ],
       error: Union[Exception, None] = None,
+      usage_metadata: Optional[
+          types.GenerateContentResponseUsageMetadata
+      ] = None,
   ):
     if error and not responses:
       return cls(responses=[], error=error)
@@ -340,14 +413,18 @@ class MockModel(BaseLlm):
       return cls(responses=responses)
     else:
       responses = [
-          LlmResponse(content=ModelContent(item))
+          LlmResponse(
+              content=ModelContent(item),
+              usage_metadata=usage_metadata,
+          )
           if isinstance(item, list) and isinstance(item[0], types.Part)
           # responses is list[list[Part]]
           else LlmResponse(
               content=ModelContent(
                   # responses is list[str] or list[Part]
                   [Part(text=item) if isinstance(item, str) else item]
-              )
+              ),
+              usage_metadata=usage_metadata,
           )
           for item in responses
           if item

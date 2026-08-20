@@ -26,7 +26,7 @@ from .base_auth_provider import BaseAuthProvider
 class AuthProviderRegistry:
   """Registry for auth provider instances."""
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._providers: dict[type[AuthScheme], BaseAuthProvider] = {}
 
   def register(
@@ -42,13 +42,18 @@ class AuthProviderRegistry:
     """
     self._providers[auth_scheme_type] = provider_instance
 
-  def get_provider(self, auth_scheme: AuthScheme) -> BaseAuthProvider | None:
+  def get_provider(
+      self, auth_scheme: AuthScheme | type[AuthScheme]
+  ) -> BaseAuthProvider | None:
     """Get the provider instance for an auth scheme.
 
     Args:
-        auth_scheme: The auth scheme to get provider for.
+        auth_scheme: The auth scheme or the auth scheme type to get the provider
+            for.
 
     Returns:
         The provider instance if registered, None otherwise.
     """
+    if isinstance(auth_scheme, type):
+      return self._providers.get(auth_scheme)
     return self._providers.get(type(auth_scheme))

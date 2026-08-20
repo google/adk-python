@@ -27,6 +27,7 @@ a2a_experimental = _make_feature_decorator(
         "themselves not experimental. Once it's stable enough the experimental "
         "mode will be removed. Your feedback is welcome."
     ),
+    bypass_env_var="ADK_SUPPRESS_A2A_EXPERIMENTAL_FEATURE_WARNINGS",
 )
 """Mark a class or function as experimental A2A feature.
 

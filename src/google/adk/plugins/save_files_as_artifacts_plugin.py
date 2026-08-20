@@ -21,15 +21,21 @@ import urllib.parse
 
 from google.genai import types
 
+from ..agents.base_agent import BaseAgent
+from ..agents.callback_context import CallbackContext
 from ..agents.invocation_context import InvocationContext
 from .base_plugin import BasePlugin
 
-logger = logging.getLogger('google_adk.' + __name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 # Schemes supported by our current LLM connectors. Vertex exposes `gs://` while
 # hosted endpoints use HTTPS. Expand this list when BaseLlm surfaces provider
 # capabilities.
-_MODEL_ACCESSIBLE_URI_SCHEMES = {'gs', 'https', 'http'}
+_MODEL_ACCESSIBLE_URI_SCHEMES = {"gs", "https", "http"}
+
+# Maximum file size for inline_data (20MB as per Gemini API documentation)
+# https://ai.google.dev/gemini-api/docs/files
+_MAX_INLINE_DATA_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 
 class SaveFilesAsArtifactsPlugin(BasePlugin):
@@ -47,13 +53,23 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
   tool to the agent, or load the artifacts in your own tool to use the files.
   """
 
-  def __init__(self, name: str = 'save_files_as_artifacts_plugin'):
+  def __init__(
+      self,
+      name: str = "save_files_as_artifacts_plugin",
+      *,
+      attach_file_reference: bool = True,
+  ):
     """Initialize the save files as artifacts plugin.
 
     Args:
       name: The name of the plugin instance.
+      attach_file_reference: Whether to attach a file reference to the
+        user message. If False, only save the files as artifacts without
+        adding a file reference, and the files will not be directly
+        accessible to the model.
     """
     super().__init__(name)
+    self._attach_file_reference = attach_file_reference
 
   async def on_user_message_callback(
       self,
@@ -64,8 +80,8 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
     """Process user message and save any attached files as artifacts."""
     if not invocation_context.artifact_service:
       logger.warning(
-          'Artifact service is not set. SaveFilesAsArtifactsPlugin'
-          ' will not be enabled.'
+          "Artifact service is not set. SaveFilesAsArtifactsPlugin"
+          " will not be enabled."
       )
       return user_message
 
@@ -82,18 +98,36 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         continue
 
       try:
-        # Use display_name if available, otherwise generate a filename
+        # Check file size before processing
         inline_data = part.inline_data
+        file_size = len(inline_data.data or b"")
+
+        # Use display_name if available, otherwise generate a filename
         file_name = inline_data.display_name
         if not file_name:
-          file_name = f'artifact_{invocation_context.invocation_id}_{i}'
+          file_name = f"artifact_{invocation_context.invocation_id}_{i}"
           logger.info(
-              f'No display_name found, using generated filename: {file_name}'
+              f"No display_name found, using generated filename: {file_name}"
           )
 
-        # Store original filename for display to user/ placeholder
+        # Store original filename for display to user/placeholder
         display_name = file_name
 
+        # Check if file exceeds inline_data limit (20MB)
+        if file_size > _MAX_INLINE_DATA_SIZE_BYTES:
+          file_size_mb = file_size / (1024 * 1024)
+          limit_mb = _MAX_INLINE_DATA_SIZE_BYTES / (1024 * 1024)
+          error_message = (
+              f"File {display_name} ({file_size_mb:.2f} MB) exceeds the"
+              f" maximum supported size of {limit_mb:.0f}MB. Please"
+              " upload a smaller file."
+          )
+          logger.warning(error_message)
+          new_parts.append(types.Part(text=f"[Upload Error: {error_message}]"))
+          modified = True
+          continue
+
+        # For files <= 20MB, use inline_data (existing behavior)
         # Create a copy to stop mutation of the saved artifact if the original part is modified
         version = await invocation_context.artifact_service.save_artifact(
             app_name=invocation_context.app_name,
@@ -108,22 +142,23 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         )
         new_parts.append(placeholder_part)
 
-        file_part = await self._build_file_reference_part(
-            invocation_context=invocation_context,
-            filename=file_name,
-            version=version,
-            mime_type=inline_data.mime_type,
-            display_name=display_name,
-        )
-        if file_part:
-          new_parts.append(file_part)
+        if self._attach_file_reference:
+          file_part = await self._build_file_reference_part(
+              invocation_context=invocation_context,
+              filename=file_name,
+              version=version,
+              mime_type=inline_data.mime_type,
+              display_name=display_name,
+          )
+          if file_part:
+            new_parts.append(file_part)
         pending_delta[file_name] = version
 
         modified = True
-        logger.info(f'Successfully saved artifact: {file_name}')
+        logger.info(f"Successfully saved artifact: {file_name}")
 
       except Exception as e:
-        logger.error(f'Failed to save artifact for part {i}: {e}')
+        logger.error(f"Failed to save artifact for part {i}: {e}")
         # Keep the original part if saving fails
         new_parts.append(part)
         continue
@@ -131,8 +166,8 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
     if modified:
       # Store pending delta in state until it can be written to event actions.
       state = invocation_context.session.state
-      state.setdefault(self.name + ':pending_delta', {})
-      state[self.name + ':pending_delta'] |= pending_delta
+      state.setdefault(self.name + ":pending_delta", {})
+      state[self.name + ":pending_delta"] |= pending_delta
       return types.Content(role=user_message.role, parts=new_parts)
     else:
       return None
@@ -141,14 +176,14 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> Optional[types.Content]:
     """Writes the pending delta to event actions."""
-    pending_delta = callback_context.state.get(self.name + ':pending_delta')
+    pending_delta = callback_context.state.get(self.name + ":pending_delta")
     if pending_delta:
       try:
         callback_context.actions.artifact_delta |= pending_delta
       except TypeError as e:
-        logger.warning('Incompatible pending_delta type: %s', e)
+        logger.warning("Incompatible pending_delta type: %s", e)
       finally:
-        callback_context.state[self.name + ':pending_delta'] = {}
+        callback_context.state[self.name + ":pending_delta"] = {}
     return None
 
   async def _build_file_reference_part(
@@ -176,7 +211,7 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
       )
     except Exception as exc:  # pylint: disable=broad-except
       logger.warning(
-          'Failed to resolve artifact version for %s: %s', filename, exc
+          "Failed to resolve artifact version for %s: %s", filename, exc
       )
       return None
 

@@ -99,7 +99,7 @@ plan_agent = Agent(
 )
 
 root_agent = Agent(
-    model='gemini-2.0-flash-001',
+    model='gemini-2.5-flash',
     name='trip_planner',
     description='Plan the best trip ever',
     instruction="""

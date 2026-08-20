@@ -31,10 +31,12 @@ Spanner database and tables.
 """
 
 from . import spanner_credentials
+from .admin_toolset import SpannerAdminToolset
 from .spanner_toolset import SpannerToolset
 
 SpannerCredentialsConfig = spanner_credentials.SpannerCredentialsConfig
 __all__ = [
     "SpannerToolset",
+    "SpannerAdminToolset",
     "SpannerCredentialsConfig",
 ]

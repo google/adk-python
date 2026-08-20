@@ -97,6 +97,23 @@ def _get_function_fields(
   return fields
 
 
+def get_callable_name(func: Callable[..., Any]) -> str:
+  """Returns the name a callable is advertised and registered under.
+
+  Callable objects carry no `__name__`, so they fall back to their class name.
+  This is the single source of truth for both the declaration sent to the model
+  and the key the tool is registered under: if the two disagree, the model is
+  told about a tool it cannot invoke.
+
+  Args:
+    func: The callable backing a tool.
+
+  Returns:
+    The name to use for the callable.
+  """
+  return getattr(func, '__name__', None) or func.__class__.__name__
+
+
 def _build_parameters_json_schema(
     func: Callable[..., Any],
     ignore_params: Optional[list[str]] = None,
@@ -115,7 +132,7 @@ def _build_parameters_json_schema(
     return None
 
   # Create a Pydantic model dynamically
-  func_name = getattr(func, '__name__', 'Callable')
+  func_name = get_callable_name(func)
   model = create_model(
       f'{func_name}Params',
       **fields,  # type: ignore[arg-type]
@@ -162,10 +179,21 @@ def _build_response_json_schema(
       return_annotation = type_args[0]
 
   try:
-    adapter = pydantic.TypeAdapter(
-        return_annotation,
-        config=pydantic.ConfigDict(arbitrary_types_allowed=True),
-    )
+    try:
+      adapter = pydantic.TypeAdapter(
+          return_annotation,
+          config=pydantic.ConfigDict(arbitrary_types_allowed=True),
+      )
+    except pydantic.PydanticUserError as e:
+      # If it failed, maybe it was because of the config argument (e.g. for dataclasses).
+      # Retry without config.
+      logging.debug(
+          'Failed to build schema with config, retrying without config for'
+          ' %s: %s',
+          func.__name__,
+          e,
+      )
+      adapter = pydantic.TypeAdapter(return_annotation)
     return adapter.json_schema()
   except Exception:
     logging.warning(
@@ -229,7 +257,7 @@ def build_function_declaration_with_json_schema(
 
   # Handle Callable functions
   description = inspect.cleandoc(func.__doc__) if func.__doc__ else None
-  func_name = getattr(func, '__name__', 'Callable')
+  func_name = get_callable_name(func)
   declaration = types.FunctionDeclaration(
       name=func_name,
       description=description,

@@ -16,17 +16,18 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 from typing import Awaitable
 from typing import Callable
-from typing import Optional
-from typing import Union
+from typing import cast
 
-from a2a.client.middleware import ClientCallContext
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Message as A2AMessage
 from pydantic import BaseModel
+from typing_extensions import Self
 
+from .. import _compat
 from ...a2a.converters.part_converter import A2APartToGenAIPartConverter
 from ...a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from ...a2a.converters.to_adk_event import A2AArtifactUpdateToEventConverter
@@ -39,13 +40,14 @@ from ...a2a.converters.to_adk_event import convert_a2a_status_update_to_event
 from ...a2a.converters.to_adk_event import convert_a2a_task_to_event
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
+from .._compat import A2AClientEvent
 
 
 class ParametersConfig(BaseModel):
   """Configuration for the parameters passed to the A2A send_message request."""
 
-  request_metadata: Optional[dict[str, Any]] = None
-  client_call_context: Optional[ClientCallContext] = None
+  request_metadata: dict[str, Any] | None = None
+  client_call_context: _compat.ClientCallContext | None = None
   # TODO: Add support for requested_extension and
   # message_send_configuration once they are supported by the A2A client.
   #
@@ -56,26 +58,50 @@ class ParametersConfig(BaseModel):
 class RequestInterceptor(BaseModel):
   """Interceptor for A2A requests."""
 
-  before_request: Optional[
+  before_request: (
       Callable[
           [InvocationContext, A2AMessage, ParametersConfig],
-          Awaitable[tuple[Union[A2AMessage, Event], ParametersConfig]],
+          Awaitable[tuple[A2AMessage | Event, ParametersConfig]],
       ]
-  ] = None
+      | None
+  ) = None
   """Hook executed before the agent starts processing the request.
 
     Returns an Event if the request should be aborted and the Event
     returned to the caller.
   """
 
-  after_request: Optional[
+  after_request: (
       Callable[
-          [InvocationContext, A2AEvent, Event], Awaitable[Union[Event, None]]
+          [InvocationContext, A2AEvent | A2AClientEvent, Event],
+          Awaitable[Event | None],
       ]
-  ] = None
+      | None
+  ) = None
   """Hook executed after the agent has processed the request.
 
     Returns None if the event should not be sent to the caller.
+  """
+
+
+class A2aCardRequestConfig(BaseModel):
+  """Configuration for the HTTP request that fetches a remote agent card."""
+
+  headers: dict[str, str] | None = None
+  """Extra HTTP headers to include in the request."""
+
+
+class CardRequestInterceptor(BaseModel):
+  """Interceptor for the remote agent card fetch request."""
+
+  before_request: (
+      Callable[[InvocationContext], Awaitable[A2aCardRequestConfig]] | None
+  ) = None
+  """Async hook returning per-invocation config for the agent card request.
+
+  Called before fetching the card from an ``http(s)`` URL; its headers
+  (e.g. an auth token from session state) are sent with the request.
+  Ignored for static ``AgentCard`` or file-path sources.
   """
 
 
@@ -107,4 +133,24 @@ class A2aRemoteAgentConfig(BaseModel):
       convert_a2a_part_to_genai_part
   )
 
-  request_interceptors: Optional[list[RequestInterceptor]] = None
+  request_interceptors: list[RequestInterceptor] | None = None
+
+  card_request_interceptors: list[CardRequestInterceptor] | None = None
+  """Interceptors that inject headers into the remote agent card fetch."""
+
+  def __deepcopy__(
+      self, memo: dict[int, Any] | None = None
+  ) -> A2aRemoteAgentConfig:
+    if memo is None:
+      memo = {}
+    cls = self.__class__
+    copied_values: dict[str, Any] = {}
+    for k, v in self.__dict__.items():
+      if not k.startswith('_'):
+        if callable(v):
+          copied_values[k] = v
+        else:
+          copied_values[k] = copy.deepcopy(v, memo)
+    result = cls.model_construct(**copied_values)
+    memo[id(self)] = result
+    return cast(Self, result)

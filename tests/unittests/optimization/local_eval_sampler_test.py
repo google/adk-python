@@ -14,15 +14,19 @@
 
 from __future__ import annotations
 
+from google.adk.agents.common_configs import CodeConfig
 from google.adk.agents.llm_agent import Agent
 from google.adk.evaluation.base_eval_service import EvaluateConfig
 from google.adk.evaluation.base_eval_service import EvaluateRequest
 from google.adk.evaluation.base_eval_service import InferenceConfig
 from google.adk.evaluation.base_eval_service import InferenceRequest
 from google.adk.evaluation.base_eval_service import InferenceResult
+from google.adk.evaluation.custom_metric_evaluator import _CustomMetricEvaluator
+from google.adk.evaluation.eval_case import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
+from google.adk.evaluation.eval_config import CustomMetricConfig
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
@@ -30,6 +34,7 @@ from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
 from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_sets_manager import EvalSetsManager
+from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.optimization.local_eval_sampler import _log_eval_summary
 from google.adk.optimization.local_eval_sampler import extract_single_invocation_info
 from google.adk.optimization.local_eval_sampler import extract_tool_call_data
@@ -218,6 +223,42 @@ def test_local_eval_service_interface_init(
     assert getattr(interface, attr) == expected_value
 
 
+def test_init_registers_custom_metrics(mocker):
+  mocker.patch.object(
+      LocalEvalSampler,
+      "_get_eval_case_ids",
+      autospec=True,
+      return_value=["t1"],
+  )
+  custom_metric_name = "custom_metric_for_sampler_test"
+  config = LocalEvalSamplerConfig(
+      eval_config=EvalConfig(
+          custom_metrics={
+              custom_metric_name: CustomMetricConfig(
+                  code_config=CodeConfig(name="math.sqrt")
+              )
+          }
+      ),
+      app_name="test_app",
+      train_eval_set="train_set",
+  )
+
+  try:
+    LocalEvalSampler(config, mocker.MagicMock(spec=EvalSetsManager))
+
+    evaluator = DEFAULT_METRIC_EVALUATOR_REGISTRY.get_evaluator(
+        EvalMetric(
+            metric_name=custom_metric_name,
+            threshold=0.5,
+            custom_function_path="math.sqrt",
+        )
+    )
+    assert isinstance(evaluator, _CustomMetricEvaluator)
+  finally:
+    # The default registry is process-wide state; remove what we added.
+    DEFAULT_METRIC_EVALUATOR_REGISTRY._registry.pop(custom_metric_name, None)
+
+
 @pytest.mark.asyncio
 async def test_evaluate_agent(mocker):
   # Mocking LocalEvalService and its methods
@@ -288,7 +329,10 @@ async def test_extract_eval_data(mocker):
   # Mock components
   mock_eval_sets_manager = mocker.MagicMock(spec=EvalSetsManager)
   mock_eval_case = mocker.MagicMock()
-  mock_eval_case.conversation_scenario = "test_scenario"
+  mock_eval_case.conversation_scenario = ConversationScenario(
+      starting_prompt="Start here.",
+      conversation_plan="Complete the task.",
+  )
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
   # Mock per invocation result
@@ -298,11 +342,18 @@ async def test_extract_eval_data(mocker):
   mock_metric_result.metric_name = "test_metric"
   mock_metric_result.score = 0.854  # should be rounded to 0.85
   mock_metric_result.eval_status = EvalStatus.PASSED
+  mock_missing_score = mocker.MagicMock(spec=EvalMetricResult)
+  mock_missing_score.metric_name = "not_evaluated_metric"
+  mock_missing_score.score = None
+  mock_missing_score.eval_status = EvalStatus.NOT_EVALUATED
 
   mock_per_inv_result = mocker.MagicMock(spec=EvalMetricResultPerInvocation)
   mock_per_inv_result.actual_invocation = mock_actual_invocation
   mock_per_inv_result.expected_invocation = mock_expected_invocation
-  mock_per_inv_result.eval_metric_results = [mock_metric_result]
+  mock_per_inv_result.eval_metric_results = [
+      mock_metric_result,
+      mock_missing_score,
+  ]
 
   mock_eval_result = mocker.MagicMock(spec=EvalCaseResult)
   mock_eval_result.eval_id = "t1"
@@ -328,13 +379,26 @@ async def test_extract_eval_data(mocker):
 
   # Assertions
   assert "t1" in eval_data
-  assert eval_data["t1"]["conversation_scenario"] == "test_scenario"
+  # The scenario is passed through unserialized, as it was before.
+  assert (
+      eval_data["t1"]["conversation_scenario"]
+      is mock_eval_case.conversation_scenario
+  )
   assert len(eval_data["t1"]["invocations"]) == 1
   inv = eval_data["t1"]["invocations"][0]
   assert inv["actual_invocation"] == {"info": "actual"}
   assert inv["expected_invocation"] == {"info": "expected"}
   assert inv["eval_metric_results"] == [
-      {"metric_name": "test_metric", "score": 0.85, "eval_status": "PASSED"}
+      {
+          "metric_name": "test_metric",
+          "score": 0.85,
+          "eval_status": "PASSED",
+      },
+      {
+          "metric_name": "not_evaluated_metric",
+          "score": None,
+          "eval_status": "NOT_EVALUATED",
+      },
   ]
 
 

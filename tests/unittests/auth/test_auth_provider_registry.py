@@ -15,16 +15,17 @@
 """Unit tests for the AuthProviderRegistry."""
 
 from google.adk.auth.auth_provider_registry import AuthProviderRegistry
+from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.auth.base_auth_provider import BaseAuthProvider
-from pydantic import BaseModel
+from pydantic import Field
 
 
-class SchemeA(BaseModel):
-  pass
+class SchemeA(CustomAuthScheme):
+  type_: str = Field(default="scheme_a")
 
 
-class SchemeB(BaseModel):
-  pass
+class SchemeB(CustomAuthScheme):
+  type_: str = Field(default="scheme_b")
 
 
 class TestAuthProviderRegistry:
@@ -42,10 +43,15 @@ class TestAuthProviderRegistry:
     assert registry.get_provider(SchemeA()) is provider_a
     assert registry.get_provider(SchemeB()) is provider_b
 
+    # Test getting by scheme type
+    assert registry.get_provider(SchemeA) is provider_a
+    assert registry.get_provider(SchemeB) is provider_b
+
   def test_get_unregistered_provider_returns_none(self):
     """Test that get_provider returns None for unregistered scheme types."""
     registry = AuthProviderRegistry()
     assert registry.get_provider(SchemeA()) is None
+    assert registry.get_provider(SchemeA) is None
 
   def test_register_duplicate_type_overwrites_existing(self, mocker):
     """Test that registering a provider for an existing type overwrites the previous one."""
@@ -57,3 +63,4 @@ class TestAuthProviderRegistry:
     registry.register(SchemeA, provider_2)
 
     assert registry.get_provider(SchemeA()) is provider_2
+    assert registry.get_provider(SchemeA) is provider_2

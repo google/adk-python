@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import collections.abc
 import inspect
+import logging
 from types import FunctionType
 import typing
 from typing import Any
@@ -37,6 +38,9 @@ from . import _function_tool_declarations
 from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..utils.variant_utils import GoogleLLMVariant
+from ._gemini_schema_util import _sanitize_schema_formats_for_gemini
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 _py_type_2_schema_type = {
     'str': types.Type.STRING,
@@ -58,7 +62,7 @@ _py_type_2_schema_type = {
 }
 
 
-def _get_fields_dict(func: Callable) -> Dict:
+def _get_fields_dict(func: Callable[..., Any]) -> Dict[str, Any]:
   param_signature = dict(inspect.signature(func).parameters)
   fields_dict = {
       name: (
@@ -93,7 +97,7 @@ def _get_fields_dict(func: Callable) -> Dict:
   return fields_dict
 
 
-def _annotate_nullable_fields(schema: Dict):
+def _annotate_nullable_fields(schema: Dict[str, Any]) -> None:
   for _, property_schema in schema.get('properties', {}).items():
     # for Optional[T], the pydantic schema is:
     # {
@@ -116,7 +120,7 @@ def _annotate_nullable_fields(schema: Dict):
         break
 
 
-def _annotate_required_fields(schema: Dict):
+def _annotate_required_fields(schema: Dict[str, Any]) -> None:
   required = [
       field_name
       for field_name, field_schema in schema.get('properties', {}).items()
@@ -125,7 +129,7 @@ def _annotate_required_fields(schema: Dict):
   schema['required'] = required
 
 
-def _remove_any_of(schema: Dict):
+def _remove_any_of(schema: Dict[str, Any]) -> None:
   for _, property_schema in schema.get('properties', {}).items():
     union_types = property_schema.pop('anyOf', None)
     # Take the first non-null type.
@@ -135,17 +139,17 @@ def _remove_any_of(schema: Dict):
           property_schema.update(type_)
 
 
-def _remove_default(schema: Dict):
+def _remove_default(schema: Dict[str, Any]) -> None:
   for _, property_schema in schema.get('properties', {}).items():
     property_schema.pop('default', None)
 
 
-def _remove_nullable(schema: Dict):
+def _remove_nullable(schema: Dict[str, Any]) -> None:
   for _, property_schema in schema.get('properties', {}).items():
     property_schema.pop('nullable', None)
 
 
-def _remove_title(schema: Dict):
+def _remove_title(schema: Dict[str, Any]) -> None:
   for _, property_schema in schema.get('properties', {}).items():
     property_schema.pop('title', None)
 
@@ -161,7 +165,9 @@ def _get_pydantic_schema(func: Callable) -> Dict:
   return pydantic.create_model(func.__name__, **fields_dict).model_json_schema()
 
 
-def _process_pydantic_schema(vertexai: bool, schema: Dict) -> Dict:
+def _process_pydantic_schema(
+    vertexai: bool, schema: Dict[str, Any]
+) -> Dict[str, Any]:
   _annotate_nullable_fields(schema)
   _annotate_required_fields(schema)
   if not vertexai:
@@ -172,7 +178,9 @@ def _process_pydantic_schema(vertexai: bool, schema: Dict) -> Dict:
   return schema
 
 
-def _map_pydantic_type_to_property_schema(property_schema: Dict):
+def _map_pydantic_type_to_property_schema(
+    property_schema: Dict[str, Any],
+) -> None:
   if 'type' in property_schema:
     property_schema['type'] = _py_type_2_schema_type.get(
         property_schema['type'], 'TYPE_UNSPECIFIED'
@@ -189,12 +197,12 @@ def _map_pydantic_type_to_property_schema(property_schema: Dict):
       property_schema['type'] = type_['type']
 
 
-def _map_pydantic_type_to_schema_type(schema: Dict):
+def _map_pydantic_type_to_schema_type(schema: Dict[str, Any]) -> None:
   for _, property_schema in schema.get('properties', {}).items():
     _map_pydantic_type_to_property_schema(property_schema)
 
 
-def _get_return_type(func: Callable) -> Any:
+def _get_return_type(func: Callable[..., Any]) -> Any:
   return _py_type_2_schema_type.get(
       inspect.signature(func).return_annotation.__name__,
       inspect.signature(func).return_annotation.__name__,
@@ -202,7 +210,7 @@ def _get_return_type(func: Callable) -> Any:
 
 
 def build_function_declaration(
-    func: Union[Callable, BaseModel],
+    func: Union[Callable[..., Any], BaseModel],
     ignore_params: Optional[list[str]] = None,
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
 ) -> types.FunctionDeclaration:
@@ -214,52 +222,49 @@ def build_function_declaration(
         )
     )
     # Add response schema only for VERTEX_AI
-    # TODO(b/421991354): Remove this check once the bug is fixed.
+    # Pending cleanup: remove this check once the Gemini API accepts
+    # response_json_schema.
     if variant != GoogleLLMVariant.VERTEX_AI:
       declaration.response_json_schema = None
     return declaration
 
   # ========== ADK defined function tool declaration (old behavior) ==========
   signature = inspect.signature(func)
-  should_update_signature = False
-  new_func = None
   if not ignore_params:
     ignore_params = []
-  for name, _ in signature.parameters.items():
-    if name in ignore_params:
-      should_update_signature = True
-      break
-  if should_update_signature:
-    new_params = [
-        param
+  should_update_signature = any(
+      name in ignore_params for name in signature.parameters
+  )
+  if not should_update_signature:
+    return from_function_with_options(func, variant)
+
+  if isinstance(func, type):
+    fields = {
+        name: (param.annotation, param.default)
         for name, param in signature.parameters.items()
         if name not in ignore_params
-    ]
-    if isinstance(func, type):
-      fields = {
-          name: (param.annotation, param.default)
-          for name, param in signature.parameters.items()
-          if name not in ignore_params
-      }
-      new_func = create_model(func.__name__, **fields)
-    else:
-      new_sig = signature.replace(parameters=new_params)
-      new_func = FunctionType(
-          func.__code__,
-          func.__globals__,
-          func.__name__,
-          func.__defaults__,
-          func.__closure__,
-      )
-      new_func.__signature__ = new_sig
-      new_func.__doc__ = func.__doc__
-      new_func.__annotations__ = func.__annotations__
+    }
+    return from_function_with_options(
+        create_model(func.__name__, **fields), variant
+    )
 
-  return (
-      from_function_with_options(func, variant)
-      if not should_update_signature
-      else from_function_with_options(new_func, variant)
+  new_params = [
+      param
+      for name, param in signature.parameters.items()
+      if name not in ignore_params
+  ]
+  new_sig = signature.replace(parameters=new_params)
+  new_func = FunctionType(
+      func.__code__,
+      func.__globals__,
+      func.__name__,
+      func.__defaults__,
+      func.__closure__,
   )
+  setattr(new_func, '__signature__', new_sig)
+  new_func.__doc__ = func.__doc__
+  new_func.__annotations__ = func.__annotations__
+  return from_function_with_options(new_func, variant)
 
 
 def build_function_declaration_for_langchain(
@@ -315,10 +320,13 @@ def build_function_declaration_util(
 
 
 def from_function_with_options(
-    func: Callable,
+    func: Callable[..., Any],
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
 ) -> 'types.FunctionDeclaration':
 
+  # Same derivation the JSON-schema builder and FunctionTool use, so a callable
+  # object is declared under the name it is registered under instead of raising.
+  func_name = _function_tool_declarations.get_callable_name(func)
   parameters_properties = {}
   parameters_json_schema = {}
   try:
@@ -338,7 +346,7 @@ def from_function_with_options(
         )
 
         schema = _function_parameter_parse_util._parse_schema_from_parameter(
-            variant, param, func.__name__
+            variant, param, func_name
         )
         parameters_properties[name] = schema
   except ValueError:
@@ -365,16 +373,26 @@ def from_function_with_options(
               param
           )
 
+          sanitized_schema = json_schema_dict
+          if variant == GoogleLLMVariant.GEMINI_API:
+            sanitized_schema = _sanitize_schema_formats_for_gemini(
+                json_schema_dict
+            )
           parameters_json_schema[name] = types.Schema.model_validate(
-              json_schema_dict
+              sanitized_schema
           )
+          if param.default is not inspect.Parameter.empty:
+            if param.default is not None:
+              parameters_json_schema[name].default = param.default
+            else:
+              parameters_json_schema[name].nullable = True
         except Exception as e:
           _function_parameter_parse_util._raise_for_unsupported_param(
-              param, func.__name__, e
+              param, func_name, e
           )
 
   declaration = types.FunctionDeclaration(
-      name=func.__name__,
+      name=func_name,
       description=func.__doc__,
   )
   if parameters_properties:
@@ -391,6 +409,11 @@ def from_function_with_options(
     declaration.parameters = types.Schema(
         type='OBJECT',
         properties=parameters_json_schema,
+    )
+    declaration.parameters.required = (
+        _function_parameter_parse_util._get_required_fields(
+            declaration.parameters
+        )
     )
 
   if variant == GoogleLLMVariant.GEMINI_API:
@@ -424,7 +447,7 @@ def from_function_with_options(
         _function_parameter_parse_util._parse_schema_from_parameter(
             variant,
             return_value,
-            func.__name__,
+            func_name,
         )
     )
     return declaration
@@ -445,7 +468,7 @@ def from_function_with_options(
         _function_parameter_parse_util._parse_schema_from_parameter(
             variant,
             return_value,
-            func.__name__,
+            func_name,
         )
     )
     return declaration
@@ -467,10 +490,12 @@ def from_function_with_options(
         _function_parameter_parse_util._parse_schema_from_parameter(
             variant,
             return_value,
-            func.__name__,
+            func_name,
         )
     )
-  except ValueError:
+  # Intentionally broad: schema derivation can raise non-ValueError types
+  # (newer Python/pydantic); any failure degrades with a warning below.
+  except Exception as primary_error:
     try:
       response_json_schema = (
           _function_parameter_parse_util._generate_json_schema_for_parameter(
@@ -479,8 +504,14 @@ def from_function_with_options(
       )
       response_json_schema = types.Schema.model_validate(response_json_schema)
     except Exception as e:
-      _function_parameter_parse_util._raise_for_unsupported_param(
-          return_value, func.__name__, e
+      # Degrade like GEMINI_API instead of rejecting a valid return type: omit
+      # the response schema and defer validation to the model API.
+      logger.warning(
+          'Could not generate a response schema for the return type of %s;'
+          ' omitting it. Fallback error: %s. Original error: %s',
+          func_name,
+          e,
+          primary_error,
       )
   if response_schema:
     declaration.response = response_schema

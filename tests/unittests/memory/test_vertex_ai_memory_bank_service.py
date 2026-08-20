@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime
+import asyncio
+import datetime
+import logging
 from typing import Any
 from typing import Iterable
 from typing import Optional
@@ -23,9 +25,10 @@ from google.adk.memory import vertex_ai_memory_bank_service as memory_service_mo
 from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
 from google.adk.sessions.session import Session
+from google.auth.credentials import Credentials
 from google.genai import types
 import pytest
-from vertexai._genai.types import common as vertex_common_types
+from vertexai import types as vertex_types
 
 MOCK_APP_NAME = 'test-app'
 MOCK_USER_ID = 'test-user'
@@ -33,20 +36,16 @@ MOCK_USER_ID = 'test-user'
 
 def _supports_generate_memories_metadata() -> bool:
   return (
-      'metadata'
-      in vertex_common_types.GenerateAgentEngineMemoriesConfig.model_fields
+      'metadata' in vertex_types.GenerateAgentEngineMemoriesConfig.model_fields
   )
 
 
 def _supports_create_memory_metadata() -> bool:
-  return 'metadata' in vertex_common_types.AgentEngineMemoryConfig.model_fields
+  return 'metadata' in vertex_types.AgentEngineMemoryConfig.model_fields
 
 
 def _supports_create_memory_revision_labels() -> bool:
-  return (
-      'revision_labels'
-      in vertex_common_types.AgentEngineMemoryConfig.model_fields
-  )
+  return 'revision_labels' in vertex_types.AgentEngineMemoryConfig.model_fields
 
 
 class _AsyncListIterator:
@@ -87,7 +86,7 @@ MOCK_SESSION = Session(
             author='user',
             timestamp=12345,
         ),
-        # Function call event, should be ignored
+        # Function call event, no longer filtered out
         Event(
             id='666',
             invocation_id='456',
@@ -117,6 +116,7 @@ def mock_vertex_ai_memory_bank_service(
     location: Optional[str] = 'test-location',
     agent_engine_id: Optional[str] = '123',
     express_mode_api_key: Optional[str] = None,
+    credentials: Optional[Credentials] = None,
 ):
   """Creates a mock Vertex AI Memory Bank service for testing."""
   return VertexAiMemoryBankService(
@@ -124,6 +124,7 @@ def mock_vertex_ai_memory_bank_service(
       location=location,
       agent_engine_id=agent_engine_id,
       express_mode_api_key=express_mode_api_key,
+      credentials=credentials,
   )
 
 
@@ -200,6 +201,79 @@ def test_build_create_memory_config_merges_revision_labels_when_supported():
   }
 
 
+def test_build_create_memory_config_sets_memory_id_when_supported():
+  with (
+      mock.patch.object(
+          memory_service_module,
+          '_get_create_memory_config_keys',
+          return_value=frozenset({'wait_for_completion', 'memory_id'}),
+      ),
+      mock.patch.object(
+          memory_service_module,
+          '_supports_create_memory_metadata',
+          return_value=False,
+      ),
+  ):
+    config = memory_service_module._build_create_memory_config(
+        None, memory_id='mem-123'
+    )
+
+  assert config == {'wait_for_completion': False, 'memory_id': 'mem-123'}
+
+
+def test_build_create_memory_config_omits_memory_id_when_none():
+  with mock.patch.object(
+      memory_service_module,
+      '_get_create_memory_config_keys',
+      return_value=frozenset({'wait_for_completion', 'memory_id'}),
+  ):
+    config = memory_service_module._build_create_memory_config(
+        None, memory_id=None
+    )
+
+  assert config == {'wait_for_completion': False}
+
+
+def test_build_create_memory_config_ignores_memory_id_when_unsupported():
+  with (
+      mock.patch.object(
+          memory_service_module,
+          '_get_create_memory_config_keys',
+          return_value=frozenset({'wait_for_completion'}),
+      ),
+      mock.patch.object(
+          memory_service_module,
+          '_supports_create_memory_metadata',
+          return_value=False,
+      ),
+  ):
+    config = memory_service_module._build_create_memory_config(
+        None, memory_id='mem-123'
+    )
+
+  assert config == {'wait_for_completion': False}
+
+
+def test_build_create_memory_config_custom_metadata_memory_id_wins():
+  with (
+      mock.patch.object(
+          memory_service_module,
+          '_get_create_memory_config_keys',
+          return_value=frozenset({'wait_for_completion', 'memory_id'}),
+      ),
+      mock.patch.object(
+          memory_service_module,
+          '_supports_create_memory_metadata',
+          return_value=False,
+      ),
+  ):
+    config = memory_service_module._build_create_memory_config(
+        {'memory_id': 'explicit'}, memory_id='from-entry'
+    )
+
+  assert config['memory_id'] == 'explicit'
+
+
 @pytest.fixture
 def mock_vertexai_client():
   with mock.patch('vertexai.Client') as mock_client_constructor:
@@ -207,6 +281,10 @@ def mock_vertexai_client():
     mock_async_client.agent_engines.memories.generate = mock.AsyncMock()
     mock_async_client.agent_engines.memories.create = mock.AsyncMock()
     mock_async_client.agent_engines.memories.retrieve = mock.AsyncMock()
+    mock_async_client.agent_engines.memories.retrieve_profiles = (
+        mock.AsyncMock()
+    )
+    mock_async_client.agent_engines.memories.ingest_events = mock.AsyncMock()
 
     mock_client = mock.MagicMock()
     mock_client.aio = mock_async_client
@@ -238,25 +316,62 @@ def test_initialize_without_agent_engine_id_error():
     mock_vertex_ai_memory_bank_service(agent_engine_id=None)
 
 
+def test_get_api_client_passes_credentials_through():
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  memory_service = mock_vertex_ai_memory_bank_service(
+      credentials=mock_credentials
+  )
+
+  with mock.patch('vertexai.Client') as mock_client_constructor:
+    memory_service._get_api_client()
+
+  mock_client_constructor.assert_called_once_with(
+      project='test-project',
+      location='test-location',
+      credentials=mock_credentials,
+  )
+
+
+def test_get_api_client_defaults_credentials_to_none():
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with mock.patch('vertexai.Client') as mock_client_constructor:
+    memory_service._get_api_client()
+
+  mock_client_constructor.assert_called_once_with(
+      project='test-project',
+      location='test-location',
+      credentials=None,
+  )
+
+
 @pytest.mark.asyncio
 async def test_add_session_to_memory(mock_vertexai_client):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_session_to_memory(MOCK_SESSION)
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_awaited_once_with(
-      name='reasoningEngines/123',
-      direct_contents_source={
-          'events': [
-              {
-                  'content': {
-                      'parts': [{'text': 'test_content'}],
-                  }
-              }
-          ]
-      },
-      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
-      config={'wait_for_completion': False},
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.ingest_events.assert_awaited_once()
+  call_kwargs = (
+      mock_vertexai_client.agent_engines.memories.ingest_events.call_args.kwargs
   )
+  assert call_kwargs['name'] == 'reasoningEngines/123'
+  assert call_kwargs['scope'] == {
+      'app_name': MOCK_APP_NAME,
+      'user_id': MOCK_USER_ID,
+  }
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 2
+  assert source.events[0].event_id == '444'
+  assert source.events[0].content.parts[0].text == 'test_content'
+  assert source.events[0].event_time == datetime.datetime.fromtimestamp(
+      12345, tz=datetime.timezone.utc
+  )
+  assert source.events[1].event_id == '666'
+  assert source.events[1].content.parts[0].function_call.name == 'test_function'
 
 
 @pytest.mark.asyncio
@@ -269,7 +384,10 @@ async def test_add_events_to_memory_with_explicit_events_and_metadata(
       user_id=MOCK_SESSION.user_id,
       session_id=MOCK_SESSION.id,
       events=[MOCK_SESSION.events[0]],
-      custom_metadata={'ttl': '6000s', 'source': 'agent'},
+      custom_metadata={
+          'ttl': '6000s',
+          'source': 'agent',
+      },
   )
 
   expected_config = {
@@ -279,26 +397,20 @@ async def test_add_events_to_memory_with_explicit_events_and_metadata(
   if _supports_generate_memories_metadata():
     expected_config['metadata'] = {'source': {'string_value': 'agent'}}
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once_with(
-      name='reasoningEngines/123',
-      direct_contents_source={
-          'events': [
-              {
-                  'content': {
-                      'parts': [{'text': 'test_content'}],
-                  }
-              }
-          ]
-      },
-      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
-      config=expected_config,
+  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  call_kwargs = (
+      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
   )
-  generate_config = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs[
-          'config'
-      ]
-  )
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+  assert call_kwargs['name'] == 'reasoningEngines/123'
+  assert call_kwargs['scope'] == {
+      'app_name': MOCK_APP_NAME,
+      'user_id': MOCK_USER_ID,
+  }
+  assert call_kwargs['config'] == expected_config
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert source.events[0].content.parts[0].text == 'test_content'
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
@@ -310,28 +422,26 @@ async def test_add_events_to_memory_without_session_id(
       app_name=MOCK_SESSION.app_name,
       user_id=MOCK_SESSION.user_id,
       events=[MOCK_SESSION.events[0]],
+      custom_metadata={'revision_ttl': '3600s'},
   )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once_with(
-      name='reasoningEngines/123',
-      direct_contents_source={
-          'events': [
-              {
-                  'content': {
-                      'parts': [{'text': 'test_content'}],
-                  }
-              }
-          ]
-      },
-      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
-      config={'wait_for_completion': False},
+  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  call_kwargs = (
+      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
   )
-  generate_config = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs[
-          'config'
-      ]
-  )
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+  assert call_kwargs['name'] == 'reasoningEngines/123'
+  assert call_kwargs['scope'] == {
+      'app_name': MOCK_APP_NAME,
+      'user_id': MOCK_USER_ID,
+  }
+  assert call_kwargs['config'] == {
+      'wait_for_completion': False,
+      'revision_ttl': '3600s',
+  }
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert source.events[0].content.parts[0].text == 'test_content'
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
   mock_vertexai_client.agent_engines.memories.create.assert_not_called()
 
 
@@ -358,26 +468,20 @@ async def test_add_events_to_memory_merges_metadata_field_and_unknown_keys(
         'source': {'string_value': 'agent'},
     }
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once_with(
-      name='reasoningEngines/123',
-      direct_contents_source={
-          'events': [
-              {
-                  'content': {
-                      'parts': [{'text': 'test_content'}],
-                  }
-              }
-          ]
-      },
-      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
-      config=expected_config,
+  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  call_kwargs = (
+      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
   )
-  generate_config = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs[
-          'config'
-      ]
-  )
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+  assert call_kwargs['name'] == 'reasoningEngines/123'
+  assert call_kwargs['scope'] == {
+      'app_name': MOCK_APP_NAME,
+      'user_id': MOCK_USER_ID,
+  }
+  assert call_kwargs['config'] == expected_config
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert source.events[0].content.parts[0].text == 'test_content'
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
@@ -390,29 +494,25 @@ async def test_add_events_to_memory_none_wait_for_completion_keeps_default(
       user_id=MOCK_SESSION.user_id,
       session_id=MOCK_SESSION.id,
       events=[MOCK_SESSION.events[0]],
-      custom_metadata={'wait_for_completion': None},
+      custom_metadata={
+          'wait_for_completion': None,
+      },
   )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once_with(
-      name='reasoningEngines/123',
-      direct_contents_source={
-          'events': [
-              {
-                  'content': {
-                      'parts': [{'text': 'test_content'}],
-                  }
-              }
-          ]
-      },
-      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
-      config={'wait_for_completion': False},
+  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  call_kwargs = (
+      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
   )
-  generate_config = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs[
-          'config'
-      ]
-  )
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+  assert call_kwargs['name'] == 'reasoningEngines/123'
+  assert call_kwargs['scope'] == {
+      'app_name': MOCK_APP_NAME,
+      'user_id': MOCK_USER_ID,
+  }
+  assert call_kwargs['config'] == {'wait_for_completion': False}
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert source.events[0].content.parts[0].text == 'test_content'
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
@@ -431,29 +531,23 @@ async def test_add_events_to_memory_ttl_used_when_revision_ttl_is_none(
       },
   )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once_with(
-      name='reasoningEngines/123',
-      direct_contents_source={
-          'events': [
-              {
-                  'content': {
-                      'parts': [{'text': 'test_content'}],
-                  }
-              }
-          ]
-      },
-      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
-      config={
-          'wait_for_completion': False,
-          'revision_ttl': '6000s',
-      },
+  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  call_kwargs = (
+      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
   )
-  generate_config = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs[
-          'config'
-      ]
-  )
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+  assert call_kwargs['name'] == 'reasoningEngines/123'
+  assert call_kwargs['scope'] == {
+      'app_name': MOCK_APP_NAME,
+      'user_id': MOCK_USER_ID,
+  }
+  assert call_kwargs['config'] == {
+      'wait_for_completion': False,
+      'revision_ttl': '6000s',
+  }
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert source.events[0].content.parts[0].text == 'test_content'
+  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
@@ -465,11 +559,85 @@ async def test_add_events_to_memory_with_filtered_events_skips_rpc(
       app_name=MOCK_SESSION.app_name,
       user_id=MOCK_SESSION.user_id,
       session_id=MOCK_SESSION.id,
-      events=[MOCK_SESSION.events[1], MOCK_SESSION.events[2]],
+      events=[MOCK_SESSION.events[1]],
+      custom_metadata={'revision_ttl': '3600s'},
   )
 
   mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
   mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_via_ingest(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_SESSION.app_name,
+      user_id=MOCK_SESSION.user_id,
+      events=[MOCK_SESSION.events[0]],
+      custom_metadata={
+          'stream_id': 'stream-123',
+          'force_flush': True,
+          'generation_trigger_config': {
+              'generation_rule': {'idle_duration': '60s'},
+          },
+      },
+  )
+
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  mock_vertexai_client.agent_engines.memories.ingest_events.assert_awaited_once()
+  call_kwargs = (
+      mock_vertexai_client.agent_engines.memories.ingest_events.call_args.kwargs
+  )
+  assert call_kwargs['name'] == 'reasoningEngines/123'
+  assert call_kwargs['scope'] == {
+      'app_name': MOCK_APP_NAME,
+      'user_id': MOCK_USER_ID,
+  }
+  assert call_kwargs['stream_id'] == 'stream-123'
+  assert call_kwargs['config'] == {'force_flush': True}
+  assert call_kwargs['generation_trigger_config'] == {
+      'generation_rule': {'idle_duration': '60s'},
+  }
+  source = call_kwargs['direct_contents_source']
+  assert len(source.events) == 1
+  assert source.events[0].event_id == '444'
+  assert source.events[0].content.parts[0].text == 'test_content'
+  assert source.events[0].event_time == datetime.datetime.fromtimestamp(
+      12345, tz=datetime.timezone.utc
+  )
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_via_ingest_no_events(
+    mock_vertexai_client,
+):
+  """No-events requests are valid for trigger config updates."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_SESSION.app_name,
+      user_id=MOCK_SESSION.user_id,
+      events=[],
+      custom_metadata={
+          'generation_trigger_config': {
+              'generation_rule': {'idle_duration': '60s'},
+          },
+      },
+  )
+
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  mock_vertexai_client.agent_engines.memories.ingest_events.assert_awaited_once_with(
+      name='reasoningEngines/123',
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+      generation_trigger_config={
+          'generation_rule': {'idle_duration': '60s'},
+      },
+  )
 
 
 @pytest.mark.asyncio
@@ -524,7 +692,7 @@ async def test_add_memory_calls_create(
           'config'
       ]
   )
-  vertex_common_types.AgentEngineMemoryConfig(**create_config)
+  vertex_types.AgentEngineMemoryConfig(**create_config)
 
 
 @pytest.mark.asyncio
@@ -571,7 +739,7 @@ async def test_add_memory_enable_consolidation_calls_generate_direct_source(
           'config'
       ]
   )
-  vertex_common_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+  vertex_types.GenerateAgentEngineMemoriesConfig(**generate_config)
 
 
 @pytest.mark.asyncio
@@ -705,7 +873,89 @@ async def test_add_memory_calls_create_with_memory_entry_metadata(
           'config'
       ]
   )
-  vertex_common_types.AgentEngineMemoryConfig(**create_config)
+  vertex_types.AgentEngineMemoryConfig(**create_config)
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_allowed_topics_routes_to_generate(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with mock.patch.object(
+      memory_service_module,
+      '_get_generate_memories_config_keys',
+      return_value=frozenset({'wait_for_completion', 'allowed_topics'}),
+  ):
+    await memory_service.add_events_to_memory(
+        app_name=MOCK_SESSION.app_name,
+        user_id=MOCK_SESSION.user_id,
+        events=[MOCK_SESSION.events[0]],
+        custom_metadata={'allowed_topics': ['USER_PREFERENCES']},
+    )
+
+  mock_vertexai_client.agent_engines.memories.ingest_events.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  call_kwargs = (
+      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
+  )
+  assert call_kwargs['config']['allowed_topics'] == ['USER_PREFERENCES']
+
+
+@pytest.mark.asyncio
+async def test_add_memory_forwards_entry_id_as_memory_id(mock_vertexai_client):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with mock.patch.object(
+      memory_service_module,
+      '_get_create_memory_config_keys',
+      return_value=frozenset({'wait_for_completion', 'memory_id'}),
+  ):
+    await memory_service.add_memory(
+        app_name=MOCK_SESSION.app_name,
+        user_id=MOCK_SESSION.user_id,
+        memories=[
+            MemoryEntry(
+                id='mem-123',
+                content=types.Content(parts=[types.Part(text='fact one')]),
+            )
+        ],
+    )
+
+  create_config = (
+      mock_vertexai_client.agent_engines.memories.create.call_args.kwargs[
+          'config'
+      ]
+  )
+  assert create_config['memory_id'] == 'mem-123'
+
+
+@pytest.mark.asyncio
+async def test_add_memory_custom_metadata_memory_id_overrides_entry_id(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with mock.patch.object(
+      memory_service_module,
+      '_get_create_memory_config_keys',
+      return_value=frozenset({'wait_for_completion', 'memory_id'}),
+  ):
+    await memory_service.add_memory(
+        app_name=MOCK_SESSION.app_name,
+        user_id=MOCK_SESSION.user_id,
+        memories=[
+            MemoryEntry(
+                id='from-entry',
+                content=types.Content(parts=[types.Part(text='fact one')]),
+            )
+        ],
+        custom_metadata={'memory_id': 'explicit'},
+    )
+
+  create_config = (
+      mock_vertexai_client.agent_engines.memories.create.call_args.kwargs[
+          'config'
+      ]
+  )
+  assert create_config['memory_id'] == 'explicit'
 
 
 @pytest.mark.asyncio
@@ -751,7 +1001,7 @@ async def test_add_memory_with_missing_text_raises(
   memory_service = mock_vertex_ai_memory_bank_service()
   with pytest.raises(
       ValueError,
-      match=r'memories\[0\] must include text',
+      match=r'memories\[0\] must include non-whitespace text',
   ):
     await memory_service.add_memory(
         app_name=MOCK_SESSION.app_name,
@@ -889,14 +1139,21 @@ async def test_add_empty_session_to_memory(mock_vertexai_client):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_session_to_memory(MOCK_SESSION_WITH_EMPTY_EVENTS)
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_awaited()
+  # Allow the fire-and-forget task to complete.
+  await asyncio.sleep(0)
+
+  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.ingest_events.assert_awaited_once_with(
+      name='reasoningEngines/123',
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+  )
 
 
 @pytest.mark.asyncio
 async def test_search_memory(mock_vertexai_client):
   retrieved_memory = mock.MagicMock()
   retrieved_memory.memory.fact = 'test_content'
-  retrieved_memory.memory.update_time = datetime(
+  retrieved_memory.memory.update_time = datetime.datetime(
       2024, 12, 12, 12, 12, 12, 123456
   )
 
@@ -940,6 +1197,65 @@ async def test_search_memory_empty_results(mock_vertexai_client):
 
 
 @pytest.mark.asyncio
+async def test_retrieve_profiles(mock_vertexai_client, caplog):
+  """Returns the structured profiles for the scope as a list."""
+  retrieve_profiles_response = vertex_types.RetrieveProfilesResponse(
+      profiles={
+          'user-profile': vertex_types.MemoryProfile(
+              schema_id='user-profile',
+              profile={'name': 'Kim'},
+          )
+      }
+  )
+  mock_vertexai_client.agent_engines.memories.retrieve_profiles.return_value = (
+      retrieve_profiles_response
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with caplog.at_level(logging.INFO):
+    result = await memory_service.retrieve_profiles(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+    )
+
+  mock_vertexai_client.agent_engines.memories.retrieve_profiles.assert_awaited_once_with(
+      name='reasoningEngines/123',
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+  )
+  assert 'Retrieved 1 memory profiles.' in caplog.text
+  assert result == [
+      vertex_types.MemoryProfile(
+          schema_id='user-profile',
+          profile={'name': 'Kim'},
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_profiles_empty_results(mock_vertexai_client, caplog):
+  """Returns an empty list when the scope has no profiles."""
+  retrieve_profiles_response = vertex_types.RetrieveProfilesResponse(
+      profiles=None
+  )
+  mock_vertexai_client.agent_engines.memories.retrieve_profiles.return_value = (
+      retrieve_profiles_response
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with caplog.at_level(logging.INFO):
+    result = await memory_service.retrieve_profiles(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+    )
+
+  mock_vertexai_client.agent_engines.memories.retrieve_profiles.assert_awaited_once_with(
+      name='reasoningEngines/123',
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+  )
+  assert 'Retrieved no memory profiles.' in caplog.text
+  assert not result
+
+
 async def test_search_memory_uses_async_client_path():
   sync_client = mock.MagicMock()
   sync_client.agent_engines.memories.retrieve.side_effect = AssertionError(
@@ -969,3 +1285,110 @@ async def test_search_memory_uses_async_client_path():
       similarity_search_params={'search_query': 'query'},
   )
   sync_client.agent_engines.memories.retrieve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_memory_skips_entry_with_none_memory(mock_vertexai_client):
+  bad_entry = mock.MagicMock()
+  bad_entry.memory = None
+
+  good_entry = mock.MagicMock()
+  good_entry.memory.fact = 'good fact'
+  good_entry.memory.update_time = datetime.datetime(2024, 1, 1)
+
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+      _AsyncListIterator([bad_entry, good_entry])
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+  )
+
+  assert len(result.memories) == 1
+  assert result.memories[0].content.parts[0].text == 'good fact'
+
+
+@pytest.mark.asyncio
+async def test_search_memory_skips_entry_with_empty_fact(mock_vertexai_client):
+  for empty_fact in [None, '']:
+    bad_entry = mock.MagicMock()
+    bad_entry.memory.fact = empty_fact
+    bad_entry.memory.update_time = datetime.datetime(2024, 1, 1)
+
+    mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+        _AsyncListIterator([bad_entry])
+    )
+    memory_service = mock_vertex_ai_memory_bank_service()
+
+    result = await memory_service.search_memory(
+        app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+    )
+
+    assert len(result.memories) == 0
+
+
+@pytest.mark.asyncio
+async def test_search_memory_handles_missing_update_time(mock_vertexai_client):
+  entry = mock.MagicMock()
+  entry.memory.fact = 'some fact'
+  entry.memory.update_time = None
+
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+      _AsyncListIterator([entry])
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+  )
+
+  assert len(result.memories) == 1
+  assert result.memories[0].content.parts[0].text == 'some fact'
+  assert result.memories[0].timestamp is None
+
+
+@pytest.mark.asyncio
+async def test_search_memory_skips_malformed_entry(mock_vertexai_client):
+  malformed = mock.MagicMock(spec=[])  # no attributes → AttributeError
+
+  good_entry = mock.MagicMock()
+  good_entry.memory.fact = 'good fact'
+  good_entry.memory.update_time = datetime.datetime(2024, 1, 1)
+
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+      _AsyncListIterator([malformed, good_entry])
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+  )
+
+  assert len(result.memories) == 1
+  assert result.memories[0].content.parts[0].text == 'good fact'
+
+
+@pytest.mark.asyncio
+async def test_search_memory_returns_partial_results_on_iterator_error(
+    mock_vertexai_client,
+):
+  good_entry = mock.MagicMock()
+  good_entry.memory.fact = 'good fact'
+  good_entry.memory.update_time = datetime.datetime(2024, 1, 1)
+
+  async def failing_async_iterator():
+    yield good_entry
+    raise RuntimeError('API stream error')
+
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+      failing_async_iterator()
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+  )
+
+  assert len(result.memories) == 1
+  assert result.memories[0].content.parts[0].text == 'good fact'

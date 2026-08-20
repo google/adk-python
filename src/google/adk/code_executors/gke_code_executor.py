@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 import uuid
 
 import kubernetes as k8s
@@ -30,12 +31,12 @@ from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 
 try:
-  from agentic_sandbox import SandboxClient
+  from k8s_agent_sandbox import SandboxClient
 except ImportError:
   SandboxClient = None
 
 if TYPE_CHECKING:
-  from agentic_sandbox import SandboxClient
+  from k8s_agent_sandbox import SandboxClient
 
 # Expose these for tests to monkeypatch.
 client = k8s.client
@@ -113,8 +114,8 @@ class GkeCodeExecutor(BaseCodeExecutor):
       self,
       kubeconfig_path: str | None = None,
       kubeconfig_context: str | None = None,
-      **data,
-  ):
+      **data: object,
+  ) -> None:
     """Initializes the executor and the Kubernetes API clients.
 
     This constructor supports multiple authentication methods:
@@ -295,6 +296,9 @@ class GkeCodeExecutor(BaseCodeExecutor):
     # Use tolerations to request a gVisor node.
     pod_spec = k8s.client.V1PodSpec(
         restart_policy="Never",
+        # The pod runs model-generated code, so it must not receive a
+        # credential for the cluster it is running in.
+        automount_service_account_token=False,
         containers=[container],
         volumes=[
             k8s.client.V1Volume(
@@ -382,8 +386,11 @@ class GkeCodeExecutor(BaseCodeExecutor):
         )
 
       pod_name = pods.items[0].metadata.name
-      return self._core_v1.read_namespaced_pod_log(
-          name=pod_name, namespace=self.namespace
+      return cast(
+          str,
+          self._core_v1.read_namespaced_pod_log(
+              name=pod_name, namespace=self.namespace
+          ),
       )
     except ApiException as e:
       raise RuntimeError(

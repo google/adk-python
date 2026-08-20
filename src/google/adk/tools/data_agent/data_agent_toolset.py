@@ -22,8 +22,6 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from typing_extensions import override
 
 from . import data_agent_tool
-from ...features import experimental
-from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
@@ -32,7 +30,6 @@ from .config import DataAgentToolConfig
 from .credentials import DataAgentCredentialsConfig
 
 
-@experimental(FeatureName.DATA_AGENT_TOOLSET)
 class DataAgentToolset(BaseToolset):
   """Data Agent Toolset contains tools for interacting with data agents."""
 
@@ -69,17 +66,23 @@ class DataAgentToolset(BaseToolset):
   async def get_tools(
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> List[BaseTool]:
+    funcs = [
+        data_agent_tool.list_accessible_data_agents,
+        data_agent_tool.get_data_agent_info,
+        data_agent_tool.ask_data_agent,
+    ]
+    if self._tool_settings.enable_data_agent_modification:
+      funcs.append(data_agent_tool.create_data_agent)
+      funcs.append(data_agent_tool.delete_data_agent)
+      funcs.append(data_agent_tool.update_data_agent)
+
     all_tools = [
         GoogleTool(
             func=func,
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,
         )
-        for func in [
-            data_agent_tool.list_accessible_data_agents,
-            data_agent_tool.get_data_agent_info,
-            data_agent_tool.ask_data_agent,
-        ]
+        for func in funcs
     ]
 
     return [

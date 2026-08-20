@@ -36,7 +36,6 @@ from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
 from ..converters.request_converter import A2ARequestToAgentRunRequestConverter
 from ..converters.request_converter import convert_a2a_request_to_agent_run_request
-from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
 from .executor_context import ExecutorContext
 
@@ -57,7 +56,7 @@ class ExecuteInterceptor:
   after_event: Optional[
       Callable[
           [ExecutorContext, A2AEvent, Event],
-          Awaitable[Union[A2AEvent, None]],
+          Awaitable[Union[A2AEvent, list[A2AEvent], None]],
       ]
   ] = None
   """Hook executed after an ADK event is converted to an A2A event.

@@ -19,13 +19,17 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import mimetypes
+from pathlib import Path
+from pathlib import PurePosixPath
+from pathlib import PureWindowsPath
 from typing import Any
+from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
-import warnings
 
 from google.genai import types
 from typing_extensions import override
@@ -33,17 +37,20 @@ from typing_extensions import override
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..code_executors.code_execution_utils import CodeExecutionInput
-from ..features import experimental
-from ..features import FeatureName
 from ..skills import models
 from ..skills import prompt
+from ..skills import SkillRegistry
+from ..telemetry import _instrumentation
+from ..utils import instructions_utils
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
+from .base_toolset import ToolPredicate
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.llm_agent import ToolUnion
+  from ..environment._base_environment import BaseEnvironment
   from ..models.llm_request import LlmRequest
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -57,24 +64,72 @@ _BINARY_FILE_DETECTED_MSG = (
     " conversation history for you to analyze."
 )
 
-_DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
 
-Skills are folders of instructions and resources that extend your capabilities for specialized tasks. Each skill folder contains:
-- **SKILL.md** (required): The main instruction file with skill metadata and detailed markdown instructions.
-- **references/** (Optional): Additional documentation or examples for skill usage.
-- **assets/** (Optional): Templates, scripts or other resources used by the skill.
-- **scripts/** (Optional): Executable scripts that can be run via bash.
+def _build_skill_system_instruction(
+    prefix: str | None = None, skills_folder: Path | None = None
+) -> str:
+  p = f"{prefix}_" if prefix else ""
+  skills_folder_posix = (
+      skills_folder.as_posix() if skills_folder is not None else None
+  )
+  env_note = (
+      (
+          "8. NOTE ON ENVIRONMENT EXECUTION: When using"
+          f" `{p}run_skill_script` with the `command` parameter, all skill"
+          " resources (including scripts and assets) are materialized in the"
+          f" execution environment under `{skills_folder_posix}/<skill_name>/`."
+          " Always specify file and script paths relative to or starting with"
+          f" `{skills_folder_posix}/<skill_name>/` (e.g.,"
+          f" `{skills_folder_posix}/<skill_name>/scripts/<script_name>`).\n"
+      )
+      if skills_folder_posix is not None
+      else ""
+  )
 
-This is very important:
+  return (
+      "You can use specialized 'skills' to help you with complex tasks. "
+      "You MUST use the skill tools to interact with these skills.\n\n"
+      "Skills are folders of instructions and resources that extend your "
+      "capabilities for specialized tasks. Each skill folder contains:\n"
+      "- **SKILL.md** (required): The main instruction file with skill "
+      "metadata and detailed markdown instructions.\n"
+      "- **references/** (Optional): Additional documentation or examples for "
+      "skill usage.\n"
+      "- **assets/** (Optional): Templates, scripts or other resources used by "
+      "the skill.\n"
+      "- **scripts/** (Optional): Executable scripts that can be run via "
+      "bash.\n\n"
+      "This is very important:\n\n"
+      "1. If a skill seems relevant to the current user query, you MUST use "
+      f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
+      "its full instructions before proceeding.\n"
+      "2. Once you have read the instructions, follow them exactly as "
+      "documented before replying to the user. For example, If the "
+      "instruction lists multiple steps, please make sure you complete all "
+      "of them in order.\n"
+      f"3. The `{p}load_skill_resource` tool is for viewing files within a "
+      "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
+      "It is ONLY for skill-bundled files — do NOT use it to access "
+      "documents or files provided by the user at runtime. Do NOT use "
+      "other tools to access skill files.\n"
+      f"4. Use `{p}run_skill_script` to run scripts from a skill's `scripts/` "
+      f"directory. Use `{p}load_skill_resource` to view script content"
+      " first if "
+      "needed.\n"
+      f"5. If `{p}load_skill_resource` returns any error, do not retry any "
+      "path. Report the error to the user and stop.\n"
+      f"6. If `{p}run_skill_script` returns an error (for example "
+      f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
+      "different script path. Report the error to the user and stop.\n"
+      f"7. Loading a skill only retrieves its instructions; it does NOT "
+      f"complete your turn. After a `{p}load_skill` call returns, continue "
+      "in the SAME turn: call whatever tools the skill's steps require "
+      "(search, data retrieval, render), then write your reply. Never end "
+      "your turn with an empty response right after loading a skill.\n"
+      + env_note
+  )
 
-1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name="<SKILL_NAME>"` to read its full instructions before proceeding.
-2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
-3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.
-4. Use `run_skill_script` to run scripts from a skill's `scripts/` directory. Use `load_skill_resource` to view script content first if needed.
-"""
 
-
-@experimental(FeatureName.SKILL_TOOLSET)
 class ListSkillsTool(BaseTool):
   """Tool to list all available skills."""
 
@@ -104,7 +159,68 @@ class ListSkillsTool(BaseTool):
     return prompt.format_skills_as_xml(skills)
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
+class SearchSkillsTool(BaseTool):
+  """Tool to search for relevant skills in the registry."""
+
+  def __init__(self, toolset: "SkillToolset"):
+    if not toolset._registry:
+      raise ValueError("SearchSkillsTool requires a configured skill registry.")
+    description = toolset._registry.search_tool_description() or (
+        "Searches for relevant skills in the registry based on a semantic or"
+        " keyword query."
+    )
+    super().__init__(
+        name="search_skills",
+        description=description,
+    )
+    self._toolset = toolset
+
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    properties = {
+        "query": {
+            "type": "string",
+            "description": "Semantic or keyword search query.",
+        },
+    }
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters_json_schema={
+            "type": "object",
+            "properties": properties,
+            "required": ["query"],
+        },
+    )
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    query = args.get("query")
+    if not query:
+      return {
+          "error": "Argument 'query' is required.",
+          "error_code": "INVALID_ARGUMENTS",
+      }
+    try:
+      results = await self._toolset._registry.search_skills(query=query)
+      formatted_results = []
+      for r in results:
+        if r.name in self._toolset._skills:
+          logger.warning(
+              "Skill naming conflict: skill '%s' already exists locally."
+              " Registry skill is filtered.",
+              r.name,
+          )
+          continue
+        formatted_results.append(r.model_dump())
+      return formatted_results
+    except Exception as e:
+      return {
+          "error": f"Failed to search skills from registry: {e}",
+          "error_code": "REGISTRY_ERROR",
+      }
+
+
 class LoadSkillTool(BaseTool):
   """Tool to load a skill's instructions."""
 
@@ -122,26 +238,38 @@ class LoadSkillTool(BaseTool):
         parameters_json_schema={
             "type": "object",
             "properties": {
-                "name": {
+                "skill_name": {
                     "type": "string",
                     "description": "The name of the skill to load.",
                 },
             },
-            "required": ["name"],
+            "required": ["skill_name"],
         },
     )
 
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    skill_name = args.get("name")
+    skill_name: str | None = args.get("skill_name")
     if not skill_name:
       return {
-          "error": "Skill name is required.",
-          "error_code": "MISSING_SKILL_NAME",
+          "error": "Argument 'skill_name' is required.",
+          "error_code": "INVALID_ARGUMENTS",
       }
 
-    skill = self._toolset._get_skill(skill_name)
+    skill_telemetry = _instrumentation.track_skill_load(skill_name)
+
+    try:
+      skill = await self._toolset._get_or_fetch_skill(
+          skill_name, tool_context.invocation_id
+      )
+      skill_telemetry.skill = skill
+    except Exception as e:
+      return {
+          "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
+          "error_code": "REGISTRY_ERROR",
+      }
+
     if not skill:
       return {
           "error": f"Skill '{skill_name}' not found.",
@@ -152,19 +280,32 @@ class LoadSkillTool(BaseTool):
     agent_name = tool_context.agent_name
     state_key = f"_adk_activated_skill_{agent_name}"
 
-    activated_skills = list(tool_context.state.get(state_key, []))
+    activated_skills = list(tool_context.state.get(state_key) or [])
     if skill_name not in activated_skills:
       activated_skills.append(skill_name)
       tool_context.state[state_key] = activated_skills
 
+    instructions = skill.instructions
+    if skill.frontmatter.metadata.get("adk_inject_state"):
+      instructions = await instructions_utils.inject_session_state(
+          instructions,
+          tool_context,
+      )
+
     return {
         "skill_name": skill_name,
-        "instructions": skill.instructions,
+        "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
     }
 
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
 
-@experimental(FeatureName.SKILL_TOOLSET)
+
 class LoadSkillResourceTool(BaseTool):
   """Tool to load resources (references, assets, or scripts) from a skill."""
 
@@ -189,7 +330,7 @@ class LoadSkillResourceTool(BaseTool):
                     "type": "string",
                     "description": "The name of the skill.",
                 },
-                "path": {
+                "file_path": {
                     "type": "string",
                     "description": (
                         "The relative path to the resource (e.g.,"
@@ -198,28 +339,42 @@ class LoadSkillResourceTool(BaseTool):
                     ),
                 },
             },
-            "required": ["skill_name", "path"],
+            "required": ["skill_name", "file_path"],
         },
     )
 
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    skill_name = args.get("skill_name")
-    resource_path = args.get("path")
+    skill_name: str | None = args.get("skill_name")
+    file_path: str | None = args.get("file_path")
 
-    if not skill_name:
+    if not skill_name or not file_path:
+      errors = []
+      if not skill_name:
+        errors.append("Argument 'skill_name' is required.")
+      if not file_path:
+        errors.append("Argument 'file_path' is required.")
       return {
-          "error": "Skill name is required.",
-          "error_code": "MISSING_SKILL_NAME",
-      }
-    if not resource_path:
-      return {
-          "error": "Resource path is required.",
-          "error_code": "MISSING_RESOURCE_PATH",
+          "error": "\n".join(errors),
+          "error_code": "INVALID_ARGUMENTS",
       }
 
-    skill = self._toolset._get_skill(skill_name)
+    skill_telemetry = _instrumentation.track_skill_resource_load(
+        skill_name, file_path
+    )
+
+    try:
+      skill = await self._toolset._get_or_fetch_skill(
+          skill_name, tool_context.invocation_id
+      )
+      skill_telemetry.skill = skill
+    except Exception as e:
+      return {
+          "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
+          "error_code": "REGISTRY_ERROR",
+      }
+
     if not skill:
       return {
           "error": f"Skill '{skill_name}' not found.",
@@ -227,14 +382,14 @@ class LoadSkillResourceTool(BaseTool):
       }
 
     content = None
-    if resource_path.startswith("references/"):
-      ref_name = resource_path[len("references/") :]
+    if file_path.startswith("references/"):
+      ref_name = file_path[len("references/") :]
       content = skill.resources.get_reference(ref_name)
-    elif resource_path.startswith("assets/"):
-      asset_name = resource_path[len("assets/") :]
+    elif file_path.startswith("assets/"):
+      asset_name = file_path[len("assets/") :]
       content = skill.resources.get_asset(asset_name)
-    elif resource_path.startswith("scripts/"):
-      script_name = resource_path[len("scripts/") :]
+    elif file_path.startswith("scripts/"):
+      script_name = file_path[len("scripts/") :]
       script = skill.resources.get_script(script_name)
       if script is not None:
         content = script.src
@@ -247,25 +402,47 @@ class LoadSkillResourceTool(BaseTool):
       }
 
     if content is None:
+      # Invocation-scoped failure counter. Counts RESOURCE_NOT_FOUND across ALL
+      # paths so the guard fires even when the LLM hallucinates a different path
+      # on each retry. The `temp:` prefix prevents persistence to durable
+      # session storage; invocation_id isolates in-memory backends.
+      counter_key = f"temp:_adk_skill_resource_not_found_count_{tool_context.invocation_id}"
+      fail_count = int(tool_context.state.get(counter_key) or 0) + 1
+      tool_context.state[counter_key] = fail_count
+      if fail_count > 1:
+        return {
+            "error": (
+                f"Resource '{file_path}' not found in skill '{skill_name}'."
+                f" This is resource lookup failure #{fail_count} this"
+                " invocation. Do not retry any path — report the error to"
+                " the user and stop."
+            ),
+            "error_code": "RESOURCE_NOT_FOUND_FATAL",
+        }
       return {
-          "error": (
-              f"Resource '{resource_path}' not found in skill '{skill_name}'."
-          ),
+          "error": f"Resource '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "RESOURCE_NOT_FOUND",
       }
 
     if isinstance(content, bytes):
       return {
           "skill_name": skill_name,
-          "path": resource_path,
+          "file_path": file_path,
           "status": _BINARY_FILE_DETECTED_MSG,
       }
 
     return {
         "skill_name": skill_name,
-        "path": resource_path,
+        "file_path": file_path,
         "content": content,
     }
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
 
   @override
   async def process_llm_request(
@@ -289,28 +466,40 @@ class LoadSkillResourceTool(BaseTool):
         continue
 
       skill_name = response.get("skill_name")
-      resource_path = response.get("path")
-      if not skill_name or not resource_path:
+      file_path = response.get("file_path")
+      if not skill_name or not file_path:
         continue
 
-      skill = self._toolset._get_skill(skill_name)
+      try:
+        skill = await self._toolset._get_or_fetch_skill(
+            skill_name, tool_context.invocation_id
+        )
+      except Exception as e:
+        logger.warning(
+            "Failed to fetch skill '%s' from registry during LLM request"
+            " processing: %s",
+            skill_name,
+            e,
+        )
+        continue
+
       if not skill:
         continue
 
       # Find the binary content
       content = None
-      if resource_path.startswith("references/"):
-        ref_name = resource_path[len("references/") :]
+      if file_path.startswith("references/"):
+        ref_name = file_path[len("references/") :]
         content = skill.resources.get_reference(ref_name)
-      elif resource_path.startswith("assets/"):
-        asset_name = resource_path[len("assets/") :]
+      elif file_path.startswith("assets/"):
+        asset_name = file_path[len("assets/") :]
         content = skill.resources.get_asset(asset_name)
 
       if not isinstance(content, bytes):
         continue
 
       # Determine mime type based on extension
-      mime_type, _ = mimetypes.guess_type(resource_path)
+      mime_type, _ = mimetypes.guess_type(file_path)
       if not mime_type:
         mime_type = "application/octet-stream"
 
@@ -320,7 +509,7 @@ class LoadSkillResourceTool(BaseTool):
               role="user",
               parts=[
                   types.Part.from_text(
-                      text=f"The content of binary file '{resource_path}' is:"
+                      text=f"The content of binary file '{file_path}' is:"
                   ),
                   types.Part(
                       inline_data=types.Blob(
@@ -347,14 +536,32 @@ class _SkillScriptCodeExecutor:
       self,
       invocation_context: Any,
       skill: models.Skill,
-      script_path: str,
-      script_args: dict[str, Any],
+      file_path: str,
+      script_args: dict[str, Any] | list[str] | None,
+      short_options: dict[str, Any] | None = None,
+      positional_args: list[str] | None = None,
   ) -> dict[str, Any]:
-    """Prepares and executes the script using the base executor."""
-    code = self._build_wrapper_code(skill, script_path, script_args)
+    """Prepares and executes the script using the base executor.
+
+    Args:
+      invocation_context: The context for execution.
+      skill: The skill containing the script.
+      file_path: Relative path to the script file (e.g., 'scripts/myscript.py'
+        or 'myscript.py').
+      script_args: Optional arguments to pass to the script. Can be a dict of
+        long options or a list of strings.
+      short_options: Optional short options (single hyphen) as key-value pairs.
+      positional_args: Optional positional arguments.
+
+    Returns:
+      A dictionary containing execution results (stdout, stderr, status).
+    """
+    code = self._build_wrapper_code(
+        skill, file_path, script_args, short_options, positional_args
+    )
     if code is None:
-      if "." in script_path:
-        ext_msg = f"'.{script_path.rsplit('.', 1)[-1]}'"
+      if "." in file_path:
+        ext_msg = f"'.{file_path.rsplit('.', 1)[-1]}'"
       else:
         ext_msg = "(no extension)"
       return {
@@ -379,9 +586,10 @@ class _SkillScriptCodeExecutor:
       # Shell scripts serialize both streams as JSON
       # through stdout; parse the envelope if present.
       rc = 0
-      is_shell = "." in script_path and script_path.rsplit(".", 1)[
-          -1
-      ].lower() in ("sh", "bash")
+      is_shell = "." in file_path and file_path.rsplit(".", 1)[-1].lower() in (
+          "sh",
+          "bash",
+      )
       if is_shell and stdout:
         try:
           parsed = json.loads(stdout)
@@ -389,8 +597,13 @@ class _SkillScriptCodeExecutor:
             stdout = parsed.get("stdout", "")
             stderr = parsed.get("stderr", "")
             rc = parsed.get("returncode", 0)
-            if rc != 0 and not stderr:
-              stderr = f"Exit code {rc}"
+            if rc != 0 and not parsed.get("timeout", False):
+              exit_code_message = f"Exit code {rc}"
+              stderr = (
+                  f"{stderr.rstrip()}\n{exit_code_message}"
+                  if stderr
+                  else exit_code_message
+              )
         except (json.JSONDecodeError, ValueError):
           pass
 
@@ -404,7 +617,7 @@ class _SkillScriptCodeExecutor:
 
       return {
           "skill_name": skill.name,
-          "script_path": script_path,
+          "file_path": file_path,
           "stdout": stdout,
           "stderr": stderr,
           "status": status,
@@ -413,14 +626,14 @@ class _SkillScriptCodeExecutor:
       if e.code in (None, 0):
         return {
             "skill_name": skill.name,
-            "script_path": script_path,
+            "file_path": file_path,
             "stdout": "",
             "stderr": "",
             "status": "success",
         }
       return {
           "error": (
-              f"Failed to execute script '{script_path}':"
+              f"Failed to execute script '{file_path}':"
               f" exited with code {e.code}"
           ),
           "error_code": "EXECUTION_ERROR",
@@ -428,7 +641,7 @@ class _SkillScriptCodeExecutor:
     except Exception as e:  # pylint: disable=broad-exception-caught
       logger.exception(
           "Error executing script '%s' from skill '%s'",
-          script_path,
+          file_path,
           skill.name,
       )
       short_msg = str(e)
@@ -437,7 +650,7 @@ class _SkillScriptCodeExecutor:
       return {
           "error": (
               "Failed to execute script"
-              f" '{script_path}':\n{type(e).__name__}:"
+              f" '{file_path}':\n{type(e).__name__}:"
               f" {short_msg}"
           ),
           "error_code": "EXECUTION_ERROR",
@@ -446,16 +659,18 @@ class _SkillScriptCodeExecutor:
   def _build_wrapper_code(
       self,
       skill: models.Skill,
-      script_path: str,
-      script_args: dict[str, Any],
+      file_path: str,
+      script_args: dict[str, Any] | list[str] | None,
+      short_options: dict[str, Any] | None = None,
+      positional_args: list[str] | None = None,
   ) -> str | None:
     """Builds a self-extracting Python script."""
     ext = ""
-    if "." in script_path:
-      ext = script_path.rsplit(".", 1)[-1].lower()
+    if "." in file_path:
+      ext = file_path.rsplit(".", 1)[-1].lower()
 
-    if not script_path.startswith("scripts/"):
-      script_path = f"scripts/{script_path}"
+    if not file_path.startswith("scripts/"):
+      file_path = f"scripts/{file_path}"
 
     files_dict = {}
     for ref_name in skill.resources.list_references():
@@ -499,37 +714,77 @@ class _SkillScriptCodeExecutor:
         "  _orig_cwd = os.getcwd()",
         "  with tempfile.TemporaryDirectory() as td:",
         "    for rel_path, content in _files.items():",
-        "      full_path = os.path.join(td, rel_path)",
+        "      norm_rel = os.path.normpath(rel_path)",
+        "      if norm_rel.startswith('..') or os.path.isabs(norm_rel):",
+        (
+            "        raise PermissionError('Path traversal blocked in skill"
+            " file: ' + rel_path)"
+        ),
+        "      full_path = os.path.join(os.path.abspath(td), norm_rel)",
         "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
         "      mode = 'wb' if isinstance(content, bytes) else 'w'",
-        "      with open(full_path, mode) as f:",
+        (
+            "      with open(full_path, mode, encoding='utf-8' if mode == 'w'"
+            " else None) as f:"
+        ),
         "        f.write(content)",
         "    os.chdir(td)",
         "    try:",
     ]
 
     if ext == "py":
-      argv_list = [script_path]
-      for k, v in script_args.items():
-        argv_list.extend([f"--{k}", str(v)])
+      argv_list = [file_path]
+      if isinstance(script_args, list):
+        argv_list.extend(str(v) for v in script_args)
+      else:
+        if isinstance(script_args, dict):
+          for k, v in script_args.items():
+            argv_list.extend([f"--{k}", str(v)])
+
+        if short_options:
+          for k, v in short_options.items():
+            argv_list.extend([f"-{k}", str(v)])
+
+        if positional_args:
+          argv_list.append("--")
+          argv_list.extend(str(v) for v in positional_args)
+
       code_lines.extend([
           f"      sys.argv = {argv_list!r}",
+          (
+              "      sys.path.insert(0,"
+              f" os.path.dirname(os.path.abspath({file_path!r})))"
+          ),
           "      try:",
-          f"        runpy.run_path({script_path!r}, run_name='__main__')",
+          f"        runpy.run_path({file_path!r}, run_name='__main__')",
           "      except SystemExit as e:",
           "        if e.code is not None and e.code != 0:",
           "          raise e",
       ])
     elif ext in ("sh", "bash"):
-      arr = ["bash", script_path]
-      for k, v in script_args.items():
-        arr.extend([f"--{k}", str(v)])
+      arr = ["bash", file_path]
+      if isinstance(script_args, list):
+        arr.extend(str(v) for v in script_args)
+      else:
+        if isinstance(script_args, dict):
+          for k, v in script_args.items():
+            arr.extend([f"--{k}", str(v)])
+
+        if short_options:
+          for k, v in short_options.items():
+            arr.extend([f"-{k}", str(v)])
+
+        if positional_args:
+          arr.append("--")
+          arr.extend(positional_args)
       timeout = self._script_timeout
       code_lines.extend([
           "      try:",
           "        _r = subprocess.run(",
           f"          {arr!r},",
           "          capture_output=True, text=True,",
+          # Keep shell output decoding independent from the host locale.
+          "          encoding='utf-8', errors='replace',",
           f"          timeout={timeout!r}, cwd=td,",
           "        )",
           "        print(_json.dumps({",
@@ -544,6 +799,7 @@ class _SkillScriptCodeExecutor:
           "            'stdout': _e.stdout or '',",
           f"            'stderr': 'Timed out after {timeout}s',",
           "            'returncode': -1,",
+          "            'timeout': True,",
           "        }))",
       ])
     else:
@@ -558,7 +814,6 @@ class _SkillScriptCodeExecutor:
     return "\n".join(code_lines)
 
 
-@experimental(FeatureName.SKILL_TOOLSET)
 class RunSkillScriptTool(BaseTool):
   """Tool to execute scripts from a skill's scripts/ directory."""
 
@@ -570,6 +825,34 @@ class RunSkillScriptTool(BaseTool):
     self._toolset = toolset
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:
+    if self._toolset._env is not None:
+      return types.FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema={
+              "type": "object",
+              "properties": {
+                  "skill_name": {
+                      "type": "string",
+                      "description": "The name of the skill.",
+                  },
+                  "file_path": {
+                      "type": "string",
+                      "description": (
+                          "The relative path to the script (e.g.,"
+                          " 'scripts/setup.py')."
+                      ),
+                  },
+                  "command": {
+                      "type": "string",
+                      "description": (
+                          "The command to execute in the environment."
+                      ),
+                  },
+              },
+              "required": ["skill_name", "file_path", "command"],
+          },
+      )
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,
@@ -580,7 +863,7 @@ class RunSkillScriptTool(BaseTool):
                     "type": "string",
                     "description": "The name of the skill.",
                 },
-                "script_path": {
+                "file_path": {
                     "type": "string",
                     "description": (
                         "The relative path to the script (e.g.,"
@@ -588,61 +871,176 @@ class RunSkillScriptTool(BaseTool):
                     ),
                 },
                 "args": {
-                    "type": "object",
+                    "anyOf": [
+                        {"type": "object"},
+                        {"type": "array", "items": {"type": "string"}},
+                    ],
                     "description": (
                         "Optional arguments to pass to the script as key-value"
-                        " pairs."
+                        " pairs (long options) or as a list of strings. If"
+                        " specified as a list, it is treated as the complete"
+                        " list of arguments, and 'short_options' and"
+                        " 'positional_args' must not be provided."
+                    ),
+                },
+                "short_options": {
+                    "type": "object",
+                    "description": (
+                        "Optional short options (single hyphen) to pass to the"
+                        " script as key-value pairs. Must not be provided if"
+                        " 'args' is a list."
+                    ),
+                },
+                "positional_args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional positional arguments to pass to the script."
+                        " Must not be provided if 'args' is a list."
                     ),
                 },
             },
-            "required": ["skill_name", "script_path"],
+            "required": ["skill_name", "file_path"],
         },
     )
 
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    skill_name = args.get("skill_name")
-    script_path = args.get("script_path")
-    script_args = args.get("args", {})
-    if not isinstance(script_args, dict):
+    # Standardized arguments: skill_name and file_path.
+    skill_name: str | None = args.get("skill_name")
+    file_path: str | None = args.get("file_path")
+    command: str | None = args.get("command")
+    script_args: Any = args.get("args")
+    short_options: Any = args.get("short_options")
+    positional_args: Any = args.get("positional_args")
+
+    if not skill_name or not file_path:
+      errors = []
+      if not skill_name:
+        errors.append("Argument 'skill_name' is required.")
+      if not file_path:
+        errors.append("Argument 'file_path' is required.")
       return {
-          "error": (
-              "'args' must be a JSON object (key-value pairs),"
-              f" got {type(script_args).__name__}."
-          ),
-          "error_code": "INVALID_ARGS_TYPE",
+          "error": "\n".join(errors),
+          "error_code": "INVALID_ARGUMENTS",
       }
 
-    if not skill_name:
+    env = self._toolset._env
+    if env is not None:
+      if command is None or not isinstance(command, str) or not command:
+        return {
+            "error": "Argument 'command' is required and must be a string.",
+            "error_code": "INVALID_ARGUMENTS",
+        }
+    else:
+      errors = []
+      if script_args is not None and not isinstance(script_args, (dict, list)):
+        errors.append(
+            "'args' must be a JSON object (dict) or a list of strings,"
+            f" got {type(script_args).__name__}."
+        )
+
+      if short_options is not None and not isinstance(short_options, dict):
+        errors.append(
+            "'short_options' must be a JSON object (dict),"
+            f" got {type(short_options).__name__}."
+        )
+
+      if positional_args is not None and not isinstance(positional_args, list):
+        errors.append(
+            "'positional_args' must be a list of strings,"
+            f" got {type(positional_args).__name__}."
+        )
+
+      if isinstance(script_args, list) and (short_options or positional_args):
+        errors.append(
+            "Cannot specify 'short_options' or 'positional_args' when 'args'"
+            " is a list."
+        )
+
+      if errors:
+        return {
+            "error": "\n".join(errors),
+            "error_code": "INVALID_ARGUMENTS",
+        }
+
+    try:
+      skill = await self._toolset._get_or_fetch_skill(
+          skill_name, tool_context.invocation_id
+      )
+    except Exception as e:
       return {
-          "error": "Skill name is required.",
-          "error_code": "MISSING_SKILL_NAME",
-      }
-    if not script_path:
-      return {
-          "error": "Script path is required.",
-          "error_code": "MISSING_SCRIPT_PATH",
+          "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
+          "error_code": "REGISTRY_ERROR",
       }
 
-    skill = self._toolset._get_skill(skill_name)
     if not skill:
       return {
           "error": f"Skill '{skill_name}' not found.",
           "error_code": "SKILL_NOT_FOUND",
       }
 
-    script = None
-    if script_path.startswith("scripts/"):
-      script = skill.resources.get_script(script_path[len("scripts/") :])
+    if file_path.startswith("scripts/"):
+      script = skill.resources.get_script(file_path[len("scripts/") :])
     else:
-      script = skill.resources.get_script(script_path)
+      script = skill.resources.get_script(file_path)
 
     if script is None:
+      # Invocation-scoped failure counter. Counts SCRIPT_NOT_FOUND across ALL
+      # paths so the guard fires even when the LLM hallucinates a different
+      # script path on each retry. The `temp:` prefix prevents persistence to
+      # durable session storage; invocation_id isolates in-memory backends.
+      counter_key = (
+          f"temp:_adk_skill_script_not_found_count_{tool_context.invocation_id}"
+      )
+      fail_count = int(tool_context.state.get(counter_key) or 0) + 1
+      tool_context.state[counter_key] = fail_count
+      if fail_count > 1:
+        return {
+            "error": (
+                f"Script '{file_path}' not found in skill '{skill_name}'."
+                f" This is script lookup failure #{fail_count} this"
+                " invocation. Do not retry any script path — report the"
+                " error to the user and stop."
+            ),
+            "error_code": "SCRIPT_NOT_FOUND_FATAL",
+        }
       return {
-          "error": f"Script '{script_path}' not found in skill '{skill_name}'.",
+          "error": f"Script '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "SCRIPT_NOT_FOUND",
       }
+
+    if env is not None:
+      try:
+        await self._ensure_skill_materialized_in_env(skill, file_path, env)
+        result = await env.execute(
+            command=cast(str, command),
+            timeout=self._toolset._script_timeout,
+        )
+        return {
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+            "timed_out": result.timed_out,
+        }
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.exception(
+            "Error executing script '%s' from skill '%s' in environment",
+            file_path,
+            skill.name,
+        )
+        short_msg = str(e)
+        if len(short_msg) > 200:
+          short_msg = short_msg[:200] + "..."
+        return {
+            "error": (
+                "Failed to execute script"
+                f" '{file_path}' in environment:\n{type(e).__name__}:"
+                f" {short_msg}"
+            ),
+            "error_code": "EXECUTION_ERROR",
+        }
 
     # Resolve code executor: toolset-level first, then agent fallback
     code_executor = self._toolset._code_executor
@@ -653,8 +1051,8 @@ class RunSkillScriptTool(BaseTool):
     if code_executor is None:
       return {
           "error": (
-              "No code executor configured. A code executor is"
-              " required to run scripts."
+              "Neither Environment nor CodeExecutor is configured. An"
+              " environment or code executor is required to run scripts."
           ),
           "error_code": "NO_CODE_EXECUTOR",
       }
@@ -663,32 +1061,132 @@ class RunSkillScriptTool(BaseTool):
         code_executor, self._toolset._script_timeout  # pylint: disable=protected-access
     )
     return await script_executor.execute_script_async(
-        tool_context._invocation_context, skill, script_path, script_args  # pylint: disable=protected-access
+        tool_context._invocation_context,  # pylint: disable=protected-access
+        skill,
+        file_path,
+        script_args,
+        short_options,
+        positional_args,  # pylint: disable=protected-access
     )
 
+  async def _ensure_skill_materialized_in_env(
+      self, skill: models.Skill, file_path: str, env: BaseEnvironment
+  ) -> None:
+    # JIT Materialization: Check if the script exists in the environment.
+    # If not, write all skill resources (including scripts) to the environment.
+    skills_folder = self._toolset.skills_folder
+    if skills_folder is None:
+      raise RuntimeError(
+          "skills_folder is not set and no environment working_dir available."
+      )
+    skill_dir = skills_folder / skill.name
+    if not file_path.startswith("scripts/"):
+      rel_script = f"scripts/{file_path}"
+    else:
+      rel_script = file_path
+    script_path = skill_dir / rel_script
 
-@experimental(FeatureName.SKILL_TOOLSET)
+    try:
+      await env.read_file(cast(Path, PurePosixPath(script_path.as_posix())))
+      script_exists = True
+    except FileNotFoundError:
+      script_exists = False
+
+    if not script_exists:
+      logger.info(
+          "Materializing skill resources for %s in environment", skill.name
+      )
+      write_tasks = []
+      for ref_name in skill.resources.list_references():
+        content = skill.resources.get_reference(ref_name)
+        if content is not None:
+          write_tasks.append(
+              env.write_file(
+                  cast(
+                      Path,
+                      PurePosixPath(
+                          (skill_dir / "references" / ref_name).as_posix()
+                      ),
+                  ),
+                  content,
+              )
+          )
+      for asset_name in skill.resources.list_assets():
+        content = skill.resources.get_asset(asset_name)
+        if content is not None:
+          write_tasks.append(
+              env.write_file(
+                  cast(
+                      Path,
+                      PurePosixPath(
+                          (skill_dir / "assets" / asset_name).as_posix()
+                      ),
+                  ),
+                  content,
+              )
+          )
+      for scr_name in skill.resources.list_scripts():
+        scr = skill.resources.get_script(scr_name)
+        if scr is not None and scr.src is not None:
+          write_tasks.append(
+              env.write_file(
+                  cast(
+                      Path,
+                      PurePosixPath(
+                          (skill_dir / "scripts" / scr_name).as_posix()
+                      ),
+                  ),
+                  scr.src,
+              )
+          )
+      if write_tasks:
+        await asyncio.gather(*write_tasks)
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
+
+
 class SkillToolset(BaseToolset):
   """A toolset for managing and interacting with agent skills."""
 
   def __init__(
       self,
-      skills: list[models.Skill],
+      skills: list[models.Skill] | None = None,
       *,
-      code_executor: Optional[BaseCodeExecutor] = None,
+      registry: SkillRegistry | None = None,
+      code_executor: BaseCodeExecutor | None = None,
+      environment: BaseEnvironment | None = None,
+      skills_folder: Path | str | None = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
       additional_tools: list[ToolUnion] | None = None,
+      tool_name_prefix: str | None = None,
+      tool_filter: ToolPredicate | list[str] | None = None,
   ):
     """Initializes the SkillToolset.
 
     Args:
       skills: List of skills to register.
+      registry: Optional skill registry for dynamic loading.
       code_executor: Optional code executor for script execution.
+      environment: Optional environment for executing scripts.
+      skills_folder: Optional absolute path where skills are stored in the
+        environment filesystem. Defaults to 'skills' under the environment's
+        working directory.
       script_timeout: Timeout in seconds for shell script execution via
         subprocess.run. Defaults to 300 seconds. Does not apply to Python
         scripts executed via exec().
+      additional_tools: Optional list of `BaseTool` or `BaseToolset` instances
+        to be made available to the agent when certain skills are activated.
+      tool_name_prefix: Optional prefix to prepend to tool names.
+      tool_filter: Optional filter to select specific tools.
     """
-    super().__init__()
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
+
+    skills = skills or []
 
     # Check for duplicate skill names
     seen: set[str] = set()
@@ -698,8 +1196,33 @@ class SkillToolset(BaseToolset):
       seen.add(skill.name)
 
     self._skills = {skill.name: skill for skill in skills}
+    self._registry = registry
     self._code_executor = code_executor
+    self._env = environment
+    if code_executor and environment:
+      raise ValueError("Cannot have both code_executor and environment")
+    self._skills_folder: Path | None = None
+    if skills_folder is not None:
+      if environment is None:
+        raise ValueError("Cannot specify skills_folder without an environment")
+      is_absolute = (
+          PurePosixPath(skills_folder).is_absolute()
+          or PureWindowsPath(skills_folder).is_absolute()
+      )
+      if not is_absolute:
+        raise ValueError(
+            f"`skills_folder` must be an absolute path: '{skills_folder}'"
+        )
+      self._skills_folder = Path(skills_folder)
     self._script_timeout = script_timeout
+    # Needed for mid-turn reloading of skill tools.
+    self._use_invocation_cache = False
+    # Cache fetched remote skill definitions per turn to reduce requests to registry
+    self._fetched_skill_cache: collections.OrderedDict[
+        str,
+        dict[str, models.Skill | asyncio.Future[models.Skill | None] | None],
+    ] = collections.OrderedDict()
+    self._max_cache_turns = 16
 
     self._provided_tools_by_name = {}
     self._provided_toolsets = []
@@ -719,6 +1242,17 @@ class SkillToolset(BaseToolset):
         LoadSkillResourceTool(self),
         RunSkillScriptTool(self),
     ]
+    if self._registry:
+      self._tools.append(SearchSkillsTool(self))
+
+  @property
+  def skills_folder(self) -> Path | None:
+    """The path where skills are materialized in the environment filesystem."""
+    if self._skills_folder is not None:
+      return self._skills_folder
+    if self._env is not None:
+      return self._env.working_dir / "skills"
+    return None
 
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
@@ -727,7 +1261,8 @@ class SkillToolset(BaseToolset):
     dynamic_tools = await self._resolve_additional_tools_from_state(
         readonly_context
     )
-    return self._tools + dynamic_tools
+    all_tools = self._tools + dynamic_tools
+    return [t for t in all_tools if self._is_tool_selected(t, readonly_context)]
 
   async def _resolve_additional_tools_from_state(
       self, readonly_context: ReadonlyContext | None
@@ -739,14 +1274,16 @@ class SkillToolset(BaseToolset):
 
     agent_name = readonly_context.agent_name
     state_key = f"_adk_activated_skill_{agent_name}"
-    activated_skills = readonly_context.state.get(state_key, [])
+    activated_skills = readonly_context.state.get(state_key) or []
 
     if not activated_skills:
       return []
 
     additional_tool_names = set()
     for skill_name in activated_skills:
-      skill = self._skills.get(skill_name)
+      skill = await self._get_or_fetch_skill(
+          skill_name, readonly_context.invocation_id
+      )
       if skill:
         additional_tools = skill.frontmatter.metadata.get(
             "adk_additional_tools"
@@ -760,11 +1297,24 @@ class SkillToolset(BaseToolset):
     # Collect all candidate tools from both individual tools and toolsets
     candidate_tools = self._provided_tools_by_name.copy()
     if self._provided_toolsets:
-      ts_results = await asyncio.gather(*(
-          ts.get_tools_with_prefix(readonly_context)
-          for ts in self._provided_toolsets
-      ))
-      for ts_tools in ts_results:
+      ts_results = await asyncio.gather(
+          *(
+              ts.get_tools_with_prefix(readonly_context)
+              for ts in self._provided_toolsets
+          ),
+          return_exceptions=True,
+      )
+      for toolset, ts_tools in zip(self._provided_toolsets, ts_results):
+        if isinstance(ts_tools, Exception):
+          logger.warning(
+              "Skipping toolset %s while resolving skill additional tools: %s",
+              type(toolset).__name__,
+              ts_tools,
+              exc_info=ts_tools,
+          )
+          continue
+        if isinstance(ts_tools, BaseException):
+          raise ts_tools
         for t in ts_tools:
           candidate_tools[t.name] = t
 
@@ -783,34 +1333,119 @@ class SkillToolset(BaseToolset):
 
     return resolved_tools
 
-  def _get_skill(self, name: str) -> models.Skill | None:
+  def _get_skill(self, skill_name: str) -> models.Skill | None:
     """Retrieves a skill by name."""
-    return self._skills.get(name)
+    return self._skills.get(skill_name)
+
+  async def _get_or_fetch_skill(
+      self, skill_name: str, invocation_id: str | None = None
+  ) -> models.Skill | None:
+    """Retrieves a skill by name, falling back to the registry if configured."""
+    skill = self._get_skill(skill_name)
+    if skill:
+      return skill
+
+    if not self._registry:
+      return None
+
+    if invocation_id:
+      if invocation_id not in self._fetched_skill_cache:
+        # Enforce bounded cache (FIFO eviction)
+        if len(self._fetched_skill_cache) >= self._max_cache_turns:
+          self._fetched_skill_cache.popitem(last=False)
+        self._fetched_skill_cache[invocation_id] = {}
+
+      turn_cache = self._fetched_skill_cache[invocation_id]
+      if skill_name in turn_cache:
+        cached = turn_cache[skill_name]
+        if isinstance(cached, asyncio.Future):
+          return await cached
+        return cached
+
+      loop = asyncio.get_running_loop()
+      fut = loop.create_future()
+      turn_cache[skill_name] = fut
+
+      try:
+        skill = await self._registry.get_skill(name=skill_name)
+        fut.set_result(skill)
+        turn_cache[skill_name] = skill
+        return skill
+      except Exception as e:
+        fut.set_exception(e)
+        fut.exception()
+        turn_cache.pop(skill_name, None)
+        raise
+
+    return await self._registry.get_skill(name=skill_name)
 
   def _list_skills(self) -> list[models.Skill]:
     """Lists all available skills."""
     return list(self._skills.values())
 
+  @property
+  def skills(self) -> list[models.Skill]:
+    """Returns the list of available skills."""
+    return self._list_skills()
+
+  def clone_with_updated_skills(
+      self, skills: list[models.Skill]
+  ) -> SkillToolset:
+    """Creates a new SkillToolset with identical configuration but modified skills."""
+    additional_tools = (
+        list(self._provided_tools_by_name.values()) + self._provided_toolsets
+    )
+    return SkillToolset(
+        skills=skills,
+        registry=self._registry,
+        code_executor=self._code_executor,
+        environment=self._env,
+        skills_folder=self._skills_folder,
+        script_timeout=self._script_timeout,
+        additional_tools=additional_tools,
+    )
+
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    skills = self._list_skills()
-    skills_xml = prompt.format_skills_as_xml(skills)
-    instructions = []
-    instructions.append(_DEFAULT_SKILL_SYSTEM_INSTRUCTION)
-    instructions.append(skills_xml)
+    if self._env is not None and not self._env.is_initialized:
+      await self._env.initialize()
+    instructions = [
+        _build_skill_system_instruction(
+            prefix=self.tool_name_prefix,
+            skills_folder=self.skills_folder,
+        )
+    ]
+
+    has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
+
+    if not has_list_skills:
+      skills = self._list_skills()
+      skills_xml = prompt.format_skills_as_xml(skills)
+      instructions.append(skills_xml)
+
+    if self._registry:
+      p = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
+      instructions.append(
+          "\nIf the locally available skills are not sufficient to complete "
+          f"your task, you can use the `{p}search_skills` tool to discover "
+          "additional skills from the registry."
+      )
+
     llm_request.append_instructions(instructions)
 
+  @override
+  async def close(self) -> None:
+    """Performs cleanup and releases resources held by the toolset."""
+    if self._env is not None and self._env.is_initialized:
+      await self._env.close()
+    for turn_cache in self._fetched_skill_cache.values():
+      for cached in turn_cache.values():
+        if isinstance(cached, asyncio.Future) and not cached.done():
+          cached.cancel()
+    self._fetched_skill_cache.clear()
+    await super().close()
 
-def __getattr__(name: str) -> Any:
-  if name == "DEFAULT_SKILL_SYSTEM_INSTRUCTION":
-    warnings.warn(
-        "DEFAULT_SKILL_SYSTEM_INSTRUCTION is experimental. Its content "
-        "is internal implementation and will change in minor/patch releases "
-        "to tune agent performance.",
-        UserWarning,
-        stacklevel=2,
-    )
-    return _DEFAULT_SKILL_SYSTEM_INSTRUCTION
-  raise AttributeError(f"module {__name__} has no attribute {name}")
+
+DEFAULT_SKILL_SYSTEM_INSTRUCTION = _build_skill_system_instruction()

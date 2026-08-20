@@ -18,7 +18,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from .eval_case import EvalCase
+from .eval_case import EvalCase as EvalCase
 
 
 class EvalSet(BaseModel):

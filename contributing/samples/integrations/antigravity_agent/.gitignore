@@ -1,0 +1,4 @@
+# Workspace the agent writes generated games into at runtime.
+game_repo/
+# Conversation trajectories persisted across turns.
+trajectories/
