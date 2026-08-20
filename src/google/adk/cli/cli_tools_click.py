@@ -1986,8 +1986,16 @@ def cli_graph(agent_file: Optional[str], host: str, port: int) -> None:
     return
 
   click.echo(f"Inspecting agent at: {agent_file}")
-  path = Path(agent_file)
-  agent_or_app = AgentLoader.load_agent_or_app(path)
+  path = Path(agent_file).resolve()
+  if path.is_file():
+    agents_dir = str(path.parent)
+    agent_name = path.stem
+  else:
+    agents_dir = str(path)
+    agent_name = path.name
+
+  loader = AgentLoader(agents_dir=agents_dir)
+  agent_or_app = loader.load_agent(agent_name)
 
   inspector = AgentInspector(agent_or_app)
   topology = inspector.inspect()
