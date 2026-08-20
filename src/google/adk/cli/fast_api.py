@@ -27,18 +27,13 @@ from typing import Awaitable
 from typing import Callable
 from typing import Literal
 from typing import Mapping
-from typing import Optional
 
 import click
 from fastapi import FastAPI
-from fastapi import File
 from fastapi import HTTPException
 from fastapi import Request
-from fastapi import UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
-from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 from opentelemetry import context
 from opentelemetry import trace
@@ -52,10 +47,10 @@ from watchdog.observers import Observer
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..telemetry._agent_engine import get_propagated_context
+from ..telemetry._agent_engine import maybe_install_request_metrics_middleware
 from ..telemetry._agent_engine import TopSpanProcessor
 from .api_server import ApiServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
-from .dev_server import DevServer
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_change_handler import AgentChangeEventHandler
@@ -80,6 +75,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _LAZY_SERVICE_IMPORTS: dict[str, str] = {
     "AgentLoader": ".utils.agent_loader",
+    "NestedAgentLoader": ".utils._nested_agent_loader",
     "LocalEvalSetResultsManager": "..evaluation.local_eval_set_results_manager",
     "LocalEvalSetsManager": "..evaluation.local_eval_sets_manager",
 }
@@ -94,309 +90,6 @@ def __getattr__(name: str):
   attr = getattr(module, name)
   globals()[name] = attr
   return attr
-
-
-def _register_builder_endpoints(app: FastAPI, web: bool, agents_dir: str):
-  """Registers builder endpoints if web is enabled and multipart is installed."""
-  if not web:
-    return
-  try:
-    import multipart  # noqa: F401
-  except ImportError:
-    logger.warning(
-        "python-multipart not installed. Builder UI endpoints will not be"
-        " available."
-    )
-    return
-
-  import shutil
-
-  import yaml
-
-  agents_base_path = (Path.cwd() / agents_dir).resolve()
-
-  def _get_app_root(app_name: str) -> Path:
-    if app_name in ("", ".", ".."):
-      raise ValueError(f"Invalid app name: {app_name!r}")
-    if Path(app_name).name != app_name or "\\" in app_name:
-      raise ValueError(f"Invalid app name: {app_name!r}")
-    app_root = (agents_base_path / app_name).resolve()
-    if not app_root.is_relative_to(agents_base_path):
-      raise ValueError(f"Invalid app name: {app_name!r}")
-    return app_root
-
-  def _normalize_relative_path(path: str) -> str:
-    return path.replace("\\", "/").lstrip("/")
-
-  def _has_parent_reference(path: str) -> bool:
-    return any(part == ".." for part in path.split("/"))
-
-  _ALLOWED_EXTENSIONS = frozenset({".yaml", ".yml"})
-
-  _BLOCKED_YAML_KEYS = frozenset({"args"})
-
-  def _check_yaml_for_blocked_keys(content: bytes, filename: str) -> None:
-    try:
-      docs = list(yaml.safe_load_all(content))
-    except yaml.YAMLError as exc:
-      raise ValueError(f"Invalid YAML in {filename!r}: {exc}") from exc
-
-    def _walk(node: Any) -> None:
-      if isinstance(node, dict):
-        for key, value in node.items():
-          if key in _BLOCKED_YAML_KEYS:
-            raise ValueError(
-                f"Blocked key {key!r} found in {filename!r}. "
-                f"The '{key}' field is not allowed in builder uploads "
-                "because it can execute arbitrary code."
-            )
-          _walk(value)
-      elif isinstance(node, list):
-        for item in node:
-          _walk(item)
-
-    for doc in docs:
-      _walk(doc)
-
-  def _parse_upload_filename(filename: Optional[str]) -> tuple[str, str]:
-    if not filename:
-      raise ValueError("Upload filename is missing.")
-    filename = _normalize_relative_path(filename)
-    if "/" not in filename:
-      raise ValueError(f"Invalid upload filename: {filename!r}")
-    app_name, rel_path = filename.split("/", 1)
-    if not app_name or not rel_path:
-      raise ValueError(f"Invalid upload filename: {filename!r}")
-    if rel_path.startswith("/"):
-      raise ValueError(f"Absolute upload path rejected: {filename!r}")
-    if _has_parent_reference(rel_path):
-      raise ValueError(f"Path traversal rejected: {filename!r}")
-    ext = os.path.splitext(rel_path)[1].lower()
-    if ext not in _ALLOWED_EXTENSIONS:
-      raise ValueError(
-          f"File type not allowed: {rel_path!r}"
-          f" (allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))})"
-      )
-    return app_name, rel_path
-
-  def _parse_file_path(file_path: str) -> str:
-    file_path = _normalize_relative_path(file_path)
-    if not file_path:
-      raise ValueError("file_path is missing.")
-    if file_path.startswith("/"):
-      raise ValueError(f"Absolute file_path rejected: {file_path!r}")
-    if _has_parent_reference(file_path):
-      raise ValueError(f"Path traversal rejected: {file_path!r}")
-    ext = os.path.splitext(file_path)[1].lower()
-    if ext not in _ALLOWED_EXTENSIONS:
-      raise ValueError(
-          f"File type not allowed: {file_path!r}"
-          f" (allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))})"
-      )
-    return file_path
-
-  def _resolve_under_dir(root_dir: Path, rel_path: str) -> Path:
-    file_path = root_dir / rel_path
-    resolved_root_dir = root_dir.resolve()
-    resolved_file_path = file_path.resolve()
-    if not resolved_file_path.is_relative_to(resolved_root_dir):
-      raise ValueError(f"Path escapes root_dir: {rel_path!r}")
-    return file_path
-
-  def _get_tmp_agent_root(app_root: Path, app_name: str) -> Path:
-    tmp_agent_root = app_root / "tmp" / app_name
-    resolved_tmp_agent_root = tmp_agent_root.resolve()
-    if not resolved_tmp_agent_root.is_relative_to(app_root):
-      raise ValueError(f"Invalid tmp path for app: {app_name!r}")
-    return tmp_agent_root
-
-  def copy_dir_contents(source_dir: Path, dest_dir: Path) -> None:
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    for source_path in source_dir.iterdir():
-      if source_path.name == "tmp":
-        continue
-
-      dest_path = dest_dir / source_path.name
-      if source_path.is_dir():
-        if dest_path.exists() and dest_path.is_file():
-          dest_path.unlink()
-        shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
-      elif source_path.is_file():
-        if dest_path.exists() and dest_path.is_dir():
-          shutil.rmtree(dest_path)
-        shutil.copy2(source_path, dest_path)
-
-  def cleanup_tmp(app_name: str) -> bool:
-    try:
-      app_root = _get_app_root(app_name)
-    except ValueError as exc:
-      logger.exception("Error in cleanup_tmp: %s", exc)
-      return False
-
-    try:
-      tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-    except ValueError as exc:
-      logger.exception("Error in cleanup_tmp: %s", exc)
-      return False
-
-    try:
-      shutil.rmtree(tmp_agent_root)
-    except FileNotFoundError:
-      pass
-    except OSError as exc:
-      logger.exception("Error deleting tmp agent root: %s", exc)
-      return False
-
-    tmp_dir = app_root / "tmp"
-    resolved_tmp_dir = tmp_dir.resolve()
-    if not resolved_tmp_dir.is_relative_to(app_root):
-      logger.error(
-          "Refusing to delete tmp outside app_root: %s", resolved_tmp_dir
-      )
-      return False
-
-    try:
-      tmp_dir.rmdir()
-    except OSError:
-      pass
-
-    return True
-
-  def ensure_tmp_exists(app_name: str) -> bool:
-    try:
-      app_root = _get_app_root(app_name)
-    except ValueError as exc:
-      logger.exception("Error in ensure_tmp_exists: %s", exc)
-      return False
-
-    if not app_root.is_dir():
-      return False
-
-    try:
-      tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-    except ValueError as exc:
-      logger.exception("Error in ensure_tmp_exists: %s", exc)
-      return False
-
-    if tmp_agent_root.exists():
-      return True
-
-    try:
-      tmp_agent_root.mkdir(parents=True, exist_ok=True)
-      copy_dir_contents(app_root, tmp_agent_root)
-    except OSError as exc:
-      logger.exception("Error in ensure_tmp_exists: %s", exc)
-      return False
-
-    return True
-
-  @app.post("/builder/save", response_model_exclude_none=True)
-  async def builder_build(
-      files: list[UploadFile] = File(...), tmp: Optional[bool] = False
-  ) -> bool:
-    try:
-      app_names: set[str] = set()
-      uploads: list[tuple[str, bytes]] = []
-      for file in files:
-        app_name, rel_path = _parse_upload_filename(file.filename)
-        app_names.add(app_name)
-        content = await file.read()
-        uploads.append((rel_path, content))
-
-      if len(app_names) != 1:
-        logger.error(
-            "Exactly one app name is required, found: %s",
-            sorted(app_names),
-        )
-        return False
-
-      app_name = next(iter(app_names))
-
-      for rel_path, content in uploads:
-        _check_yaml_for_blocked_keys(content, f"{app_name}/{rel_path}")
-
-      if tmp:
-        app_root = _get_app_root(app_name)
-        tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-        tmp_agent_root.mkdir(parents=True, exist_ok=True)
-
-        for rel_path, content in uploads:
-          destination_path = _resolve_under_dir(tmp_agent_root, rel_path)
-          destination_path.parent.mkdir(parents=True, exist_ok=True)
-          destination_path.write_bytes(content)
-
-        return True
-
-      app_root = _get_app_root(app_name)
-      app_root.mkdir(parents=True, exist_ok=True)
-
-      tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-      if tmp_agent_root.is_dir():
-        copy_dir_contents(tmp_agent_root, app_root)
-
-      for rel_path, content in uploads:
-        destination_path = _resolve_under_dir(app_root, rel_path)
-        destination_path.parent.mkdir(parents=True, exist_ok=True)
-        destination_path.write_bytes(content)
-
-      return cleanup_tmp(app_name)
-    except ValueError as exc:
-      logger.exception("Error in builder_build: %s", exc)
-      raise HTTPException(status_code=400, detail=str(exc))
-    except OSError as exc:
-      logger.exception("Error in builder_build: %s", exc)
-      return False
-
-  @app.post("/builder/app/{app_name}/cancel", response_model_exclude_none=True)
-  async def builder_cancel(app_name: str) -> bool:
-    return cleanup_tmp(app_name)
-
-  @app.get(
-      "/builder/app/{app_name}",
-      response_model_exclude_none=True,
-      response_class=PlainTextResponse,
-  )
-  async def get_agent_builder(
-      app_name: str,
-      file_path: Optional[str] = None,
-      tmp: Optional[bool] = False,
-  ):
-    try:
-      app_root = _get_app_root(app_name)
-    except ValueError as exc:
-      logger.exception("Error in get_agent_builder: %s", exc)
-      return ""
-
-    agent_dir = app_root
-    if tmp:
-      if not ensure_tmp_exists(app_name):
-        return ""
-      agent_dir = app_root / "tmp" / app_name
-
-    if not file_path:
-      rel_path = "root_agent.yaml"
-    else:
-      try:
-        rel_path = _parse_file_path(file_path)
-      except ValueError as exc:
-        logger.exception("Error in get_agent_builder: %s", exc)
-        return ""
-
-    try:
-      agent_file_path = _resolve_under_dir(agent_dir, rel_path)
-    except ValueError as exc:
-      logger.exception("Error in get_agent_builder: %s", exc)
-      return ""
-
-    if not agent_file_path.is_file():
-      return ""
-
-    return FileResponse(
-        path=agent_file_path,
-        media_type="application/x-yaml",
-        filename=file_path or f"{app_name}.yaml",
-        headers={"Cache-Control": "no-store"},
-    )
 
 
 def get_fast_api_app(
@@ -414,6 +107,7 @@ def get_fast_api_app(
     a2a: bool = False,
     task_store_uri: str | None = None,
     host: str = "127.0.0.1",
+    bind_host: str | None = None,
     port: int = 8000,
     url_prefix: str | None = None,
     trace_to_cloud: bool = False,
@@ -461,7 +155,11 @@ def get_fast_api_app(
     a2a: Whether to enable Agent-to-Agent (A2A) protocol support.
     task_store_uri: URI for the A2A task store. Uses in-memory task store if
       None. Only used when ``a2a=True``.
-    host: Host address for the server (defaults to 127.0.0.1).
+    host: Host address for the server (defaults to 127.0.0.1). Unused by the
+      returned app; pass ``bind_host`` to guard it.
+    bind_host: The address the caller will bind the returned app to. A loopback
+      value turns on DNS-rebinding protection, which rejects requests addressed
+      to any other host. Leave it None to serve the app yourself without that.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -484,6 +182,12 @@ def get_fast_api_app(
   Returns:
     The configured FastAPI application instance.
   """
+
+  # Enable the YAML key denylist for config loads if the web UI is enabled.
+  if web:
+    from ..agents import config_agent_utils
+
+    config_agent_utils._set_enforce_yaml_key_denylist(True)
 
   # Detect single agent mode
   agents_path = Path(agents_dir).resolve()
@@ -514,9 +218,15 @@ def get_fast_api_app(
   # initialize Agent Loader if not passed as argument
   this_module = sys.modules[__name__]
   if agent_loader is None:
-    agent_loader = this_module.AgentLoader(original_agents_dir)
-  elif is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
-    agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
+    if web:
+      agent_loader = this_module.NestedAgentLoader(original_agents_dir)
+    else:
+      agent_loader = this_module.AgentLoader(original_agents_dir)
+  else:
+    if is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
+      if single_agent_name is not None:
+        agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
+  agent_loader._allow_special_agents = web
 
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
@@ -555,7 +265,24 @@ def get_fast_api_app(
   # Instantiate the appropriate server class based on web option
   # If web=True, use DevServer (includes all endpoints: production + dev)
   # If web=False, use ApiServer (production-safe endpoints only)
-  ServerClass = DevServer if web else ApiServer
+  if web:
+    try:
+      from .dev_server import DevServer
+
+      ServerClass = DevServer
+    except ModuleNotFoundError as e:
+      # Fallback to ApiServer if dev_server.py is not available
+      # (e.g., in production packages where dev_server.py is excluded)
+      if e.name and e.name.endswith("dev_server"):
+        logger.warning(
+            "DevServer not found, falling back to ApiServer. "
+            "Debug and evaluation endpoints will not be available."
+        )
+        ServerClass = ApiServer
+      else:
+        raise
+  else:
+    ServerClass = ApiServer
 
   adk_web_server = ServerClass(
       agent_loader=agent_loader,
@@ -580,7 +307,7 @@ def get_fast_api_app(
     adk_web_server.default_app_name = single_agent_name
 
   # Callbacks & other optional args for when constructing the FastAPI instance
-  extra_fast_api_args = {}
+  extra_fast_api_args: dict[str, Any] = {}
 
   # TODO - Remove separate trace_to_cloud logic once otel_to_cloud stops being
   # EXPERIMENTAL.
@@ -662,19 +389,16 @@ def get_fast_api_app(
       lifespan=lifespan,
       allow_origins=allow_origins,
       otel_to_cloud=otel_to_cloud,
+      bind_host=bind_host,
       **extra_fast_api_args,
   )
 
-  # --- Builder endpoints (agent editor UI) ---
-  _register_builder_endpoints(app, web, agents_dir)
+  maybe_install_request_metrics_middleware(app, otel_to_cloud=otel_to_cloud)
 
   if a2a and a2a_task_store is not None:
-    from a2a.server.apps import A2AStarletteApplication
-    from a2a.server.request_handlers import DefaultRequestHandler
     from a2a.server.tasks import InMemoryPushNotificationConfigStore
-    from a2a.types import AgentCard
-    from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 
+    from ..a2a import _compat
     from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
 
     # locate all a2a agent apps in the agents directory
@@ -710,28 +434,18 @@ def get_fast_api_app(
 
           push_config_store = InMemoryPushNotificationConfigStore()
 
-          request_handler = DefaultRequestHandler(
+          with (p / "agent.json").open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            agent_card = _compat.parse_agent_card(data)
+
+          _compat.attach_a2a_routes_to_app(
+              app,
+              agent_card=agent_card,
               agent_executor=agent_executor,
               task_store=a2a_task_store,
               push_config_store=push_config_store,
+              prefix=f"/a2a/{app_name}",
           )
-
-          with (p / "agent.json").open("r", encoding="utf-8") as f:
-            data = json.load(f)
-            agent_card = AgentCard(**data)
-
-          a2a_app = A2AStarletteApplication(
-              agent_card=agent_card,
-              http_handler=request_handler,
-          )
-
-          routes = a2a_app.routes(
-              rpc_url=f"/a2a/{app_name}",
-              agent_card_url=f"/a2a/{app_name}{AGENT_CARD_WELL_KNOWN_PATH}",
-          )
-
-          for new_route in routes:
-            app.router.routes.append(new_route)
 
           logger.info("Successfully configured A2A agent: %s", app_name)
 
@@ -746,7 +460,6 @@ def get_fast_api_app(
       )
 
     import inspect
-    import json
 
     from google.adk.agents import Agent
     import google.auth
@@ -913,14 +626,21 @@ def get_fast_api_app(
       output = await _invoke_callable_or_raise(method, parsed.input or {})
 
       if inspect.isgenerator(output):
+        # Sentinel-based exhaustion check. We cannot rely on catching
+        # StopIteration here: when ``next(iterator)`` is called inside the
+        # threadpool worker, the StopIteration propagates out of the
+        # ``run_in_threadpool`` coroutine frame, and Python (PEP 479) converts
+        # it to ``RuntimeError("coroutine raised StopIteration")`` before the
+        # ``except StopIteration`` clause can ever see it. Passing a default to
+        # ``next`` avoids raising at the boundary entirely.
+        _SENTINEL = object()
 
         async def _aiter_from_iter(iterator):
           while True:
-            try:
-              chunk = await run_in_threadpool(next, iterator)
-              yield chunk
-            except StopIteration:
+            chunk = await run_in_threadpool(next, iterator, _SENTINEL)
+            if chunk is _SENTINEL:
               break
+            yield chunk
 
         content_iter = _aiter_from_iter(output)
       else:

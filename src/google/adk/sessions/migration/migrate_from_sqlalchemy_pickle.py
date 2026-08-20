@@ -220,7 +220,12 @@ def _row_to_event(
       author=row.get("author", "agent"),
       branch=row.get("branch"),
       actions=actions,
-      timestamp=timestamp.replace(tzinfo=timezone.utc).timestamp(),
+      # v0 wrote this column as a naive datetime in local time (via
+      # datetime.fromtimestamp) and read it back the same way, so interpret a
+      # naive value as local time here too. Forcing UTC would shift every
+      # migrated timestamp by the host's UTC offset. datetime.timestamp()
+      # treats naive datetimes as local and honors tzinfo when present.
+      timestamp=timestamp.timestamp(),
       long_running_tool_ids=long_running_tool_ids,
       partial=row.get("partial"),
       turn_complete=row.get("turn_complete"),
@@ -279,7 +284,10 @@ def migrate(
   source_sync_url = _schema_check_utils.to_sync_url(source_db_url)
   dest_sync_url = _schema_check_utils.to_sync_url(dest_db_url)
 
-  logger.info(f"Connecting to source database: {source_db_url}")
+  logger.info(
+      "Connecting to source database: %s",
+      _schema_check_utils._redact_db_url(source_db_url),
+  )
   if allow_unsafe_unpickling:
     logger.warning(
         "Unsafe pickle migration mode is enabled. Only use this with a trusted"
@@ -292,7 +300,10 @@ def migrate(
     logger.error(f"Failed to connect to source database: {e}")
     raise RuntimeError(f"Failed to connect to source database: {e}") from e
 
-  logger.info(f"Connecting to destination database: {dest_db_url}")
+  logger.info(
+      "Connecting to destination database: %s",
+      _schema_check_utils._redact_db_url(dest_db_url),
+  )
   try:
     dest_engine = create_engine(dest_sync_url)
     v1.Base.metadata.create_all(dest_engine)

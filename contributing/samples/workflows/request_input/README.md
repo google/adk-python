@@ -20,7 +20,8 @@ This pattern is crucial for tasks where AI actions require human verification be
 
 ```mermaid
 graph TD
-    START --> draft_email
+    START --> process_input
+    process_input --> draft_email
     draft_email --> request_human_review
     request_human_review --> handle_human_review
     handle_human_review -->|revise| draft_email
@@ -59,7 +60,7 @@ graph TD
    Workflow(
        name="request_input",
        edges=[
-           ("START", ..., draft_email, request_human_review, handle_human_review),
+           ("START", process_input, draft_email, request_human_review, handle_human_review),
            (handle_human_review, {"revise": draft_email, "approved": send_email}),
        ],
    )

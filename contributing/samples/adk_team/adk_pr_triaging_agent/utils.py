@@ -15,9 +15,11 @@
 import sys
 from typing import Any
 
+from adk_pr_triaging_agent.settings import GITHUB_BASE_URL
 from adk_pr_triaging_agent.settings import GITHUB_GRAPHQL_URL
 from adk_pr_triaging_agent.settings import GITHUB_TOKEN
-from google.adk.agents.run_config import RunConfig
+from adk_pr_triaging_agent.settings import OWNER
+from adk_pr_triaging_agent.settings import REPO
 from google.adk.runners import Runner
 from google.genai import types
 import requests
@@ -66,6 +68,16 @@ def post_request(url: str, payload: Any) -> dict[str, Any]:
   return response.json()
 
 
+def is_assignable(login: str) -> bool:
+  """Whether a GitHub user can be assigned to an issue/PR in this repo."""
+  # GitHub only allows assignees with repo write/triage access and silently
+  # drops others from an assignee POST; check first so callers can report the
+  # skip instead of a silent no-op.
+  url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/assignees/{login}"
+  response = requests.get(url, headers=headers, timeout=60)
+  return response.status_code == 204
+
+
 def error_response(error_message: str) -> dict[str, Any]:
   """Returns an error response."""
   return {"status": "error", "error_message": error_message}
@@ -110,7 +122,6 @@ async def call_agent_async(
       user_id=user_id,
       session_id=session_id,
       new_message=content,
-      run_config=RunConfig(save_input_blobs_as_artifacts=False),
   ):
     if event.content and event.content.parts:
       if text := "".join(part.text or "" for part in event.content.parts):

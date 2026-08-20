@@ -20,21 +20,20 @@ replay interception.
 
 from unittest.mock import MagicMock
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
 from google.adk.workflow._node_state import NodeState
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
 from google.adk.workflow.utils._replay_interceptor import check_interception
+from google.adk.workflow.utils._replay_interceptor import create_mock_context
+from google.adk.workflow.utils._replay_interceptor import InterceptionResult
 import pytest
-
-
-def _make_parent_ctx():
-  ctx = MagicMock(spec=Context)
-  ctx._invocation_context = MagicMock()
-  ctx.resume_inputs = {}
-  return ctx
 
 
 def test_same_turn_completed():
@@ -45,14 +44,11 @@ def test_same_turn_completed():
       output='cached-out',
       transfer_to_agent='target-agent',
   )
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=BaseNode(name='node'),
       current_run=run,
-      curr_parent_ctx=ctx,
   )
 
   # Then it intercepts with cached results
@@ -67,14 +63,11 @@ def test_same_turn_waiting():
   run = DynamicNodeRun(
       state=NodeState(status=NodeStatus.WAITING, interrupts=['fc-1']),
   )
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=BaseNode(name='node'),
       current_run=run,
-      curr_parent_ctx=ctx,
   )
 
   # Then it intercepts and keeps waiting
@@ -91,14 +84,11 @@ def test_cross_turn_unresolved_interrupts_no_rerun():
       resolved_ids={'fc-1'},
   )
   node = BaseNode(name='node', rerun_on_resume=False)
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it stays waiting on unresolved interrupts
@@ -116,14 +106,11 @@ def test_cross_turn_unresolved_interrupts_rerun():
       resolved_responses={'fc-1': 'ans'},
   )
   node = BaseNode(name='node', rerun_on_resume=True)
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it reruns with partial resolved inputs
@@ -140,14 +127,11 @@ def test_cross_turn_completed():
       route='route-a',
   )
   node = BaseNode(name='node')
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it fast-forwards with cached output and route
@@ -166,17 +150,11 @@ def test_cross_turn_all_resolved_no_rerun():
       resolved_responses={'fc-1': 'ans'},
   )
   node = BaseNode(name='node', rerun_on_resume=False)
-  ctx = _make_parent_ctx()
-  ctx.resume_inputs = {
-      'fc-1': {'result': 'ans'}
-  }  # Simulate FunctionResponse dict
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it auto-completes
@@ -194,16 +172,96 @@ def test_cross_turn_all_resolved_rerun():
       resolved_responses={'fc-1': 'ans'},
   )
   node = BaseNode(name='node', rerun_on_resume=True)
-  ctx = _make_parent_ctx()
 
   # When checked
   result = check_interception(
-      node_path='wf/node@1',
       node=node,
       recovered=recovered,
-      curr_parent_ctx=ctx,
   )
 
   # Then it reruns
   assert result.should_run
   assert result.resume_inputs == {'fc-1': 'ans'}
+
+
+# --- create_mock_context ---
+
+
+def _parent_ctx(branch=None):
+  """A root Context standing in for the parent of an intercepted node."""
+  ic = InvocationContext(
+      invocation_id='inv-1',
+      agent=MagicMock(spec=BaseAgent),
+      session=Session(id='s', app_name='app', user_id='u'),
+      session_service=InMemorySessionService(),
+      branch=branch,
+  )
+  return Context(ic, node_path='wf@1')
+
+
+def test_create_mock_context_fast_forward_carries_cached_results():
+  """A fast-forwarded node exposes its cached results without executing."""
+  parent = _parent_ctx()
+  result = InterceptionResult(
+      should_run=False,
+      output='past-out',
+      route='route-a',
+      transfer_to_agent='target-agent',
+  )
+
+  ctx = create_mock_context(
+      parent_ctx=parent,
+      node=BaseNode(name='node'),
+      run_id='1',
+      result=result,
+      ancestors=['wf@1'],
+      node_path='wf@1/node@1',
+  )
+
+  assert ctx.output == 'past-out'
+  # Marked emitted so the orchestrator does not re-emit the cached output.
+  assert ctx._output_emitted is True
+  assert ctx.route == 'route-a'
+  assert ctx.actions.transfer_to_agent == 'target-agent'
+  assert ctx._output_for_ancestors == ['wf@1']
+  assert ctx.node_path == 'wf@1/node@1'
+
+
+def test_create_mock_context_waiting_result_captures_interrupts_only():
+  """A node paused on interrupts must not look like it produced an output."""
+  parent = _parent_ctx()
+  result = InterceptionResult(should_run=False, interrupts={'fc-1', 'fc-2'})
+
+  ctx = create_mock_context(
+      parent_ctx=parent,
+      node=BaseNode(name='node'),
+      run_id='1',
+      result=result,
+      ancestors=[],
+      node_path='wf@1/node@1',
+  )
+
+  assert ctx.interrupt_ids == {'fc-1', 'fc-2'}
+  assert ctx.output is None
+  assert ctx._output_emitted is False
+  assert ctx.route is None
+  assert ctx.actions.transfer_to_agent is None
+
+
+def test_create_mock_context_branch_override_does_not_touch_parent():
+  """Overriding the branch is scoped to the replayed child's context."""
+  parent = _parent_ctx(branch='root')
+  result = InterceptionResult(should_run=False, output='out')
+
+  ctx = create_mock_context(
+      parent_ctx=parent,
+      node=BaseNode(name='node'),
+      run_id='1',
+      result=result,
+      ancestors=[],
+      node_path='wf@1/node@1',
+      branch='root.sub',
+  )
+
+  assert ctx.branch == 'root.sub'
+  assert parent.branch == 'root'

@@ -22,7 +22,7 @@ from typing import Optional
 
 from crewai.tools import BaseTool
 from google.adk import Agent
-from google.adk.tools.crewai_tool import CrewaiTool
+from google.adk.integrations.crewai import CrewaiTool
 from pydantic import BaseModel
 from pydantic import Field
 

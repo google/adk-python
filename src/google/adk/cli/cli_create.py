@@ -54,22 +54,54 @@ https://google.github.io/adk-docs/agents/models
 _SUCCESS_MSG_CODE = """
 Agent created in {agent_folder}:
 - .env
+- .gitignore
 - __init__.py
 - agent.py
 
 ⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
-Please ensure .env is added to your .gitignore to avoid committing secrets to version control.
 """
 
 _SUCCESS_MSG_CONFIG = """
 Agent created in {agent_folder}:
 - .env
+- .gitignore
 - __init__.py
 - root_agent.yaml
 
 ⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
-Please ensure .env is added to your .gitignore to avoid committing secrets to version control.
 """
+
+
+_GENERATED_GITIGNORE_ENTRIES = (".env", ".adk/")
+
+
+def _ensure_dotenv_gitignored(agent_folder: str) -> None:
+  """Ensures generated secrets and local runtime data are excluded from
+  version control."""
+  gitignore_file_path = os.path.join(agent_folder, ".gitignore")
+
+  if not os.path.exists(gitignore_file_path):
+    with open(gitignore_file_path, "w", encoding="utf-8") as f:
+      f.write("".join(f"{entry}\n" for entry in _GENERATED_GITIGNORE_ENTRIES))
+    return
+
+  with open(gitignore_file_path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+  existing_lines = content.splitlines()
+  missing_entries = [
+      entry
+      for entry in _GENERATED_GITIGNORE_ENTRIES
+      if entry not in existing_lines
+  ]
+  if not missing_entries:
+    return
+
+  # Append missing entries, ensuring proper newline separation.
+  with open(gitignore_file_path, "a", encoding="utf-8") as f:
+    if content and not content.endswith("\n"):
+      f.write("\n")
+    f.write("".join(f"{entry}\n" for entry in missing_entries))
 
 
 def _generate_files(
@@ -80,7 +112,7 @@ def _generate_files(
     google_cloud_region: Optional[str] = None,
     model: Optional[str] = None,
     type: str,
-):
+) -> None:
   """Generates a folder name for the agent."""
   os.makedirs(agent_folder, exist_ok=True)
 
@@ -102,6 +134,7 @@ def _generate_files(
     if google_cloud_region:
       lines.append(f"GOOGLE_CLOUD_LOCATION={google_cloud_region}")
     f.write("\n".join(lines))
+  _ensure_dotenv_gitignored(agent_folder)
 
   if type == "config":
     with open(agent_config_file_path, "w", encoding="utf-8") as f:
@@ -164,7 +197,7 @@ def run_cmd(
     google_cloud_project: Optional[str],
     google_cloud_region: Optional[str],
     type: Optional[str],
-):
+) -> None:
   """Runs `adk create` command to create agent template.
 
   Args:

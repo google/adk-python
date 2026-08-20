@@ -1,3 +1,17 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: ADK Answering Agent for Discussions
 
 on:
@@ -12,22 +26,26 @@ permissions:
 jobs:
   agent-answer-questions:
     if: >-
+      github.repository == 'google/adk-python' && (
       (github.event_name == 'discussion' && github.event.discussion.category.name == 'Q&A') ||
       (github.event_name == 'discussion_comment' && contains(github.event.comment.body, '@adk-bot') && github.event.sender.login != 'adk-bot')
+      )
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
 
       - name: Authenticate to Google Cloud
         id: auth
-        uses: 'google-github-actions/auth@v3'
+        uses: 'google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093' # v3
         with:
           credentials_json: '${{ secrets.ADK_GCP_SA_KEY }}'
 
@@ -41,17 +59,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
           ADK_GCP_SA_KEY: ${{ secrets.ADK_GCP_SA_KEY }}
           GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
-          GOOGLE_CLOUD_LOCATION: ${{ secrets.GOOGLE_CLOUD_LOCATION }}
+          GOOGLE_CLOUD_LOCATION: ${{ vars.ADK_ANSWERING_LOCATION || secrets.GOOGLE_CLOUD_LOCATION }}
           VERTEXAI_DATASTORE_ID: ${{ secrets.VERTEXAI_DATASTORE_ID }}
           GEMINI_API_DATASTORE_ID: ${{ secrets.GEMINI_API_DATASTORE_ID }}
           GOOGLE_GENAI_USE_VERTEXAI: 1
+          LLM_MODEL_NAME: ${{ vars.ADK_ANSWERING_MODEL || 'gemini-2.5-flash' }}
           OWNER: 'google'
           REPO: 'adk-python'
           INTERACTIVE: 0
           PYTHONPATH: contributing/samples/adk_team
+          DISCUSSION_NUMBER: ${{ github.event.discussion.number || github.event.comment.discussion.number }}
         run: |
-          # Write discussion data to temporary file to avoid secret masking issues
-          cat > /tmp/discussion.json << 'EOF'
-          ${{ toJson(github.event.discussion) }}
-          EOF
-          python -m adk_answering_agent.main --discussion-file /tmp/discussion.json
+          # Security fix: Do not pass raw event data to agent prompt.
+          # Pass only the discussion number; agent fetches content via GitHub API.
+          python -m adk_answering_agent.main --discussion_number "$DISCUSSION_NUMBER"

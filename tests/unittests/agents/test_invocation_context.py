@@ -17,6 +17,8 @@ from unittest.mock import Mock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.invocation_context import LlmCallsLimitExceededError
+from google.adk.agents.run_config import RunConfig
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -127,6 +129,45 @@ class TestInvocationContext:
     assert not events
 
 
+class TestInvocationContextInitialization:
+  """Test suite for InvocationContext initialization."""
+
+  def test_custom_metadata_propagation(self):
+    """Tests that custom_metadata from RunConfig is propagated to InvocationContext."""
+    run_cfg = RunConfig(custom_metadata={'test_key': 'test_value'})
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        run_config=run_cfg,
+    )
+    # Access private attribute to verify
+    assert inv_ctx._custom_metadata == {'test_key': 'test_value'}
+
+  def test_custom_metadata_default_empty(self):
+    """Tests that _custom_metadata is empty by default when no RunConfig is provided."""
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert inv_ctx._custom_metadata == {}
+
+  def test_custom_metadata_empty_run_config(self):
+    """Tests that _custom_metadata is empty when RunConfig has no custom_metadata."""
+    run_cfg = RunConfig()
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        run_config=run_cfg,
+    )
+    assert inv_ctx._custom_metadata == {}
+
+
 class TestInvocationContextWithAppResumablity:
   """Test suite for InvocationContext regarding app resumability."""
 
@@ -152,14 +193,14 @@ class TestInvocationContextWithAppResumablity:
     )
 
   def _create_test_invocation_context(
-      self, resumability_config
+      self, resumability_config: ResumabilityConfig | None = None
   ) -> InvocationContext:
     """Create a mock invocation context for testing."""
     ctx = InvocationContext(
         session_service=Mock(spec=BaseSessionService),
         agent=Mock(spec=BaseAgent),
         invocation_id='inv_1',
-        session=Mock(spec=Session),
+        session=Mock(spec=Session, events=[]),
         resumability_config=resumability_config,
     )
     return ctx
@@ -207,6 +248,69 @@ class TestInvocationContextWithAppResumablity:
     assert not mock_invocation_context.should_pause_invocation(
         nonpausable_event
     )
+
+  def test_should_not_pause_when_user_resumes_in_sub_branch(
+      self, event_to_pause, long_running_function_call
+  ):
+    """We do not pause the invocation if a subsequent user event belongs to a sub-branch."""
+    # Arrange
+    mock_invocation_context = self._create_test_invocation_context()
+    user_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        branch=f'agent@{long_running_function_call.id}.child',
+    )
+    mock_invocation_context.session.events = [event_to_pause, user_event]
+
+    # Act
+    should_pause = mock_invocation_context.should_pause_invocation(
+        event_to_pause
+    )
+
+    # Assert
+    assert not should_pause
+
+  def test_should_not_pause_when_user_resumes_in_deeply_nested_sub_branch(
+      self, event_to_pause, long_running_function_call
+  ):
+    """We do not pause if the user resumes in a deeply nested sub-branch containing the tool call."""
+    # Arrange
+    mock_invocation_context = self._create_test_invocation_context()
+    user_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        branch=f'parent@other.child@{long_running_function_call.id}.grandchild',
+    )
+    mock_invocation_context.session.events = [event_to_pause, user_event]
+
+    # Act
+    should_pause = mock_invocation_context.should_pause_invocation(
+        event_to_pause
+    )
+
+    # Assert
+    assert not should_pause
+
+  def test_should_pause_when_user_resumes_in_different_branch(
+      self, event_to_pause
+  ):
+    """We still pause the invocation if the subsequent user event belongs to a different branch."""
+    # Arrange
+    mock_invocation_context = self._create_test_invocation_context()
+    user_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        branch='parent@different_id.child',
+    )
+    mock_invocation_context.session.events = [event_to_pause, user_event]
+
+    # Act
+    should_pause = mock_invocation_context.should_pause_invocation(
+        event_to_pause
+    )
+
+    # Assert
+    assert should_pause
 
   def test_is_resumable_true(self):
     """Tests that is_resumable is True when resumability is enabled."""
@@ -534,3 +638,159 @@ class TestFindMatchingFunctionCall:
     invocation_context = test_invocation_context([fc_event, fr_event])
     match = invocation_context._find_matching_function_call(fr_event_no_fr)
     assert match is None
+
+  def test_stamp_event_branch_context_preserves_isolation_scope(
+      self, test_invocation_context
+  ):
+    """Tests stamp_event_branch_context does not overwrite existing isolation_scope with None."""
+    fc = Part.from_function_call(name='some_tool', args={})
+    fc.function_call.id = 'test_function_call_id'
+    fc_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        branch='root@1',
+        isolation_scope=None,  # Coordinator FC has None scope
+        content=testing_utils.ModelContent([fc]),
+    )
+    fr = Part.from_function_response(
+        name='some_tool', response={'result': 'ok'}
+    )
+    fr.function_response.id = 'test_function_call_id'
+    fr_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        isolation_scope='task_123',  # Pre-populated active task scope
+        content=Content(role='user', parts=[fr]),
+    )
+    invocation_context = test_invocation_context([fc_event, fr_event])
+
+    invocation_context.stamp_event_branch_context(fr_event)
+    assert fr_event.branch == 'root@1'
+    assert fr_event.isolation_scope == 'task_123'
+
+  def test_stamp_event_branch_context_does_not_overwrite_existing_scope(
+      self, test_invocation_context
+  ):
+    """Tests stamp_event_branch_context does not overwrite existing isolation_scope if set."""
+    fc = Part.from_function_call(name='some_tool', args={})
+    fc.function_call.id = 'test_function_call_id'
+    fc_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        branch='root@1',
+        isolation_scope='task_456',  # Function call has isolation scope
+        content=testing_utils.ModelContent([fc]),
+    )
+    fr = Part.from_function_response(
+        name='some_tool', response={'result': 'ok'}
+    )
+    fr.function_response.id = 'test_function_call_id'
+    fr_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        isolation_scope='task_123',  # Pre-populated active task scope
+        content=Content(role='user', parts=[fr]),
+    )
+    invocation_context = test_invocation_context([fc_event, fr_event])
+
+    invocation_context.stamp_event_branch_context(fr_event)
+    assert fr_event.branch == 'root@1'
+    assert fr_event.isolation_scope == 'task_123'
+
+  def test_find_matching_function_call_when_response_is_not_last_event(
+      self, test_invocation_context
+  ):
+    """Tests that matching function call is found even when response is not the last event in history."""
+    fc = Part.from_function_call(name='some_tool', args={})
+    fc.function_call.id = 'test_function_call_id'
+    fc_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=testing_utils.ModelContent([fc]),
+    )
+    fr = Part.from_function_response(
+        name='some_tool', response={'result': 'ok'}
+    )
+    fr.function_response.id = 'test_function_call_id'
+    fr_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=Content(role='user', parts=[fr]),
+    )
+    # Add a subsequent event to the history so that fr_event is NOT the last one
+    subsequent_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        content=Content(role='user', parts=[Part(text='next user message')]),
+    )
+    invocation_context = test_invocation_context(
+        [fc_event, fr_event, subsequent_event]
+    )
+
+    matching_fc_event = invocation_context._find_matching_function_call(
+        fr_event
+    )
+    assert testing_utils.simplify_content(
+        matching_fc_event.content
+    ) == testing_utils.simplify_content(fc_event.content)
+
+
+class TestIncrementLlmCallCount:
+  """Test suite for InvocationContext.increment_llm_call_count."""
+
+  def _context(self, run_config=None):
+    kwargs = {} if run_config is None else {'run_config': run_config}
+    return InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        **kwargs,
+    )
+
+  def test_allows_exactly_max_llm_calls_then_raises(self):
+    """The limit is the number of calls allowed, not the count before it."""
+    ctx = self._context(RunConfig(max_llm_calls=2))
+
+    ctx.increment_llm_call_count()
+    ctx.increment_llm_call_count()
+
+    with pytest.raises(LlmCallsLimitExceededError, match='limit of `2`'):
+      ctx.increment_llm_call_count()
+
+  def test_keeps_raising_once_the_limit_is_passed(self):
+    """The limit latches: a caller cannot swallow one error and carry on."""
+    ctx = self._context(RunConfig(max_llm_calls=1))
+    ctx.increment_llm_call_count()
+
+    with pytest.raises(LlmCallsLimitExceededError):
+      ctx.increment_llm_call_count()
+    with pytest.raises(LlmCallsLimitExceededError):
+      ctx.increment_llm_call_count()
+
+  @pytest.mark.parametrize('max_llm_calls', [0, -1])
+  def test_non_positive_limit_is_not_enforced(self, max_llm_calls: int):
+    """A non-positive limit documents 'no enforcement', not 'no calls'."""
+    ctx = self._context(RunConfig(max_llm_calls=max_llm_calls))
+
+    for _ in range(5):
+      ctx.increment_llm_call_count()
+
+  def test_without_run_config_the_limit_is_not_enforced(self):
+    """run_config is optional, so counting must tolerate its absence."""
+    ctx = self._context()
+    assert ctx.run_config is None
+
+    for _ in range(5):
+      ctx.increment_llm_call_count()
+
+  def test_count_is_per_invocation_context(self):
+    """Two invocations must not share a budget."""
+    first = self._context(RunConfig(max_llm_calls=1))
+    second = self._context(RunConfig(max_llm_calls=1))
+
+    first.increment_llm_call_count()
+    second.increment_llm_call_count()
+
+    with pytest.raises(LlmCallsLimitExceededError):
+      second.increment_llm_call_count()

@@ -13,13 +13,16 @@
 # limitations under the License.
 
 import asyncio
+import json
 from typing import Any
 from typing import Optional
+from unittest.mock import patch
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -32,9 +35,11 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.runners import Runner
+import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.types import Part
@@ -182,6 +187,108 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
 
   assert captured['runner_app_name'] == parent_app_name
   assert captured['session_app_name'] == parent_app_name
+
+
+async def _capture_nested_run_config(
+    monkeypatch, parent_run_config: RunConfig
+) -> RunConfig:
+  """Returns the RunConfig an AgentTool hands to the Runner it starts."""
+  captured: dict[str, Any] = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent: Agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del app_name, artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id: Optional[str] = None,
+        new_message: Optional[types.Content] = None,
+        state_delta: Optional[dict[str, Any]] = None,
+        run_config: Optional[RunConfig] = None,
+    ):
+      del user_id, session_id, invocation_id, new_message, state_delta
+      captured['run_config'] = run_config
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name='parent_app',
+      user_id='user',
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='invocation-id',
+      agent=root_agent,
+      session=parent_session,
+      run_config=parent_run_config,
+  )
+
+  await agent_tool.run_async(
+      args={'request': 'hello'},
+      tool_context=ToolContext(invocation_context),
+  )
+
+  return captured['run_config']
+
+
+@mark.asyncio
+async def test_agent_tool_forwards_parent_run_config(monkeypatch):
+  parent_run_config = RunConfig(max_llm_calls=7, custom_metadata={'tier': 'x'})
+
+  nested_run_config = await _capture_nested_run_config(
+      monkeypatch, parent_run_config
+  )
+
+  assert nested_run_config is parent_run_config
+  assert nested_run_config.max_llm_calls == 7
+  assert nested_run_config.custom_metadata == {'tier': 'x'}
+
+
+@mark.asyncio
+async def test_agent_tool_does_not_forward_support_cfc(monkeypatch):
+  """CFC describes the caller's own model, not the agent it wraps as a tool."""
+  parent_run_config = RunConfig(support_cfc=True, max_llm_calls=7)
+
+  nested_run_config = await _capture_nested_run_config(
+      monkeypatch, parent_run_config
+  )
+
+  assert nested_run_config.support_cfc is False
+  assert nested_run_config.max_llm_calls == 7
+  assert parent_run_config.support_cfc is True
 
 
 def test_no_schema():
@@ -1147,6 +1254,60 @@ async def test_run_async_skips_thought_parts():
   assert result == '42'
 
 
+async def _run_agent_tool_with_events(events: list[Event]) -> Any:
+  """Drives AgentTool with an inner agent that yields `events` in order."""
+
+  class _StaticAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      for event in events:
+        yield event
+
+  inner = _StaticAgent(name='inner_agent', description='static')
+  agent_tool = AgentTool(agent=inner)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=inner,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  return await agent_tool.run_async(
+      args={'request': 'test request'}, tool_context=tool_context
+  )
+
+
+@mark.asyncio
+async def test_run_async_preserves_error_event_with_no_content():
+  """An error-only event with no content surfaces its error_message."""
+  result = await _run_agent_tool_with_events([
+      Event(author='inner_agent', error_message='A2A request failed: 503'),
+  ])
+  assert result == 'A2A request failed: 503'
+
+
+@mark.asyncio
+async def test_run_async_preserves_error_when_only_thought_parts():
+  """When the final content is all thought parts, the error_message wins."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='thinking', thought=True)],
+          ),
+      ),
+      Event(author='inner_agent', error_message='A2A request failed: 503'),
+  ])
+  assert result == 'A2A request failed: 503'
+
+
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 
@@ -1408,6 +1569,64 @@ class TestAgentToolWithCompositeAgents:
       # Should NOT have the fallback 'request' parameter
       assert 'request' not in sequence_tool.parameters.properties
 
+  @mark.asyncio
+  async def test_sequential_agent_returns_last_sub_agent_output(self):
+    """The tool result is the last sub-agent's output, not the whole pipeline's."""
+
+    class CustomOutput(BaseModel):
+      custom_output: str
+
+    function_call_seq = Part.from_function_call(
+        name='sequence', args={'request': 'test1'}
+    )
+
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            function_call_seq,
+            'a draft from the first step',
+            '{"custom_output": "final_response"}',
+            'root_response',
+        ]
+    )
+
+    first_agent = Agent(name='first_agent', model=mock_model)
+
+    second_agent = Agent(
+        name='second_agent',
+        model=mock_model,
+        output_schema=CustomOutput,
+        output_key='seq_output',
+    )
+
+    sequence = SequentialAgent(
+        name='sequence',
+        description='A sequential pipeline',
+        sub_agents=[first_agent, second_agent],
+    )
+
+    root_agent = Agent(
+        name='root_agent',
+        model=mock_model,
+        tools=[AgentTool(agent=sequence)],
+    )
+
+    runner = testing_utils.InMemoryRunner(root_agent)
+
+    # run_async, not run: run() drains the agent on a worker thread and would
+    # drop a validation error raised inside the tool.
+    events = await runner.run_async('test1')
+
+    assert testing_utils.simplify_events(events) == [
+        ('root_agent', function_call_seq),
+        (
+            'root_agent',
+            Part.from_function_response(
+                name='sequence', response={'custom_output': 'final_response'}
+            ),
+        ),
+        ('root_agent', 'root_response'),
+    ]
+
   def test_empty_sequential_agent_falls_back_to_request(self):
     """Test that AgentTool with empty SequentialAgent falls back to 'request'."""
 
@@ -1431,3 +1650,343 @@ class TestAgentToolWithCompositeAgents:
       }
     else:
       assert declaration.parameters.properties['request'].type == 'STRING'
+
+
+@mark.parametrize(
+    'args,expected_text',
+    [
+        (
+            {'brand': 'Nike', 'product': 'running shoes'},
+            '{"brand": "Nike", "product": "running shoes"}',
+        ),
+        (
+            {'request': 'find me Nike running shoes'},
+            'find me Nike running shoes',
+        ),
+        (
+            {'request': ''},
+            '',
+        ),
+    ],
+)
+@mark.asyncio
+async def test_no_schema_args_handling(monkeypatch, args, expected_text):
+  """AgentTool.run_async handles fallback schema cases properly.
+
+  - Non-'request' args are serialized as JSON.
+  - 'request' key is kept as plain text (backward compatibility).
+  - Empty string 'request' is correctly preserved instead of evaluating to
+  false.
+  """
+  captured = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id=None,
+        new_message=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      captured['new_message'] = new_message
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='user'
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='test-invocation',
+      agent=root_agent,
+      session=session,
+      run_config=RunConfig(),
+  )
+  tool_context = ToolContext(invocation_context)
+
+  await agent_tool.run_async(
+      args=args,
+      tool_context=tool_context,
+  )
+
+  assert captured['new_message'] is not None
+  text = captured['new_message'].parts[0].text
+  assert text == expected_text
+
+
+@pytest.fixture
+def setup_skip_summarization_runner():
+  def _setup_runner(tool_agent_model_responses, tool_agent_output_schema=None):
+    tool_agent_model = testing_utils.MockModel.create(
+        responses=tool_agent_model_responses
+    )
+    tool_agent = Agent(
+        name='tool_agent',
+        model=tool_agent_model,
+        output_schema=tool_agent_output_schema,
+    )
+
+    agent_tool = AgentTool(agent=tool_agent, skip_summarization=True)
+
+    root_agent_model = testing_utils.MockModel.create(
+        responses=[
+            function_call_no_schema,
+            'final_summary_text_that_should_not_be_reached',
+        ]
+    )
+
+    root_agent = Agent(
+        name='root_agent',
+        model=root_agent_model,
+        tools=[agent_tool],
+    )
+    return testing_utils.InMemoryRunner(root_agent)
+
+  return _setup_runner
+
+
+def test_agent_tool_skip_summarization_has_text_output(
+    setup_skip_summarization_runner,
+):
+  """Tests that when skip_summarization is True, the final event contains text content."""
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['tool_response_text']
+  )
+  events = runner.run('start')
+
+  final_events = [e for e in events if e.is_final_response()]
+  assert final_events
+  last_event = final_events[-1]
+  assert last_event.is_final_response()
+
+  assert any(p.function_response for p in last_event.content.parts)
+
+  assert [p.text for p in last_event.content.parts if p.text] == [
+      'tool_response_text'
+  ]
+
+
+def test_agent_tool_skip_summarization_preserves_json_string_output(
+    setup_skip_summarization_runner,
+):
+  """Tests that structured output string is preserved as text when skipping summarization."""
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['{"field": "value"}']
+  )
+  events = runner.run('start')
+
+  final_events = [e for e in events if e.is_final_response()]
+  assert final_events
+  last_event = final_events[-1]
+  assert last_event.is_final_response()
+
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+
+  # Check that the JSON string content is preserved exactly
+  assert text_parts == ['{"field": "value"}']
+
+
+def test_agent_tool_skip_summarization_handles_non_string_result(
+    setup_skip_summarization_runner,
+):
+  """Tests that non-string (dict) output is correctly serialized as JSON text."""
+
+  class CustomOutput(BaseModel):
+    value: int
+
+  runner = setup_skip_summarization_runner(
+      tool_agent_model_responses=['{"value": 123}'],
+      tool_agent_output_schema=CustomOutput,
+  )
+  events = runner.run('start')
+
+  final_events = [e for e in events if e.is_final_response()]
+  assert final_events
+  last_event = final_events[-1]
+
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+
+  assert text_parts == ['{"value": 123}']
+
+
+# ---------------------------------------------------------------------------
+# Tests for input_schema message wrapping
+# ---------------------------------------------------------------------------
+
+
+async def _run_agent_tool_and_capture_content(
+    args: dict,
+    input_schema=None,
+    output_schema=None,
+) -> types.Content:
+  """Drives AgentTool and captures the Content passed to the inner agent.
+
+  This uses a stub Runner (same pattern as test_agent_tool_inherits_parent_app_name)
+  to intercept the new_message without executing the actual agent pipeline.
+  """
+  if input_schema is not None:
+    inner = LlmAgent(
+        name='inner_agent',
+        description='captures input',
+        model=testing_utils.MockModel.create(responses=['done']),
+        input_schema=input_schema,
+        output_schema=output_schema,
+    )
+  else:
+    inner = Agent(name='inner_agent', model='test-model')
+
+  new_message_holder: list = []
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class _StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name,
+        agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+      self.app_name = app_name
+
+    def run_async(
+        self,
+        *,
+        user_id,
+        session_id,
+        invocation_id=None,
+        new_message=None,
+        state_delta=None,
+        run_config=None,
+    ):
+      new_message_holder.append(new_message)
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  with patch.object(_runners_module, 'Runner', _StubRunner):
+    agent_tool = AgentTool(agent=inner)
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name='test_app', user_id='test_user'
+    )
+    invocation_context = InvocationContext(
+        invocation_id='invocation_id',
+        agent=inner,
+        session=session,
+        session_service=session_service,
+    )
+    tool_context = ToolContext(invocation_context=invocation_context)
+    await agent_tool.run_async(args=args, tool_context=tool_context)
+
+  return new_message_holder[0] if new_message_holder else None
+
+
+@mark.asyncio
+async def test_run_async_no_input_schema_passes_request_unchanged():
+  """Without input_schema, the message is args['request'] verbatim."""
+  content = await _run_agent_tool_and_capture_content(
+      args={'request': 'hello world'},
+      input_schema=None,
+  )
+
+  assert content is not None
+  assert len(content.parts) == 1
+  assert content.parts[0].text == 'hello world'
+
+
+class _RoundTripInput(BaseModel):
+  query: str
+  limit: int
+
+
+class _RoundTripOutput(BaseModel):
+  result: str
+
+
+@mark.asyncio
+@pytest.mark.parametrize('output_schema', [None, _RoundTripOutput])
+async def test_run_async_with_input_schema_passes_bare_json(output_schema):
+  """With input_schema the message is the bare serialized payload."""
+  content = await _run_agent_tool_and_capture_content(
+      args={'query': 'hello', 'limit': 5},
+      input_schema=_RoundTripInput,
+      output_schema=output_schema,
+  )
+
+  assert content is not None
+  assert len(content.parts) == 1
+  payload = json.loads(content.parts[0].text)
+  assert payload == {'query': 'hello', 'limit': 5}
+
+
+@mark.asyncio
+@pytest.mark.parametrize('output_schema', [None, _RoundTripOutput])
+async def test_run_async_input_schema_content_survives_node_validation(
+    output_schema,
+):
+  """The message AgentTool sends must validate against the same input_schema.
+
+  The node runtime re-validates the first user message against the inner
+  agent's input_schema, so anything AgentTool prepends to the payload breaks
+  the call before the agent runs. This drives the real validator rather than
+  the stubbed runner used above.
+  """
+  content = await _run_agent_tool_and_capture_content(
+      args={'query': 'hello', 'limit': 5},
+      input_schema=_RoundTripInput,
+      output_schema=output_schema,
+  )
+
+  assert validate_node_data(
+      _RoundTripInput, content, preserve_content=False
+  ) == {'query': 'hello', 'limit': 5}

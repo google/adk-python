@@ -31,12 +31,13 @@ classifiers = [
 ]
 dynamic = [ "version" ]
 dependencies = [
+  "aiohttp!=3.14.2",
   "aiosqlite>=0.21",
   "authlib>=1.6.6,<2",
   "click>=8.1.8,<9",
   "fastapi>=0.133,<1",
   "google-auth[pyopenssl]>=2.47",
-  "google-genai>=2.8,<3",
+  "google-genai>=2.12.1,<3",
   "graphviz>=0.20.2,<1",
   "httpx>=0.27,<1",
   "jsonschema>=4.23,<5",
@@ -48,7 +49,7 @@ dependencies = [
   "python-multipart>=0.0.9,<1",
   "pyyaml>=6.0.2,<7",
   "requests>=2.32.4,<3",
-  "starlette>=1.0.1,<2",
+  "starlette>=1.3.1,<2",
   "tenacity>=9,<10",
   "typing-extensions>=4.5,<5",
   "tzlocal>=5.3,<6",
@@ -57,22 +58,37 @@ dependencies = [
   "websockets>=15.0.1,<16",
 ]
 optional-dependencies.a2a = [
-  "a2a-sdk>=0.3.4,<0.4",
+  "a2a-sdk[http-server]>=0.3.4,<2",
 ]
 optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
 ]
+# Union of every extra that unlocks a runtime feature. Excludes benchmark,
+# community, dev, docs and test, which exist to build, test or document ADK
+# itself.
 optional-dependencies.all = [
+  "a2a-sdk[http-server]>=0.3.4,<2",
+  "anthropic>=0.78",
   "anyio>=4.9,<5",
+  "beautifulsoup4>=3.2.2",
+  "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # chromadb/pypika fail on 3.12+
+  "daytona>=0.191",
+  "docker>=7",
   "e2b>=2,<3",
+  "gepa>=0.1",
+  "google-antigravity>=0.1,<0.2",
   "google-api-python-client>=2.157,<3",
-  "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
+  "google-cloud-agentidentitycredentials>=0.1,<0.2",
+  "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",
+  "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-eventarc-publishing>=0.10,<1",
+  "google-cloud-firestore>=2.11,<3",
+  "google-cloud-iamconnectorcredentials>=0.1,<0.2",
   "google-cloud-parametermanager>=0.4,<1",
   "google-cloud-pubsub>=2,<3",
   "google-cloud-resource-manager>=1.12,<2",
@@ -80,29 +96,70 @@ optional-dependencies.all = [
   "google-cloud-spanner>=3.56,<4",
   "google-cloud-speech>=2.30,<3",
   "google-cloud-storage>=2.18,<4",
+  "google-cloud-texttospeech>=2.37",
+  "jinja2>=3.1.4,<4",
+  "k8s-agent-sandbox>=0.1.1.post3",
+  "kubernetes>=29",
+  "langgraph>=1.0.10,<2",
+  "langgraph-checkpoint>=4.1.1,<5",
+  "litellm>=1.84",
+  "llama-index-embeddings-google-genai>=0.3",
+  "llama-index-readers-file>=0.4",
+  "lxml>=5.3",
   "mcp>=1.24,<2",
+  "nltk!=3.10.1",
+  "oci>=2.126",
+  "openai>=2.20,<3",
+  "openpyxl>=3.1.5,<4",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
+  "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
+  "opentelemetry-instrumentation-grpc>=0.43b0,<1",
+  "opentelemetry-instrumentation-httpx>=0.54b0,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
+  "pandas>=2.2.3",
+  "protobuf>=6",
   "pyarrow>=14",
+  "pypika>=0.50",
   "python-dateutil>=2.9.0.post0,<3",
+  "redis>=4.2",
+  "rouge-score>=0.1.2",
+  "slack-bolt>=1.22",
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
+  "tabulate>=0.9",
+  "toolbox-adk>=1,<2",
+  "xlrd>=2,<3",
 ]
 optional-dependencies.antigravity = [
   "google-antigravity>=0.1,<0.2",
   "protobuf>=6",
 ]
+optional-dependencies.benchmark = [
+  "google-benchmark>=1.9",
+]
+# Everything BigQueryAgentAnalyticsPlugin needs. Separate from gcp because
+# pyarrow is a third of that extra's install size and only this plugin uses it.
+optional-dependencies.bigquery-analytics = [
+  "google-cloud-bigquery>=2.2",
+  "google-cloud-bigquery-storage>=2",
+  "google-cloud-storage>=2.18,<4",
+  "pyarrow>=14",
+]
 optional-dependencies.community = [
   "google-adk-community",
+]
+optional-dependencies.daytona = [
+  "daytona>=0.191", # For DaytonaEnvironment remote sandbox.
 ]
 optional-dependencies.db = [
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
 ]
 optional-dependencies.dev = [
+  "codespell[toml]==2.4.2",
   "flit>=3.10",
   # Lint tools used by scripts/run_precommit_checks.sh (which runs them directly,
   # without the pre-commit framework). Formatters that rewrite files are pinned
@@ -136,10 +193,14 @@ optional-dependencies.e2b = [
 optional-dependencies.eval = [
   "gepa>=0.1",
   "google-cloud-aiplatform[evaluation]>=1.148",
+  "google-cloud-texttospeech>=2.37",
   "jinja2>=3.1.4,<4",                           # For eval template rendering
+  "nltk!=3.10.1",                               # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
+  "openpyxl>=3.1.5,<4",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
+  "xlrd>=2,<3",
 ]
 optional-dependencies.extensions = [
   "anthropic>=0.78",                                                 # For anthropic model support; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
@@ -149,11 +210,14 @@ optional-dependencies.extensions = [
   "google-cloud-firestore>=2.11,<3",                                 # For Firestore services
   "k8s-agent-sandbox>=0.1.1.post3",
   "kubernetes>=29",
-  "langgraph>=0.2.60,<0.4.8",
-  "litellm>=1.83.7,<=1.83.14",
+  "langgraph>=1.0.10,<2",
+  "langgraph-checkpoint>=4.1.1,<5",                                  # LangGraph's own floor still admits unsafe checkpoint deserialization.
+  "litellm>=1.84",
   "llama-index-embeddings-google-genai>=0.3",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
+  "nltk!=3.10.1",                                                    # Transitive via llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
+  "openai>=2.20,<3",
   "pypika>=0.50",
   "toolbox-adk>=1,<2",
 ]
@@ -161,9 +225,10 @@ optional-dependencies.gcp = [
   "google-cloud-aiplatform[agent-engines]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",
+  "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-eventarc-publishing>=0.10,<1",
   "google-cloud-parametermanager>=0.4,<1",
   "google-cloud-pubsub>=2,<3",
   "google-cloud-resource-manager>=1.12,<2",
@@ -176,24 +241,32 @@ optional-dependencies.gcp = [
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
-  "pyarrow>=14",
   "python-dateutil>=2.9.0.post0,<3",
 ]
 optional-dependencies.mcp = [
   "anyio>=4.9,<5",
   "mcp>=1.24,<2",
 ]
+optional-dependencies.oci = [
+  "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
+]
 optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
 ]
+optional-dependencies.redis = [
+  "redis>=4.2", # 4.2 is where redis.asyncio landed, the only API used.
+]
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
-  "a2a-sdk>=0.3,<0.4",
+  "a2a-sdk>=0.3.4,<2",
   "anthropic>=0.78",                                                 # For anthropic model tests; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
   "anyio>=4.9,<5",
+  "beautifulsoup4>=3.2.2",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # For CrewaiTool tests; chromadb/pypika fail on 3.12+
+  "daytona>=0.191",
+  "docker>=7",                                                       # For ContainerCodeExecutor tests
   "e2b>=2,<3",
   "gepa>=0.1",
   "google-antigravity>=0.1,<0.2",
@@ -202,9 +275,10 @@ optional-dependencies.test = [
   "google-cloud-aiplatform[agent-engines,evaluation]>=1.148.1,<2",
   "google-cloud-bigquery>=2.2",
   "google-cloud-bigquery-storage>=2",
-  "google-cloud-bigtable>=2.32",
+  "google-cloud-bigtable>=2.39.1",
   "google-cloud-dataplex>=1.7,<3",
   "google-cloud-discoveryengine>=0.13.12,<0.14",
+  "google-cloud-eventarc-publishing>=0.10,<1",
   "google-cloud-firestore>=2.11,<3",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
   "google-cloud-parametermanager>=0.4,<1",
@@ -214,14 +288,19 @@ optional-dependencies.test = [
   "google-cloud-spanner>=3.56,<4",
   "google-cloud-speech>=2.30,<3",
   "google-cloud-storage>=2.18,<4",
+  "hypothesis>=6",
   "jinja2>=3.1.4,<4",
   "kubernetes>=29",
   "langchain-community>=0.3.17",
-  "langgraph>=0.2.60,<0.4.8",
-  "litellm>=1.83.7,<=1.83.14",
+  "langgraph>=1.0.10,<2",
+  "langgraph-checkpoint>=4.1.1,<5",                                  # LangGraph's own floor still admits unsafe checkpoint deserialization.
+  "litellm>=1.84",
   "llama-index-readers-file>=0.4",
+  "lxml>=5.3",
   "mcp>=1.24,<2",
-  "openai>=1.100.2",
+  "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
+  "openai>=2.20,<3",
+  "openpyxl>=3.1.5,<4",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
@@ -244,6 +323,7 @@ optional-dependencies.test = [
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "tomli>=2,<3; python_version<'3.11'",
+  "xlrd>=2,<3",
 ]
 optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
 optional-dependencies.tools = [
@@ -272,8 +352,6 @@ extend-exclude = [
   "src/google/adk/integrations/bigquery/data_insights_tool.py",
   "src/google/adk/plugins/bigquery_agent_analytics_plugin.py",
   "src/google/adk/tools/data_agent/data_agent_tool.py",
-  "src/google/adk/v1/",
-  "v1_tests/",
 ]
 lint.select = [ "F401" ]
 # __init__.py files re-export symbols for the public API; unused imports
@@ -286,13 +364,31 @@ line_length = 200
 single_line_exclusions = []
 known_third_party = [ "a2a", "google.adk" ]
 
+[tool.codespell]
+# Real words/identifiers that codespell misreads as typos:
+#   hel/serie/strin -> substrings in test fixtures; te -> local variable;
+#   rouge -> the ROUGE metric; unparseable -> valid spelling variant;
+#   re-use/re-used -> intentional hyphenation; lamda -> Google LaMDA project;
+#   astroid -> AST library used by pylint.
+ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda,astroid"
+# CHANGELOG.md is generated from commit messages; lockfiles, notebooks, JSON
+# fixtures, bundled JS/source maps, and the vendored CLI browser bundle are
+# generated or data files, not prose we own.
+skip = "*CHANGELOG.md,*.lock,*.ipynb,*.json,*.js,*.map,*/cli/browser/*,constraints-*.txt"
+
 [tool.mypy]
+mypy_path = [ "src" ]
 exclude = [ "contributing/samples/", "tests/" ]
-follow_imports = "skip"
+namespace_packages = true
+explicit_package_bases = true
+follow_imports = "normal"
 python_version = "3.11"
 disable_error_code = [ "import-not-found", "import-untyped", "unused-ignore" ]
 strict = true
 plugins = [ "pydantic.mypy" ]
+overrides = [ { module = [
+  "google.auth.*",
+], ignore_missing_imports = true, follow_imports = "skip" } ]
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]

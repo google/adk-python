@@ -26,6 +26,16 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
 
+from ....utils import _mtls_utils
+
+_DEFAULT_INTEGRATIONS_REGIONAL_ENDPOINT_TEMPLATE = (
+    "{location}-integrations.googleapis.com"
+)
+_DEFAULT_MTLS_INTEGRATIONS_REGIONAL_ENDPOINT_TEMPLATE = (
+    "{location}-integrations.mtls.googleapis.com"
+)
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+
 
 class IntegrationClient:
   """A client for interacting with Google Cloud Application Integration.
@@ -88,7 +98,12 @@ class IntegrationClient:
         Exception: For any other unexpected errors.
     """
     try:
-      url = f"https://{self.location}-integrations.googleapis.com/v1/projects/{self.project}/locations/{self.location}:generateOpenApiSpec"
+      endpoint = _mtls_utils.get_api_endpoint(
+          self.location,
+          _DEFAULT_INTEGRATIONS_REGIONAL_ENDPOINT_TEMPLATE,
+          _DEFAULT_MTLS_INTEGRATIONS_REGIONAL_ENDPOINT_TEMPLATE,
+      )
+      url = f"https://{endpoint}/v1/projects/{self.project}/locations/{self.location}:generateOpenApiSpec"
       headers = {
           "Content-Type": "application/json",
           "Authorization": f"Bearer {self._get_access_token()}",
@@ -104,7 +119,12 @@ class IntegrationClient:
           ],
           "fileFormat": "JSON",
       }
-      response = requests.post(url, headers=headers, json=data)
+      response = requests.post(
+          url,
+          headers=headers,
+          json=data,
+          timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
+      )
       response.raise_for_status()
       spec = response.json().get("openApiSpec", {})
       return json.loads(spec)

@@ -26,7 +26,7 @@ This sample demonstrates ADK context caching features using a comprehensive rese
 
   *Specific request triggering the benchmark_performance tool with explicit parameters.*
 
-- `Call analyze_user_behavior_patterns with user_segment='premium_customers', time_period='last_30_days', metrics=['engagement', 'conversion'].`
+- `Call analyze_data_patterns with data='premium customer engagement and conversion events for the last 30 days', analysis_type='trends'.`
 
   *Specific request triggering data analysis tools with required parameters.*
 
@@ -85,10 +85,10 @@ You can also run or debug the agent directly using the ADK CLI:
 
 ```bash
 # Run the agent directly
-adk run contributing/samples/cache_analysis/agent.py
+adk run contributing/samples/context_management/cache_analysis
 
 # Web interface for debugging
-adk web contributing/samples/cache_analysis
+adk web contributing/samples/context_management
 ```
 
 ### 4. Experiment Types

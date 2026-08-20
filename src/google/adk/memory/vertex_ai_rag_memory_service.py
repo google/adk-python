@@ -15,10 +15,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 from collections import OrderedDict
 import json
+import logging
 import os
 import tempfile
 from typing import Optional
@@ -33,11 +35,21 @@ from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
 
 if TYPE_CHECKING:
+  import agentplatform
+
   from ..events.event import Event
   from ..sessions.session import Session
 
 
+logger = logging.getLogger("google_adk." + __name__)
+
 _SOURCE_DISPLAY_NAME_PREFIX = "adk-memory-v1."
+
+_RAG_FILE_PAGE_SIZE = 100
+
+# Scoping walks the corpus file list, so it is capped to keep the cost of a
+# search independent of how large a shared corpus grows.
+_MAX_RAG_FILE_PAGES = 10
 
 
 def _encode_source_display_name_part(value: str) -> str:
@@ -89,106 +101,247 @@ def _parse_source_display_name(
   return parts[0], parts[1], parts[2]
 
 
+async def _scoped_rag_resources(
+    client: agentplatform.AsyncClient,
+    rag_resources: list[types.VertexRagStoreRagResource],
+    app_name: str,
+    user_id: str,
+) -> list[types.VertexRagStoreRagResource] | None:
+  """Returns resources naming only the files owned by one app and user.
+
+  Returns None when a corpus cannot be listed within the page budget, in which
+  case the caller retrieves without narrowing the resources.
+  """
+  from agentplatform import types as agentplatform_types
+
+  scoped_resources: list[types.VertexRagStoreRagResource] = []
+  for rag_resource in rag_resources:
+    rag_corpus = rag_resource.rag_corpus
+    if not rag_corpus:
+      return None
+
+    rag_file_ids: list[str] = []
+    page_token: str | None = None
+    for _ in range(_MAX_RAG_FILE_PAGES):
+      response = await client.rag.list_files(
+          name=rag_corpus,
+          config=agentplatform_types.ListRagFilesConfig(
+              page_size=_RAG_FILE_PAGE_SIZE, page_token=page_token
+          ),
+      )
+      for rag_file in response.rag_files or []:
+        session_info = _parse_source_display_name(rag_file.display_name or "")
+        if (
+            not session_info
+            or session_info[0] != app_name
+            or session_info[1] != user_id
+            or not rag_file.name
+        ):
+          continue
+        # rag_file_ids takes the bare file id, not the full resource name.
+        rag_file_ids.append(rag_file.name.rsplit("/", 1)[-1])
+      page_token = response.next_page_token
+      if not page_token:
+        break
+
+    if page_token:
+      # Scoping to the files seen so far would hide the caller's own memories,
+      # so an incomplete listing is abandoned instead.
+      logger.warning(
+          "Listing %s did not finish within %d pages, so retrieval is not"
+          " scoped to the requesting app and user.",
+          rag_corpus,
+          _MAX_RAG_FILE_PAGES,
+      )
+      return None
+    if rag_file_ids:
+      scoped_resources.append(
+          types.VertexRagStoreRagResource(
+              rag_corpus=rag_corpus, rag_file_ids=rag_file_ids
+          )
+      )
+
+  return scoped_resources
+
+
 class VertexAiRagMemoryService(BaseMemoryService):
-  """A memory service that uses Vertex AI RAG for storage and retrieval."""
+  """A memory service that uses Agent Platform RAG for storage and retrieval."""
 
   def __init__(
       self,
       rag_corpus: Optional[str] = None,
       similarity_top_k: Optional[int] = None,
       vector_distance_threshold: float = 10,
+      project: Optional[str] = None,
+      location: Optional[str] = None,
   ):
     """Initializes a VertexAiRagMemoryService.
 
     Args:
-        rag_corpus: The name of the Vertex AI RAG corpus to use. Format:
+        rag_corpus: The name of the Agent Platform RAG corpus to use. Format:
           ``projects/{project}/locations/{location}/ragCorpora/{rag_corpus_id}``
           or ``{rag_corpus_id}``
         similarity_top_k: The number of contexts to retrieve.
         vector_distance_threshold: Only returns contexts with vector distance
           smaller than the threshold.
+        project: The project to use for the Agent Platform RAG corpus. If not
+          set, the value of the GOOGLE_CLOUD_PROJECT environment variable is
+          used.
+        location: The location to use for the Agent Platform RAG corpus. If not
+          set, the value of the GOOGLE_CLOUD_LOCATION environment variable is
+          used.
     """
     try:
-      import vertexai  # noqa: F401
+      import agentplatform  # noqa: F401
     except ImportError as e:
       from ..utils._dependency import missing_extra
 
       raise missing_extra("google-cloud-aiplatform", "gcp") from e
 
+    self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    self._location = location or os.environ.get("GOOGLE_CLOUD_LOCATION")
+
+    # Fallback: if the fully-qualified corpus name is provided, use it to
+    # determine the project and location, if they are not already set.
+    if (not self._project or not self._location) and (
+        rag_corpus and rag_corpus.startswith("projects/")
+    ):
+      parts = rag_corpus.split("/")
+      if len(parts) >= 4 and parts[0] == "projects" and parts[2] == "locations":
+        self._project = self._project or parts[1]
+        self._location = self._location or parts[3]
+
+    # Top-k belongs on the retrieval query, not on the store: the
+    # retrieveContexts request's VertexRagStore has no such field.
+    self._similarity_top_k = similarity_top_k
     self._vertex_rag_store = types.VertexRagStore(
         rag_resources=[
             types.VertexRagStoreRagResource(rag_corpus=rag_corpus),
         ],
-        similarity_top_k=similarity_top_k,
         vector_distance_threshold=vector_distance_threshold,
     )
 
   @override
   async def add_session_to_memory(self, session: Session) -> None:
-    with tempfile.NamedTemporaryFile(
-        mode="w", delete=False, suffix=".txt"
-    ) as temp_file:
+    rag_resources = self._vertex_rag_store.rag_resources or ()
+    corpus_names = tuple(
+        resource.rag_corpus for resource in rag_resources if resource.rag_corpus
+    )
+    if not corpus_names or len(corpus_names) != len(rag_resources):
+      raise ValueError("rag_corpus must be set on every RAG resource.")
 
-      output_lines = []
-      for event in session.events:
-        if not event.content or not event.content.parts:
-          continue
-        text_parts = [
-            part.text.replace("\n", " ")
-            for part in event.content.parts
-            if part.text
-        ]
-        if text_parts:
-          output_lines.append(
-              json.dumps({
-                  "author": event.author,
-                  "timestamp": event.timestamp,
-                  "text": ".".join(text_parts),
-              })
+    output_lines = []
+    for event in session.events:
+      if not event.content or not event.content.parts:
+        continue
+      text_parts = [
+          part.text.replace("\n", " ")
+          for part in event.content.parts
+          if part.text
+      ]
+      if text_parts:
+        output_lines.append(
+            json.dumps({
+                "author": event.author,
+                "timestamp": event.timestamp,
+                "text": ".".join(text_parts),
+            })
+        )
+    output_string = "\n".join(output_lines)
+
+    import agentplatform
+
+    temp_file_path: str | None = None
+    try:
+      with tempfile.NamedTemporaryFile(
+          mode="w",
+          delete=False,
+          encoding="utf-8",
+          suffix=".txt",
+      ) as temp_file:
+        temp_file_path = temp_file.name
+        temp_file.write(output_string)
+
+      client = agentplatform.Client(
+          project=self._project, location=self._location
+      ).aio
+      rag = client.rag
+      try:
+        # Fails fast: the RAG API cannot roll back corpora already written.
+        for corpus_name in corpus_names:
+          await rag.upload_file(
+              corpus_name=corpus_name,
+              path=temp_file_path,
+              display_name=_build_source_display_name(
+                  session.app_name, session.user_id, session.id
+              ),
           )
-      output_string = "\n".join(output_lines)
-      temp_file.write(output_string)
-      temp_file_path = temp_file.name
-
-    if not self._vertex_rag_store.rag_resources:
-      raise ValueError("Rag resources must be set.")
-
-    from ..dependencies.vertexai import rag
-
-    for rag_resource in self._vertex_rag_store.rag_resources:
-      rag.upload_file(
-          corpus_name=rag_resource.rag_corpus,
-          path=temp_file_path,
-          # this is the temp workaround as upload file does not support
-          # adding metadata, thus use display_name to store the session info.
-          display_name=_build_source_display_name(
-              session.app_name, session.user_id, session.id
-          ),
-      )
-
-    os.remove(temp_file_path)
+      finally:
+        # Shielded so a cancellation racing the close cannot leak the
+        # underlying HTTP session.
+        await asyncio.shield(client.aclose())
+    finally:
+      if temp_file_path:
+        try:
+          os.remove(temp_file_path)
+        except FileNotFoundError:
+          pass
 
   @override
   async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query using rag.retrieval_query."""
-    from ..dependencies.vertexai import rag
+    import agentplatform
+    from agentplatform import types as agentplatform_types
+
     from ..events.event import Event
 
-    response = rag.retrieval_query(
-        text=query,
-        rag_resources=self._vertex_rag_store.rag_resources,
-        rag_corpora=self._vertex_rag_store.rag_corpora,
-        similarity_top_k=self._vertex_rag_store.similarity_top_k,
-        vector_distance_threshold=self._vertex_rag_store.vector_distance_threshold,
-    )
+    rag_resources = self._vertex_rag_store.rag_resources
+    if not rag_resources:
+      raise ValueError("Rag resources must be set.")
 
+    client = agentplatform.Client(
+        project=self._project, location=self._location
+    ).aio
+    try:
+      try:
+        scoped_resources = await _scoped_rag_resources(
+            client, rag_resources, app_name, user_id
+        )
+      except Exception:  # pylint: disable=broad-except
+        # Narrowing the resources only improves ranking and transfer; the
+        # response filter below keeps an unnarrowed retrieval correct.
+        logger.warning(
+            "Listing the corpus failed, so retrieval is not scoped to the"
+            " requesting app and user.",
+            exc_info=True,
+        )
+        scoped_resources = None
+
+      vertex_rag_store = self._vertex_rag_store
+      if scoped_resources is not None:
+        if not scoped_resources:
+          return SearchMemoryResponse()
+        vertex_rag_store = self._vertex_rag_store.model_copy(
+            update={"rag_resources": scoped_resources}
+        )
+
+      response = await client.rag.retrieve_contexts(
+          vertex_rag_store=vertex_rag_store,
+          query=agentplatform_types.RagQuery(
+              text=query,
+              similarity_top_k=self._similarity_top_k,
+          ),
+      )
+    finally:
+      # Shielded so a cancellation racing the close cannot leak the
+      # underlying HTTP session.
+      await asyncio.shield(client.aclose())
     memory_results = []
     session_events_map: OrderedDict[str, list[list[Event]]] = OrderedDict()
     for context in response.contexts.contexts:
-      # filter out context that is not related
-      # TODO: Add server side filtering by app_name and user_id.
+      # Still required: retrieval is unscoped whenever listing did not finish.
       source_display_name = getattr(context, "source_display_name", "")
       if not isinstance(source_display_name, str):
         continue

@@ -1,3 +1,17 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 name: Upload ADK Docs to Vertex AI Search
 
 on:
@@ -17,7 +31,9 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
       - name: Clone adk-docs repository
         run: git clone https://github.com/google/adk-docs.git /tmp/adk-docs
@@ -26,13 +42,13 @@ jobs:
         run: git clone https://github.com/google/adk-python.git /tmp/adk-python
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
 
       - name: Authenticate to Google Cloud
         id: auth
-        uses: 'google-github-actions/auth@v3'
+        uses: 'google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093' # v3
         with:
           credentials_json: '${{ secrets.ADK_GCP_SA_KEY }}'
 

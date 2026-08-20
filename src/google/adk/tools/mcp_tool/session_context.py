@@ -19,6 +19,7 @@ from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import logging
+from types import TracebackType
 from typing import Any
 from typing import Coroutine
 from typing import Optional
@@ -26,6 +27,7 @@ from typing import TypeVar
 
 from mcp import ClientSession
 from mcp import SamplingCapability
+from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
 
 from ...features import FeatureName
@@ -34,6 +36,34 @@ from ...features import is_feature_enabled
 logger = logging.getLogger('google_adk.' + __name__)
 
 _T = TypeVar('_T')
+
+
+def _format_exception(exc: BaseException | None) -> str:
+  """Formats an exception into a readable string representation.
+
+  This handles `ExceptionGroup` (by flattening inner exceptions) and optionally
+  extracts HTTP response bodies for network-related errors, truncating them
+  to 1000 characters to prevent log/context overflow.
+
+  Args:
+    exc: The exception to format.
+
+  Returns:
+    A formatted string representing the exception and its pertinent details.
+  """
+  if exc is None:
+    return 'None'
+  if hasattr(exc, 'exceptions') and getattr(exc, 'exceptions'):
+    return ' | '.join(_format_exception(e) for e in exc.exceptions)
+  if hasattr(exc, 'response') and exc.response is not None:
+    try:
+      response_text = exc.response.text
+      if len(response_text) > 1000:
+        response_text = response_text[:1000] + '... [truncated]'
+      return f'{exc} (Response: {response_text})'
+    except Exception:
+      pass
+  return str(exc)
 
 
 class SessionContext:
@@ -61,36 +91,43 @@ class SessionContext:
   def __init__(
       self,
       client: AbstractAsyncContextManager[Any],
-      timeout: Optional[float],
-      sse_read_timeout: Optional[float],
+      timeout: float | None,
+      sse_read_timeout: float | None,
       is_stdio: bool = False,
       *,
-      sampling_callback: Optional[SamplingFnT] = None,
-      sampling_capabilities: Optional[SamplingCapability] = None,
+      sampling_callback: SamplingFnT | None = None,
+      sampling_capabilities: SamplingCapability | None = None,
+      elicitation_callback: ElicitationFnT | None = None,
   ):
-    """
+    """Initializes SessionContext.
+
     Args:
-        client: An MCP client context manager (e.g., from streamablehttp_client,
-            sse_client, or stdio_client).
-        timeout: Timeout in seconds for connection and initialization.
-        sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
-            server.
-        is_stdio: Whether this is a stdio connection (affects read timeout).
-        sampling_callback: Optional callback to handle sampling requests from the
-            MCP server.
-        sampling_capabilities: Optional capabilities for sampling.
+      client: An MCP client context manager (e.g., from streamablehttp_client,
+        sse_client, or stdio_client).
+      timeout: Timeout in seconds for connection and initialization. This is the
+        budget for the whole bring-up -- entering the client's context and
+        running ``initialize()`` -- not a separate allowance for each step.
+      sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
+        server.
+      is_stdio: Whether this is a stdio connection (affects read timeout).
+      sampling_callback: Optional callback to handle sampling requests from the
+        MCP server.
+      sampling_capabilities: Optional capabilities for sampling.
+      elicitation_callback: Optional callback to handle elicitation requests
+        from the MCP server (``elicitation/create``).
     """
     self._client = client
     self._timeout = timeout
     self._sse_read_timeout = sse_read_timeout
     self._is_stdio = is_stdio
-    self._session: Optional[ClientSession] = None
+    self._session: ClientSession | None = None
     self._ready_event = asyncio.Event()
     self._close_event = asyncio.Event()
-    self._task: Optional[asyncio.Task] = None
+    self._task: asyncio.Task[None] | None = None
     self._task_lock = asyncio.Lock()
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
+    self._elicitation_callback = elicitation_callback
 
   @property
   def session(self) -> Optional[ClientSession]:
@@ -108,6 +145,10 @@ class SessionContext:
 
   async def start(self) -> ClientSession:
     """Start the runner and wait for the session to be ready.
+
+    The wait is bounded by ``timeout``, which covers connecting and
+    initializing together. A connect that eats most of the budget therefore
+    leaves ``initialize()`` less of it.
 
     Returns:
         The initialized ClientSession.
@@ -130,20 +171,39 @@ class SessionContext:
       if not self._task:
         self._task = asyncio.create_task(self._run())
 
-        def _retrieve_exception(t: asyncio.Task):
+        def _retrieve_exception(t: asyncio.Task[None]) -> None:
           if not t.cancelled():
             t.exception()
 
         self._task.add_done_callback(_retrieve_exception)
 
-    await self._ready_event.wait()
+    if (
+        is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)  # pylint: disable=protected-access
+        and self._timeout is not None
+    ):
+      # `_ready_event` is a plain asyncio.Event, so bounding this wait only
+      # cancels a bare future waiter and never crosses an AnyIO cancel
+      # scope. The scopes live inside `self._task` and are unwound there,
+      # in the task that entered them -- the same thing `close()` does for
+      # an abandoned start.
+      try:
+        await asyncio.wait_for(self._ready_event.wait(), timeout=self._timeout)
+      except asyncio.TimeoutError as e:
+        self._task.cancel()
+        raise ConnectionError(
+            'Failed to create MCP session: timed out after'
+            f' {self._timeout}s waiting for the session to become ready'
+        ) from e
+    else:
+      await self._ready_event.wait()
 
     if self._task.cancelled():
       raise ConnectionError('Failed to create MCP session: task cancelled')
 
     if self._task.done() and self._task.exception():
       raise ConnectionError(
-          f'Failed to create MCP session: {self._task.exception()}'
+          'Failed to create MCP session:'
+          f' {_format_exception(self._task.exception())}'
       ) from self._task.exception()
 
     # Pre-fix code returned `self._session` here directly (typed as
@@ -186,7 +246,7 @@ class SessionContext:
       # Close the coroutine to avoid "was never awaited" warnings.
       coro.close()
       raise ConnectionError(
-          f'MCP session task has already terminated: {exc}'
+          f'MCP session task has already terminated: {_format_exception(exc)}'
       ) from exc
 
     coro_task = asyncio.ensure_future(coro)
@@ -212,9 +272,11 @@ class SessionContext:
       pass
 
     exc = self._task.exception() if not self._task.cancelled() else None
-    raise ConnectionError(f'MCP session connection lost: {exc}') from exc
+    raise ConnectionError(
+        f'MCP session connection lost: {_format_exception(exc)}'
+    ) from exc
 
-  async def close(self):
+  async def close(self) -> None:
     """Signal the context task to close and wait for cleanup."""
     # Set the close event to signal the task to close.
     # Even if start has not been called, we need to set the close event
@@ -242,10 +304,15 @@ class SessionContext:
   async def __aenter__(self) -> ClientSession:
     return await self.start()
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb):
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     await self.close()
 
-  async def _run(self):
+  async def _run(self) -> None:
     """Run the complete session context within a single task."""
     try:
       async with AsyncExitStack() as exit_stack:
@@ -256,9 +323,10 @@ class SessionContext:
           # in a nested task and can cancel from a different task on
           # timeout, producing "Attempted to exit cancel scope in a
           # different task" errors. The connection-establishment timeout
-          # is still enforced by MCPSessionManager.create_session via its
-          # outer asyncio.wait_for around
-          # exit_stack.enter_async_context(SessionContext(...)).
+          # is enforced by `start()`, which bounds its wait on
+          # `_ready_event` -- an asyncio.Event, so bounding it never
+          # cancels across a cancel scope. (create_session's outer
+          # asyncio.wait_for only exists on the flag-off path.)
           transports = await exit_stack.enter_async_context(self._client)
         else:
           # Pre-fix behavior: wrap with asyncio.wait_for so the inner
@@ -283,6 +351,7 @@ class SessionContext:
                   else None,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
+                  elicitation_callback=self._elicitation_callback,
               )
           )
         else:
@@ -296,6 +365,7 @@ class SessionContext:
                   else None,
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
+                  elicitation_callback=self._elicitation_callback,
               )
           )
         # pylint: disable-next=protected-access
@@ -316,8 +386,8 @@ class SessionContext:
 
         # Wait for close signal - the session remains valid while we wait
         await self._close_event.wait()
-    except BaseException as e:
-      logger.warning(f'Error on session runner task: {e}')
+    except Exception as e:
+      logger.warning('Error on session runner task: %s', e)
       raise
     finally:
       self._ready_event.set()

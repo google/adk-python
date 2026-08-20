@@ -90,6 +90,23 @@ class BaseTool(ABC):
   NOTE: the entire dict must be JSON serializable.
   """
 
+  response_scheduling: Optional[types.FunctionResponseScheduling] = None
+  """Controls when the model reacts to the tool's response (Live API only).
+
+  Applied to the emitted ``FunctionResponse`` for asynchronous function calling:
+    - ``SILENT``: feeds the response back without triggering a model turn.
+    - ``WHEN_IDLE``: defers the reaction until the model is idle.
+    - ``INTERRUPT``: reacts immediately.
+
+  This is the tool-wide default. A streaming tool can choose a different mode
+  for one chunk by yielding a ``types.FunctionResponse`` carrying that chunk's
+  payload in ``response`` and the mode in ``scheduling``; anything it yields
+  plainly falls back to this setting.
+
+  Ignored by models that don't support asynchronous function calling. ``None``
+  preserves the default behavior.
+  """
+
   def __init__(
       self,
       *,
@@ -97,12 +114,14 @@ class BaseTool(ABC):
       description,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
+      response_scheduling: Optional[types.FunctionResponseScheduling] = None,
   ):
     self.name = name
     self.description = description
     self.is_long_running = is_long_running
     self._defers_response = False
     self.custom_metadata = custom_metadata
+    self.response_scheduling = response_scheduling
 
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool in the form of a FunctionDeclaration.
@@ -153,6 +172,12 @@ class BaseTool(ABC):
     """
     # Use the consolidated logic in LlmRequest.append_tools
     llm_request.append_tools([self])
+
+  async def check_require_confirmation(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> bool:
+    """Returns whether the tool requires confirmation for the given args."""
+    return False
 
   @property
   def _api_variant(self) -> GoogleLLMVariant:

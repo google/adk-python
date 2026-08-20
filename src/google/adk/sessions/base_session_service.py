@@ -96,6 +96,9 @@ class BaseSessionService(abc.ABC):
   ) -> ListSessionsResponse:
     """Lists all the sessions for a user.
 
+    Sessions are ordered by last update time, oldest first, so the last session
+    is the most recently active one.
+
     Args:
       app_name: The name of the app.
       user_id: The ID of the user. If not provided, lists all sessions for all
@@ -152,7 +155,12 @@ class BaseSessionService(abc.ABC):
     )
 
   async def append_event(self, session: Session, event: Event) -> Event:
-    """Appends an event to a session object."""
+    """Appends an event to a session object.
+
+    Raises:
+      StaleSessionError: When a persistent implementation detects that the
+        supplied session has been superseded by a newer stored revision.
+    """
     if event.partial:
       return event
     # Apply temp-scoped state to the in-memory session BEFORE trimming the
@@ -164,7 +172,7 @@ class BaseSessionService(abc.ABC):
     session.events.append(event)
     return event
 
-  async def flush(self):
+  async def flush(self) -> None:
     """Flushes any buffered events.
 
     For non-buffering implementations, this can be a no-op.

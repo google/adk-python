@@ -15,35 +15,27 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
+import warnings
 
 from google.auth.credentials import Credentials
 
+from . import admin_tool
 from . import client
 
 
-def get_bucket(*, bucket_name: str, credentials: Credentials) -> dict:
+def get_bucket(*, bucket_name: str, credentials: Credentials) -> dict[str, Any]:
   """Get metadata information about a GCS bucket.
 
-  Args:
-      bucket_name (str): The name of the GCS bucket.
-      credentials (Credentials): The credentials to use for the request.
-
-  Returns:
-      dict: Dictionary representing the properties of the bucket.
+  Deprecated: Use admin_tool.get_bucket instead.
   """
-  try:
-    gcs_client = client.get_gcs_client(credentials=credentials)
-    bucket = gcs_client.get_bucket(bucket_name)
-    results = getattr(bucket, "_properties", {}).copy()
-    return {
-        "status": "SUCCESS",
-        "results": results,
-    }
-  except Exception as ex:
-    return {
-        "status": "ERROR",
-        "error_details": str(ex),
-    }
+  warnings.warn(
+      "storage_tool.get_bucket is deprecated and will be removed in a future"
+      " version. Use admin_tool.get_bucket instead.",
+      DeprecationWarning,
+      stacklevel=2,
+  )
+  return admin_tool.get_bucket(bucket_name=bucket_name, credentials=credentials)
 
 
 def list_objects(
@@ -53,7 +45,7 @@ def list_objects(
     prefix: str | None = None,
     page_size: int | None = None,
     page_token: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
   """List object names in a GCS bucket.
 
   Args:
@@ -73,7 +65,7 @@ def list_objects(
   try:
     gcs_client = client.get_gcs_client(credentials=credentials)
     bucket = gcs_client.get_bucket(bucket_name)
-    list_kwargs = {}
+    list_kwargs: dict[str, Any] = {}
     if page_size is not None:
       list_kwargs["max_results"] = page_size
     if page_token is not None:
@@ -110,7 +102,7 @@ def get_object_metadata(
     object_name: str,
     credentials: Credentials,
     generation: int | None = None,
-) -> dict:
+) -> dict[str, Any]:
   """Get metadata information about a GCS object (blob).
 
   Args:
@@ -156,7 +148,7 @@ def create_object(
     credentials: Credentials,
     data: str | None = None,
     source_file_path: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
   """Create a new object (blob) in a GCS bucket from provided data or a local file.
 
   Args:
@@ -207,7 +199,7 @@ def get_object_data(
     credentials: Credentials,
     generation: int | None = None,
     destination_file_path: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
   """Get the content/data of a GCS object (blob).
 
   Args:
@@ -274,7 +266,7 @@ def delete_objects(
     bucket_name: str,
     object_names: list[str],
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Delete multiple objects (blobs) from a GCS bucket.
 
   Note: A GCS bucket must be empty before it can be deleted. Use this tool to

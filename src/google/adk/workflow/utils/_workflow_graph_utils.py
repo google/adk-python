@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 from typing import cast
+from typing import Literal
 
 from ...tools.base_tool import BaseTool
 from .._base_node import BaseNode
@@ -45,6 +46,7 @@ def build_node(
     retry_config: RetryConfig | None = None,
     timeout: float | None = None,
     auth_config: Any = None,
+    parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> BaseNode:
   """Converts a NodeLike to a BaseNode, wrapping async funcs in FunctionNode.
 
@@ -57,6 +59,11 @@ def build_node(
       wrapped node.
     timeout: If provided, overrides the timeout property of the wrapped node.
     auth_config: If provided, passed to FunctionNode for authentication.
+    parameter_binding: How function parameters are bound. ``'state'``
+      (default) binds parameters from ``ctx.state``. ``'node_input'``
+      binds parameters from ``node_input`` dict and infers
+      ``input_schema`` / ``output_schema`` from the function signature
+      (used when the node acts as an agent's tool).
 
   Returns:
     A BaseNode instance.
@@ -73,6 +80,15 @@ def build_node(
   # workflow_graph_utils -> agents.llm_agent -> ... -> workflow_graph_utils
   from ...agents.llm_agent import LlmAgent
 
+  # Optional dependency: RemoteA2aAgent is only available if a2a is installed.
+  _remote_a2a_agent_type: Any = None
+  try:
+    from ...agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
+
+    _remote_a2a_agent_type = RemoteA2aAgent
+  except ImportError:
+    pass
+
   if isinstance(node_like, BaseNode):
     kwargs: dict[str, Any] = {}
     if name is not None:
@@ -84,14 +100,27 @@ def build_node(
     if timeout is not None:
       kwargs['timeout'] = timeout
 
-    if isinstance(node_like, LlmAgent):
+    is_remote_a2a_task = False
+    if _remote_a2a_agent_type is not None:
+      is_remote_a2a_task = (
+          isinstance(node_like, _remote_a2a_agent_type)
+          and node_like.mode == 'task'
+      )
+    if is_remote_a2a_task and getattr(node_like, 'parent_agent', None) is None:
+      raise ValueError(
+          'RemoteA2aAgent in task mode is not supported as a standalone '
+          'workflow node. It is only supported in tool-delegation mode.'
+      )
+
+    if isinstance(node_like, LlmAgent) or is_remote_a2a_task:
       if rerun_on_resume is None:
         kwargs['rerun_on_resume'] = True
-      agent = node_like.clone(update=kwargs)
+      agent_node = cast(Any, node_like)
+      agent = agent_node.clone(update=kwargs)
       # Preserve parent agent reference that was lost during clone
-      agent.parent_agent = node_like.parent_agent
+      agent.parent_agent = agent_node.parent_agent
 
-      if agent.mode is None:
+      if isinstance(agent, LlmAgent) and agent.mode is None:
         # Sub-agents dynamically attached to a parent agent default to 'chat'
         # mode to enable agent transfer.
         # Standalone agents in a workflow graph default to 'single_turn'.
@@ -103,7 +132,7 @@ def build_node(
       if agent.mode in ('task', 'chat'):
         agent.wait_for_output = True
 
-      if agent.parallel_worker:
+      if isinstance(agent, LlmAgent) and agent.parallel_worker:
         from .._parallel_worker import _ParallelWorker
 
         agent.parallel_worker = False
@@ -111,7 +140,7 @@ def build_node(
       return cast(BaseNode, agent)
     else:
       if kwargs:
-        return cast(BaseNode, node_like.model_copy(update=kwargs))
+        return node_like.model_copy(update=kwargs)
       return node_like
   elif isinstance(node_like, BaseTool):
     return _ToolNode(
@@ -128,6 +157,7 @@ def build_node(
         retry_config=retry_config,
         timeout=timeout,
         auth_config=auth_config,
+        parameter_binding=parameter_binding,
     )
   else:
     raise ValueError(

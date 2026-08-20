@@ -56,7 +56,7 @@ Once the agent is running, try these queries:
 
 The agent uses:
 
-- **Model**: Gemini 2.0 Flash
+- **Model**: the ADK default model (the agent does not set `model`)
 - **MCP Server**: `postgres-mcp` (via `uvx`)
 - **Access Mode**: Unrestricted (allows read/write operations). **Warning**: Using unrestricted mode in a production environment can pose significant security risks. It is recommended to use a more restrictive access mode or configure database user permissions appropriately for production use.
 - **Connection**: StdioConnectionParams with 60-second timeout

@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
+from .config import DataAgentToolConfig
 from .credentials import DataAgentCredentialsConfig
 from .data_agent_toolset import DataAgentToolset
 
 __all__ = [
     "DataAgentCredentialsConfig",
+    "DataAgentToolConfig",
     "DataAgentToolset",
 ]

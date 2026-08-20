@@ -65,6 +65,7 @@ def test_skill_properties():
   skill = models.Skill(frontmatter=frontmatter, instructions="do this")
   assert skill.name == "my-skill"
   assert skill.description == "my description"
+  assert skill._uri is None
 
 
 def test_script_to_string():
@@ -231,4 +232,22 @@ def test_metadata_adk_additional_tools_invalid_type():
         "name": "my-skill",
         "description": "desc",
         "metadata": {"adk_additional_tools": 123},
+    })
+
+
+def test_metadata_adk_inject_state_bool():
+  fm = models.Frontmatter.model_validate({
+      "name": "my-skill",
+      "description": "desc",
+      "metadata": {"adk_inject_state": True},
+  })
+  assert fm.metadata["adk_inject_state"] is True
+
+
+def test_metadata_adk_inject_state_rejected_as_string():
+  with pytest.raises(ValidationError, match="adk_inject_state must be a bool"):
+    models.Frontmatter.model_validate({
+        "name": "my-skill",
+        "description": "desc",
+        "metadata": {"adk_inject_state": "true"},
     })

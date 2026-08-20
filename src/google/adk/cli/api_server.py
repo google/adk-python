@@ -19,6 +19,8 @@ Api server with all production ADK endpoints.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from contextlib import asynccontextmanager
 import importlib
 import json
@@ -26,13 +28,16 @@ import logging
 import os
 import re
 import sys
+import time
 import traceback
 import typing
 from typing import Any
 from typing import Callable
 from typing import List
 from typing import Literal
+from typing import Mapping
 from typing import Optional
+import urllib.parse
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -74,11 +79,16 @@ from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
+from ..events.event_actions import EventActions
+from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..utils._telemetry_config import read_telemetry_consent
 from ..utils.agent_info import AgentInfo
 from ..utils.agent_info import get_agents_dict
 from ..utils.context_utils import Aclosing
@@ -87,7 +97,6 @@ from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
-from .utils import envs
 from .utils.base_agent_loader import BaseAgentLoader
 from .utils.shared_value import SharedValue
 
@@ -165,6 +174,49 @@ def _get_scope_header(
   return None
 
 
+import ipaddress as _ipaddress
+
+_LOOPBACK_HOSTNAMES = frozenset({"localhost"})
+
+
+def _strip_port(host: str) -> str:
+  """Returns *host* without its port, or unchanged if it has no valid one."""
+  # A malformed authority must come back whole, so that callers never read
+  # "127.0.0.1:8000.evil.com" as loopback.
+  if host.startswith("["):  # [addr] or [addr]:port
+    bare, bracket, suffix = host[1:].partition("]")
+    if not bracket:
+      return host
+  elif host.count(":") == 1:  # host:port; bracketless IPv6 has more colons
+    bare, _, port = host.partition(":")
+    suffix = f":{port}"
+  else:
+    return host
+  if suffix and not (suffix.startswith(":") and suffix[1:].isdigit()):
+    return host
+  return bare
+
+
+def _is_loopback_address(host: str) -> bool:
+  """Return True if *host* (with or without a port) refers to a loopback address."""
+  # Host names are case-insensitive and may carry a root dot ("localhost.").
+  bare = _strip_port(host).lower().rstrip(".")
+  if bare in _LOOPBACK_HOSTNAMES:
+    return True
+  try:
+    return _ipaddress.ip_address(bare).is_loopback
+  except ValueError:
+    return False
+
+
+def _get_server_host(scope: dict[str, Any]) -> Optional[str]:
+  """Return the host the server is actually bound to (from ASGI server port)."""
+  server = scope.get("server")
+  if server and len(server) == 2:
+    return str(server[0])
+  return None
+
+
 def _get_request_origin(scope: dict[str, Any]) -> Optional[str]:
   """Compute the effective origin for the current HTTP/WebSocket request."""
   forwarded = _get_scope_header(scope, b"forwarded")
@@ -194,18 +246,106 @@ def _get_request_origin(scope: dict[str, Any]) -> Optional[str]:
   return f"{_normalize_origin_scheme(proto)}://{host}"
 
 
+def _get_allowed_request_hosts(
+    allowed_literal_origins: list[str],
+) -> Optional[frozenset[str]]:
+  """Returns hosts the rebinding guard accepts besides loopback, None for all."""
+  # A loopback bind behind a same-machine proxy sees the proxy's hostname in
+  # Host, so listing an origin in --allow_origins vouches for its host. A
+  # 'regex:' entry yields no host, so only "*" opts out of the guard.
+  if "*" in allowed_literal_origins:
+    return None
+
+  hosts = set()
+  for origin in allowed_literal_origins:
+    try:
+      host = urllib.parse.urlparse(origin).hostname
+    except ValueError:
+      continue  # A malformed origin vouches for no host.
+    if host:
+      hosts.add(host.lower())
+  return frozenset(hosts)
+
+
+def _is_dns_rebinding_request(
+    scope: Mapping[str, Any],
+    bind_host: Optional[str],
+    allowed_request_hosts: Optional[frozenset[str]],
+) -> bool:
+  """Returns True if the request must be rejected as possible DNS rebinding."""
+  # A loopback bind is reachable only from this machine, so a request naming
+  # any other host was pointed here by rebound DNS. Origin cannot catch that:
+  # browsers omit it on requests they consider same-origin, as a rebound page's
+  # are, so callers must apply this to every request, safe methods included.
+  if allowed_request_hosts is None or bind_host is None:
+    # A bind we were not told about is not ours to guess: an app embedded
+    # behind a same-machine proxy would then reject its own traffic.
+    return False
+  if not _is_loopback_address(bind_host):
+    return False
+
+  # Only the real Host header will do: it is a forbidden request header,
+  # whereas a same-origin fetch() may set X-Forwarded-Host or Forwarded freely.
+  host_values = [
+      value.decode("latin-1").strip()
+      for name, value in scope.get("headers", [])
+      if name.lower() == b"host"
+  ]
+  if not host_values:
+    # Browsers always send Host, so its absence is not a rebinding vector.
+    return False
+  if len(host_values) > 1 or "," in host_values[0]:
+    # Host is a singleton header; a list of them is smuggling, not a client.
+    return True
+  if _is_loopback_address(host_values[0]):
+    return False
+
+  return (
+      _strip_port(host_values[0]).lower().rstrip(".")
+      not in allowed_request_hosts
+  )
+
+
 def _is_request_origin_allowed(
     origin: str,
     scope: dict[str, Any],
     allowed_literal_origins: list[str],
     allowed_origin_regex: Optional[re.Pattern[str]],
     has_configured_allowed_origins: bool,
+    bind_host: Optional[str] = None,
 ) -> bool:
-  """Validate an Origin header against explicit config or same-origin."""
+  """Validate an Origin header against explicit config or same-origin.
+
+  DNS-rebinding protection: when the server is bound to a loopback address
+  (127.0.0.1 / ::1 / localhost) and no explicit allow-origins have been
+  configured, we additionally require that the request's Origin header also
+  resolves to a loopback host.  This prevents a DNS-rebinding attack where
+  an external page temporarily resolves to 127.0.0.1 and then reaches the
+  local development server by matching its own (evil.com) origin against the
+  Host header it controls.
+  """
   if has_configured_allowed_origins and _is_origin_allowed(
       origin, allowed_literal_origins, allowed_origin_regex
   ):
     return True
+
+  # DNS-rebinding guard: if the server is on loopback and no explicit
+  # allow-origins list is configured, only permit origins whose host is also
+  # loopback.  This mirrors the protection used by the MCP go-sdk SSEHandler.
+  # scope["server"] is only a fallback for an unknown bind: ASGI servers fill
+  # it from the accepted socket, so a wildcard bind reports 127.0.0.1 here.
+  server_host = _get_server_host(scope) if bind_host is None else bind_host
+  if (
+      not has_configured_allowed_origins
+      and server_host is not None
+      and _is_loopback_address(server_host)
+  ):
+    try:
+      origin_host = urllib.parse.urlparse(origin).hostname or ""
+    except Exception:  # pylint: disable=broad-except
+      return False
+    if not _is_loopback_address(origin_host):
+      return False
 
   request_origin = _get_request_origin(scope)
   if request_origin is None:
@@ -213,11 +353,25 @@ def _is_request_origin_allowed(
   return origin == request_origin
 
 
-_SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+async def _send_forbidden(send: Any, reason: str) -> None:
+  """Sends a plain-text 403 over the ASGI send channel."""
+  response_body = f"Forbidden: {reason}".encode()
+  await send({
+      "type": "http.response.start",
+      "status": 403,
+      "headers": [
+          (b"content-type", b"text/plain"),
+          (b"content-length", str(len(response_body)).encode()),
+      ],
+  })
+  await send({
+      "type": "http.response.body",
+      "body": response_body,
+  })
 
 
 class _OriginCheckMiddleware:
-  """ASGI middleware that blocks cross-origin state-changing requests."""
+  """ASGI middleware that blocks cross-origin requests."""
 
   def __init__(
       self,
@@ -225,11 +379,14 @@ class _OriginCheckMiddleware:
       has_configured_allowed_origins: bool,
       allowed_origins: list[str],
       allowed_origin_regex: Optional[re.Pattern[str]],
+      bind_host: Optional[str] = None,
   ) -> None:
     self._app = app
     self._has_configured_allowed_origins = has_configured_allowed_origins
     self._allowed_origins = allowed_origins
     self._allowed_origin_regex = allowed_origin_regex
+    self._bind_host = bind_host
+    self._allowed_request_hosts = _get_allowed_request_hosts(allowed_origins)
 
   async def __call__(
       self,
@@ -241,39 +398,27 @@ class _OriginCheckMiddleware:
       await self._app(scope, receive, send)
       return
 
-    method = scope.get("method", "GET")
-    if method in _SAFE_HTTP_METHODS:
-      await self._app(scope, receive, send)
+    # Every method: the reads here are the whole session history, and a rebound
+    # page looks same-origin, so neither method nor Origin can gate them.
+    if _is_dns_rebinding_request(
+        scope, self._bind_host, self._allowed_request_hosts
+    ):
+      await _send_forbidden(send, "host not allowed")
       return
 
     origin = _get_scope_header(scope, b"origin")
-    if origin is None:
-      await self._app(scope, receive, send)
-      return
-
-    if _is_request_origin_allowed(
+    if origin is not None and not _is_request_origin_allowed(
         origin,
         scope,
         self._allowed_origins,
         self._allowed_origin_regex,
         self._has_configured_allowed_origins,
+        self._bind_host,
     ):
-      await self._app(scope, receive, send)
+      await _send_forbidden(send, "origin not allowed")
       return
 
-    response_body = b"Forbidden: origin not allowed"
-    await send({
-        "type": "http.response.start",
-        "status": 403,
-        "headers": [
-            (b"content-type", b"text/plain"),
-            (b"content-length", str(len(response_body)).encode()),
-        ],
-    })
-    await send({
-        "type": "http.response.body",
-        "body": response_body,
-    })
+    await self._app(scope, receive, send)
 
 
 class _DefaultAppRewriteMiddleware:
@@ -404,6 +549,50 @@ class CreateSessionRequest(common.BaseModel):
   )
 
 
+# Function calls ADK generates itself to drive human-in-the-loop flows.
+_ADK_RESERVED_FUNCTION_NAMES = frozenset({
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+    REQUEST_INPUT_FUNCTION_CALL_NAME,
+})
+
+
+def _is_adk_reserved_function_name(name: Optional[str]) -> bool:
+  """Returns whether a function name belongs to ADK rather than to a tool."""
+  return name is not None and name in _ADK_RESERVED_FUNCTION_NAMES
+
+
+def _invalid_event_error(event_index: int, disallowed: str) -> HTTPException:
+  """Builds the error for an initialization event ADK will not accept."""
+  return HTTPException(
+      status_code=400,
+      detail=(
+          f"Session initialization event {event_index} cannot include"
+          f" {disallowed}."
+      ),
+  )
+
+
+def _validate_session_initialization_events(events: list[Event]) -> None:
+  """Rejects client-supplied events that claim to be ADK-generated.
+
+  Ordinary tool calls and responses are allowed on purpose, so a conversation
+  that used tools can be restored. `EventActions` is compared against a
+  default instance rather than field by field, so it stays correct as fields
+  are added.
+  """
+  for event_index, event in enumerate(events):
+    if event.long_running_tool_ids:
+      raise _invalid_event_error(event_index, "long-running tool IDs")
+    if event.actions != EventActions():
+      raise _invalid_event_error(event_index, "event actions")
+    function_names: list[Optional[str]] = []
+    function_names.extend(fc.name for fc in event.get_function_calls())
+    function_names.extend(fr.name for fr in event.get_function_responses())
+    if any(_is_adk_reserved_function_name(name) for name in function_names):
+      raise _invalid_event_error(event_index, "ADK protocol function calls")
+
+
 class SaveArtifactRequest(common.BaseModel):
   """Request payload for saving a new artifact."""
 
@@ -429,6 +618,19 @@ class UpdateSessionRequest(common.BaseModel):
 
   state_delta: dict[str, Any]
   """The state changes to apply to the session."""
+
+
+class FinalizeAgentIdentityCredentialsRequest(common.BaseModel):
+  """Request to finalize a 3LO consent for an Agent Identity connector."""
+
+  connector_name: str
+  """Full connector resource name, e.g. projects/../connectors/github."""
+  user_id: str
+  """The end-user identity the credential is being stored for."""
+  user_id_validation_state: str
+  """The validation state returned by the connector's consent redirect."""
+  consent_nonce: str
+  """The single-use nonce from the original consent challenge."""
 
 
 class AppInfo(common.BaseModel):
@@ -502,8 +704,7 @@ def _setup_gcp_telemetry(
           # TODO - use trace_to_cloud here as well once otel_to_cloud is no
           # longer experimental.
           enable_cloud_tracing=True,
-          # TODO - re-enable metrics once errors during shutdown are fixed.
-          enable_cloud_metrics=False,
+          enable_cloud_metrics=True,
           enable_cloud_logging=True,
           google_auth=(credentials, project_id),
       )
@@ -569,6 +770,11 @@ def _setup_instrumentation_lib_if_installed():
       )
 
 
+def _get_app_basename(name: str) -> str:
+  """Returns the last segment of a dot-delimited app name."""
+  return name.split(".")[-1]
+
+
 class ApiServer:
   """Helper class for setting up and running the ADK web server on FastAPI.
 
@@ -581,6 +787,15 @@ class ApiServer:
   You can add additional API endpoints by modifying the FastAPI app
   instance returned by get_fast_api_app as this class exposes the agent runners
   and most other bits of state retained during the lifetime of the server.
+
+  Security:
+      The served endpoints are unauthenticated. Any client that can reach the
+      server can read and write sessions, memory, and artifacts and run agents
+      for any user or app. Run it only on a trusted network (for example bound
+      to localhost for local development) and do not expose it directly to
+      untrusted or public networks. Put it behind your own authentication and
+      authorization layer before serving multiple users or exposing it beyond
+      the local machine.
 
   Attributes:
       agent_loader: An instance of BaseAgentLoader for loading agents.
@@ -603,6 +818,8 @@ class ApiServer:
       current_app_name_ref: A shared reference to the latest ran app name.
       runner_dict: A dict of instantiated runners for each app.
   """
+
+  _allow_special_agents: bool = False
 
   def __init__(
       self,
@@ -637,7 +854,7 @@ class ApiServer:
     # Internal properties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
-    self.runner_dict = {}
+    self.runner_dict: dict[str, Runner] = {}
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
@@ -646,19 +863,30 @@ class ApiServer:
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
+    if app_name.startswith("__") and not self._allow_special_agents:
+      raise HTTPException(
+          status_code=403,
+          detail=(
+              "Access to internal special agents is disabled in API server"
+              " mode."
+          ),
+      )
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
       runner = self.runner_dict.pop(app_name, None)
-      await cleanup.close_runners(list([runner]))
+      if runner is not None:
+        await cleanup.close_runners([runner])
 
     # Return cached runner if exists
     if app_name in self.runner_dict:
       return self.runner_dict[app_name]
 
     # Create new runner
-    envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
-    agent_or_app = self.agent_loader.load_agent(app_name)
+    try:
+      agent_or_app = self.agent_loader.load_agent(app_name)
+    except ValueError as ve:
+      raise HTTPException(status_code=404, detail=str(ve)) from ve
 
     if self.default_llm_model:
       from .cli import _override_default_llm_model
@@ -712,7 +940,7 @@ class ApiServer:
             plugins=plugins,
         )
       return App(
-          name=app_name,
+          name=_get_app_basename(app_name),
           root_agent=agent_or_app,
           plugins=plugins,
       )
@@ -737,7 +965,7 @@ class ApiServer:
     if is_visual_builder_agent:
       object.__setattr__(agentic_app, "_is_visual_builder_app", True)
 
-    runner = self._create_runner(agentic_app)
+    runner = self._create_runner(agentic_app, app_name)
     self.runner_dict[app_name] = runner
     return runner
 
@@ -747,10 +975,11 @@ class ApiServer:
       return agent_or_app.root_agent
     return agent_or_app
 
-  def _create_runner(self, agentic_app: App) -> Runner:
+  def _create_runner(self, agentic_app: App, app_name: str) -> Runner:
     """Create a runner with common services."""
     return Runner(
         app=agentic_app,
+        app_name=app_name,
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
@@ -816,6 +1045,9 @@ class ApiServer:
           runtime_config_path,
       )
     runtime_config["backendUrl"] = self.url_prefix if self.url_prefix else ""
+    # Inject telemetry consent on bootstrapping to avoid an extra API call
+    # when loading the UI.
+    runtime_config["telemetry"] = read_telemetry_consent()
 
     # Set custom logo config.
     if self.logo_text or self.logo_image_url:
@@ -883,6 +1115,7 @@ class ApiServer:
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
       with_ui: bool = False,
+      bind_host: Optional[str] = None,
   ):
     """Creates a FastAPI app for the ADK web server.
 
@@ -904,12 +1137,16 @@ class ApiServer:
         to the TracerProvider.
       otel_to_cloud: Whether to enable Cloud Trace and Cloud Logging
         integrations.
+      with_ui: Whether the dev UI is being served.
+      bind_host: The address the server will bind. A loopback value rejects
+        requests addressed to any other host as DNS rebinding; None disables
+        that, for callers that do not own the bind.
 
     Returns:
       A FastAPI app instance.
     """
-    trace_dict = {}
-    session_trace_dict = {}
+    trace_dict: dict[str, Any] = {}
+    session_trace_dict: dict[str, Any] = {}
     self._trace_dict = trace_dict
     self._session_trace_dict = session_trace_dict
 
@@ -972,14 +1209,16 @@ class ApiServer:
         has_configured_allowed_origins=has_configured_allowed_origins,
         allowed_origins=literal_origins,
         allowed_origin_regex=compiled_origin_regex,
+        bind_host=bind_host,
     )
+    allowed_request_hosts = _get_allowed_request_hosts(literal_origins)
 
     app.add_middleware(
         _DefaultAppRewriteMiddleware,
         default_app_name=self.default_app_name,
     )
 
-    # Register production endpoints (22 total)
+    # Register production endpoints (23 total)
     self._register_production_endpoints(
         app,
         trace_dict,
@@ -987,6 +1226,8 @@ class ApiServer:
         literal_origins,
         compiled_origin_regex,
         has_configured_allowed_origins,
+        bind_host,
+        allowed_request_hosts,
     )
 
     if web_assets_dir:
@@ -1037,6 +1278,8 @@ class ApiServer:
       literal_origins: list[str],
       compiled_origin_regex: Optional[re.Pattern[str]],
       has_configured_allowed_origins: bool,
+      bind_host: Optional[str],
+      allowed_request_hosts: Optional[frozenset[str]],
   ):
     """Register all core production-safe endpoints."""
 
@@ -1054,6 +1297,88 @@ class ApiServer:
           ),
       }
 
+    # Agent Identity Auth Manager (3LO): finalize the user-consent handshake.
+    # The web client (adk web) opens the consent popup and, once the connector
+    # redirects back with the validation state, relays it here. We complete the
+    # OAuth exchange into the credential vault using the same IAM Connector
+    # Credentials transport as retrieve_credentials so the agent can fetch the
+    # user-delegated token on the next tool run.
+    @app.post("/agent-identity/finalize")
+    async def finalize_agent_identity_credentials(
+        req: FinalizeAgentIdentityCredentialsRequest,
+    ) -> dict[str, str]:
+      try:
+        from google.api_core.client_options import ClientOptions
+        from google.api_core.exceptions import GoogleAPICallError
+        from google.api_core.exceptions import InvalidArgument
+        from google.cloud.iamconnectorcredentials_v1alpha import FinalizeCredentialsRequest
+        from google.cloud.iamconnectorcredentials_v1alpha import IAMConnectorCredentialsServiceClient
+      except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Agent Identity support requires: pip install"
+                ' "google-adk[agent-identity]"'
+            ),
+        ) from e
+
+      # Optional endpoint override (defaults to the prod
+      # iamconnectorcredentials.googleapis.com when unset). Mirrors the retrieve
+      # client so finalize targets the same service instance; developers do not
+      # normally set this.
+      client_options = None
+      if host := os.environ.get("IAM_CONNECTOR_CREDENTIALS_TARGET_HOST"):
+        client_options = ClientOptions(api_endpoint=host)
+      client = IAMConnectorCredentialsServiceClient(
+          client_options=client_options, transport="rest"
+      )
+
+      # user_id_validation_state is a proto `bytes` field; the connector delivers
+      # it as a url-safe base64 string in the redirect query, so decode it back.
+      try:
+        state_bytes = base64.urlsafe_b64decode(
+            req.user_id_validation_state
+            + "=" * (-len(req.user_id_validation_state) % 4)
+        )
+      except (binascii.Error, ValueError, TypeError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid base64 user_id_validation_state: {e}",
+        ) from e
+
+      finalize_request = FinalizeCredentialsRequest(
+          connector=req.connector_name,
+          user_id=req.user_id,
+          user_id_validation_state=state_bytes,
+          consent_nonce=req.consent_nonce,
+      )
+      try:
+        await asyncio.to_thread(client.finalize_credentials, finalize_request)
+      except InvalidArgument as e:
+        logger.warning("Invalid argument during credential finalization: %s", e)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid credentials request: {e}",
+        ) from e
+      except GoogleAPICallError as e:
+        status_code = (
+            e.code
+            if hasattr(e, "code") and e.code and 400 <= e.code < 500
+            else 500
+        )
+        logger.error("API error during agent identity finalization: %s", e)
+        raise HTTPException(
+            status_code=status_code,
+            detail=f"Failed to finalize credentials: {e}",
+        ) from e
+      except Exception as e:  # pylint: disable=broad-except
+        logger.error("Failed to finalize agent identity credentials: %s", e)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to finalize credentials: {e}"
+        ) from e
+
+      return {"status": "ok"}
+
     @app.get("/list-apps")
     async def list_apps(
         detailed: bool = Query(
@@ -1069,7 +1394,18 @@ class ApiServer:
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      if app_name.startswith("__") and not self._allow_special_agents:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Access to internal special agents is disabled in API server"
+                " mode."
+            ),
+        )
+      try:
+        agent_or_app = self.agent_loader.load_agent(app_name)
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
         return AppInfo(
@@ -1146,6 +1482,9 @@ class ApiServer:
     ) -> Session:
       if not req:
         return await self._create_session(app_name=app_name, user_id=user_id)
+
+      if req.events:
+        _validate_session_initialization_events(req.events)
 
       session = await self._create_session(
           app_name=app_name,
@@ -1556,50 +1895,86 @@ class ApiServer:
 
       # Convert the events to properly formatted SSE
       async def event_generator():
-        async with Aclosing(
-            runner.run_async(
-                user_id=req.user_id,
-                session_id=req.session_id,
-                new_message=req.new_message,
-                state_delta=req.state_delta,
-                run_config=RunConfig(
-                    streaming_mode=stream_mode,
-                    custom_metadata=req.custom_metadata,
-                ),
-                invocation_id=req.invocation_id,
-            )
-        ) as agen:
-          try:
-            async for event in agen:
-              # ADK Web renders artifacts from `actions.artifactDelta`
-              # during part processing *and* during action processing
-              # 1) the original event with `artifactDelta` cleared (content)
-              # 2) a content-less "action-only" event carrying `artifactDelta`
-              events_to_stream = [event]
-              if (
-                  not req.function_call_event_id
-                  and event.actions.artifact_delta
-                  and event.content
-                  and event.content.parts
-              ):
-                content_event = event.model_copy(deep=True)
-                content_event.actions.artifact_delta = {}
-                artifact_event = event.model_copy(deep=True)
-                artifact_event.content = None
-                events_to_stream = [content_event, artifact_event]
+        is_closing = False
+        original_exc = None
+        try:
+          async with Aclosing(
+              runner.run_async(
+                  user_id=req.user_id,
+                  session_id=req.session_id,
+                  new_message=req.new_message,
+                  state_delta=req.state_delta,
+                  run_config=RunConfig(
+                      streaming_mode=stream_mode,
+                      custom_metadata=req.custom_metadata,
+                  ),
+                  invocation_id=req.invocation_id,
+              )
+          ) as agen:
+            try:
+              async for event in agen:
+                # ADK Web renders artifacts from `actions.artifactDelta`
+                # during part processing *and* during action processing
+                # 1) the original event with `artifactDelta` cleared (content)
+                # 2) a content-less "action-only" event carrying `artifactDelta`
+                events_to_stream = [event]
+                if (
+                    not req.function_call_event_id
+                    and event.actions.artifact_delta
+                    and event.content
+                    and event.content.parts
+                ):
+                  content_event = event.model_copy(deep=True)
+                  content_event.actions.artifact_delta = {}
+                  artifact_event = event.model_copy(deep=True)
+                  artifact_event.content = None
+                  events_to_stream = [content_event, artifact_event]
 
-              for event_to_stream in events_to_stream:
-                sse_event = event_to_stream.model_dump_json(
-                    exclude_none=True,
-                    by_alias=True,
-                )
-                logger.debug(
-                    "Generated event in agent run streaming: %s", sse_event
-                )
-                yield f"data: {sse_event}\n\n"
-          except Exception as e:
-            logger.exception("Error in event_generator: %s", e)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                for event_to_stream in events_to_stream:
+                  sse_event = event_to_stream.model_dump_json(
+                      exclude_none=True,
+                      by_alias=True,
+                  )
+                  logger.debug(
+                      "Generated event in agent run streaming: %s", sse_event
+                  )
+                  yield f"data: {sse_event}\n\n"
+            except (GeneratorExit, asyncio.CancelledError) as e:
+              is_closing = True
+              original_exc = e
+              raise
+            except Exception as e:
+              original_exc = e
+              raise
+        except Exception as e:
+          if original_exc:
+            if e is not original_exc:
+              logger.exception("Error during generator cleanup: %s", e)
+            if is_closing:
+              raise original_exc from e
+            logger.exception("Error in event_generator: %s", original_exc)
+            error_details = {
+                "error_type": type(original_exc).__name__,
+                "error_message": str(original_exc),
+                "timestamp": time.time(),
+            }
+            if logger.isEnabledFor(logging.DEBUG):
+              error_details["stacktrace"] = "".join(
+                  traceback.format_exception(
+                      type(original_exc),
+                      original_exc,
+                      original_exc.__traceback__,
+                  )
+              )
+            yield (
+                "data:"
+                f" {json.dumps({'error': f'{type(original_exc).__name__}: {original_exc}', 'error_details': error_details})}\n\n"
+            )
+            return
+          logger.exception(
+              "Error during generator cleanup after completion: %s", e
+          )
+          raise e
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1613,14 +1988,22 @@ class ApiServer:
         user_id: str,
         session_id: str,
         app_name: Optional[str] = Query(default=None),
-        modalities: List[Literal["TEXT", "AUDIO"]] = Query(
+        modalities: List[Literal["TEXT", "AUDIO", "VIDEO"]] = Query(
             default=["AUDIO"]
-        ),  # Only allows "TEXT" or "AUDIO"
+        ),  # Only allows "TEXT", "AUDIO" or "VIDEO"
         proactive_audio: bool | None = Query(default=None),
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
         save_live_blob: bool = Query(default=False),
+        explicit_vad_signal: bool | None = Query(default=None),
     ) -> None:
+      # Before anything else: this decides whether the caller may talk to us.
+      if _is_dns_rebinding_request(
+          websocket.scope, bind_host, allowed_request_hosts
+      ):
+        await websocket.close(code=1008, reason="Host not allowed")
+        return
+
       resolved_app_name = app_name or self.default_app_name
       if not resolved_app_name:
         await websocket.close(
@@ -1640,6 +2023,7 @@ class ApiServer:
           literal_origins,
           compiled_origin_regex,
           has_configured_allowed_origins,
+          bind_host,
       ):
         await websocket.close(code=1008, reason="Origin not allowed")
         return
@@ -1676,6 +2060,7 @@ class ApiServer:
                 else None
             ),
             save_live_blob=save_live_blob,
+            explicit_vad_signal=explicit_vad_signal,
         )
         async with Aclosing(
             runner.run_live(

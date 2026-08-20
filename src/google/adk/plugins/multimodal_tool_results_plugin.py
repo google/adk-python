@@ -34,7 +34,6 @@ class MultimodalToolResultsPlugin(BasePlugin):
 
   Should be removed in favor of directly supporting FunctionResponsePart when these
   are supported outside of computer use tool.
-  For context see: https://github.com/google/adk-python/issues/3064#issuecomment-3463067459
   """
 
   def __init__(self, name: str = "multimodal_tool_results_plugin"):
@@ -51,8 +50,8 @@ class MultimodalToolResultsPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
     """Saves parts returned by the tool in ToolContext.
 
     Later these are passed to LLM's context as-is.
@@ -80,6 +79,9 @@ class MultimodalToolResultsPlugin(BasePlugin):
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
   ) -> Optional[LlmResponse]:
     """Attach saved list[google.genai.types.Part] returned by the tool to llm_request."""
+
+    if not llm_request.contents:
+      return None
 
     if saved_parts := callback_context.state.get(
         PARTS_RETURNED_BY_TOOLS_ID, None

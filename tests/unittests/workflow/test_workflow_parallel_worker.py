@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import asyncio
+import gc
+import logging
 from typing import Any
 from typing import AsyncGenerator
 
@@ -35,6 +37,11 @@ from typing_extensions import override
 
 from . import testing_utils
 from .workflow_testing_utils import simplify_events_with_node
+
+# Upper bound on any wait between workers that are supposed to be running
+# concurrently. Reaching it means they are not, so the waiting test fails on
+# its own assertions rather than blocking until the whole target times out.
+_MAX_WAIT_S = 5.0
 
 
 class _ProducerNode(BaseNode):
@@ -330,8 +337,8 @@ async def test_parallel_worker_failure_propagates_and_cancels_others(
 ):
   """One worker failure cancels remaining workers and propagates the exception.
 
-  Setup: 3 items — task-1 completes fast, task-2 fails after delay,
-    task-3 is slow.
+  Setup: 3 items — task-1 completes, task-2 fails once task-1 has finished
+    and task-3 is parked, task-3 waits to be cancelled.
   Assert:
     - task-1 finishes before the failure.
     - task-2's ValueError propagates to the runner.
@@ -343,16 +350,25 @@ async def test_parallel_worker_failure_propagates_and_cancels_others(
 
   tracker = {}
   task_3_done_cancelled = False
+  # The interleaving the assertions below describe is established by handshake
+  # rather than by racing sleeps against each other: task-2 may only fail once
+  # task-1 has finished and task-3 is parked.
+  task_1_done = asyncio.Event()
+  task_3_parked = asyncio.Event()
 
   async def _worker_failable_func(node_input: str) -> AsyncGenerator[Any, None]:
     if node_input == 'task-1':
       yield f'{node_input}_processed'
     elif node_input == 'task-2':
-      await asyncio.sleep(0.05)
+      await asyncio.wait_for(task_1_done.wait(), timeout=_MAX_WAIT_S)
+      await asyncio.wait_for(task_3_parked.wait(), timeout=_MAX_WAIT_S)
       raise ValueError(f'{node_input} failed')
     elif node_input == 'task-3':
+      task_3_parked.set()
       try:
-        await asyncio.sleep(0.1)
+        # Long enough that only the cancellation task-2's failure delivers ends
+        # this wait; sleeping it out instead fails the assertions below.
+        await asyncio.sleep(_MAX_WAIT_S)
       except asyncio.CancelledError:
         nonlocal task_3_done_cancelled
         task_3_done_cancelled = True
@@ -360,6 +376,8 @@ async def test_parallel_worker_failure_propagates_and_cancels_others(
       yield f'{node_input}_processed'
 
     tracker[node_input] = True
+    if node_input == 'task-1':
+      task_1_done.set()
 
   worker = ParallelWorker(node=_worker_failable_func)
 
@@ -781,10 +799,10 @@ async def test_workflow_auto_wraps_parallel_worker_when_flag_set(
 
 
 @pytest.mark.asyncio
-async def test_parallel_worker_limits_concurrency(
+async def test_parallel_worker_limits_parallel_workers(
     request: pytest.FixtureRequest,
 ):
-  """max_concurrency limits the number of concurrent workers at any time."""
+  """max_parallel_workers limits the number of concurrent workers at any time."""
   # Given items and events to control concurrency
   items = ['item1', 'item2', 'item3', 'item4']
   started_events = {item: asyncio.Event() for item in items}
@@ -798,10 +816,10 @@ async def test_parallel_worker_limits_concurrency(
     yield f'{node_input}_processed'
 
   node_a = _ProducerNode(items=items, name='NodeA')
-  worker = ParallelWorker(node=_concurrency_worker_func, max_concurrency=2)
+  worker = ParallelWorker(node=_concurrency_worker_func, max_parallel_workers=2)
 
   agent = Workflow(
-      name='max_concurrency_agent',
+      name='max_parallel_workers_agent',
       edges=[
           (START, node_a),
           (node_a, worker),
@@ -861,35 +879,35 @@ async def test_parallel_worker_limits_concurrency(
 
   assert simplified_events == [
       (
-          'max_concurrency_agent@1/NodeA@1',
+          'max_parallel_workers_agent@1/NodeA@1',
           {'output': items},
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@2',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@2',
           {
               'output': 'item2_processed',
           },
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@3',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@3',
           {
               'output': 'item3_processed',
           },
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@1',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@1',
           {
               'output': 'item1_processed',
           },
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@4',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1/_concurrency_worker_func@4',
           {
               'output': 'item4_processed',
           },
       ),
       (
-          'max_concurrency_agent@1/_concurrency_worker_func@1',
+          'max_parallel_workers_agent@1/_concurrency_worker_func@1',
           {
               'output': [
                   'item1_processed',
@@ -904,12 +922,12 @@ async def test_parallel_worker_limits_concurrency(
 
 @pytest.mark.asyncio
 @pytest.mark.skip(reason='Hangs: ctx.run_node needs barrier for parallel HITL')
-async def test_parallel_worker_hitl_respects_concurrency_limits(
+async def test_parallel_worker_hitl_respects_parallel_workers_limits(
     request: pytest.FixtureRequest,
 ):
-  """HITL resume under max_concurrency schedules next worker after resolution.
+  """HITL resume under max_parallel_workers schedules next worker after resolution.
 
-  Setup: 3 items, max_concurrency=2. item1 waits, item2 does HITL,
+  Setup: 3 items, max_parallel_workers=2. item1 waits, item2 does HITL,
     item3 does HITL.
   Act:
     - Run 1: item1 and item2 start. item2 interrupts. Signal item1 to finish.
@@ -951,10 +969,10 @@ async def test_parallel_worker_hitl_respects_concurrency_limits(
       yield Event(output=f'{val}_processed')
 
   node_a = _ProducerNode(items=items, name='NodeA')
-  worker = ParallelWorker(node=hitl_concurrency_worker, max_concurrency=2)
+  worker = ParallelWorker(node=hitl_concurrency_worker, max_parallel_workers=2)
 
   agent = Workflow(
-      name='max_concurrency_hitl_agent',
+      name='max_parallel_workers_hitl_agent',
       edges=[
           (START, node_a),
           (node_a, worker),
@@ -999,17 +1017,17 @@ async def test_parallel_worker_hitl_respects_concurrency_limits(
   simplified_events1 = simplify_events_with_node(events1)
   assert simplified_events1 == [
       (
-          'max_concurrency_hitl_agent@1/NodeA@1',
+          'max_parallel_workers_hitl_agent@1/NodeA@1',
           {
               'output': items,
           },
       ),
       (
-          'max_concurrency_hitl_agent',
+          'max_parallel_workers_hitl_agent',
           testing_utils.simplify_content(req_events[0].content),
       ),
       (
-          'max_concurrency_hitl_agent@1/Worker__0@1',
+          'max_parallel_workers_hitl_agent@1/Worker__0@1',
           {'output': 'item1_processed'},
       ),
   ]
@@ -1047,11 +1065,11 @@ async def test_parallel_worker_hitl_respects_concurrency_limits(
   simplified_events2 = simplify_events_with_node(events2)
   assert simplified_events2 == [
       (
-          'max_concurrency_hitl_agent@1/Worker__1@1',
+          'max_parallel_workers_hitl_agent@1/Worker__1@1',
           {'output': 'item2_resumed'},
       ),
       (
-          'max_concurrency_hitl_agent',
+          'max_parallel_workers_hitl_agent',
           testing_utils.simplify_content(req_events_2[0].content),
       ),
   ]
@@ -1080,13 +1098,212 @@ async def test_parallel_worker_hitl_respects_concurrency_limits(
 
   assert simplified_events3 == [
       (
-          'max_concurrency_hitl_agent@1/Worker__2@1',
+          'max_parallel_workers_hitl_agent@1/Worker__2@1',
           {'output': 'item3_resumed'},
       ),
       (
-          'max_concurrency_hitl_agent@1/Worker@1',
+          'max_parallel_workers_hitl_agent@1/Worker@1',
           {
               'output': ['item1_processed', 'item2_resumed', 'item3_resumed'],
           },
       ),
   ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_simultaneous_failures_raise_lowest_index(
+    request: pytest.FixtureRequest,
+):
+  """The exception surfaced from concurrent failures is deterministic.
+
+  Setup: 2 items whose workers both fail immediately, so both tasks can
+    complete within the same asyncio.wait wake-up.
+  Assert: the propagated exception is always the lowest-index item's.
+    Previously the failed task was picked by iterating the unordered set
+    returned by asyncio.wait, so the surfaced exception could differ
+    between runs (and between record and replay).
+  """
+
+  async def _worker_always_fails(node_input: str) -> str:
+    raise ValueError(f'{node_input} failed')
+
+  for _ in range(10):
+    node_a = _ProducerNode(items=['item-0', 'item-1'], name='NodeA')
+    worker = ParallelWorker(node=_worker_always_fails)
+    agent = Workflow(
+        name='test_agent_simultaneous_fail',
+        edges=[
+            (START, node_a),
+            (node_a, worker),
+        ],
+    )
+    app = App(name=request.function.__name__, root_agent=agent)
+    runner = testing_utils.InMemoryRunner(app=app)
+
+    with pytest.raises(ValueError, match='item-0 failed'):
+      await runner.run_async(testing_utils.get_user_content('start'))
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_cancels_in_flight_items(
+    request: pytest.FixtureRequest,
+):
+  """Cancelling the worker cancels the items it still has in flight.
+
+  Setup: 2 items that never finish on their own, driven by a plain node so
+    the worker is the only owner of the item tasks.
+  Assert: cancelling the run cancels both items. Previously asyncio.wait was
+    left to abandon them, and an orphaned item kept running and then blocked
+    forever emitting into a run nobody consumes any more.
+  """
+  items = ['item1', 'item2']
+  started = {item: asyncio.Event() for item in items}
+  cancelled = {item: asyncio.Event() for item in items}
+
+  async def _never_finishing_worker_func(node_input: str) -> str:
+    started[node_input].set()
+    try:
+      await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+      cancelled[node_input].set()
+      raise
+    return f'{node_input}_processed'
+
+  worker = ParallelWorker(node=_never_finishing_worker_func)
+
+  @node(name='Driver', rerun_on_resume=True)
+  async def driver(ctx: Context, node_input: Any) -> AsyncGenerator[Any, None]:
+    yield Event(output=await ctx.run_node(worker, node_input=items))
+
+  app = App(name=request.function.__name__, root_agent=driver)
+  runner = testing_utils.InMemoryRunner(app=app)
+  run_task = asyncio.create_task(
+      runner.run_async(testing_utils.get_user_content('start'))
+  )
+  await asyncio.wait_for(
+      asyncio.gather(*(event.wait() for event in started.values())), timeout=5
+  )
+
+  # When the run is cancelled while both items are still in flight
+  run_task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    # Bounded so that a worker which waits on abandoned items fails here
+    # instead of hanging the suite.
+    await asyncio.wait_for(run_task, timeout=5)
+
+  # Then both items were cancelled rather than left running
+  await asyncio.wait_for(
+      asyncio.gather(*(event.wait() for event in cancelled.values())), timeout=1
+  )
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_retrieves_every_simultaneous_failure(
+    request: pytest.FixtureRequest,
+):
+  """Concurrent failures are all retrieved from their tasks.
+
+  Setup: 2 items whose workers both fail immediately, so both tasks complete
+    within the same asyncio.wait wake-up.
+  Assert: asyncio does not report "Task exception was never retrieved" for
+    the failure that is not the one propagated.
+  """
+  unretrieved: list[str] = []
+  loop = asyncio.get_running_loop()
+  previous_handler = loop.get_exception_handler()
+  loop.set_exception_handler(
+      lambda _, context: unretrieved.append(context.get('message', ''))
+  )
+  try:
+
+    async def _worker_always_fails(node_input: str) -> str:
+      raise ValueError(f'{node_input} failed')
+
+    node_a = _ProducerNode(items=['item-0', 'item-1'], name='NodeA')
+    worker = ParallelWorker(node=_worker_always_fails)
+    agent = Workflow(
+        name='test_agent_retrieved_failures',
+        edges=[
+            (START, node_a),
+            (node_a, worker),
+        ],
+    )
+    app = App(name=request.function.__name__, root_agent=agent)
+    runner = testing_utils.InMemoryRunner(app=app)
+
+    # When both items fail. The error is caught by hand rather than with
+    # pytest.raises, whose ExceptionInfo holds the traceback (and so the task
+    # objects) alive past the point where asyncio would report them.
+    error_message = None
+    try:
+      await runner.run_async(testing_utils.get_user_content('start'))
+    except ValueError as e:
+      error_message = str(e)
+    assert error_message == 'item-0 failed'
+
+    gc.collect()
+    await asyncio.sleep(0)
+  finally:
+    loop.set_exception_handler(previous_handler)
+
+  # Then nothing was left unretrieved
+  assert [
+      message for message in unretrieved if 'never retrieved' in message
+  ] == []
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_gives_up_on_item_that_ignores_cancellation(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+  """An item that swallows cancellation does not hang the worker.
+
+  Setup: 1 item that catches CancelledError and keeps running, driven by a
+    plain node so the worker is the only owner of the item task.
+  Assert: the worker stops waiting once the drain timeout elapses and says
+    so, rather than waiting on the item forever.
+  """
+  monkeypatch.setattr(
+      'google.adk.workflow._parallel_worker'
+      '._CANCELLED_ITEM_DRAIN_TIMEOUT_SECONDS',
+      0.1,
+  )
+  started = asyncio.Event()
+  release = asyncio.Event()
+
+  async def _ignores_cancellation(node_input: str) -> str:
+    started.set()
+    try:
+      await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+      # Keep running past the cancellation until the test lets go.
+      await release.wait()
+    return f'{node_input}_processed'
+
+  worker = ParallelWorker(node=_ignores_cancellation)
+
+  @node(name='Driver', rerun_on_resume=True)
+  async def driver(ctx: Context, node_input: Any) -> AsyncGenerator[Any, None]:
+    yield Event(output=await ctx.run_node(worker, node_input=['item1']))
+
+  app = App(name=request.function.__name__, root_agent=driver)
+  runner = testing_utils.InMemoryRunner(app=app)
+  run_task = asyncio.create_task(
+      runner.run_async(testing_utils.get_user_content('start'))
+  )
+  await asyncio.wait_for(started.wait(), timeout=5)
+
+  # When the run is cancelled and the item refuses to stop
+  run_task.cancel()
+  with caplog.at_level(logging.WARNING):
+    with pytest.raises(asyncio.CancelledError):
+      # Well past the drain timeout, so an unbounded wait fails here.
+      await asyncio.wait_for(run_task, timeout=3)
+
+  # Then the worker gave up on it and said so
+  assert 'did not stop within' in caplog.text
+
+  release.set()
+  await asyncio.sleep(0)

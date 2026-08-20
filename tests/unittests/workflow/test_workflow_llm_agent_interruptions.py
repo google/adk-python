@@ -24,6 +24,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
@@ -124,13 +125,6 @@ async def test_workflow_pause_and_resume_simple(
   assert any('LLM response after tool' in t for t in content_texts)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        'when scheduler preserves originating node_input on resume.'
-    ),
-)
 @pytest.mark.asyncio
 async def test_workflow_pause_and_resume_task_mode(
     request: pytest.FixtureRequest,
@@ -415,13 +409,6 @@ async def test_workflow_pause_and_resume_auth_node(
   assert any('authed with secret_key' in t for t in content_texts)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "mode='task' workflow graph nodes temporarily disabled; re-enable "
-        'when scheduler preserves originating node_input on resume.'
-    ),
-)
 @pytest.mark.asyncio
 async def test_workflow_pause_and_resume_parent_interruption(
     request: pytest.FixtureRequest,
@@ -885,3 +872,189 @@ async def test_workflow_resume_inputs_multiple_branches(monkeypatch):
   assert 'branch_B' in branches
   assert 'func_A' in names
   assert 'func_B' in names
+
+
+@pytest.mark.asyncio
+async def test_workflow_task_mode_plain_text_resume_auto_routing(
+    request: pytest.FixtureRequest,
+):
+  """Tests that task mode agent can pause for text and resume with text without explicit invocation_id."""
+
+  # LLM behavior:
+  # Round 1: Outputs text asking for info.
+  # Round 2: After user replies with text, calls finish_task with result.
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_text(text='Please provide the secret code:'),
+          types.Part.from_function_call(
+              name='finish_task',
+              args={'result': 'Success with code'},
+          ),
+      ]
+  )
+
+  node_a = LlmAgent(
+      name='my_task_agent',
+      model=mock_model,
+      mode='task',
+  )
+
+  wf = Workflow(
+      name='test_workflow_plain_text_resume',
+      edges=[
+          (START, node_a),
+      ],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # 1. First run: should yield the prompt and pause.
+  events1 = await runner.run_async('start workflow')
+
+  # Verify it yielded the prompt
+  texts1 = [
+      p.text
+      for e in events1
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ]
+  assert 'Please provide the secret code:' in texts1
+
+  # 2. Second run: resume with plain text, NOT passing invocation_id!
+  # It should automatically resolve invocation_id and isolation_scope.
+  events2 = await runner.run_async('my_secret_code_123')
+
+  # Verify completion
+  # The last event should have output set from finish_task args
+  assert any(e.output == {'result': 'Success with code'} for e in events2)
+
+
+@pytest.mark.asyncio
+async def test_workflow_mixed_turn_lro_pause(
+    request: pytest.FixtureRequest,
+):
+  """Tests that in a mixed turn, if an LRO tool pauses, task delegation is executed and the node pauses."""
+
+  # 1. Create a child agent (delegated task)
+  child_agent = LlmAgent(
+      name='child_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='finish_task',
+                  args={'result': 'Child done'},
+              )
+          ]
+      ),
+      mode='task',
+  )
+
+  # 2. Parent agent calls both LRO and delegates to child in the same turn
+  fc_lro = types.Part.from_function_call(name='long_running_tool_func', args={})
+  fc_child = types.Part.from_function_call(
+      name='child_agent',
+      args={'request': 'Start child task'},
+  )
+
+  parent_model = testing_utils.MockModel.create(
+      responses=[
+          [fc_lro, fc_child],  # Mixed turn
+          'Parent all done',  # After resume
+      ]
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=parent_model,
+      tools=[
+          LongRunningFunctionTool(func=long_running_tool_func),
+      ],
+      sub_agents=[child_agent],
+      mode='chat',
+  )
+
+  wf = Workflow(
+      name='test_workflow_mixed_turn_pause',
+      edges=[
+          (START, parent_agent),
+      ],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Run 1: Should pause on LRO, but child_agent should have been executed.
+  events1 = await runner.run_async(testing_utils.get_user_content('start'))
+
+  # Verify it paused on LRO (it has long_running_tool_ids)
+  assert any(e.long_running_tool_ids for e in events1)
+
+  # Verify that child_agent WAS executed.
+  session_events = runner.session.events
+  child_fr_events = [
+      e
+      for e in session_events
+      if e.content
+      and any(
+          p.function_response and p.function_response.name == 'child_agent'
+          for p in e.content.parts
+      )
+  ]
+  assert child_fr_events, 'Child agent task was not dispatched!'
+
+  # Verify parent did not finish yet (no "Parent all done")
+  parent_finished_events = [
+      e
+      for e in events1
+      if e.content
+      and any(p.text and 'Parent all done' in p.text for p in e.content.parts)
+  ]
+  assert not parent_finished_events, 'Parent finished prematurely!'
+
+  # Get the LRO FC ID and invocation ID to resume
+  lro_fc = None
+  invocation_id = None
+  for event in events1:
+    for fc in event.get_function_calls():
+      if fc.name == 'long_running_tool_func':
+        lro_fc = fc
+        invocation_id = event.invocation_id
+        break
+    if lro_fc:
+      break
+  assert lro_fc is not None
+  assert invocation_id is not None
+
+  # Resume with LRO response
+  tool_response = testing_utils.UserContent(
+      types.Part(
+          function_response=types.FunctionResponse(
+              id=lro_fc.id,
+              name='long_running_tool_func',
+              response={'result': 'LRO done'},
+          )
+      )
+  )
+
+  events2 = await runner.run_async(
+      new_message=tool_response,
+      invocation_id=invocation_id,
+  )
+
+  # Verify completion in Run 2
+  parent_finished_events2 = [
+      e
+      for e in events2
+      if e.content
+      and any(p.text and 'Parent all done' in p.text for p in e.content.parts)
+  ]
+  assert parent_finished_events2, 'Parent did not finish after resume!'

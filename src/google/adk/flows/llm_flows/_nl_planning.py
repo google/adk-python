@@ -29,6 +29,8 @@ from ...events.event import Event
 from ...planners.plan_re_act_planner import PlanReActPlanner
 from ._base_llm_processor import BaseLlmRequestProcessor
 from ._base_llm_processor import BaseLlmResponseProcessor
+from ._invocation_utils import as_llm_agent
+from ._invocation_utils import require_agent_name
 
 if TYPE_CHECKING:
   from ...models.llm_request import LlmRequest
@@ -50,7 +52,7 @@ class _NlPlanningRequestProcessor(BaseLlmRequestProcessor):
 
     if isinstance(planner, BuiltInPlanner):
       planner.apply_thinking_config(llm_request)
-    elif isinstance(planner, PlanReActPlanner):
+    else:
       if planning_instruction := planner.build_planning_instruction(
           ReadonlyContext(invocation_context), llm_request
       ):
@@ -82,7 +84,11 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
       return
 
     planner = _get_planner(invocation_context)
-    if not planner or isinstance(planner, BuiltInPlanner):
+    if (
+        not planner
+        or type(planner).process_planning_response
+        is BuiltInPlanner.process_planning_response
+    ):
       return
 
     # Postprocess the LLM response.
@@ -96,7 +102,7 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
     if callback_context.state.has_delta():
       state_update_event = Event(
           invocation_id=invocation_context.invocation_id,
-          author=invocation_context.agent.name,
+          author=require_agent_name(invocation_context),
           branch=invocation_context.branch,
           actions=callback_context._event_actions,
       )
@@ -111,10 +117,8 @@ def _get_planner(
 ) -> Optional[BasePlanner]:
   from ...planners.base_planner import BasePlanner
 
-  agent = invocation_context.agent
-  if not hasattr(agent, 'planner'):
-    return None
-  if not agent.planner:
+  agent = as_llm_agent(invocation_context)
+  if not hasattr(agent, 'planner') or not agent.planner:
     return None
 
   if isinstance(agent.planner, BasePlanner):
@@ -122,7 +126,7 @@ def _get_planner(
   return PlanReActPlanner()
 
 
-def _remove_thought_from_request(llm_request: LlmRequest):
+def _remove_thought_from_request(llm_request: LlmRequest) -> None:
   if not llm_request.contents:
     return
 

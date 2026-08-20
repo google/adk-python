@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
+import re
 from typing import Optional
 
 from google.adk.agents.llm_agent import Agent
@@ -25,12 +27,8 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import ContentCapturingMode
 from google.adk.telemetry import TelemetryConfig
 from google.adk.telemetry import tracing
-from google.adk.telemetry._experimental_semconv import get_content_capturing_mode
-from google.adk.telemetry._experimental_semconv import is_experimental_semconv
 from google.adk.telemetry._experimental_semconv import set_operation_details_common_attributes
 from google.adk.telemetry.context import ADK_TELEMETRY_IGNORE_RUN_CONFIG
-from google.adk.telemetry.tracing import _should_add_request_response_to_spans
-from google.adk.telemetry.tracing import _should_log_prompt_response_content
 from google.adk.telemetry.tracing import trace_inference_result
 from google.genai.types import Part
 from opentelemetry.sdk.trace import TracerProvider
@@ -47,12 +45,14 @@ _ENV_EXPERIMENTAL = 'OTEL_SEMCONV_STABILITY_OPT_IN'
 _ENV_CAPTURE = 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT'
 _ENV_ADK_SPAN_CAPTURE = 'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'
 _ENV_ADMIN_LOCK = ADK_TELEMETRY_IGNORE_RUN_CONFIG
+_ENV_ADK_EXPERIMENTAL_TELEMETRY = 'ADK_EXPERIMENTAL_TELEMETRY'
 
 _ALL_TELEMETRY_ENV_VARS = (
     _ENV_EXPERIMENTAL,
     _ENV_CAPTURE,
     _ENV_ADK_SPAN_CAPTURE,
     _ENV_ADMIN_LOCK,
+    _ENV_ADK_EXPERIMENTAL_TELEMETRY,
 )
 
 
@@ -78,7 +78,7 @@ def test_telemetry_config_is_frozen():
 
 # ---------------------------------------------------------------------------
 # Construction truth table for ``TelemetryConfig`` itself (no env vars, no
-# decision functions). Covers the cartesian product of the two fields'
+# decision functions). Covers the cartesian product of the three fields'
 # accepted/rejected values: every valid combination must construct and
 # preserve its field values; every invalid value must raise ValidationError.
 # ---------------------------------------------------------------------------
@@ -92,27 +92,35 @@ _VALID_CAPTURE_VALUES = (
     ContentCapturingMode.SPAN_ONLY,
     ContentCapturingMode.SPAN_AND_EVENT,
 )
+_VALID_ADK_EXPERIMENTAL_TELEMETRY_VALUES = (None, True, False)
 
 # Full cartesian product of valid field values.
-_VALID_CONSTRUCTION_TABLE = [
-    (opt_in, capture)
-    for opt_in in _VALID_OPT_IN_VALUES
-    for capture in _VALID_CAPTURE_VALUES
-]
+_VALID_CONSTRUCTION_TABLE = list(
+    itertools.product(
+        _VALID_OPT_IN_VALUES,
+        _VALID_CAPTURE_VALUES,
+        _VALID_ADK_EXPERIMENTAL_TELEMETRY_VALUES,
+    )
+)
 
 
-@pytest.mark.parametrize('opt_in,capture', _VALID_CONSTRUCTION_TABLE)
+@pytest.mark.parametrize(
+    'opt_in,capture,adk_experimental_telemetry', _VALID_CONSTRUCTION_TABLE
+)
 def test_telemetry_config_construction_accepts_valid_combinations(
     opt_in: Optional[str],
     capture: Optional[ContentCapturingMode],
+    adk_experimental_telemetry: Optional[bool],
 ):
-  """Every valid (opt_in, capture) pair constructs and round-trips its fields."""
+  """Every valid (opt_in, capture, adk_experimental_telemetry) triple constructs and round-trips its fields."""
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in=opt_in,
       capture_message_content=capture,
+      adk_experimental_telemetry_opt_in=adk_experimental_telemetry,
   )
   assert cfg.genai_semconv_stability_opt_in == opt_in
   assert cfg.capture_message_content == capture
+  assert cfg.adk_experimental_telemetry_opt_in == adk_experimental_telemetry
 
 
 @pytest.mark.parametrize('member', list(ContentCapturingMode))
@@ -144,6 +152,31 @@ _INVALID_CONSTRUCTION_TABLE = [
     ({'capture_message_content': 'event_only'}, 'capture_wrong_case'),
     # extra='forbid' rejects unknown fields.
     ({'typo_field': 'experimental'}, 'extra_field'),
+    # adk_experimental_telemetry_opt_in must be a bool.
+    (
+        {'adk_experimental_telemetry_opt_in': 'true'},
+        'bool_str_true',
+    ),
+    (
+        {'adk_experimental_telemetry_opt_in': 'false'},
+        'bool_str_false',
+    ),
+    (
+        {'adk_experimental_telemetry_opt_in': 1},
+        'bool_1',
+    ),
+    (
+        {'adk_experimental_telemetry_opt_in': 0},
+        'bool_0',
+    ),
+    (
+        {'adk_experimental_telemetry_opt_in': 'yes'},
+        'bool_yes',
+    ),
+    (
+        {'adk_experimental_telemetry_opt_in': 'no'},
+        'bool_no',
+    ),
 ]
 
 
@@ -167,11 +200,10 @@ def test_telemetry_config_round_trips_through_json():
       telemetry=TelemetryConfig(
           genai_semconv_stability_opt_in='experimental',
           capture_message_content=ContentCapturingMode.SPAN_AND_EVENT,
+          adk_experimental_telemetry_opt_in=True,
       )
   )
   js = cfg.model_dump_json()
-  assert 'experimental' in js
-  assert 'SPAN_AND_EVENT' in js
   reloaded = RunConfig.model_validate_json(js)
   assert reloaded.telemetry == cfg.telemetry
   assert isinstance(reloaded.telemetry, TelemetryConfig)
@@ -201,7 +233,7 @@ def test_capture_mode_env_invalid_values_treated_as_disabled(
   ``test_capture_mode_env_legacy_*``.
   """
   monkeypatch.setenv(_ENV_CAPTURE, invalid)
-  assert get_content_capturing_mode() == ''
+  assert TelemetryConfig().content_capturing_mode_value == ''
 
 
 @pytest.mark.parametrize('legacy', ['true', 'TRUE', 'True', '1'])
@@ -217,7 +249,7 @@ def test_capture_mode_env_legacy_values_coerced_to_event_only(
   Coercion preserves observable behavior for existing deployments.
   """
   monkeypatch.setenv(_ENV_CAPTURE, legacy)
-  assert get_content_capturing_mode() == 'EVENT_ONLY', (
+  assert TelemetryConfig().content_capturing_mode_value == 'EVENT_ONLY', (
       f"legacy env value {legacy!r} should coerce to 'EVENT_ONLY' for"
       ' back-compat'
   )
@@ -234,7 +266,7 @@ def test_capture_mode_env_legacy_coercion_is_silent(
   with caplog.at_level(
       'WARNING', logger='google.adk.telemetry._experimental_semconv'
   ):
-    assert get_content_capturing_mode() == 'EVENT_ONLY'
+    assert TelemetryConfig().content_capturing_mode_value == 'EVENT_ONLY'
   assert not caplog.records, (
       'legacy-value coercion must be silent; got log records:'
       f' {[(r.levelname, r.message) for r in caplog.records]}'
@@ -397,6 +429,78 @@ def test_should_add_content_to_legacy_spans_resolution(
   assert cfg.should_add_content_to_legacy_spans is expected
 
 
+_EXPERIMENTAL_TELEMETRY_RESOLUTION_TABLE = [
+    pytest.param('true', True, 'true', True, id='lock_ignores_opt_in_0'),
+    pytest.param('true', True, 'false', False, id='lock_ignores_opt_in_1'),
+    pytest.param('true', False, 'true', True, id='lock_ignores_opt_in_2'),
+    pytest.param('true', False, 'false', False, id='lock_ignores_opt_in_3'),
+    pytest.param('true', None, '0', False, id='number_value_accepted_0'),
+    pytest.param('true', None, '1', True, id='number_value_accepted_1'),
+    pytest.param('true', None, 'yes', False, id='bad_env_value_ignored_0'),
+    pytest.param('true', None, 'no', False, id='bad_env_value_ignored_1'),
+    pytest.param('false', True, 'true', True, id='no_lock_opt_in_precedence_0'),
+    pytest.param(
+        'false', True, 'false', True, id='no_lock_opt_in_precedence_1'
+    ),
+    pytest.param(
+        'false', False, 'true', False, id='no_lock_opt_in_precedence_2'
+    ),
+    pytest.param(
+        'false', False, 'false', False, id='no_lock_opt_in_precedence_3'
+    ),
+    pytest.param(
+        'false',
+        None,
+        'true',
+        True,
+        id='no_lock_no_opt_in_env_precedence_0',
+    ),
+    pytest.param(
+        'false',
+        None,
+        'false',
+        False,
+        id='no_lock_no_opt_in_env_precedence_1',
+    ),
+    pytest.param(
+        'true',
+        None,
+        None,
+        False,
+        id='default_value_false_lock_doesnt_matter_0',
+    ),
+    pytest.param(
+        'false',
+        None,
+        None,
+        False,
+        id='default_value_false_lock_doesnt_matter_1',
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    'lock,opt_in,env_value,expected', _EXPERIMENTAL_TELEMETRY_RESOLUTION_TABLE
+)
+def test_should_record_experimental_telemetry_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    env_value: str | None,
+    lock: str,
+    opt_in: bool | None,
+    expected: bool,
+):
+  """Admin lock > per-request field > env var > default."""
+  _set_env(
+      monkeypatch,
+      **{
+          _ENV_ADK_EXPERIMENTAL_TELEMETRY: env_value,
+          _ENV_ADMIN_LOCK: lock,
+      },
+  )
+  cfg = TelemetryConfig(adk_experimental_telemetry_opt_in=opt_in)
+  assert cfg.should_emit_experimental_telemetry is expected
+
+
 def test_admin_lock_disables_all_resolution_properties(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -410,6 +514,7 @@ def test_admin_lock_disables_all_resolution_properties(
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in='experimental',
       capture_message_content=ContentCapturingMode.SPAN_AND_EVENT,
+      adk_experimental_telemetry_opt_in=True,
   )
   assert cfg.should_use_experimental_genai_semconv is False
   assert cfg.content_capturing_mode_value == ''
@@ -417,6 +522,7 @@ def test_admin_lock_disables_all_resolution_properties(
   assert cfg.should_add_content_to_experimental_spans is False
   # Legacy span knob falls back to its env var, which defaults to on.
   assert cfg.should_add_content_to_legacy_spans is True
+  assert cfg.should_emit_experimental_telemetry is False
 
 
 def test_admin_lock_falls_back_to_env_not_per_request_field(
@@ -437,11 +543,13 @@ def test_admin_lock_falls_back_to_env_not_per_request_field(
           _ENV_EXPERIMENTAL: 'gen_ai_latest_experimental',
           _ENV_CAPTURE: 'EVENT_ONLY',
           _ENV_ADK_SPAN_CAPTURE: 'false',
+          _ENV_ADK_EXPERIMENTAL_TELEMETRY: 'true',
       },
   )
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in='stable',
       capture_message_content=ContentCapturingMode.NO_CONTENT,
+      adk_experimental_telemetry_opt_in=False,
   )
   # Env opts in even though the per-request field said 'stable'.
   assert cfg.should_use_experimental_genai_semconv is True
@@ -452,6 +560,7 @@ def test_admin_lock_falls_back_to_env_not_per_request_field(
   assert cfg.should_add_content_to_experimental_spans is False
   # Legacy span env explicitly set to false wins over the ignored field.
   assert cfg.should_add_content_to_legacy_spans is False
+  assert cfg.should_emit_experimental_telemetry is True
 
 
 # ---------------------------------------------------------------------------
@@ -471,9 +580,9 @@ def _run_set_common_attrs(
   out: dict = {}
   set_operation_details_common_attributes(
       out,
+      telemetry_config or TelemetryConfig(),
       {'gen_ai.operation.name': 'chat'},
       log_only_attributes={'gen_ai.user.id': 'user-123'},
-      telemetry_config=telemetry_config,
   )
   return out
 
@@ -554,19 +663,21 @@ def test_admin_lock_value_parsing(
 
   When locked, a per-request cfg opting in to experimental + EVENT_ONLY is
   ignored and the (empty) env fallback wins; when unlocked, the cfg wins.
-  Asserts across all four decision functions to pin the shared parsing.
+  Asserts across all five decision functions to pin the shared parsing.
   """
   _set_env(monkeypatch, **{_ENV_ADMIN_LOCK: lock_value})
   cfg = TelemetryConfig(
       genai_semconv_stability_opt_in='experimental',
       capture_message_content=ContentCapturingMode.EVENT_ONLY,
+      adk_experimental_telemetry_opt_in=True,
   )
-  assert is_experimental_semconv(cfg) is (not locked)
-  assert _should_log_prompt_response_content(cfg) is (not locked)
-  assert bool(get_content_capturing_mode(cfg)) is (not locked)
+  assert cfg.should_use_experimental_genai_semconv is (not locked)
+  assert cfg.should_add_content_to_logs is (not locked)
+  assert bool(cfg.content_capturing_mode_value) is (not locked)
   # SPAN-bearing knob: EVENT_ONLY does not enable spans, so when unlocked the
   # cfg disables span capture; when locked the env default (on) wins.
-  assert _should_add_request_response_to_spans(cfg) is locked
+  assert cfg.should_add_content_to_legacy_spans is locked
+  assert cfg.should_emit_experimental_telemetry is (not locked)
 
 
 def _make_test_runner(
@@ -1045,7 +1156,5 @@ async def test_runner_invocation_with_admin_lock_ignores_span_capture_override(
   assert all(v == '{}' for v in llm_request_attrs), (
       'admin lock + env=false should suppress the legacy ADK span'
       ' content attribute regardless of per-request capture=True; some'
-      ' call site bypassed the lock guard in'
-      ' _should_add_request_response_to_spans. attrs='
-      f'{llm_request_attrs}'
+      ' call site bypassed the lock guard. attrs={llm_request_attrs}'
   )

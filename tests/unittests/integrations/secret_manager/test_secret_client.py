@@ -21,6 +21,7 @@ from unittest.mock import patch
 from google.adk.integrations.secret_manager.secret_client import SecretManagerClient
 from google.adk.integrations.secret_manager.secret_client import USER_AGENT
 from google.api_core.gapic_v1 import client_info
+from google.oauth2.credentials import Credentials
 import pytest
 
 import google
@@ -94,37 +95,32 @@ class TestSecretManagerClient:
   @patch("google.cloud.secretmanager.SecretManagerServiceClient")
   def test_init_with_auth_token(self, mock_secret_manager_client):
     """Test initialization with auth token."""
-    # Setup
     auth_token = "test-token"
-    mock_credentials = MagicMock()
 
-    # Mock the entire credentials creation process
-    with (
-        patch("google.auth.credentials.Credentials") as mock_credentials_class,
-        patch("google.auth.transport.requests.Request") as mock_request,
-    ):
-      # Configure the mock to return our mock_credentials when instantiated
-      mock_credentials_class.return_value = mock_credentials
+    client = SecretManagerClient(auth_token=auth_token)
 
-      # Execute
-      client = SecretManagerClient(auth_token=auth_token)
-
-      # Verify
-      mock_credentials.refresh.assert_called_once()
-      mock_secret_manager_client.assert_called_once()
-      call_kwargs = mock_secret_manager_client.call_args.kwargs
-      assert call_kwargs["credentials"] == mock_credentials
-      assert call_kwargs["client_options"] is None
-      assert call_kwargs["client_info"].user_agent == USER_AGENT
-      assert client._credentials == mock_credentials
-      assert client._client == mock_secret_manager_client.return_value
+    mock_secret_manager_client.assert_called_once()
+    call_kwargs = mock_secret_manager_client.call_args.kwargs
+    assert isinstance(call_kwargs["credentials"], Credentials)
+    assert call_kwargs["credentials"].token == auth_token
+    assert call_kwargs["client_options"] is None
+    assert call_kwargs["client_info"].user_agent == USER_AGENT
+    assert isinstance(client._credentials, Credentials)
+    assert client._credentials.token == auth_token
+    assert client._client == mock_secret_manager_client.return_value
 
   @patch("google.cloud.secretmanager.SecretManagerServiceClient")
   @patch(
       "google.adk.integrations.secret_manager.secret_client.default_service_credential"
   )
+  @patch(
+      "google.adk.integrations.secret_manager.secret_client._mtls_utils.get_api_endpoint"
+  )
   def test_init_with_location(
-      self, mock_default_service_credential, mock_secret_manager_client
+      self,
+      mock_get_api_endpoint,
+      mock_default_service_credential,
+      mock_secret_manager_client,
   ):
     """Test initialization with a specific location."""
     # Setup
@@ -134,6 +130,7 @@ class TestSecretManagerClient:
         "test-project",
     )
     location = "us-central1"
+    mock_get_api_endpoint.return_value = "resolved-endpoint"
 
     # Execute
     SecretManagerClient(location=location)
@@ -143,9 +140,14 @@ class TestSecretManagerClient:
     call_kwargs = mock_secret_manager_client.call_args.kwargs
     assert call_kwargs["credentials"] == mock_credentials
     assert call_kwargs["client_options"] == {
-        "api_endpoint": f"secretmanager.{location}.rep.googleapis.com"
+        "api_endpoint": "resolved-endpoint"
     }
     assert call_kwargs["client_info"].user_agent == USER_AGENT
+    mock_get_api_endpoint.assert_called_once_with(
+        location,
+        "secretmanager.{location}.rep.googleapis.com",
+        "secretmanager.{location}.rep.mtls.googleapis.com",
+    )
 
   @patch(
       "google.adk.integrations.secret_manager.secret_client.default_service_credential"
@@ -169,6 +171,20 @@ class TestSecretManagerClient:
     # Execute and verify
     with pytest.raises(ValueError, match="Invalid service account JSON"):
       SecretManagerClient(service_account_json="invalid-json")
+
+  def test_init_with_both_service_account_json_and_auth_token(self):
+    """Test initialization rejects conflicting credential inputs."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Must provide either 'service_account_json' or 'auth_token', not"
+            " both."
+        ),
+    ):
+      SecretManagerClient(
+          service_account_json=json.dumps({"type": "service_account"}),
+          auth_token="test-token",
+      )
 
   @patch("google.cloud.secretmanager.SecretManagerServiceClient")
   @patch(

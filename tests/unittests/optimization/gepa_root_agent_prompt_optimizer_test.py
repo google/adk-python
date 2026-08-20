@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import types
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.optimization.data_types import UnstructuredSamplingResult
@@ -49,6 +50,8 @@ def fixture_mock_gepa(mocker):
 
   mock_gepa_adapter.EvaluationBatch = MockEvaluationBatch
   mock_gepa_adapter.GEPAAdapter = MockGEPAAdapter
+  mock_gepa_api = types.ModuleType("gepa.api")
+  mock_gepa_api.optimize = mock_gepa_module.optimize
 
   mock_gepa_module.core = mocker.MagicMock()
   mock_gepa_module.core.adapter = mock_gepa_adapter
@@ -57,6 +60,7 @@ def fixture_mock_gepa(mocker):
       sys.modules,
       {
           "gepa": mock_gepa_module,
+          "gepa.api": mock_gepa_api,
           "gepa.core": mock_gepa_module.core,
           "gepa.core.adapter": mock_gepa_adapter,
       },
@@ -189,6 +193,22 @@ def test_adapter_make_reflective_dataset(
       "score": 0.1,
       "eval_data": {"t": 2},
   }
+
+
+def test_adapter_rejects_missing_trajectories(
+    mocker, mock_gepa, mock_sampler, mock_agent
+):
+  del mock_gepa
+  adapter_class = _create_agent_gepa_adapter_class()
+  adapter = adapter_class(
+      mock_agent,
+      mock_sampler,
+      mocker.MagicMock(spec=asyncio.AbstractEventLoop),
+  )
+  eval_batch = MockEvaluationBatch(outputs=[], scores=[], trajectories=None)
+
+  with pytest.raises(ValueError, match="without captured trajectories"):
+    adapter.make_reflective_dataset({}, eval_batch, [])
 
 
 @pytest.mark.asyncio

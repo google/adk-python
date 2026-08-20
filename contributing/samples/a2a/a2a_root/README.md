@@ -53,14 +53,14 @@ The A2A Root sample consists of:
 
    ```bash
    # Start the remote agent using uvicorn
-   uvicorn contributing.samples.a2a_root.remote_a2a.hello_world.agent:a2a_app --host localhost --port 8001
+   uvicorn contributing.samples.a2a.a2a_root.remote_a2a.hello_world.agent:a2a_app --host localhost --port 8001
    ```
 
 1. **Run the Main Agent**:
 
    ```bash
    # In a separate terminal, run the adk web server
-   adk web contributing/samples/
+   adk web contributing/samples/a2a
    ```
 
 ### Example Interactions
@@ -130,5 +130,5 @@ Bot: 3, 7 are prime numbers.
 
 **Uvicorn Issues:**
 
-- Make sure the module path is correct: `contributing.samples.a2a_root.remote_a2a.hello_world.agent:a2a_app`
+- Make sure the module path is correct: `contributing.samples.a2a.a2a_root.remote_a2a.hello_world.agent:a2a_app`
 - Check that all dependencies are installed

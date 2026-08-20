@@ -21,6 +21,7 @@ from google.adk.platform import time as platform_time
 from google.genai import types
 
 from ...events.event import Event
+from ._invocation_utils import require_agent_name
 
 if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
@@ -35,7 +36,7 @@ class TranscriptionManager:
       self,
       invocation_context: InvocationContext,
       transcription: types.Transcription,
-  ) -> None:
+  ) -> Event:
     """Handle user input transcription events.
 
     Args:
@@ -53,7 +54,7 @@ class TranscriptionManager:
       self,
       invocation_context: InvocationContext,
       transcription: types.Transcription,
-  ) -> None:
+  ) -> Event:
     """Handle model output transcription events.
 
     Args:
@@ -63,7 +64,7 @@ class TranscriptionManager:
     return await self._create_and_save_transcription_event(
         invocation_context=invocation_context,
         transcription=transcription,
-        author=invocation_context.agent.name,
+        author=require_agent_name(invocation_context),
         is_input=False,
     )
 
@@ -73,7 +74,7 @@ class TranscriptionManager:
       transcription: types.Transcription,
       author: str,
       is_input: bool,
-  ) -> None:
+  ) -> Event:
     """Create and save a transcription event to session service.
 
     Args:

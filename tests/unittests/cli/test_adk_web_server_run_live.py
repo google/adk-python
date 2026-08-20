@@ -106,6 +106,7 @@ def test_run_live_applies_run_config_query_options():
       "&enable_affective_dialog=true"
       "&enable_session_resumption=true"
       "&save_live_blob=true"
+      "&explicit_vad_signal=true"
   )
 
   with client.websocket_connect(url) as ws:
@@ -120,23 +121,27 @@ def test_run_live_applies_run_config_query_options():
   assert run_config.session_resumption is not None
   assert run_config.session_resumption.transparent is True
   assert run_config.save_live_blob is True
+  assert run_config.explicit_vad_signal is True
 
 
 @pytest.mark.parametrize(
     (
         "query,expected_enable_affective,expected_proactive_audio,"
-        "expected_session_resumption_transparent,expected_save_live_blob"
+        "expected_session_resumption_transparent,expected_save_live_blob,"
+        "expected_explicit_vad_signal"
     ),
     [
-        ("", None, None, None, False),
-        ("&proactive_audio=true", None, True, None, False),
-        ("&proactive_audio=false", None, False, None, False),
-        ("&enable_affective_dialog=true", True, None, None, False),
-        ("&enable_affective_dialog=false", False, None, None, False),
-        ("&enable_session_resumption=true", None, None, True, False),
-        ("&enable_session_resumption=false", None, None, False, False),
-        ("&save_live_blob=true", None, None, None, True),
-        ("&save_live_blob=false", None, None, None, False),
+        ("", None, None, None, False, None),
+        ("&proactive_audio=true", None, True, None, False, None),
+        ("&proactive_audio=false", None, False, None, False, None),
+        ("&enable_affective_dialog=true", True, None, None, False, None),
+        ("&enable_affective_dialog=false", False, None, None, False, None),
+        ("&enable_session_resumption=true", None, None, True, False, None),
+        ("&enable_session_resumption=false", None, None, False, False, None),
+        ("&save_live_blob=true", None, None, None, True, None),
+        ("&save_live_blob=false", None, None, None, False, None),
+        ("&explicit_vad_signal=true", None, None, None, False, True),
+        ("&explicit_vad_signal=false", None, None, None, False, False),
     ],
 )
 def test_run_live_defaults_and_individual_options(
@@ -145,6 +150,7 @@ def test_run_live_defaults_and_individual_options(
     expected_proactive_audio: bool | None,
     expected_session_resumption_transparent: bool | None,
     expected_save_live_blob: bool,
+    expected_explicit_vad_signal: bool | None,
 ):
   session_service = InMemorySessionService()
   asyncio.run(
@@ -210,6 +216,7 @@ def test_run_live_defaults_and_individual_options(
         is expected_session_resumption_transparent
     )
   assert run_config.save_live_blob is expected_save_live_blob
+  assert run_config.explicit_vad_signal is expected_explicit_vad_signal
 
 
 _WS_BASE_URL = (
@@ -221,8 +228,11 @@ _WS_BASE_URL = (
 )
 
 
-def _build_ws_client():
-  """Build a TestClient wired to a capturing runner."""
+def _build_ws_client(bind_host=None):
+  """Build a TestClient wired to a capturing runner.
+
+  A loopback *bind_host* turns on the DNS-rebinding guard.
+  """
   session_service = InMemorySessionService()
   asyncio.run(
       session_service.create_session(
@@ -253,8 +263,24 @@ def _build_ws_client():
   fast_api_app = adk_web_server.get_fast_api_app(
       setup_observer=lambda _observer, _server: None,
       tear_down_observer=lambda _observer, _server: None,
+      bind_host=bind_host,
   )
   return TestClient(fast_api_app)
+
+
+def test_run_live_rejects_rebound_host():
+  """A rebound handshake carries the attacker's hostname in Host."""
+  client = _build_ws_client(bind_host="127.0.0.1")
+  with pytest.raises(WebSocketDisconnect) as exc_info:
+    with client.websocket_connect(f"ws://evil.com:8000{_WS_BASE_URL}") as ws:
+      ws.receive_text()
+  assert exc_info.value.code == 1008
+
+
+def test_run_live_allows_loopback_host():
+  client = _build_ws_client(bind_host="127.0.0.1")
+  with client.websocket_connect(f"ws://localhost:8000{_WS_BASE_URL}") as ws:
+    _ = ws.receive_text()
 
 
 def test_run_live_rejects_disallowed_origin():

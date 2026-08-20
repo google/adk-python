@@ -22,7 +22,6 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Optional
 
 from typing_extensions import override
 
@@ -44,8 +43,8 @@ class LocalEnvironment(BaseEnvironment):
   def __init__(
       self,
       *,
-      working_dir: Optional[Path] = None,
-      env_vars: Optional[dict[str, str]] = None,
+      working_dir: Path | None = None,
+      env_vars: dict[str, str] | None = None,
   ):
     """Create a local environment.
 
@@ -91,7 +90,7 @@ class LocalEnvironment(BaseEnvironment):
       self,
       command: str,
       *,
-      timeout: Optional[float] = None,
+      timeout: float | None = None,
   ) -> ExecutionResult:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
@@ -142,11 +141,16 @@ class LocalEnvironment(BaseEnvironment):
     return await asyncio.to_thread(self._sync_write, resolved, content)
 
   def _resolve_path(self, path: str | Path) -> Path:
-    """Resolve a relative path against the working directory."""
-    path_obj = Path(path)
-    if path_obj.is_absolute():
-      return path_obj
-    return self.working_dir / path_obj
+    """Resolve a file path inside the working directory."""
+    candidate = Path(path)
+    working_dir = self.working_dir.resolve()
+    if not candidate.is_absolute():
+      candidate = working_dir / candidate
+
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(working_dir):
+      raise ValueError(f'Path escapes working directory: {path}')
+    return resolved
 
   @staticmethod
   def _sync_read(path: Path) -> bytes:
@@ -156,7 +160,9 @@ class LocalEnvironment(BaseEnvironment):
   @staticmethod
   def _sync_write(path: Path, content: str | bytes) -> None:
     os.makedirs(path.parent, exist_ok=True)
-    mode = 'w' if isinstance(content, str) else 'wb'
-    kwargs = {'encoding': 'utf-8'} if isinstance(content, str) else {}
-    with open(path, mode, **kwargs) as f:
-      f.write(content)
+    if isinstance(content, str):
+      with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(content)
+    else:
+      with open(path, 'wb') as f:
+        f.write(content)

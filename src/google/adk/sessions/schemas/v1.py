@@ -17,8 +17,6 @@
 This module defines SQLAlchemy models for storing session and event data
 in a relational database with the "events" table using JSON
 serialization for Event data.
-
-See https://github.com/google/adk-python/discussions/3605 for more details.
 """
 
 from __future__ import annotations
@@ -46,6 +44,8 @@ from .shared import DEFAULT_MAX_KEY_LENGTH
 from .shared import DEFAULT_MAX_VARCHAR_LENGTH
 from .shared import DynamicJSON
 from .shared import PreciseTimestamp
+from .shared import timestamp_to_utc_datetime
+from .shared import utc_datetime_to_timestamp
 
 
 class Base(DeclarativeBase):
@@ -87,7 +87,7 @@ class StorageSession(Base):
   )
 
   state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
+      MutableDict.as_mutable(DynamicJSON), default=dict
   )
 
   create_time: Mapped[datetime] = mapped_column(
@@ -104,7 +104,7 @@ class StorageSession(Base):
       cascade="all, delete-orphan",
   )
 
-  def __repr__(self):
+  def __repr__(self) -> str:
     return f"<StorageSession(id={self.id}, update_time={self.update_time})>"
 
   @property
@@ -119,12 +119,22 @@ class StorageSession(Base):
         and sqlalchemy_session.bind
         and sqlalchemy_session.bind.dialect.name == "sqlite"
     )
-    return self.get_update_timestamp(is_sqlite=is_sqlite)
+    is_postgresql = bool(
+        sqlalchemy_session
+        and sqlalchemy_session.bind
+        and sqlalchemy_session.bind.dialect.name == "postgresql"
+    )
+    return self.get_update_timestamp(
+        is_sqlite=is_sqlite, is_postgresql=is_postgresql
+    )
 
-  def get_update_timestamp(self, is_sqlite: bool) -> float:
+  def get_update_timestamp(
+      self, is_sqlite: bool = False, is_postgresql: bool = False
+  ) -> float:
     """Returns the time zone aware update timestamp."""
-    if is_sqlite:
-      # SQLite does not support timezone. SQLAlchemy returns a naive datetime
+    del is_sqlite, is_postgresql  # Unused.
+    if self.update_time.tzinfo is None:
+      # SQLite and PostgreSQL do not support timezone. SQLAlchemy returns a naive datetime
       # object without timezone information. We need to convert it to UTC
       # manually.
       return self.update_time.replace(tzinfo=timezone.utc).timestamp()
@@ -142,6 +152,7 @@ class StorageSession(Base):
       state: dict[str, Any] | None = None,
       events: list[Event] | None = None,
       is_sqlite: bool = False,
+      is_postgresql: bool = False,
   ) -> Session:
     """Converts the storage session to a session object."""
     if state is None:
@@ -155,7 +166,9 @@ class StorageSession(Base):
         id=self.id,
         state=state,
         events=events,
-        last_update_time=self.get_update_timestamp(is_sqlite=is_sqlite),
+        last_update_time=self.get_update_timestamp(
+            is_sqlite=is_sqlite, is_postgresql=is_postgresql
+        ),
     )
     session._storage_update_marker = self.get_update_marker()
     return session
@@ -180,12 +193,14 @@ class StorageEvent(Base):
   )
 
   invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
-  timestamp: Mapped[PreciseTimestamp] = mapped_column(
+  timestamp: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
   # The event_data uses JSON serialization to store the Event data, replacing
   # various fields previously used.
-  event_data: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
+  event_data: Mapped[dict[str, Any] | None] = mapped_column(
+      DynamicJSON, nullable=True
+  )
 
   storage_session: Mapped[StorageSession] = relationship(
       "StorageSession",
@@ -216,17 +231,26 @@ class StorageEvent(Base):
         session_id=session.id,
         app_name=session.app_name,
         user_id=session.user_id,
-        timestamp=datetime.fromtimestamp(event.timestamp),
+        timestamp=timestamp_to_utc_datetime(event.timestamp),
         event_data=event.model_dump(exclude_none=True, mode="json"),
     )
 
   def to_event(self) -> Event:
     """Converts the StorageEvent to an Event."""
+    event_data = self.event_data or {}
+    # The stored payload already carries the event's exact epoch. Prefer it
+    # over the `timestamp` column: that column holds a naive local datetime, so
+    # rebuilding an epoch from it silently resolves an ambiguous local time
+    # (a daylight-saving fall-back repeats a whole hour) to the wrong instant,
+    # which shifts the event and reorders the conversation on read back.
+    timestamp = event_data.get("timestamp")
+    if timestamp is None:
+      timestamp = utc_datetime_to_timestamp(self.timestamp)
     return Event.model_validate({
-        **self.event_data,
+        **event_data,
         "id": self.id,
         "invocation_id": self.invocation_id,
-        "timestamp": self.timestamp.timestamp(),
+        "timestamp": timestamp,
     })
 
 
@@ -239,7 +263,7 @@ class StorageAppState(Base):
       String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
+      MutableDict.as_mutable(DynamicJSON), default=dict
   )
   update_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now(), onupdate=func.now()
@@ -258,7 +282,7 @@ class StorageUserState(Base):
       String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
   )
   state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
+      MutableDict.as_mutable(DynamicJSON), default=dict
   )
   update_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now(), onupdate=func.now()

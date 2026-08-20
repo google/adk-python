@@ -17,12 +17,12 @@ from __future__ import annotations
 import collections.abc
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
+from collections.abc import Mapping
 import functools
 import inspect
 import logging
 import typing
 from typing import Any
-from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
 
@@ -163,7 +163,7 @@ class FunctionNode(BaseNode):
   _func: Callable[..., Any] = PrivateAttr()
   _sig: inspect.Signature = PrivateAttr()
   _type_hints: dict[str, Any] = PrivateAttr()
-  _type_adapters: dict[str, TypeAdapter] = PrivateAttr()
+  _type_adapters: dict[str, TypeAdapter[Any]] = PrivateAttr()
   _context_param_name: str | None = PrivateAttr(default=None)
 
   def __init__(
@@ -328,9 +328,15 @@ class FunctionNode(BaseNode):
     is passed through directly and all other non-context parameters are
     looked up in ``ctx.state``.
     """
+    from pydantic import BaseModel
+
     input_bound = self.parameter_binding == 'node_input'
+    source: Any
     if input_bound:
-      source = node_input if isinstance(node_input, dict) else {}
+      if isinstance(node_input, (dict, BaseModel)):
+        source = node_input
+      else:
+        source = {}
     else:
       source = ctx.state
     source_name = 'node_input' if input_bound else 'state'
@@ -353,8 +359,21 @@ class FunctionNode(BaseNode):
         kwargs[param_name] = value
         continue
 
-      if param_name in source:
-        value = source[param_name]
+      has_param = False
+      value = None
+      if isinstance(source, BaseModel):
+        if hasattr(source, param_name):
+          has_param = True
+          value = getattr(source, param_name)
+      else:
+        try:
+          if param_name in source:
+            has_param = True
+            value = source[param_name]
+        except (TypeError, KeyError):
+          pass
+
+      if has_param:
         if param_name in self._type_hints:
           value = self._coerce_param(
               param_name,
@@ -372,7 +391,9 @@ class FunctionNode(BaseNode):
         )
     return kwargs
 
-  def _to_event(self, ctx: Context, data: Any) -> Event | None:
+  def _to_event(
+      self, ctx: Context, data: object
+  ) -> Event | RequestInput | None:
     """Converts a function return value to an Event.
 
     Pass-through types (returned as-is): Event, RequestInput.
@@ -448,16 +469,16 @@ class FunctionNode(BaseNode):
 
   @override
   def model_copy(
-      self, *, update: dict[str, Any] | None = None, deep: bool = False
+      self, *, update: Mapping[str, Any] | None = None, deep: bool = False
   ) -> FunctionNode:
-    copied = cast(FunctionNode, super().model_copy(update=update, deep=deep))
+    copied = super().model_copy(update=update, deep=deep)
     if not update or 'name' not in update:
       return copied
 
     # If the wrapped function is a bound method of a Node, we need to clone
     # the Node and re-bind the function to the new instance.
     # This is needed if the function is referring to params like 'name' from the "self" reference.
-    # Like Workflow or LLM use that name for event node_paths or retreving session events.
+    # Like Workflow or LLM use that name for event node_paths or retrieving session events.
     func = self._func
     if inspect.ismethod(func) and isinstance(
         getattr(func, '__self__', None), BaseNode
@@ -494,9 +515,13 @@ class FunctionNode(BaseNode):
       interrupt_id = f'wf_auth:{ctx.node_path}'
       auth_response = ctx.resume_inputs.get(interrupt_id)
       if auth_response is not None:
-        await process_auth_resume(auth_response, self.auth_config, ctx.state)
+        await process_auth_resume(
+            auth_response, self.auth_config, ctx.state, interrupt_id
+        )
       elif not has_auth_credential(self.auth_config, ctx.state):
-        yield create_auth_request_event(self.auth_config, interrupt_id)
+        yield create_auth_request_event(
+            self.auth_config, interrupt_id, ctx.state
+        )
         return
 
     kwargs = self._bind_parameters(ctx, node_input)

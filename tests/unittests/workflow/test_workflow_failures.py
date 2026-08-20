@@ -19,6 +19,7 @@ from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
 
+from google.adk import platform as adk_platform
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
 from google.adk.events.event import Event
@@ -29,8 +30,8 @@ from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
 from google.adk.workflow import START
 from google.adk.workflow._graph import Graph
-from google.adk.workflow._node import node
 from google.adk.workflow._node import Node
+from google.adk.workflow._node import node
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
@@ -586,13 +587,16 @@ async def test_retry_with_jitter(request: pytest.FixtureRequest):
   app = App(name=request.function.__name__, root_agent=agent)
   runner = testing_utils.InMemoryRunner(app=app)
 
-  with (
-      mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep,
-      mock.patch('random.uniform', return_value=-1.0) as mock_random,
-  ):
-    events = await runner.run_async(testing_utils.get_user_content('start'))
-    mock_sleep.assert_any_await(3.0)
-    mock_random.assert_called_once_with(-2.0, 2.0)
+  mock_random = mock.Mock()
+  mock_random.uniform = mock.Mock(return_value=-1.0)
+  adk_platform.set_random_provider(lambda: mock_random)
+  try:
+    with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
+      events = await runner.run_async(testing_utils.get_user_content('start'))
+      mock_sleep.assert_any_await(3.0)
+      mock_random.uniform.assert_called_once_with(-2.0, 2.0)
+  finally:
+    adk_platform.reset_random_provider()
 
   assert simplify_events_with_node(events) == [
       (
@@ -1068,3 +1072,93 @@ async def test_workflow_returns_normally_on_node_failure():
       and e.node_info.path == 'test_error_workflow@1'
   ]
   assert len(workflow_error_events) == 0
+
+
+@pytest.mark.asyncio
+async def test_fail_fast_preserves_completed_siblings(
+    request: pytest.FixtureRequest,
+):
+  """Tests that when one node fails, other sibling nodes completed in the same tick still have their outputs preserved."""
+  node_success_started = False
+  node_success_completed = False
+
+  @node()
+  async def succeeding_node(ctx: Context):
+    nonlocal node_success_started, node_success_completed
+    node_success_started = True
+    await asyncio.sleep(0)
+    node_success_completed = True
+    return 'success_output'
+
+  @node()
+  async def failing_node(ctx: Context):
+    await asyncio.sleep(0)
+    raise ValueError('Fail')
+
+  wf = Workflow(
+      name='test_fail_fast_workflow',
+      edges=[
+          (START, failing_node),
+          (START, succeeding_node),
+      ],
+  )
+
+  original_handle_completion = Workflow._handle_completion
+  handle_completion_calls = []
+
+  def spy_handle_completion(
+      self, loop_state, node_name, node_obj, child_ctx, ctx
+  ):
+    handle_completion_calls.append(node_name)
+    return original_handle_completion(
+        self, loop_state, node_name, node_obj, child_ctx, ctx
+    )
+
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  with mock.patch.object(
+      Workflow, '_handle_completion', new=spy_handle_completion
+  ):
+    with pytest.raises(ValueError, match='Fail'):
+      await runner.run_async(testing_utils.get_user_content('start'))
+
+  # The succeeding_node should have successfully completed.
+  assert node_success_started is True
+  assert node_success_completed is True
+
+  # Under the bug, succeeding_node's completion handler was skipped.
+  # With the fix, succeeding_node's completion is handled.
+  assert 'failing_node' not in handle_completion_calls
+  assert 'succeeding_node' in handle_completion_calls
+
+
+@pytest.mark.asyncio
+async def test_multiple_failures_first_error_wins(
+    request: pytest.FixtureRequest,
+):
+  """Tests that when multiple parallel nodes fail in the same tick, the first error is preserved."""
+
+  @node()
+  async def failing_node_1(ctx: Context):
+    await asyncio.sleep(0.1)
+    raise ValueError('Fail 1')
+
+  @node()
+  async def failing_node_2(ctx: Context):
+    await asyncio.sleep(0.1)
+    raise ValueError('Fail 2')
+
+  wf = Workflow(
+      name='test_multiple_failures_workflow',
+      edges=[
+          (START, failing_node_1),
+          (START, failing_node_2),
+      ],
+  )
+
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  with pytest.raises(ValueError, match='Fail 1'):
+    await runner.run_async(testing_utils.get_user_content('start'))

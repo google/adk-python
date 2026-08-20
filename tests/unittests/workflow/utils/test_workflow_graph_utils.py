@@ -14,7 +14,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.tools.base_tool import BaseTool
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
@@ -134,3 +137,53 @@ class TestBuildNode:
     standalone = LlmAgent(name="standalone", instruction="test")
     built_standalone = build_node(standalone)
     assert built_standalone.mode == "single_turn"
+
+  def test_build_node_remote_a2a_agent_non_task(self):
+    """build_node does not wrap RemoteA2aAgent in task wrapper if mode is not task."""
+
+    class DummyRemoteAgent(RemoteA2aAgent):
+
+      def __init__(self, mode=None):
+        super().__init__(name="dummy", agent_card="dummy_card", mode=mode)
+        self.parent_agent = None
+
+      def clone(self, *args, **kwargs):
+        raise AssertionError("clone should not be called")
+
+    agent = DummyRemoteAgent(mode=None)
+    built = build_node(agent)
+    assert built == agent
+
+  def test_build_node_remote_a2a_agent_task(self):
+    """build_node raises ValueError if RemoteA2aAgent mode is task."""
+
+    class DummyRemoteAgent(RemoteA2aAgent):
+
+      def __init__(self, mode="task"):
+        super().__init__(name="dummy", agent_card="dummy_card", mode=mode)
+        self.parent_agent = None
+
+    agent = DummyRemoteAgent(mode="task")
+    with pytest.raises(
+        ValueError,
+        match=(
+            "RemoteA2aAgent in task mode is not supported as a standalone"
+            " workflow node. It is only supported in tool-delegation mode."
+        ),
+    ):
+      build_node(agent)
+
+  def test_build_node_remote_a2a_agent_task_with_parent(self):
+    """build_node allows task-mode RemoteA2aAgent if parent_agent is set."""
+
+    class DummyRemoteAgent(RemoteA2aAgent):
+
+      def __init__(self, mode="task"):
+        super().__init__(name="dummy", agent_card="dummy_card", mode=mode)
+        self.parent_agent = Mock()
+
+    agent = DummyRemoteAgent(mode="task")
+    built = build_node(agent)
+    assert built is not agent
+    assert built.mode == "task"
+    assert built.wait_for_output is True

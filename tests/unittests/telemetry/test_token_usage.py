@@ -219,3 +219,16 @@ def test_to_attributes_missing_optional_attrs():
   attrs = token_usage.to_attributes()
   assert attrs[_token_usage.GEN_AI_USAGE_INPUT_TOKENS] == 10
   assert attrs[_token_usage.GEN_AI_USAGE_OUTPUT_TOKENS] == 20
+
+
+def test_to_attributes_cache_creation(
+    usage_metadata: types.GenerateContentResponseUsageMetadata,
+):
+  """Tests to_attributes when cache_creation_input_tokens is present."""
+  usage_metadata.prompt_token_count = 10
+  object.__setattr__(usage_metadata, "cache_creation_input_tokens", 50)
+
+  token_usage = _token_usage.TokenUsage(usage_metadata)
+  attrs = token_usage.to_attributes()
+  assert attrs[_token_usage.GEN_AI_USAGE_INPUT_TOKENS] == 10
+  assert attrs[_token_usage.GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS] == 50

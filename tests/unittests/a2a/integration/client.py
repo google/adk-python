@@ -14,10 +14,9 @@
 
 """A2A Client for integration tests."""
 
-from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.extensions.common import HTTP_EXTENSION_HEADER
-from a2a.types import TransportProtocol as A2ATransport
+from google.adk.a2a import _compat
 from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 import httpx
@@ -40,11 +39,10 @@ def create_client(app, streaming: bool = False) -> RemoteA2aAgent:
       transport=httpx.ASGITransport(app=app), base_url="http://test"
   )
 
-  client_config = A2AClientConfig(
+  client_config = _compat.make_client_config(
       httpx_client=client,
       streaming=streaming,
       polling=False,
-      supported_transports=[A2ATransport.jsonrpc],
   )
   factory = A2AClientFactory(config=client_config)
 
@@ -78,11 +76,10 @@ def create_a2a_client(app, streaming: bool = False):
       headers={HTTP_EXTENSION_HEADER: _NEW_A2A_ADK_INTEGRATION_EXTENSION},
   )
 
-  client_config = A2AClientConfig(
+  client_config = _compat.make_client_config(
       httpx_client=client,
       streaming=streaming,
       polling=False,
-      supported_transports=[A2ATransport.jsonrpc],
   )
   factory = A2AClientFactory(config=client_config)
   return factory.create(agent_card)

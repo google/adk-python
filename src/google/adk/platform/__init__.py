@@ -11,3 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from ._random import get_random
+from ._random import reset_random_provider
+from ._random import set_random_provider
+
+__all__ = [
+    'get_random',
+    'reset_random_provider',
+    'set_random_provider',
+]

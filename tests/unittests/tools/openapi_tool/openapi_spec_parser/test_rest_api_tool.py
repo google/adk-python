@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import MediaType
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter as OpenAPIParameter
@@ -35,6 +36,7 @@ from google.adk.sessions.state import State
 from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_credential
 from google.adk.tools.openapi_tool.common.common import ApiParameter
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
+from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import ParsedOperation
 from google.adk.tools.openapi_tool.openapi_spec_parser.operation_parser import OperationParser
 from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
 from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import snake_to_lower_camel
@@ -516,6 +518,61 @@ class TestRestApiTool:
     assert request_params["json"] == {"param1": "value1", "param2": 123}
     assert request_params["params"] == {"testQueryParam": "query_value"}
 
+  def test_prepare_request_params_preserves_falsy_query_params(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    mock_operation = Operation(operationId="test_op")
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+
+    params = [
+        ApiParameter(
+            original_name="flag",
+            py_name="flag",
+            param_location="query",
+            param_schema=OpenAPISchema(type="boolean"),
+        ),
+        ApiParameter(
+            original_name="offset",
+            py_name="offset",
+            param_location="query",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+        ApiParameter(
+            original_name="cursor",
+            py_name="cursor",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+        ApiParameter(
+            original_name="empty_param",
+            py_name="empty_param",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+    ]
+    kwargs = {
+        "flag": False,
+        "offset": 0,
+        "cursor": None,
+        "empty_param": "",
+    }
+
+    request_params = tool._prepare_request_params(params, kwargs)
+    # Explicit False/0/"" must be kept; None is omitted.
+    assert request_params["params"] == {
+        "flag": False,
+        "offset": 0,
+        "empty_param": "",
+    }
+
   def test_prepare_request_params_array(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
@@ -673,7 +730,59 @@ class TestRestApiTool:
     request_params = tool._prepare_request_params(params, kwargs)
 
     assert request_params["files"] == {"file1": b"file_content"}
-    assert request_params["headers"]["Content-Type"] == "multipart/form-data"
+    # For multipart/form-data the boundary-bearing Content-Type must be set by
+    # httpx (from the `files` payload), not forced here. Forcing a boundary-less
+    # "multipart/form-data" header would override the boundary httpx generates
+    # and make the request body unparsable.
+    assert "Content-Type" not in request_params["headers"]
+
+  def test_prepare_request_params_multipart_content_type_has_boundary(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    mock_operation = Operation(
+        operationId="test_op",
+        requestBody=RequestBody(
+            content={
+                "multipart/form-data": MediaType(
+                    schema=OpenAPISchema(
+                        type="object",
+                        properties={
+                            "file1": OpenAPISchema(
+                                type="string", format="binary"
+                            )
+                        },
+                    )
+                )
+            }
+        ),
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="file1",
+            py_name="file1",
+            param_location="body",
+            param_schema=OpenAPISchema(type="string", format="binary"),
+        )
+    ]
+    kwargs = {"file1": b"file_content"}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    # Build the request httpx would actually send and assert the wire
+    # Content-Type carries the multipart boundary that matches the body.
+    request = httpx.Client().build_request(**request_params)
+    content_type = request.headers["Content-Type"]
+    assert content_type.startswith("multipart/form-data; boundary=")
+    boundary = content_type.split("boundary=", 1)[1]
+    assert request.read().startswith(f"--{boundary}".encode())
 
   def test_prepare_request_params_octet_stream(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential
@@ -744,6 +853,62 @@ class TestRestApiTool:
     assert (
         request_params["url"] == "https://example.com/test/123"
     )  # Path param replaced
+
+  def test_prepare_request_params_path_param_is_percent_encoded(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    """A path parameter value must not be able to introduce new path
+    segments, a query string, or a fragment into the constructed URL.
+
+    This ensures security by escaping user-controlled values.
+
+    Path parameter values ultimately come from the model's tool-call
+    arguments. Without percent-encoding, a value such as '../../admin'
+    could redirect the request -- along with this tool's configured auth
+    credentials -- to an endpoint the OpenAPI spec never declared.
+    """
+    mock_operation = Operation(operationId="test_op")
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="user_id",
+            py_name="user_id",
+            param_location="path",
+            param_schema=OpenAPISchema(type="string"),
+        )
+    ]
+    endpoint_with_path = OperationEndpoint(
+        base_url="https://example.com",
+        path="/users/{user_id}/messages",
+        method="get",
+    )
+    tool.endpoint = endpoint_with_path
+
+    # Path traversal attempt: '/' must be escaped so this cannot leave the
+    # {user_id} path segment.
+    request_params = tool._prepare_request_params(
+        params, {"user_id": "../../admin/v1/tenants"}
+    )
+    assert request_params["url"] == (
+        "https://example.com/users/..%2F..%2Fadmin%2Fv1%2Ftenants/messages"
+    )
+
+    # Query/fragment smuggling attempt: '?' and '#' must be escaped so a
+    # path parameter value cannot introduce a query string or fragment.
+    request_params = tool._prepare_request_params(
+        params, {"user_id": "me?impersonate=other-user#"}
+    )
+    assert request_params["url"] == (
+        "https://example.com/users/me%3Fimpersonate%3Dother-user%23/messages"
+    )
+    assert request_params["params"] == {}  # nothing smuggled into query params
 
   def test_prepare_request_params_header_param(
       self,
@@ -1130,7 +1295,6 @@ class TestRestApiTool:
     httpx defaults to a 5-second timeout, which is too short for many
     real-world API calls. Verify that we explicitly disable the timeout
     to match the previous requests-library behavior (no timeout).
-    Regression test for https://github.com/google/adk-python/issues/4431.
     """
     mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
@@ -1455,7 +1619,6 @@ class TestRestApiTool:
     in the OpenAPI path (e.g. '...execute?triggerId=api_trigger/Name#action').
     These must be moved into the explicit query_params dict so httpx does not
     strip them when it replaces the URL query string with the `params` arg.
-    Regression test for https://github.com/google/adk-python/issues/4555.
     """
     integration_path = (
         "/v2/projects/my-proj/locations/us-central1"
@@ -1602,6 +1765,31 @@ class TestRestApiTool:
 
     assert request_params["url"] == "https://example.com/test"
 
+  def test_rest_api_tool_repr_and_str(
+      self, sample_endpoint, sample_operation, sample_auth_scheme
+  ):
+    """The attached credential is not rendered into repr or str."""
+    secret_cred = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY,
+        api_key="sk-live-secret-api-key-12345",
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="test description",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=secret_cred,
+    )
+    repr_str = repr(tool)
+    str_str = str(tool)
+    assert 'name="test_tool"' in repr_str
+    assert 'description="test description"' in repr_str
+    assert "auth_scheme=" in repr_str
+    assert "auth_credential=" not in repr_str
+    assert "sk-live-secret-api-key-12345" not in repr_str
+    assert "sk-live-secret-api-key-12345" not in str_str
+
 
 def test_snake_to_lower_camel():
   assert snake_to_lower_camel("single") == "single"
@@ -1609,3 +1797,206 @@ def test_snake_to_lower_camel():
   assert snake_to_lower_camel("three_word_example") == "threeWordExample"
   assert not snake_to_lower_camel("")
   assert snake_to_lower_camel("alreadyCamelCase") == "alreadyCamelCase"
+
+
+def _build_parsed_operation(
+    operation: Operation,
+    parameters=None,
+    auth_scheme=None,
+    auth_credential=None,
+) -> ParsedOperation:
+  """A ParsedOperation whose own name/description differ from the operation's.
+
+  ``from_parsed_operation`` is documented to build the tool out of the OpenAPI
+  operation, so these two fields exist as decoys: a tool that picks them up is
+  reading the wrong source.
+  """
+  return ParsedOperation(
+      name="parsed_name_that_is_not_the_tool_name",
+      description="Parsed description that is not the tool description.",
+      endpoint=OperationEndpoint(
+          base_url="https://example.com", path="/pets", method="GET"
+      ),
+      operation=operation,
+      parameters=parameters if parameters is not None else [],
+      return_value=ApiParameter(
+          original_name="",
+          py_name="",
+          param_location="",
+          param_schema=OpenAPISchema(type="string"),
+      ),
+      auth_scheme=auth_scheme,
+      auth_credential=auth_credential,
+  )
+
+
+class TestRestApiToolFromParsedOperation:
+  """Tests for RestApiTool.from_parsed_operation."""
+
+  def test_from_parsed_operation_names_tool_after_operation_id(self):
+    parsed = _build_parsed_operation(
+        Operation(operationId="ListPetsByStatus", description="List pets.")
+    )
+
+    tool = RestApiTool.from_parsed_operation(parsed)
+
+    assert tool.name == "list_pets_by_status"
+
+  def test_from_parsed_operation_truncates_long_name_to_60_chars(self):
+    # Gemini rejects function names of 64 characters or more.
+    operation_id = "get" + "Extremely" * 10 + "LongOperationName"
+    parsed = _build_parsed_operation(
+        Operation(operationId=operation_id, description="Long one.")
+    )
+
+    tool = RestApiTool.from_parsed_operation(parsed)
+
+    assert len(tool.name) == 60
+    assert tool.name.startswith("get_extremely_extremely_")
+
+  @pytest.mark.parametrize(
+      "description, summary, expected",
+      [
+          (
+              "Operation description.",
+              "Operation summary.",
+              "Operation description.",
+          ),
+          (None, "Operation summary.", "Operation summary."),
+          (None, None, ""),
+      ],
+  )
+  def test_from_parsed_operation_description_precedence(
+      self, description, summary, expected
+  ):
+    parsed = _build_parsed_operation(
+        Operation(
+            operationId="listPets", description=description, summary=summary
+        )
+    )
+
+    tool = RestApiTool.from_parsed_operation(parsed)
+
+    assert tool.description == expected
+
+  def test_from_parsed_operation_uses_parsed_parameters_over_operation_ones(
+      self,
+  ):
+    # The operation declares one query parameter, but the caller has already
+    # parsed a different one; the pre-parsed list is what the tool must expose.
+    operation = Operation(
+        operationId="listPets",
+        description="List pets.",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "fromOperation",
+                "in": "query",
+                "schema": OpenAPISchema(type="string"),
+            })
+        ],
+    )
+    parsed = _build_parsed_operation(
+        operation,
+        parameters=[
+            ApiParameter(
+                original_name="fromParsed",
+                py_name="from_parsed",
+                param_location="query",
+                param_schema=OpenAPISchema(type="string"),
+            )
+        ],
+    )
+
+    tool = RestApiTool.from_parsed_operation(parsed)
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False
+    ):
+      declaration = tool._get_declaration()
+
+    assert set(declaration.parameters.properties) == {"from_parsed"}
+
+  def test_from_parsed_operation_forwards_transport_options(
+      self, mock_ssl_context
+  ):
+    parsed = _build_parsed_operation(
+        Operation(operationId="listPets", description="List pets.")
+    )
+
+    def header_provider(_):
+      return {"X-Correlation-Id": "abc"}
+
+    def client_factory():
+      return httpx.AsyncClient()
+
+    tool = RestApiTool.from_parsed_operation(
+        parsed,
+        ssl_verify=mock_ssl_context,
+        header_provider=header_provider,
+        httpx_client_factory=client_factory,
+    )
+
+    assert tool._ssl_verify is mock_ssl_context
+    assert tool._header_provider is header_provider
+    assert tool._httpx_client_factory is client_factory
+
+  def test_from_parsed_operation_carries_over_auth(
+      self, sample_auth_scheme, sample_auth_credential
+  ):
+    parsed = _build_parsed_operation(
+        Operation(operationId="listPets", description="List pets."),
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    tool = RestApiTool.from_parsed_operation(parsed)
+
+    assert tool.auth_scheme == sample_auth_scheme
+    assert tool.auth_credential == sample_auth_credential
+
+
+class TestRestApiToolAuthConfiguration:
+  """Tests for configure_auth_scheme / configure_auth_credential."""
+
+  @pytest.fixture
+  def tool(self, sample_endpoint, sample_operation):
+    return RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+
+  def test_configure_auth_scheme_converts_dict_to_auth_scheme(self, tool):
+    tool.configure_auth_scheme({
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+    })
+
+    assert isinstance(tool.auth_scheme, APIKey)
+    assert tool.auth_scheme.name == "X-API-Key"
+    assert tool.auth_scheme.in_.value == "header"
+
+  def test_configure_auth_credential_parses_json_string(self, tool):
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme="bearer",
+            credentials=HttpCredentials(token="token-from-json"),
+        ),
+    )
+
+    tool.configure_auth_credential(credential.model_dump_json())
+
+    assert isinstance(tool.auth_credential, AuthCredential)
+    assert tool.auth_credential == credential
+
+  def test_configure_auth_credential_none_clears_existing_credential(
+      self, tool, sample_auth_credential
+  ):
+    tool.configure_auth_credential(sample_auth_credential)
+
+    tool.configure_auth_credential(None)
+
+    assert tool.auth_credential is None

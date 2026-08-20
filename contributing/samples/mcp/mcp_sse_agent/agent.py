@@ -12,13 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import logging
 import os
+import pprint
+from typing import Any
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.mcp_instruction_provider import McpInstructionProvider
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.tool_context import ToolContext
+
+# Configure logging; the mcp_tool logger must be set to
+# DEBUG to capture http_debug_info
+logging.basicConfig(level=logging.INFO)
+logging.getLogger('google_adk.google.adk.tools.mcp_tool.mcp_tool').setLevel(
+    logging.DEBUG
+)
 
 _allowed_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -27,6 +38,20 @@ connection_params = SseConnectionParams(
     headers={'Accept': 'text/event-stream'},
 )
 
+
+def after_tool_debug_callback(
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+    tool_response: dict[str, Any],
+) -> dict[str, Any] | None:
+  # pylint: disable=unused-argument
+  print(f'\n=== HTTP Debug Info (from Callback for {tool.name}) ===')
+  pprint.pprint(tool_context.custom_metadata.get('http_debug_info'))
+  print('====================================================\n')
+  return None
+
+
 root_agent = LlmAgent(
     name='enterprise_assistant',
     instruction=McpInstructionProvider(
@@ -34,7 +59,7 @@ root_agent = LlmAgent(
         prompt_name='file_system_prompt',
     ),
     tools=[
-        MCPToolset(
+        McpToolset(
             connection_params=connection_params,
             # don't want agent to do write operation
             # you can also do below
@@ -47,14 +72,11 @@ root_agent = LlmAgent(
             # ],
             tool_filter=[
                 'read_file',
-                'read_multiple_files',
                 'list_directory',
-                'directory_tree',
-                'search_files',
-                'get_file_info',
-                'list_allowed_directories',
+                'get_cwd',
             ],
             require_confirmation=True,
         )
     ],
+    after_tool_callback=after_tool_debug_callback,
 )

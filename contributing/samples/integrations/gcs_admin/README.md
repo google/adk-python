@@ -5,19 +5,23 @@
 This sample agent demonstrates the Google Cloud Storage (GCS) administrative tools in ADK,
 distributed via the `google.adk.integrations.gcs` module. These tools include:
 
-1. `gcs_list_buckets`
+1. `list_buckets`
 
 List GCS bucket names in a Google Cloud project.
 
-1. `gcs_create_bucket`
+1. `get_bucket`
+
+Get metadata information about a GCS bucket.
+
+1. `create_bucket`
 
 Create a new GCS bucket.
 
-1. `gcs_update_bucket`
+1. `update_bucket`
 
 Update properties of a GCS bucket.
 
-1. `gcs_delete_bucket`
+1. `delete_bucket`
 
 Delete a GCS bucket.
 
@@ -98,6 +102,7 @@ credentials.
 ## Sample prompts
 
 - List all buckets in the my-project project.
+- Show me metadata for the my-bucket bucket.
 - Create a new bucket named my-bucket in my-project.
 - Enable versioning and uniform bucket-level access on my-bucket.
 - Delete the GCS bucket my-bucket.

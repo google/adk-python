@@ -46,6 +46,7 @@ from typing_extensions import override
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ._openai_schema import enforce_strict_openai_schema
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -180,29 +181,6 @@ def _content_to_openai_messages(
   return messages
 
 
-def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
-  """Recursively transforms a JSON schema for OpenAI strict structured outputs."""
-  if not isinstance(schema, dict):
-    return
-  if "$ref" in schema:
-    for key in list(schema.keys()):
-      if key != "$ref":
-        del schema[key]
-    return
-  if schema.get("type") == "object" and "properties" in schema:
-    schema["additionalProperties"] = False
-    schema["required"] = sorted(schema["properties"].keys())
-  for defn in schema.get("$defs", {}).values():
-    _enforce_strict_openai_schema(defn)
-  for prop in schema.get("properties", {}).values():
-    _enforce_strict_openai_schema(prop)
-  for key in ("anyOf", "oneOf", "allOf"):
-    for item in schema.get(key, []):
-      _enforce_strict_openai_schema(item)
-  if "items" in schema and isinstance(schema["items"], dict):
-    _enforce_strict_openai_schema(schema["items"])
-
-
 def _update_type_string(value: Any):
   """Lowercases nested JSON schema type strings for OpenAI compatibility."""
   if isinstance(value, list):
@@ -298,6 +276,13 @@ def _function_declaration_to_openai_tool(
   }
 
 
+def _extract_cached_token_count(usage: Any) -> int | None:
+  """Returns OpenAI prompt_tokens_details.cached_tokens, if present."""
+  details = getattr(usage, "prompt_tokens_details", None)
+  cached = getattr(details, "cached_tokens", None)
+  return cached if isinstance(cached, int) else None
+
+
 def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
   """Parses an OpenAI response into an LlmResponse."""
   choice = response.choices[0]
@@ -331,6 +316,9 @@ def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
           prompt_token_count=response.usage.prompt_tokens,
           candidates_token_count=response.usage.completion_tokens,
           total_token_count=response.usage.total_tokens,
+          cached_content_token_count=_extract_cached_token_count(
+              response.usage
+          ),
       ),
   )
 
@@ -338,18 +326,26 @@ def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
 class OpenAILlm(BaseLlm):
   """Integration with OpenAI models.
 
+  For configuration beyond the defaults (api_key, base_url, organization,
+  timeout, retries, custom headers, ...), pass a pre-configured ``AsyncOpenAI``
+  instance as ``client``. Pointing its ``base_url`` at an OpenAI-compatible
+  host is how this model reaches a non-OpenAI backend.
+
   Attributes:
       model: The name of the OpenAI model.
       max_tokens: The maximum number of tokens to generate.
+      client: A pre-configured OpenAI client. When unset, a default client is
+        constructed, which reads its configuration from the environment.
   """
 
   model: str = "gpt-4o"
   max_tokens: int = 4096
+  client: AsyncOpenAI | None = None
 
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
-    return [r"gpt-.*", r"o1-.*", r"o3-.*"]
+    return [r"gpt-.*", r"o\d+-.*"]
 
   @override
   async def generate_content_async(
@@ -396,7 +392,7 @@ class OpenAILlm(BaseLlm):
           schema_name = str(schema_dict["title"])
 
       if schema_dict:
-        _enforce_strict_openai_schema(schema_dict)
+        enforce_strict_openai_schema(schema_dict)
         response_format = {
             "type": "json_schema",
             "json_schema": {
@@ -505,4 +501,6 @@ class OpenAILlm(BaseLlm):
 
   @cached_property
   def _openai_client(self) -> AsyncOpenAI:
+    if self.client is not None:
+      return self.client
     return AsyncOpenAI()

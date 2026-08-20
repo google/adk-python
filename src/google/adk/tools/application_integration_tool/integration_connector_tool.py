@@ -80,6 +80,7 @@ class IntegrationConnectorTool(BaseTool):
       rest_api_tool: RestApiTool,
       auth_scheme: Optional[Union[AuthScheme, str]] = None,
       auth_credential: Optional[Union[AuthCredential, str]] = None,
+      credential_key: Optional[str] = None,
   ):
     """Initializes the ApplicationIntegrationTool.
 
@@ -115,6 +116,7 @@ class IntegrationConnectorTool(BaseTool):
     self._rest_api_tool = rest_api_tool
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._credential_key = credential_key
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -156,7 +158,10 @@ class IntegrationConnectorTool(BaseTool):
   ) -> Dict[str, Any]:
 
     tool_auth_handler = ToolAuthHandler.from_tool_context(
-        tool_context, self._auth_scheme, self._auth_credential
+        tool_context,
+        self._auth_scheme,
+        self._auth_credential,
+        credential_key=self._credential_key,
     )
     auth_result = await tool_auth_handler.prepare_auth_credentials()
 

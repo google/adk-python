@@ -32,6 +32,7 @@ from typing import Union
 from google.genai import types
 from typing_extensions import override
 
+from . import artifact_util
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
@@ -39,18 +40,59 @@ from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
 
+_GCS_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
+_GCS_IS_TEXT_METADATA_KEY = "adkIsText"
+_GCS_FILE_URI_METADATA_KEY = "adkFileUri"
+_GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
+
+
+def _parse_version(blob_name: str, prefix: str) -> Optional[int]:
+  """Extracts the version of an artifact from one of its blob names.
+
+  GCS has a flat namespace, so listing by prefix is a plain string match with
+  no notion of nesting depth. Because filenames are allowed to contain "/",
+  the prefix of an artifact is also a prefix of every artifact nested under it:
+  scanning "a/" to find versions of "a" also returns "a/b/3", which is version
+  3 of the distinct artifact "a/b".
+
+  A blob only holds a version of the artifact denoted by ``prefix`` when its
+  name is exactly ``{prefix}{version}``, so anything with a further "/" in it
+  belongs to some other artifact and must be skipped.
+
+  Args:
+      blob_name: The full name of the blob, which must start with ``prefix``.
+      prefix: The blob prefix of the artifact, including the trailing "/".
+
+  Returns:
+      The version number, or None if the blob does not hold a version of this
+      artifact.
+  """
+  suffix = blob_name[len(prefix) :]
+  if "/" in suffix:
+    # Belongs to a distinct artifact nested under this one.
+    return None
+  # int() also accepts surrounding whitespace, underscores and non-ASCII
+  # digits, none of which _get_blob_name can produce.
+  if not (suffix.isascii() and suffix.isdigit()):
+    logger.warning(
+        "Skipping blob %s because it does not end with a version number.",
+        blob_name,
+    )
+    return None
+  return int(suffix)
+
 
 class GcsArtifactService(BaseArtifactService):
   """An artifact service implementation using Google Cloud Storage (GCS)."""
 
-  def __init__(self, bucket_name: str, **kwargs):
+  def __init__(self, bucket_name: str, **kwargs: Any):
     """Initializes the GcsArtifactService.
 
     Args:
         bucket_name: The name of the bucket to use.
         **kwargs: Keyword arguments to pass to the Google Cloud Storage client.
     """
-    from google.cloud import storage
+    from google.cloud import storage  # pylint: disable=g-import-not-at-top
 
     self.bucket_name = bucket_name
     self.storage_client = storage.Client(**kwargs)
@@ -161,6 +203,8 @@ class GcsArtifactService(BaseArtifactService):
       session_id: Optional[str] = None,
   ) -> str:
     """Constructs the blob name prefix in GCS for a given artifact."""
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
@@ -168,6 +212,7 @@ class GcsArtifactService(BaseArtifactService):
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
+    artifact_util.validate_path_segment(session_id, "session_id")
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   def _get_blob_name(
@@ -216,23 +261,61 @@ class GcsArtifactService(BaseArtifactService):
         app_name, user_id, filename, version, session_id
     )
     blob = self.bucket.blob(blob_name)
-    if custom_metadata:
-      blob.metadata = {k: str(v) for k, v in custom_metadata.items()}
+    blob_metadata = {k: str(v) for k, v in (custom_metadata or {}).items()}
+    if artifact.inline_data and artifact.inline_data.display_name:
+      blob_metadata[_GCS_DISPLAY_NAME_METADATA_KEY] = (
+          artifact.inline_data.display_name
+      )
+    elif artifact.inline_data is None and artifact.text is not None:
+      # Flag text artifacts so they can be reconstructed as Part(text=...) on
+      # load instead of Part.from_bytes() (which would only populate
+      # inline_data).
+      blob_metadata[_GCS_IS_TEXT_METADATA_KEY] = "true"
+    if blob_metadata:
+      blob.metadata = blob_metadata
 
     if artifact.inline_data:
+      data = artifact.inline_data.data
+      if data is None:
+        raise InputValidationError("Artifact inline_data must contain data.")
       blob.upload_from_string(
-          data=artifact.inline_data.data,
+          data=data,
           content_type=artifact.inline_data.mime_type,
       )
-    elif artifact.text:
+    elif artifact.text is not None:
       blob.upload_from_string(
           data=artifact.text,
           content_type="text/plain",
       )
     elif artifact.file_data:
-      raise NotImplementedError(
-          "Saving artifact with file_data is not supported yet in"
-          " GcsArtifactService."
+      file_data = artifact.file_data
+      assert file_data is not None
+      file_uri = file_data.file_uri
+      if not file_uri:
+        raise InputValidationError("Artifact file_data must have a file_uri.")
+      if artifact_util.is_artifact_ref(artifact):
+        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
+        if not parsed_uri:
+          raise InputValidationError(
+              f"Invalid artifact reference URI: {file_uri}"
+          )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
+      # Store the URI and mime_type (if any) as blob metadata; no content to upload.
+      metadata = {
+          **(blob.metadata or {}),
+          _GCS_FILE_URI_METADATA_KEY: file_uri,
+      }
+      if file_data.mime_type:
+        metadata[_GCS_FILE_MIME_TYPE_METADATA_KEY] = file_data.mime_type
+      blob.metadata = metadata
+      blob.upload_from_string(
+          b"",
+          content_type=file_data.mime_type or None,
       )
     else:
       raise InputValidationError(
@@ -263,19 +346,74 @@ class GcsArtifactService(BaseArtifactService):
     blob_name = self._get_blob_name(
         app_name, user_id, filename, version, session_id
     )
-    blob = self.bucket.blob(blob_name)
+    blob = self.bucket.get_blob(blob_name)
+    if not blob:
+      return None
+
+    # If the artifact was saved as a file_data URI reference, restore or resolve it.
+    file_uri = None
+    if blob.metadata:
+      file_uri = blob.metadata.get(
+          _GCS_FILE_URI_METADATA_KEY
+      ) or blob.metadata.get("file_uri")
+
+    if file_uri:
+      if file_uri.startswith("artifact://"):
+        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
+        if not parsed_uri:
+          raise InputValidationError(
+              f"Invalid artifact reference URI: {file_uri}"
+          )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
+        return self._load_artifact(
+            app_name=parsed_uri.app_name,
+            user_id=parsed_uri.user_id,
+            session_id=parsed_uri.session_id,
+            filename=parsed_uri.filename,
+            version=parsed_uri.version,
+        )
+      mime_type = None
+      if blob.metadata:
+        mime_type = blob.metadata.get(_GCS_FILE_MIME_TYPE_METADATA_KEY)
+      if mime_type is None:
+        mime_type = blob.content_type or None
+      return types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type=mime_type,
+          )
+      )
 
     artifact_bytes = blob.download_as_bytes()
-    if not artifact_bytes:
-      return None
-    artifact = types.Part.from_bytes(
+    if blob.metadata and blob.metadata.get(_GCS_IS_TEXT_METADATA_KEY) == "true":
+      return types.Part(text=artifact_bytes.decode("utf-8"))
+    display_name = None
+    if blob.metadata:
+      display_name = blob.metadata.get(_GCS_DISPLAY_NAME_METADATA_KEY)
+    if display_name:
+      return types.Part(
+          inline_data=types.Blob(
+              mime_type=blob.content_type,
+              data=artifact_bytes,
+              display_name=display_name,
+          )
+      )
+    return types.Part.from_bytes(
         data=artifact_bytes, mime_type=blob.content_type
     )
-    return artifact
 
   def _list_artifact_keys(
       self, app_name: str, user_id: str, session_id: Optional[str]
   ) -> list[str]:
+    artifact_util.validate_path_segment(app_name, "app_name")
+    artifact_util.validate_path_segment(user_id, "user_id")
+    if session_id is not None:
+      artifact_util.validate_path_segment(session_id, "session_id")
     filenames = set()
 
     if session_id:
@@ -346,15 +484,22 @@ class GcsArtifactService(BaseArtifactService):
 
     Returns:
         A list of version numbers (integers) available for the specified
-        artifact.
+        artifact, in ascending order.
         Returns an empty list if no versions are found.
     """
-    prefix = self._get_blob_prefix(app_name, user_id, filename, session_id)
-    blobs = self.storage_client.list_blobs(self.bucket, prefix=f"{prefix}/")
+    prefix = (
+        f"{self._get_blob_prefix(app_name, user_id, filename, session_id)}/"
+    )
+    blobs = self.storage_client.list_blobs(self.bucket, prefix=prefix)
     versions = []
     for blob in blobs:
-      *_, version = blob.name.split("/")
-      versions.append(int(version))
+      version = _parse_version(blob.name, prefix)
+      if version is None:
+        continue
+
+      versions.append(version)
+
+    versions.sort()
     return versions
 
   def _get_artifact_version_sync(
@@ -402,17 +547,14 @@ class GcsArtifactService(BaseArtifactService):
       filename: str,
   ) -> list[ArtifactVersion]:
     """Lists all versions and their metadata of an artifact."""
-    prefix = self._get_blob_prefix(app_name, user_id, filename, session_id)
-    blobs = self.storage_client.list_blobs(self.bucket, prefix=f"{prefix}/")
+    prefix = (
+        f"{self._get_blob_prefix(app_name, user_id, filename, session_id)}/"
+    )
+    blobs = self.storage_client.list_blobs(self.bucket, prefix=prefix)
     artifact_versions = []
     for blob in blobs:
-      try:
-        version = int(blob.name.split("/")[-1])
-      except ValueError:
-        logger.warning(
-            "Skipping blob %s because it does not end with a version number.",
-            blob.name,
-        )
+      version = _parse_version(blob.name, prefix)
+      if version is None:
         continue
 
       canonical_uri = f"gs://{self.bucket_name}/{blob.name}"

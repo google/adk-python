@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
@@ -23,12 +25,17 @@ from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.eval_rubrics import RubricContent
 from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvalStatus
+from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.llm_as_judge_utils import get_average_rubric_score
+from google.adk.evaluation.rubric_based_evaluator import AutoRaterResponseParser
 from google.adk.evaluation.rubric_based_evaluator import DefaultAutoRaterResponseParser
+from google.adk.evaluation.rubric_based_evaluator import InvocationResultsSummarizer
 from google.adk.evaluation.rubric_based_evaluator import MajorityVotePerInvocationResultsAggregator
 from google.adk.evaluation.rubric_based_evaluator import MeanInvocationResultsSummarizer
+from google.adk.evaluation.rubric_based_evaluator import PerInvocationResultsAggregator
 from google.adk.evaluation.rubric_based_evaluator import RubricBasedEvaluator
+from google.adk.evaluation.rubric_based_evaluator import RubricResponse
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
 import pytest
@@ -157,8 +164,7 @@ class TestDefaultAutoRaterResponseParser:
       Rationale: It was not bad.
       """  # Missing Verdict
     parsed = DefaultAutoRaterResponseParser().parse(response)
-    assert len(parsed) == 1  # zip will only create one item
-    assert parsed[0].property_text == "Is the response good?"
+    assert parsed == []
 
   def test_parse_auto_rater_response_with_case_insensitive_verdict(self):
     """Tests _parse_auto_rater_response is case-insensitive for verdicts."""
@@ -174,6 +180,82 @@ class TestDefaultAutoRaterResponseParser:
     assert len(parsed) == 2
     assert parsed[0].score == 1.0
     assert parsed[1].score == 0.0
+
+  def test_parse_auto_rater_response_with_id(self):
+    """Tests the parser captures a rubric id echoed by the auto-rater."""
+    response = """
+      ID: 1
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].rubric_id == "1"
+    assert parsed[0].property_text == "Is the response good?"
+    assert parsed[0].score == 1.0
+
+  def test_parse_auto_rater_response_without_id_leaves_id_none(self):
+    """Tests that a response with no ID line leaves rubric_id as None."""
+    response = """
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].rubric_id is None
+    assert parsed[0].property_text == "Is the response good?"
+
+  def test_parse_auto_rater_response_with_first_id_present_second_absent(self):
+    """An id stays with its own property when a later property omits its id."""
+    response = """
+      ID: 1
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+
+      Property: Is the response bad?
+      Rationale: It was not bad.
+      Verdict: no
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 2
+    assert parsed[0].rubric_id == "1"
+    assert parsed[0].property_text == "Is the response good?"
+    assert parsed[1].rubric_id is None
+    assert parsed[1].property_text == "Is the response bad?"
+
+  def test_parse_auto_rater_response_with_first_id_omitted_second_present(self):
+    """A later id is not shifted onto an earlier property that omitted its id."""
+    response = """
+      Property: Is the response good?
+      Rationale: It was good.
+      Verdict: yes
+
+      ID: 2
+      Property: Is the response bad?
+      Rationale: It was not bad.
+      Verdict: no
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 2
+    assert parsed[0].rubric_id is None
+    assert parsed[0].property_text == "Is the response good?"
+    assert parsed[1].rubric_id == "2"
+    assert parsed[1].property_text == "Is the response bad?"
+
+  def test_parse_auto_rater_response_ignores_mid_line_id_substring(self):
+    """A mid-line 'ID: ' (e.g. inside 'UUID: ') is not captured as an id."""
+    response = """
+      Property: Is the response good?
+      Rationale: The session UUID: abc-123 was fine.
+      Verdict: yes
+      """
+    parsed = DefaultAutoRaterResponseParser().parse(response)
+    assert len(parsed) == 1
+    assert parsed[0].rubric_id is None
+    assert parsed[0].property_text == "Is the response good?"
 
 
 class TestMajorityVotePerInvocationResultsAggregator:
@@ -493,6 +575,41 @@ class TestRubricBasedEvaluator:
     assert auto_rater_score.score is None
     assert auto_rater_score.rubric_scores == []
 
+  def test_convert_auto_rater_response_to_score_with_none_content(
+      self,
+      evaluator: RubricBasedEvaluator,
+      caplog: pytest.LogCaptureFixture,
+  ):
+    """An empty auto-rater response is scored as empty, not crashed on."""
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(content=None)
+    with caplog.at_level(logging.WARNING):
+      auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+          response
+      )
+    assert auto_rater_score.score is None
+    assert auto_rater_score.rubric_scores == []
+    assert "empty response" in caplog.text
+
+  def test_convert_auto_rater_response_to_score_warns_on_unparseable(
+      self,
+      evaluator: RubricBasedEvaluator,
+      caplog: pytest.LogCaptureFixture,
+  ):
+    """Auto-rater output that misses the expected format logs a diagnostic."""
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text="**Verdict**: Yes")]
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+      auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+          response
+      )
+    assert auto_rater_score.rubric_scores == []
+    assert "did not match the expected" in caplog.text
+
   def test_convert_auto_rater_response_to_score_with_mixed_verdicts(
       self,
       evaluator: RubricBasedEvaluator,
@@ -563,6 +680,85 @@ class TestRubricBasedEvaluator:
     assert auto_rater_score.score is None
     assert auto_rater_score.rubric_scores == []
 
+  @pytest.mark.parametrize(
+      "property_text",
+      [
+          "\u2022 Is the response good?",
+          "- Is the response good?",
+          "* **Is the response good?**",
+          "**Is the response good?**",
+          "### Is the response good?",
+          "```Is the response good?```",
+          "> Is the response good?",
+          "\u201cIs the response good?\u201d",
+          "\u2014 Is the response good?",
+          "Is  the   response  good?",
+      ],
+  )
+  def test_convert_auto_rater_response_to_score_with_decorated_property(
+      self,
+      evaluator: RubricBasedEvaluator,
+      property_text: str,
+  ):
+    """Markdown and typographic decoration still resolves to its rubric."""
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(
+                    text=(
+                        f"Property: {property_text}\n"
+                        "Rationale: It was good.\n"
+                        "Verdict: yes\n"
+                    )
+                )
+            ]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1"]
+    assert auto_rater_score.score == 1.0
+
+  def test_convert_auto_rater_response_to_score_keeps_non_ascii_rubric(self):
+    """Normalization must not drop accented characters from rubric text."""
+    criterion = RubricsBasedCriterion(
+        threshold=0.5,
+        rubrics=[
+            Rubric(
+                rubric_id="1",
+                rubric_content=RubricContent(
+                    text_property="La réponse utilise l'outil"
+                ),
+            )
+        ],
+        judge_model_options=JudgeModelOptions(
+            judge_model_config=None, num_samples=1
+        ),
+    )
+    evaluator = FakeRubricBasedEvaluator(
+        EvalMetric(
+            metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+            threshold=0.5,
+            criterion=criterion,
+        )
+    )
+    evaluator.create_effective_rubrics_list(None)
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(
+                    text=(
+                        "Property: **La réponse utilise l\u2019outil**\n"
+                        "Rationale: Oui.\n"
+                        "Verdict: yes\n"
+                    )
+                )
+            ]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert [s.rubric_id for s in auto_rater_score.rubric_scores] == ["1"]
+
   def test_create_effective_rubrics_list_with_invocation_rubrics(
       self, evaluator: RubricBasedEvaluator
   ):
@@ -598,6 +794,24 @@ class TestRubricBasedEvaluator:
     effective_rubrics = evaluator.get_effective_rubrics_list()
     assert len(effective_rubrics) == 2
     assert {r.rubric_id for r in effective_rubrics} == {"1", "2"}
+
+  def test_create_effective_rubrics_list_with_no_rubrics_raises_error(self):
+    judge_model_options = JudgeModelOptions(
+        judge_model_config=None,
+        num_samples=3,
+    )
+    criterion = RubricsBasedCriterion(
+        threshold=0.5, judge_model_options=judge_model_options
+    )
+    metric = EvalMetric(
+        metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+        threshold=0.5,
+        criterion=criterion,
+    )
+    evaluator = FakeRubricBasedEvaluator(metric)
+
+    with pytest.raises(ValueError, match="Rubrics are required."):
+      evaluator.create_effective_rubrics_list(None)
 
   def test_get_effective_rubrics_list_before_creation_raises_error(
       self, evaluator: RubricBasedEvaluator
@@ -658,3 +872,460 @@ class TestRubricBasedEvaluator:
         "2",
         "test_type_rubric",
     }
+
+  def test_create_effective_rubrics_filters_to_empty_raises_error(self):
+    judge_model_options = JudgeModelOptions(
+        judge_model_config=None,
+        num_samples=3,
+    )
+    criterion = RubricsBasedCriterion(
+        threshold=0.5, judge_model_options=judge_model_options
+    )
+    metric = EvalMetric(
+        metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+        threshold=0.5,
+        criterion=criterion,
+    )
+    evaluator = FakeRubricBasedEvaluator(metric, rubric_type="EXPECTED_TYPE")
+    invocation_rubrics = [
+        Rubric(
+            rubric_id="wrong_type_rubric",
+            rubric_content=RubricContent(text_property="Invocation rubric"),
+            type="WRONG_TYPE",
+        )
+    ]
+
+    with pytest.raises(ValueError, match="Rubrics are required."):
+      evaluator.create_effective_rubrics_list(invocation_rubrics)
+
+  def test_convert_matches_by_id_when_text_paraphrased(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """A rubric is matched by echoed id even when its text is paraphrased."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    ID: 1
+    Property: Is the reply excellent?
+    Rationale: It was good.
+    Verdict: yes
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert len(auto_rater_score.rubric_scores) == 1
+    assert auto_rater_score.rubric_scores[0].rubric_id == "1"
+    assert auto_rater_score.rubric_scores[0].score == 1.0
+
+  def test_convert_does_not_misattribute_when_first_id_omitted(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """An omitted leading id must not shift a later id onto an earlier property."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    Property: Is the reply excellent?
+    Rationale: It was good.
+    Verdict: yes
+
+    ID: 2
+    Property: Is the reply awful?
+    Rationale: It was not bad.
+    Verdict: no
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    # The first (paraphrased, id-less) property matches no rubric; the second is
+    # matched to rubric "2" by its id and keeps its own "no" verdict.
+    assert len(auto_rater_score.rubric_scores) == 1
+    assert auto_rater_score.rubric_scores[0].rubric_id == "2"
+    assert auto_rater_score.rubric_scores[0].score == 0.0
+
+  def test_convert_falls_back_to_text_when_id_absent(
+      self,
+      evaluator: RubricBasedEvaluator,
+  ):
+    """Without an id, matching falls back to normalized property text."""
+    evaluator.create_effective_rubrics_list(None)
+    response_text = """
+    Property: Is the response good?
+    Rationale: It was good.
+    Verdict: yes
+    """
+    response = LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text=response_text)]
+        )
+    )
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
+    assert len(auto_rater_score.rubric_scores) == 1
+    assert auto_rater_score.rubric_scores[0].rubric_id == "1"
+    assert auto_rater_score.rubric_scores[0].score == 1.0
+
+
+class TestMajorityVoteAggregatorEvalStatus:
+  """Threshold-boundary behavior of the aggregated per-invocation verdict."""
+
+  def _split_verdict_samples(self) -> list[PerInvocationResult]:
+    """Returns samples where rubric "1" wins yes 2-1 and rubric "2" wins no 2-1.
+
+    Majority vote therefore settles on 1.0 for rubric "1" and 0.0 for rubric
+    "2", making the aggregated score mean(1.0, 0.0) == 0.5.
+    """
+    return [
+        _create_per_invocation_result([
+            RubricScore(rubric_id="1", score=1.0),
+            RubricScore(rubric_id="2", score=0.0),
+        ]),
+        _create_per_invocation_result([
+            RubricScore(rubric_id="1", score=1.0),
+            RubricScore(rubric_id="2", score=0.0),
+        ]),
+        _create_per_invocation_result([
+            RubricScore(rubric_id="1", score=0.0),
+            RubricScore(rubric_id="2", score=1.0),
+        ]),
+    ]
+
+  def test_aggregated_score_equal_to_threshold_passes(self):
+    result = MajorityVotePerInvocationResultsAggregator().aggregate(
+        self._split_verdict_samples(), threshold=0.5
+    )
+
+    assert result.score == 0.5
+    # The threshold is inclusive, so a score sitting exactly on it passes.
+    assert result.eval_status == EvalStatus.PASSED
+
+  def test_aggregated_score_just_short_of_threshold_fails(self):
+    result = MajorityVotePerInvocationResultsAggregator().aggregate(
+        self._split_verdict_samples(), threshold=0.5000001
+    )
+
+    assert result.score == 0.5
+    assert result.eval_status == EvalStatus.FAILED
+
+  def test_every_rubric_voted_down_scores_zero_and_fails(self):
+    samples = [
+        _create_per_invocation_result([
+            RubricScore(rubric_id="1", score=0.0),
+            RubricScore(rubric_id="2", score=0.0),
+        ])
+    ]
+
+    result = MajorityVotePerInvocationResultsAggregator().aggregate(
+        samples, threshold=0.5
+    )
+
+    assert result.score == 0.0
+    assert [s.score for s in result.rubric_scores] == [0.0, 0.0]
+    assert result.eval_status == EvalStatus.FAILED
+
+  def test_unscored_rubrics_are_reported_as_not_evaluated(self):
+    samples = [
+        _create_per_invocation_result(
+            [RubricScore(rubric_id="1", score=None, rationale="r1")]
+        )
+    ]
+
+    result = MajorityVotePerInvocationResultsAggregator().aggregate(
+        samples, threshold=0.0
+    )
+
+    # A threshold of 0.0 clears every real score, but nothing was scored here,
+    # so the invocation must come back unevaluated rather than passed.
+    assert result.score is None
+    assert result.eval_status == EvalStatus.NOT_EVALUATED
+
+
+class TestMeanSummarizerScoreAndStatus:
+  """Score arithmetic and pass/fail verdict of the invocation summarizer."""
+
+  def test_overall_score_weights_every_rubric_observation_equally(self):
+    # The first invocation scores rubric "1" 1.0 and rubric "2" 0.0; the second
+    # only scores rubric "1" 1.0. The overall score is the mean over all three
+    # observations (2/3), not the mean of the two per-rubric means (0.5).
+    invocations = [
+        _create_per_invocation_result([
+            RubricScore(rubric_id="1", score=1.0),
+            RubricScore(rubric_id="2", score=0.0),
+        ]),
+        _create_per_invocation_result([RubricScore(rubric_id="1", score=1.0)]),
+    ]
+
+    result = MeanInvocationResultsSummarizer().summarize(
+        invocations, threshold=0.5
+    )
+
+    assert result.overall_score == pytest.approx(2 / 3)
+    assert {s.rubric_id: s.score for s in result.overall_rubric_scores} == {
+        "1": 1.0,
+        "2": 0.0,
+    }
+
+  def test_overall_score_equal_to_threshold_passes(self):
+    invocations = [
+        _create_per_invocation_result([
+            RubricScore(rubric_id="1", score=1.0),
+            RubricScore(rubric_id="2", score=0.0),
+        ])
+    ]
+
+    result = MeanInvocationResultsSummarizer().summarize(
+        invocations, threshold=0.5
+    )
+
+    assert result.overall_score == 0.5
+    assert result.overall_eval_status == EvalStatus.PASSED
+
+  def test_overall_score_below_threshold_fails(self):
+    # mean(1.0, 0.0, 0.0) is 1/3, which is under the 0.5 bar.
+    invocations = [
+        _create_per_invocation_result([
+            RubricScore(rubric_id="1", score=1.0),
+            RubricScore(rubric_id="2", score=0.0),
+            RubricScore(rubric_id="3", score=0.0),
+        ])
+    ]
+
+    result = MeanInvocationResultsSummarizer().summarize(
+        invocations, threshold=0.5
+    )
+
+    assert result.overall_score == pytest.approx(1 / 3)
+    assert result.overall_eval_status == EvalStatus.FAILED
+
+  def test_every_rubric_failing_in_every_invocation_scores_zero(self):
+    invocations = [
+        _create_per_invocation_result([
+            RubricScore(rubric_id="1", score=0.0),
+            RubricScore(rubric_id="2", score=0.0),
+        ]),
+        _create_per_invocation_result([
+            RubricScore(rubric_id="1", score=0.0),
+            RubricScore(rubric_id="2", score=0.0),
+        ]),
+    ]
+
+    result = MeanInvocationResultsSummarizer().summarize(
+        invocations, threshold=0.5
+    )
+
+    assert result.overall_score == 0.0
+    assert {s.rubric_id: s.score for s in result.overall_rubric_scores} == {
+        "1": 0.0,
+        "2": 0.0,
+    }
+    assert result.overall_eval_status == EvalStatus.FAILED
+
+  def test_no_results_are_reported_as_not_evaluated(self):
+    result = MeanInvocationResultsSummarizer().summarize([], threshold=0.0)
+
+    # As above: an empty run must not be read as clearing a 0.0 threshold.
+    assert result.overall_score is None
+    assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+
+  def test_aggregated_rubric_score_does_not_reuse_a_sample_rationale(self):
+    # A per-rubric mean has no model rationale behind it, so the summarizer
+    # must say so rather than promote one sample's rationale to the whole set.
+    invocations = [
+        _create_per_invocation_result(
+            [RubricScore(rubric_id="1", score=1.0, rationale="looked great")]
+        ),
+        _create_per_invocation_result(
+            [RubricScore(rubric_id="1", score=0.0, rationale="looked awful")]
+        ),
+    ]
+
+    result = MeanInvocationResultsSummarizer().summarize(
+        invocations, threshold=0.5
+    )
+
+    rationale = result.overall_rubric_scores[0].rationale
+    assert "looked great" not in rationale
+    assert "looked awful" not in rationale
+    assert "aggregated score" in rationale
+
+
+class ConfigurableFakeRubricBasedEvaluator(RubricBasedEvaluator):
+  """A fake evaluator that exposes RubricBasedEvaluator's injectable pieces."""
+
+  def __init__(self, eval_metric: EvalMetric, **kwargs):
+    super().__init__(
+        eval_metric, criterion_type=RubricsBasedCriterion, **kwargs
+    )
+
+  def format_auto_rater_prompt(
+      self, actual: Invocation, expected: Invocation
+  ) -> str:
+    return "fake prompt"
+
+
+class _RecordingAggregator(PerInvocationResultsAggregator):
+  """Records the threshold it is handed and returns a fixed result."""
+
+  def __init__(self, result: PerInvocationResult):
+    self.thresholds: list[float] = []
+    self.received_samples: list[list[PerInvocationResult]] = []
+    self._result = result
+
+  def aggregate(
+      self,
+      per_invocation_samples: list[PerInvocationResult],
+      threshold: float,
+  ) -> PerInvocationResult:
+    self.thresholds.append(threshold)
+    self.received_samples.append(per_invocation_samples)
+    return self._result
+
+
+class _RecordingSummarizer(InvocationResultsSummarizer):
+  """Records the threshold it is handed and returns a fixed result."""
+
+  def __init__(self, result: EvaluationResult):
+    self.thresholds: list[float] = []
+    self._result = result
+
+  def summarize(
+      self, per_invocation_results: list[PerInvocationResult], threshold: float
+  ) -> EvaluationResult:
+    self.thresholds.append(threshold)
+    return self._result
+
+
+class _FixedResponseParser(AutoRaterResponseParser):
+  """Returns a fixed list of RubricResponse, ignoring the raw text."""
+
+  def __init__(self, rubric_responses: list[RubricResponse]):
+    self._rubric_responses = rubric_responses
+
+  def parse(self, auto_rater_response: str) -> list[RubricResponse]:
+    return list(self._rubric_responses)
+
+
+def _metric_with_thresholds(
+    metric_threshold: float | None, criterion_threshold: float
+) -> EvalMetric:
+  """Returns a metric whose own threshold differs from its criterion's."""
+  rubrics = [
+      Rubric(
+          rubric_id="1",
+          rubric_content=RubricContent(text_property="Is the response good?"),
+      ),
+      Rubric(
+          rubric_id="2",
+          rubric_content=RubricContent(text_property="Is the response bad?"),
+      ),
+  ]
+  criterion = RubricsBasedCriterion(
+      threshold=criterion_threshold,
+      rubrics=rubrics,
+      judge_model_options=JudgeModelOptions(
+          judge_model_config=None, num_samples=3
+      ),
+  )
+  return EvalMetric(
+      metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
+      threshold=metric_threshold,
+      criterion=criterion,
+  )
+
+
+class TestRubricBasedEvaluatorCollaborators:
+  """RubricBasedEvaluator must defer to the collaborators it is given."""
+
+  def test_per_invocation_aggregation_uses_the_criterion_threshold(self):
+    sentinel = _create_per_invocation_result(
+        [RubricScore(rubric_id="1", score=1.0)]
+    )
+    aggregator = _RecordingAggregator(sentinel)
+    evaluator = ConfigurableFakeRubricBasedEvaluator(
+        _metric_with_thresholds(metric_threshold=0.9, criterion_threshold=0.1),
+        per_invocation_results_aggregator=aggregator,
+    )
+    samples = [_create_per_invocation_result([])]
+
+    assert evaluator.aggregate_per_invocation_samples(samples) is sentinel
+    assert aggregator.received_samples == [samples]
+    # The criterion's threshold reaches the aggregator, not the deprecated one.
+    assert aggregator.thresholds == [0.1]
+
+  def test_invocation_summarization_uses_the_criterion_threshold(self):
+    sentinel = EvaluationResult(overall_score=0.25)
+    summarizer = _RecordingSummarizer(sentinel)
+    evaluator = ConfigurableFakeRubricBasedEvaluator(
+        _metric_with_thresholds(metric_threshold=0.9, criterion_threshold=0.1),
+        invocation_results_summarizer=summarizer,
+    )
+
+    assert evaluator.aggregate_invocation_results([]) is sentinel
+    assert summarizer.thresholds == [0.1]
+
+  def test_criterion_only_metric_still_grades(self):
+    # A metric configured with just a criterion carries no deprecated
+    # threshold, and must still produce a real verdict.
+    evaluator = FakeRubricBasedEvaluator(
+        _metric_with_thresholds(metric_threshold=None, criterion_threshold=0.5)
+    )
+
+    passing = evaluator.aggregate_per_invocation_samples(
+        [_create_per_invocation_result([RubricScore(rubric_id="1", score=1.0)])]
+    )
+    assert passing.eval_status == EvalStatus.PASSED
+    assert (
+        evaluator.aggregate_invocation_results([passing]).overall_eval_status
+        == EvalStatus.PASSED
+    )
+
+    failing = evaluator.aggregate_per_invocation_samples(
+        [_create_per_invocation_result([RubricScore(rubric_id="1", score=0.0)])]
+    )
+    assert failing.eval_status == EvalStatus.FAILED
+    assert (
+        evaluator.aggregate_invocation_results([failing]).overall_eval_status
+        == EvalStatus.FAILED
+    )
+
+  def test_scoring_uses_the_injected_response_parser(self):
+    # The parser is the only thing that reads the auto-rater's raw text, so a
+    # parser that ignores that text entirely still drives the scoring.
+    parser = _FixedResponseParser([
+        RubricResponse(
+            rubric_id="1",
+            property_text="a paraphrase no rubric contains",
+            rationale="fine",
+            score=1.0,
+        ),
+        RubricResponse(
+            rubric_id="not_a_rubric",
+            property_text="also unknown",
+            rationale="fine",
+            score=0.0,
+        ),
+    ])
+    evaluator = ConfigurableFakeRubricBasedEvaluator(
+        _metric_with_thresholds(metric_threshold=0.5, criterion_threshold=0.5),
+        auto_rater_response_parser=parser,
+    )
+    evaluator.create_effective_rubrics_list(None)
+
+    auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+        LlmResponse(
+            content=genai_types.Content(
+                parts=[genai_types.Part(text="text the parser ignores")]
+            )
+        )
+    )
+
+    # Only the response naming a known rubric id survives; the unknown one is
+    # dropped, so the mean is 1.0 rather than 0.5.
+    assert [(s.rubric_id, s.score) for s in auto_rater_score.rubric_scores] == [
+        ("1", 1.0)
+    ]
+    assert auto_rater_score.score == 1.0

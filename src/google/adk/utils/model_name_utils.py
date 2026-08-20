@@ -18,11 +18,16 @@ from __future__ import annotations
 
 import re
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from packaging.version import InvalidVersion
 from packaging.version import Version
+from typing_extensions import deprecated
 
 from .env_utils import is_env_enabled
+
+if TYPE_CHECKING:
+  from ..models.llm_request import LlmRequest
 
 _DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR = 'ADK_DISABLE_GEMINI_MODEL_ID_CHECK'
 
@@ -36,12 +41,18 @@ def is_gemini_model_id_check_disabled() -> bool:
   return is_env_enabled(_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR)
 
 
+def _is_managed_agent(llm_request: LlmRequest) -> bool:
+  """Whether the request was built by a ManagedAgent."""
+  return llm_request._is_managed_agent
+
+
 def extract_model_name(model_string: str) -> str:
   """Extract the actual model name from either simple or path-based format.
 
   Args:
     model_string: Either a simple model name like "gemini-2.5-pro" or a
-      path-based model name like "projects/.../models/gemini-2.5-flash"
+      path-based model name like "projects/.../models/gemini-2.5-flash",
+      or a provider-prefixed model name like "gemini/gemini-2.5-flash".
 
   Returns:
     The extracted model name (e.g., "gemini-2.5-pro")
@@ -63,6 +74,19 @@ def extract_model_name(model_string: str) -> str:
   if model_string.startswith('models/'):
     return model_string[len('models/') :]
 
+  # Malformed 'projects/' path (didn't match the Vertex pattern above); return
+  # as-is so the provider-prefix block below doesn't misread it as a Gemini id.
+  if model_string.startswith('projects/'):
+    return model_string
+
+  # Handle provider-prefixed LiteLLM-compatible names like
+  # "gemini/gemini-2.5-flash" or "openrouter/google/gemini-2.5-pro:online".
+  # Only Gemini names are extracted; other providers fall through unchanged.
+  if '/' in model_string:
+    model_name = model_string.rsplit('/', 1)[1]
+    if model_name.startswith('gemini-'):
+      return model_name
+
   # If it's not a path-based model, return as-is (simple model name)
   return model_string
 
@@ -83,6 +107,10 @@ def is_gemini_model(model_string: Optional[str]) -> bool:
   return re.match(r'^gemini-', model_name) is not None
 
 
+@deprecated(
+    'ADK no longer distinguishes Gemini versions internally, because Gemini'
+    ' 1.x is fully deprecated. Use is_gemini_model instead.'
+)
 def is_gemini_1_model(model_string: Optional[str]) -> bool:
   """Check if the model is a Gemini 1.x model using regex patterns.
 
@@ -99,6 +127,10 @@ def is_gemini_1_model(model_string: Optional[str]) -> bool:
   return re.match(r'^gemini-1\.\d+', model_name) is not None
 
 
+@deprecated(
+    'ADK no longer distinguishes Gemini versions internally, because Gemini'
+    ' 1.x is fully deprecated. Use is_gemini_model instead.'
+)
 def is_gemini_eap_or_2_or_above(model_string: Optional[str]) -> bool:
   """Check if the model is a Gemini EAP or a Gemini 2.0+ model.
 
@@ -143,7 +175,8 @@ def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
   followed by a numeric suffix, e.g. ``gemini-flash-early-exp`` or
   ``gemini-flash-early-exp3``. ``<variant>`` is one or more
   alphanumeric/underscore segments separated by ``-`` (e.g. ``flash``,
-  ``pro``, ``flash-lite``).
+  ``pro``, ``flash-lite``), and is optional: variant-less EAP ids such as
+  ``gemini-early-exp`` are also matched.
 
   Args:
     model_string: Either a simple model name or path-based model name.
@@ -156,24 +189,30 @@ def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
 
   model_name = extract_model_name(model_string)
   return (
-      re.match(r'^gemini-[a-z0-9_]+(?:-[a-z0-9_]+)*-early-exp\d*$', model_name)
+      re.match(
+          r'^gemini-(?:[a-z0-9_]+(?:-[a-z0-9_]+)*-)?early-exp\d*$', model_name
+      )
       is not None
   )
 
 
-def is_gemini_3_1_flash_live(model_string: Optional[str]) -> bool:
-  """Check if the model is a Gemini 3.1 Flash Live model.
+def _is_gemini_3_x_live(model_string: Optional[str]) -> bool:
+  """Check if the model is a Gemini 3.x Live model.
 
   Args:
     model_string: The model name
 
   Returns:
-    True if it's a Gemini 3.1 Flash Live model, False otherwise
+    True if it's a Gemini 3.x Live model, False otherwise
   """
   if not model_string:
     return False
   model_name = extract_model_name(model_string)
-  return model_name.startswith('gemini-3.1-flash-live')
+  return (
+      model_name.startswith('gemini-3.')
+      and '-live' in model_name
+      and not is_gemini_3_5_live_translate(model_string)
+  )
 
 
 def is_gemini_3_5_live_translate(model_string: Optional[str]) -> bool:

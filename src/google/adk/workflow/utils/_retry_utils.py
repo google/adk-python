@@ -16,8 +16,7 @@ from __future__ import annotations
 
 """Utility functions for retrying nodes in a workflow."""
 
-import random
-
+from ...platform import _random as platform_random
 from .._node_state import NodeState
 from .._retry_config import RetryConfig
 
@@ -32,7 +31,9 @@ def _should_retry_node(
     return False
 
   attempt_count = node_state.attempt_count
-  max_attempts = retry_config.max_attempts or 5
+  max_attempts = (
+      retry_config.max_attempts if retry_config.max_attempts is not None else 5
+  )
 
   # attempt_count starts at 1 for the original request.
   # So if attempt_count >= max_attempts, we have reached the limit.
@@ -77,10 +78,16 @@ def _get_retry_delay(
   attempt_for_calc = max(0, attempt_count - 1)
 
   delay = initial_delay * (backoff_factor**attempt_for_calc)
-  delay = min(delay, max_delay)
 
   if jitter > 0.0:
-    random_offset = random.uniform(-jitter * delay, jitter * delay)
+    # Cap the delay before jittering, so that even the widest positive offset
+    # lands on max_delay. Capping the jittered result instead would hold the
+    # bound but collapse every overshooting draw onto exactly max_delay,
+    # firing the retries jitter exists to spread out at the same instant.
+    delay = min(delay, max_delay / (1.0 + jitter))
+    random_offset = platform_random.get_random().uniform(
+        -jitter * delay, jitter * delay
+    )
     delay = max(0.0, delay + random_offset)
 
-  return delay
+  return min(delay, max_delay)
