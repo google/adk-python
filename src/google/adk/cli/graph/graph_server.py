@@ -32,7 +32,7 @@ class CodeSaveRequest(BaseModel):
 
 
 class GraphServer:
-  """FastAPI server serving visual graph topology, real-time execution events, and split-screen code editing."""
+  """FastAPI server serving interactive visual graph canvas (Vis.js / Cytoscape) and code editor."""
 
   def __init__(
       self,
@@ -45,7 +45,7 @@ class GraphServer:
     self.agent_file_path = agent_file_path
     self.host = host
     self.port = port
-    self.app = FastAPI(title="ADK Graph Visualizer & Debugger")
+    self.app = FastAPI(title="ADK Interactive Graph Canvas & Code Workbench")
     self._setup_routes()
 
   def _setup_routes(self) -> None:
@@ -74,9 +74,9 @@ class GraphServer:
       <!DOCTYPE html>
       <html>
       <head>
-        <title>ADK Visual Graph & Code Workbench</title>
+        <title>ADK Interactive Graph Canvas & Code Workbench</title>
         <meta charset="utf-8">
-        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+        <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
         <style>
           * { box-sizing: border-box; }
           body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; height: 100vh; display: flex; flex-direction: column; }
@@ -86,27 +86,26 @@ class GraphServer:
           .panel { flex: 1; padding: 16px; display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid #334155; }
           .panel:last-child { border-right: none; }
           .panel-title { font-weight: bold; margin-bottom: 12px; font-size: 0.9rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; }
-          .graph-wrapper { flex: 1; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 20px; overflow: auto; display: flex; justify-content: center; align-items: center; }
+          #mynetwork { flex: 1; background: #020617; border: 1px solid #334155; border-radius: 8px; overflow: hidden; }
           textarea { flex: 1; background: #020617; color: #38bdf8; border: 1px solid #334155; border-radius: 8px; padding: 16px; font-family: 'Fira Code', monospace; font-size: 13px; resize: none; outline: none; line-height: 1.5; }
           button { background: #0284c7; color: white; border: none; padding: 6px 14px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: 600; }
           button:hover { background: #0369a1; }
           #toast { color: #4ade80; font-size: 0.8rem; margin-left: 10px; display: none; }
-          .mermaid { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; }
+          .info-panel { font-size: 0.8rem; color: #64748b; margin-top: 8px; }
         </style>
       </head>
       <body>
         <header>
-          <h1>ADK Visual Graph & Code Workbench</h1>
+          <h1>ADK Interactive Graph Canvas & Code Workbench</h1>
           <div id="status" style="font-size: 0.85rem; color: #38bdf8;">Interactive Mode</div>
         </header>
         <div class="container">
           <div class="panel">
             <div class="panel-title">
-              <span>VISUAL AGENT GRAPH TOPOLOGY</span>
+              <span>INTERACTIVE AGENT GRAPH CANVAS</span>
+              <span class="info-panel">Drag nodes to rearrange | Scroll to zoom</span>
             </div>
-            <div class="graph-wrapper">
-              <div id="mermaid-container" class="mermaid">Loading diagram...</div>
-            </div>
+            <div id="mynetwork"></div>
           </div>
           <div class="panel">
             <div class="panel-title">
@@ -120,39 +119,81 @@ class GraphServer:
           </div>
         </div>
         <script>
-          mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+          let network = null;
+
+          function colorForType(type) {
+            switch(type) {
+              case 'sequential': return { background: '#0284c7', border: '#38bdf8' };
+              case 'parallel': return { background: '#7c3aed', border: '#a78bfa' };
+              case 'loop': return { background: '#d97706', border: '#fbbf24' };
+              case 'llm_agent': return { background: '#059669', border: '#34d399' };
+              case 'tool': return { background: '#dc2626', border: '#f87171' };
+              default: return { background: '#475569', border: '#94a3b8' };
+            }
+          }
+
+          function iconForType(type) {
+            switch(type) {
+              case 'sequential': return '🔄 ';
+              case 'parallel': return '⚡ ';
+              case 'loop': return '🔁 ';
+              case 'llm_agent': return '🤖 ';
+              case 'tool': return '🛠️ ';
+              default: return '📦 ';
+            }
+          }
 
           function renderGraph(topology) {
-            if (!topology || !topology.nodes || topology.nodes.length === 0) {
-              document.getElementById('mermaid-container').innerText = 'No nodes detected.';
-              return;
-            }
+            if (!topology || !topology.nodes) return;
 
-            let def = 'graph TD\\n';
+            const nodesArray = [];
+            const edgesArray = [];
+
             topology.nodes.forEach(node => {
-              if (node.type === 'sequential' || node.type === 'parallel' || node.type === 'loop') {
-                def += `  ${node.id}["🔄 ${node.label} (${node.type})"]\\n`;
-              } else if (node.type === 'llm_agent') {
-                def += `  ${node.id}["🤖 ${node.label}"]\\n`;
-              } else if (node.type === 'tool') {
-                def += `  ${node.id}["🛠️ ${node.label}"]\\n`;
-              } else {
-                def += `  ${node.id}["📦 ${node.label}"]\\n`;
-              }
+              const colors = colorForType(node.type);
+              nodesArray.push({
+                id: node.id,
+                label: `${iconForType(node.type)}${node.label}\\n[${node.type}]`,
+                shape: 'box',
+                margin: 12,
+                color: {
+                  background: colors.background,
+                  border: colors.border,
+                  highlight: { background: colors.border, border: '#ffffff' }
+                },
+                font: { color: '#ffffff', face: 'monospace', size: 14 }
+              });
             });
 
             topology.edges.forEach(edge => {
-              if (edge.type === 'sub_agent') {
-                def += `  ${edge.source} -->|sub-agent| ${edge.target}\\n`;
-              } else if (edge.type === 'tool_binding') {
-                def += `  ${edge.source} -.->|tool| ${edge.target}\\n`;
-              }
+              const isTool = edge.type === 'tool_binding';
+              edgesArray.push({
+                from: edge.source,
+                to: edge.target,
+                label: edge.type,
+                arrows: 'to',
+                dashes: isTool,
+                color: { color: isTool ? '#f87171' : '#38bdf8', highlight: '#ffffff' },
+                font: { color: '#94a3b8', size: 10, align: 'middle' }
+              });
             });
 
-            const element = document.getElementById('mermaid-container');
-            element.removeAttribute('data-processed');
-            element.innerHTML = def;
-            mermaid.contentLoaded();
+            const container = document.getElementById('mynetwork');
+            const data = {
+              nodes: new vis.DataSet(nodesArray),
+              edges: new vis.DataSet(edgesArray)
+            };
+
+            const options = {
+              physics: {
+                solver: 'forceAtlas2Based',
+                forceAtlas2Based: { gravitationalConstant: -50, centralGravity: 0.01, springLength: 100 }
+              },
+              interaction: { hover: true, dragNodes: true, zoomView: true, dragView: true }
+            };
+
+            if (network) network.destroy();
+            network = new vis.Network(container, data, options);
           }
 
           fetch('/api/graph/topology')
