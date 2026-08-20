@@ -673,10 +673,43 @@ class Runner:
               yield user_event
 
           # Run before_run callbacks
-          await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
+          early_exit_result = await ic.plugin_manager.run_before_run_callback(
+              invocation_context=ic
+          )
         except Exception as e:
           await _notify_run_error(ic.plugin_manager, ic, e)
           raise
+
+        # A Content returned by before_run halts the run and becomes the
+        # final response, mirroring the early-exit contract of
+        # _exec_with_plugin. The success-only cleanup below (after_run and
+        # compaction) is run explicitly: the finally that normally runs it
+        # belongs to the main loop, which a halted run never enters.
+        if isinstance(early_exit_result, types.Content):
+          early_exit_event = Event(
+              invocation_id=ic.invocation_id,
+              author='model',
+              content=early_exit_result,
+          )
+          _apply_run_config_custom_metadata(early_exit_event, ic.run_config)
+          if self._should_append_event(early_exit_event, is_live_call=False):
+            await self.session_service.append_event(
+                session=ic.session,
+                event=early_exit_event,
+            )
+          yield early_exit_event
+          try:
+            await ic.plugin_manager.run_after_run_callback(
+                invocation_context=ic
+            )
+            await self._run_post_invocation_compaction(
+                session=session,
+                skip_token_compaction=ic.token_compaction_checked,
+            )
+          except Exception as e:
+            await _notify_run_error(ic.plugin_manager, ic, e)
+            raise
+          return
 
         # 3. Start root node in background
         from .agents.context import Context

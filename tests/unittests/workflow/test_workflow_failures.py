@@ -21,8 +21,11 @@ from unittest import mock
 
 from google.adk import platform as adk_platform
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import Agent
 from google.adk.apps.app import App
 from google.adk.events.event import Event
+from google.adk.plugins.base_plugin import BasePlugin
 # Added for the moved test
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -1162,3 +1165,82 @@ async def test_multiple_failures_first_error_wins(
 
   with pytest.raises(ValueError, match='Fail 1'):
     await runner.run_async(testing_utils.get_user_content('start'))
+
+
+class _HaltingPlugin(BasePlugin):
+  """Plugin whose before_run_callback halts the run with a Content."""
+
+  def __init__(self):
+    super().__init__(name='halting_plugin')
+    self.after_run_called = False
+
+  async def before_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> types.Content:
+    return types.Content(
+        role='model', parts=[types.Part(text='halted by plugin')]
+    )
+
+  async def after_run_callback(
+      self, *, invocation_context: InvocationContext
+  ) -> None:
+    self.after_run_called = True
+
+
+def _texts(events: list[Event]) -> list[str]:
+  return [
+      part.text
+      for event in events
+      if event.content and event.content.parts
+      for part in event.content.parts
+      if part.text
+  ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_halts_when_before_run_callback_returns_content(
+    request: pytest.FixtureRequest,
+):
+  """Regression for #6013: a Content returned by before_run_callback must
+  halt the run with that content and skip node execution."""
+  node_a = TestingNode(name='NodeA', output='should not run')
+  graph = Graph(edges=[Edge(from_node=START, to_node=node_a)])
+  workflow = Workflow(name='halt_workflow', graph=graph)
+
+  plugin = _HaltingPlugin()
+  app = App(
+      name=request.function.__name__,
+      root_agent=workflow,
+      plugins=[plugin],
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert node_a.received_inputs == []
+  assert 'halted by plugin' in _texts(events)
+  # A halted run is a completed run: after_run must still fire, matching
+  # the _exec_with_plugin early-exit behavior.
+  assert plugin.after_run_called
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_root_halts_when_before_run_callback_returns_content(
+    request: pytest.FixtureRequest,
+):
+  """Same regression for the other node-path shape: a root LlmAgent. The
+  model must never be called on a halted run."""
+  mock_model = testing_utils.MockModel.create(responses=['should not run'])
+  agent = Agent(name='root_agent', model=mock_model)
+
+  plugin = _HaltingPlugin()
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+      plugins=[plugin],
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('hello'))
+
+  assert not mock_model.requests
+  assert 'halted by plugin' in _texts(events)
+  assert plugin.after_run_called
