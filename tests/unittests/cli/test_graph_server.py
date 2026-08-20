@@ -90,8 +90,10 @@ def test_workbench_exposes_smart_layout_and_accessible_icon_tooltips() -> None:
   assert 'id="node-instruction"' in page
   assert 'id="reconnect-edge"' in page
   assert "smooth:{type:'horizontal'" in page
-  assert 'data-tooltip="Smart auto-arrange"' in page
-  assert 'aria-label="Auto-arrange graph"' in page
+  assert 'id="layout" class="btn">Auto layout' in page
+  assert 'id="add-node" class="btn primary">+ Add' in page
+  assert "function toolsFor(node)" in page
+  assert "node.type!=='tool'" in page
   assert "split(/\\s+/)" in page
   assert "function undo()" in page
   assert "function redo()" in page
