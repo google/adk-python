@@ -5903,6 +5903,25 @@ def _resume_events(
   return [call_event, response_event]
 
 
+def _call_event(author, name, args, text="hello"):
+  """Builds a one-turn history event: one function_call plus a text sibling."""
+  parts = [
+      genai_types.Part(
+          function_call=genai_types.FunctionCall(
+              id="fc-1", name=name, args=args
+          )
+      )
+  ]
+  if text is not None:
+    parts.append(genai_types.Part(text=text))
+  return Event(
+      invocation_id="inv-1",
+      author=author,
+      id="e_auth",
+      content=genai_types.Content(role="model", parts=parts),
+  )
+
+
 def _make_agent():
   return RemoteA2aAgent(
       name="test_agent", agent_card="http://example.com/agent.json"
@@ -6204,6 +6223,124 @@ class TestHitlResumeRewrite:
     parts, _ = agent._construct_message_parts_from_session(ctx)  # pylint: disable=protected-access
     assert _SECRET not in _dump(parts)
     assert any(_kind(part) == "text" for part in parts)
+
+  @pytest.mark.parametrize("author", ["test_agent", "other_agent"])
+  def test_construct_message_parts_drops_credential_request_from_history(
+      self, author
+  ):
+    """An adk_request_credential call is never forwarded.
+
+    A flow appends this event to the session when it asks the client for a
+    credential, and its arguments carry the raw client secret. It must be
+    dropped whether it is replayed as the agent's own part or rendered as
+    another agent's message.
+    """
+    agent = _make_agent()
+    event = _call_event(
+        author,
+        "adk_request_credential",
+        {"functionCallId": "toolset:test_agent", "authConfig": _AUTH_PAYLOAD},
+    )
+    ctx = _make_ctx([event])
+
+    parts, _ = agent._construct_message_parts_from_session(ctx)  # pylint: disable=protected-access
+
+    assert _SECRET not in _dump(parts)
+    assert any(_kind(part) == "text" for part in parts)
+    # The scrub copies; the session it read from keeps both parts.
+    assert len(event.content.parts) == 2
+
+  @pytest.mark.parametrize("author", ["test_agent", "other_agent"])
+  def test_construct_message_parts_skips_credential_only_event(self, author):
+    """A credential-only event empties on scrub and is then skipped.
+
+    Without a text sibling the scrub leaves the event with no parts. The walk
+    must drop such an event, so no empty or preamble-only message reaches the
+    peer.
+    """
+    agent = _make_agent()
+    ctx = _make_ctx([
+        _call_event(
+            author,
+            "adk_request_credential",
+            {
+                "functionCallId": "toolset:test_agent",
+                "authConfig": _AUTH_PAYLOAD,
+            },
+            text=None,
+        )
+    ])
+
+    parts, _ = agent._construct_message_parts_from_session(ctx)  # pylint: disable=protected-access
+
+    assert parts == []
+
+  def test_construct_message_parts_drops_credential_call_under_other_name(self):
+    """Fail-closed: a credential call is dropped by shape, not only by name.
+
+    The AuthConfig sits under `authConfig`, one level down, because the call
+    carries an AuthToolArguments envelope. Reading only the top level here would
+    match nothing at all.
+    """
+    agent = _make_agent()
+    ctx = _make_ctx([
+        _call_event(
+            "test_agent",
+            "some_unknown_tool",  # NOT a credential call name
+            {
+                "functionCallId": "toolset:test_agent",
+                "authConfig": _AUTH_PAYLOAD,
+            },
+        )
+    ])
+
+    parts, _ = agent._construct_message_parts_from_session(ctx)  # pylint: disable=protected-access
+
+    assert _SECRET not in _dump(parts)
+
+  def test_construct_message_parts_keeps_ordinary_call_with_auth_scheme_arg(
+      self,
+  ):
+    """An ordinary tool taking an `auth_scheme` argument still gets forwarded.
+
+    `auth_scheme` is a top-level key of a serialized AuthConfig, so a scrub that
+    matched on the top level of the arguments would silently eat this call. In
+    task mode that is invisible: the message empties and the task aborts.
+    """
+    agent = _make_agent()
+    ctx = _make_ctx([
+        _call_event(
+            "test_agent",
+            "register_connector",
+            {"auth_scheme": "oauth2", "name": "drive"},
+        )
+    ])
+
+    parts, _ = agent._construct_message_parts_from_session(ctx)  # pylint: disable=protected-access
+
+    assert "register_connector" in _dump(parts)
+
+  @pytest.mark.parametrize("author", ["test_agent", "other_agent"])
+  def test_construct_message_parts_keeps_mock_auth_prompt(self, author):
+    """The mock auth call holds the peer's prompt, not a credential.
+
+    `to_adk_event` builds this call for an auth-required task and puts it in
+    place of the peer's last text part, so dropping it throws the prompt away
+    and leaves an empty message.
+    """
+    agent = _make_agent()
+    ctx = _make_ctx([
+        _call_event(
+            author,
+            "mock_function_call_for_required_user_auth",
+            {"auth_required": "Sign in to Drive to continue"},
+            text=None,
+        )
+    ])
+
+    parts, _ = agent._construct_message_parts_from_session(ctx)  # pylint: disable=protected-access
+
+    assert "Sign in to Drive to continue" in _dump(parts)
 
   @pytest.mark.asyncio
   async def test_run_async_impl_never_forwards_credential_to_peer(self):

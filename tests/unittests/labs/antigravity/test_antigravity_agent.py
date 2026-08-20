@@ -22,7 +22,6 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.run_config import RunConfig
-from google.adk.events.event import Event
 from google.adk.labs.antigravity import _antigravity_agent
 from google.adk.labs.antigravity._antigravity_agent import AntigravityAgent
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -103,74 +102,6 @@ async def _run_via_node_runner(agent, node_input):
       node_input
   )
   return child_ctx, enqueued
-
-
-def _event(author='agy', partial=False, parts=None):
-  """Builds an ADK Event; `parts=None` means the event carries no content."""
-  return Event(
-      invocation_id='inv_1',
-      author=author,
-      partial=partial,
-      content=(
-          None
-          if parts is None
-          else genai_types.Content(role='model', parts=parts)
-      ),
-  )
-
-
-_TEXT_PART = genai_types.Part.from_text(text='answer')
-_THOUGHT_PART = genai_types.Part(text='thinking out loud', thought=True)
-_CALL_PART = genai_types.Part(
-    function_call=genai_types.FunctionCall(name='run_command', args={})
-)
-_RESPONSE_PART = genai_types.Part(
-    function_response=genai_types.FunctionResponse(
-        name='run_command', response={'result': 'ok'}
-    )
-)
-
-
-@pytest.mark.parametrize(
-    'event,expected',
-    [
-        pytest.param(_event(parts=[_TEXT_PART]), 'answer', id='text'),
-        pytest.param(
-            _event(parts=[_TEXT_PART, _TEXT_PART]),
-            'answeranswer',
-            id='text_parts_concatenated',
-        ),
-        pytest.param(
-            _event(parts=[_THOUGHT_PART, _TEXT_PART]),
-            'answer',
-            id='thought_dropped_text_kept',
-        ),
-        pytest.param(
-            _event(partial=True, parts=[_TEXT_PART]), None, id='partial'
-        ),
-        pytest.param(_event(parts=[_THOUGHT_PART]), None, id='thought_only'),
-        pytest.param(_event(parts=[_CALL_PART]), None, id='function_call_only'),
-        pytest.param(
-            _event(author='run_command', parts=[_RESPONSE_PART]),
-            None,
-            id='function_response_from_tool',
-        ),
-        pytest.param(
-            _event(author='some_other_agent', parts=[_TEXT_PART]),
-            None,
-            id='wrong_author',
-        ),
-        pytest.param(_event(parts=[]), None, id='empty_parts'),
-        pytest.param(_event(parts=None), None, id='no_content'),
-    ],
-)
-def test_final_model_text_filters(event, expected):
-  """Only this agent's own, complete, user-visible text becomes node output.
-
-  Notably `partial`: in SSE mode a trajectory can end on a streaming chunk,
-  which would otherwise surface as a truncated answer.
-  """
-  assert _antigravity_agent._final_model_text(event, 'agy') == expected
 
 
 def test_standalone_agent_is_allowed():

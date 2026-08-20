@@ -28,6 +28,7 @@ from google.adk.integrations.agent_registry.agent_registry import _ProtocolType
 from google.adk.integrations.agent_registry.agent_registry import _should_use_mtls_endpoint
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.utils._google_client_headers import merge_tracking_headers
 import httpx
 from mcp import ClientSession
 from mcp.types import ListToolsResult
@@ -325,7 +326,7 @@ class TestAgentRegistry:
     assert agents == {"agents": [{"name": "agent-1"}]}
     registry._session.post.assert_called_once_with(
         f"{registry._base_url}/projects/test-project/locations/global/agents:search",
-        headers={"x-goog-user-project": "test-project"},
+        headers=merge_tracking_headers({"x-goog-user-project": "test-project"}),
         json={
             "searchString": "test-agent",
             "searchType": "KEYWORD",
@@ -359,7 +360,7 @@ class TestAgentRegistry:
     assert mcp_servers == {"mcpServers": [{"name": "mcp-1"}]}
     registry._session.post.assert_called_once_with(
         f"{registry._base_url}/projects/test-project/locations/global/mcpServers:search",
-        headers={"x-goog-user-project": "test-project"},
+        headers=merge_tracking_headers({"x-goog-user-project": "test-project"}),
         json={
             "searchString": "test-mcp",
             "searchType": "KEYWORD",
@@ -672,6 +673,25 @@ class TestAgentRegistry:
     headers = registry._get_auth_headers()
     assert headers["Authorization"] == "Bearer fake-token"
     assert "x-goog-user-project" not in headers
+
+  def test_registry_requests_identify_adk(self, registry):
+    """Registry calls carry the ADK client label.
+
+    Without it, server-side usage data cannot separate ADK traffic from any
+    other caller of the Agent Registry API.
+    """
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"mcpServers": []}
+    mock_response.raise_for_status = MagicMock()
+    registry._session.post.return_value = mock_response
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    registry.search_mcp_servers(search_string="test")
+
+    headers = registry._session.post.call_args.kwargs["headers"]
+    assert "google-adk/" in headers["x-goog-api-client"]
+    assert "google-adk/" in headers["user-agent"]
 
   def test_make_request_raises_http_status_error(self, registry):
     mock_response = MagicMock()

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import copy
 import logging
 from typing import AsyncGenerator
@@ -147,19 +148,42 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
-  function_call_id_to_response_events_index: dict[str | None, int] = {}
+  # A model may hand out the same function call id more than once in a session,
+  # so an id on its own does not identify a single call. Each response is
+  # attributed to the newest call that precedes it and carries the same id, and
+  # a call then takes the last response attributed to it. Taking the last one
+  # keeps the closing update of a long-running tool, which reports progress
+  # several times under one id, while attributing first stops a reused id from
+  # handing a call the response that belongs to a different call.
+  call_event_indices_by_id: dict[str | None, list[int]] = {}
   for i, event in enumerate(events):
-    function_responses = event.get_function_responses()
-    if function_responses:
-      for function_response in function_responses:
-        function_call_id = function_response.id
-        function_call_id_to_response_events_index[function_call_id] = i
+    if event.get_function_responses():
+      continue
+    for function_call in event.get_function_calls():
+      call_event_indices_by_id.setdefault(function_call.id, []).append(i)
 
-  if not function_call_id_to_response_events_index:
+  response_event_index_by_call: dict[tuple[str | None, int], int] = {}
+  history_has_function_responses = False
+  for i, event in enumerate(events):
+    for function_response in event.get_function_responses():
+      history_has_function_responses = True
+      call_event_indices = call_event_indices_by_id.get(function_response.id)
+      if not call_event_indices:
+        continue
+      # Indices are collected in ascending order, so the call that owns this
+      # response is the one just before it. A response preceding every call
+      # that carries its id keeps the first, as it did before ids could repeat.
+      preceding_calls = bisect_left(call_event_indices, i)
+      owning_call_event_index = call_event_indices[max(preceding_calls - 1, 0)]
+      response_event_index_by_call[
+          (function_response.id, owning_call_event_index)
+      ] = i
+
+  if not history_has_function_responses:
     return events
 
   result_events: list[Event] = []
-  for event in events:
+  for i, event in enumerate(events):
     if event.get_function_responses():
       # function_response should be handled together with function_call below.
       continue
@@ -167,11 +191,11 @@ def _rearrange_events_for_async_function_responses_in_history(
 
       function_response_events_indices = set()
       for function_call in event.get_function_calls():
-        function_call_id = function_call.id
-        if function_call_id in function_call_id_to_response_events_index:
-          function_response_events_indices.add(
-              function_call_id_to_response_events_index[function_call_id]
-          )
+        response_event_index = response_event_index_by_call.get(
+            (function_call.id, i)
+        )
+        if response_event_index is not None:
+          function_response_events_indices.add(response_event_index)
       result_events.append(event)
       if not function_response_events_indices:
         continue
