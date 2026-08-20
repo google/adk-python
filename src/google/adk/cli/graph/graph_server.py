@@ -74,8 +74,9 @@ class GraphServer:
       <!DOCTYPE html>
       <html>
       <head>
-        <title>ADK Visual Graph & Code Editor</title>
+        <title>ADK Visual Graph & Code Workbench</title>
         <meta charset="utf-8">
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
         <style>
           * { box-sizing: border-box; }
           body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; height: 100vh; display: flex; flex-direction: column; }
@@ -84,43 +85,79 @@ class GraphServer:
           .container { display: flex; flex: 1; overflow: hidden; }
           .panel { flex: 1; padding: 16px; display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid #334155; }
           .panel:last-child { border-right: none; }
-          .panel-title { font-weight: bold; margin-bottom: 8px; font-size: 0.9rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; }
-          textarea { flex: 1; background: #020617; color: #38bdf8; border: 1px solid #334155; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 13px; resize: none; outline: none; }
-          pre { flex: 1; background: #020617; color: #a7f3d0; border: 1px solid #334155; border-radius: 6px; padding: 12px; margin: 0; overflow: auto; font-size: 12px; }
+          .panel-title { font-weight: bold; margin-bottom: 12px; font-size: 0.9rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; }
+          .graph-wrapper { flex: 1; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 20px; overflow: auto; display: flex; justify-content: center; align-items: center; }
+          textarea { flex: 1; background: #020617; color: #38bdf8; border: 1px solid #334155; border-radius: 8px; padding: 16px; font-family: 'Fira Code', monospace; font-size: 13px; resize: none; outline: none; line-height: 1.5; }
           button { background: #0284c7; color: white; border: none; padding: 6px 14px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: 600; }
           button:hover { background: #0369a1; }
           #toast { color: #4ade80; font-size: 0.8rem; margin-left: 10px; display: none; }
+          .mermaid { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; }
         </style>
       </head>
       <body>
         <header>
-          <h1>ADK Visual Graph & Live Code Workbench</h1>
-          <div id="status" style="font-size: 0.85rem; color: #94a3b8;">Loaded</div>
+          <h1>ADK Visual Graph & Code Workbench</h1>
+          <div id="status" style="font-size: 0.85rem; color: #38bdf8;">Interactive Mode</div>
         </header>
         <div class="container">
           <div class="panel">
             <div class="panel-title">
-              <span>VISUAL GRAPH TOPOLOGY</span>
+              <span>VISUAL AGENT GRAPH TOPOLOGY</span>
             </div>
-            <pre id="graph-json">Loading topology...</pre>
+            <div class="graph-wrapper">
+              <div id="mermaid-container" class="mermaid">Loading diagram...</div>
+            </div>
           </div>
           <div class="panel">
             <div class="panel-title">
               <span>AGENT SOURCE CODE (Python)</span>
               <div>
-                <button onclick="saveCode()">Save Code</button>
-                <span id="toast">Saved!</span>
+                <button onclick="saveCode()">Save & Re-Parse Graph</button>
+                <span id="toast">Saved & Updated!</span>
               </div>
             </div>
             <textarea id="code-editor" placeholder="# Python code editor..."></textarea>
           </div>
         </div>
         <script>
+          mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+
+          function renderGraph(topology) {
+            if (!topology || !topology.nodes || topology.nodes.length === 0) {
+              document.getElementById('mermaid-container').innerText = 'No nodes detected.';
+              return;
+            }
+
+            let def = 'graph TD\\n';
+            topology.nodes.forEach(node => {
+              if (node.type === 'sequential' || node.type === 'parallel' || node.type === 'loop') {
+                def += `  ${node.id}["🔄 ${node.label} (${node.type})"]\\n`;
+              } else if (node.type === 'llm_agent') {
+                def += `  ${node.id}["🤖 ${node.label}"]\\n`;
+              } else if (node.type === 'tool') {
+                def += `  ${node.id}["🛠️ ${node.label}"]\\n`;
+              } else {
+                def += `  ${node.id}["📦 ${node.label}"]\\n`;
+              }
+            });
+
+            topology.edges.forEach(edge => {
+              if (edge.type === 'sub_agent') {
+                def += `  ${edge.source} -->|sub-agent| ${edge.target}\\n`;
+              } else if (edge.type === 'tool_binding') {
+                def += `  ${edge.source} -.->|tool| ${edge.target}\\n`;
+              }
+            });
+
+            const element = document.getElementById('mermaid-container');
+            element.removeAttribute('data-processed');
+            element.innerHTML = def;
+            mermaid.contentLoaded();
+          }
+
           fetch('/api/graph/topology')
             .then(res => res.json())
-            .then(data => {
-              document.getElementById('graph-json').innerText = JSON.stringify(data, null, 2);
-            });
+            .then(data => renderGraph(data));
 
           fetch('/api/graph/code')
             .then(res => res.json())
@@ -140,6 +177,10 @@ class GraphServer:
               const toast = document.getElementById('toast');
               toast.style.display = 'inline';
               setTimeout(() => { toast.style.display = 'none'; }, 2000);
+
+              fetch('/api/graph/topology')
+                .then(res => res.json())
+                .then(topo => renderGraph(topo));
             });
           }
         </script>

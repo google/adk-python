@@ -111,6 +111,37 @@ def test_main_disables_click_windows_glob_expansion() -> None:
   assert mock_main.call_args.kwargs["windows_expand_args"] is False
 
 
+def test_graph_opens_the_selected_agent_source_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """The graph workbench retains the selected source file for code editing."""
+  from google.adk.cli.utils.agent_loader import AgentLoader
+
+  agent_file = tmp_path / "sample_agent.py"
+  agent_file.touch()
+  captured_kwargs = {}
+
+  class _GraphServer:
+
+    def __init__(self, **kwargs: Any) -> None:
+      captured_kwargs.update(kwargs)
+
+    def run(self) -> None:
+      pass
+
+  monkeypatch.setattr(
+      AgentLoader, "load_agent", lambda _self, _agent_name: root_agent
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.graph.graph_server.GraphServer", _GraphServer
+  )
+
+  result = CliRunner().invoke(cli_tools_click.main, ["graph", str(agent_file)])
+
+  assert result.exit_code == 0, result.output
+  assert captured_kwargs["agent_file_path"] == agent_file.resolve()
+
+
 # validate_exclusive
 def test_validate_exclusive_allows_single() -> None:
   """Providing exactly one exclusive option should pass."""

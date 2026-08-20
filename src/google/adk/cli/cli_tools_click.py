@@ -2003,7 +2003,9 @@ def cli_graph(agent_file: Optional[str], host: str, port: int) -> None:
   click.echo(f"Successfully parsed agent graph! Total nodes: {len(topology.nodes)}, edges: {len(topology.edges)}")
   click.echo(f"Serving Visual Agent Graph on http://{host}:{port}")
 
-  server = GraphServer(topology=topology, host=host, port=port)
+  server = GraphServer(
+      topology=topology, agent_file_path=path, host=host, port=port
+  )
   server.run()
 
 
