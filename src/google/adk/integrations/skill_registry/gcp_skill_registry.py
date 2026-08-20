@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import ssl
 import tempfile
@@ -35,6 +36,9 @@ import google.auth.exceptions
 from google.auth.transport import mtls
 from google.auth.transport import requests as auth_requests
 import httpx
+from pydantic import ValidationError
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class GCPSkillRegistry(SkillRegistry):
@@ -215,6 +219,10 @@ class GCPSkillRegistry(SkillRegistry):
   async def search_skills(self, *, query: str) -> list[models.Frontmatter]:
     """Searches for skills in the registry.
 
+    Catalog entries that fail client-side Frontmatter validation (for
+    example names with dots that ``get_skill`` also rejects) are skipped
+    so one non-conforming hit cannot fail the whole search.
+
     Args:
       query: The search query.
 
@@ -234,10 +242,18 @@ class GCPSkillRegistry(SkillRegistry):
 
       results = []
       for s in response_data.get("skills", []):
-        results.append(
-            models.Frontmatter(
-                name=s.get("name", "").split("/")[-1],
-                description=s.get("description", "") or "",
-            )
-        )
+        raw_name = s.get("name", "")
+        try:
+          results.append(
+              models.Frontmatter(
+                  name=raw_name.split("/")[-1],
+                  description=s.get("description", "") or "",
+              )
+          )
+        except ValidationError:
+          logger.warning(
+              "Skipping skill search result that failed frontmatter"
+              " validation: %s",
+              raw_name,
+          )
       return results

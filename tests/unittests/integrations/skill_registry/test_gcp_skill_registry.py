@@ -185,6 +185,63 @@ async def test_search_skills_success():
 
 
 @pytest.mark.asyncio
+async def test_search_skills_skips_invalid_frontmatter_names():
+  """A non-conforming catalog name is skipped; valid hits are still returned."""
+  registry = gcp_skill_registry.GCPSkillRegistry()
+  invalid_name = (
+      "projects/test-project/locations/us-central1/skills/"
+      "cloud.google.com-agent-platform-eval-flywheel"
+  )
+  mock_response = mock.MagicMock()
+  mock_response.status_code = 200
+  mock_response.json.return_value = {
+      "skills": [
+          {
+              "name": invalid_name,
+              "description": "First-party catalog entry with dots in the name.",
+          },
+          {
+              "name": (
+                  "projects/test-project/locations/us-central1/skills/valid-skill"
+              ),
+              "description": "A loadable skill.",
+          },
+      ]
+  }
+
+  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+    results = await registry.search_skills(query="query")
+
+  assert len(results) == 1
+  assert results[0].name == "valid-skill"
+  assert results[0].description == "A loadable skill."
+
+
+@pytest.mark.asyncio
+async def test_search_skills_returns_empty_when_all_hits_are_invalid():
+  """Search still succeeds when every catalog hit fails Frontmatter validation."""
+  registry = gcp_skill_registry.GCPSkillRegistry()
+  mock_response = mock.MagicMock()
+  mock_response.status_code = 200
+  mock_response.json.return_value = {
+      "skills": [
+          {
+              "name": (
+                  "projects/test-project/locations/us-central1/skills/"
+                  "cloud.google.com-agent-platform-eval-flywheel"
+              ),
+              "description": "Dots are not allowed in Frontmatter.name.",
+          },
+      ]
+  }
+
+  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+    results = await registry.search_skills(query="query")
+
+  assert results == []
+
+
+@pytest.mark.asyncio
 async def test_registry_requests_identify_adk():
   """Registry calls carry the ADK client label.
 
