@@ -17,6 +17,7 @@
 import io
 import logging
 import os
+import ssl
 from unittest import mock
 import zipfile
 
@@ -542,7 +543,9 @@ async def test_get_skill_with_mtls():
       skill = await registry.get_skill(name="my-skill")
 
       # Verify AsyncClient was instantiated with verify=mock_ssl_context
-      mock_client_class.assert_called_with(verify=mock_ssl_context)
+      mock_client_class.assert_called_with(
+          verify=mock_ssl_context, follow_redirects=True
+      )
 
   assert skill.frontmatter.name == "my-skill"
 
@@ -578,3 +581,22 @@ async def test_use_custom_credentials():
       }),
       params={"search_string": "query"},
   )
+
+
+@pytest.mark.asyncio
+async def test_create_httpx_client_follows_redirects():
+  """Clients follow the 302 redirect issued by the media download endpoint."""
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  client = registry._create_httpx_client()
+  try:
+    assert client.follow_redirects is True
+  finally:
+    await client.aclose()
+
+  registry._ssl_context = ssl.create_default_context()
+  client = registry._create_httpx_client()
+  try:
+    assert client.follow_redirects is True
+  finally:
+    await client.aclose()
