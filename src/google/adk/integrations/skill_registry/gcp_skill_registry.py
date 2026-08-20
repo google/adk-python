@@ -27,6 +27,7 @@ from google.adk.skills import _utils
 from google.adk.skills import models
 from google.adk.skills.skill_registry import SkillRegistry
 from google.adk.utils import _mtls_utils
+from google.adk.utils._google_client_headers import merge_tracking_headers
 import google.auth
 import google.auth.credentials
 from google.auth.credentials import Credentials
@@ -127,7 +128,7 @@ class GCPSkillRegistry(SkillRegistry):
     }
     if quota_project_id:
       headers["x-goog-user-project"] = quota_project_id
-    return headers
+    return merge_tracking_headers(headers)
 
   async def _make_request(
       self,

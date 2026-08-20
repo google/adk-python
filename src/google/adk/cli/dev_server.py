@@ -950,7 +950,7 @@ class DevServer(ApiServer):
       await create_eval_set(
           app_name=app_name,
           create_eval_set_request=CreateEvalSetRequest(
-              eval_set=UserEvalSet(eval_set_id=eval_set_id, eval_cases=[]),
+              eval_set=EvalSet(eval_set_id=eval_set_id, eval_cases=[]),
           ),
       )
 

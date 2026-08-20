@@ -856,6 +856,7 @@ class UsageMetadataChunk(BaseModel):
   total_tokens: int
   cached_prompt_tokens: int = 0
   reasoning_tokens: int = 0
+  cache_creation_tokens: Optional[int] = None
 
 
 class LiteLLMClient:
@@ -1027,7 +1028,11 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
       if total > 0:
         return total
 
-    for key in ("cached_prompt_tokens", "cached_tokens"):
+    for key in (
+        "cached_prompt_tokens",
+        "cached_tokens",
+        "cache_read_input_tokens",
+    ):
       value = usage_dict.get(key)
       if isinstance(value, int):
         return value
@@ -1035,6 +1040,39 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
     logger.debug("Error extracting cached prompt tokens: %s", e)
 
   return 0
+
+
+def _extract_cache_creation_tokens(usage: Any) -> Optional[int]:
+  """Extracts cache creation (write) tokens from LiteLLM usage.
+
+  Args:
+    usage: Usage dictionary from LiteLLM response.
+
+  Returns:
+    Integer number of cache creation tokens if present; otherwise None.
+  """
+  try:
+    usage_dict = usage
+    if hasattr(usage, "model_dump"):
+      usage_dict = usage.model_dump()
+    elif isinstance(usage, str):
+      try:
+        usage_dict = json.loads(usage)
+      except json.JSONDecodeError:
+        return None
+
+    if not isinstance(usage_dict, dict):
+      return None
+
+    for key in ("cache_creation_input_tokens", "cache_write_input_tokens"):
+      if key in usage_dict:
+        value = usage_dict.get(key)
+        if isinstance(value, int):
+          return value
+  except (TypeError, AttributeError) as e:
+    logger.debug("Error extracting cache creation tokens: %s", e)
+
+  return None
 
 
 def _decode_thought_signature(value: Any) -> Optional[bytes]:
@@ -1195,7 +1233,7 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
-) -> Union[Message, list[Message]]:
+) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
   Handles multipart function responses by returning a list of
@@ -1207,14 +1245,18 @@ async def _content_to_message_param(
     model: The LiteLLM model string, used for provider-specific behavior.
 
   Returns:
-    A litellm Message, a list of litellm Messages.
+    A litellm Message, a list of litellm Messages, or None if skipped.
   """
   _ensure_litellm_imported()
 
+  # Skip content if there are no parts to avoid LiteLLM adapter errors.
+  parts = content.parts or []
+  if not parts:
+    return None
+
   tool_messages: list[Message] = []
   non_tool_parts: list[types.Part] = []
-  content_parts_or_empty = content.parts or []
-  for part in content_parts_or_empty:
+  for part in parts:
     if part.function_response:
       function_response = part.function_response
       response = function_response.response
@@ -1262,7 +1304,7 @@ async def _content_to_message_param(
   role = _to_litellm_role(content.role)
 
   if role == "user":
-    user_parts = [part for part in content_parts_or_empty if not part.thought]
+    user_parts = [part for part in parts if not part.thought]
     message_content = (
         await _get_content(user_parts, provider=provider, model=model) or None
     )
@@ -1274,7 +1316,7 @@ async def _content_to_message_param(
     tool_calls: list[_OutboundToolCall] = []
     content_parts: list[types.Part] = []
     reasoning_parts: list[types.Part] = []
-    for part in content_parts_or_empty:
+    for part in parts:
       if part.function_call:
         function_call = part.function_call
         if not function_call.name:
@@ -2268,6 +2310,7 @@ def _model_response_to_chunk(
           total_tokens=usage.get("total_tokens", 0) or 0,
           cached_prompt_tokens=_extract_cached_prompt_tokens(usage),
           reasoning_tokens=_extract_reasoning_tokens(usage),
+          cache_creation_tokens=_extract_cache_creation_tokens(usage),
       ), None
     except AttributeError as e:
       raise TypeError(
@@ -2363,6 +2406,13 @@ def _model_response_to_generate_content_response(
         cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
+    cache_creation = _extract_cache_creation_tokens(usage_dict)
+    if cache_creation is not None:
+      object.__setattr__(
+          llm_response.usage_metadata,
+          "cache_creation_input_tokens",
+          cache_creation,
+      )
 
   grounding_metadata = _extract_grounding_metadata(response)
   if grounding_metadata:
@@ -3242,6 +3292,12 @@ class LiteLlm(BaseLlm):
                 if chunk.reasoning_tokens
                 else None,
             )
+            if chunk.cache_creation_tokens is not None:
+              object.__setattr__(
+                  usage_metadata,
+                  "cache_creation_input_tokens",
+                  chunk.cache_creation_tokens,
+              )
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
           # finalize tool calls on an explicit tool_calls/length finish_reason,

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import time
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
 from unittest.mock import Mock
@@ -27,7 +29,9 @@ from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool import mcp_tool
+from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
@@ -302,6 +306,73 @@ class TestMCPTool:
     # Fix: call_tool uses 'arguments' parameter, not positional args
     self.mock_session.call_tool.assert_called_once_with(
         "test_tool", arguments=args, progress_callback=None, meta=None
+    )
+
+  @pytest.mark.asyncio
+  async def test_in_flight_tool_call_is_held_out_of_the_idle_sweep(self):
+    """A call in flight must not have its session swept out from under it."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+    session_key = manager._generate_session_key(manager._merge_headers(None))
+
+    call_started = asyncio.Event()
+    finish_call = asyncio.Event()
+
+    async def _slow_call_tool(*args, **kwargs):
+      call_started.set()
+      await finish_call.wait()
+      return CallToolResult(content=[TextContent(type="text", text="ok")])
+
+    pooled_session = Mock()
+    pooled_session._read_stream = Mock(_closed=False)
+    pooled_session._write_stream = Mock(_closed=False)
+    pooled_session.call_tool = _slow_call_tool
+    exit_stack = AsyncMock()
+    manager._sessions[session_key] = (
+        pooled_session,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=manager,
+    )
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+    ):
+      call = asyncio.ensure_future(
+          tool._run_async_impl(
+              args={"param1": "test_value"},
+              tool_context=tool_context,
+              credential=None,
+          )
+      )
+      await asyncio.wait_for(call_started.wait(), timeout=5.0)
+
+      # The call outlives the idle TTL. The pool stamps the session only when
+      # it hands it out, so on the timestamp alone it now looks maximally
+      # idle -- and some unrelated caller touches the pool.
+      manager._session_last_used[session_key] = (
+          time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+      )
+      manager._evict_idle_sessions(keep_key="key_of_another_caller")
+
+      assert session_key in manager._sessions
+      exit_stack.aclose.assert_not_called()
+
+      finish_call.set()
+      result = await asyncio.wait_for(call, timeout=5.0)
+
+    assert result["content"][0]["text"] == "ok"
+    # Finishing the call is what restarts the idle clock.
+    assert (
+        time.monotonic() - manager._session_last_used[session_key]
+        < _SESSION_IDLE_TTL_SECONDS
     )
 
   @pytest.mark.asyncio

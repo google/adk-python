@@ -670,6 +670,12 @@ def _extract_thinking_token_count(
   return min(thinking, output_tokens)
 
 
+def _extract_cache_creation_token_count(usage: Any) -> int | None:
+  """Returns Anthropic cache-write tokens, the analog of cache_creation tokens."""
+  cached = getattr(usage, "cache_creation_input_tokens", None)
+  return cached if isinstance(cached, int) else None
+
+
 def message_to_generate_content_response(
     message: anthropic_types.Message,
 ) -> LlmResponse:
@@ -683,21 +689,27 @@ def message_to_generate_content_response(
 
   prompt_tokens = _extract_prompt_token_count(message.usage)
   thinking_tokens = _extract_thinking_token_count(message.usage)
+  usage_metadata = types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=prompt_tokens,
+      candidates_token_count=(
+          message.usage.output_tokens - (thinking_tokens or 0)
+      ),
+      total_token_count=prompt_tokens + message.usage.output_tokens,
+      cached_content_token_count=_extract_cached_token_count(message.usage),
+      thoughts_token_count=thinking_tokens,
+  )
+  cache_creation = _extract_cache_creation_token_count(message.usage)
+  if cache_creation is not None:
+    object.__setattr__(
+        usage_metadata, "cache_creation_input_tokens", cache_creation
+    )
 
   return LlmResponse(
       content=types.Content(
           role="model",
           parts=parts,
       ),
-      usage_metadata=types.GenerateContentResponseUsageMetadata(
-          prompt_token_count=prompt_tokens,
-          candidates_token_count=(
-              message.usage.output_tokens - (thinking_tokens or 0)
-          ),
-          total_token_count=prompt_tokens + message.usage.output_tokens,
-          cached_content_token_count=_extract_cached_token_count(message.usage),
-          thoughts_token_count=thinking_tokens,
-      ),
+      usage_metadata=usage_metadata,
       finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
 
@@ -993,6 +1005,7 @@ class AnthropicLlm(BaseLlm):
     output_tokens = 0
     thinking_tokens: int | None = None
     cached_input_tokens: int | None = None
+    cache_creation_tokens: int | None = None
     stop_reason: Optional[anthropic_types.StopReason] = None
 
     async for event in raw_stream:
@@ -1001,6 +1014,9 @@ class AnthropicLlm(BaseLlm):
         output_tokens = event.message.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.message.usage)
         cached_input_tokens = _extract_cached_token_count(event.message.usage)
+        cache_creation_tokens = _extract_cache_creation_token_count(
+            event.message.usage
+        )
 
       elif event.type == "content_block_start":
         block = event.content_block
@@ -1114,15 +1130,21 @@ class AnthropicLlm(BaseLlm):
         function_call.id = tool_acc.id
         all_parts.append(part)
 
+    usage_metadata = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=input_tokens,
+        candidates_token_count=output_tokens - (thinking_tokens or 0),
+        total_token_count=input_tokens + output_tokens,
+        cached_content_token_count=cached_input_tokens,
+        thoughts_token_count=thinking_tokens,
+    )
+    if cache_creation_tokens is not None:
+      object.__setattr__(
+          usage_metadata, "cache_creation_input_tokens", cache_creation_tokens
+      )
+
     yield LlmResponse(
         content=types.Content(role="model", parts=all_parts),
-        usage_metadata=types.GenerateContentResponseUsageMetadata(
-            prompt_token_count=input_tokens,
-            candidates_token_count=output_tokens - (thinking_tokens or 0),
-            total_token_count=input_tokens + output_tokens,
-            cached_content_token_count=cached_input_tokens,
-            thoughts_token_count=thinking_tokens,
-        ),
+        usage_metadata=usage_metadata,
         finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
     )

@@ -1167,6 +1167,141 @@ async def test_send_history_turn_complete_determined_by_filtered_content(
 
 
 @pytest.mark.asyncio
+async def test_send_history_gemini_3_x_live_triggers_response(
+    mock_gemini_session,
+):
+  """Gemini 3.x Live gets a placeholder realtime input to trigger a response."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+      types.Content(
+          role='user', parts=[types.Part.from_text(text='how are you?')]
+      ),
+  ]
+
+  await conn.send_history(history)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=history,
+      turn_complete=True,
+  )
+  mock_gemini_session.send_realtime_input.assert_called_once_with(text='.')
+  # The trigger must come after the history, otherwise the model responds
+  # before it has seen the replayed turns.
+  assert [call[0] for call in mock_gemini_session.mock_calls] == [
+      'send_client_content',
+      'send_realtime_input',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_send_history_gemini_3_x_live_no_trigger_when_model_speaks_last(
+    mock_gemini_session,
+):
+  """No trigger when history ends with a model turn, the model must wait."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+  ]
+
+  await conn.send_history(history)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=history,
+      turn_complete=False,
+  )
+  mock_gemini_session.send_realtime_input.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_history_gemini_3_x_live_trigger_follows_filtered_content(
+    mock_gemini_session,
+):
+  """The trigger tracks the filtered history, not the raw history."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  audio_part = types.Part(
+      inline_data=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  # The trailing user turn is audio-only and gets filtered out, leaving a
+  # model turn last, so no response should be triggered.
+  await conn.send_history([
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+      types.Content(role='user', parts=[audio_part]),
+  ])
+
+  mock_gemini_session.send_realtime_input.assert_not_called()
+
+  # The trailing model turn is audio-only and gets filtered out, leaving a
+  # user turn last, so a response should be triggered.
+  await conn.send_history([
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[audio_part]),
+  ])
+
+  mock_gemini_session.send_realtime_input.assert_called_once_with(text='.')
+
+
+@pytest.mark.asyncio
+async def test_send_history_empty_history_no_trigger(mock_gemini_session):
+  """An empty history sends nothing at all, including the trigger."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+
+  await conn.send_history([])
+
+  mock_gemini_session.send_client_content.assert_not_called()
+  mock_gemini_session.send_realtime_input.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model_version',
+    [
+        'gemini-2.5-flash-native-audio-preview-12-2025',
+        'gemini-3.5-live-translate-preview',
+    ],
+)
+async def test_send_history_no_trigger_for_other_models(
+    mock_gemini_session, model_version
+):
+  """Only Gemini 3.x Live needs the placeholder realtime input."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version=model_version,
+  )
+  history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+  ]
+
+  await conn.send_history(history)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=history,
+      turn_complete=True,
+  )
+  mock_gemini_session.send_realtime_input.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_receive_grounding_metadata_standalone(
     gemini_connection, mock_gemini_session
 ):

@@ -20,6 +20,7 @@ from unittest import mock
 import zipfile
 
 from google.adk.integrations.skill_registry import gcp_skill_registry
+from google.adk.utils._google_client_headers import merge_tracking_headers
 import pytest
 
 
@@ -118,20 +119,20 @@ async def test_get_skill_success():
   mock_get_called.assert_has_calls([
       mock.call(
           "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills/my-skill",
-          headers={
+          headers=merge_tracking_headers({
               "Authorization": "Bearer fake-token",
               "Content-Type": "application/json",
               "x-goog-user-project": "test-project",
-          },
+          }),
           params=None,
       ),
       mock.call(
           "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills/my-skill/revisions/rev-123",
-          headers={
+          headers=merge_tracking_headers({
               "Authorization": "Bearer fake-token",
               "Content-Type": "application/json",
               "x-goog-user-project": "test-project",
-          },
+          }),
           params={"alt": "media"},
       ),
   ])
@@ -174,13 +175,28 @@ async def test_search_skills_success():
 
   mock_get_called.assert_called_once_with(
       "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills:search",
-      headers={
+      headers=merge_tracking_headers({
           "Authorization": "Bearer fake-token",
           "Content-Type": "application/json",
           "x-goog-user-project": "test-project",
-      },
+      }),
       params={"search_string": "query"},
   )
+
+
+@pytest.mark.asyncio
+async def test_registry_requests_identify_adk():
+  """Registry calls carry the ADK client label.
+
+  Without it, server-side usage data cannot separate ADK traffic from any
+  other caller of the Skill Registry API.
+  """
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  headers = await registry._get_headers()
+
+  assert "google-adk/" in headers["x-goog-api-client"]
+  assert "google-adk/" in headers["user-agent"]
 
 
 @pytest.mark.asyncio
@@ -468,10 +484,10 @@ async def test_use_custom_credentials():
 
   mock_get_called.assert_called_once_with(
       "https://agentregistry.googleapis.com/v1alpha/projects/test-project/locations/us-central1/skills:search",
-      headers={
+      headers=merge_tracking_headers({
           "Authorization": "Bearer custom-token",
           "Content-Type": "application/json",
           "x-goog-user-project": "custom-quota-project",
-      },
+      }),
       params={"search_string": "query"},
   )

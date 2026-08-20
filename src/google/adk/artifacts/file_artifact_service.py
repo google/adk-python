@@ -304,6 +304,29 @@ def _list_versions_on_disk(artifact_dir: Path) -> list[int]:
   return sorted(versions)
 
 
+def _reserve_version_dir(artifact_dir: Path) -> tuple[int, Path, Path]:
+  """Atomically reserves a version and returns its staging and final paths."""
+  versions_dir = _versions_dir(artifact_dir)
+  versions_dir.mkdir(parents=True, exist_ok=True)
+  versions = _list_versions_on_disk(artifact_dir)
+  version = 0 if not versions else versions[-1] + 1
+
+  while True:
+    staging_dir = versions_dir / f".{version}.pending"
+    try:
+      staging_dir.mkdir()
+    except FileExistsError:
+      version += 1
+      continue
+
+    version_dir = versions_dir / str(version)
+    if not version_dir.exists():
+      return version, staging_dir, version_dir
+
+    staging_dir.rmdir()
+    version += 1
+
+
 class FileArtifactVersion(ArtifactVersion):
   """Represents persisted metadata for a file-backed artifact."""
 
@@ -337,6 +360,7 @@ class FileArtifactService(BaseArtifactService):
   #                 │       └── artifacts/
   #                 │           └── {artifact_path}/  # from filename
   #                 │               └── versions/
+  #                 │                   ├── .{version}.pending/  # in progress
   #                 │                   └── {version}/
   #                 │                       ├── {original_filename}
   #                 │                       └── metadata.json
@@ -352,6 +376,11 @@ class FileArtifactService(BaseArtifactService):
   # nested directories, and path traversal is rejected to keep the layout
   # portable across filesystems. `{artifact_path}` therefore mirrors the
   # sanitized, scope-relative path derived from each filename.
+  #
+  # A save stages into `.{version}.pending` and publishes it with a single
+  # rename, so readers only ever observe complete versions. A staging directory
+  # left behind by a killed save is never read, but it keeps its version number
+  # reserved, so published versions are not guaranteed to be contiguous.
 
   def __init__(self, root_dir: Path | str):
     """Initializes the file-based artifact service.
@@ -485,20 +514,15 @@ class FileArtifactService(BaseArtifactService):
       )
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    versions = _list_versions_on_disk(artifact_dir)
-    next_version = 0 if not versions else versions[-1] + 1
-    versions_dir = _versions_dir(artifact_dir)
-    versions_dir.mkdir(parents=True, exist_ok=True)
-    version_dir = versions_dir / str(next_version)
-    version_dir.mkdir()
+    next_version, staging_dir, version_dir = _reserve_version_dir(artifact_dir)
 
     stored_filename = artifact_dir.name
-    content_path = version_dir / stored_filename
+    content_path = staging_dir / stored_filename
 
     # A version directory is only ever observed complete or not at all. A
     # partially written version -- payload present, metadata missing or
     # truncated -- is indistinguishable from a valid one on the read path, so
-    # any failure discards the whole directory instead of leaving it behind.
+    # any failure discards the whole staging directory instead of publishing it.
     try:
       display_name: Optional[str] = None
       if artifact.inline_data:
@@ -522,7 +546,7 @@ class FileArtifactService(BaseArtifactService):
 
       canonical_uri = _canonical_uri(artifact_dir, next_version)
       _write_metadata(
-          _metadata_path(artifact_dir, next_version),
+          staging_dir / _METADATA_FILENAME,
           filename=filename,
           mime_type=mime_type,
           version=next_version,
@@ -530,8 +554,9 @@ class FileArtifactService(BaseArtifactService):
           custom_metadata=custom_metadata,
           display_name=display_name,
       )
+      os.replace(staging_dir, version_dir)
     except BaseException:
-      shutil.rmtree(version_dir, ignore_errors=True)
+      shutil.rmtree(staging_dir, ignore_errors=True)
       raise
 
     logger.debug(

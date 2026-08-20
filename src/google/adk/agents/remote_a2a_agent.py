@@ -111,10 +111,19 @@ _HUMAN_INPUT_FUNCTION_CALL_NAMES = frozenset({
     REQUEST_EUC_FUNCTION_CALL_NAME,
 })
 
+# Function call names whose *response* carries credential material.
 _CREDENTIAL_FUNCTION_CALL_NAMES = frozenset({
     MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
     REQUEST_EUC_FUNCTION_CALL_NAME,
 })
+
+# Function call names whose *arguments* carry credential material. The mock auth
+# call is not one: its args hold the peer's own prompt (`{"auth_required":
+# <prompt>}`) and it stands in for the peer's last text part, so dropping it
+# would throw away the prompt and can empty the message.
+_CREDENTIAL_ARG_FUNCTION_CALL_NAMES = frozenset(
+    {REQUEST_EUC_FUNCTION_CALL_NAME}
+)
 
 _RESULT_KEY = "result"
 
@@ -128,6 +137,10 @@ _CREDENTIAL_PAYLOAD_KEYS = frozenset({
     "raw_auth_credential",
     "rawAuthCredential",
 })
+
+# The AuthToolArguments field holding the AuthConfig; `by_alias=True` on the
+# producer in flows.llm_flows.functions emits the camelCase form.
+_AUTH_CONFIG_ARG_KEYS = ("authConfig", "auth_config")
 
 
 def _payload_is_auth_config(payload: Any) -> bool:
@@ -152,6 +165,61 @@ def _is_credential_function_response(
   if function_response.name in _CREDENTIAL_FUNCTION_CALL_NAMES:
     return True
   return _payload_is_auth_config(function_response.response)
+
+
+def _is_credential_function_call(
+    function_call: genai_types.FunctionCall,
+) -> bool:
+  """Whether a function_call carries credential material (fail closed)."""
+  if function_call.name in _CREDENTIAL_ARG_FUNCTION_CALL_NAMES:
+    return True
+  # A request wraps the AuthConfig in an AuthToolArguments envelope, where a
+  # response carries it flat, so the shape has to be read one level down. Read
+  # the top level instead and this matches nothing, while dropping any ordinary
+  # call that happens to take an `auth_scheme` argument.
+  args = function_call.args
+  if not isinstance(args, dict):
+    return False
+  return any(
+      _payload_is_auth_config(args.get(key)) for key in _AUTH_CONFIG_ARG_KEYS
+  )
+
+
+def _without_credential_function_calls(event: Event) -> Event:
+  """Returns ``event`` with any credential-bearing function_call removed.
+
+  An `adk_request_credential` call carries a serialized `AuthConfig` in its
+  arguments, including `raw_auth_credential` (an OAuth2 client secret or a
+  service account key). A flow appends that event to the session when it asks
+  the client for a credential, so it is in the history that the next request is
+  rebuilt from and would otherwise be sent to the remote peer.
+
+  Args:
+    event: The session event to scrub.
+
+  Returns:
+    The event unchanged when it holds no credential call, or a copy without
+    those parts.
+  """
+  if not event.content or not event.content.parts:
+    return event
+  if not any(
+      part.function_call is not None
+      and _is_credential_function_call(part.function_call)
+      for part in event.content.parts
+  ):
+    return event
+
+  scrubbed = event.model_copy(deep=True)
+  content = scrubbed.content
+  assert content is not None
+  content.parts = [
+      part
+      for part in content.parts or []
+      if part.function_call is None
+      or not _is_credential_function_call(part.function_call)
+  ]
+  return scrubbed
 
 
 def _render_user_function_response(
@@ -922,9 +990,13 @@ class RemoteA2aAgent(BaseAgent):
               remote_fc_ids.add(fc.id)
 
     for event in reversed(events_to_process):
-      processed_event: Optional[Event] = event
-      if _is_other_agent_reply(self.name, event):
-        processed_event = _present_other_agent_message(event)
+      # Drop credential material before anything else looks at the event.
+      # `_present_other_agent_message` renders a function_call as text with its
+      # arguments inlined, so scrubbing after it would be too late.
+      scrubbed_event = _without_credential_function_calls(event)
+      processed_event: Optional[Event] = scrubbed_event
+      if _is_other_agent_reply(self.name, scrubbed_event):
+        processed_event = _present_other_agent_message(scrubbed_event)
 
       if (
           not processed_event

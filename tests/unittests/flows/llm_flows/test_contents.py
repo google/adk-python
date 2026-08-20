@@ -1964,6 +1964,99 @@ def test_rearrange_async_function_responses_early_returns_when_no_responses():
   assert result is events
 
 
+def _function_call_event(call_id: str, name: str) -> Event:
+  return Event(
+      invocation_id="inv1",
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id, name=name, args={}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def _function_response_event(call_id: str, name: str, result: str) -> Event:
+  return Event(
+      invocation_id="inv1",
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=call_id, name=name, response={"result": result}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def test_rearrange_async_function_responses_reused_id_across_tools():
+  """A reused call id must not pair a call with a different tool's response."""
+  events = [
+      _function_call_event("call_807", "site_posture"),
+      _function_response_event("call_807", "site_posture", "site"),
+      _function_call_event("call_807", "fleet_summary"),
+      _function_response_event("call_807", "fleet_summary", "fleet"),
+  ]
+
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "site_posture"
+  assert result[1].get_function_responses()[0].name == "site_posture"
+  assert result[2].get_function_calls()[0].name == "fleet_summary"
+  assert result[3].get_function_responses()[0].name == "fleet_summary"
+
+
+def test_rearrange_async_function_responses_reused_id_same_tool():
+  """A call id reused by one tool must keep each call's own response."""
+  events = [
+      _function_call_event("call_42", "lookup"),
+      _function_response_event("call_42", "lookup", "first"),
+      _function_call_event("call_42", "lookup"),
+      _function_response_event("call_42", "lookup", "second"),
+  ]
+
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+
+  assert len(result) == 4
+  assert result[1].get_function_responses()[0].response == {"result": "first"}
+  assert result[3].get_function_responses()[0].response == {"result": "second"}
+
+
+def test_rearrange_async_function_responses_reused_id_keeps_last_update():
+  """A call reporting progress twice keeps its last update, not a later call's."""
+  events = [
+      _function_call_event("call_7", "watch"),
+      _function_response_event("call_7", "watch", "progress"),
+      _function_response_event("call_7", "watch", "done"),
+      _function_call_event("call_7", "watch"),
+      _function_response_event("call_7", "watch", "second_call"),
+  ]
+
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+
+  assert len(result) == 4
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[3].get_function_responses()[0].response == {
+      "result": "second_call"
+  }
+
+
 def _long_running_call_event() -> Event:
   return Event(
       invocation_id="inv2",

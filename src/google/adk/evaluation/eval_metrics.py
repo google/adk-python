@@ -107,6 +107,14 @@ class JudgeModelOptions(EvalBaseModel):
       ),
   )
 
+  parallelism_limit: int = Field(
+      default=1,
+      ge=1,
+      description=(
+          "The maximum number of parallel LLM evaluation calls to execute."
+      ),
+  )
+
 
 class BaseCriterion(BaseModel):
   """Base criterion to use for an Eval Metric."""
