@@ -146,3 +146,54 @@ class TestValidateGenerateContentConfigErrors:
     config = types.GenerateContentConfig(response_schema={'type': 'string'})
     with pytest.raises(ValueError, match=r'Move your schema'):
       LlmAgent.validate_generate_content_config(config)
+
+
+class TestGenerateContentKwargErrors:
+  """Tests for LlmAgent generation-kwarg folding error messages."""
+
+  def test_system_instruction_kwarg_points_to_instruction(self):
+    """system_instruction= should tell users to use instruction=."""
+    with pytest.raises(ValueError, match=r'LlmAgent.instruction'):
+      LlmAgent(name='test_agent', system_instruction='You are helpful.')
+
+  def test_response_schema_kwarg_points_to_output_schema(self):
+    """response_schema= should tell users to use output_schema=."""
+    with pytest.raises(ValueError, match=r'LlmAgent.output_schema'):
+      LlmAgent(name='test_agent', response_schema={'type': 'string'})
+
+  def test_generation_kwarg_conflict_with_generate_content_config(self):
+    """The same field set twice should name both sources."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            r'both as an LlmAgent argument and inside generate_content_config'
+        ),
+    ):
+      LlmAgent(
+          name='test_agent',
+          generate_content_config=types.GenerateContentConfig(temperature=0.5),
+          temperature=0.1,
+      )
+
+  def test_camel_case_config_dict_conflict_with_snake_case_kwarg(self):
+    """Aliased dict keys still conflict with the snake_case kwarg."""
+    with pytest.raises(ValueError, match=r'`max_output_tokens`'):
+      LlmAgent(
+          name='test_agent',
+          generate_content_config={'maxOutputTokens': 10},
+          max_output_tokens=20,
+      )
+
+  def test_unknown_extra_kwarg_still_forbidden(self):
+    """Unrecognized kwargs remain extra_forbidden."""
+    with pytest.raises(ValueError, match='Extra inputs are not permitted'):
+      LlmAgent(name='test_agent', not_a_real_field=True)
+
+  def test_duplicate_snake_and_camel_generation_kwargs_raise(self):
+    """The same generation field via name and alias is rejected."""
+    with pytest.raises(ValueError, match=r'max_output_tokens'):
+      LlmAgent.model_validate({
+          'name': 'test_agent',
+          'max_output_tokens': 10,
+          'maxOutputTokens': 20,
+      })

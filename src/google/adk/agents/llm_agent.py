@@ -231,10 +231,73 @@ async def _convert_tool_union_to_tools(
     return []
 
 
+# GenerateContentConfig fields that already have a dedicated LlmAgent argument.
+# Passing them as LlmAgent kwargs should point at that argument rather than
+# folding into generate_content_config (which would then fail later).
+_GENERATE_CONTENT_FIELDS_OWNED_BY_AGENT: dict[str, str] = {
+    'system_instruction': 'instruction',
+    'response_schema': 'output_schema',
+}
+
+# Snake-case field names and camelCase aliases used by GenerateContentConfig.
+_GENERATE_CONTENT_FIELD_NAMES: dict[str, str] = {
+    name: name for name in types.GenerateContentConfig.model_fields
+}
+_GENERATE_CONTENT_FIELD_NAMES.update({
+    field.alias: name
+    for name, field in types.GenerateContentConfig.model_fields.items()
+    if field.alias is not None
+})
+
+
+def _generate_content_field_name(key: str) -> Optional[str]:
+  """Return the GenerateContentConfig field name for key, or None."""
+  return _GENERATE_CONTENT_FIELD_NAMES.get(key)
+
+
+def _existing_generate_content_as_dict(
+    existing: Any,
+) -> Optional[dict[str, Any]]:
+  """Normalize generate_content_config input to a snake_case dict.
+
+  Returns None when the value is not a recognized config shape so the
+  generate_content_config field validator can report the type error.
+  """
+  if existing is None:
+    return {}
+  if isinstance(existing, types.GenerateContentConfig):
+    return existing.model_dump(exclude_unset=True)
+  if isinstance(existing, dict):
+    normalized: dict[str, Any] = {}
+    for key, value in existing.items():
+      canonical = _generate_content_field_name(key) or key
+      normalized[canonical] = value
+    return normalized
+  return None
+
+
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
 # static type checkers.
 class LlmAgent(BaseAgent, abc.ABC):
-  """LLM-based Agent."""
+  """LLM-based Agent.
+
+  Generation settings from ``google.genai.types.GenerateContentConfig``
+  such as ``temperature``, ``top_p``, and ``max_output_tokens`` can be
+  passed directly as keyword arguments. They are merged into
+  ``generate_content_config``.
+
+  Example:
+    ```python
+    from google.adk.agents import LlmAgent
+
+    agent = LlmAgent(
+        name='grader',
+        model='gemini-3.5-flash',
+        instruction='Grade the exam.',
+        temperature=0.1,
+    )
+    ```
+  """
 
   DEFAULT_MODEL: ClassVar[str] = 'gemini-3.5-flash'
   """System default model used when no model is set on an agent."""
@@ -355,11 +418,13 @@ class LlmAgent(BaseAgent, abc.ABC):
   generate_content_config: Optional[types.GenerateContentConfig] = None
   """The additional content generation configurations.
 
-  NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
-  thinking_config can be configured here or via the `planner`. If both are set, the planner's configuration takes precedence.
+  Generation knobs such as temperature, top_p, and max_output_tokens may
+  also be passed directly as LlmAgent keyword arguments; they are merged
+  into this config.
 
-  For example: use this config to adjust model temperature, configure safety
-  settings, etc.
+  NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
+  thinking_config can be configured here or via the `planner`. If both are
+  set, the planner's configuration takes precedence.
   """
 
   mode: Literal['chat', 'task', 'single_turn'] | None = None
@@ -1085,6 +1150,73 @@ class LlmAgent(BaseAgent, abc.ABC):
     accumulator += text
     event.actions.state_delta[self.output_key] = accumulator
     return accumulator
+
+  @model_validator(mode='before')
+  @classmethod
+  def _fold_generate_content_kwargs(cls, data: Any) -> Any:
+    """Fold GenerateContentConfig fields passed as LlmAgent kwargs.
+
+    Users coming from google-genai often pass temperature= (and similar
+    generation knobs) on LlmAgent. Merge those into generate_content_config
+    so construction succeeds, and point reserved fields at the LlmAgent
+    argument that owns them.
+    """
+    if not isinstance(data, dict):
+      return data
+
+    convenience_kwargs: dict[str, Any] = {}
+    redirected: list[tuple[str, str]] = []
+    for key, value in data.items():
+      gcc_field = _generate_content_field_name(key)
+      if gcc_field is None or gcc_field in cls.model_fields:
+        continue
+      agent_field = _GENERATE_CONTENT_FIELDS_OWNED_BY_AGENT.get(gcc_field)
+      if agent_field is not None:
+        redirected.append((key, agent_field))
+        continue
+      if gcc_field in convenience_kwargs:
+        raise ValueError(
+            f'Generation setting `{gcc_field}` was passed more than once'
+            ' (including via its GenerateContentConfig alias). Set it in'
+            ' only one place.'
+        )
+      convenience_kwargs[gcc_field] = value
+
+    if redirected:
+      details = '. '.join(
+          f'`{src}` must be set via LlmAgent.{dest}, not via'
+          f' LlmAgent({src}=...)'
+          for src, dest in redirected
+      )
+      raise ValueError(details + '.')
+
+    if not convenience_kwargs:
+      return data
+
+    existing_dict = _existing_generate_content_as_dict(
+        data.get('generate_content_config')
+    )
+    if existing_dict is None:
+      return data
+
+    conflicts = sorted(
+        key for key in convenience_kwargs if key in existing_dict
+    )
+    if conflicts:
+      conflict_list = ', '.join(f'`{key}`' for key in conflicts)
+      raise ValueError(
+          f'Cannot set {conflict_list} both as an LlmAgent argument and'
+          ' inside generate_content_config. Set each field in only one'
+          ' place.'
+      )
+
+    for key in list(data.keys()):
+      gcc_field = _generate_content_field_name(key)
+      if gcc_field is not None and gcc_field in convenience_kwargs:
+        del data[key]
+    existing_dict.update(convenience_kwargs)
+    data['generate_content_config'] = existing_dict
+    return data
 
   @model_validator(mode='before')
   @classmethod
