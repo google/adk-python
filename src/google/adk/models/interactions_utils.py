@@ -772,6 +772,12 @@ class _StreamState:
   """
 
   parts: list[types.Part] = dataclasses.field(default_factory=list)
+  # Maps a function-call step's ``index`` to the part started at that step, so
+  # interleaved calls route their argument deltas and stops to the matching
+  # step instead of always landing on the most recently started call.
+  fc_parts_by_index: dict[int, types.Part] = dataclasses.field(
+      default_factory=dict
+  )
   web_search_queries: list[str] = dataclasses.field(default_factory=list)
   grounding_chunks: list[types.GroundingChunk] = dataclasses.field(
       default_factory=list
@@ -836,23 +842,43 @@ def _handle_media(
   return _partial_part_response(part, interaction_id)
 
 
+def _resolve_streaming_function_call_part(
+    index: int | None, state: _StreamState
+) -> types.Part | None:
+  """Resolve the function-call part a streaming event applies to.
+
+  Streaming events carry the ``index`` of the step they belong to. When that
+  index maps to a known function-call part we use it directly, so argument
+  deltas and step stops for interleaved calls route to the correct step instead
+  of always landing on the most recently started call. Events without an index
+  (or from builds that don't track one) fall back to the last started function
+  call to preserve the previous behavior.
+  """
+  if index is not None and index in state.fc_parts_by_index:
+    return state.fc_parts_by_index[index]
+  if state.parts and state.parts[-1].function_call:
+    return state.parts[-1]
+  return None
+
+
 def _handle_arguments_delta(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: StepDeltaData,
+    state: _StreamState,
+    interaction_id: str | None,
+    index: int | None = None,
 ) -> LlmResponse | None:
-  if not state.parts:
-    return None
-  last_part = state.parts[-1]
-  if not last_part.function_call:
+  target_part = _resolve_streaming_function_call_part(index, state)
+  if target_part is None or not target_part.function_call:
     return None
   delta_args = delta.arguments
-  if delta_args is None or last_part.function_call.partial_args is None:
+  if delta_args is None or target_part.function_call.partial_args is None:
     return None
-  last_part.function_call.partial_args.append(
+  target_part.function_call.partial_args.append(
       types.PartialArg(string_value=delta_args)
   )
   chunk_part = types.Part(
       function_call=types.FunctionCall(
-          name=last_part.function_call.name,
+          name=target_part.function_call.name,
           partial_args=[types.PartialArg(string_value=delta_args)],
       )
   )
@@ -1066,6 +1092,8 @@ def convert_interaction_event_to_llm_response(
       )
       part = types.Part(function_call=fc)
       state.parts.append(part)
+      if event.index is not None:
+        state.fc_parts_by_index[event.index] = part
 
       return LlmResponse(
           content=types.Content(role='model', parts=[part]),
@@ -1087,7 +1115,7 @@ def convert_interaction_event_to_llm_response(
     elif delta_type in ('image', 'audio', 'video', 'document'):
       return _handle_media(delta, state, interaction_id)
     elif delta_type == 'arguments_delta':
-      return _handle_arguments_delta(delta, state, interaction_id)
+      return _handle_arguments_delta(delta, state, interaction_id, event.index)
     elif delta_type == 'code_execution_call':
       return _handle_code_execution_call(delta, state, interaction_id)
     elif delta_type == 'code_execution_result':
@@ -1104,8 +1132,9 @@ def convert_interaction_event_to_llm_response(
       return _handle_unknown_delta(delta, state, interaction_id)
 
   elif isinstance(event, StepStop):
-    if state.parts and state.parts[-1].function_call:
-      fc = state.parts[-1].function_call
+    target_part = _resolve_streaming_function_call_part(event.index, state)
+    if target_part is not None and target_part.function_call:
+      fc = target_part.function_call
       if fc.partial_args is not None:
         arg_str = ''.join(pa.string_value or '' for pa in fc.partial_args)
 

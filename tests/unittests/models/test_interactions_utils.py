@@ -2074,6 +2074,65 @@ class TestConvertInteractionEventToLlmResponse:
     # The logging check can remain to ensure the raw exception is still logged.
     assert 'Failed to parse function call args' in caplog.text
 
+  def test_interleaved_function_call_streaming_routes_by_index(self):
+    """Interleaved function-call steps route deltas/stops by their index.
+
+    Two calls start at indexes 0 and 1, then arguments for both arrive before
+    either stops. Without index-based routing, both deltas would be appended to
+    the most recently started call (index 1), so the first call ends up with no
+    arguments while the second receives two concatenated JSON objects.
+    """
+    state = interactions_utils._StreamState()
+
+    # Start two function calls at different indexes.
+    for idx, (call_id, name) in enumerate(
+        [('call_0', 'get_weather'), ('call_1', 'get_time')]
+    ):
+      interactions_utils.convert_interaction_event_to_llm_response(
+          StepStart(
+              event_type='step.start',
+              index=idx,
+              step=FunctionCallStep(
+                  type='function_call', id=call_id, name=name, arguments={}
+              ),
+          ),
+          state,
+          interaction_id='int_multi',
+      )
+
+    # Interleave argument deltas: index 0 first, then index 1.
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": "Paris"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=1,
+            delta={'type': 'arguments_delta', 'arguments': '{"zone": "UTC"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    # Stop both steps.
+    for idx in (0, 1):
+      interactions_utils.convert_interaction_event_to_llm_response(
+          StepStop(event_type='step.stop', index=idx),
+          state,
+          interaction_id='int_multi',
+      )
+
+    assert state.parts[0].function_call.name == 'get_weather'
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+    assert state.parts[1].function_call.name == 'get_time'
+    assert state.parts[1].function_call.args == {'zone': 'UTC'}
+
 
 @pytest.mark.parametrize(
     ('streamed_events_factory', 'expected_ids'),
