@@ -32,7 +32,7 @@ class CodeSaveRequest(BaseModel):
 
 
 class GraphServer:
-  """FastAPI server serving interactive visual graph canvas with node editing & code synchronization."""
+  """FastAPI server serving Google Material 3 UI visual agent graph canvas and code editor."""
 
   def __init__(
       self,
@@ -45,7 +45,7 @@ class GraphServer:
     self.agent_file_path = agent_file_path
     self.host = host
     self.port = port
-    self.app = FastAPI(title="ADK Interactive Graph Canvas & Code Workbench")
+    self.app = FastAPI(title="ADK Visual Graph Workbench")
     self._setup_routes()
 
   def _setup_routes(self) -> None:
@@ -74,61 +74,71 @@ class GraphServer:
       <!DOCTYPE html>
       <html>
       <head>
-        <title>ADK Visual Graph Builder & Code Editor</title>
+        <title>Google ADK Visual Graph Workbench</title>
         <meta charset="utf-8">
+        <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
         <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
         <style>
           * { box-sizing: border-box; }
-          body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; height: 100vh; display: flex; flex-direction: column; }
-          header { padding: 12px 24px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }
-          h1 { margin: 0; font-size: 1.1rem; color: #38bdf8; }
-          .toolbar { display: flex; gap: 8px; align-items: center; }
+          body { margin: 0; font-family: 'Google Sans', -apple-system, sans-serif; background: #202124; color: #e8eaed; height: 100vh; display: flex; flex-direction: column; }
+          header { padding: 12px 24px; background: #2d2e31; border-bottom: 1px solid #3c4043; display: flex; justify-content: space-between; align-items: center; }
+          .logo { display: flex; align-items: center; gap: 10px; font-weight: 500; font-size: 1.1rem; color: #ffffff; }
+          .logo svg { fill: #8ab4f8; }
+          .toolbar { display: flex; gap: 10px; align-items: center; }
           .container { display: flex; flex: 1; overflow: hidden; }
-          .panel { flex: 1; padding: 16px; display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid #334155; }
+          .panel { flex: 1; padding: 16px; display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid #3c4043; }
           .panel:last-child { border-right: none; }
-          .panel-title { font-weight: bold; margin-bottom: 12px; font-size: 0.9rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; }
-          #mynetwork { flex: 1; background: #020617; border: 1px solid #334155; border-radius: 8px; overflow: hidden; }
-          textarea { flex: 1; background: #020617; color: #38bdf8; border: 1px solid #334155; border-radius: 8px; padding: 16px; font-family: 'Fira Code', monospace; font-size: 13px; resize: none; outline: none; line-height: 1.5; }
-          button { background: #0284c7; color: white; border: none; padding: 6px 14px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 4px; }
-          button:hover { background: #0369a1; }
-          button.btn-success { background: #059669; }
-          button.btn-success:hover { background: #047857; }
-          #toast { color: #4ade80; font-size: 0.8rem; margin-left: 10px; display: none; }
+          .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+          .panel-title { font-weight: 500; font-size: 0.85rem; color: #9aa0a6; text-transform: uppercase; letter-spacing: 0.5px; }
+          #mynetwork { flex: 1; background: #171717; border: 1px solid #3c4043; border-radius: 12px; overflow: hidden; }
+          textarea { flex: 1; background: #171717; color: #e8eaed; border: 1px solid #3c4043; border-radius: 12px; padding: 16px; font-family: 'Roboto Mono', monospace; font-size: 13px; resize: none; outline: none; line-height: 1.6; }
+          textarea:focus { border-color: #8ab4f8; }
           
-          /* Modal Popup for Node Editing & Creation */
-          .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; justify-content: center; align-items: center; z-index: 1000; }
-          .modal { background: #1e293b; border: 1px solid #475569; border-radius: 8px; width: 420px; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
-          .modal h3 { margin: 0; color: #38bdf8; font-size: 1.1rem; }
+          /* Google Material Design Buttons */
+          .btn { background: #8ab4f8; color: #202124; border: none; padding: 8px 18px; border-radius: 20px; font-size: 13px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background 0.2s; }
+          .btn:hover { background: #aecbfa; }
+          .btn-secondary { background: #3c4043; color: #e8eaed; }
+          .btn-secondary:hover { background: #4d5156; }
+          #toast { color: #81c995; font-size: 0.8rem; margin-left: 10px; display: none; font-weight: 500; }
+          
+          /* Google Material Modal Overlay */
+          .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); display: none; justify-content: center; align-items: center; z-index: 1000; backdrop-filter: blur(4px); }
+          .modal { background: #2d2e31; border: 1px solid #3c4043; border-radius: 16px; width: 440px; padding: 24px; display: flex; flex-direction: column; gap: 16px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); }
+          .modal h3 { margin: 0; color: #ffffff; font-size: 1.2rem; font-weight: 500; }
           .form-group { display: flex; flex-direction: column; gap: 6px; }
-          .form-group label { font-size: 0.8rem; color: #94a3b8; font-weight: 600; }
-          .form-group input, .form-group select, .form-group textarea { background: #0f172a; border: 1px solid #334155; color: white; padding: 8px 12px; border-radius: 4px; font-size: 13px; outline: none; }
-          .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+          .form-group label { font-size: 0.8rem; color: #9aa0a6; font-weight: 500; }
+          .form-group input, .form-group select, .form-group textarea { background: #171717; border: 1px solid #3c4043; color: #e8eaed; padding: 10px 14px; border-radius: 8px; font-size: 13px; font-family: inherit; outline: none; }
+          .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: #8ab4f8; }
+          .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
         </style>
       </head>
       <body>
         <header>
-          <h1>ADK Visual Graph Builder & Code Workbench</h1>
+          <div class="logo">
+            <svg width="24" height="24" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/></svg>
+            <span>Google ADK Visual Graph Workbench</span>
+          </div>
           <div class="toolbar">
-            <button class="btn-success" onclick="openAddNodeModal()">+ Add Node (Agent / Tool)</button>
+            <button class="btn" onclick="openAddNodeModal()">+ Add Agent / Tool</button>
           </div>
         </header>
         <div class="container">
           <div class="panel">
-            <div class="panel-title">
-              <span>VISUAL AGENT CANVAS</span>
-              <span style="font-size: 0.8rem; color: #64748b;">Double-click node to edit properties | Drag to connect</span>
+            <div class="panel-header">
+              <span class="panel-title">Visual Multi-Agent Canvas</span>
+              <span style="font-size: 0.75rem; color: #9aa0a6;">Hierarchical Layout | Drag to Rearrange</span>
             </div>
             <div id="mynetwork"></div>
           </div>
           <div class="panel">
-            <div class="panel-title">
-              <span>AGENT SOURCE CODE (Python)</span>
+            <div class="panel-header">
+              <span class="panel-title">Agent Source Code (Python)</span>
               <div>
-                <button onclick="saveCode()">Save & Re-Parse Graph</button>
-                <span id="toast">Saved & Updated!</span>
+                <button class="btn btn-secondary" onclick="saveCode()">Save & Update Graph</button>
+                <span id="toast">Saved & Synced!</span>
               </div>
             </div>
-            <textarea id="code-editor" placeholder="# Python code editor..."></textarea>
+            <textarea id="code-editor" placeholder="# ADK Python code..."></textarea>
           </div>
         </div>
 
@@ -137,8 +147,8 @@ class GraphServer:
           <div class="modal">
             <h3 id="modalTitle">Add Agent or Tool</h3>
             <div class="form-group">
-              <label>Node Name (Variable Identifier)</label>
-              <input type="text" id="nodeName" placeholder="e.g. ValidatorAgent">
+              <label>Node Name (Python Variable)</label>
+              <input type="text" id="nodeName" placeholder="e.g. ResearcherAgent">
             </div>
             <div class="form-group">
               <label>Node Type</label>
@@ -152,11 +162,11 @@ class GraphServer:
             </div>
             <div class="form-group">
               <label>Instruction / Description</label>
-              <textarea id="nodeInstruction" rows="3" placeholder="e.g. Validate output dataset"></textarea>
+              <textarea id="nodeInstruction" rows="3" placeholder="e.g. Gather research data from web"></textarea>
             </div>
             <div class="modal-actions">
-              <button style="background: #475569;" onclick="closeModal()">Cancel</button>
-              <button class="btn-success" onclick="submitNodeModal()">Add to Graph & Code</button>
+              <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+              <button class="btn" onclick="submitNodeModal()">Add Node</button>
             </div>
           </div>
         </div>
@@ -167,12 +177,12 @@ class GraphServer:
 
           function colorForType(type) {
             switch(type) {
-              case 'sequential': return { background: '#0284c7', border: '#38bdf8' };
-              case 'parallel': return { background: '#7c3aed', border: '#a78bfa' };
-              case 'loop': return { background: '#d97706', border: '#fbbf24' };
-              case 'llm_agent': return { background: '#059669', border: '#34d399' };
-              case 'tool': return { background: '#dc2626', border: '#f87171' };
-              default: return { background: '#475569', border: '#94a3b8' };
+              case 'sequential': return { background: '#1a73e8', border: '#8ab4f8' };
+              case 'parallel': return { background: '#9334e6', border: '#c58af9' };
+              case 'loop': return { background: '#e37400', border: '#fde293' };
+              case 'llm_agent': return { background: '#137333', border: '#81c995' };
+              case 'tool': return { background: '#c5221f', border: '#f28b82' };
+              default: return { background: '#3c4043', border: '#9aa0a6' };
             }
           }
 
@@ -198,15 +208,16 @@ class GraphServer:
               const colors = colorForType(node.type);
               nodesArray.push({
                 id: node.id,
-                label: `${iconForType(node.type)}${node.label}\\n[${node.type}]`,
+                label: `${iconForType(node.type)} ${node.label}\\n[${node.type}]`,
                 shape: 'box',
-                margin: 12,
+                margin: 14,
+                borderRadius: 8,
                 color: {
                   background: colors.background,
                   border: colors.border,
                   highlight: { background: colors.border, border: '#ffffff' }
                 },
-                font: { color: '#ffffff', face: 'monospace', size: 14 }
+                font: { color: '#ffffff', face: 'Google Sans, sans-serif', size: 13, bold: true }
               });
             });
 
@@ -215,11 +226,12 @@ class GraphServer:
               edgesArray.push({
                 from: edge.source,
                 to: edge.target,
-                label: edge.type,
-                arrows: 'to',
+                label: edge.type === 'sub_agent' ? 'sub-agent' : 'tool',
+                arrows: { to: { enabled: true, scaleFactor: 0.8 } },
                 dashes: isTool,
-                color: { color: isTool ? '#f87171' : '#38bdf8', highlight: '#ffffff' },
-                font: { color: '#94a3b8', size: 10, align: 'middle' }
+                smooth: { type: 'cubicBezier', roundness: 0.5 },
+                color: { color: isTool ? '#f28b82' : '#8ab4f8', highlight: '#ffffff' },
+                font: { color: '#9aa0a6', size: 11, face: 'Google Sans', align: 'middle' }
               });
             });
 
@@ -230,10 +242,16 @@ class GraphServer:
             };
 
             const options = {
-              physics: {
-                solver: 'forceAtlas2Based',
-                forceAtlas2Based: { gravitationalConstant: -50, centralGravity: 0.01, springLength: 100 }
+              layout: {
+                hierarchical: {
+                  enabled: true,
+                  direction: 'UD',
+                  sortMethod: 'directed',
+                  nodeSpacing: 160,
+                  levelSeparation: 120
+                }
               },
+              physics: { enabled: false },
               interaction: { hover: true, dragNodes: true, zoomView: true, dragView: true }
             };
 
@@ -281,7 +299,7 @@ class GraphServer:
           }
 
           function openAddNodeModal() {
-            document.getElementById('modalTitle').innerText = "Add New Agent or Tool";
+            document.getElementById('modalTitle').innerText = "Add Agent or Tool";
             document.getElementById('nodeName').value = "";
             document.getElementById('nodeInstruction').value = "";
             document.getElementById('nodeModal').style.display = "flex";

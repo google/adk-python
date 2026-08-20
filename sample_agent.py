@@ -52,3 +52,10 @@ root_agent = SequentialAgent(
     description="Multi-agent workflow that researches, analyzes, and drafts reports.",
     sub_agents=[researcher, analyst, writer],
 )
+
+# New Sequential Pipeline
+ResearchAndReportingPipeline = SequentialAgent(
+    name="ResearchAndReportingPipeline",
+    description="Multi-agent workflow that researches, analyzes, and drafts reports.",
+    sub_agents=[],
+)
