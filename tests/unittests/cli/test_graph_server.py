@@ -85,6 +85,11 @@ def test_workbench_exposes_smart_layout_and_accessible_icon_tooltips() -> None:
   assert "levelSeparation:190" in page
   assert "function advancedLayout()" in page
   assert "function highlightRelatedNodes(id)" in page
+  assert "function validateDraft()" in page
+  assert "function inspectEdge(id)" in page
+  assert 'id="node-instruction"' in page
+  assert 'id="reconnect-edge"' in page
+  assert "smooth:{type:'horizontal'" in page
   assert 'data-tooltip="Smart auto-arrange"' in page
   assert 'aria-label="Auto-arrange graph"' in page
   assert "split(/\\s+/)" in page
