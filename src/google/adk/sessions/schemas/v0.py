@@ -133,7 +133,9 @@ class DynamicPickleType(TypeDecorator[object]):  # type: ignore[misc]
 
     return process
 
-  def process_result_value(self, value, dialect):
+  def process_result_value(
+      self, value: object | None, dialect: Dialect
+  ) -> object | None:
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
       if dialect.name in ("spanner+spanner", "mysql"):
