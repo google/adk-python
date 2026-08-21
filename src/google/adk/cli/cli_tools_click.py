@@ -276,6 +276,10 @@ def _warn_if_with_ui(with_ui: bool) -> None:
 class TelemetryGroup(click.Group):
   """Custom Click Group to wrap execution for telemetry tracking."""
 
+  def main(self, *args, **kwargs):
+    kwargs.setdefault("windows_expand_args", False)
+    return super().main(*args, **kwargs)
+
   def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
     ctx.telemetry_args = list(args)  # type: ignore[attr-defined]
     return super().parse_args(ctx, args)

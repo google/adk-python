@@ -48,6 +48,7 @@ from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import override
 
+from ..utils import _json_utils
 from ..utils._google_client_headers import get_tracking_headers
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
@@ -669,6 +670,12 @@ def _extract_thinking_token_count(
   return min(thinking, output_tokens)
 
 
+def _extract_cache_creation_token_count(usage: Any) -> int | None:
+  """Returns Anthropic cache-write tokens, the analog of cache_creation tokens."""
+  cached = getattr(usage, "cache_creation_input_tokens", None)
+  return cached if isinstance(cached, int) else None
+
+
 def message_to_generate_content_response(
     message: anthropic_types.Message,
 ) -> LlmResponse:
@@ -682,21 +689,27 @@ def message_to_generate_content_response(
 
   prompt_tokens = _extract_prompt_token_count(message.usage)
   thinking_tokens = _extract_thinking_token_count(message.usage)
+  usage_metadata = types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=prompt_tokens,
+      candidates_token_count=(
+          message.usage.output_tokens - (thinking_tokens or 0)
+      ),
+      total_token_count=prompt_tokens + message.usage.output_tokens,
+      cached_content_token_count=_extract_cached_token_count(message.usage),
+      thoughts_token_count=thinking_tokens,
+  )
+  cache_creation = _extract_cache_creation_token_count(message.usage)
+  if cache_creation is not None:
+    object.__setattr__(
+        usage_metadata, "cache_creation_input_tokens", cache_creation
+    )
 
   return LlmResponse(
       content=types.Content(
           role="model",
           parts=parts,
       ),
-      usage_metadata=types.GenerateContentResponseUsageMetadata(
-          prompt_token_count=prompt_tokens,
-          candidates_token_count=(
-              message.usage.output_tokens - (thinking_tokens or 0)
-          ),
-          total_token_count=prompt_tokens + message.usage.output_tokens,
-          cached_content_token_count=_extract_cached_token_count(message.usage),
-          thoughts_token_count=thinking_tokens,
-      ),
+      usage_metadata=usage_metadata,
       finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
 
@@ -810,6 +823,11 @@ class AnthropicLlm(BaseLlm):
 
   model: str = "claude-sonnet-4-20250514"
   max_tokens: int = 8192
+
+  client: Optional[Union[AsyncAnthropic, AsyncAnthropicVertex]] = Field(
+      default=None, exclude=True
+  )
+  """An optional pre-configured Anthropic client."""
 
   @classmethod
   @override
@@ -992,6 +1010,7 @@ class AnthropicLlm(BaseLlm):
     output_tokens = 0
     thinking_tokens: int | None = None
     cached_input_tokens: int | None = None
+    cache_creation_tokens: int | None = None
     stop_reason: Optional[anthropic_types.StopReason] = None
 
     async for event in raw_stream:
@@ -1000,6 +1019,9 @@ class AnthropicLlm(BaseLlm):
         output_tokens = event.message.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.message.usage)
         cached_input_tokens = _extract_cached_token_count(event.message.usage)
+        cache_creation_tokens = _extract_cache_creation_token_count(
+            event.message.usage
+        )
 
       elif event.type == "content_block_start":
         block = event.content_block
@@ -1099,7 +1121,11 @@ class AnthropicLlm(BaseLlm):
         all_parts.append(types.Part.from_text(text=text_blocks[idx]))
       if idx in tool_use_blocks:
         tool_acc = tool_use_blocks[idx]
-        args = json.loads(tool_acc.args_json) if tool_acc.args_json else {}
+        args = (
+            _json_utils.safe_json_loads(tool_acc.args_json)
+            if tool_acc.args_json
+            else {}
+        )
         part = types.Part.from_function_call(name=tool_acc.name, args=args)
         function_call = part.function_call
         if function_call is None:
@@ -1109,21 +1135,29 @@ class AnthropicLlm(BaseLlm):
         function_call.id = tool_acc.id
         all_parts.append(part)
 
+    usage_metadata = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=input_tokens,
+        candidates_token_count=output_tokens - (thinking_tokens or 0),
+        total_token_count=input_tokens + output_tokens,
+        cached_content_token_count=cached_input_tokens,
+        thoughts_token_count=thinking_tokens,
+    )
+    if cache_creation_tokens is not None:
+      object.__setattr__(
+          usage_metadata, "cache_creation_input_tokens", cache_creation_tokens
+      )
+
     yield LlmResponse(
         content=types.Content(role="model", parts=all_parts),
-        usage_metadata=types.GenerateContentResponseUsageMetadata(
-            prompt_token_count=input_tokens,
-            candidates_token_count=output_tokens - (thinking_tokens or 0),
-            total_token_count=input_tokens + output_tokens,
-            cached_content_token_count=cached_input_tokens,
-            thoughts_token_count=thinking_tokens,
-        ),
+        usage_metadata=usage_metadata,
         finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
     )
 
   @cached_property
   def _anthropic_client(self) -> AsyncAnthropic | AsyncAnthropicVertex:
+    if self.client:
+      return self.client
     client = AsyncAnthropic()
     # Let the SDK run its own credential resolution first, then ask the client
     # what it found. Enumerating credential sources here would reject setups
@@ -1163,6 +1197,10 @@ class Claude(AnthropicLlm):
   @cached_property
   @override
   def _anthropic_client(self) -> AsyncAnthropicVertex:
+    if self.client is not None:
+      if not isinstance(self.client, AsyncAnthropicVertex):
+        raise ValueError("Claude requires an AsyncAnthropicVertex client.")
+      return self.client
     project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GOOGLE_CLOUD_LOCATION")
 

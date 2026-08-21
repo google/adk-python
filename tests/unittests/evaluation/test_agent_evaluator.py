@@ -34,13 +34,18 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import LiveModelConfig
+from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
 from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
+from google.adk.evaluation.eval_metrics import MetricInfo
+from google.adk.evaluation.eval_metrics import MetricValueInfo
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.eval_set_results_manager import EvalSetResultsManager
 from google.adk.evaluation.evaluator import EvalStatus
+from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.evaluation.simulation.user_simulator_provider import UserSimulatorProvider
+from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
 from google.genai import types as genai_types
 import pandas as pd
 import pytest
@@ -721,6 +726,113 @@ def test_migrate_eval_data_to_new_schema_missing_reference_rejected(tmp_path):
   with pytest.raises(ValueError, match="response_match_score"):
     AgentEvaluator.migrate_eval_data_to_new_schema(
         str(old_file), str(tmp_path / "migrated.evalset.json")
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_registers_custom_metrics(mocker):
+  """Custom metrics in the eval config are available during evaluation."""
+  eval_set = SimpleNamespace(
+      eval_set_id="eval_set_1",
+      eval_cases=[SimpleNamespace(eval_id="case_a")],
+  )
+  eval_config = EvalConfig(
+      custom_metrics={
+          "my_custom_metric": {
+              "code_config": {"name": "math.sqrt"},
+          }
+      }
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=AsyncMock(return_value=(mocker.Mock(), None)),
+  )
+  mocker.patch(
+      "google.adk.evaluation.agent_evaluator.get_eval_metrics_from_config",
+      return_value=[],
+  )
+  get_results_mock = mocker.patch.object(
+      AgentEvaluator,
+      "_get_eval_results_by_eval_id",
+      new=AsyncMock(return_value={}),
+  )
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module="my.pkg.search_agent",
+      eval_set=eval_set,
+      eval_config=eval_config,
+      print_detailed_results=False,
+  )
+
+  metric_evaluator_registry = get_results_mock.await_args.kwargs[
+      "metric_evaluator_registry"
+  ]
+  assert "my_custom_metric" in {
+      metric_info.metric_name
+      for metric_info in metric_evaluator_registry.get_registered_metrics()
+  }
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_keeps_evaluators_from_the_default_registry(
+    mocker,
+):
+  """Evaluators the caller registered on the default registry stay usable.
+
+  Registering an `Evaluator` subclass on `DEFAULT_METRIC_EVALUATOR_REGISTRY` is
+  the only way to plug one in, since an eval config can only name a scoring
+  function. Evaluation must therefore start from that registry's contents.
+  """
+  eval_set = SimpleNamespace(
+      eval_set_id="eval_set_1",
+      eval_cases=[SimpleNamespace(eval_id="case_a")],
+  )
+  metric_name = "globally_registered_metric_for_agent_evaluator_test"
+  DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
+      MetricInfo(
+          metric_name=metric_name,
+          description="Registered by the caller, not by an eval config.",
+          metric_value_info=MetricValueInfo(),
+      ),
+      TrajectoryEvaluator,
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=AsyncMock(return_value=(mocker.Mock(), None)),
+  )
+  mocker.patch(
+      "google.adk.evaluation.agent_evaluator.get_eval_metrics_from_config",
+      return_value=[],
+  )
+  get_results_mock = mocker.patch.object(
+      AgentEvaluator,
+      "_get_eval_results_by_eval_id",
+      new=AsyncMock(return_value={}),
+  )
+
+  try:
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="my.pkg.search_agent",
+        eval_set=eval_set,
+        eval_config=EvalConfig(),
+        print_detailed_results=False,
+    )
+
+    metric_evaluator_registry = get_results_mock.await_args.kwargs[
+        "metric_evaluator_registry"
+    ]
+    assert isinstance(
+        metric_evaluator_registry.get_evaluator(
+            EvalMetric(metric_name=metric_name, threshold=0.5)
+        ),
+        TrajectoryEvaluator,
+    )
+  finally:
+    # The default registry is process-wide state; remove what we added.
+    DEFAULT_METRIC_EVALUATOR_REGISTRY._registry.pop(  # pylint: disable=protected-access
+        metric_name, None
     )
 
 

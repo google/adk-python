@@ -41,6 +41,12 @@ questions in the same session, and the agent will maintain context.
   setting `enable_data_agent_modification=True` in `DataAgentToolConfig`). Takes
   a JSON string (`agent_config`) representing the DataAgent resource. This tool
   is experimental.
+- `delete_data_agent`: Deletes a Data Agent given its full resource name
+  (requires setting `enable_data_agent_modification=True` in
+  `DataAgentToolConfig`). This tool is experimental.
+- `update_data_agent`: Updates an existing Data Agent given its full resource
+  name (requires setting `enable_data_agent_modification=True` in
+  `DataAgentToolConfig`). This tool is experimental.
 
 ## How to Run
 

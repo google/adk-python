@@ -316,21 +316,30 @@ def test_append_instructions_invalid_input():
 
   # Test with invalid types
   with pytest.raises(
-      TypeError, match='instructions must be list\\[str\\] or types.Content'
+      TypeError,
+      match=r'instructions must be list\[str\] or types.Content, got str\.',
   ):
     request.append_instructions('single string')  # Should be list[str]
 
   with pytest.raises(
-      TypeError, match='instructions must be list\\[str\\] or types.Content'
+      TypeError,
+      match=r'instructions must be list\[str\] or types.Content, got int\.',
   ):
     request.append_instructions(123)  # Invalid type
 
   with pytest.raises(
-      TypeError, match='instructions must be list\\[str\\] or types.Content'
+      TypeError,
+      match=r'instructions must be list\[str\] or types.Content, got list\.',
   ):
     request.append_instructions(
         ['valid string', 123]
     )  # Mixed valid/invalid in list
+
+  with pytest.raises(
+      TypeError,
+      match=r'instructions must be list\[str\] or types.Content, got dict\.',
+  ):
+    request.append_instructions({'instruction': 'test'})
 
 
 def test_append_instructions_content_preserves_role_and_parts():
@@ -933,7 +942,11 @@ def test_set_output_schema_without_any_schema_raises_value_error():
   request = LlmRequest()
 
   with pytest.raises(
-      ValueError, match='Either output_schema or base_model must be provided.'
+      ValueError,
+      match=(
+          r'Either output_schema or base_model must be provided\.'
+          r' Pass output_schema=<your_schema> \(base_model is deprecated\)\.'
+      ),
   ):
     request.set_output_schema()
 

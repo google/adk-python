@@ -20,6 +20,7 @@ from unittest.mock import patch
 from google.adk.integrations import api_registry
 from google.adk.integrations.api_registry import ApiRegistry
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.utils._google_client_headers import merge_tracking_headers
 import requests
 
 MOCK_MCP_SERVERS_LIST = {
@@ -42,6 +43,14 @@ MOCK_MCP_SERVERS_LIST = {
         {
             "name": "test-mcp-server-https",
             "urls": ["https://mcp.server_https.com"],
+        },
+        {
+            "name": "test-mcp-server-google",
+            "urls": ["mcp.us-central1.googleapis.com"],
+        },
+        {
+            "name": "test-mcp-server-google-http",
+            "urls": ["http://mcp.us-central1.googleapis.com"],
         },
     ]
 }
@@ -103,7 +112,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
         api_registry_project_id=self.project_id, location=self.location
     )
 
-    self.assertEqual(len(api_registry_instance._mcp_servers), 5)
+    self.assertEqual(len(api_registry_instance._mcp_servers), 7)
     self.assertIn("test-mcp-server-1", api_registry_instance._mcp_servers)
     self.assertIn("test-mcp-server-2", api_registry_instance._mcp_servers)
     self.assertIn("test-mcp-server-no-url", api_registry_instance._mcp_servers)
@@ -111,9 +120,9 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.assertIn("test-mcp-server-https", api_registry_instance._mcp_servers)
     self.mock_session.get.assert_called_once_with(
         f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
+        headers=merge_tracking_headers({
             "Content-Type": "application/json",
-        },
+        }),
         params={"filter": "enabled=false"},
     )
 
@@ -127,15 +136,31 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
         api_registry_project_id=self.project_id, location=self.location
     )
 
-    self.assertEqual(len(api_registry_instance._mcp_servers), 5)
+    self.assertEqual(len(api_registry_instance._mcp_servers), 7)
     self.mock_session.get.assert_called_once_with(
         f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
+        headers=merge_tracking_headers({
             "Content-Type": "application/json",
             "x-goog-user-project": "quota-project",
-        },
+        }),
         params={"filter": "enabled=false"},
     )
+
+  def test_registry_request_identifies_adk(self):
+    """Registry calls carry the ADK client label.
+
+    Without it, server-side usage data cannot separate ADK traffic from any
+    other caller of the Cloud API Registry API.
+    """
+    mock_response = MagicMock()
+    mock_response.json.return_value = MOCK_MCP_SERVERS_LIST
+    self.mock_session.get.return_value = mock_response
+
+    ApiRegistry(api_registry_project_id=self.project_id, location=self.location)
+
+    headers = self.mock_session.get.call_args.kwargs["headers"]
+    self.assertIn("google-adk/", headers["x-goog-api-client"])
+    self.assertIn("google-adk/", headers["user-agent"])
 
   def test_init_with_pagination_success(self):
     mock_response1 = MagicMock()
@@ -178,16 +203,16 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.mock_session.get.call_count, 2)
     self.mock_session.get.assert_any_call(
         f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
+        headers=merge_tracking_headers({
             "Content-Type": "application/json",
-        },
+        }),
         params={"filter": "enabled=false"},
     )
     self.mock_session.get.assert_called_with(
         f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
+        headers=merge_tracking_headers({
             "Content-Type": "application/json",
-        },
+        }),
         params={"filter": "enabled=false", "pageToken": "next_page_token"},
     )
 
@@ -235,7 +260,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     MockMcpToolset.assert_called_once_with(
         connection_params=StreamableHTTPConnectionParams(
             url="https://mcp.server1.com",
-            headers={"Authorization": "Bearer mock_token"},
+            headers=None,
         ),
         tool_filter=None,
         tool_name_prefix=None,
@@ -257,11 +282,11 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
         api_registry_project_id=self.project_id, location=self.location
     )
 
-    toolset = api_registry_instance.get_toolset("test-mcp-server-1")
+    toolset = api_registry_instance.get_toolset("test-mcp-server-google")
 
     MockMcpToolset.assert_called_once_with(
         connection_params=StreamableHTTPConnectionParams(
-            url="https://mcp.server1.com",
+            url="https://mcp.us-central1.googleapis.com",
             headers={
                 "Authorization": "Bearer mock_token",
                 "x-goog-user-project": "quota-project",
@@ -297,7 +322,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     MockMcpToolset.assert_called_once_with(
         connection_params=StreamableHTTPConnectionParams(
             url="https://mcp.server1.com",
-            headers={"Authorization": "Bearer mock_token"},
+            headers=None,
         ),
         tool_filter=tool_filter,
         tool_name_prefix=tool_name_prefix,
@@ -330,12 +355,40 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
           MockMcpToolset.assert_called_once_with(
               connection_params=StreamableHTTPConnectionParams(
                   url=mock_url,
-                  headers={"Authorization": "Bearer mock_token"},
+                  headers=None,
               ),
               tool_filter=None,
               tool_name_prefix=None,
               header_provider=None,
           )
+
+  def test_get_toolset_credentials_only_for_google_api_url(self):
+    params = [
+        ("test-mcp-server-1", None),
+        ("test-mcp-server-http", None),
+        ("test-mcp-server-https", None),
+        ("test-mcp-server-google-http", None),
+        ("test-mcp-server-google", {"Authorization": "Bearer mock_token"}),
+    ]
+    for mock_server_name, expected_headers in params:
+      with self.subTest(server_name=mock_server_name):
+        with patch.object(
+            api_registry.api_registry, "McpToolset", autospec=True
+        ) as MockMcpToolset:
+          mock_response = MagicMock()
+          mock_response.json.return_value = MOCK_MCP_SERVERS_LIST
+          self.mock_session.get.return_value = mock_response
+
+          api_registry_instance = ApiRegistry(
+              api_registry_project_id=self.project_id, location=self.location
+          )
+
+          api_registry_instance.get_toolset(mock_server_name)
+
+          connection_params = MockMcpToolset.call_args.kwargs[
+              "connection_params"
+          ]
+          self.assertEqual(connection_params.headers, expected_headers)
 
   def test_get_toolset_server_not_found(self):
     mock_response = MagicMock()

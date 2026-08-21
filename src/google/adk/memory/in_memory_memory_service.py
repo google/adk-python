@@ -31,6 +31,7 @@ if TYPE_CHECKING:
   from ..sessions.session import Session
 
 _UNKNOWN_SESSION_ID = '__unknown_session_id__'
+_MAX_SEARCH_RESULTS = 10
 
 
 def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
@@ -38,14 +39,15 @@ def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
 
 
 def _extract_words_lower(text: str) -> set[str]:
-  """Extracts words from a string and converts them to lowercase."""
-  return set([word.lower() for word in re.findall(r'\w+', text, re.UNICODE)])
+  """Extracts Unicode-aware tokens from a string in lowercase."""
+  return set(word.lower() for word in re.findall(r'\w+', text))
 
 
 class InMemoryMemoryService(BaseMemoryService):
   """An in-memory memory service for prototyping purpose only.
 
-  Uses keyword matching instead of semantic search.
+  Uses keyword matching instead of semantic search. A search returns at most
+  ten memories, the ones sharing the most words with the query.
 
   This class is thread-safe, however, it should be used for testing and
   development only.
@@ -117,25 +119,42 @@ class InMemoryMemoryService(BaseMemoryService):
       ]
 
     words_in_query = _extract_words_lower(query)
-    response = SearchMemoryResponse()
+    scored_memories: list[tuple[int, MemoryEntry]] = []
 
     for session_events in session_event_lists:
       for event in session_events:
         if not event.content or not event.content.parts:
           continue
-        words_in_event = _extract_words_lower(
-            ' '.join([part.text for part in event.content.parts if part.text])
+        event_text = ' '.join(
+            [part.text for part in event.content.parts if part.text]
         )
+        words_in_event = _extract_words_lower(event_text)
         if not words_in_event:
           continue
 
-        if any(query_word in words_in_event for query_word in words_in_query):
-          response.memories.append(
+        event_text_lower = event_text.lower()
+        matched_words = sum(
+            1
+            for query_word in words_in_query
+            if query_word in words_in_event
+            or (not query_word.isascii() and query_word in event_text_lower)
+        )
+        if matched_words:
+          scored_memories.append((
+              matched_words,
               MemoryEntry(
                   content=event.content,
                   author=event.author,
                   timestamp=_utils.format_timestamp(event.timestamp),
-              )
-          )
+              ),
+          ))
 
-    return response
+    # Almost any two sentences share a word, so returning every event that
+    # matches at least one query word returns most of the store, and callers
+    # such as the preload_memory tool put all of it in the prompt. Keep the
+    # events matching the most query words. The sort key reads only the count,
+    # so it is stable and events matching equally stay in insertion order.
+    scored_memories.sort(key=lambda scored_memory: -scored_memory[0])
+    return SearchMemoryResponse(
+        memories=[memory for _, memory in scored_memories[:_MAX_SEARCH_RESULTS]]
+    )

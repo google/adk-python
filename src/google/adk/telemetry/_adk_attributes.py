@@ -27,9 +27,9 @@ from __future__ import annotations
 
 ADK_EXPERIMENTAL_SKILL_NAME = 'adk.experimental.skill.name'
 ADK_EXPERIMENTAL_SKILL_SOURCE_TYPE = 'adk.experimental.skill.source.type'
-ADK_EXPERIMENTAL_SKILL_CACHE_HIT = 'adk.experimental.skill.cache_hit'
 ADK_EXPERIMENTAL_SKILL_DESCRIPTION = 'adk.experimental.skill.description'
 ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS = (
     'adk.experimental.skill.additional_tools'
 )
 ADK_EXPERIMENTAL_SKILL_SOURCE_URI = 'adk.experimental.skill.source.uri'
+ADK_EXPERIMENTAL_SKILL_RESOURCE_PATH = 'adk.experimental.skill.resource.path'
