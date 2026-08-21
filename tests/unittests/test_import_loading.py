@@ -82,8 +82,8 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
     'typing_inspection',
     'zstandard',
     # google.genai.types annotates optional fields with aiohttp and Pillow
-    # types and imports whichever of the two the environment happens to have.
-    # No ADK module imports either one, so these are absent in some installs.
+    # types and probes for httpx2 compatibility. It imports whichever packages
+    # the environment happens to have, so these are absent in some installs.
     'PIL',
     'aiohappyeyeballs',
     'aiohttp',
@@ -91,6 +91,7 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
     'attr',
     'defusedxml',
     'frozenlist',
+    'httpx2',
     'multidict',
     'propcache',
     'yarl',
