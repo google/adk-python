@@ -113,6 +113,8 @@ def test_workbench_exposes_smart_layout_and_accessible_icon_tooltips() -> None:
   assert "function advancedLayout()" in page
   assert "function highlightRelatedNodes(id)" in page
   assert "function validateDraft()" in page
+  assert "Sub-agent connections cannot contain a cycle." in page
+  assert "Each graph node must have a unique id." in page
   assert "function inspectEdge(id)" in page
   assert 'id="node-instruction"' in page
   assert 'id="reconnect-edge"' in page
