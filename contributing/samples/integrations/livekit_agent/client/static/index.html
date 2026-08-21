@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice agent</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <!-- LiveKit's own client SDK, unmodified, from a CDN (no build step). -->
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <main class="pane">
+        <header class="head">
+          <h1>Voice agent</h1>
+          <p class="subtitle">
+            Speak, type, or turn on your camera. The agent rolls dice and
+            checks whether the results are prime. Each function it calls
+            appears on the right as it runs.
+          </p>
+        </header>
+
+        <button id="talk" class="btn">Start talking</button>
+
+        <!-- Agent state, straight off LiveKit's lk.agent.state attribute. -->
+        <div class="status">
+          <span id="dot" class="dot"></span>
+          <span id="state">Idle</span>
+        </div>
+
+        <!-- The agent's audio track is attached here so you can hear it. -->
+        <div id="audio-container" hidden></div>
+
+        <!-- Opt-in: a video track is all the connector needs to see. -->
+        <div class="camera" hidden id="camera-row">
+          <button id="camera" class="btn btn-secondary" type="button">
+            Turn on camera
+          </button>
+          <video id="preview" class="preview" autoplay muted playsinline hidden>
+          </video>
+        </div>
+
+        <!-- Live captions, read off LiveKit's lk.transcription text streams. -->
+        <div id="transcript" class="transcript" aria-live="polite">
+          <p class="placeholder">
+            Try: <em>"roll a 20 sided die and tell me if it's prime."</em>
+          </p>
+        </div>
+
+        <!-- Text input travels on LiveKit's lk.chat topic as a user turn. -->
+        <form id="say-form" class="say" autocomplete="off">
+          <input
+            id="say"
+            class="say-input"
+            type="text"
+            placeholder="…or type instead of talking"
+            disabled
+          />
+          <button id="send" class="btn btn-secondary" type="submit" disabled>
+            Send
+          </button>
+        </form>
+      </main>
+
+      <aside class="pane pane-side">
+        <!-- The one ADK-specific channel: LiveKit has no tool convention. -->
+        <section class="tools">
+          <h2 class="panel-title">Tool activity</h2>
+          <p class="tools-hint">
+            Every function the agent calls, with its arguments and the value it
+            returned.
+          </p>
+          <ol id="tools" class="tool-list"></ol>
+          <p id="tools-empty" class="tools-empty">
+            No tool calls yet. Ask the agent to roll a die.
+          </p>
+        </section>
+
+        <section class="log-wrap">
+          <h2 class="panel-title">Connection log</h2>
+          <pre id="log" class="log" aria-live="polite"></pre>
+        </section>
+      </aside>
+    </div>
+
+    <script src="/static/script.js"></script>
+  </body>
+</html>

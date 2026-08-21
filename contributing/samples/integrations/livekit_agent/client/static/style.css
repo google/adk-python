@@ -1,0 +1,384 @@
+/*
+ * Copyright 2026 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+:root {
+  --bg: #0f1115;
+  --card: #1a1d24;
+  --sunken: #0c0e12;
+  --line: #262a33;
+  --fg: #e7e9ee;
+  --muted: #9aa0ac;
+  --accent: #4f8cff;
+  --ok: #35c46b;
+  --warm: #f0a742;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* A class that sets `display` outranks the UA rule behind `hidden`. */
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+/* Panes are fixed to the viewport and scroll their own overflow, so a long
+ * conversation never pushes the controls off the bottom of the page. */
+.app {
+  width: min(1200px, 100%);
+  height: min(880px, calc(100dvh - 40px));
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(340px, 0.85fr);
+  gap: 18px;
+}
+
+.pane,
+.tools,
+.log-wrap {
+  min-height: 0; /* Lets a grid/flex child shrink so its overflow scrolls. */
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+}
+
+.pane-side {
+  gap: 16px;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 1.45rem;
+}
+
+.subtitle {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+/* --- Controls ------------------------------------------------------------ */
+
+.btn {
+  width: 100%;
+  padding: 13px 18px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: white;
+  background: var(--accent);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn-secondary {
+  width: auto;
+  background: var(--line);
+  font-size: 0.95rem;
+  padding: 11px 18px;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 16px 0 12px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+/* Agent state, straight off LiveKit's lk.agent.state attribute. */
+.dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.dot.connected {
+  background: var(--ok);
+}
+
+.dot.speaking {
+  background: var(--accent);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.dot.thinking {
+  background: var(--warm);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* --- Captions ------------------------------------------------------------ */
+
+.transcript {
+  flex: 1; /* Takes whatever height is left over. */
+  min-height: 120px;
+  margin: 0 0 14px;
+  overflow-y: auto;
+  padding: 6px 14px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  line-height: 1.6;
+}
+
+.placeholder,
+.tools-empty,
+.tools-hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.line {
+  margin: 10px 0;
+  word-break: break-word;
+}
+
+.line-user::before {
+  content: "You: ";
+  color: var(--muted);
+}
+
+.line-agent {
+  color: var(--accent);
+}
+
+.line-agent::before {
+  content: "Agent: ";
+  color: var(--muted);
+}
+
+/* --- Text input ---------------------------------------------------------- */
+
+.say {
+  display: flex;
+  gap: 8px;
+}
+
+.say-input {
+  flex: 1;
+  padding: 11px 13px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+.say-input:disabled {
+  opacity: 0.6;
+}
+
+/* --- Camera -------------------------------------------------------------- */
+
+.camera {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.preview {
+  width: 132px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--sunken);
+  /* Mirrored, so moving left on screen matches moving left in the room. */
+  transform: scaleX(-1);
+}
+
+/* --- Tool activity ------------------------------------------------------- */
+
+.tools {
+  flex: 1; /* Grows to fill the column; the list inside is what scrolls. */
+}
+
+.tools-hint {
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+
+.tool-list {
+  flex: 1;
+  min-height: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.tool-list:empty {
+  flex: none;
+}
+
+.tools-empty {
+  margin: 12px 0 0;
+  font-style: italic;
+}
+
+.tool {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  border-left: 3px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tool-pending {
+  border-left-color: var(--warm);
+}
+
+.tool-done {
+  border-left-color: var(--ok);
+}
+
+.tool-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tool-name,
+.tool-args,
+.tool-result {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.tool-status {
+  flex: none;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.tool-pending .tool-status {
+  color: var(--warm);
+}
+
+.tool-done .tool-status {
+  color: var(--ok);
+}
+
+.tool-args,
+.tool-result {
+  margin: 7px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted);
+}
+
+.tool-args:empty {
+  display: none;
+}
+
+/* Separated from the arguments above it, or the two read as one blob. */
+.tool-result {
+  padding-top: 7px;
+  border-top: 1px dashed var(--line);
+  color: var(--ok);
+}
+
+/* --- Connection log ------------------------------------------------------ */
+
+.log-wrap {
+  flex: 0 1 34%;
+  min-height: 128px;
+}
+
+.log {
+  flex: 1;
+  min-height: 0;
+  margin: 10px 0 0;
+  overflow-y: auto;
+  padding: 12px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- Narrow screens ------------------------------------------------------ */
+
+/* One column below two comfortable ones: fixed-height panes on a phone give
+ * each a uselessly small scroll area. */
+@media (max-width: 940px) {
+  .app {
+    width: min(680px, 100%);
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .transcript {
+    max-height: 320px;
+  }
+
+  .tool-list {
+    max-height: 300px;
+  }
+
+  .log {
+    max-height: 200px;
+  }
+}
