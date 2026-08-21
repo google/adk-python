@@ -75,6 +75,33 @@ def test_standalone_graph_exposes_read_only_code() -> None:
   assert response.json()["editable"] is False
 
 
+def test_read_only_adk_components_disable_managed_source_generation() -> None:
+  """Inspected components without a safe serializer cannot overwrite source."""
+  topology = GraphTopology(
+      root_id="workflow",
+      nodes=[
+          GraphNode(
+              id="workflow",
+              type="workflow",
+              label="workflow",
+              config={"read_only": True},
+          )
+      ],
+  )
+  client = TestClient(GraphServer(topology=topology).app)
+
+  topology_response = client.get("/api/graph/topology")
+  preview_response = client.post("/api/graph/code/preview")
+
+  assert topology_response.json()["managed_source_supported"] is False
+  assert (
+      "read-only ADK components"
+      in topology_response.json()["managed_source_error"]
+  )
+  assert preview_response.status_code == 422
+  assert "read-only ADK components" in preview_response.json()["detail"]
+
+
 def test_workbench_exposes_smart_layout_and_accessible_icon_tooltips() -> None:
   """The canvas sizes labels, groups relationships, and labels icon controls."""
   client = TestClient(GraphServer(topology=None).app)

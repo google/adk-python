@@ -35,6 +35,19 @@ from .inspector import GraphTopology
 logger = logging.getLogger("google_adk." + __name__)
 
 
+def _managed_source_error(topology: GraphTopology) -> str | None:
+  """Explains why a visual graph cannot be safely serialized to ADK Python."""
+  read_only_nodes = [
+      node.label for node in topology.nodes if node.config.get("read_only")
+  ]
+  if read_only_nodes:
+    return (
+        "Generated source is unavailable because this graph includes "
+        f"read-only ADK components: {', '.join(read_only_nodes)}."
+    )
+  return None
+
+
 def _atomic_write(path: Path, contents: str) -> None:
   """Atomically replaces a UTF-8 source file after caller-side validation."""
   if path.is_file():
@@ -86,7 +99,11 @@ class GraphServer:
   def _setup_routes(self) -> None:
     @self.app.get("/api/graph/topology")
     def get_topology() -> dict:
-      return self.document.model_dump()
+      payload = self.document.model_dump()
+      error = _managed_source_error(self.document.topology)
+      payload["managed_source_supported"] = error is None
+      payload["managed_source_error"] = error
+      return payload
 
     @self.app.put("/api/graph/topology")
     def save_topology(req: GraphDraftRequest) -> dict:
@@ -143,6 +160,9 @@ class GraphServer:
 
     @self.app.post("/api/graph/code/preview")
     def preview_generated_code() -> dict:
+      error = _managed_source_error(self.document.topology)
+      if error:
+        raise HTTPException(status_code=422, detail=error)
       try:
         return {"code": generate_source(self.document.topology)}
       except ValueError as error:
@@ -154,6 +174,9 @@ class GraphServer:
         raise HTTPException(
             status_code=400, detail="No source file attached to save code."
         )
+      error = _managed_source_error(self.document.topology)
+      if error:
+        raise HTTPException(status_code=422, detail=error)
       try:
         source = generate_source(self.document.topology)
       except ValueError as error:
@@ -224,7 +247,7 @@ class GraphServer:
   <div id="modal-backdrop" class="modal-backdrop" role="presentation"><form id="node-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h2 id="modal-title">Add node</h2><div class="field"><label for="new-name">Name</label><input id="new-name" placeholder="Researcher" required autocomplete="off"></div><div class="field"><label for="new-type">Type</label><select id="new-type"><option value="llm_agent">LLM agent</option><option value="sequential">Sequential workflow</option><option value="parallel">Parallel workflow</option><option value="loop">Loop workflow</option><option value="tool">Tool</option></select></div><div class="field"><label for="new-description">Description</label><textarea id="new-description" placeholder="What does this component do?"></textarea></div><div id="new-tool-field" class="field" hidden><label for="new-tool-implementation">Python implementation</label><textarea id="new-tool-implementation" spellcheck="false" placeholder="def search(query: str) -> str:\n  return query"></textarea><p class="hint">Tools attach to the selected LLM agent and must define this function name.</p></div><div class="modal-actions"><button id="cancel-modal" class="btn" type="button">Cancel</button><button class="btn primary" type="submit">Add to canvas</button></div></form></div><div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script>
     const TYPES = { llm_agent:['Agent','#1a73e8'], sequential:['Sequential','#7b1fa2'], parallel:['Parallel','#00897b'], loop:['Loop','#e37400'], tool:['Tool','#d93025'] };
-    let graphDocument = {revision:0,topology:{root_id:'',nodes:[],edges:[]},positions:{}}, topology = graphDocument.topology, network, nodes, edges, selected = null, reconnectingEdge = null, sourceEditable = false, history = [], future = [], problemNodes = new Map();
+    let graphDocument = {revision:0,topology:{root_id:'',nodes:[],edges:[]},positions:{}}, topology = graphDocument.topology, network, nodes, edges, selected = null, reconnectingEdge = null, sourceEditable = false, builderEditable = true, history = [], future = [], problemNodes = new Map();
     const $ = id => document.getElementById(id); const status = (text, dirty=false) => { $('status').textContent=text; $('status').classList.toggle('dirty',dirty); };
     function toast(message) { $('toast').textContent=message; $('toast').classList.add('show'); setTimeout(() => $('toast').classList.remove('show'), 2500); }
     function wrapText(text, limit) { const words=String(text||'').trim().split(/\s+/).filter(Boolean); const lines=[]; let line=''; words.forEach(word=>{ const next=line ? line+' '+word : word; if(next.length>limit && line){lines.push(line);line=word;}else{line=next;} }); if(line)lines.push(line); return lines; }
@@ -254,7 +277,7 @@ class GraphServer:
     function inspectNode(id) { selected=id; highlightRelatedNodes(id); const node=selectedNode(); const isTool=node.type==='tool',isLoop=node.type==='loop',readOnly=node.config?.read_only; $('node-form').hidden=false; $('edge-inspector').hidden=true; $('inspector-empty').hidden=true; $('node-heading').textContent=node.label; $('node-type').textContent=(TYPES[node.type]||['Component'])[0]; $('node-label').value=node.label; $('node-description').value=node.description||''; $('node-kind').value=node.type; $('node-model').value=node.config?.model||''; $('node-instruction').value=node.config?.instruction||''; $('node-max-iterations').value=node.config?.max_iterations||''; $('tool-implementation').value=node.config?.implementation||''; document.querySelectorAll('.config-agent').forEach(field=>field.hidden=isTool); $('node-max-iterations').parentElement.hidden=!isLoop; $('tool-implementation').parentElement.hidden=!isTool; $('node-form').querySelectorAll('input,textarea,select,button[type=submit]').forEach(field=>field.disabled=readOnly); }
     function inspectEdge(id) { selected=id; const edge=topology.edges.find(item=>item.id===id); const source=topology.nodes.find(node=>node.id===edge.source),target=topology.nodes.find(node=>node.id===edge.target); $('node-form').hidden=true; $('edge-inspector').hidden=false; $('inspector-empty').hidden=true; $('edge-type').textContent=edge.type==='tool_binding'?'Tool binding':'Sub-agent connection'; $('edge-endpoints').textContent=`${source?.label||edge.source} → ${target?.label||edge.target}`; }
     function clearInspector() { selected=null; $('node-form').hidden=true; $('edge-inspector').hidden=true; $('inspector-empty').hidden=false; }
-    async function saveDraft() { if(!validateDraft()){render();throw new Error('Fix the highlighted graph issues before saving.');} graphDocument.topology=topology; const response=await fetch('/api/graph/topology',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:graphDocument,expected_revision:graphDocument.revision})}); const data=await response.json(); if(!response.ok) throw new Error(data.detail||'Unable to save draft'); graphDocument=data; topology=graphDocument.topology; status('Draft saved'); toast('Graph draft saved'); }
+    async function saveDraft() { if(!builderEditable)throw new Error('This inspected ADK graph is read-only.'); if(!validateDraft()){render();throw new Error('Fix the highlighted graph issues before saving.');} graphDocument.topology=topology; const response=await fetch('/api/graph/topology',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:graphDocument,expected_revision:graphDocument.revision})}); const data=await response.json(); if(!response.ok) throw new Error(data.detail||'Unable to save draft'); graphDocument=data; topology=graphDocument.topology; status('Draft saved'); toast('Graph draft saved'); }
     async function saveCode() { if(!sourceEditable){ toast('No source file is attached to this graph.'); return; } const response=await fetch('/api/graph/code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('code').value})}); const data=await response.json(); if(!response.ok) throw new Error(data.detail||'Unable to save code'); $('code-status').textContent=data.requires_reload?'Saved — restart graph to reload topology':'Saved'; toast(data.requires_reload?'Source saved. Restart the graph server to reload it.':'Python source saved'); }
     async function previewGeneratedCode() { const response=await fetch('/api/graph/code/preview',{method:'POST'}); const data=await response.json(); if(!response.ok) throw new Error(data.detail||'Unable to generate code'); $('code').value=data.code; $('code-status').textContent='Generated preview — review before applying'; codeDrawer(true); }
     async function applyGeneratedCode() { if(!sourceEditable){ toast('No source file is attached to this graph.'); return; } if(!confirm('Replace the current source file with code generated from this graph?')) return; const response=await fetch('/api/graph/code/apply',{method:'POST'}); const data=await response.json(); if(!response.ok) throw new Error(data.detail||'Unable to apply graph'); $('code').value=data.code; $('code-status').textContent='Generated code applied'; toast('Generated ADK source saved'); }
@@ -268,7 +291,7 @@ class GraphServer:
     const codeDrawer=open=>{ $('drawer').classList.toggle('open',open); $('code-toggle').classList.toggle('primary',open); }; $('code-toggle').onclick=()=>codeDrawer(!$('drawer').classList.contains('open')); $('close-code').onclick=()=>codeDrawer(false); $('cancel-modal').onclick=closeAdd;
     $('network').addEventListener('dragover',event=>event.preventDefault()); $('network').addEventListener('drop',event=>{ event.preventDefault(); openAdd(event.dataTransfer.getData('text/plain')||'llm_agent'); });
     document.addEventListener('keydown',event=>{ if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();saveDraft().catch(error=>toast(error.message));} if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='z'){event.preventDefault();event.shiftKey?redo():undo();} if(event.key==='Escape'){closeAdd();network?.disableEditMode();} if(event.key.toLowerCase()==='a'&&document.activeElement===document.body)openAdd(); if(event.key.toLowerCase()==='f'&&document.activeElement===document.body)network?.fit({animation:true}); });
-    async function initialize() { try { populatePalette(); const [graph,code]=await Promise.all([fetch('/api/graph/topology'),fetch('/api/graph/code')]); if(!graph.ok)throw new Error('Unable to load graph'); graphDocument=await graph.json(); graphDocument.positions=graphDocument.positions||{}; topology=graphDocument.topology; history=[snapshot()]; updateHistoryButtons(); const source=await code.json(); $('code').value=source.code; sourceEditable=source.editable; $('save-code').disabled=!sourceEditable; $('apply-code').disabled=!sourceEditable; $('code-status').textContent=sourceEditable?'':'Read-only: no file attached'; render(); status('Draft loaded'); } catch(error) { status('Unable to load graph'); toast(error.message); } }
+    async function initialize() { try { populatePalette(); const [graph,code]=await Promise.all([fetch('/api/graph/topology'),fetch('/api/graph/code')]); if(!graph.ok)throw new Error('Unable to load graph'); graphDocument=await graph.json(); graphDocument.positions=graphDocument.positions||{}; topology=graphDocument.topology; builderEditable=graphDocument.managed_source_supported!==false; history=[snapshot()]; updateHistoryButtons(); const source=await code.json(); $('code').value=source.code; sourceEditable=source.editable; $('save-code').disabled=!sourceEditable; $('apply-code').disabled=!sourceEditable||!builderEditable; $('preview-code').disabled=!builderEditable; $('save-draft').disabled=!builderEditable; $('add-node').disabled=!builderEditable; document.querySelectorAll('.palette-item').forEach(item=>item.disabled=!builderEditable); $('code-status').textContent=!builderEditable?graphDocument.managed_source_error:(sourceEditable?'':'Read-only: no file attached'); render(); status(builderEditable?'Draft loaded':'Read-only ADK graph'); } catch(error) { status('Unable to load graph'); toast(error.message); } }
     initialize();
   </script>
 </body>
