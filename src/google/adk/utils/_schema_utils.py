@@ -25,6 +25,7 @@ import json
 import logging
 import re
 from types import UnionType
+from typing import Annotated
 from typing import Any
 from typing import get_args
 from typing import get_origin
@@ -331,11 +332,19 @@ def preprocess_args(
   for param_name, param in signature.parameters.items():
     if param_name in args:
       target_type = type_hints.get(param_name, param.annotation)
+      if get_origin(target_type) is Annotated:
+        # Strip Annotated to get actual type
+        target_type = get_args(target_type)[0]
       if target_type != inspect.Parameter.empty:
         origin = get_origin(target_type)
         if origin is Union or origin is UnionType:
           union_args = get_args(target_type)
-          non_none_types = [arg for arg in union_args if arg is not type(None)]
+          # Handle Optional[Annotated(...)]
+          non_none_types = [
+              get_args(arg)[0] if get_origin(arg) is Annotated else arg
+              for arg in union_args
+              if arg is not type(None)
+          ]
           if len(non_none_types) == 1:
             target_type = non_none_types[0]
             origin = get_origin(target_type)
