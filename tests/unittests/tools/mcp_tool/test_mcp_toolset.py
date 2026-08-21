@@ -60,6 +60,11 @@ import pytest
 from ._sdk_compat import requires_sdk_v1
 from ._sdk_compat import requires_sdk_v2
 
+# The extension's wire identifier. Spelled out rather than imported from
+# `_tasks`, which needs MCP SDK 2.x while this file runs on both -- and an
+# identifier the protocol fixes is worth pinning independently anyway.
+TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks"
+
 
 class MockMCPTool:
   """Mock MCP Tool for testing."""
@@ -972,6 +977,73 @@ class TestMcpToolset:
       McpToolset(
           connection_params=self.mock_stdio_params,
           extensions={"io.modelcontextprotocol/tasks": {}},
+      )
+
+  @requires_sdk_v2
+  def test_enable_tasks_registers_the_extension_and_its_claim(self):
+    """The advertisement and the claim have to be added together."""
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params, enable_tasks=True
+    )
+
+    # pylint: disable=protected-access
+    assert toolset._extensions == {TASKS_EXTENSION_ID: {}}
+    claims = toolset._result_claims[TASKS_EXTENSION_ID]
+    assert [c.result_type for c in claims] == ["task"]
+    assert toolset._mcp_session_manager._claims_by_model
+    # pylint: enable=protected-access
+
+  @requires_sdk_v2
+  def test_enable_tasks_preserves_caller_supplied_extensions(self):
+    """Opting into tasks must not drop an extension the caller carried."""
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        enable_tasks=True,
+        extensions={"vendor/ext": {"setting": True}},
+    )
+
+    # pylint: disable=protected-access
+    assert toolset._extensions == {
+        "vendor/ext": {"setting": True},
+        TASKS_EXTENSION_ID: {},
+    }
+    # pylint: enable=protected-access
+
+  @requires_sdk_v1
+  def test_enable_tasks_is_refused_on_sdk_v1(self):
+    """The built-in tasks path rides the seam, so it is refused with it.
+
+    Separate from the generic extension refusal because `enable_tasks` is the
+    argument a caller is most likely to reach for without knowing there is a
+    seam underneath, and because the composition it triggers imports models
+    a 1.x install does not carry.
+    """
+    with pytest.raises(ValueError, match="requires MCP SDK 2.x"):
+      McpToolset(connection_params=self.mock_stdio_params, enable_tasks=True)
+
+  def test_enable_tasks_is_off_by_default(self):
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+
+    # pylint: disable=protected-access
+    assert toolset._enable_tasks is False
+    assert toolset._extensions is None
+    # pylint: enable=protected-access
+
+  @requires_sdk_v2
+  def test_enable_tasks_conflicting_with_a_caller_entry_is_refused(self):
+    """Two claims on one result type only fails much later otherwise."""
+    with pytest.raises(ValueError, match="conflicts with"):
+      McpToolset(
+          connection_params=self.mock_stdio_params,
+          enable_tasks=True,
+          extensions={TASKS_EXTENSION_ID: {}},
+      )
+
+    with pytest.raises(ValueError, match="conflicts with"):
+      McpToolset(
+          connection_params=self.mock_stdio_params,
+          enable_tasks=True,
+          result_claims={TASKS_EXTENSION_ID: [SimpleNamespace(model=object)]},
       )
 
   def test_extension_arguments_default_to_none(self):

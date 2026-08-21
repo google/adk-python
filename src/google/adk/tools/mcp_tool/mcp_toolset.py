@@ -43,7 +43,6 @@ from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
 from ...dependencies._mcp import ElicitationFnT
-from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import ListResourcesResult
 from ...dependencies._mcp import ListToolsResult
 from ...dependencies._mcp import NotificationBinding
@@ -60,6 +59,7 @@ from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import _http_debug_var
+from .mcp_session_manager import _require_extension_support
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -115,6 +115,63 @@ class _CachedToolList:
 
   tools: List[McpBaseTool]
   expires_at: float
+
+
+def _compose_tasks_extension(
+    extensions: dict[str, dict[str, Any]] | None,
+    result_claims: Mapping[str, Sequence[ResultClaim]] | None,
+    *,
+    enable_tasks: bool,
+) -> tuple[
+    dict[str, dict[str, Any]] | None,
+    Mapping[str, Sequence[ResultClaim]] | None,
+]:
+  """Folds the built-in tasks extension into caller-supplied extensions.
+
+  The advertisement and the claim are added together, because a claim whose
+  extension is not advertised is rejected when the session is built.
+
+  Args:
+    extensions: Extensions the caller asked for, if any.
+    result_claims: Result claims the caller asked for, if any.
+    enable_tasks: Whether to add the built-in tasks extension.
+
+  Returns:
+    The extensions and result claims to hand to the session manager.
+
+  Raises:
+    ValueError: If the installed MCP SDK is 1.x, or if the caller already
+      carries the tasks extension. Two claims on one result type is refused
+      when the session is built, deep inside a later tool call; refusing it
+      here says so while the cause is still in view.
+  """
+  if not enable_tasks:
+    return extensions, result_claims
+
+  _require_extension_support("enable_tasks=True")
+
+  # Imported here rather than at module scope: the wire models in `_tasks`
+  # derive from `mcp_types`, which only a 2.x install carries. The check above
+  # is what guarantees nothing reaches this line on 1.x.
+  from ._tasks import make_tasks_claim  # pylint: disable=g-import-not-at-top
+  from ._tasks import TASKS_EXTENSION_ID  # pylint: disable=g-import-not-at-top
+
+  carries_tasks = TASKS_EXTENSION_ID in (extensions or {}) or (
+      TASKS_EXTENSION_ID in (result_claims or {})
+  )
+  if carries_tasks:
+    raise ValueError(
+        f"enable_tasks=True conflicts with the {TASKS_EXTENSION_ID!r} entry"
+        " already passed in extensions or result_claims. Use one or the"
+        " other: enable_tasks for the built-in implementation, or your own"
+        " entry to replace it."
+    )
+
+  composed_extensions = dict(extensions or {})
+  composed_extensions[TASKS_EXTENSION_ID] = {}
+  composed_claims = dict(result_claims or {})
+  composed_claims[TASKS_EXTENSION_ID] = [make_tasks_claim()]
+  return composed_extensions, composed_claims
 
 
 class McpToolset(BaseToolset):
@@ -178,6 +235,7 @@ class McpToolset(BaseToolset):
       extensions: dict[str, dict[str, Any]] | None = None,
       result_claims: Mapping[str, Sequence[ResultClaim]] | None = None,
       notification_bindings: Sequence[NotificationBinding] | None = None,
+      enable_tasks: bool = False,
       credential_key: str | None = None,
   ):
     """Initializes the McpToolset.
@@ -241,6 +299,14 @@ class McpToolset(BaseToolset):
         resolves a claimed result through its claim before handing it to the
         agent, so the agent sees an ordinary tool result either way.
       notification_bindings: Handlers for extension notifications.
+      enable_tasks: Whether to accept task-augmented tool calls. When enabled
+        and the server also supports the extension, a tool call the server
+        answers with a task handle is polled to completion and returns its
+        result, instead of failing. The agent sees the same tool and the same
+        result either way; what changes is that the operation is no longer
+        bounded by the lifetime of one request. Defaults to False. Servers
+        that do not support the extension are unaffected. Rides the extension
+        seam, so it requires MCP SDK 2.x and raises on 1.x.
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
     """
@@ -250,8 +316,10 @@ class McpToolset(BaseToolset):
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
-    self._extensions = extensions
-    self._result_claims = result_claims
+    self._enable_tasks = enable_tasks
+    self._extensions, self._result_claims = _compose_tasks_extension(
+        extensions, result_claims, enable_tasks=enable_tasks
+    )
     self._notification_bindings = notification_bindings
 
     if not connection_params:
@@ -696,6 +764,7 @@ class McpToolset(BaseToolset):
         auth_credential=mcp_toolset_config.auth_credential,
         credential_key=mcp_toolset_config.credential_key,
         use_mcp_resources=mcp_toolset_config.use_mcp_resources,
+        enable_tasks=mcp_toolset_config.enable_tasks,
     )
 
   def __getstate__(self):
@@ -754,6 +823,7 @@ class McpToolsetConfig(BaseToolConfig):
   credential_key: str | None = None
 
   use_mcp_resources: bool = False
+  enable_tasks: bool = False
 
   @model_validator(mode="after")
   def _check_only_one_params_field(self):

@@ -29,6 +29,7 @@ from google.adk.agents import config_agent_utils
 from google.adk.apps.app import App
 from google.adk.cli.agent_test_runner import test_agent_replay as _test_agent_replay
 from google.adk.cli.utils.agent_loader import AgentLoader
+from google.adk.dependencies._mcp import IS_MCP_SDK_V2
 from google.adk.events import Event
 from google.genai import types
 import pytest
@@ -142,6 +143,15 @@ SKIP_LOAD = {
         "fetches the Calendar API (calendar v3) discovery doc at import"
     ),
 }
+
+# Added conditionally rather than listed above, because the reason is the
+# installed SDK and not the sample: it opts into the MCP Tasks extension, which
+# rides a seam that exists only in MCP SDK 2.x, and `McpToolset` refuses the
+# opt-in on 1.x at construction. On 2.x the sample has to load like any other.
+if not IS_MCP_SDK_V2:
+  SKIP_LOAD["mcp/mcp_tasks_agent"] = (
+      "opts into the MCP Tasks extension, which needs MCP SDK 2.x"
+  )
 
 # Samples whose own code is currently broken against the ADK API. Loading them
 # fails today; remove the entry once the sample is fixed.
