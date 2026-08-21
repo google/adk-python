@@ -28,6 +28,7 @@ from typing import AsyncGenerator
 from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.adk import version as adk_version
 from google.genai import types
@@ -116,6 +117,7 @@ class ApigeeLlm(Gemini):
       retry_options: Optional[types.HttpRetryOptions] = None,
       api_type: ApiType | str = ApiType.UNKNOWN,
       credentials: Credentials | None = None,
+      client: Client | None = None,
   ) -> None:
     """Initializes the Apigee LLM backend.
 
@@ -152,9 +154,10 @@ class ApigeeLlm(Gemini):
         additional OAuth scopes (e.g., `userinfo.email` for tokeninfo-based
         caller identification). When omitted, the default `genai.Client`
         authentication flow is used.
+      client: An optional pre-configured google-genai Client.
     """  # fmt: skip
 
-    super().__init__(model=model, retry_options=retry_options)
+    super().__init__(model=model, retry_options=retry_options, client=client)
     # Validate the model string. Create a helper method to validate the model
     # string.
     if not _validate_model_string(model):
@@ -199,6 +202,22 @@ class ApigeeLlm(Gemini):
     self._custom_headers = custom_headers or {}
     self._user_agent = f'google-adk/{adk_version.__version__}'
     self._credentials = credentials
+
+    if client:
+      if self._proxy_url or self._custom_headers:
+        warnings.warn(
+            'Both client and proxy_url/custom_headers were provided. The'
+            ' injected client will be used as-is for GENAI calls, and'
+            ' proxy_url/custom_headers will be ignored. Ensure the injected'
+            ' client is pre-configured with the correct proxy and headers.',
+            UserWarning,
+        )
+      if self._api_type == ApigeeLlm.ApiType.CHAT_COMPLETIONS:
+        warnings.warn(
+            'An injected client was provided but ApiType is CHAT_COMPLETIONS. '
+            'The injected client will be ignored for CHAT_COMPLETIONS calls.',
+            UserWarning,
+        )
 
   @classmethod
   @override
@@ -264,6 +283,9 @@ class ApigeeLlm(Gemini):
     Returns:
       The api client.
     """
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     http_options = types.HttpOptions(

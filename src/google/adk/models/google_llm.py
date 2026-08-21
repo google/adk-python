@@ -37,6 +37,8 @@ from google.genai.errors import ClientError
 from pydantic import Field
 from typing_extensions import override
 
+from google import genai
+
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
@@ -120,6 +122,13 @@ class Gemini(BaseLlm):
   """
 
   model: str = 'gemini-2.5-flash'
+
+  client: Optional[genai.Client] = Field(default=None, exclude=True)
+  """An optional pre-configured google-genai Client.
+
+  When provided, this client will be used for all API calls instead of
+  constructing a new one from environment variables or other attributes.
+  """
 
   client_kwargs: Optional[dict[str, Any]] = Field(
       default=None, exclude=True, repr=False
@@ -381,6 +390,9 @@ class Gemini(BaseLlm):
     Returns:
       The api client.
     """
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     base_url, api_version = self._base_url_and_api_version
@@ -450,6 +462,9 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     base_url, _ = self._base_url_and_api_version

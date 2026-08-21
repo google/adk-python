@@ -29,6 +29,12 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 # from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS
 GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens'
 
+# Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.41.0
+# from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS
+GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS = (
+    'gen_ai.usage.cache_creation.input_tokens'
+)
+
 # Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.42.0
 # from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_REASONING_OUTPUT_TOKENS
 GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = 'gen_ai.usage.reasoning.output_tokens'
@@ -78,6 +84,12 @@ class TokenUsage:
       cached_tokens = self.usage_metadata.cached_content_token_count
       if cached_tokens is not None:
         attrs[GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS] = cached_tokens
+
+      cache_creation_tokens = getattr(
+          self.usage_metadata, 'cache_creation_input_tokens', None
+      )
+      if cache_creation_tokens is not None:
+        attrs[GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS] = cache_creation_tokens
 
       thoughts_tokens = self.usage_metadata.thoughts_token_count
       if thoughts_tokens is not None:

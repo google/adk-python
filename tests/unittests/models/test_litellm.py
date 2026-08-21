@@ -1847,6 +1847,46 @@ async def test_generate_content_async_with_usage_metadata(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_with_bedrock_cache_tokens(
+    lite_llm_instance, mock_acompletion
+):
+  mock_response_with_usage_metadata = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="Test response",
+              )
+          )
+      ],
+      usage={
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "total_tokens": 15,
+          "cache_read_input_tokens": 8,
+          "cache_creation_input_tokens": 4,
+      },
+  )
+  mock_acompletion.return_value = mock_response_with_usage_metadata
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          ),
+      ],
+  )
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.usage_metadata.prompt_token_count == 10
+    assert response.usage_metadata.candidates_token_count == 5
+    assert response.usage_metadata.total_token_count == 15
+    assert response.usage_metadata.cached_content_token_count == 8
+    assert response.usage_metadata.cache_creation_input_tokens == 4
+
+  mock_acompletion.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_ollama_chat_preserves_multimodal_content(
     mock_acompletion, mock_completion
 ):
@@ -2043,6 +2083,23 @@ async def test_content_to_message_param_user_message():
   message = await _content_to_message_param(content)
   assert message["role"] == "user"
   assert message["content"] == "Test prompt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_user_message_without_parts(parts):
+  # parts must not raise.
+  content = types.Content(role="user", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_assistant_message_without_parts(parts):
+  content = types.Content(role="assistant", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message is None
 
 
 @pytest.mark.asyncio
@@ -4517,6 +4574,46 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[3].usage_metadata.total_token_count == 15
   assert responses[3].usage_metadata.cached_content_token_count == 8
   assert responses[3].usage_metadata.thoughts_token_count == 5
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_bedrock_cache_tokens(
+    mock_completion, lite_llm_instance
+):
+  streaming_model_response_with_usage_metadata = [
+      *STREAMING_MODEL_RESPONSE,
+      ModelResponseStream(
+          usage={
+              "prompt_tokens": 10,
+              "completion_tokens": 5,
+              "total_tokens": 15,
+              "cache_read_input_tokens": 8,
+              "cache_creation_input_tokens": 4,
+          },
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+              )
+          ],
+      ),
+  ]
+
+  mock_completion.return_value = iter(
+      streaming_model_response_with_usage_metadata
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  assert len(responses) == 4
+  assert responses[3].usage_metadata.prompt_token_count == 10
+  assert responses[3].usage_metadata.candidates_token_count == 5
+  assert responses[3].usage_metadata.total_token_count == 15
+  assert responses[3].usage_metadata.cached_content_token_count == 8
+  assert responses[3].usage_metadata.cache_creation_input_tokens == 4
 
 
 @pytest.mark.asyncio

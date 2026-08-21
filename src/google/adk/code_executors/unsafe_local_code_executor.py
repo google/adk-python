@@ -14,15 +14,12 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stdout
-import io
 import logging
-import multiprocessing
 import os
-import queue
 import re
 import signal
-import traceback
+import subprocess
+import sys
 from typing import Any
 
 from pydantic import Field
@@ -39,82 +36,83 @@ logger = logging.getLogger('google_adk.' + __name__)
 # escalating to SIGKILL, so that the timeout itself cannot block forever.
 _TERMINATE_GRACE_SECONDS = 5
 
+# Runs one program in the child interpreter.
+#
+# The program arrives on stdin rather than in argv because a single argument is
+# capped (at 128 KiB on Linux) and generated programs can carry their own data.
+# Reading it leaves stdin at end-of-file, which is what the program would have
+# seen before.
+#
+# The traceback is printed here, without the frame this wrapper contributes, so
+# that a failure shows the model its own code and not a file inside this
+# package -- a frame it can do nothing about, which then stays in the
+# conversation for every later request.
+_RUNNER = """
+import sys, traceback
 
-def _execute_in_process(
-    code: str,
-    globals_: dict[str, Any],
-    result_queue: multiprocessing.Queue[tuple[str, str | None]],
-) -> None:
-  """Executes code in a separate process and puts result in queue."""
-  # Detach into a new session/process group before running anything, so that a
-  # timed-out execution can be killed together with everything it spawned.
-  if hasattr(os, 'setsid'):
-    try:
-      os.setsid()
-    except OSError:
-      logger.debug('Could not detach the execution process group.')
+_run_name = sys.argv[1]
+del sys.argv[1:]
 
-  stdout = io.StringIO()
-  error = None
-  try:
-    with redirect_stdout(stdout):
-      exec(code, globals_, globals_)
-  except BaseException:
-    error = traceback.format_exc()
-  result_queue.put((stdout.getvalue(), error))
+_globals = {'__name__': _run_name} if _run_name else {}
+_source = sys.stdin.buffer.read().decode('utf-8')
+
+try:
+  exec(compile(_source, '<code>', 'exec'), _globals, _globals)
+except SystemExit:
+  # The program chose its own exit status, so let it stand rather than
+  # reporting a deliberate clean exit as a failure.
+  raise
+except BaseException as exc:
+  _tb = exc.__traceback__
+  traceback.print_exception(
+      type(exc), exc, _tb.tb_next if _tb else None, file=sys.stderr
+  )
+  sys.exit(1)
+"""
 
 
-def _execution_group(
-    process: multiprocessing.process.BaseProcess,
-) -> int | None:
-  """Returns the group the execution detached into, or None if it has not."""
-  if process.pid is None or not hasattr(os, 'killpg'):
-    return None
-  try:
-    group = os.getpgid(process.pid)
-    # Only report the group once the execution has detached into its own;
-    # otherwise the group is still ours and signalling it would take down the
-    # agent along with the code it is running.
-    return group if group != os.getpgid(0) else None
-  except OSError:
-    return None
+def _run_name(code: str) -> str:
+  """Returns the `__name__` the code should run under, or '' for none."""
+  if re.search(r"if\s+__name__\s*==\s*['\"]__main__['\"]", code):
+    return '__main__'
+  return ''
 
 
 def _signal_group(group: int, sig: int) -> None:
   """Signals every process left in a group, tolerating an empty one."""
+  if not hasattr(os, 'killpg'):
+    return
   try:
     os.killpg(group, sig)
   except OSError:
     logger.debug('Could not signal the execution process group.')
 
 
-def _kill_execution(process: multiprocessing.process.BaseProcess) -> None:
-  """Kills a timed-out execution along with any process it spawned."""
-  # Resolved up front: once the execution process has been reaped its group can
-  # no longer be looked up through it, and the group is what holds whatever the
-  # code spawned.
-  group = _execution_group(process)
+def _kill_execution(process: subprocess.Popen[str]) -> tuple[str, str]:
+  """Kills a timed-out execution, returning what it wrote before it died."""
+  # The execution leads its own process group, so its pid is the group that
+  # holds whatever it spawned. `terminate` and `kill` below reach the execution
+  # itself on the platforms that have no group to signal.
+  group = process.pid
 
   # SIGTERM first, so the code and its children get the same grace period the
   # execution process itself gets before anything is killed outright.
-  if group is not None:
-    _signal_group(group, signal.SIGTERM)
+  _signal_group(group, signal.SIGTERM)
   process.terminate()
-  process.join(_TERMINATE_GRACE_SECONDS)
+  try:
+    process.wait(_TERMINATE_GRACE_SECONDS)
+  except subprocess.TimeoutExpired:
+    pass
 
   # Escalate unconditionally: the execution process exiting says nothing about
-  # a child of it that is ignoring SIGTERM.
-  if group is not None:
-    _signal_group(group, signal.SIGKILL)
-  if process.is_alive():
-    process.kill()
-    process.join()
-
-
-def _prepare_globals(code: str, globals_: dict[str, Any]) -> None:
-  """Prepare globals for code execution, injecting __name__ if needed."""
-  if re.search(r"if\s+__name__\s*==\s*['\"]__main__['\"]", code):
-    globals_['__name__'] = '__main__'
+  # a child of it that is ignoring SIGTERM, and such a child holds the output
+  # pipes open besides.
+  _signal_group(group, signal.SIGKILL)
+  process.kill()
+  try:
+    return process.communicate(timeout=_TERMINATE_GRACE_SECONDS)
+  except subprocess.TimeoutExpired:
+    return '', ''
 
 
 class UnsafeLocalCodeExecutor(BaseCodeExecutor):
@@ -144,33 +142,56 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
     logger.debug('Executing code:\n```\n%s\n```', code_execution_input.code)
-    # Execute the code.
-    globals_: dict[str, Any] = {}
-    _prepare_globals(code_execution_input.code, globals_)
 
-    ctx = multiprocessing.get_context('spawn')
-    result_queue: multiprocessing.Queue[tuple[str, str | None]] = ctx.Queue()
-    process = ctx.Process(
-        target=_execute_in_process,
-        args=(code_execution_input.code, globals_, result_queue),
-        daemon=True,
+    env = dict(os.environ)
+    # A plain child interpreter starts with its own import path, so pass the
+    # agent's along: code importing a module from the application resolved
+    # before this and still does.
+    env['PYTHONPATH'] = os.pathsep.join(p for p in sys.path if p)
+    # Pin the child's output encoding. Its stdout is a pipe, so it would
+    # otherwise encode with the host locale and a program printing non-ASCII
+    # under a non-UTF-8 locale would die encoding its own output.
+    env['PYTHONIOENCODING'] = 'utf-8'
+
+    process = subprocess.Popen(
+        [sys.executable, '-c', _RUNNER, _run_name(code_execution_input.code)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding='utf-8',
+        errors='replace',
+        env=env,
+        # Its own session, so a timeout can take down everything the code
+        # started and nothing else. Ignored on Windows, as `os.killpg` is.
+        start_new_session=True,
     )
-    process.start()
 
-    output = ''
-    error = ''
+    timed_out = False
     try:
-      output, err = result_queue.get(timeout=self.timeout_seconds)
-      process.join()
-      if err:
-        error = err
-    except queue.Empty:
-      _kill_execution(process)
-      error = f'Code execution timed out after {self.timeout_seconds} seconds.'
+      output, error = process.communicate(
+          input=code_execution_input.code, timeout=self.timeout_seconds
+      )
+    except subprocess.TimeoutExpired:
+      output, error = _kill_execution(process)
+      timed_out = True
+
+    if timed_out:
+      # Appended rather than assigned: whatever the code wrote before it was
+      # killed is still the useful diagnostic, but on its own it would hide
+      # the fact that the run was cut short.
+      note = f'Code execution timed out after {self.timeout_seconds} seconds.'
+      error = f'{error}\n{note}' if error else note
+    elif process.returncode == 0:
+      # A non-empty stderr is what marks the result failed and drives the retry
+      # counter, so it has to mean the program failed rather than that the
+      # program wrote a warning. The exit status is what says which happened.
+      error = ''
+    elif not error:
+      # The code died without saying why: a signal, or a call to `os._exit`.
+      # Reporting nothing would show the model a clean run.
+      error = f'Code execution exited with status {process.returncode}.'
 
     # Collect the final result.
-    result_queue.close()
-    result_queue.join_thread()
     return CodeExecutionResult(
         stdout=output,
         stderr=error,

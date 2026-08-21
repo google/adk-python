@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from typing import AsyncGenerator
 
@@ -79,6 +80,8 @@ def _merge_credential_oauth2_fields(
 # listing) and don't require resuming a function call.
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = "_adk_toolset_auth_"
 
+logger = logging.getLogger("google_adk." + __name__)
+
 
 async def _store_auth_and_collect_resume_targets(
     events: list[Event],
@@ -89,11 +92,10 @@ async def _store_auth_and_collect_resume_targets(
   """Store auth credentials and return original function call IDs to resume.
 
   Scans session events for ``adk_request_credential`` function calls whose
-  IDs are in *auth_fc_ids*, extracts ``credential_key`` from their
-  ``AuthToolArguments`` args, merges ``credential_key`` into the
-  corresponding auth response, stores credentials via ``AuthHandler``,
-  and returns the set of original function call IDs that should be
-  re-executed (excluding toolset auth).
+  IDs are in *auth_fc_ids*, merges the ``auth_scheme`` and ``credential_key``
+  this server issued into the corresponding auth response, stores credentials
+  via ``AuthHandler``, and returns the set of original function call IDs that
+  should be re-executed (excluding toolset auth).
 
   Args:
     events: Session events to scan.
@@ -123,25 +125,39 @@ async def _store_auth_and_collect_resume_targets(
     except TypeError:
       continue
 
+  # Step 2: Store credentials. The client's response supplies the result of the
+  # user's browser round trip; the auth scheme and the credential key come from
+  # the request this server issued.
   authorized_keys: set[str] = set()
   for fc_id in auth_fc_ids:
     if fc_id not in auth_responses:
       continue
-    auth_config = AuthConfig.model_validate(auth_responses[fc_id])
     requested_auth_config = requested_auth_config_by_id.get(fc_id)
-    if requested_auth_config:
-      if requested_auth_config.credential_key is not None:
-        auth_config.credential_key = requested_auth_config.credential_key
-      if requested_auth_config.raw_auth_credential:
-        auth_config.raw_auth_credential = _merge_credential_oauth2_fields(
-            auth_config.raw_auth_credential,
-            requested_auth_config.raw_auth_credential,
-        )
-      if requested_auth_config.exchanged_auth_credential:
-        auth_config.exchanged_auth_credential = _merge_credential_oauth2_fields(
-            auth_config.exchanged_auth_credential,
-            requested_auth_config.exchanged_auth_credential,
-        )
+    if requested_auth_config is None:
+      # Nothing to pin against, so the response would get to choose both the
+      # credential it is exchanged with and the endpoint that goes to.
+      logger.warning(
+          "Ignoring auth response for function call ID %r, which this session"
+          " never requested.",
+          fc_id,
+      )
+      continue
+
+    auth_config = AuthConfig.model_validate(auth_responses[fc_id])
+    # The scheme names the token endpoint the developer's secret is posted to.
+    auth_config.auth_scheme = requested_auth_config.auth_scheme
+    if requested_auth_config.credential_key is not None:
+      auth_config.credential_key = requested_auth_config.credential_key
+    if requested_auth_config.raw_auth_credential:
+      auth_config.raw_auth_credential = _merge_credential_oauth2_fields(
+          auth_config.raw_auth_credential,
+          requested_auth_config.raw_auth_credential,
+      )
+    if requested_auth_config.exchanged_auth_credential:
+      auth_config.exchanged_auth_credential = _merge_credential_oauth2_fields(
+          auth_config.exchanged_auth_credential,
+          requested_auth_config.exchanged_auth_credential,
+      )
     if auth_config.credential_key:
       authorized_keys.add(auth_config.credential_key)
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import unittest
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -46,11 +47,12 @@ class _StubSummarizer(BaseEventsSummarizer):
 
   def __init__(self, compacted_event: Event | None):
     self._compacted_event = compacted_event
+    self.called_with_events = None
 
   async def maybe_summarize_events(
       self, *, events: list[Event]
   ) -> Event | None:
-    del events
+    self.called_with_events = events
     return self._compacted_event
 
 
@@ -1932,6 +1934,71 @@ async def test_run_compaction_for_token_threshold_adds_summary_trace(
 
 
 @pytest.mark.asyncio
+async def test_run_compaction_for_token_threshold_with_agent_name():
+  """Tests compaction with tool responses and non-empty agent name."""
+  # pylint: disable=protected-access
+  large_response = {'result': 'a' * 100}
+  session = Session(
+      app_name='app',
+      user_id='user',
+      id='session-id',
+      events=[
+          _create_trace_test_event(
+              timestamp=1.0, invocation_id='inv1', text='small'
+          ),
+          Event(
+              timestamp=2.0,
+              invocation_id='inv2',
+              author='agent',
+              content=Content(
+                  role='user',
+                  parts=[
+                      Part(
+                          function_response=types.FunctionResponse(
+                              id='call1',
+                              name='tool',
+                              response=large_response,
+                          )
+                      )
+                  ],
+              ),
+          ),
+      ],
+  )
+  session_service = AsyncMock(spec=BaseSessionService)
+  compacted_event = _create_trace_compacted_event(
+      start_ts=1.0, end_ts=2.0, summary_text='summary'
+  )
+  summarizer = _StubSummarizer(compacted_event)
+  config = EventsCompactionConfig(
+      summarizer=summarizer,
+      compaction_interval=999,
+      overlap_size=0,
+      token_threshold=30,  # Requires ~120 chars.
+      event_retention_size=0,
+  )
+
+  # Run with agent_name. Tool response should be counted, triggering compaction.
+  compacted = (
+      await compaction_module._run_compaction_for_token_threshold_config(
+          config=config,
+          session=session,
+          session_service=session_service,
+          agent=Mock(spec=BaseAgent),
+          agent_name='my_agent',
+      )
+  )
+
+  assert compacted
+  assert summarizer.called_with_events is not None
+  # Both events should be compacted.
+  assert [e.invocation_id for e in summarizer.called_with_events] == [
+      'inv1',
+      'inv2',
+  ]
+
+
+@pytest.mark.asyncio
 async def test_run_compaction_for_sliding_window_adds_summary_trace(
     span_exporter: InMemorySpanExporter,
 ):
@@ -1989,3 +2056,75 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
       summary_span.attributes['gen_ai.compaction.result_event_id']
       == 'compacted-event-id'
   )
+
+
+def test_count_chars_in_content():
+  """Tests counting characters in Content objects."""
+  # pylint: disable=protected-access
+  # 1. Text only
+  content = types.Content(role='user', parts=[types.Part(text='hello')])
+  assert compaction_module._count_chars_in_content(content) == 5
+
+  # 2. Function Call
+  content = types.Content(
+      role='model',
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(
+                  id='call1',
+                  name='my_tool',
+                  args={'arg1': 'val1'},
+              )
+          )
+      ],
+  )
+  expected_args_len = len(json.dumps({'arg1': 'val1'}))
+  assert (
+      compaction_module._count_chars_in_content(content)
+      == 7 + expected_args_len
+  )
+
+  # 3. Function Response (JSON serializable)
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='call1',
+                  name='my_tool',
+                  response={'result': 'success'},
+              )
+          )
+      ],
+  )
+  expected_resp_len = len(json.dumps({'result': 'success'}))
+  assert (
+      compaction_module._count_chars_in_content(content)
+      == 7 + expected_resp_len
+  )
+
+  # 4. Function Response (Non-serializable fallback to str)
+  class BadObject:
+
+    def __str__(self):
+      return 'bad'
+
+    def __repr__(self):
+      return 'bad'
+
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='call1',
+                  name='my_tool',
+                  response={'result': BadObject()},
+              )
+          )
+      ],
+  )
+  # dict __str__ uses repr on values, so:
+  # str({"result": BadObject()}) -> "{'result': bad}" (15 chars)
+  # "my_tool" (7) + "{'result': bad}" (15) = 22
+  assert compaction_module._count_chars_in_content(content) == 7 + 15

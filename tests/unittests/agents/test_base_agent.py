@@ -14,6 +14,7 @@
 
 """Testings for the BaseAgent."""
 
+import abc
 from enum import Enum
 from functools import partial
 import logging
@@ -27,11 +28,13 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.workflow import BaseNode
 from google.genai import types
 import pytest
 import pytest_mock
@@ -971,6 +974,32 @@ def test_validate_sub_agents_unique_names_empty_list(
   )
 
   assert len(parent.sub_agents) == 0
+
+
+@pytest.mark.parametrize('agent_class', [BaseNode, BaseAgent, LlmAgent])
+def test_agent_classes_are_abstract(agent_class: type[BaseNode]):
+  """Each class reaches `abc.ABC` through an explicitly declared base.
+
+  Subclasses declare `@abc.abstractmethod` without inheriting `abc.ABC`
+  themselves. Static type checkers only honor that when a base says `abc.ABC`
+  in source, because they do not see `ABCMeta` through pydantic's
+  `ModelMetaclass`. Losing it makes those subclasses look concrete and their
+  abstract methods look like they return `None`.
+  """
+  assert issubclass(agent_class, abc.ABC)
+
+
+def test_abstract_subclass_cannot_be_instantiated():
+  """A subclass that leaves an abstract method unimplemented still raises."""
+
+  class _Incomplete(LlmAgent):
+
+    @abc.abstractmethod
+    def summarize(self) -> str:
+      """Left unimplemented on purpose."""
+
+  with pytest.raises(TypeError, match='abstract'):
+    _Incomplete(name='incomplete')
 
 
 if __name__ == '__main__':
