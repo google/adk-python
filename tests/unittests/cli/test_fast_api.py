@@ -153,6 +153,34 @@ async def dummy_run_async(
     yield _event_state_delta(state_delta)
 
 
+async def dummy_cancel_async(
+    self,
+    *,
+    user_id,
+    session_id,
+    invocation_id=None,
+):
+  del self, user_id, session_id
+  return [invocation_id] if invocation_id else ["inv-live"]
+
+
+async def dummy_edit_message_async(
+    self,
+    *,
+    user_id,
+    session_id,
+    invocation_id,
+    new_message,
+    state_delta=None,
+    run_config: Optional[RunConfig] = None,
+):
+  del self, user_id, session_id, invocation_id, new_message
+  del state_delta, run_config
+  yield _event_1()
+  await asyncio.sleep(0)
+  yield _event_3()
+
+
 # Define a local mock for EvalCaseResult specific to fast_api tests
 class _MockEvalCaseResult(BaseModel):
   eval_set_id: str
@@ -176,6 +204,8 @@ def patch_runner(monkeypatch):
   """Patch the Runner methods to use our dummy implementations."""
   monkeypatch.setattr(Runner, "run_live", dummy_run_live)
   monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+  monkeypatch.setattr(Runner, "cancel_async", dummy_cancel_async)
+  monkeypatch.setattr(Runner, "edit_message_async", dummy_edit_message_async)
 
 
 @pytest.fixture
@@ -2093,7 +2123,13 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception(
   )
 
   # Call handler
-  response = await handler(req)
+  async def _pending_receive():
+    await asyncio.sleep(3600)
+    return {"type": "http.request", "body": b""}
+
+  mock_request = MagicMock()
+  mock_request.receive = _pending_receive
+  response = await handler(req, mock_request)
   assert response.status_code == 200
 
   # Iterate generator and close it early
@@ -2166,7 +2202,13 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
   )
 
   # Call handler
-  response = await handler(req)
+  async def _pending_receive():
+    await asyncio.sleep(3600)
+    return {"type": "http.request", "body": b""}
+
+  mock_request = MagicMock()
+  mock_request.receive = _pending_receive
+  response = await handler(req, mock_request)
   assert response.status_code == 200
 
   # Iterate generator
@@ -4783,6 +4825,105 @@ def test_create_eval_set_legacy_route_creates_eval_set(
       mock_eval_sets_manager.get_eval_set("test_app", "legacy_eval_set")
       is not None
   )
+
+
+def test_cancel_agent_run_endpoint(test_app, create_test_session, monkeypatch):
+  """POST /sessions/{id}/cancel stops the live invocation via Runner."""
+  captured = {}
+
+  async def capturing_cancel_async(
+      self, *, user_id, session_id, invocation_id=None
+  ):
+    captured["user_id"] = user_id
+    captured["session_id"] = session_id
+    captured["invocation_id"] = invocation_id
+    return ["inv-live"]
+
+  monkeypatch.setattr(Runner, "cancel_async", capturing_cancel_async)
+
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/cancel"
+  )
+  response = test_app.post(url, json={"invocationId": "inv-live"})
+
+  assert response.status_code == 200
+  data = response.json()
+  assert data["cancelled"] is True
+  assert data["invocationIds"] == ["inv-live"]
+  assert captured["user_id"] == info["user_id"]
+  assert captured["session_id"] == info["session_id"]
+  assert captured["invocation_id"] == "inv-live"
+
+
+def test_cancel_agent_run_endpoint_without_invocation_id(
+    test_app, create_test_session
+):
+  """Omitting invocation_id cancels every live run on the session."""
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/cancel"
+  )
+  response = test_app.post(url, json={})
+
+  assert response.status_code == 200
+  data = response.json()
+  assert data["cancelled"] is True
+  assert data["invocationIds"] == ["inv-live"]
+
+
+def test_edit_agent_message_endpoint(
+    test_app, create_test_session, monkeypatch
+):
+  """POST /sessions/{id}/edit regenerates from the targeted user turn."""
+  captured = {}
+
+  async def capturing_edit_message_async(
+      self,
+      *,
+      user_id,
+      session_id,
+      invocation_id,
+      new_message,
+      state_delta=None,
+      run_config=None,
+  ):
+    captured["user_id"] = user_id
+    captured["session_id"] = session_id
+    captured["invocation_id"] = invocation_id
+    captured["new_message"] = new_message
+    yield _event_1()
+    yield _event_3()
+
+  monkeypatch.setattr(
+      Runner, "edit_message_async", capturing_edit_message_async
+  )
+
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}/edit"
+  )
+  response = test_app.post(
+      url,
+      json={
+          "invocationId": "inv-to-edit",
+          "newMessage": {
+              "role": "user",
+              "parts": [{"text": "edited prompt"}],
+          },
+      },
+  )
+
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, list)
+  assert len(data) == 2
+  assert data[0]["author"] == "dummy agent"
+  assert captured["invocation_id"] == "inv-to-edit"
+  assert captured["new_message"].parts[0].text == "edited prompt"
 
 
 if __name__ == "__main__":

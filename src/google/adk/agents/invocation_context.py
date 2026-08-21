@@ -206,6 +206,9 @@ class InvocationContext(BaseModel):
 
   Set to True in callbacks or tools to terminate this invocation."""
 
+  _cancel_event: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
+  """Set when a caller requests this invocation to stop (Runner.cancel_async)."""
+
   live_request_queue: LiveRequestQueue | None = None
   """The queue to receive live requests."""
 
@@ -313,6 +316,15 @@ class InvocationContext(BaseModel):
       processed = asyncio.Event()
       await self._event_queue.put((event, processed))
       await processed.wait()
+
+  def request_cancel(self) -> None:
+    """Asks this invocation to stop as soon as possible.
+
+    Sets ``end_invocation`` so LLM loops exit at the next step, and trips
+    ``_cancel_event`` so the runner can abort a blocked tool or model call.
+    """
+    self.end_invocation = True
+    self._cancel_event.set()
 
   def set_agent_state(
       self,
