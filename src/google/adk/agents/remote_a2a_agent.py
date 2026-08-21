@@ -1184,7 +1184,13 @@ class RemoteA2aAgent(BaseAgent):
             if fc.id is not None:
               remote_fc_ids.add(fc.id)
 
+    # Only the final session event can be a resume payload, and that path is
+    # handled by `_create_a2a_request_for_user_function_response` before we ever
+    # rebuild from history. Anything older is history by definition.
+    last_session_event = ctx.session.events[-1] if ctx.session.events else None
+
     for event in reversed(events_to_process):
+      is_last_session_event = event is last_session_event
       # Drop credential material before anything else looks at the event.
       # `_present_other_agent_message` renders a function_call as text with its
       # arguments inlined, so scrubbing after it would be too late.
@@ -1224,12 +1230,25 @@ class RemoteA2aAgent(BaseAgent):
           # Skip sibling function calls from the coordinator intended for other tools/agents.
           continue
 
-        if (
-            self.mode == "task"
-            and part.function_response
-            and isinstance(part.function_response, genai_types.FunctionResponse)
-            and part.function_response.id not in remote_fc_ids
+        render_function_response_as_text = False
+        if part.function_response is not None and isinstance(
+            part.function_response, genai_types.FunctionResponse
         ):
+          if self.mode == "task":
+            render_function_response_as_text = (
+                part.function_response.id not in remote_fc_ids
+            )
+          else:
+            # A function response sitting in history is not a resume payload:
+            # the peer starting this turn has no invocation to resume. Sending
+            # it as a DataPart makes the outbound message carry a function
+            # response next to the text parts of the same history, which the
+            # receiving runner rejects outright ("Message cannot contain both
+            # function responses and text"). Render it the way another agent's
+            # function response is already rendered, as text.
+            render_function_response_as_text = not is_last_session_event
+
+        if render_function_response_as_text:
           # Convert non-agent function response to text to prevent A2A server
           # validation errors.
           text_content = (

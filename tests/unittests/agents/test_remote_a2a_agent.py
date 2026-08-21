@@ -1338,6 +1338,71 @@ class TestRemoteA2aAgentMessageHandling:
       assert len(parts) == 1
       assert parts[0] == mock_a2a_part
 
+  def test_construct_message_parts_from_session_historical_function_response_converted(
+      self,
+  ):
+    """Test that a function response in history is rendered as text.
+
+    A completed task delegation is recorded as a function response authored
+    "user" (``_synthesize_task_fr_event``). Because its author is "user",
+    ``_present_other_agent_message`` does not catch it, so it used to be
+    re-serialized as a DataPart next to the text parts of the same history.
+    The receiving runner rejects exactly that combination ("Message cannot
+    contain both function responses and text"), which broke every delegation
+    after the first one in the same turn.
+
+    Only the final session event can be a resume payload, and that path is
+    handled by ``_create_a2a_request_for_user_function_response``; anything
+    older is history and belongs on the wire as text.
+    """
+    fr_part = Mock()
+    fr_part.function_call = None
+    fr_part.text = None
+    fr_part.function_response = genai_types.FunctionResponse(
+        id="c1", name="trades", response={"output": "BTCZ0, value 19050"}
+    )
+    fr_event = Mock()
+    fr_event.author = "user"
+    fr_event.custom_metadata = None
+    fr_event.content = Mock()
+    fr_event.content.parts = [fr_part]
+    fr_event.get_function_calls.return_value = []
+    fr_event.get_function_responses.return_value = []
+
+    # The coordinator's next delegation lands after the synthesized function
+    # response, so the function response is no longer the final event and
+    # cannot be a resume payload.
+    text_part = Mock()
+    text_part.function_call = None
+    text_part.function_response = None
+    text_part.text = "now convert it"
+    trailing_event = Mock()
+    trailing_event.author = "user"
+    trailing_event.custom_metadata = None
+    trailing_event.content = Mock()
+    trailing_event.content.parts = [text_part]
+    trailing_event.get_function_calls.return_value = []
+    trailing_event.get_function_responses.return_value = []
+
+    self.mock_session.events = [fr_event, trailing_event]
+    self.mock_genai_part_converter.side_effect = lambda part: (
+        _compat.make_text_part(part.text)
+    )
+
+    parts, _ = self.agent._construct_message_parts_from_session(
+        self.mock_context
+    )
+
+    # The historical function response never reaches the part converter -- it
+    # is rendered as text instead, so nothing goes out as a DataPart.
+    self.mock_genai_part_converter.assert_called_once_with(text_part)
+    assert len(parts) == 2
+    assert (
+        _compat.part_text(parts[0])
+        == 'Tool trades returned: {"output": "BTCZ0, value 19050"}'
+    )
+    assert _compat.part_text(parts[1]) == "now convert it"
+
   def test_construct_message_parts_from_session_stops_on_agent_reply_when_disabled(
       self,
   ):
