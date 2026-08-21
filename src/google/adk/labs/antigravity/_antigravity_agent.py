@@ -66,32 +66,6 @@ def _derive_conversation_id(session_id: str, agent_name: str) -> str:
   return hashlib.sha256(f'{session_id}/{agent_name}'.encode()).hexdigest()
 
 
-def _final_model_text(event: Event, author: str) -> str | None:
-  """Returns an event's user-visible model text, or None if it carries none.
-
-  Partials, other authors, and thought/function parts do not count.
-
-  Args:
-    event: The event to inspect.
-    author: The agent name whose events count as model output.
-
-  Returns:
-    The concatenated user-visible text, or None if the event carries none.
-  """
-  if event.partial or event.author != author or not event.content:
-    return None
-  parts = event.content.parts or []
-  chunks = [
-      part.text
-      for part in parts
-      if part.text
-      and not part.thought
-      and not part.function_call
-      and not part.function_response
-  ]
-  return ''.join(chunks) if chunks else None
-
-
 class AntigravityAgent(BaseAgent):
   """Runs a Google Antigravity SDK agent as an ADK agent.
 
@@ -153,6 +127,15 @@ class AntigravityAgent(BaseAgent):
           return str(part.text)
     return ''
 
+  @property
+  def _sdk_agent_cls(self) -> type[Agent]:
+    """The SDK Agent class each turn runs on.
+
+    Override in a subclass to run turns on a different Agent implementation.
+    """
+    # The ignore is for the SDK being untyped to mypy, not for the return.
+    return Agent  # type: ignore[no-any-return]
+
   @override
   async def _run_async_impl(
       self, ctx: InvocationContext
@@ -200,7 +183,7 @@ class AntigravityAgent(BaseAgent):
         ctx.run_config and ctx.run_config.streaming_mode == StreamingMode.SSE
     )
 
-    async with Agent(config) as active_agent:
+    async with self._sdk_agent_cls(config) as active_agent:
       await active_agent.conversation.send(prompt)
 
       async for step in active_agent.conversation.receive_steps():
@@ -266,7 +249,8 @@ class AntigravityAgent(BaseAgent):
         ctx.event_author = event.author
       if not event.node_info.path and event.author == self.name:
         event.node_info.path = ctx.node_path
-      if (text := _final_model_text(event, self.name)) is not None:
+      text = _event_converter.final_model_text(event, self.name)
+      if text is not None:
         last_text = text
       yield event
 

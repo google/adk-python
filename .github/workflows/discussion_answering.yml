@@ -68,7 +68,8 @@ jobs:
           REPO: 'adk-python'
           INTERACTIVE: 0
           PYTHONPATH: contributing/samples/adk_team
-          DISCUSSION_JSON: ${{ toJson(github.event.discussion) }}
+          DISCUSSION_NUMBER: ${{ github.event.discussion.number || github.event.comment.discussion.number }}
         run: |
-          python -c "import os; open('/tmp/discussion.json', 'w').write(os.environ['DISCUSSION_JSON'])"
-          python -m adk_answering_agent.main --discussion-file /tmp/discussion.json
+          # Security fix: Do not pass raw event data to agent prompt.
+          # Pass only the discussion number; agent fetches content via GitHub API.
+          python -m adk_answering_agent.main --discussion_number "$DISCUSSION_NUMBER"

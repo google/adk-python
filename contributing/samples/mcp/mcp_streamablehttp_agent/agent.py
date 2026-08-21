@@ -13,23 +13,17 @@
 # limitations under the License.
 
 
-import os
-
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPServerParams
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-
-_allowed_path = os.path.dirname(os.path.abspath(__file__))
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 root_agent = LlmAgent(
     name='enterprise_assistant',
-    instruction=f"""\
+    instruction="""\
 Help user accessing their file systems.
-
-Allowed directory: {_allowed_path}
     """,
     tools=[
-        MCPToolset(
+        McpToolset(
             connection_params=StreamableHTTPServerParams(
                 url='http://localhost:3000/mcp',
             ),
@@ -44,12 +38,8 @@ Allowed directory: {_allowed_path}
             # ],
             tool_filter=[
                 'read_file',
-                'read_multiple_files',
                 'list_directory',
-                'directory_tree',
-                'search_files',
-                'get_file_info',
-                'list_allowed_directories',
+                'get_cwd',
             ],
             use_mcp_resources=True,
         )

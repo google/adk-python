@@ -33,6 +33,7 @@ from google.adk.models.lite_llm import _BraceDepthTracker
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
+from google.adk.models.lite_llm import _extract_gemini_model_from_litellm
 from google.adk.models.lite_llm import _extract_json_from_deepseek_args
 from google.adk.models.lite_llm import _extract_reasoning_value
 from google.adk.models.lite_llm import _extract_thought_signature_from_tool_call
@@ -45,6 +46,8 @@ from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _is_anthropic_model
 from google.adk.models.lite_llm import _is_anthropic_provider
 from google.adk.models.lite_llm import _is_anthropic_route
+from google.adk.models.lite_llm import _is_litellm_gemini_model
+from google.adk.models.lite_llm import _is_litellm_vertex_model
 from google.adk.models.lite_llm import _looks_like_openai_file_id
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
@@ -1844,6 +1847,46 @@ async def test_generate_content_async_with_usage_metadata(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_with_bedrock_cache_tokens(
+    lite_llm_instance, mock_acompletion
+):
+  mock_response_with_usage_metadata = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="Test response",
+              )
+          )
+      ],
+      usage={
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "total_tokens": 15,
+          "cache_read_input_tokens": 8,
+          "cache_creation_input_tokens": 4,
+      },
+  )
+  mock_acompletion.return_value = mock_response_with_usage_metadata
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          ),
+      ],
+  )
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.usage_metadata.prompt_token_count == 10
+    assert response.usage_metadata.candidates_token_count == 5
+    assert response.usage_metadata.total_token_count == 15
+    assert response.usage_metadata.cached_content_token_count == 8
+    assert response.usage_metadata.cache_creation_input_tokens == 4
+
+  mock_acompletion.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_ollama_chat_preserves_multimodal_content(
     mock_acompletion, mock_completion
 ):
@@ -2040,6 +2083,23 @@ async def test_content_to_message_param_user_message():
   message = await _content_to_message_param(content)
   assert message["role"] == "user"
   assert message["content"] == "Test prompt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_user_message_without_parts(parts):
+  # parts must not raise.
+  content = types.Content(role="user", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_assistant_message_without_parts(parts):
+  content = types.Content(role="assistant", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message is None
 
 
 @pytest.mark.asyncio
@@ -2244,6 +2304,63 @@ async def test_content_to_message_param_function_response_with_extra_parts():
 
 
 @pytest.mark.asyncio
+async def test_content_to_message_param_function_response_with_media():
+  """Media a tool attached to its response follows as its own message."""
+  image_bytes = b"test_image_data"
+  tool_part = types.Part.from_function_response(
+      name="draw_chart",
+      response={"title": "Revenue"},
+      parts=[
+          types.FunctionResponsePart.from_bytes(
+              data=image_bytes, mime_type="image/png"
+          )
+      ],
+  )
+  tool_part.function_response.id = "tool_call_1"
+
+  content = types.Content(role="user", parts=[tool_part])
+
+  messages = await _content_to_message_param(content)
+
+  assert messages == [
+      {
+          "role": "tool",
+          "tool_call_id": "tool_call_1",
+          "content": '{"title": "Revenue"}',
+      },
+      {
+          "role": "user",
+          "content": [{
+              "type": "image_url",
+              "image_url": {
+                  "url": "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
+              },
+          }],
+      },
+  ]
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_function_response_without_media():
+  """A response carrying no media still converts to a lone tool message."""
+  tool_part = types.Part.from_function_response(
+      name="lookup",
+      response={"status": "success"},
+  )
+  tool_part.function_response.id = "tool_call_1"
+
+  content = types.Content(role="user", parts=[tool_part])
+
+  message = await _content_to_message_param(content)
+
+  assert message == {
+      "role": "tool",
+      "tool_call_id": "tool_call_1",
+      "content": '{"status": "success"}',
+  }
+
+
+@pytest.mark.asyncio
 async def test_content_to_message_param_function_response_preserves_string():
   """Tests that string responses are used directly without double-serialization.
 
@@ -2267,6 +2384,9 @@ async def test_content_to_message_param_function_response_preserves_string():
   mock_function_response = Mock(spec=types.FunctionResponse)
   mock_function_response.response = response_payload
   mock_function_response.id = "tool_call_1"
+  # Mock(spec=...) exposes none of a Pydantic model's fields, so every field
+  # the converter reads has to be set explicitly.
+  mock_function_response.parts = None
   part.function_response = mock_function_response
 
   content = types.Content(
@@ -3372,6 +3492,39 @@ async def test_get_content_file_uri_file_id_required_raises_error(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "model",
+    [
+        "litellm_proxy/azure/gpt-4",
+        "litellm_proxy/openai/gpt-4o",
+        "litellm_proxy/anthropic/claude-3",
+        "litellm_proxy/vertex_ai/gemini-pro",
+        "litellm_proxy/vertex_ai/non-gemini",
+    ],
+)
+async def test_get_content_file_uri_proxied_does_not_raise(model):
+  provider = _get_provider_from_model(model)
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  # Should not raise ValueError even though it is azure/openai provider
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content[0] == {
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/path/to/document.pdf",
+          "format": "application/pdf",
+      },
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "provider,model",
     [
         ("openai", "openai/gpt-4o"),
@@ -4211,7 +4364,7 @@ async def test_generate_content_async_stream_grounding_metadata(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_stream_with_usage_metadata(
+async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
     mock_completion, lite_llm_instance
 ):
 
@@ -4234,7 +4387,9 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[2].content.parts[0].text == "two:"
   assert responses[2].model_version == "test_model"
   assert responses[3].content.role == "model"
-  assert responses[3].content.parts[-1].function_call.name == "test_function"
+  assert len(responses[3].content.parts) == 2
+  assert responses[3].content.parts[0].text == "zero, one, two:"
+  assert responses[3].content.parts[1].function_call.name == "test_function"
   assert responses[3].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
@@ -4310,7 +4465,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_async_stream_with_usage_metadata(
+async def test_generate_content_async_stream_with_reasoning_tokens(
     mock_completion, lite_llm_instance
 ):
 
@@ -4419,6 +4574,46 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[3].usage_metadata.total_token_count == 15
   assert responses[3].usage_metadata.cached_content_token_count == 8
   assert responses[3].usage_metadata.thoughts_token_count == 5
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_bedrock_cache_tokens(
+    mock_completion, lite_llm_instance
+):
+  streaming_model_response_with_usage_metadata = [
+      *STREAMING_MODEL_RESPONSE,
+      ModelResponseStream(
+          usage={
+              "prompt_tokens": 10,
+              "completion_tokens": 5,
+              "total_tokens": 15,
+              "cache_read_input_tokens": 8,
+              "cache_creation_input_tokens": 4,
+          },
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+              )
+          ],
+      ),
+  ]
+
+  mock_completion.return_value = iter(
+      streaming_model_response_with_usage_metadata
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  assert len(responses) == 4
+  assert responses[3].usage_metadata.prompt_token_count == 10
+  assert responses[3].usage_metadata.candidates_token_count == 5
+  assert responses[3].usage_metadata.total_token_count == 15
+  assert responses[3].usage_metadata.cached_content_token_count == 8
+  assert responses[3].usage_metadata.cache_creation_input_tokens == 4
 
 
 @pytest.mark.asyncio
@@ -4941,6 +5136,15 @@ def test_non_gemini_litellm_no_warning():
     assert len(w) == 0
 
 
+def test_proxied_gemini_litellm_no_warning():
+  """Test that proxied Gemini models via LiteLLM don't show warning."""
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    # Test with proxied Gemini model
+    LiteLlm(model="litellm_proxy/vertex_ai/gemini-2.5-flash")
+    assert len(w) == 0
+
+
 @pytest.mark.parametrize(
     "finish_reason,response_content,expected_content,has_tool_calls",
     [
@@ -5172,6 +5376,17 @@ async def test_finish_reason_unknown_maps_to_other(
         ("groq/llama3-70b", "groq"),
         ("anthropic/claude-3", "anthropic"),
         ("vertex_ai/gemini-pro", "vertex_ai"),
+        # litellm_proxy is a routing prefix: the provider that actually serves
+        # the request is the segment after it.
+        ("litellm_proxy/azure/my-deployment", "azure"),
+        ("litellm_proxy/openai/gpt-4o", "openai"),
+        ("litellm_proxy/anthropic/claude-3", "anthropic"),
+        ("litellm_proxy/vertex_ai/gemini-pro", "vertex_ai"),
+        ("LiteLLM_Proxy/azure/gpt-4", "azure"),
+        # A bare proxy deployment name has no nested provider, so it is
+        # treated as the litellm_proxy provider.
+        ("litellm_proxy/azure-gpt-4", "litellm_proxy"),
+        ("litellm_proxy/my-deployment", "litellm_proxy"),
         # Fallback heuristics
         ("gpt-4o", "openai"),
         ("o1-preview", "openai"),
@@ -5185,6 +5400,55 @@ async def test_finish_reason_unknown_maps_to_other(
 def test_get_provider_from_model(model_string, expected_provider):
   """Test provider extraction from model strings."""
   assert _get_provider_from_model(model_string) == expected_provider
+
+
+@pytest.mark.parametrize(
+    "model_string, is_anthropic, is_gemini, is_vertex, gemini_name",
+    [
+        # Proxied models keep the behavior of the provider that serves them.
+        (
+            "litellm_proxy/anthropic/claude-4-sonnet",
+            True,
+            False,
+            False,
+            "claude-4-sonnet",
+        ),
+        (
+            "litellm_proxy/vertex_ai/gemini-2.5-flash",
+            False,
+            True,
+            True,
+            "gemini-2.5-flash",
+        ),
+        (
+            "litellm_proxy/bedrock/anthropic.claude-3-5-sonnet",
+            True,
+            False,
+            False,
+            "anthropic.claude-3-5-sonnet",
+        ),
+        (
+            "litellm_proxy/azure/my-deployment",
+            False,
+            False,
+            False,
+            "my-deployment",
+        ),
+        # Direct (non-proxied) strings are unaffected.
+        ("anthropic/claude-4-sonnet", True, False, False, "claude-4-sonnet"),
+        ("vertex_ai/gemini-2.5-flash", False, True, True, "gemini-2.5-flash"),
+        ("gemini/gemini-2.5-pro", False, True, False, "gemini-2.5-pro"),
+        ("azure/gpt-4", False, False, False, "gpt-4"),
+    ],
+)
+def test_model_family_detection_through_litellm_proxy(
+    model_string, is_anthropic, is_gemini, is_vertex, gemini_name
+):
+  """Model-family detection must see through the litellm_proxy prefix."""
+  assert _is_anthropic_model(model_string) is is_anthropic
+  assert _is_litellm_gemini_model(model_string) is is_gemini
+  assert _is_litellm_vertex_model(model_string) is is_vertex
+  assert _extract_gemini_model_from_litellm(model_string) == gemini_name
 
 
 @pytest.mark.parametrize(
@@ -5220,7 +5484,39 @@ async def test_get_content_pdf_openai_uses_file_id(mocker):
   assert "file_data" not in content[0]["file"]
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_proxied_azure_uses_file_id(mocker):
+  """PDFs sent to a proxied Azure model must upload and send a file_id.
+
+  Regression test: a nested ``litellm_proxy/azure/...`` identifier used to be
+  classified as the ``litellm_proxy`` provider, which skipped the Azure upload
+  path and emitted a bare ``file_data`` block that Azure rejects.
+  """
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  model = "litellm_proxy/azure/my-deployment"
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(
+      parts, provider=_get_provider_from_model(model), model=model
+  )
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  assert "file_data" not in content[0]["file"]
+
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="openai",
   )
@@ -5260,9 +5556,44 @@ async def test_get_content_pdf_azure_uses_file_id(mocker):
   assert content[0]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="azure",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_guess_extension_fallback(mocker):
+  """Test that guess_extension fallback is used when guess_extension returns None."""
+  import mimetypes
+
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-docx123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  # Mock mimetypes.guess_extension to simulate environment without mime db
+  mocker.patch.object(mimetypes, "guess_extension", return_value=None)
+
+  parts = [
+      types.Part.from_bytes(
+          data=b"test_docx_data",
+          mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      )
+  ]
+  content = await _get_content(parts, provider="openai")
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-docx123"
+
+  mock_acreate_file.assert_called_once_with(
+      file=(
+          "document.docx",
+          b"test_docx_data",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ),
+      purpose="assistants",
+      custom_llm_provider="openai",
   )
 
 
@@ -5305,7 +5636,11 @@ async def test_get_completion_inputs_openai_file_upload(mocker):
   assert content[1]["file"]["file_id"] == "file-uploaded123"
   assert content[1]["file"]["format"] == "application/pdf"
 
-  mock_acreate_file.assert_called_once()
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_content", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+  )
 
 
 @pytest.mark.asyncio

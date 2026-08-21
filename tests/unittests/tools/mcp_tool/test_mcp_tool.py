@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import inspect
+import asyncio
+import time
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.agents.context import Context
-from google.adk.agents.invocation_context import InvocationContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
@@ -28,14 +28,13 @@ from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
-from google.adk.sessions.session import Session
 from google.adk.tools.mcp_tool import mcp_tool
-from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
-from google.genai.types import Type
 from mcp.types import CallToolResult
 from mcp.types import TextContent
 import pytest
@@ -243,6 +242,40 @@ class TestMCPTool:
 
     assert tool.description == ""
 
+  @pytest.mark.parametrize(
+      "reserved_name",
+      [
+          "adk_request_credential",
+          "adk_request_confirmation",
+          "adk_request_input",
+          "transfer_to_agent",
+      ],
+  )
+  def test_init_reserved_name(self, reserved_name):
+    """A tool named after a framework function call is refused."""
+    mock_tool = MockMCPTool(name=reserved_name)
+    with pytest.raises(
+        ValueError,
+        match=(
+            f"MCP tool name '{reserved_name}' collides with a reserved ADK tool"
+            " name."
+        ),
+    ):
+      MCPTool(
+          mcp_tool=mock_tool,
+          mcp_session_manager=self.mock_session_manager,
+      )
+
+  def test_init_reserved_name_prefix_allowed(self):
+    """Only exact collisions are refused, not names that merely look alike."""
+    mock_tool = MockMCPTool(name="transfer_to_agent_v2")
+    tool = MCPTool(
+        mcp_tool=mock_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    assert tool.name == "transfer_to_agent_v2"
+
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):
     """Test running tool without authentication."""
@@ -273,6 +306,73 @@ class TestMCPTool:
     # Fix: call_tool uses 'arguments' parameter, not positional args
     self.mock_session.call_tool.assert_called_once_with(
         "test_tool", arguments=args, progress_callback=None, meta=None
+    )
+
+  @pytest.mark.asyncio
+  async def test_in_flight_tool_call_is_held_out_of_the_idle_sweep(self):
+    """A call in flight must not have its session swept out from under it."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+    session_key = manager._generate_session_key(manager._merge_headers(None))
+
+    call_started = asyncio.Event()
+    finish_call = asyncio.Event()
+
+    async def _slow_call_tool(*args, **kwargs):
+      call_started.set()
+      await finish_call.wait()
+      return CallToolResult(content=[TextContent(type="text", text="ok")])
+
+    pooled_session = Mock()
+    pooled_session._read_stream = Mock(_closed=False)
+    pooled_session._write_stream = Mock(_closed=False)
+    pooled_session.call_tool = _slow_call_tool
+    exit_stack = AsyncMock()
+    manager._sessions[session_key] = (
+        pooled_session,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=manager,
+    )
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+    ):
+      call = asyncio.ensure_future(
+          tool._run_async_impl(
+              args={"param1": "test_value"},
+              tool_context=tool_context,
+              credential=None,
+          )
+      )
+      await asyncio.wait_for(call_started.wait(), timeout=5.0)
+
+      # The call outlives the idle TTL. The pool stamps the session only when
+      # it hands it out, so on the timestamp alone it now looks maximally
+      # idle -- and some unrelated caller touches the pool.
+      manager._session_last_used[session_key] = (
+          time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+      )
+      manager._evict_idle_sessions(keep_key="key_of_another_caller")
+
+      assert session_key in manager._sessions
+      exit_stack.aclose.assert_not_called()
+
+      finish_call.set()
+      result = await asyncio.wait_for(call, timeout=5.0)
+
+    assert result["content"][0]["text"] == "ok"
+    # Finishing the call is what restarts the idle clock.
+    assert (
+        time.monotonic() - manager._session_last_used[session_key]
+        < _SESSION_IDLE_TTL_SECONDS
     )
 
   @pytest.mark.asyncio
@@ -717,16 +817,77 @@ class TestMCPTool:
     assert headers == {"X-Service-API-Key": "test_service_key"}
 
   @pytest.mark.asyncio
-  async def test_run_async_impl_retry_decorator(self):
-    """Test that the retry decorator is applied correctly."""
-    # This is more of an integration test to ensure the decorator is present
+  async def test_run_async_impl_does_not_retry_ambiguous_tool_failure(self):
+    """A possibly completed remote tool call must not be repeated."""
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
         mcp_session_manager=self.mock_session_manager,
     )
+    self.mock_session.call_tool = AsyncMock(
+        side_effect=ConnectionError("response was lost")
+    )
+    tool_context = ToolContext(invocation_context=Mock())
 
-    # Check that the method has the retry decorator
-    assert hasattr(tool._run_async_impl, "__wrapped__")
+    with pytest.raises(ConnectionError, match="response was lost"):
+      await tool._run_async_impl(
+          args={"param1": "test_value"},
+          tool_context=tool_context,
+          credential=None,
+      )
+
+    self.mock_session_manager.create_session.assert_awaited_once_with(
+        headers=None
+    )
+    self.mock_session.call_tool.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_does_not_repeat_after_local_failure(self):
+    """A local failure after a response must not replay the remote call."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    response = Mock()
+    response.model_dump.side_effect = RuntimeError("serialization failed")
+    self.mock_session.call_tool = AsyncMock(return_value=response)
+    tool_context = ToolContext(invocation_context=Mock())
+
+    with pytest.raises(RuntimeError, match="serialization failed"):
+      await tool._run_async_impl(
+          args={"param1": "test_value"},
+          tool_context=tool_context,
+          credential=None,
+      )
+
+    self.mock_session_manager.create_session.assert_awaited_once_with(
+        headers=None
+    )
+    self.mock_session.call_tool.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_retries_session_setup(self):
+    """Session setup is pre-send, so it is still retried once."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    self.mock_session_manager.create_session = AsyncMock(
+        side_effect=[ConnectionError("session setup failed"), self.mock_session]
+    )
+    response = Mock()
+    response.model_dump.return_value = {"result": "ok"}
+    self.mock_session.call_tool = AsyncMock(return_value=response)
+    tool_context = ToolContext(invocation_context=Mock())
+
+    result = await tool._run_async_impl(
+        args={"param1": "test_value"},
+        tool_context=tool_context,
+        credential=None,
+    )
+
+    assert result == {"result": "ok"}
+    assert self.mock_session_manager.create_session.await_count == 2
+    self.mock_session.call_tool.assert_awaited_once()
 
   @pytest.mark.asyncio
   async def test_get_headers_http_custom_scheme(self):
@@ -1373,12 +1534,10 @@ class TestMCPTool:
 
     assert "http_debug_info" in metadata_dict
     debug_info = metadata_dict["http_debug_info"]
-    # Retries once on error, so we expect 2 debug entries
-    assert len(debug_info) == 2
+    # Tool calls are at-most-once, including ambiguous transport failures.
+    assert len(debug_info) == 1
     assert debug_info[0]["url"] == "https://example.com/api"
     assert debug_info[0]["status_code"] == 500
-    assert debug_info[1]["url"] == "https://example.com/api"
-    assert debug_info[1]["status_code"] == 500
 
   @pytest.mark.asyncio
   @patch(
@@ -1422,12 +1581,10 @@ class TestMCPTool:
     assert result == {"error": "MCP tool execution failed: Forbidden"}
     assert "http_debug_info" in metadata_dict
     debug_info = metadata_dict["http_debug_info"]
-    # Retries once on error, so we expect 2 debug entries
-    assert len(debug_info) == 2
+    # Graceful error conversion must not replay a remote tool call.
+    assert len(debug_info) == 1
     assert debug_info[0]["url"] == "https://example.com/api"
     assert debug_info[0]["status_code"] == 403
-    assert debug_info[1]["url"] == "https://example.com/api"
-    assert debug_info[1]["status_code"] == 403
 
 
 class TestMCPToolGracefulErrorHandling:

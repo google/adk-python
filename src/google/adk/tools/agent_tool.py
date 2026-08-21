@@ -287,12 +287,30 @@ class AgentTool(BaseTool):
         state=state_dict,
     )
 
+    # The wrapped agent runs as part of the caller's invocation, so it should
+    # obey the caller's run settings. Without this the nested run falls back to
+    # RunConfig's defaults, which means a max_llm_calls ceiling of 500 whatever
+    # the caller asked for and no custom_metadata, labels or HTTP options at
+    # all. The count itself is still per-invocation, so the ceiling bounds the
+    # nested run rather than being shared with the caller's.
+    nested_run_config = invocation_context.run_config
+    if nested_run_config is not None and nested_run_config.support_cfc:
+      # CFC describes how the caller's own model executes. Handing it to
+      # another agent replaces that agent's code executor and refuses to run it
+      # at all unless its model happens to be a Gemini 2 one.
+      nested_run_config = nested_run_config.model_copy(
+          update={'support_cfc': False}
+      )
+
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
     async with Aclosing(
         runner.run_async(
-            user_id=session.user_id, session_id=session.id, new_message=content
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=content,
+            run_config=nested_run_config,
         )
     ) as agen:
       async for event in agen:

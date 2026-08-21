@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 from pathlib import Path
@@ -25,20 +26,32 @@ from unittest.mock import AsyncMock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.evaluation import agent_evaluator as agent_evaluator_module
 from google.adk.evaluation.agent_evaluator import _EvalMetricResultWithInvocation
 from google.adk.evaluation.agent_evaluator import AgentEvaluator
+from google.adk.evaluation.agent_evaluator import load_json
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import LiveModelConfig
+from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
+from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
+from google.adk.evaluation.eval_metrics import MetricInfo
+from google.adk.evaluation.eval_metrics import MetricValueInfo
+from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.eval_set_results_manager import EvalSetResultsManager
 from google.adk.evaluation.evaluator import EvalStatus
+from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.evaluation.simulation.user_simulator_provider import UserSimulatorProvider
+from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
 from google.genai import types as genai_types
 import pandas as pd
 import pytest
+
+_NON_ASCII_TEXT = "😀 你好 café"
+_real_open = builtins.open
 
 
 def _make_eval_set() -> EvalSet:
@@ -133,6 +146,129 @@ async def test_evaluate_eval_set_threads_artifact_service(mocker):
       mock_local_eval_service_cls.call_args.kwargs["artifact_service"]
       is my_service
   )
+
+
+async def _mock_evaluate_eval_set(mocker, eval_case_result: EvalCaseResult):
+  """Runs evaluate_eval_set against an eval service yielding the given result."""
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=mocker.AsyncMock(return_value=(mocker.MagicMock(), None)),
+  )
+  mock_local_eval_service_cls = mocker.patch(
+      "google.adk.evaluation.local_eval_service.LocalEvalService"
+  )
+
+  async def _one_result(*args, **kwargs):
+    yield eval_case_result
+
+  instance = mock_local_eval_service_cls.return_value
+  instance.perform_inference = _empty_async_gen
+  instance.evaluate = _one_result
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module="my.agent.module",
+      eval_set=_make_eval_set(),
+      eval_config=EvalConfig(),
+      num_runs=1,
+      print_detailed_results=False,
+  )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_fails_when_inference_crashed(mocker):
+  """A FAILED eval case with no metric results is still reported as a failure.
+
+  This is the shape recorded when inferencing raised: the verdict lives only in
+  `final_eval_status`, with no per-invocation metric results to re-derive it
+  from.
+  """
+  crashed_result = EvalCaseResult(
+      eval_set_id="test_eval_set",
+      eval_id="case1",
+      final_eval_status=EvalStatus.FAILED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[],
+      session_id="",
+  )
+
+  with pytest.raises(AssertionError, match="case1 for my.agent.module Failed"):
+    await _mock_evaluate_eval_set(mocker, crashed_result)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_keeps_metric_detail_for_failed_metric(mocker):
+  """A metric that scored below threshold still reports the metric detail."""
+  failed_metric_result = EvalCaseResult(
+      eval_set_id="test_eval_set",
+      eval_id="case1",
+      final_eval_status=EvalStatus.FAILED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("5"),
+              ),
+              expected_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              eval_metric_results=[
+                  EvalMetricResult(
+                      metric_name="response_match_score",
+                      threshold=0.8,
+                      score=0.1,
+                      eval_status=EvalStatus.FAILED,
+                  )
+              ],
+          )
+      ],
+      session_id="",
+  )
+
+  with pytest.raises(AssertionError) as exc_info:
+    await _mock_evaluate_eval_set(mocker, failed_metric_result)
+
+  message = str(exc_info.value)
+  assert "response_match_score for my.agent.module Failed" in message
+  assert "Expected 0.8, but got 0.1" in message
+  # The metric detail accounts for the failure; nothing extra is reported.
+  assert "no metric results" not in message
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_passes_when_metrics_pass(mocker):
+  """A passing eval case is not turned into a failure."""
+  passing_result = EvalCaseResult(
+      eval_set_id="test_eval_set",
+      eval_id="case1",
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              expected_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              eval_metric_results=[
+                  EvalMetricResult(
+                      metric_name="response_match_score",
+                      threshold=0.8,
+                      score=1.0,
+                      eval_status=EvalStatus.PASSED,
+                  )
+              ],
+          )
+      ],
+      session_id="",
+  )
+
+  await _mock_evaluate_eval_set(mocker, passing_result)
 
 
 class TestGetAgentForEval:
@@ -594,6 +730,113 @@ def test_migrate_eval_data_to_new_schema_missing_reference_rejected(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_evaluate_eval_set_registers_custom_metrics(mocker):
+  """Custom metrics in the eval config are available during evaluation."""
+  eval_set = SimpleNamespace(
+      eval_set_id="eval_set_1",
+      eval_cases=[SimpleNamespace(eval_id="case_a")],
+  )
+  eval_config = EvalConfig(
+      custom_metrics={
+          "my_custom_metric": {
+              "code_config": {"name": "math.sqrt"},
+          }
+      }
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=AsyncMock(return_value=(mocker.Mock(), None)),
+  )
+  mocker.patch(
+      "google.adk.evaluation.agent_evaluator.get_eval_metrics_from_config",
+      return_value=[],
+  )
+  get_results_mock = mocker.patch.object(
+      AgentEvaluator,
+      "_get_eval_results_by_eval_id",
+      new=AsyncMock(return_value={}),
+  )
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module="my.pkg.search_agent",
+      eval_set=eval_set,
+      eval_config=eval_config,
+      print_detailed_results=False,
+  )
+
+  metric_evaluator_registry = get_results_mock.await_args.kwargs[
+      "metric_evaluator_registry"
+  ]
+  assert "my_custom_metric" in {
+      metric_info.metric_name
+      for metric_info in metric_evaluator_registry.get_registered_metrics()
+  }
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_keeps_evaluators_from_the_default_registry(
+    mocker,
+):
+  """Evaluators the caller registered on the default registry stay usable.
+
+  Registering an `Evaluator` subclass on `DEFAULT_METRIC_EVALUATOR_REGISTRY` is
+  the only way to plug one in, since an eval config can only name a scoring
+  function. Evaluation must therefore start from that registry's contents.
+  """
+  eval_set = SimpleNamespace(
+      eval_set_id="eval_set_1",
+      eval_cases=[SimpleNamespace(eval_id="case_a")],
+  )
+  metric_name = "globally_registered_metric_for_agent_evaluator_test"
+  DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
+      MetricInfo(
+          metric_name=metric_name,
+          description="Registered by the caller, not by an eval config.",
+          metric_value_info=MetricValueInfo(),
+      ),
+      TrajectoryEvaluator,
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=AsyncMock(return_value=(mocker.Mock(), None)),
+  )
+  mocker.patch(
+      "google.adk.evaluation.agent_evaluator.get_eval_metrics_from_config",
+      return_value=[],
+  )
+  get_results_mock = mocker.patch.object(
+      AgentEvaluator,
+      "_get_eval_results_by_eval_id",
+      new=AsyncMock(return_value={}),
+  )
+
+  try:
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="my.pkg.search_agent",
+        eval_set=eval_set,
+        eval_config=EvalConfig(),
+        print_detailed_results=False,
+    )
+
+    metric_evaluator_registry = get_results_mock.await_args.kwargs[
+        "metric_evaluator_registry"
+    ]
+    assert isinstance(
+        metric_evaluator_registry.get_evaluator(
+            EvalMetric(metric_name=metric_name, threshold=0.5)
+        ),
+        TrajectoryEvaluator,
+    )
+  finally:
+    # The default registry is process-wide state; remove what we added.
+    DEFAULT_METRIC_EVALUATOR_REGISTRY._registry.pop(  # pylint: disable=protected-access
+        metric_name, None
+    )
+
+
+@pytest.mark.asyncio
 async def test_evaluate_eval_set_forwards_results_manager_and_app_name(mocker):
   """Results manager and resolved app_name are handed to the eval service
   (LocalEvalService), which owns persistence."""
@@ -852,6 +1095,90 @@ async def test_evaluate_keeps_positional_initial_session_file_and_print_flag(
       evaluate_eval_set_mock.await_args.kwargs["print_detailed_results"]
       is False
   )
+
+
+def _non_utf8_default_open(file, mode="r", *args, **kwargs):
+  """Emulates a platform whose default text encoding is not UTF-8.
+
+  On such platforms (for example Windows, where the default is cp1252),
+  `open()` calls that omit `encoding=` inherit that non-UTF-8 default. This
+  wrapper reproduces that behaviour on any platform by falling back to ASCII
+  when a text-mode open does not specify an encoding, so a missing
+  `encoding="utf-8"` argument raises instead of silently depending on the
+  host locale.
+  """
+  if "b" not in mode and "encoding" not in kwargs:
+    kwargs["encoding"] = "ascii"
+  return _real_open(file, mode, *args, **kwargs)
+
+
+def test_load_json_reads_non_ascii_with_non_utf8_default(tmp_path, mocker):
+  """`load_json` must decode eval data as UTF-8 regardless of platform locale."""
+  file_path = tmp_path / "eval.json"
+  file_path.write_text(
+      json.dumps([{"query": _NON_ASCII_TEXT}], ensure_ascii=False),
+      encoding="utf-8",
+  )
+
+  mocker.patch.object(
+      agent_evaluator_module, "open", _non_utf8_default_open, create=True
+  )
+
+  assert load_json(str(file_path)) == [{"query": _NON_ASCII_TEXT}]
+
+
+def test_get_initial_session_reads_non_ascii_with_non_utf8_default(
+    tmp_path, mocker
+):
+  """`_get_initial_session` must decode the session file as UTF-8."""
+  session_file = tmp_path / "initial_session.json"
+  session_file.write_text(
+      json.dumps({"state": {"city": _NON_ASCII_TEXT}}, ensure_ascii=False),
+      encoding="utf-8",
+  )
+
+  mocker.patch.object(
+      agent_evaluator_module, "open", _non_utf8_default_open, create=True
+  )
+
+  initial_session = AgentEvaluator._get_initial_session(str(session_file))
+
+  assert initial_session == {"state": {"city": _NON_ASCII_TEXT}}
+
+
+def test_migrate_eval_data_round_trips_non_ascii_with_non_utf8_default(
+    tmp_path, mocker
+):
+  """Migration must read the old file and write the new file as UTF-8.
+
+  This exercises both the read (`load_json`) and the write
+  (`model_dump_json`) of eval data, which must stay UTF-8 consistent so that
+  datasets containing non-ASCII characters survive migration on any platform.
+  """
+  old_eval_data_file = tmp_path / "old_format.test.json"
+  old_eval_data_file.write_text(
+      json.dumps(
+          [{
+              "query": _NON_ASCII_TEXT,
+              "reference": _NON_ASCII_TEXT,
+              "expected_tool_use": [],
+          }],
+          ensure_ascii=False,
+      ),
+      encoding="utf-8",
+  )
+  new_eval_data_file = tmp_path / "new_format.json"
+
+  mocker.patch.object(
+      agent_evaluator_module, "open", _non_utf8_default_open, create=True
+  )
+
+  AgentEvaluator.migrate_eval_data_to_new_schema(
+      str(old_eval_data_file), str(new_eval_data_file)
+  )
+
+  migrated = json.loads(new_eval_data_file.read_text(encoding="utf-8"))
+  assert _NON_ASCII_TEXT in json.dumps(migrated, ensure_ascii=False)
 
 
 if __name__ == "__main__":

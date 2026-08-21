@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from typing import Any
 from typing import Callable
+from urllib.parse import urlparse
 import warnings
 
 from google.adk.agents.readonly_context import ReadonlyContext
@@ -24,6 +25,7 @@ from google.adk.tools.base_toolset import ToolPredicate
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.utils import _mtls_utils
+from google.adk.utils._google_client_headers import merge_tracking_headers
 import google.auth
 from google.auth.transport import mtls
 from google.auth.transport import requests as requests_auth
@@ -48,6 +50,17 @@ def _get_api_registry_url(client_cert_source: Any | None = None) -> str:
   ):
     return API_REGISTRY_MTLS_URL
   return API_REGISTRY_URL
+
+
+def _is_google_api(url: str) -> bool:
+  """Checks if the given URL points to a Google API endpoint over https."""
+  parsed_url = urlparse(url)
+  if parsed_url.scheme != "https" or not parsed_url.hostname:
+    return False
+  return (
+      parsed_url.hostname == "googleapis.com"
+      or parsed_url.hostname.endswith(".googleapis.com")
+  )
 
 
 class ApiRegistry:
@@ -104,6 +117,7 @@ class ApiRegistry:
       }
       if quota_project_id:
         headers["x-goog-user-project"] = quota_project_id
+      headers = merge_tracking_headers(headers)
 
       page_token = None
       with requests_auth.AuthorizedSession(
@@ -164,11 +178,17 @@ class ApiRegistry:
       raise ValueError(f"MCP server {mcp_server_name} has no URLs.")
 
     mcp_server_url = server["urls"][0]
-    headers = self._get_auth_headers()
 
     # Only prepend "https://" if the URL doesn't already have a scheme
     if not mcp_server_url.startswith(("http://", "https://")):
       mcp_server_url = "https://" + mcp_server_url
+
+    # A registry entry can name any host, so the caller's own credentials are
+    # only attached to Google API endpoints. Other servers get their headers
+    # from the header_provider.
+    headers = (
+        self._get_auth_headers() if _is_google_api(mcp_server_url) else None
+    )
 
     return McpToolset(
         connection_params=StreamableHTTPConnectionParams(

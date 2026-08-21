@@ -20,6 +20,7 @@ import contextlib
 import copy
 from functools import cached_property
 import logging
+import os
 import re
 from typing import Any
 from typing import AsyncGenerator
@@ -35,6 +36,8 @@ from google.genai import types
 from google.genai.errors import ClientError
 from pydantic import Field
 from typing_extensions import override
+
+from google import genai
 
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
@@ -58,6 +61,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
 _GOOGLE_API_VERSION_SUFFIX_PATTERN = re.compile(r'/?(v[0-9][a-z0-9.-]*)/?')
+_API_VERSION_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_API_VERSION'
 
 
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
@@ -119,6 +123,13 @@ class Gemini(BaseLlm):
 
   model: str = 'gemini-2.5-flash'
 
+  client: Optional[genai.Client] = Field(default=None, exclude=True)
+  """An optional pre-configured google-genai Client.
+
+  When provided, this client will be used for all API calls instead of
+  constructing a new one from environment variables or other attributes.
+  """
+
   client_kwargs: Optional[dict[str, Any]] = Field(
       default=None, exclude=True, repr=False
   )
@@ -126,6 +137,27 @@ class Gemini(BaseLlm):
 
   base_url: Optional[str] = None
   """The base URL for the AI platform service endpoint."""
+
+  api_version: Optional[str] = None
+  """The API version to use for the AI platform service endpoint.
+
+  For the Vertex AI backend the google-genai SDK defaults to ``v1beta1``, which
+  exposes the latest preview features. Production deployments that require a
+  stable, SLA-eligible endpoint can set this to ``v1`` to use the GA Vertex AI
+  API. When unset, the ``GOOGLE_GENAI_API_VERSION`` environment variable is
+  consulted, and finally the SDK's own default is used so existing behavior is
+  unchanged.
+
+  An API version embedded in the ``base_url`` path (e.g. a trailing ``/v1``)
+  takes precedence over this field.
+
+  Sample:
+  ```python
+  from google.adk.models import Gemini
+
+  agent = Agent(model=Gemini(model="gemini-2.5-pro", api_version="v1"))
+  ```
+  """
 
   speech_config: Optional[types.SpeechConfig] = None
 
@@ -237,7 +269,9 @@ class Gemini(BaseLlm):
           llm_request.config.http_options.headers or {}
       )
       _, api_version = self._base_url_and_api_version
-      if api_version:
+      if api_version is None:
+        api_version = self.api_version
+      if api_version and not llm_request.config.http_options.api_version:
         llm_request.config.http_options.api_version = api_version
 
     try:
@@ -356,9 +390,14 @@ class Gemini(BaseLlm):
     Returns:
       The api client.
     """
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     base_url, api_version = self._base_url_and_api_version
+    if api_version is None:
+      api_version = self._configured_api_version()
     kwargs_for_http_options: dict[str, Any] = {
         'headers': self._tracking_headers(),
         'retry_options': self.retry_options,
@@ -390,6 +429,21 @@ class Gemini(BaseLlm):
   def _tracking_headers(self) -> dict[str, str]:
     return get_tracking_headers()
 
+  def _configured_api_version(self) -> Optional[str]:
+    """Returns the explicitly configured API version, if any.
+
+    Resolution order:
+      1. The ``api_version`` field set on this instance.
+      2. The ``GOOGLE_GENAI_API_VERSION`` environment variable.
+
+    Returns ``None`` when neither is set, in which case the google-genai SDK's
+    own default (``v1beta1`` for Vertex AI) applies, preserving existing
+    behavior.
+    """
+    if self.api_version:
+      return self.api_version
+    return os.environ.get(_API_VERSION_ENV_VARIABLE_NAME) or None
+
   @cached_property
   def _base_url_and_api_version(self) -> tuple[Optional[str], Optional[str]]:
     return _normalize_base_url_and_api_version(self.base_url)
@@ -408,6 +462,9 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     base_url, _ = self._base_url_and_api_version
@@ -583,7 +640,7 @@ class Gemini(BaseLlm):
           await self._adapt_computer_use_tool(llm_request)
 
     # Sanitize inputs by ensuring unsupported inline types (e.g. DOCX from UI)
-    # are converted to plain text using load_artifacts_tool._as_safe_part_for_llm.
+    # are converted to plain text using load_artifacts_tool.as_safe_part_for_llm.
     if llm_request.contents:
       for content in llm_request.contents:
         if not content.parts:
@@ -593,8 +650,8 @@ class Gemini(BaseLlm):
           if part.inline_data:
             # GE inline_data does not preserve filenames, so we pass a dummy
             # 'inline-file' name as a placeholder for
-            # _as_safe_part_for_llm's required artifact_name argument.
-            part = load_artifacts_tool._as_safe_part_for_llm(  # pylint: disable=protected-access
+            # as_safe_part_for_llm's required artifact_name argument.
+            part = load_artifacts_tool.as_safe_part_for_llm(  # pylint: disable=protected-access
                 part, 'inline-file'
             )
           new_parts.append(part)
@@ -675,14 +732,28 @@ def _build_request_log(req: LlmRequest) -> str:
             exclude={
                 'system_instruction': True,
                 'tools': tools_exclusion if req.config.tools else True,
-                # Callers may put credentials in per-request headers, so the
-                # transport options never go to the log.
-                'http_options': True,
+                # `http_options` carries caller-supplied credentials:
+                # `headers` commonly holds an Authorization bearer token,
+                # and `extra_body` / `*client_args` are free-form
+                # passthroughs that can hold auth material too. None of
+                # it may reach a debug log. Mirrors the same exclusion
+                # applied to trace spans in telemetry/tracing.py.
+                'http_options': {
+                    'httpx_client': True,
+                    'httpx_async_client': True,
+                    'aiohttp_client': True,
+                    'headers': True,
+                    'extra_body': True,
+                    'client_args': True,
+                    'async_client_args': True,
+                },
             },
         )
     )
   except Exception:
-    config_log = repr(req.config.model_copy(update={'http_options': None}))
+    # Do not fall back to repr(req.config) here: an unredacted repr would
+    # reintroduce the same credential leak this function exists to avoid.
+    config_log = '<error building config log>'
 
   return f"""
 LLM Request:

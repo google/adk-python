@@ -43,16 +43,18 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = as_llm_agent(invocation_context)
-    if not hasattr(agent, 'disallow_transfer_to_parent'):
-      return
-
     transfer_targets = _get_transfer_targets(agent)
     if not transfer_targets:
       return
 
-    transfer_to_agent_tool = TransferToAgentTool(
-        agent_names=[agent.name for agent in transfer_targets]
-    )
+    if err_msg := _get_incompatible_builtin_tool_error(agent):
+      sub_agents = getattr(agent, 'sub_agents', None) or []
+      sub_agent_targets = [t for t in transfer_targets if t in sub_agents]
+      if sub_agent_targets:
+        raise ValueError(err_msg)
+      return
+
+    transfer_to_agent_tool = _build_transfer_tool(transfer_targets)
 
     llm_request.append_instructions([
         _build_transfer_instructions(
@@ -161,7 +163,7 @@ If neither you nor the other agents are best for the question, transfer to your 
   return si
 
 
-def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
+def _get_transfer_targets(agent: BaseAgent) -> list[BaseAgent]:
   """Gets the list of agents that the current agent can transfer to.
 
   The transfer targets include:
@@ -172,32 +174,35 @@ def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
       not disallow transfer to peers.
 
   Args:
-    agent: The LlmAgent for which to find transfer targets.
+    agent: The BaseAgent for which to find transfer targets.
 
   Returns:
     A list of BaseAgent instances that are valid transfer targets.
   """
-  result = []
-  result.extend([
-      sub_agent
-      for sub_agent in agent.sub_agents
-      if not hasattr(sub_agent, 'mode')
-      or sub_agent.mode not in ('single_turn', 'task')
-  ])
+  if not hasattr(agent, 'disallow_transfer_to_parent'):
+    return []
 
-  if not agent.parent_agent or not hasattr(
-      agent.parent_agent, 'disallow_transfer_to_parent'
-  ):
+  result = []
+  if hasattr(agent, 'sub_agents') and agent.sub_agents:
+    result.extend([
+        sub_agent
+        for sub_agent in agent.sub_agents
+        if not hasattr(sub_agent, 'mode')
+        or sub_agent.mode not in ('single_turn', 'task')
+    ])
+
+  parent = getattr(agent, 'parent_agent', None)
+  if not parent or not hasattr(parent, 'disallow_transfer_to_parent'):
     return result
 
-  if not agent.disallow_transfer_to_parent:
-    result.append(agent.parent_agent)
+  if not getattr(agent, 'disallow_transfer_to_parent', False):
+    result.append(parent)
 
-  if not agent.disallow_transfer_to_peers:
+  if not getattr(agent, 'disallow_transfer_to_peers', False):
     result.extend([
         peer_agent
-        for peer_agent in agent.parent_agent.sub_agents
-        if peer_agent.name != agent.name
+        for peer_agent in getattr(parent, 'sub_agents', []) or []
+        if getattr(peer_agent, 'name', None) != getattr(agent, 'name', None)
         and (
             not hasattr(peer_agent, 'mode')
             or peer_agent.mode not in ('single_turn', 'task')
@@ -205,3 +210,54 @@ def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
     ])
 
   return result
+
+
+def _build_transfer_tool(
+    transfer_targets: Sequence[BaseAgent],
+) -> TransferToAgentTool:
+  """Builds the transfer tool offering the given agents as targets.
+
+  Args:
+    transfer_targets: The agents that can be transferred to.
+
+  Returns:
+    A TransferToAgentTool for the given targets.
+  """
+  return TransferToAgentTool(
+      agent_names=[target.name for target in transfer_targets]
+  )
+
+
+def _get_incompatible_builtin_tool_error(agent: BaseAgent) -> str | None:
+  """Returns an error message if the agent uses built-in tools incompatible with function calling."""
+  tools = getattr(agent, 'tools', None)
+  if not tools:
+    return None
+
+  from ...tools.enterprise_search_tool import EnterpriseWebSearchTool
+  from ...tools.google_search_tool import GoogleSearchTool
+  from ...tools.vertex_ai_search_tool import VertexAiSearchTool
+
+  agent_name = getattr(agent, 'name', '')
+  for tool in tools:
+    if (
+        isinstance(tool, (GoogleSearchTool, VertexAiSearchTool))
+        and not tool.bypass_multi_tools_limit
+    ):
+      return (
+          f"Agent '{agent_name}' has sub-agent transfer targets but is"
+          f' configured with {tool.__class__.__name__} without'
+          ' bypass_multi_tools_limit=True. Gemini API does not allow built-in'
+          ' search tools to be combined with function calling (agent'
+          ' delegation). To enable both search and sub-agent delegation, set'
+          ' bypass_multi_tools_limit=True on GoogleSearchTool or'
+          ' VertexAiSearchTool.'
+      )
+    if isinstance(tool, EnterpriseWebSearchTool):
+      return (
+          f"Agent '{agent_name}' has sub-agent transfer targets but is"
+          ' configured with EnterpriseWebSearchTool. Gemini API does not allow'
+          ' EnterpriseWebSearchTool to be combined with function calling'
+          ' (agent delegation).'
+      )
+  return None

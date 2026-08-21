@@ -474,6 +474,24 @@ class TestPydocHelper:
         == expected_doc
     )
 
+  def test_generate_return_doc_with_range_key_does_not_crash(self):
+    responses = {
+        '4XX': {'description': 'Client error'},
+        '200': {
+            'description': 'Successful response',
+            'content': {'application/json': {'schema': {'type': 'string'}}},
+        },
+    }
+    expected_doc = 'Returns (str): Successful response'
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == expected_doc
+    )
+
+  def test_generate_return_doc_only_non_numeric_keys_returns_empty(self):
+    responses = {'default': {'description': 'Only a default response'}}
+    assert PydocHelper.generate_return_doc(dict_to_responses(responses)) == ''
+
 
 if __name__ == '__main__':
   pytest.main([__file__])

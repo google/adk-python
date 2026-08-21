@@ -28,6 +28,7 @@ from collections.abc import Iterator
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
+from contextlib import ExitStack
 import logging
 import re
 from typing import Final
@@ -702,12 +703,16 @@ async def use_inference_span(
   if invocation_context.session.user_id is not None:
     log_only_common_attributes[USER_ID] = invocation_context.session.user_id
   if _should_emit_native_telemetry(invocation_context.agent):
-    async with _use_native_generate_content_span(
-        llm_request=llm_request,
-        common_attributes=common_attributes,
-        log_only_common_attributes=log_only_common_attributes,
-        telemetry_config=telemetry_config,
-    ) as gc_span:
+    with ExitStack() as stack:
+      gc_span = stack.enter_context(
+          _use_native_generate_content_span(
+              llm_request=llm_request,
+              common_attributes=common_attributes,
+              log_only_common_attributes=log_only_common_attributes,
+              telemetry_config=telemetry_config,
+          )
+      )
+      gc_span._exit_stack = stack  # pylint: disable=protected-access
       if telemetry_config.should_use_experimental_genai_semconv:
         set_operation_details_common_attributes(
             gc_span.operation_details_common_attributes,
@@ -715,16 +720,17 @@ async def use_inference_span(
             common_attributes,
             log_only_attributes=log_only_common_attributes,
         )
-      try:
-        yield gc_span
-      finally:
-        maybe_log_completion_details(
-            gc_span.span,
-            otel_logger,
-            gc_span.operation_details_attributes,
-            gc_span.operation_details_common_attributes,
-            telemetry_config,
-        )
+      # Registered last, so it unwinds first: while the span is still open.
+      _ = gc_span._exit_stack.callback(
+          lambda: maybe_log_completion_details(
+              gc_span.span,
+              otel_logger,
+              gc_span.operation_details_attributes,
+              gc_span.operation_details_common_attributes,
+              telemetry_config,
+          )
+      )  # pylint: disable=protected-access
+      yield gc_span
   else:
     with _use_extra_generate_content_attributes(
         common_attributes,
@@ -857,13 +863,13 @@ def _use_native_generate_content_span_stable_semconv(
     yield gc_span
 
 
-@asynccontextmanager
-async def _use_native_generate_content_span(
+@contextmanager
+def _use_native_generate_content_span(
     llm_request: LlmRequest,
     common_attributes: Mapping[str, AttributeValue],
     telemetry_config: TelemetryConfig,
     log_only_common_attributes: Mapping[str, AttributeValue] | None = None,
-) -> AsyncIterator[GenerateContentSpan]:
+) -> Iterator[GenerateContentSpan]:
   if not telemetry_config.should_use_experimental_genai_semconv:
     with _use_native_generate_content_span_stable_semconv(
         llm_request,
@@ -899,6 +905,11 @@ class GenerateContentSpan:
     self.span: Final = span
     self.operation_details_attributes: dict[str, AttributeValue] = {}
     self.operation_details_common_attributes: dict[str, AttributeValue] = {}
+    # Ends underlying span and records completion details log record.
+    # Used over contextmanager to end the underlying span as soon as the
+    # inference is done, instead of when the caller is done with the response.
+    # Matches opentelemetry-instrumentation-google-genai behavior.
+    self._exit_stack: ExitStack | None = None
 
 
 @deprecated(

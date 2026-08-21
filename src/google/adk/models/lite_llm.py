@@ -242,6 +242,23 @@ _SUPPORTED_FILE_CONTENT_MIME_TYPES = frozenset({
 # Providers that require file_id instead of inline file_data
 _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 
+# Routing-only prefix: requests go through a LiteLLM Proxy deployment, but the
+# payload must still be shaped for the provider named in the next segment.
+_PROXY_PROVIDER = "litellm_proxy"
+
+_MIME_TYPE_TO_EXTENSION = {
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        ".docx"
+    ),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
+        ".pptx"
+    ),
+    "application/json": ".json",
+    "application/x-sh": ".sh",
+}
+
 _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
@@ -309,6 +326,35 @@ def _map_finish_reason(
   return _FINISH_REASON_MAPPING.get(finish_reason_str, types.FinishReason.OTHER)
 
 
+def _strip_proxy_prefix(model: str) -> str:
+  """Removes a leading ``litellm_proxy/`` routing prefix from a model string.
+
+  ``litellm_proxy`` selects the transport (a LiteLLM Proxy deployment), not the
+  model family, so the segment after it identifies the provider that actually
+  serves the request (e.g. ``litellm_proxy/azure/my-deployment`` is served by
+  Azure). Provider-specific request shaping must follow that underlying
+  provider, otherwise proxied requests get generic payloads the backend
+  rejects.
+
+  A bare ``litellm_proxy/<deployment>`` has no nested provider, so the
+  prefix is not stripped and it is treated as the ``litellm_proxy`` provider.
+
+  Args:
+    model: The model string (e.g., "litellm_proxy/azure/gpt-4").
+
+  Returns:
+    The model string without the ``litellm_proxy/`` prefix if nested.
+  """
+  if not model:
+    return model
+  prefix = _PROXY_PROVIDER + "/"
+  if model.lower().startswith(prefix):
+    remaining = model[len(prefix) :]
+    if "/" in remaining:
+      return remaining
+  return model
+
+
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
 
@@ -320,6 +366,9 @@ def _get_provider_from_model(model: str) -> str:
   """
   if not model:
     return ""
+  # `litellm_proxy` is a transport prefix; the provider that actually serves
+  # the request is the next segment.
+  model = _strip_proxy_prefix(model)
   # LiteLLM uses "provider/model" format
   if "/" in model:
     provider, _ = model.split("/", 1)
@@ -440,6 +489,9 @@ def _redact_file_uri_for_log(
 
 def _is_file_uri_supported(provider: str, model: str, file_uri: str) -> bool:
   """Returns True when `file_uri` can be sent as a file content block."""
+  # If the model is proxied, the proxy might accept arbitrary URIs.
+  if model.lower().startswith(_PROXY_PROVIDER + "/"):
+    return True
   if provider in _FILE_ID_REQUIRED_PROVIDERS:
     return _looks_like_openai_file_id(file_uri)
   if provider == "anthropic":
@@ -804,6 +856,7 @@ class UsageMetadataChunk(BaseModel):
   total_tokens: int
   cached_prompt_tokens: int = 0
   reasoning_tokens: int = 0
+  cache_creation_tokens: Optional[int] = None
 
 
 class LiteLLMClient:
@@ -975,7 +1028,11 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
       if total > 0:
         return total
 
-    for key in ("cached_prompt_tokens", "cached_tokens"):
+    for key in (
+        "cached_prompt_tokens",
+        "cached_tokens",
+        "cache_read_input_tokens",
+    ):
       value = usage_dict.get(key)
       if isinstance(value, int):
         return value
@@ -983,6 +1040,39 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
     logger.debug("Error extracting cached prompt tokens: %s", e)
 
   return 0
+
+
+def _extract_cache_creation_tokens(usage: Any) -> Optional[int]:
+  """Extracts cache creation (write) tokens from LiteLLM usage.
+
+  Args:
+    usage: Usage dictionary from LiteLLM response.
+
+  Returns:
+    Integer number of cache creation tokens if present; otherwise None.
+  """
+  try:
+    usage_dict = usage
+    if hasattr(usage, "model_dump"):
+      usage_dict = usage.model_dump()
+    elif isinstance(usage, str):
+      try:
+        usage_dict = json.loads(usage)
+      except json.JSONDecodeError:
+        return None
+
+    if not isinstance(usage_dict, dict):
+      return None
+
+    for key in ("cache_creation_input_tokens", "cache_write_input_tokens"):
+      if key in usage_dict:
+        value = usage_dict.get(key)
+        if isinstance(value, int):
+          return value
+  except (TypeError, AttributeError) as e:
+    logger.debug("Error extracting cache creation tokens: %s", e)
+
+  return None
 
 
 def _decode_thought_signature(value: Any) -> Optional[bytes]:
@@ -1121,12 +1211,29 @@ def _extract_thought_signature_from_tool_call(
   return None
 
 
+def _function_response_media_parts(
+    function_response: types.FunctionResponse,
+) -> list[types.Part]:
+  """Converts media a tool attached to its response into content parts."""
+  media_parts: list[types.Part] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    if blob is None or blob.data is None or not blob.mime_type:
+      continue
+    media_parts.append(
+        types.Part(
+            inline_data=types.Blob(data=blob.data, mime_type=blob.mime_type)
+        )
+    )
+  return media_parts
+
+
 async def _content_to_message_param(
     content: types.Content,
     *,
     provider: str = "",
     model: str = "",
-) -> Union[Message, list[Message]]:
+) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
   Handles multipart function responses by returning a list of
@@ -1138,14 +1245,18 @@ async def _content_to_message_param(
     model: The LiteLLM model string, used for provider-specific behavior.
 
   Returns:
-    A litellm Message, a list of litellm Messages.
+    A litellm Message, a list of litellm Messages, or None if skipped.
   """
   _ensure_litellm_imported()
 
+  # Skip content if there are no parts to avoid LiteLLM adapter errors.
+  parts = content.parts or []
+  if not parts:
+    return None
+
   tool_messages: list[Message] = []
   non_tool_parts: list[types.Part] = []
-  content_parts_or_empty = content.parts or []
-  for part in content_parts_or_empty:
+  for part in parts:
     if part.function_response:
       function_response = part.function_response
       response = function_response.response
@@ -1168,6 +1279,10 @@ async def _content_to_message_param(
               content=response_content,
           )
       )
+      # A tool can attach media alongside the serializable part of its
+      # result. A tool-role message carries text only, so the media has to
+      # follow the tool result as its own message.
+      non_tool_parts.extend(_function_response_media_parts(function_response))
     else:
       non_tool_parts.append(part)
 
@@ -1189,7 +1304,7 @@ async def _content_to_message_param(
   role = _to_litellm_role(content.role)
 
   if role == "user":
-    user_parts = [part for part in content_parts_or_empty if not part.thought]
+    user_parts = [part for part in parts if not part.thought]
     message_content = (
         await _get_content(user_parts, provider=provider, model=model) or None
     )
@@ -1201,7 +1316,7 @@ async def _content_to_message_param(
     tool_calls: list[_OutboundToolCall] = []
     content_parts: list[types.Part] = []
     reasoning_parts: list[types.Part] = []
-    for part in content_parts_or_empty:
+    for part in parts:
       if part.function_call:
         function_call = part.function_call
         if not function_call.name:
@@ -1461,10 +1576,21 @@ async def _get_content(
       elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         # OpenAI/Azure require file_id from uploaded file, not inline data
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
+          upload_provider = (
+              "openai"
+              if model.lower().startswith(_PROXY_PROVIDER + "/")
+              else provider
+          )
+          ext = (
+              mimetypes.guess_extension(mime_type)
+              or _MIME_TYPE_TO_EXTENSION.get(mime_type)
+              or ".bin"
+          )
+          filename = f"document{ext}"
           file_response = await litellm.acreate_file(
-              file=part.inline_data.data,
+              file=(filename, part.inline_data.data, mime_type),
               purpose="assistants",
-              custom_llm_provider=provider,
+              custom_llm_provider=upload_provider,
           )
           content_objects.append(
               _FileContentObject(
@@ -2184,6 +2310,7 @@ def _model_response_to_chunk(
           total_tokens=usage.get("total_tokens", 0) or 0,
           cached_prompt_tokens=_extract_cached_prompt_tokens(usage),
           reasoning_tokens=_extract_reasoning_tokens(usage),
+          cache_creation_tokens=_extract_cache_creation_tokens(usage),
       ), None
     except AttributeError as e:
       raise TypeError(
@@ -2279,6 +2406,13 @@ def _model_response_to_generate_content_response(
         cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
+    cache_creation = _extract_cache_creation_tokens(usage_dict)
+    if cache_creation is not None:
+      object.__setattr__(
+          llm_response.usage_metadata,
+          "cache_creation_input_tokens",
+          cache_creation,
+      )
 
   grounding_metadata = _extract_grounding_metadata(response)
   if grounding_metadata:
@@ -2690,7 +2824,7 @@ def _is_anthropic_model(model_string: str) -> bool:
   Returns:
     True if it's an Anthropic Claude model, False otherwise.
   """
-  lower = model_string.lower()
+  lower = _strip_proxy_prefix(model_string.lower())
   if lower.startswith("anthropic/"):
     return True
   if lower.startswith("bedrock/"):
@@ -2711,7 +2845,7 @@ def _is_litellm_vertex_model(model_string: str) -> bool:
   Returns:
     True if it's a Vertex AI model accessed via LiteLLM, False otherwise
   """
-  return model_string.startswith("vertex_ai/")
+  return _strip_proxy_prefix(model_string).startswith("vertex_ai/")
 
 
 def _is_litellm_gemini_model(model_string: str) -> bool:
@@ -2724,7 +2858,9 @@ def _is_litellm_gemini_model(model_string: str) -> bool:
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise
   """
-  return model_string.startswith(("gemini/gemini-", "vertex_ai/gemini-"))
+  return _strip_proxy_prefix(model_string).startswith(
+      ("gemini/gemini-", "vertex_ai/gemini-")
+  )
 
 
 def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
@@ -2736,6 +2872,9 @@ def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
   Returns:
     Pure Gemini model name like "gemini-2.5-pro"
   """
+  # Remove the proxy routing prefix first so the provider prefix below is the
+  # one that actually names the model family.
+  litellm_model = _strip_proxy_prefix(litellm_model)
   # Remove LiteLLM provider prefix
   if "/" in litellm_model:
     return litellm_model.split("/", 1)[1]
@@ -2752,6 +2891,10 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
     model_string: The LiteLLM model string to check
   """
   if not _is_litellm_gemini_model(model_string):
+    return
+
+  # Do not warn if using a proxy, as native Gemini client might not support it.
+  if model_string.lower().startswith(_PROXY_PROVIDER + "/"):
     return
 
   # Check if warning should be suppressed via environment variable
@@ -3149,6 +3292,12 @@ class LiteLlm(BaseLlm):
                 if chunk.reasoning_tokens
                 else None,
             )
+            if chunk.cache_creation_tokens is not None:
+              object.__setattr__(
+                  usage_metadata,
+                  "cache_creation_input_tokens",
+                  chunk.cache_creation_tokens,
+              )
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
           # finalize tool calls on an explicit tool_calls/length finish_reason,

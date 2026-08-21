@@ -191,6 +191,33 @@ async def test_send_content_function_response(
 
 
 @pytest.mark.asyncio
+async def test_send_content_mixed_content_sends_via_client_content(
+    gemini_connection, mock_gemini_session
+):
+  """Test send_content with mixed text and function response sends via send."""
+  function_response = types.FunctionResponse(
+      name='test_function', response={'result': 'success'}
+  )
+  content = types.Content(
+      role='user',
+      parts=[
+          types.Part.from_text(text='Hello'),
+          types.Part(function_response=function_response),
+      ],
+  )
+
+  await gemini_connection.send_content(content)
+
+  mock_gemini_session.send.assert_called_once_with(
+      input=types.LiveClientContent(
+          turns=[content],
+          turn_complete=True,
+      )
+  )
+  mock_gemini_session.send_tool_response.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_close(gemini_connection, mock_gemini_session):
   """Test close method."""
   await gemini_connection.close()
@@ -1140,6 +1167,141 @@ async def test_send_history_turn_complete_determined_by_filtered_content(
 
 
 @pytest.mark.asyncio
+async def test_send_history_gemini_3_x_live_triggers_response(
+    mock_gemini_session,
+):
+  """Gemini 3.x Live gets a placeholder realtime input to trigger a response."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+      types.Content(
+          role='user', parts=[types.Part.from_text(text='how are you?')]
+      ),
+  ]
+
+  await conn.send_history(history)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=history,
+      turn_complete=True,
+  )
+  mock_gemini_session.send_realtime_input.assert_called_once_with(text='.')
+  # The trigger must come after the history, otherwise the model responds
+  # before it has seen the replayed turns.
+  assert [call[0] for call in mock_gemini_session.mock_calls] == [
+      'send_client_content',
+      'send_realtime_input',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_send_history_gemini_3_x_live_no_trigger_when_model_speaks_last(
+    mock_gemini_session,
+):
+  """No trigger when history ends with a model turn, the model must wait."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+  ]
+
+  await conn.send_history(history)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=history,
+      turn_complete=False,
+  )
+  mock_gemini_session.send_realtime_input.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_history_gemini_3_x_live_trigger_follows_filtered_content(
+    mock_gemini_session,
+):
+  """The trigger tracks the filtered history, not the raw history."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+  audio_part = types.Part(
+      inline_data=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  # The trailing user turn is audio-only and gets filtered out, leaving a
+  # model turn last, so no response should be triggered.
+  await conn.send_history([
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[types.Part.from_text(text='hello')]),
+      types.Content(role='user', parts=[audio_part]),
+  ])
+
+  mock_gemini_session.send_realtime_input.assert_not_called()
+
+  # The trailing model turn is audio-only and gets filtered out, leaving a
+  # user turn last, so a response should be triggered.
+  await conn.send_history([
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+      types.Content(role='model', parts=[audio_part]),
+  ])
+
+  mock_gemini_session.send_realtime_input.assert_called_once_with(text='.')
+
+
+@pytest.mark.asyncio
+async def test_send_history_empty_history_no_trigger(mock_gemini_session):
+  """An empty history sends nothing at all, including the trigger."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version='gemini-3.1-flash-live-preview',
+  )
+
+  await conn.send_history([])
+
+  mock_gemini_session.send_client_content.assert_not_called()
+  mock_gemini_session.send_realtime_input.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model_version',
+    [
+        'gemini-2.5-flash-native-audio-preview-12-2025',
+        'gemini-3.5-live-translate-preview',
+    ],
+)
+async def test_send_history_no_trigger_for_other_models(
+    mock_gemini_session, model_version
+):
+  """Only Gemini 3.x Live needs the placeholder realtime input."""
+  conn = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version=model_version,
+  )
+  history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='hi')]),
+  ]
+
+  await conn.send_history(history)
+
+  mock_gemini_session.send_client_content.assert_called_once_with(
+      turns=history,
+      turn_complete=True,
+  )
+  mock_gemini_session.send_realtime_input.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_receive_grounding_metadata_standalone(
     gemini_connection, mock_gemini_session
 ):
@@ -1587,6 +1749,107 @@ async def test_receive_aggregates_thoughts_separately(
 
   # Check turn complete
   assert responses[5].turn_complete is True
+
+
+@pytest.mark.asyncio
+async def test_receive_multiplexed_thought_and_text(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive with multiplexed thought and text in a single chunk."""
+  part1 = types.Part.from_text(text='Let me think.')
+  part1.thought = True
+  part2 = types.Part.from_text(text=' Hello.')
+  part2.thought = False
+  mock_content = types.Content(
+      role='model',
+      parts=[part1, part2],
+  )
+  mock_server_content = mock.Mock()
+  mock_server_content.model_turn = mock_content
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.turn_complete = True
+  mock_server_content.grounding_metadata = None
+  mock_server_content.turn_complete_reason = None
+
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+  mock_message.voice_activity = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 3
+
+  assert responses[0].content.parts[0].text == 'Let me think.'
+  assert responses[0].content.parts[0].thought is True
+  assert responses[0].partial is False
+
+  assert responses[1].content.parts[0].text == ' Hello.'
+  assert not getattr(responses[1].content.parts[0], 'thought', False)
+  assert responses[1].partial is False
+
+  assert responses[2].turn_complete is True
+
+
+@pytest.mark.asyncio
+async def test_receive_multiplexed_thought_and_text_partial(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive with multiplexed thought and text in a single chunk with turn_complete=False."""
+  part1 = types.Part.from_text(text='Let me think.')
+  part1.thought = True
+  part2 = types.Part.from_text(text=' Hello.')
+  part2.thought = False
+  mock_content = types.Content(
+      role='model',
+      parts=[part1, part2],
+  )
+  mock_server_content = mock.Mock()
+  mock_server_content.model_turn = mock_content
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+  mock_server_content.turn_complete = False
+  mock_server_content.grounding_metadata = None
+  mock_server_content.turn_complete_reason = None
+
+  mock_message = mock.AsyncMock()
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+  mock_message.go_away = None
+  mock_message.voice_activity = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 2
+
+  assert responses[0].content.parts[0].text == 'Let me think.'
+  assert responses[0].content.parts[0].thought is True
+  assert responses[0].partial is False
+
+  assert len(responses[1].content.parts) == 1
+  assert responses[1].content.parts[0].text == ' Hello.'
+  assert not getattr(responses[1].content.parts[0], 'thought', False)
+  assert responses[1].partial is True
 
 
 @pytest.mark.asyncio

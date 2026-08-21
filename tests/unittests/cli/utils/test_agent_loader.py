@@ -287,6 +287,48 @@ class TestAgentLoader:
       assert agent2 is not agent3
       assert agent1.agent_id != agent2.agent_id != agent3.agent_id
 
+  def test_list_agents_skips_directories_without_a_loadable_agent(self):
+    """Stray non-agent directories under agents_dir must not be listed."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      self.create_agent_structure(
+          temp_path, "real_agent", "package_with_agent_module"
+      )
+      # A stray directory with no agent.py or root_agent.yaml,
+      # e.g. one created as a side effect of local storage keyed by an
+      # unmapped app name.
+      (temp_path / "stray_dir").mkdir()
+
+      loader = AgentLoader(str(temp_path))
+
+      assert loader.list_agents() == ["real_agent"]
+
+  def test_list_agents_handles_permission_error(self):
+    """Permission errors on subdirectories must be handled gracefully."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      self.create_agent_structure(
+          temp_path, "real_agent", "package_with_agent_module"
+      )
+
+      # Create a directory that we will simulate permission error on
+      no_perm_dir = temp_path / "no_perm_dir"
+      no_perm_dir.mkdir()
+
+      # We want to mock is_file for paths under no_perm_dir to raise PermissionError
+      original_is_file = Path.is_file
+
+      def mock_is_file(self_path):
+        if no_perm_dir in self_path.parents or self_path == no_perm_dir:
+          raise PermissionError("[Errno 13] Permission denied")
+        return original_is_file(self_path)
+
+      loader = AgentLoader(str(temp_path))
+
+      with mock.patch.object(Path, "is_file", mock_is_file):
+        assert loader.list_agents() == ["real_agent"]
+
   def test_error_messages_use_os_sep_consistently(self):
     """Verify error messages use os.sep instead of hardcoded '/'."""
     del self
@@ -1060,6 +1102,102 @@ class TestAgentLoader:
       loader._allow_special_agents = True
       # Should not raise any exception
       loader._validate_agent_name("__adk_agent_builder_assistant")
+
+  def test_wrong_type_root_agent_raises_targeted_error(self):
+    """A non-agent `root_agent` raises a type-mismatch error, not 'not found'."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_file = temp_path / "mistyped_agent.py"
+      agent_file.write_text(dedent("""
+                root_agent = "I am a string, not an agent"
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent("mistyped_agent")
+
+      message = str(exc_info.value)
+      assert "mistyped_agent.root_agent" in message
+      assert "builtins.str" in message
+      assert "No root_agent found" not in message
+
+  def test_app_exported_as_root_agent_suggests_app_name(self):
+    """Exporting an App as `root_agent` points the user at the 'app' name."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_file = temp_path / "app_agent.py"
+      agent_file.write_text(dedent("""
+                from google.adk.agents.base_agent import BaseAgent
+                from google.adk.apps.app import App
+
+
+                class MyAgent(BaseAgent):
+
+                    def __init__(self):
+                        super().__init__(name="my_agent")
+
+
+                root_agent = App(name="app_agent", root_agent=MyAgent())
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent("app_agent")
+
+      message = str(exc_info.value)
+      assert "google.adk.apps.app.App" in message
+      assert "under the name 'app'" in message
+
+  def test_wrong_type_root_agent_in_agent_module_raises_targeted_error(self):
+    """A non-agent `root_agent` in {agent}/agent.py reports the submodule."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "mistyped_pkg"
+      agent_dir.mkdir()
+      (agent_dir / "__init__.py").write_text("")
+      (agent_dir / "agent.py").write_text(dedent("""
+                root_agent = 42
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent("mistyped_pkg")
+
+      message = str(exc_info.value)
+      assert "mistyped_pkg.agent.root_agent" in message
+      assert "builtins.int" in message
+      assert "No root_agent found" not in message
+
+  def test_valid_agent_module_wins_over_mistyped_package_root_agent(self):
+    """A bad `root_agent` in __init__.py must not block agent.py's valid one."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "fallthrough_agent"
+      agent_dir.mkdir()
+      (agent_dir / "__init__.py").write_text(dedent("""
+                root_agent = "not an agent"
+            """))
+      (agent_dir / "agent.py").write_text(dedent("""
+                from google.adk.agents.base_agent import BaseAgent
+
+
+                class FallthroughAgent(BaseAgent):
+
+                    def __init__(self):
+                        super().__init__(name="fallthrough_agent")
+
+
+                root_agent = FallthroughAgent()
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      agent = loader.load_agent("fallthrough_agent")
+
+      assert agent.name == "fallthrough_agent"
 
 
 class TestDetermineAgentLanguage:

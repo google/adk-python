@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import AsyncGenerator
 from typing import cast
+from typing import Final
 from typing import Union
 
 from google.genai import types
@@ -40,6 +41,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
   from google.genai import live
+
+# Minimal placeholder text sent to Gemini 3.x Live to trigger a response to
+# history that was just replayed. See `GeminiLlmConnection.send_history`.
+_RESPONSE_TRIGGER_TEXT: Final[str] = '.'
 
 
 class GeminiLlmConnection(BaseLlmConnection):
@@ -94,10 +99,25 @@ class GeminiLlmConnection(BaseLlmConnection):
     if contents:
       logger.debug('Sending history to live connection: %s', contents)
       turns: list[types.Content | types.ContentDict] = [*contents]
+      turn_complete = contents[-1].role == 'user'
       await self._gemini_session.send_client_content(
           turns=turns,
-          turn_complete=contents[-1].role == 'user',
+          turn_complete=turn_complete,
       )
+      if turn_complete and self._is_gemini_3_x_live:
+        # When `initial_history_in_client_content` is set to True, after
+        # receiving `turn_complete=True` from client, Gemini 3.x Live only
+        # starts generating once it receives new user input, so the replayed
+        # history alone leaves the model waiting. Sending a placeholder text
+        # triggers the response that the caller expects, e.g. right after an
+        # agent transfer.
+        logger.debug(
+            'Sending placeholder realtime input to trigger the Gemini 3.x Live'
+            ' response.'
+        )
+        await self._gemini_session.send_realtime_input(
+            text=_RESPONSE_TRIGGER_TEXT
+        )
     else:
       logger.info('no content is sent')
 
@@ -124,18 +144,8 @@ class GeminiLlmConnection(BaseLlmConnection):
         complete the model turn.
     """
     assert content.parts
-    if content.parts[0].function_response:
-      # All parts have to be function responses.
-      function_responses = [
-          function_response
-          for part in content.parts
-          if (function_response := part.function_response) is not None
-      ]
-      if len(function_responses) != len(content.parts):
-        raise ValueError(
-            'Function-response content cannot mix function and non-function'
-            ' parts.'
-        )
+    if all(p.function_response for p in content.parts):
+      function_responses = [p.function_response for p in content.parts]
       logger.debug('Sending LLM function response: %s', function_responses)
       await self._gemini_session.send_tool_response(
           function_responses=function_responses
@@ -380,25 +390,49 @@ class GeminiLlmConnection(BaseLlmConnection):
                 llm_response.grounding_metadata = (
                     message.server_content.grounding_metadata
                 )
-            if content.parts[0].text:
-              current_is_thought = getattr(content.parts[0], 'thought', False)
-              if text and current_is_thought != is_thought:
-                yield self.__build_full_text_response(text, is_thought)
+            will_flush = (
+                message.server_content.turn_complete
+                or message.server_content.interrupted
+                or message.tool_call is not None
+            )
+            flushed_part_ids = set()
+            accumulated_parts = []
+            for part in content.parts:
+              if part.text:
+                current_is_thought = getattr(part, 'thought', False)
+                if text and current_is_thought != is_thought:
+                  yield self.__build_full_text_response(text, is_thought)
+                  text = ''
+                  is_thought = False
+                  flushed_part_ids.update(id(p) for p in accumulated_parts)
+                  accumulated_parts = []
+
+                text += part.text
+                is_thought = current_is_thought
+                llm_response.partial = True
+                accumulated_parts.append(part)
+              # don't yield the merged text event when receiving audio data
+              elif text and not part.inline_data:
+                yield self.__build_full_text_response(
+                    text, is_thought, last_grounding_metadata
+                )
                 text = ''
                 is_thought = False
-
-              text += content.parts[0].text
-              is_thought = current_is_thought
-              llm_response.partial = True
-            # don't yield the merged text event when receiving audio data
-            elif text and not content.parts[0].inline_data:
-              yield self.__build_full_text_response(
-                  text, is_thought, last_grounding_metadata
+                last_grounding_metadata = None
+                flushed_part_ids.update(id(p) for p in accumulated_parts)
+                accumulated_parts = []
+            if will_flush:
+              flushed_part_ids.update(id(p) for p in accumulated_parts)
+              accumulated_parts = []
+            if flushed_part_ids:
+              llm_response.content = types.Content(
+                  role=content.role,
+                  parts=[
+                      p for p in content.parts if id(p) not in flushed_part_ids
+                  ],
               )
-              text = ''
-              is_thought = False
-              last_grounding_metadata = None
-            yield llm_response
+            if llm_response.content.parts:
+              yield llm_response
           # Note: in some cases, tool_call may arrive before
           # generation_complete, causing transcription to appear after
           # tool_call in the session log.

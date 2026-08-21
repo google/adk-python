@@ -16,11 +16,14 @@
 
 """Tests for the artifact service."""
 
+import asyncio
 from datetime import datetime
 import enum
 import json
 from pathlib import Path
 import stat
+import threading
+from types import SimpleNamespace
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -1203,13 +1206,186 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+async def test_file_save_artifact_reserves_concurrent_versions(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  original_list_versions = file_artifact_service._list_versions_on_disk
+  first_reads = threading.Barrier(2)
+  calls_lock = threading.Lock()
+  synchronized_calls = 0
+
+  def synchronize_initial_reads(artifact_dir: Path) -> list[int]:
+    nonlocal synchronized_calls
+    versions = original_list_versions(artifact_dir)
+    with calls_lock:
+      synchronized_calls += 1
+      should_wait = synchronized_calls <= 2
+    if should_wait:
+      first_reads.wait(timeout=5)
+    return versions
+
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "report.txt",
+  }
+  with mock.patch.object(
+      file_artifact_service,
+      "_list_versions_on_disk",
+      side_effect=synchronize_initial_reads,
+  ):
+    saved_versions = await asyncio.gather(
+        service.save_artifact(
+            **save_args,
+            artifact=types.Part(text="first"),
+        ),
+        service.save_artifact(
+            **save_args,
+            artifact=types.Part(text="second"),
+        ),
+    )
+
+  assert sorted(saved_versions) == [0, 1]
+  assert await service.list_versions(**save_args) == [0, 1]
+
+  loaded_texts: set[str] = set()
+  for version in saved_versions:
+    artifact = await service.load_artifact(**save_args, version=version)
+    assert artifact is not None
+    assert artifact.text is not None
+    loaded_texts.add(artifact.text)
+  assert loaded_texts == {"first", "second"}
+
+
+@pytest.mark.asyncio
+async def test_file_save_artifact_does_not_publish_failed_write(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "report.txt",
+  }
+
+  with mock.patch.object(
+      file_artifact_service,
+      "_write_metadata",
+      side_effect=OSError("write failed"),
+  ):
+    with pytest.raises(OSError, match="write failed"):
+      await service.save_artifact(
+          **save_args,
+          artifact=types.Part(text="incomplete"),
+      )
+
+  assert await service.list_versions(**save_args) == []
+  assert await service.load_artifact(**save_args) is None
+  # list_versions ignores staging directories, so assert on disk that the
+  # failed reservation was released rather than merely hidden.
+  assert not list(service.root_dir.rglob("*.pending"))
+
+
+@pytest.mark.asyncio
+async def test_file_save_artifact_stages_binary_payload(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "photo.png",
+  }
+  payload = bytes(range(256))
+
+  version = await service.save_artifact(
+      **save_args,
+      artifact=types.Part(
+          inline_data=types.Blob(mime_type="image/png", data=payload)
+      ),
+  )
+
+  assert version == 0
+  loaded = await service.load_artifact(**save_args)
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.mime_type == "image/png"
+  assert loaded.inline_data.data == payload
+  assert not list(service.root_dir.rglob("*.pending"))
+
+
+@pytest.mark.asyncio
+async def test_file_save_artifact_skips_abandoned_reservation(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "report.txt",
+  }
+  versions_dir = file_artifact_service._versions_dir(
+      service._artifact_dir(**save_args)
+  )
+  (versions_dir / ".0.pending").mkdir(parents=True)
+
+  version = await service.save_artifact(
+      **save_args,
+      artifact=types.Part(text="complete"),
+  )
+
+  assert version == 1
+  assert await service.list_versions(**save_args) == [1]
+  # The abandoned reservation holds version 0 permanently; it is skipped, not
+  # reclaimed.
+  assert (versions_dir / ".0.pending").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_file_save_artifact_never_republishes_existing_version(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "report.txt",
+  }
+  await service.save_artifact(**save_args, artifact=types.Part(text="first"))
+
+  # A save that reads the version list before a concurrent save publishes
+  # version 0 starts its reservation at 0. Publishing must still not land on
+  # the version already on disk.
+  with mock.patch.object(
+      file_artifact_service, "_list_versions_on_disk", return_value=[]
+  ):
+    version = await service.save_artifact(
+        **save_args, artifact=types.Part(text="second")
+    )
+
+  assert version == 1
+  assert await service.list_versions(**save_args) == [0, 1]
+  first = await service.load_artifact(**save_args, version=0)
+  assert first is not None and first.text == "first"
+  assert not list(service.root_dir.rglob("*.pending"))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("filename", "session_id"),
     [
         ("../escape.txt", "sess123"),
+        (r"..\escape.txt", "sess123"),
+        ("folder/../alias.txt", "sess123"),
+        (r"folder\..\alias.txt", "sess123"),
+        (r"folder/..\alias.txt", "sess123"),
         ("user:../escape.txt", "sess123"),
+        (r"user:..\escape.txt", "sess123"),
+        (r"user:folder\..\alias.txt", "sess123"),
         ("/absolute/path.txt", "sess123"),
         ("user:/absolute/path.txt", None),
+        (r"C:\absolute\path.txt", "sess123"),
+        ("C:/absolute/path.txt", "sess123"),
+        ("C:drive-relative.txt", "sess123"),
+        (r"\\server\share\file.txt", "sess123"),
+        ("//server/share/file.txt", "sess123"),
+        (r"\rooted\file.txt", "sess123"),
     ],
 )
 async def test_file_save_artifact_rejects_out_of_scope_paths(
@@ -1242,6 +1418,9 @@ INVALID_PATH_SEGMENT_CASES = (
         "\\leading\\backslash",
         "must not be an absolute path or start with a slash",
     ),
+    (r"C:\absolute", "must not be drive-qualified"),
+    ("C:/absolute", "must not be drive-qualified"),
+    ("C:drive-relative", "must not be drive-qualified"),
 )
 
 

@@ -58,7 +58,7 @@ dependencies = [
   "websockets>=15.0.1,<16",
 ]
 optional-dependencies.a2a = [
-  "a2a-sdk>=0.3.4,<2",
+  "a2a-sdk[http-server]>=0.3.4,<2",
 ]
 optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
@@ -68,7 +68,7 @@ optional-dependencies.agent-identity = [
 # community, dev, docs and test, which exist to build, test or document ADK
 # itself.
 optional-dependencies.all = [
-  "a2a-sdk>=0.3.4,<2",
+  "a2a-sdk[http-server]>=0.3.4,<2",
   "anthropic>=0.78",
   "anyio>=4.9,<5",
   "beautifulsoup4>=3.2.2",
@@ -110,6 +110,7 @@ optional-dependencies.all = [
   "nltk!=3.10.1",
   "oci>=2.126",
   "openai>=2.20,<3",
+  "openpyxl>=3.1.5,<4",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
@@ -123,12 +124,14 @@ optional-dependencies.all = [
   "pyarrow>=14",
   "pypika>=0.50",
   "python-dateutil>=2.9.0.post0,<3",
+  "redis>=4.2",
   "rouge-score>=0.1.2",
   "slack-bolt>=1.22",
   "sqlalchemy>=2,<3",
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "toolbox-adk>=1,<2",
+  "xlrd>=2,<3",
 ]
 optional-dependencies.antigravity = [
   "google-antigravity>=0.1,<0.2",
@@ -136,6 +139,14 @@ optional-dependencies.antigravity = [
 ]
 optional-dependencies.benchmark = [
   "google-benchmark>=1.9",
+]
+# Everything BigQueryAgentAnalyticsPlugin needs. Separate from gcp because
+# pyarrow is a third of that extra's install size and only this plugin uses it.
+optional-dependencies.bigquery-analytics = [
+  "google-cloud-bigquery>=2.2",
+  "google-cloud-bigquery-storage>=2",
+  "google-cloud-storage>=2.18,<4",
+  "pyarrow>=14",
 ]
 optional-dependencies.community = [
   "google-adk-community",
@@ -185,9 +196,11 @@ optional-dependencies.eval = [
   "google-cloud-texttospeech>=2.37",
   "jinja2>=3.1.4,<4",                           # For eval template rendering
   "nltk!=3.10.1",                               # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
+  "openpyxl>=3.1.5,<4",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
   "tabulate>=0.9",
+  "xlrd>=2,<3",
 ]
 optional-dependencies.extensions = [
   "anthropic>=0.78",                                                 # For anthropic model support; 0.78 introduced ThinkingConfigAdaptiveParam (required for Claude Opus 4.7).
@@ -228,7 +241,6 @@ optional-dependencies.gcp = [
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
   "opentelemetry-exporter-otlp-proto-http>=1.36",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
-  "pyarrow>=14",
   "python-dateutil>=2.9.0.post0,<3",
 ]
 optional-dependencies.mcp = [
@@ -242,6 +254,9 @@ optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
+]
+optional-dependencies.redis = [
+  "redis>=4.2", # 4.2 is where redis.asyncio landed, the only API used.
 ]
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
@@ -285,6 +300,7 @@ optional-dependencies.test = [
   "mcp>=1.24,<2",
   "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
+  "openpyxl>=3.1.5,<4",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
@@ -307,6 +323,7 @@ optional-dependencies.test = [
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "tomli>=2,<3; python_version<'3.11'",
+  "xlrd>=2,<3",
 ]
 optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
 optional-dependencies.tools = [

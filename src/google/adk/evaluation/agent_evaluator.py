@@ -38,6 +38,7 @@ from pydantic import ValidationError
 from ..agents.base_agent import BaseAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..utils import _json_utils
 from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from .eval_case import get_all_tool_calls
@@ -59,6 +60,9 @@ from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
+from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
+from .metric_evaluator_registry import MetricEvaluatorRegistry
+from .metric_evaluator_registry import register_custom_metrics_from_config
 from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -94,7 +98,7 @@ EXPECTED_TOOL_USE_COLUMN = "expected_tool_use"
 
 
 def load_json(file_path: str) -> Union[Dict[str, Any], List[Any]]:
-  with open(file_path, "r") as f:
+  with open(file_path, "r", encoding="utf-8") as f:
     return cast(Union[Dict[str, Any], List[Any]], json.load(f))
 
 
@@ -198,6 +202,16 @@ class AgentEvaluator:
     # `app_name` is fine here.
     app_name = app_name or "test_app"
 
+    # A fork, not the default registry itself: the custom metrics of this eval
+    # config belong to this run only. Forking (rather than starting from a bare
+    # `MetricEvaluatorRegistry()`) keeps evaluators that the caller registered
+    # on the default registry resolvable, which is the only way to plug in a
+    # custom `Evaluator` subclass since an eval config can only name a scoring
+    # function.
+    metric_evaluator_registry = register_custom_metrics_from_config(
+        eval_config, DEFAULT_METRIC_EVALUATOR_REGISTRY.fork()
+    )
+
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
         agent_for_eval=agent_for_eval,
@@ -210,6 +224,7 @@ class AgentEvaluator:
         artifact_service=artifact_service,
         app=app,
         eval_set_results_manager=eval_set_results_manager,
+        metric_evaluator_registry=metric_evaluator_registry,
     )
 
     # Step 2: Post-process the results!
@@ -235,6 +250,13 @@ class AgentEvaluator:
       )
 
       failures.extend(failures_per_eval_case)
+      failures.extend(
+          AgentEvaluator._get_failures_from_final_eval_status(
+              eval_id=eval_id,
+              eval_results_per_eval_id=eval_results_per_eval_id,
+              agent_module=agent_module,
+          )
+      )
 
       if output_file:
         csv_rows.extend(
@@ -358,7 +380,7 @@ class AgentEvaluator:
         old_eval_data_file, eval_config, initial_session
     )
 
-    with open(new_eval_data_file, "w") as f:
+    with open(new_eval_data_file, "w", encoding="utf-8") as f:
       f.write(eval_set.model_dump_json(indent=2))
 
   @staticmethod
@@ -417,8 +439,10 @@ class AgentEvaluator:
   ) -> dict[str, Any]:
     initial_session: dict[str, Any] = {}
     if initial_session_file:
-      with open(initial_session_file, "r") as f:
-        initial_session = json.loads(f.read())
+      with open(initial_session_file, "r", encoding="utf-8") as f:
+        initial_session = _json_utils.safe_json_loads(
+            f.read(), context=f"initial session file {initial_session_file}"
+        )
     return initial_session
 
   @staticmethod
@@ -672,6 +696,7 @@ class AgentEvaluator:
       *,
       app_name: str,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
+      metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -697,6 +722,7 @@ class AgentEvaluator:
         artifact_service=artifact_service,
         app=app,
         eval_set_results_manager=eval_set_results_manager,
+        metric_evaluator_registry=metric_evaluator_registry,
     )
 
     if live_model_config:
@@ -839,6 +865,39 @@ class AgentEvaluator:
         )
 
     return failures
+
+  @staticmethod
+  def _get_failures_from_final_eval_status(
+      eval_id: str,
+      eval_results_per_eval_id: list[EvalCaseResult],
+      agent_module: str,
+  ) -> list[str]:
+    """Returns failures that the per-invocation metric results cannot show.
+
+    A run that produced no metric results at all, for example because
+    inferencing raised, leaves `_process_metrics_and_get_failures` with nothing
+    to derive a verdict from. The status recorded on the EvalCaseResult is the
+    only record that such a run failed, so we honor it here.
+    """
+    failed_runs = 0
+    for eval_case_result in eval_results_per_eval_id:
+      if eval_case_result.final_eval_status != EvalStatus.FAILED:
+        continue
+      per_invocation_results = (
+          eval_case_result.eval_metric_result_per_invocation
+      )
+      if any(r.eval_metric_results for r in per_invocation_results):
+        continue
+      failed_runs += 1
+
+    if not failed_runs:
+      return []
+
+    return [
+        f"{eval_id} for {agent_module} Failed. {failed_runs} of"
+        f" {len(eval_results_per_eval_id)} runs were recorded as failed without"
+        " producing any metric results."
+    ]
 
   @staticmethod
   def _get_results_as_rows(

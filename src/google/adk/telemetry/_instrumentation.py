@@ -25,7 +25,9 @@ from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
+from typing_extensions import assert_never
 
+from . import _adk_attributes
 from . import _metrics
 from . import tracing
 from ._schema_version import resolve_schema_version
@@ -33,17 +35,23 @@ from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 
 # pylint: disable=g-import-not-at-top
 if TYPE_CHECKING:
+  from opentelemetry.util.types import AttributeValue
+
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
   from ..events import event as event_lib
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
+  from ..skills.models import Skill
   from ..tools.base_tool import BaseTool
   from ..workflow._base_node import BaseNode
 
 logger = logging.getLogger("google_adk." + __name__)
 
 _INVOKE_AGENT_TELEMETRY_KEY = context_api.create_key("invoke_agent_telemetry")
+_TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
+    "tool_execution_telemetry"
+)
 
 
 @contextlib.contextmanager
@@ -86,6 +94,56 @@ def record_invocation(
 
 
 @dataclasses.dataclass
+class _SkillTelemetryCommon:
+  """Common attributes for skill related telemetry.
+
+  Added to the enclosing tool execution via :func:`track_*` functions,
+  which is what turns it into attributes on the skill related spans.
+
+  Attributes:
+    skill_name: The name of the skill, stored in case the skill is not loaded
+      properly.
+    skill: The loaded skill, or None if the load did not produce one (unknown
+      skill name, registry failure). Nothing is recorded in that case; the
+      failure itself is already reported as the span's ``error.type``.
+  """
+
+  skill_name: str | None = None
+  skill: Skill | None = None
+
+
+@dataclasses.dataclass
+class SkillLoadTelemetry(_SkillTelemetryCommon):
+  """Skill telemetry extension for skill load.
+
+  Attributes:
+    additional_tools: The list of additional tools reported by the skill.
+  """
+
+  @property
+  def additional_tools(self) -> list[str] | None:
+    if self.skill is None:
+      return None
+    return self.skill.frontmatter.metadata.get("adk_additional_tools", None)
+
+
+@dataclasses.dataclass
+class SkillResourceLoadTelemetry(_SkillTelemetryCommon):
+  """Skill telemetry extension for skill resource load.
+
+  See :class:`_SkillTelemetryCommon`, for more information.
+
+  Attributes:
+    resource_path: Path of resource being loaded from skill.
+  """
+
+  resource_path: str | None = None
+
+
+SkillTelemetry = SkillLoadTelemetry | SkillResourceLoadTelemetry
+
+
+@dataclasses.dataclass
 class TelemetryContext:
   """Stores all telemetry related state."""
 
@@ -93,7 +151,9 @@ class TelemetryContext:
   function_response_event: event_lib.Event | None = None
   error_type: str | None = None
   span: tracing.GenerateContentSpan | trace.Span | None = None
+  skill_telemetry: SkillTelemetry | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
+  _inference_span_ended: bool = False
   _inference_call_count: int = 0
   _tool_call_count: int = 0
 
@@ -119,7 +179,23 @@ class TelemetryContext:
       self, invocation_context: InvocationContext, response: LlmResponse
   ) -> None:
     self._llm_responses.append(response)
+    # Anything after the span ended (a second complete response for the same
+    # call) can no longer be recorded on it, but still counts for the metrics.
+    if self._inference_span_ended:
+      return
+
     tracing.trace_inference_result(invocation_context, self.span, response)
+    # A non-partial response is the end of the inference: end the span before
+    # the response is handed back to the caller, so what the caller does with
+    # it (running the tool the model asked for) is not nested inside the
+    # inference span. Partial chunks keep it open until the final one arrives.
+    if (
+        not response.partial
+        and isinstance(self.span, tracing.GenerateContentSpan)
+        and (exit_stack := self.span._exit_stack) is not None  # pylint: disable=protected-access
+    ):
+      exit_stack.close()
+      self._inference_span_ended = True
 
 
 def _record_agent_metrics(
@@ -165,6 +241,61 @@ def _accumulate_invoke_agent_inference_call() -> None:
   span_tel_ctx = _active_invoke_agent_tel_ctx()
   if span_tel_ctx is not None:
     span_tel_ctx.increment_inference_calls()
+
+
+def _active_tool_execution_tel_ctx() -> TelemetryContext | None:
+  """Returns the TelemetryContext of the active execute_tool span."""
+  value = context_api.get_value(_TOOL_EXECUTION_TELEMETRY_KEY)
+  return value if isinstance(value, TelemetryContext) else None
+
+
+def track_skill_load(skill_name: str) -> SkillLoadTelemetry:
+  """Creates a SkillLoadTelemetry for the given skill name, and attaches it to the enclosing tool execution span."""
+  skill_telemetry = SkillLoadTelemetry(skill_name=skill_name)
+  attach_skill_telemetry(skill_telemetry)
+  return skill_telemetry
+
+
+def track_skill_resource_load(
+    skill_name: str, resource_path: str
+) -> SkillResourceLoadTelemetry:
+  """Creates a SkillResourceLoadTelemetry for the given skill name and resource path, and attaches it to the enclosing tool execution span."""
+  skill_telemetry = SkillResourceLoadTelemetry(
+      skill_name=skill_name, resource_path=resource_path
+  )
+  attach_skill_telemetry(skill_telemetry)
+  return skill_telemetry
+
+
+def attach_skill_telemetry(
+    skill_telemetry: SkillTelemetry,
+) -> None:
+  """Attaches skill telemetry to the enclosing tool execution.
+
+  The attributes are written by :func:`record_tool_execution`, which owns the
+  ``execute_tool`` span, once the tool call completes. Callers therefore never
+  depend on a span being open: outside a tool execution this is a no-op rather
+  than an attribute silently landing on whatever span happens to be current.
+
+  A tool execution references a single skill, so a second call within the same
+  tool execution replaces the first.
+
+  Args:
+    skill_telemetry: Skill telemetry reference to attach to the active tool
+      execution context.
+  """
+  tel_ctx = _active_tool_execution_tel_ctx()
+  if tel_ctx is None:
+    logger.debug(
+        "No tool execution is being recorded, skill telemetry will not be"
+        " attached to current span."
+    )
+    return
+  if tel_ctx.skill_telemetry is not None:
+    logger.warning(
+        "Tool execution already has attached skill telemetry, overwriting."
+    )
+  tel_ctx.skill_telemetry = skill_telemetry
 
 
 @contextlib.asynccontextmanager
@@ -216,12 +347,19 @@ async def record_tool_execution(
     with tracing.tracer.start_as_current_span(span_name) as s:
       span = s
       tel_ctx = TelemetryContext(otel_context=context_api.get_current())
+      # Published so the running tool can report telemetry back to this span
+      # (see `record_skill_telemetry`) without reaching for the ambient span
+      # itself.
+      token = context_api.attach(
+          context_api.set_value(_TOOL_EXECUTION_TELEMETRY_KEY, tel_ctx)
+      )
       try:
         yield tel_ctx
       except Exception as e:
         caught_error = e
         raise
       finally:
+        context_api.detach(token)
         detected_error_type = tel_ctx.error_type
         response_event = (
             tel_ctx.function_response_event if caught_error is None else None
@@ -234,6 +372,10 @@ async def record_tool_execution(
             invocation_context=invocation_context,
             error_type=tel_ctx.error_type,
         )
+        if tel_ctx.skill_telemetry is not None:
+          _dispatch_skill_telemetry(
+              span, tel_ctx.skill_telemetry, invocation_context
+          )
   finally:
     _accumulate_invoke_agent_tool_call()
     try:
@@ -296,3 +438,75 @@ async def record_inference_telemetry(
           "Failed to record inference metrics for agent %s",
           agent.name if agent is not None else "<unknown>",
       )
+
+
+def _dispatch_skill_telemetry(
+    span: trace.Span,
+    skill_telemetry: SkillTelemetry,
+    invocation_context: InvocationContext,
+) -> None:
+  """Selects and attaches the correct skill telemetry to the enclosing tool execution span."""
+  telemetry_config = tracing._telemetry_config_from_invocation_context(
+      invocation_context
+  )
+  if not telemetry_config.should_emit_experimental_telemetry:
+    return
+
+  match skill_telemetry:
+    case SkillLoadTelemetry():
+      _trace_skill_load(span, skill_telemetry)
+    case SkillResourceLoadTelemetry():
+      _trace_skill_resource_load(span, skill_telemetry)
+    case _:
+      assert_never(skill_telemetry)
+
+
+def _trace_skill_load(
+    span: trace.Span,
+    skill_telemetry: SkillLoadTelemetry,
+) -> None:
+  """Stamps the skill load attributes onto the ``execute_tool`` span."""
+  attributes: dict[str, AttributeValue] = {}
+
+  if (skill_name := skill_telemetry.skill_name) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = skill_name
+
+  skill = skill_telemetry.skill
+
+  if skill is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_DESCRIPTION] = (
+        skill.description
+    )
+
+    if (uri := skill._uri) is not None:
+      attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
+
+    if (additional_tools := skill_telemetry.additional_tools) is not None:
+      attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS] = (
+          additional_tools
+      )
+
+  span.set_attributes(attributes)
+
+
+def _trace_skill_resource_load(
+    span: trace.Span,
+    skill_telemetry: SkillResourceLoadTelemetry,
+) -> None:
+  """Stamps the skill resource loading information in the ``execute_tool load_skill_resource`` span."""
+  attributes: dict[str, AttributeValue] = {}
+
+  if (skill_name := skill_telemetry.skill_name) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = skill_name
+
+  if (skill := skill_telemetry.skill) is not None and (
+      uri := skill._uri
+  ) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
+
+  if (resource_path := skill_telemetry.resource_path) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_RESOURCE_PATH] = (
+        resource_path
+    )
+
+  span.set_attributes(attributes)

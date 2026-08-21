@@ -39,6 +39,7 @@ from google.adk.auth.auth_tool import AuthConfig
 from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
 from google.adk.tools.mcp_tool import mcp_toolset as mcp_toolset_module
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
@@ -396,6 +397,27 @@ class TestMcpToolset:
     tools = await toolset.get_tools()
 
     assert [tool.name for tool in tools] == ["alpha", "bravo", "charlie"]
+
+  @pytest.mark.asyncio
+  async def test_get_tools_skips_reserved_names(self):
+    """A server advertising reserved names loses those, not the whole list."""
+    mock_tools = [
+        MockMCPTool("valid_tool"),
+        MockMCPTool("transfer_to_agent"),
+        MockMCPTool("adk_request_credential"),
+        MockMCPTool("adk_request_confirmation"),
+        MockMCPTool("adk_request_input"),
+    ]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert [tool.name for tool in tools] == ["valid_tool"]
 
   @pytest.mark.asyncio
   async def test_get_tools_with_list_filter(self):
@@ -1300,4 +1322,58 @@ class TestMcpToolsetToolListCache:
     assert (
         len(toolset._tool_list_cache)
         == mcp_toolset_module._MAX_TOOL_LIST_CACHE_ENTRIES
+    )
+
+
+class TestMcpToolsetSessionInUse:
+  """Tests that a session in use is held out of the pool's idle sweep."""
+
+  @pytest.mark.asyncio
+  async def test_execute_with_session_is_not_swept_mid_call(self):
+    """A toolset call in flight must not have its session torn down."""
+    toolset = McpToolset(
+        connection_params=StreamableHTTPConnectionParams(
+            url="http://example.com/mcp"
+        )
+    )
+    manager = toolset._mcp_session_manager
+    session_key = manager._generate_session_key(manager._merge_headers(None))
+
+    pooled_session = Mock()
+    pooled_session._read_stream = Mock(_closed=False)
+    pooled_session._write_stream = Mock(_closed=False)
+    exit_stack = AsyncMock()
+    manager._sessions[session_key] = (
+        pooled_session,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    call_started = asyncio.Event()
+    finish_call = asyncio.Event()
+
+    async def slow_coro(session):
+      call_started.set()
+      await finish_call.wait()
+      return "done"
+
+    call = asyncio.ensure_future(
+        toolset._execute_with_session(slow_coro, "error")
+    )
+    await asyncio.wait_for(call_started.wait(), timeout=5.0)
+
+    # The call has outlived the idle TTL and an unrelated caller sweeps.
+    manager._session_last_used[session_key] = (
+        time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+    )
+    manager._evict_idle_sessions(keep_key="key_of_another_caller")
+
+    assert session_key in manager._sessions
+    exit_stack.aclose.assert_not_called()
+
+    finish_call.set()
+    assert await asyncio.wait_for(call, timeout=5.0) == "done"
+    assert (
+        time.monotonic() - manager._session_last_used[session_key]
+        < _SESSION_IDLE_TTL_SECONDS
     )

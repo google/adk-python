@@ -216,6 +216,23 @@ _BLOCKED_MODULES = frozenset({
     "_testcapi",
     "_testinternalcapi",
     "test",
+    # Hard, always-installed third-party dependencies of adk-python itself
+    # (or common transitive dependencies) that ship exec-capable
+    # deserialization entry points. A denylist still cannot cover third-party
+    # packages in general (the loader resolves them by name, and any of the
+    # many packages an integration might install could have its own gadget),
+    # but these are common enough that they are blocked outright rather than
+    # left to the general third-party gap.
+    #
+    # yaml.unsafe_load (and yaml.load without an explicit safe Loader, and
+    # yaml.full_load) and ruamel.yaml equivalents construct arbitrary Python
+    # objects from the YAML document they are given, via tags such as
+    # !!python/object/apply:os.system. A reference to any of these as a
+    # code-reference field's target -- with the YAML content supplied as
+    # the function's argument at call time -- is a direct RCE primitive
+    # requiring no other preconditions.
+    "ruamel",
+    "yaml",
 })
 
 

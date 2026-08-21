@@ -15,17 +15,12 @@
 """The node/workflow functional test matrix.
 
 The same grid as ``functional_test_cases.py``, run against the canonical
-Workflow + nested workflow + node + agent + tool scenario. The telemetry each
-case is expected to emit is the recording in
-``functional_goldens/node/<test_id>.json``, reachable as ``case.expected``;
-re-record it with:
-
-    python -m tests.unittests.telemetry.regenerate
+Workflow + nested workflow + node + agent + tool scenario.
 """
 
 from __future__ import annotations
 
+from .functional._recording import FunctionalTestCase
 from .functional_test_cases import semconv_matrix
-from .functional_test_helpers import FunctionalTestCase
 
 ALL_NODE_CASES: list[FunctionalTestCase] = semconv_matrix("node")

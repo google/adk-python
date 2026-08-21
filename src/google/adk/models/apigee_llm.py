@@ -28,6 +28,7 @@ from typing import AsyncGenerator
 from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.adk import version as adk_version
 from google.genai import types
@@ -35,6 +36,7 @@ import httpx
 import tenacity
 from typing_extensions import override
 
+from ..utils import _json_utils
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -61,6 +63,28 @@ _CUSTOM_METADATA_FIELDS = (
 )
 
 _REFUSAL_PREFIX = '[[REFUSAL]]: '
+
+# Timeouts, in seconds, for the completions HTTP client. httpx applies no
+# timeout at all unless one is given, so a stalled proxy would otherwise hold
+# the connection and the streaming loop open indefinitely.
+_CONNECT_TIMEOUT_SECONDS = 30.0
+_REQUEST_TIMEOUT_SECONDS = 600.0
+
+
+def _httpx_timeout(timeout_seconds: Optional[float] = None) -> httpx.Timeout:
+  """Returns the httpx timeout budget for a completions request.
+
+  A bare float would spend the caller's whole budget on the connect phase too,
+  so the connect budget is always kept short enough to fail fast on an
+  unreachable proxy.
+
+  Args:
+    timeout_seconds: The total budget for the request, or None for the default.
+  """
+  return httpx.Timeout(
+      _REQUEST_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds,
+      connect=_CONNECT_TIMEOUT_SECONDS,
+  )
 
 
 class ApigeeLlm(Gemini):
@@ -93,6 +117,7 @@ class ApigeeLlm(Gemini):
       retry_options: Optional[types.HttpRetryOptions] = None,
       api_type: ApiType | str = ApiType.UNKNOWN,
       credentials: Credentials | None = None,
+      client: Client | None = None,
   ) -> None:
     """Initializes the Apigee LLM backend.
 
@@ -129,9 +154,10 @@ class ApigeeLlm(Gemini):
         additional OAuth scopes (e.g., `userinfo.email` for tokeninfo-based
         caller identification). When omitted, the default `genai.Client`
         authentication flow is used.
+      client: An optional pre-configured google-genai Client.
     """  # fmt: skip
 
-    super().__init__(model=model, retry_options=retry_options)
+    super().__init__(model=model, retry_options=retry_options, client=client)
     # Validate the model string. Create a helper method to validate the model
     # string.
     if not _validate_model_string(model):
@@ -176,6 +202,22 @@ class ApigeeLlm(Gemini):
     self._custom_headers = custom_headers or {}
     self._user_agent = f'google-adk/{adk_version.__version__}'
     self._credentials = credentials
+
+    if client:
+      if self._proxy_url or self._custom_headers:
+        warnings.warn(
+            'Both client and proxy_url/custom_headers were provided. The'
+            ' injected client will be used as-is for GENAI calls, and'
+            ' proxy_url/custom_headers will be ignored. Ensure the injected'
+            ' client is pre-configured with the correct proxy and headers.',
+            UserWarning,
+        )
+      if self._api_type == ApigeeLlm.ApiType.CHAT_COMPLETIONS:
+        warnings.warn(
+            'An injected client was provided but ApiType is CHAT_COMPLETIONS. '
+            'The injected client will be ignored for CHAT_COMPLETIONS calls.',
+            UserWarning,
+        )
 
   @classmethod
   @override
@@ -241,6 +283,9 @@ class ApigeeLlm(Gemini):
     Returns:
       The api client.
     """
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     http_options = types.HttpOptions(
@@ -360,6 +405,23 @@ def _parse_logprobs(
   )
 
 
+def _function_response_media_content_parts(
+    function_response: types.FunctionResponse,
+) -> list[dict[str, Any]]:
+  """Converts media a tool attached to its response into content parts."""
+  media_content_parts: list[dict[str, Any]] = []
+  for response_part in function_response.parts or []:
+    blob = response_part.inline_data
+    if blob is None or blob.data is None or not blob.mime_type:
+      continue
+    data = base64.b64encode(blob.data).decode('utf-8')
+    media_content_parts.append({
+        'type': 'image_url',
+        'image_url': {'url': f'data:{blob.mime_type};base64,{data}'},
+    })
+  return media_content_parts
+
+
 def _validate_model_string(model: str) -> bool:
   """Validates the model string for Apigee LLM.
 
@@ -437,8 +499,8 @@ class CompletionsHTTPClient:
     client = httpx.AsyncClient(
         base_url=self._base_url,
         headers=self._headers,
-        timeout=None,
-        follow_redirects=True,
+        timeout=_httpx_timeout(),
+        follow_redirects=False,
     )
     atexit.register(self._cleanup_client, client)
     return client
@@ -573,7 +635,7 @@ class CompletionsHTTPClient:
     async for attempt in tenacity.AsyncRetrying(**retry_kwargs):
       with attempt:
         response = await self._client.post(
-            url, json=payload, headers=headers, timeout=timeout
+            url, json=payload, headers=headers, timeout=_httpx_timeout(timeout)
         )
         response.raise_for_status()
         return response
@@ -594,7 +656,7 @@ class CompletionsHTTPClient:
         url,
         json=payload,
         headers=headers,
-        timeout=timeout,
+        timeout=_httpx_timeout(timeout),
     ) as resp:
       resp.raise_for_status()
       async for line in resp.aiter_lines():
@@ -607,11 +669,12 @@ class CompletionsHTTPClient:
         if line == '[DONE]':
           break
         try:
-          for res in self._parse_streaming_line(line, accumulator):
-            yield res
-        except json.JSONDecodeError:
+          chunk = _json_utils.safe_json_loads(line, context='streaming chunk')
+        except ValueError:
           logger.warning('Failed to parse JSON chunk: %s', line)
           continue
+        for res in self._parse_streaming_line(chunk, accumulator):
+          yield res
 
   def _construct_payload(
       self, llm_request: LlmRequest, stream: bool
@@ -714,7 +777,11 @@ class CompletionsHTTPClient:
     content_parts: list[dict[str, Any]] = []
     refusals: list[str] = []
 
-    function_responses = []
+    function_responses: list[dict[str, Any]] = []
+    # A tool can attach media alongside the serializable part of its result.
+    # A tool-role message carries text only, so the media has to follow the
+    # tool results as its own message.
+    response_media_parts: list[dict[str, Any]] = []
 
     for part in content.parts or []:
       self._process_content_part(
@@ -726,7 +793,14 @@ class CompletionsHTTPClient:
             'tool_call_id': part.function_response.id,
             'content': json.dumps(part.function_response.response),
         })
+        response_media_parts.extend(
+            _function_response_media_content_parts(part.function_response)
+        )
     if function_responses:
+      if response_media_parts:
+        function_responses.append(
+            {'role': 'user', 'content': response_media_parts}
+        )
       return function_responses
 
     message: dict[str, Any] = {'role': role}
@@ -884,21 +958,19 @@ class CompletionsHTTPClient:
 
   def _parse_streaming_line(
       self,
-      line: str,
+      chunk: dict[str, Any],
       accumulator: ChatCompletionsResponseHandler,
   ) -> Generator[LlmResponse]:
     """Parses a single line from the streaming response.
 
     Args:
-      line: A single line from the streaming response, expected to be a JSON
-        string.
+      chunk: The parsed JSON chunk.
       accumulator: An accumulator to manage partial chat completion choices
         across multiple chunks.
 
     Yields:
       An LlmResponse object parsed from the streaming line.
     """
-    chunk = json.loads(line)
     for response in accumulator.process_chunk(chunk):
       yield response
 
@@ -1214,15 +1286,14 @@ class ChatCompletionsResponseHandler:
     func = tool_call.get('function', {})
     args_delta = func.get('arguments', '')
     if args_delta:
-      try:
-        args = json.loads(args_delta)
-        chunk_function_call.args = args
-        if not function_call.args:
-          function_call.args = dict(args)
-        else:
-          function_call.args.update(args)
-      except json.JSONDecodeError as e:
-        raise ValueError(f'Failed to parse arguments: {args_delta}') from e
+      args = _json_utils.safe_json_loads(
+          args_delta, context=f'tool call arguments: {args_delta}'
+      )
+      chunk_function_call.args = args
+      if not function_call.args:
+        function_call.args = dict(args)
+      else:
+        function_call.args.update(args)
 
     func_name = func.get('name')
     if func_name:

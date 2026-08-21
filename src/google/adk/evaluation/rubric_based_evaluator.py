@@ -487,7 +487,7 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
     The aggregator helps convert those multiple samples into a single result.
     """
     return self._per_invocation_results_aggregator.aggregate(
-        per_invocation_samples, self._eval_metric.threshold
+        per_invocation_samples, self._threshold
     )
 
   @override
@@ -496,5 +496,5 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
   ) -> EvaluationResult:
     """Summarizes per invocation evaluation results into a single score."""
     return self._invocation_results_summarizer.summarize(
-        per_invocation_results, self._eval_metric.threshold
+        per_invocation_results, self._threshold
     )

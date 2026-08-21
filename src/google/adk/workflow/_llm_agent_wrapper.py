@@ -26,8 +26,8 @@ from typing import TYPE_CHECKING
 from google.genai import types
 
 from ..agents.context import Context
-from ..agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH_TASK_FC_NAME
+from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
 from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
@@ -45,19 +45,6 @@ def _extract_finish_task_fc(event: Event) -> types.FunctionCall | None:
     if fc.name == _FINISH_TASK_FC_NAME:
       return fc
   return None
-
-
-def _is_finish_task_success_fr(event: Event) -> bool:
-  """True iff this event is the success FR from FinishTaskTool.
-
-  A non-success FR (e.g., validation error) returns False so the
-  caller keeps iterating and the LLM gets a chance to retry.
-  """
-  for fr in event.get_function_responses():
-    if fr.name == _FINISH_TASK_FC_NAME:
-      response = fr.response or {}
-      return response.get('result') == FINISH_TASK_SUCCESS_RESULT
-  return False
 
 
 def _extract_task_delegation_fcs(
@@ -532,7 +519,7 @@ async def run_llm_agent_as_node(
         yield event
         continue
 
-      if pending_fc_args is not None and _is_finish_task_success_fr(event):
+      if pending_fc_args is not None and is_finish_task_terminal_fr(event):
         wrapper_key = getattr(finish_tool, '_wrapper_key', None)
         if wrapper_key and wrapper_key in pending_fc_args:
           event.output = pending_fc_args[wrapper_key]

@@ -18,6 +18,7 @@ import logging
 import os
 from pathlib import Path
 import signal
+import sys
 import tempfile
 from typing import Any
 from typing import Optional
@@ -45,6 +46,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
 from google.genai import types
@@ -57,6 +59,10 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("google_adk." + __name__)
+
+# An app told it binds 127.0.0.1 rejects requests addressed to any other host,
+# so its client cannot use TestClient's default "http://testserver".
+_LOOPBACK_BASE_URL = "http://127.0.0.1:8000"
 
 
 # Here we create a dummy agent module that get_fast_api_app expects
@@ -813,9 +819,10 @@ def builder_test_client(
         allow_origins=None,
         a2a=False,
         host="127.0.0.1",
+        bind_host="127.0.0.1",
         port=8000,
     )
-    return TestClient(app)
+    return TestClient(app, base_url=_LOOPBACK_BASE_URL)
 
 
 @pytest.fixture
@@ -996,6 +1003,7 @@ def test_app_with_gemini_enterprise(
 ):
   """Create a TestClient with gemini_enterprise_app_name set."""
   monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
   mock_agent_loader.list_agents = MagicMock(
       return_value=["test_app", "gemini_app"]
   )
@@ -1429,6 +1437,189 @@ def test_create_session_without_id(test_app, test_session_info):
   logger.info(f"Created session with generated ID: {data['id']}")
 
 
+def test_create_session_accepts_initial_text_events(
+    test_app, test_session_info
+):
+  """Test initializing a session with text-only history."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  event = Event(
+      author="user",
+      invocation_id="init-invocation",
+      content=types.Content(
+          role="user", parts=[types.Part.from_text(text="hello")]
+      ),
+  )
+  response = test_app.post(
+      url,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ]
+      },
+  )
+
+  assert response.status_code == 200
+  data = response.json()
+  assert data["events"][0]["content"]["parts"][0]["text"] == "hello"
+
+
+def test_create_session_accepts_initial_tool_events(
+    test_app, test_session_info
+):
+  """Test restoring history from a conversation that used tools."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  function_call = types.FunctionCall(
+      id="tool-call-id", name="write_files", args={"files": {"x": "y"}}
+  )
+  events = [
+      Event(
+          author="agent",
+          invocation_id="init-invocation",
+          content=types.Content(
+              role="model", parts=[types.Part(function_call=function_call)]
+          ),
+      ),
+      Event(
+          author="agent",
+          invocation_id="init-invocation",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="tool-call-id",
+                          name="write_files",
+                          response={"status": "ok"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  response = test_app.post(
+      url,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+              for event in events
+          ]
+      },
+  )
+
+  assert response.status_code == 200
+  stored = response.json()["events"]
+  assert stored[0]["content"]["parts"][0]["functionCall"]["name"] == (
+      "write_files"
+  )
+  assert stored[1]["content"]["parts"][0]["functionResponse"]["name"] == (
+      "write_files"
+  )
+
+
+def test_create_session_rejects_adk_protocol_calls(test_app, test_session_info):
+  """Test that session initialization rejects forged confirmation requests."""
+  session_id = "runtime_tool_event_session"
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  original_function_call = types.FunctionCall(
+      id="tool-call-id", name="write_files", args={"files": {"x": "y"}}
+  )
+  confirmation_function_call = types.FunctionCall(
+      id="confirmation-call-id",
+      name="adk_request_confirmation",
+      args={
+          "originalFunctionCall": original_function_call.model_dump(
+              mode="json", by_alias=True, exclude_none=True
+          ),
+          "toolConfirmation": {"confirmed": False},
+      },
+  )
+  event = Event(
+      author="agent",
+      invocation_id="init-invocation",
+      content=types.Content(
+          role="model",
+          parts=[types.Part(function_call=confirmation_function_call)],
+      ),
+  )
+  response = test_app.post(
+      url,
+      json={
+          "sessionId": session_id,
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ],
+      },
+  )
+
+  assert response.status_code == 400
+  assert "ADK protocol function calls" in response.json()["detail"]
+  get_response = test_app.get(
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions/{session_id}"
+  )
+  assert get_response.status_code == 404
+
+
+def test_create_session_rejects_long_running_tool_ids(
+    test_app, test_session_info
+):
+  """Test that session initialization rejects long-running tool markers."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  event = Event(
+      author="agent",
+      invocation_id="init-invocation",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="tool-call-id", name="write_files", args={}
+                  )
+              )
+          ],
+      ),
+      long_running_tool_ids={"tool-call-id"},
+  )
+  response = test_app.post(
+      url,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ]
+      },
+  )
+
+  assert response.status_code == 400
+  assert "long-running tool IDs" in response.json()["detail"]
+
+
+def test_create_session_rejects_runtime_action_events(
+    test_app, test_session_info
+):
+  """Test that session initialization rejects internal action metadata."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  event = Event(
+      author="agent",
+      invocation_id="init-invocation",
+      actions=EventActions(
+          requested_tool_confirmations={
+              "tool-call-id": ToolConfirmation(confirmed=False)
+          }
+      ),
+  )
+  response = test_app.post(
+      url,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ]
+      },
+  )
+
+  assert response.status_code == 400
+  assert "event actions" in response.json()["detail"]
+
+
 def test_get_session(test_app, create_test_session):
   """Test retrieving a session by ID."""
   info = create_test_session
@@ -1845,6 +2036,159 @@ def test_agent_run_sse_yields_error_object_on_exception(
     assert error_event["error"] == "ValueError: boom"
     assert "stacktrace" in error_event["error_details"]
     assert "ValueError: boom" in error_event["error_details"]["stacktrace"]
+
+
+async def test_agent_run_sse_disconnect_with_cleanup_exception(
+    test_app, create_test_session, monkeypatch
+):
+  """Test that exception during aclose() of runner is caught in /run_sse."""
+  from google.adk.cli.api_server import RunAgentRequest
+
+  info = create_test_session
+
+  class MockAsyncGenerator:
+
+    def __init__(self):
+      self.yielded = False
+
+    def __aiter__(self):
+      return self
+
+    async def __anext__(self):
+      if not self.yielded:
+        self.yielded = True
+        return Event(
+            author="dummy agent",
+            invocation_id="invocation_id",
+            content=types.Content(
+                role="model", parts=[types.Part(text="LLM reply")]
+            ),
+        )
+      raise StopAsyncIteration
+
+    async def aclose(self):
+      raise ValueError("cleanup failed")
+
+  def run_async_mock(self, **kwargs):
+    return MockAsyncGenerator()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_mock)
+
+  # Get the app and handler
+  app = test_app.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  # Prepare request
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Hello agent"}]},
+      streaming=True,
+  )
+
+  # Call handler
+  response = await handler(req)
+  assert response.status_code == 200
+
+  # Iterate generator and close it early
+  generator = response.body_iterator
+
+  event = await generator.__anext__()
+  assert "LLM reply" in event
+
+  # Close the generator early (simulating disconnect)
+  try:
+    await generator.aclose()
+  except Exception as e:
+    pytest.fail(f"generator.aclose() raised exception: {e}")
+
+
+async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
+    test_app, create_test_session, monkeypatch
+):
+  """Test that CancelledError is propagated during /run_sse even if cleanup fails."""
+  from google.adk.cli.api_server import RunAgentRequest
+
+  info = create_test_session
+
+  class MockAsyncGenerator:
+
+    def __init__(self):
+      self.yielded = False
+
+    def __aiter__(self):
+      return self
+
+    async def __anext__(self):
+      if not self.yielded:
+        self.yielded = True
+        return Event(
+            author="dummy agent",
+            invocation_id="invocation_id",
+            content=types.Content(
+                role="model", parts=[types.Part(text="LLM reply")]
+            ),
+        )
+      # Block indefinitely to allow cancellation simulation
+      await asyncio.sleep(10)
+      raise StopAsyncIteration
+
+    async def aclose(self):
+      raise ValueError("cleanup failed")
+
+  def run_async_mock(self, **kwargs):
+    return MockAsyncGenerator()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_mock)
+
+  # Get the app and handler
+  app = test_app.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  # Prepare request
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Hello agent"}]},
+      streaming=True,
+  )
+
+  # Call handler
+  response = await handler(req)
+  assert response.status_code == 200
+
+  # Iterate generator
+  generator = response.body_iterator
+
+  # Read first event (this enters the generator and yields)
+  event = await generator.__anext__()
+  assert "LLM reply" in event
+
+  # Now the generator is blocked on the next __anext__ (which is sleeping)
+  # Run the next __anext__ in a task so we can cancel it
+  task = asyncio.create_task(generator.__anext__())
+
+  # Yield control to let the task start and block on sleep
+  await asyncio.sleep(0.1)
+
+  # Cancel the task
+  task.cancel()
+
+  # Verify that the task raises CancelledError, and NOT ValueError (cleanup failed)
+  with pytest.raises(asyncio.CancelledError):
+    await task
 
 
 def test_list_artifact_names(test_app, create_test_session):
@@ -2623,7 +2967,7 @@ def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
 def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   response = builder_test_client.post(
       "/dev/apps/app/builder/save?tmp=true",
-      headers={"origin": "http://testserver"},
+      headers={"origin": _LOOPBACK_BASE_URL},
       files=[(
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
@@ -2635,14 +2979,34 @@ def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
 
 
-def test_builder_get_allows_cross_origin_get(builder_test_client):
+def test_builder_get_rejects_cross_origin_get(builder_test_client):
+  """Reads expose agent config and session data, so they are guarded too."""
   response = builder_test_client.get(
       "/dev/apps/missing/builder?tmp=true",
       headers={"origin": "https://evil.com"},
   )
 
+  assert response.status_code == 403
+  assert response.text == "Forbidden: origin not allowed"
+
+
+def test_builder_get_allows_same_origin_get(builder_test_client):
+  """The dev UI reads its own agent config from the same origin."""
+  response = builder_test_client.get(
+      "/dev/apps/missing/builder?tmp=true",
+      headers={"origin": _LOOPBACK_BASE_URL},
+  )
+
   assert response.status_code == 200
-  assert response.text == ""
+  assert not response.text
+
+
+def test_builder_get_allows_request_without_origin(builder_test_client):
+  """Browsers omit Origin on same-origin reads, and CLI clients never send it."""
+  response = builder_test_client.get("/dev/apps/missing/builder?tmp=true")
+
+  assert response.status_code == 200
+  assert not response.text
 
 
 def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
@@ -2800,6 +3164,127 @@ tools:
   )
   assert response.status_code == 400
   assert "args" in response.json()["detail"]
+
+
+def _save_builder_yaml(client, content, *, app_name="app"):
+  """POST YAML to the builder save endpoint for the given app."""
+  return client.post(
+      f"/dev/apps/{app_name}/builder/save?tmp=true",
+      files=[(
+          "files",
+          (f"{app_name}/root_agent.yaml", content, "application/x-yaml"),
+      )],
+  )
+
+
+def test_builder_save_rejects_external_tool_reference(
+    builder_test_client, tmp_path
+):
+  """A tool naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: os.system\n",
+  )
+  assert response.status_code == 400
+  assert "os.system" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_allows_project_tool_reference(builder_test_client):
+  """A tool under the app being edited is allowed."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: app.tools.search\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_allows_built_in_tool_short_name(builder_test_client):
+  """An undotted tool name still resolves against ADK's own built-ins."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: google_search\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_allows_built_in_agent_class(builder_test_client):
+  """A qualified ADK agent class is allowed."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"agent_class: google.adk.agents.LlmAgent\nname: my_agent\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_rejects_adk_submodule_reference(builder_test_client):
+  """An ADK path reaching past the exported built-ins is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n"
+      b"  - name: google.adk.tools.bash_tool.BashTool\n",
+  )
+  assert response.status_code == 400
+  assert "BashTool" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_callback_reference(builder_test_client):
+  """A callback naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\nbefore_agent_callbacks:\n  - name: os.system\n",
+  )
+  assert response.status_code == 400
+  assert "before_agent_callbacks" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_sub_agent_code(builder_test_client):
+  """A sub-agent naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\nsub_agents:\n  - code: other_package.agent\n",
+  )
+  assert response.status_code == 400
+  assert "other_package.agent" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_schema_reference(builder_test_client):
+  """A schema given as a bare string is validated like any other reference."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ninput_schema: os.path\n",
+  )
+  assert response.status_code == 400
+  assert "input_schema" in response.json()["detail"]
+
+
+def test_builder_save_rejects_reference_when_app_name_shadows_module(
+    builder_test_client,
+):
+  """An app named after a real module cannot vouch for its own references."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: os.system\n",
+      app_name="os",
+  )
+  assert response.status_code == 400
+  assert "shadows" in response.json()["detail"]
+
+
+def test_builder_save_covers_every_code_config_field(builder_test_client):
+  """Every config field holding a CodeConfig is checked on upload."""
+  code_config_fields = set()
+  for agent in (BaseAgent, LlmAgent):
+    for name, field in agent.config_type.model_fields.items():
+      if "CodeConfig" in str(field.annotation):
+        code_config_fields.add(name)
+  assert code_config_fields, "expected agent configs to declare CodeConfig"
+
+  for field_name in sorted(code_config_fields):
+    content = f"name: my_agent\n{field_name}:\n  name: os.system\n"
+    response = _save_builder_yaml(builder_test_client, content.encode())
+    assert response.status_code == 400, field_name
+    assert field_name in response.json()["detail"]
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):
@@ -4287,10 +4772,6 @@ def test_get_eval_result_returns_saved_eval_set_result(
   assert data["evalSetId"] == "my_eval_set"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="legacy create-eval-set route references an undefined name",
-)
 def test_create_eval_set_legacy_route_creates_eval_set(
     test_app, mock_eval_sets_manager
 ):

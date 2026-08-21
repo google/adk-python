@@ -51,7 +51,6 @@ from ..telemetry._agent_engine import maybe_install_request_metrics_middleware
 from ..telemetry._agent_engine import TopSpanProcessor
 from .api_server import ApiServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
-from .dev_server import DevServer
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_change_handler import AgentChangeEventHandler
@@ -108,6 +107,7 @@ def get_fast_api_app(
     a2a: bool = False,
     task_store_uri: str | None = None,
     host: str = "127.0.0.1",
+    bind_host: str | None = None,
     port: int = 8000,
     url_prefix: str | None = None,
     trace_to_cloud: bool = False,
@@ -155,7 +155,11 @@ def get_fast_api_app(
     a2a: Whether to enable Agent-to-Agent (A2A) protocol support.
     task_store_uri: URI for the A2A task store. Uses in-memory task store if
       None. Only used when ``a2a=True``.
-    host: Host address for the server (defaults to 127.0.0.1).
+    host: Host address for the server (defaults to 127.0.0.1). Unused by the
+      returned app; pass ``bind_host`` to guard it.
+    bind_host: The address the caller will bind the returned app to. A loopback
+      value turns on DNS-rebinding protection, which rejects requests addressed
+      to any other host. Leave it None to serve the app yourself without that.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -261,7 +265,24 @@ def get_fast_api_app(
   # Instantiate the appropriate server class based on web option
   # If web=True, use DevServer (includes all endpoints: production + dev)
   # If web=False, use ApiServer (production-safe endpoints only)
-  ServerClass = DevServer if web else ApiServer
+  if web:
+    try:
+      from .dev_server import DevServer
+
+      ServerClass = DevServer
+    except ModuleNotFoundError as e:
+      # Fallback to ApiServer if dev_server.py is not available
+      # (e.g., in production packages where dev_server.py is excluded)
+      if e.name and e.name.endswith("dev_server"):
+        logger.warning(
+            "DevServer not found, falling back to ApiServer. "
+            "Debug and evaluation endpoints will not be available."
+        )
+        ServerClass = ApiServer
+      else:
+        raise
+  else:
+    ServerClass = ApiServer
 
   adk_web_server = ServerClass(
       agent_loader=agent_loader,
@@ -368,6 +389,7 @@ def get_fast_api_app(
       lifespan=lifespan,
       allow_origins=allow_origins,
       otel_to_cloud=otel_to_cloud,
+      bind_host=bind_host,
       **extra_fast_api_args,
   )
 

@@ -19,7 +19,6 @@ import builtins
 import io
 import pathlib
 import struct
-import sys
 import threading
 import tracemalloc
 from unittest import mock
@@ -84,6 +83,7 @@ Test instructions
   assert skill.resources.get_reference("ref1.md") == "ref1 content"
   assert skill.resources.get_asset("asset1.txt") == "asset1 content"
   assert skill.resources.get_script("script1.sh").src == "echo hello"
+  assert skill._uri == f"file://{skill_dir}"
 
 
 def _write_nested_skill(tmp_path):
@@ -419,6 +419,7 @@ def test__load_skill_from_gcs_dir(mock_client_class):
   assert skill.instructions == "Test instructions"
   # Using dict access for reference
   assert skill.resources.get_reference("ref1.md") == "ref1 content"
+  assert skill._uri == "gs://my-bucket/skills/my-skill//"
 
 
 @mock.patch("google.cloud.storage.Client")
@@ -533,6 +534,7 @@ def test__load_skill_from_zip_bytes():
   assert skill.instructions == "Body instructions"
   assert skill.resources.get_reference("ref1.md") == "ref1 content"
   assert skill.resources.get_script("script1.sh").src == "echo hello"
+  assert skill._uri is None
 
 
 def test__load_skill_from_zip_bytes_keeps_binary_resources():

@@ -276,6 +276,10 @@ def _warn_if_with_ui(with_ui: bool) -> None:
 class TelemetryGroup(click.Group):
   """Custom Click Group to wrap execution for telemetry tracking."""
 
+  def main(self, *args, **kwargs):
+    kwargs.setdefault("windows_expand_args", False)
+    return super().main(*args, **kwargs)
+
   def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
     ctx.telemetry_args = list(args)  # type: ignore[attr-defined]
     return super().parse_args(ctx, args)
@@ -2069,6 +2073,7 @@ def cli_web(
       lifespan=_lifespan,
       a2a=a2a,
       host=host,
+      bind_host=host,
       port=port,
       url_prefix=url_prefix,
       reload_agents=reload_agents,
@@ -2209,6 +2214,7 @@ def cli_api_server(
           otel_to_cloud=otel_to_cloud,
           a2a=a2a,
           host=host,
+          bind_host=host,
           port=port,
           url_prefix=url_prefix,
           reload_agents=reload_agents,

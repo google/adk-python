@@ -22,10 +22,10 @@ This script demonstrates the two-phase tool discovery flow:
 
 Usage:
   # Start the MCP server first (in another terminal):
-  PYTHONPATH=src python contributing/samples/mcp_toolset_auth/oauth_mcp_server.py
+  PYTHONPATH=src python contributing/samples/mcp/mcp_toolset_auth/oauth_mcp_server.py
 
   # Run the demo:
-  PYTHONPATH=src python contributing/samples/mcp_toolset_auth/main.py
+  PYTHONPATH=src python contributing/samples/mcp/mcp_toolset_auth/main.py
 """
 
 from __future__ import annotations

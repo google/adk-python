@@ -78,6 +78,12 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Set the dependency resolution cutoff
+        # PyPI uploads a release's wheels one platform at a time, so resolving
+        # mid-upload can select a version whose wheel for this interpreter does
+        # not exist yet and fail the install. Skip the last hour of releases.
+        run: echo "UV_EXCLUDE_NEWER=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Generate Baseline
         env:
           TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
@@ -149,6 +155,12 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Set the dependency resolution cutoff
+        # PyPI uploads a release's wheels one platform at a time, so resolving
+        # mid-upload can select a version whose wheel for this interpreter does
+        # not exist yet and fail the install. Skip the last hour of releases.
+        run: echo "UV_EXCLUDE_NEWER=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: |
           uv venv .venv
@@ -192,6 +204,12 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
+
+      - name: Set the dependency resolution cutoff
+        # PyPI uploads a release's wheels one platform at a time, so resolving
+        # mid-upload can select a version whose wheel for this interpreter does
+        # not exist yet and fail the install. Skip the last hour of releases.
+        run: echo "UV_EXCLUDE_NEWER=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: |

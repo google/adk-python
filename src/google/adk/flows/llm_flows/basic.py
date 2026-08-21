@@ -17,8 +17,11 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
+from typing import Optional
+from typing import TypeVar
 
 from google.genai import types
+from pydantic import BaseModel
 from typing_extensions import override
 
 from ...agents.invocation_context import InvocationContext
@@ -73,23 +76,38 @@ def _copy_http_options(
   )
 
 
+_ModelT = TypeVar('_ModelT', bound=BaseModel)
+
+
+def _copy_or_none(model: Optional[_ModelT]) -> Optional[_ModelT]:
+  """Returns a deep copy of a RunConfig sub-model that assembly then mutates."""
+  return None if model is None else model.model_copy(deep=True)
+
+
 def _copy_request_scoped_fields(
     config: types.GenerateContentConfig,
 ) -> types.GenerateContentConfig:
   """Copies the agent config fields that request assembly goes on to mutate.
 
-  ``model_copy`` is shallow, so ``labels`` and ``http_options`` would still be
-  the agent's own objects and the writes during assembly would outlive the
+  ``model_copy`` is shallow, so every container the agent configured would still
+  be the agent's own object, and a write during assembly would outlive the
   invocation and be seen by every later run of that agent.
 
-  The copies stay shallow on purpose. ``http_options`` can hold a live httpx or
-  aiohttp client and an SSL context, none of which survive a deep copy, so only
-  its ``headers`` dict is copied: that is the one part assembly mutates in
-  place, and assigning the other fields lands on the copy.
+  Every list and dict is copied, not just the fields assembly happens to touch
+  today: a before-model callback receives the request config and can append to
+  any of them. The elements themselves are shared, because assembly replaces
+  entries rather than mutating them.
+
+  ``http_options`` needs its own copy because it is a model rather than a
+  container. It can hold a live httpx or aiohttp client and an SSL context,
+  none of which survive a deep copy, so only its ``headers`` dict is copied.
   """
   updates: dict[str, object] = {}
-  if config.labels is not None:
-    updates['labels'] = dict(config.labels)
+  for name, value in config:
+    if isinstance(value, list):
+      updates[name] = list(value)
+    elif isinstance(value, dict):
+      updates[name] = dict(value)
   if config.http_options is not None:
     updates['http_options'] = _copy_http_options(config.http_options)
   return config.model_copy(update=updates)
@@ -176,10 +194,20 @@ def _build_basic_request(
   llm_request.live_connect_config.proactivity = (
       None if is_gemini_3_x else run_config.proactivity
   )
-  llm_request.live_connect_config.session_resumption = (
+  # Copied rather than aliased: live request assembly writes into both of these
+  # while the session runs. `BaseLlmFlow.run_live` stamps each server-issued
+  # resumption handle onto `session_resumption`, and sets
+  # `initial_history_in_client_content` on `history_config` when it seeds a
+  # fresh connection with history. Aliasing the RunConfig's own objects makes
+  # those writes outlive the invocation, so a RunConfig reused for a later run
+  # would carry a stale handle into it. This mirrors what
+  # `_copy_request_scoped_fields` already does for `llm_request.config`.
+  llm_request.live_connect_config.session_resumption = _copy_or_none(
       run_config.session_resumption
   )
-  llm_request.live_connect_config.history_config = run_config.history_config
+  llm_request.live_connect_config.history_config = _copy_or_none(
+      run_config.history_config
+  )
   llm_request.live_connect_config.context_window_compression = (
       run_config.context_window_compression
   )

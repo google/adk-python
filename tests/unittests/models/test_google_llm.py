@@ -356,6 +356,63 @@ def test_api_client_preserves_custom_base_url_path():
   assert client._api_client._http_options.api_version == "v1beta"
 
 
+def test_api_client_default_api_version_unchanged(monkeypatch):
+  """Without configuration, ADK does not force an api_version (SDK default)."""
+  monkeypatch.delenv("GOOGLE_GENAI_API_VERSION", raising=False)
+  model = Gemini(model="gemini-2.5-flash")
+
+  # ADK leaves api_version unset so the google-genai SDK applies its own
+  # default (v1beta1 for Vertex AI), preserving existing behavior.
+  assert model._base_url_and_api_version == (None, None)
+  client = model.api_client
+  assert client._api_client._http_options.api_version == "v1beta"
+
+
+def test_api_client_uses_api_version_field():
+  """The api_version field flows into the constructed client's http_options."""
+  model = Gemini(model="gemini-2.5-flash", api_version="v1")
+
+  client = model.api_client
+
+  assert client._api_client._http_options.api_version == "v1"
+
+
+def test_api_client_uses_api_version_env_var(monkeypatch):
+  """The GOOGLE_GENAI_API_VERSION env var flows into http_options."""
+  monkeypatch.setenv("GOOGLE_GENAI_API_VERSION", "v1")
+  model = Gemini(model="gemini-2.5-flash")
+
+  client = model.api_client
+
+  assert client._api_client._http_options.api_version == "v1"
+
+
+def test_api_version_field_overrides_env_var(monkeypatch):
+  """The explicit api_version field takes precedence over the env var."""
+  monkeypatch.setenv("GOOGLE_GENAI_API_VERSION", "v1beta1")
+  model = Gemini(model="gemini-2.5-flash", api_version="v1")
+
+  client = model.api_client
+
+  assert client._api_client._http_options.api_version == "v1"
+
+
+def test_base_url_api_version_overrides_field():
+  """A version embedded in base_url wins over the api_version field."""
+  model = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+      api_version="v1",
+  )
+
+  client = model.api_client
+
+  assert client._api_client._http_options.base_url == (
+      "https://generativelanguage.googleapis.com/"
+  )
+  assert client._api_client._http_options.api_version == "v1alpha"
+
+
 def test_maybe_append_user_content(gemini_llm, llm_request):
   # Test with user content already present
   gemini_llm._maybe_append_user_content(llm_request)
@@ -788,12 +845,118 @@ async def test_generate_content_async_patches_api_version(
     assert len(responses) == 2 if stream else 1
 
 
+@pytest.mark.asyncio
+async def test_generate_content_async_patches_api_version_from_field(
+    llm_request, generate_content_response
+):
+  """The configured api_version field is patched onto the request config."""
+  gemini_llm = Gemini(model="gemini-2.5-flash", api_version="v1")
+  llm_request.config.http_options = types.HttpOptions(
+      headers={"custom-header": "custom-value"}
+  )
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    _ = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+    call_args = mock_client.aio.models.generate_content.call_args
+    final_config = call_args.kwargs["config"]
+    assert final_config.http_options.api_version == "v1"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_does_not_override_request_api_version(
+    llm_request, generate_content_response
+):
+  """Request-level api_version takes precedence over model-level configuration."""
+  gemini_llm = Gemini(model="gemini-2.5-flash", api_version="v1")
+  llm_request.config.http_options = types.HttpOptions(api_version="v2")
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    _ = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+    call_args = mock_client.aio.models.generate_content.call_args
+    final_config = call_args.kwargs["config"]
+    assert final_config.http_options.api_version == "v2"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_env_var_does_not_override_custom_client_api_version(
+    llm_request, generate_content_response, monkeypatch
+):
+  """The GOOGLE_GENAI_API_VERSION env var does not override client-level custom configuration."""
+  monkeypatch.setenv("GOOGLE_GENAI_API_VERSION", "env-version")
+  gemini_llm = Gemini(model="gemini-2.5-flash")
+  llm_request.config.http_options = types.HttpOptions()
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    _ = [
+        resp
+        async for resp in gemini_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+    call_args = mock_client.aio.models.generate_content.call_args
+    final_config = call_args.kwargs["config"]
+    assert final_config.http_options.api_version is None
+
+
 def test_live_api_version_vertex_ai(gemini_llm):
   """Test that _live_api_version returns 'v1beta1' for Vertex AI backend."""
   with mock.patch.object(
       gemini_llm, "_api_backend", GoogleLLMVariant.VERTEX_AI
   ):
     assert gemini_llm._live_api_version == "v1beta1"
+
+
+def test_live_api_version_ignores_configured_field():
+  """Test that _live_api_version ignores the configured api_version field."""
+  gemini_llm = Gemini(model="gemini-2.5-flash", api_version="v1")
+
+  with mock.patch.object(
+      gemini_llm, "_api_backend", GoogleLLMVariant.VERTEX_AI
+  ):
+    assert gemini_llm._live_api_version == "v1beta1"
+
+
+def test_live_api_client_ignores_configured_field():
+  """Test that _live_api_client http_options ignores the api_version field."""
+  gemini_llm = Gemini(model="gemini-2.5-flash", api_version="v1")
+
+  with mock.patch.object(
+      gemini_llm, "_api_backend", GoogleLLMVariant.VERTEX_AI
+  ):
+    client = gemini_llm._live_api_client
+
+    assert client._api_client._http_options.api_version == "v1beta1"
 
 
 def test_live_api_version_uses_google_base_url_version():
@@ -1205,9 +1368,9 @@ async def test_preprocess_request_handles_backend_specific_fields(
 
 @pytest.mark.asyncio
 async def test_preprocess_request_converts_inline_data_safely():
-  """Tests that _preprocess_request uses _as_safe_part_for_llm to sanitize inline data."""
+  """Tests that _preprocess_request uses as_safe_part_for_llm to sanitize inline data."""
   with mock.patch.object(
-      load_artifacts_tool, "_as_safe_part_for_llm", autospec=True
+      load_artifacts_tool, "as_safe_part_for_llm", autospec=True
   ) as mock_safe_part:
     # Arrange
     mock_safe_part.return_value = Part.from_text(text="safe_text")
@@ -2400,7 +2563,7 @@ def test_build_request_log_function_declarations_in_second_tool():
 
 
 def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
-  """Test that _build_request_log falls back to repr() if model_dump fails."""
+  """Test that _build_request_log falls back to placeholder if model_dump fails."""
 
   llm_request = LlmRequest(
       model="gemini-2.5-flash",
@@ -2421,9 +2584,45 @@ def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
 
   log_output = _build_request_log(llm_request)
 
-  # Should still succeed using repr()
+  # Should still succeed using the placeholder
   assert "Config:" in log_output
-  assert "GenerateContentConfig" in log_output
+  assert "<error building config log>" in log_output
+
+
+def test_build_request_log_redacts_http_options_credentials():
+  """Test that _build_request_log redacts sensitive fields in http_options."""
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          http_options=types.HttpOptions(
+              headers={"Authorization": "Bearer secret_token"},
+              extra_body={"secret_key": "some_secret"},
+              client_args={"token": "arg_secret"},
+              async_client_args={"token": "async_secret"},
+              base_url="https://example.com/api",
+          ),
+      ),
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  assert "Config:" in log_output
+  # base_url should be present
+  assert "https://example.com/api" in log_output
+  # sensitive http_options fields should NOT be present in log_output
+  assert "secret_token" not in log_output
+  assert "secret_key" not in log_output
+  assert "arg_secret" not in log_output
+  assert "async_secret" not in log_output
+  assert "'headers'" not in log_output
+  assert "'extra_body'" not in log_output
+  assert "'client_args'" not in log_output
+  assert "'async_client_args'" not in log_output
+  assert "'httpx_client'" not in log_output
+  assert "'httpx_async_client'" not in log_output
+  assert "'aiohttp_client'" not in log_output
 
 
 @pytest.mark.asyncio
