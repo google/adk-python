@@ -1961,6 +1961,9 @@ class Runner:
         live_request_queue=live_request_queue,
         run_config=run_config,
     )
+    # A streaming tool emits its user-facing events here instead of returning
+    # them inline; without a queue those enqueues raise.
+    invocation_context._event_queue = asyncio.Queue()
 
     invocation_context.agent = self._find_agent_to_run(
         invocation_context.session, root_agent
@@ -1975,18 +1978,81 @@ class Runner:
           yield event
 
     async with aclosing(
-        _with_caller_context(
-            self._exec_with_plugin(
-                invocation_context=invocation_context,
-                session=invocation_context.session,
-                execute_fn=execute,
-                is_live_call=True,
+        self._merge_live_event_streams(
+            invocation_context,
+            _with_caller_context(
+                self._exec_with_plugin(
+                    invocation_context=invocation_context,
+                    session=invocation_context.session,
+                    execute_fn=execute,
+                    is_live_call=True,
+                ),
+                caller_ctx,
             ),
-            caller_ctx,
         )
     ) as agen:
       async for event in agen:
         yield event
+
+  async def _merge_live_event_streams(
+      self,
+      ic: InvocationContext,
+      agent_events: AsyncGenerator[Event, None],
+  ) -> AsyncGenerator[Event, None]:
+    """Interleaves the live agent's events with events from ``ic._event_queue``.
+
+    Code running underneath the live agent — a streaming tool, or a node — has
+    no way to yield an event back through the agent's own stream, so it
+    enqueues on ``ic._event_queue`` instead. Both sources are drained
+    concurrently into one queue and surfaced in the order they are produced.
+
+    Each source keeps its own post-processing: the agent's events are already
+    persisted and plugin-processed by ``_exec_with_plugin``, and the queued
+    events by ``_consume_event_queue``, so nothing is handled twice.
+    """
+    if ic._event_queue is None:
+      raise RuntimeError(
+          'Live event stream merging requires an initialized event queue.'
+      )
+    # Bind the queue to a local: the narrowing above does not reach into the
+    # nested pumps below.
+    event_queue = ic._event_queue
+    done_sentinel = object()
+    merged: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+
+    async def _pump_agent_events() -> None:
+      try:
+        async with aclosing(agent_events) as agen:
+          async for event in agen:
+            await merged.put(event)
+      finally:
+        # The queue consumer owns the merged sentinel, so end its stream
+        # rather than the merged one; that also lets already-enqueued events
+        # drain before the merge finishes.
+        await event_queue.put((done_sentinel, None))
+
+    async def _pump_queued_events() -> None:
+      try:
+        async with aclosing(
+            self._consume_event_queue(ic, done_sentinel)
+        ) as agen:
+          async for event in agen:
+            await merged.put(event)
+      finally:
+        await merged.put(done_sentinel)
+
+    agent_task = asyncio.create_task(_pump_agent_events())
+    queue_task = asyncio.create_task(_pump_queued_events())
+    try:
+      while True:
+        event_or_done = await merged.get()
+        if event_or_done is done_sentinel:
+          break
+        yield event_or_done
+    finally:
+      # _cleanup_root_task re-raises a failure from either pump.
+      await self._cleanup_root_task(agent_task, self.agent.name)
+      await self._cleanup_root_task(queue_task, self.agent.name)
 
   def _find_agent_to_run(
       self, session: Session, root_agent: BaseAgent
