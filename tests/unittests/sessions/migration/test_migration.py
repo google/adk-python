@@ -485,6 +485,32 @@ def test_migrate_from_sqlalchemy_pickle_ignores_non_object_json_fields():
   assert event.content is None
 
 
+@pytest.mark.parametrize("as_binary", [bytes, bytearray, memoryview])
+def test_migrate_from_sqlalchemy_pickle_reads_every_binary_column_type(
+    as_binary,
+):
+  """Pickled actions must survive whichever binary type the driver returns.
+
+  Events are read with raw SQL, so SQLAlchemy has no column type to coerce
+  with and the driver's own representation reaches the migration: psycopg2
+  returns a memoryview rather than bytes. Treating that as "some other
+  backend handed us an object" replaced the actions with an empty one while
+  the migration still reported success.
+  """
+  actions = EventActions(state_delta={"skey": 4}, escalate=True)
+
+  event = mfsp._row_to_event({
+      "id": "event-binary-actions",
+      "invocation_id": "invoke1",
+      "author": "user",
+      "timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
+      "actions": as_binary(pickle.dumps(actions)),
+  })
+
+  assert event.actions.state_delta == {"skey": 4}
+  assert event.actions.escalate is True
+
+
 @contextlib.contextmanager
 def _pinned_local_timezone(name: str):
   """Pins the process timezone for the duration of the block.
