@@ -22,7 +22,9 @@ from fastapi.openapi.models import OAuth2
 from google.adk.a2a import _compat
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.integrations.agent_identity.gcp_auth_provider_scheme import GcpAuthProviderScheme
 from google.adk.integrations.agent_registry import AgentRegistry
 from google.adk.integrations.agent_registry.agent_registry import _ProtocolType
 from google.adk.integrations.agent_registry.agent_registry import _should_use_mtls_endpoint
@@ -62,6 +64,34 @@ def _assert_protocol_version(agent_card, expected):
       iface.protocol_version for iface in agent_card.supported_interfaces or []
   ]
   assert expected in versions
+
+
+def _agent_with_binding_side_effect(path, *_args, **_kwargs):
+  """Serves an A2A agent bound to an auth provider."""
+  if path == "test-agent":
+    return {
+        "displayName": "TestAgent",
+        "description": "Test Desc",
+        "version": "1.0",
+        "agentId": "urn:agent:pub:ns:agent-456",
+        "protocols": [{
+            "type": _ProtocolType.A2A_AGENT,
+            "interfaces": [{
+                "url": "https://my-agent.com",
+                "protocolBinding": "HTTP_JSON",
+            }],
+        }],
+    }
+  if path == "bindings":
+    return {
+        "bindings": [{
+            "target": {"identifier": "urn:agent:pub:ns:agent-456"},
+            "authProviderBinding": {
+                "authProvider": "projects/123/locations/l/authProviders/ap-789"
+            },
+        }]
+    }
+  return {}
 
 
 class TestAgentRegistry:
@@ -815,6 +845,113 @@ class TestAgentRegistry:
         == "projects/123/locations/l/authProviders/ap-789"
     )
     assert toolset._auth_scheme.continue_uri == "https://override.com/continue"
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_remote_a2a_agent_with_binding(self, mock_make_request, registry):
+    """The agent's auth provider binding becomes its auth scheme."""
+    mock_make_request.side_effect = _agent_with_binding_side_effect
+
+    agent = registry.get_remote_a2a_agent(
+        "test-agent", continue_uri="https://override.com/continue"
+    )
+
+    assert isinstance(agent, RemoteA2aAgent)
+    auth_scheme = agent._auth_config.auth_scheme
+    assert isinstance(auth_scheme, GcpAuthProviderScheme)
+    assert auth_scheme.name == "projects/123/locations/l/authProviders/ap-789"
+    assert auth_scheme.continue_uri == "https://override.com/continue"
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_remote_a2a_agent_with_card_and_binding(
+      self, mock_make_request, registry
+  ):
+    """The binding is resolved for agents that publish a full card too."""
+
+    def side_effect(path, *args, **kwargs):
+      if path == "test-agent":
+        return {
+            "agentId": "urn:agent:pub:ns:agent-456",
+            "card": {
+                "type": "A2A_AGENT_CARD",
+                "content": {
+                    "name": "CardName",
+                    "description": "CardDesc",
+                    "version": "2.0",
+                    "url": "https://card-agent.com",
+                    "capabilities": {},
+                    "defaultInputModes": ["text"],
+                    "defaultOutputModes": ["text"],
+                    "skills": [],
+                },
+            },
+        }
+      return _agent_with_binding_side_effect(path, *args, **kwargs)
+
+    mock_make_request.side_effect = side_effect
+
+    agent = registry.get_remote_a2a_agent("test-agent")
+
+    assert (
+        agent._auth_config.auth_scheme.name
+        == "projects/123/locations/l/authProviders/ap-789"
+    )
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_remote_a2a_agent_with_explicit_auth(
+      self, mock_make_request, registry
+  ):
+    """An explicit scheme is used as is and skips the binding lookup."""
+    mock_make_request.side_effect = _agent_with_binding_side_effect
+    auth_scheme = GcpAuthProviderScheme(name="explicit-provider")
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="key"
+    )
+
+    agent = registry.get_remote_a2a_agent(
+        "test-agent",
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+
+    assert agent._auth_config.auth_scheme is auth_scheme
+    assert agent._auth_config.raw_auth_credential == auth_credential
+    assert "bindings" not in [
+        c.args[0] for c in mock_make_request.call_args_list
+    ]
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_remote_a2a_agent_without_binding(
+      self, mock_make_request, registry
+  ):
+    """An agent bound to no auth provider is left unauthenticated."""
+
+    def side_effect(path, *args, **kwargs):
+      if path == "bindings":
+        return {"bindings": []}
+      return _agent_with_binding_side_effect(path, *args, **kwargs)
+
+    mock_make_request.side_effect = side_effect
+
+    agent = registry.get_remote_a2a_agent("test-agent")
+
+    assert agent._auth_config is None
+
+  @patch.object(AgentRegistry, "_make_request")
+  def test_get_remote_a2a_agent_tolerates_bindings_failure(
+      self, mock_make_request, registry
+  ):
+    """A failed binding lookup does not fail agent construction."""
+
+    def side_effect(path, *args, **kwargs):
+      if path == "bindings":
+        raise RuntimeError("bindings unavailable")
+      return _agent_with_binding_side_effect(path, *args, **kwargs)
+
+    mock_make_request.side_effect = side_effect
+
+    agent = registry.get_remote_a2a_agent("test-agent")
+
+    assert agent._auth_config is None
 
 
 class TestAgentRegistryMtls:

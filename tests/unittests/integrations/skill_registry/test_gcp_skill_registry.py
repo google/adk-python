@@ -15,6 +15,7 @@
 """Tests for GCP Skill Registry."""
 
 import io
+import logging
 import os
 from unittest import mock
 import zipfile
@@ -182,6 +183,92 @@ async def test_search_skills_success():
       }),
       params={"search_string": "query"},
   )
+
+
+@pytest.mark.parametrize(
+    "bad_name, bad_description",
+    [
+        # A real first-party catalog entry: dots are outside the name pattern.
+        ("cloud.google.com-agent-platform-eval-flywheel", "Description bad"),
+        ("Skill-With-Caps", "Description bad"),
+        ("a" * 65, "Description bad"),
+        ("skill-no-description", ""),
+    ],
+)
+@pytest.mark.asyncio
+async def test_search_skills_skips_entry_failing_validation(
+    caplog, bad_name, bad_description
+):
+  """A catalog entry the client cannot represent must not sink the search.
+
+  The caller does not control what the catalog holds, so one entry that fails
+  frontmatter validation has to be skipped, leaving every valid hit returned.
+  Skipping loses data, so the warning is part of the contract: it is the only
+  signal the caller gets that a hit was dropped.
+  """
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  mock_response = mock.MagicMock()
+  mock_response.status_code = 200
+  mock_response.json.return_value = {
+      "skills": [
+          {
+              "name": (
+                  f"projects/test-project/locations/us-central1/skills/{bad_name}"
+              ),
+              "description": bad_description,
+          },
+          {
+              "name": (
+                  "projects/test-project/locations/us-central1/skills/skill2"
+              ),
+              "description": "Description 2",
+          },
+      ]
+  }
+
+  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      results = await registry.search_skills(query="query")
+
+  assert [r.name for r in results] == ["skill2"]
+  assert results[0].description == "Description 2"
+  assert len(caplog.records) == 1
+  assert bad_name in caplog.text
+
+
+@pytest.mark.parametrize("raw_name", [None, 7, ["a"]])
+@pytest.mark.asyncio
+async def test_search_skills_skips_entry_whose_name_is_not_a_string(
+    caplog, raw_name
+):
+  """A name that is not a string must take the same skip path.
+
+  `.split` on a non-string raises before validation is ever reached, which
+  would take down the whole call again -- the exact failure this skip removes.
+  """
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  mock_response = mock.MagicMock()
+  mock_response.status_code = 200
+  mock_response.json.return_value = {
+      "skills": [
+          {"name": raw_name, "description": "Description 1"},
+          {
+              "name": (
+                  "projects/test-project/locations/us-central1/skills/skill2"
+              ),
+              "description": "Description 2",
+          },
+      ]
+  }
+
+  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      results = await registry.search_skills(query="query")
+
+  assert [r.name for r in results] == ["skill2"]
+  assert len(caplog.records) == 1
 
 
 @pytest.mark.asyncio

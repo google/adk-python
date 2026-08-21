@@ -872,8 +872,11 @@ class DevServer(ApiServer):
 
       test_file_path = os.path.join(tests_dir, test_name)
 
-      with open(test_file_path, "w") as f:
-        json.dump(req.session_data, f, indent=2, sort_keys=True)
+      with open(test_file_path, "w", encoding="utf-8") as f:
+        json.dump(
+            req.session_data, f, indent=2, sort_keys=True, ensure_ascii=False
+        )
+        f.write("\n")
 
       return {"status": "success", "file": test_name}
 
@@ -908,7 +911,7 @@ class DevServer(ApiServer):
       if not os.path.exists(test_file_path):
         raise HTTPException(status_code=404, detail="Test file not found")
 
-      with open(test_file_path, "r") as f:
+      with open(test_file_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
     # ========== EVALUATION ENDPOINTS ==========
