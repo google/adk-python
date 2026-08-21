@@ -94,6 +94,9 @@ def test_workbench_exposes_smart_layout_and_accessible_icon_tooltips() -> None:
   assert 'id="add-node" class="btn primary">+ Add' in page
   assert "function toolsFor(node)" in page
   assert "node.type!=='tool'" in page
+  assert "function updateNewNodeFields()" in page
+  assert 'id="new-tool-implementation"' in page
+  assert "Select an LLM agent before adding a tool." in page
   assert "split(/\\s+/)" in page
   assert "function undo()" in page
   assert "function redo()" in page
