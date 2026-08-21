@@ -40,6 +40,10 @@ This directory contains specific developer guides for the ADK Python implementat
 * [ReflectAndRetryModelPlugin](plugins/reflect_retry_model_plugin/index.md) - Self-healing, concurrent-safe error recovery for model failures.
 * [ReflectAndRetryToolPlugin](plugins/reflect_retry_tool_plugin/index.md) - Self-healing, concurrent-safe error recovery for tool failures.
 
+### Runners
+* [Runner and InMemoryRunner](runners/runner/index.md) - Managing session lifecycles, state resolution, and streaming agent execution events.
+* [Runner Live Streaming](runners/runner/live.md) - Real-time bidirectional audio/text streaming and non-blocking background tool execution with Gemini Multimodal Live API.
+
 ### Sessions
 * [Session and BaseSessionService](sessions/session/index.md) - The session lifecycle, state scoping, and choosing a session service.
 * [State](sessions/state/index.md) - Session state and the app:, user:, and temp: prefixes that decide what is shared and what is stored.

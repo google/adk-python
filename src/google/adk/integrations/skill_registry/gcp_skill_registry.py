@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import ssl
 import tempfile
@@ -35,6 +36,9 @@ import google.auth.exceptions
 from google.auth.transport import mtls
 from google.auth.transport import requests as auth_requests
 import httpx
+from pydantic import ValidationError
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 class GCPSkillRegistry(SkillRegistry):
@@ -219,7 +223,10 @@ class GCPSkillRegistry(SkillRegistry):
       query: The search query.
 
     Returns:
-      A list of Frontmatter objects for discovery.
+      A list of Frontmatter objects for discovery. A catalog entry that fails
+      client-side frontmatter validation is skipped and logged, not raised: the
+      caller does not control what the catalog holds, so one entry it never
+      asked about must not break discovery for everything else.
     """
     async with self._create_httpx_client() as client:
       url = (
@@ -234,10 +241,23 @@ class GCPSkillRegistry(SkillRegistry):
 
       results = []
       for s in response_data.get("skills", []):
-        results.append(
-            models.Frontmatter(
-                name=s.get("name", "").split("/")[-1],
-                description=s.get("description", "") or "",
-            )
-        )
+        # A non-string name is as much outside the caller's control as a
+        # non-conforming one, so give it the same treatment: an empty name
+        # fails validation below and takes the skip path.
+        raw_name = s.get("name")
+        name = raw_name.split("/")[-1] if isinstance(raw_name, str) else ""
+        try:
+          results.append(
+              models.Frontmatter(
+                  name=name,
+                  description=s.get("description", "") or "",
+              )
+          )
+        except ValidationError as e:
+          logger.warning(
+              "Skipping search result %r: it does not pass frontmatter"
+              " validation: %s",
+              name,
+              e,
+          )
       return results

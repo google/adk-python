@@ -824,6 +824,11 @@ class AnthropicLlm(BaseLlm):
   model: str = "claude-sonnet-4-20250514"
   max_tokens: int = 8192
 
+  client: Optional[Union[AsyncAnthropic, AsyncAnthropicVertex]] = Field(
+      default=None, exclude=True
+  )
+  """An optional pre-configured Anthropic client."""
+
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
@@ -1151,6 +1156,8 @@ class AnthropicLlm(BaseLlm):
 
   @cached_property
   def _anthropic_client(self) -> AsyncAnthropic | AsyncAnthropicVertex:
+    if self.client:
+      return self.client
     client = AsyncAnthropic()
     # Let the SDK run its own credential resolution first, then ask the client
     # what it found. Enumerating credential sources here would reject setups
@@ -1190,6 +1197,10 @@ class Claude(AnthropicLlm):
   @cached_property
   @override
   def _anthropic_client(self) -> AsyncAnthropicVertex:
+    if self.client is not None:
+      if not isinstance(self.client, AsyncAnthropicVertex):
+        raise ValueError("Claude requires an AsyncAnthropicVertex client.")
+      return self.client
     project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GOOGLE_CLOUD_LOCATION")
 

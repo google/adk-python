@@ -594,11 +594,37 @@ class AgentRegistry:
   def get_remote_a2a_agent(
       self,
       agent_name: str,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
       *,
       httpx_client: httpx.AsyncClient | None = None,
+      continue_uri: str | None = None,
   ) -> RemoteA2aAgent:
-    """Creates a RemoteA2aAgent instance for a registered A2A Agent."""
+    """Creates a RemoteA2aAgent instance for a registered A2A Agent.
+
+    If `auth_scheme` is omitted, it is automatically resolved from the agent's
+    IAM bindings via `GcpAuthProviderScheme`.
+
+    Args:
+      agent_name: Resource name of the A2A Agent.
+      auth_scheme: Optional auth scheme. Resolved via bindings if omitted.
+      auth_credential: Optional auth credential.
+      httpx_client: Optional shared HTTP client.
+      continue_uri: Optional continue URI to override what is in the auth
+        provider.
+
+    Returns:
+      A RemoteA2aAgent for the registered agent.
+    """
     agent_info = self.get_agent_info(agent_name)
+
+    agent_id = agent_info.get("agentId")
+    if not isinstance(agent_id, str):
+      agent_id = None
+    if not auth_scheme:
+      auth_scheme = self._resolve_auth_provider_scheme(
+          agent_id, agent_name, continue_uri=continue_uri
+      )
 
     # Try to use the full agent card if available
     card = agent_info.get("card", {})
@@ -613,6 +639,8 @@ class AgentRegistry:
           agent_card=agent_card,
           description=agent_card.description,
           httpx_client=httpx_client,
+          auth_scheme=auth_scheme,
+          auth_credential=auth_credential,
       )
 
     name = self._clean_name(agent_info.get("displayName", agent_name))
@@ -655,6 +683,8 @@ class AgentRegistry:
         agent_card=agent_card,
         description=description,
         httpx_client=httpx_client,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
     )
 
 

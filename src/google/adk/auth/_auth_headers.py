@@ -48,7 +48,11 @@ def build_auth_headers(
   headers: dict[str, str] | None = None
 
   if credential.oauth2:
-    headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
+    # The token is checked here as it is on the HTTP bearer branch below. A
+    # failed exchange returns the credential with no access token, and without
+    # this the header is the literal string "Bearer None".
+    if credential.oauth2.access_token:
+      headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
   elif credential.http:
     # Handle HTTP authentication schemes
     if (
