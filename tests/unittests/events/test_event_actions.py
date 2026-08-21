@@ -20,6 +20,7 @@ import datetime
 import logging
 
 from google.adk.events.event_actions import _make_json_serializable
+from google.adk.events.event_actions import EscalationContext
 from google.adk.events.event_actions import EventActions
 from pydantic import BaseModel
 
@@ -148,3 +149,47 @@ class TestAgentStateSerialization:
         'Failed to serialize `agent_state`' in record.message
         for record in caplog.records
     )
+
+
+class TestEscalationContext:
+  """Tests for scoped loop escalation."""
+
+  def test_bare_escalate_is_root_and_stays_active(self):
+    actions = EventActions(escalate=True)
+    assert actions.consume_workflow_escalation('inner')
+    assert actions.consume_workflow_escalation('outer')
+    assert actions.is_active_escalation()
+    assert actions.escalation_context is None
+
+  def test_parent_scope_is_consumed_by_nearest_agent(self):
+    actions = EventActions(
+        escalate=True,
+        escalation_context=EscalationContext(type='parent'),
+    )
+    assert actions.consume_workflow_escalation('inner')
+    assert actions.escalation_context.handled_by == ['inner']
+    assert not actions.consume_workflow_escalation('outer')
+    assert not actions.is_active_escalation()
+
+  def test_target_agent_only_matches_named_loop(self):
+    actions = EventActions(
+        escalate=True,
+        escalation_context=EscalationContext(
+            type='parent', target_agent='outer'
+        ),
+    )
+    assert not actions.consume_workflow_escalation('inner')
+    assert actions.consume_workflow_escalation('outer')
+    assert not actions.is_active_escalation()
+
+  def test_escalation_context_round_trips(self):
+    actions = EventActions(
+        escalation_context=EscalationContext(
+            type='parent', handled_by=['inner'], target_agent='outer'
+        )
+    )
+    dumped = actions.model_dump(mode='json', by_alias=True)
+    restored = EventActions.model_validate(dumped)
+    assert restored.escalation_context.type == 'parent'
+    assert restored.escalation_context.handled_by == ['inner']
+    assert restored.escalation_context.target_agent == 'outer'

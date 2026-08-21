@@ -60,6 +60,11 @@ class LoopAgent(BaseAgent):
   When sub-agent generates an event with escalate or max_iterations are
   reached, the loop agent will stop.
 
+  ``escalate=True`` with no ``escalation_context`` (including ``exit_loop``)
+  exits every enclosing LoopAgent. ``EscalationContext(type='parent')``
+  (including ``exit_current_loop``) exits only this loop so an outer loop
+  can continue.
+
   .. deprecated::
     LoopAgent is deprecated in favor of Workflow and will be removed in a
     future version. Workflow cannot yet be used as an LlmAgent sub-agent.
@@ -112,9 +117,9 @@ class LoopAgent(BaseAgent):
 
         async with Aclosing(sub_agent.run_async(ctx)) as agen:
           async for event in agen:
-            yield event
-            if event.actions.escalate:
+            if event.actions.consume_workflow_escalation(self.name):
               should_exit = True
+            yield event
             if ctx.should_pause_invocation(event):
               pause_invocation = True
 

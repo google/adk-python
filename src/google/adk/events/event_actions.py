@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 from typing import cast
+from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
@@ -75,6 +76,34 @@ class EventCompaction(BaseModel):  # type: ignore[misc]
   """The compacted content of the events."""
 
 
+class EscalationContext(BaseModel):  # type: ignore[misc]
+  """Controls how far an ``escalate`` action travels in nested workflows.
+
+  ``escalate=True`` with no context is treated as ``type='root'`` so existing
+  ``exit_loop`` callers keep stopping every enclosing LoopAgent.
+  """
+
+  model_config = ConfigDict(
+      extra='forbid',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+  """The pydantic model config."""
+
+  type: Literal['parent', 'root'] = 'root'
+  """Which ancestor should stop.
+
+  - ``root``: every enclosing LoopAgent exits (same as escalate=True alone).
+  - ``parent``: only the nearest LoopAgent exits; outer loops continue.
+  """
+
+  handled_by: list[str] = Field(default_factory=list)
+  """LoopAgents that already consumed a parent-scoped escalation."""
+
+  target_agent: Optional[str] = None
+  """If set, only this named agent treats the event as a loop exit."""
+
+
 class EventActions(BaseModel):  # type: ignore[misc]
   """Represents the actions attached to an event."""
 
@@ -124,6 +153,13 @@ class EventActions(BaseModel):  # type: ignore[misc]
 
   escalate: Optional[bool] = None
   """The agent is escalating to a higher level agent."""
+
+  escalation_context: Optional[EscalationContext] = None
+  """Optional scope for ``escalate``.
+
+  When omitted, ``escalate=True`` stops every enclosing LoopAgent (root).
+  ``EscalationContext(type='parent')`` stops only the nearest LoopAgent.
+  """
 
   requested_auth_configs: dict[str, AuthConfig] = Field(default_factory=dict)
   """Authentication configurations requested by tool responses.
@@ -200,3 +236,38 @@ class EventActions(BaseModel):  # type: ignore[misc]
 
   set_model_response: Optional[Any] = None
   """The model response structured output."""
+
+  def is_active_escalation(self) -> bool:
+    """Whether this event should still stop ancestor workflows.
+
+    Parent-scoped escalations already consumed by a LoopAgent are inactive so
+    outer loops and ParallelAgent siblings keep running.
+    """
+    context = self.escalation_context
+    if context is None:
+      return bool(self.escalate)
+    if context.target_agent is not None:
+      return False
+    if context.type == 'parent' and context.handled_by:
+      return False
+    return bool(self.escalate) or context is not None
+
+  def consume_workflow_escalation(self, agent_name: str) -> bool:
+    """Returns True if ``agent_name`` should exit because of this event.
+
+    Parent-scoped escalations are consumed by the nearest LoopAgent, which
+    records itself on ``escalation_context.handled_by``. Root-scoped
+    escalations (including bare ``escalate=True``) stay active for every
+    ancestor.
+    """
+    context = self.escalation_context
+    if context is None:
+      return bool(self.escalate)
+    if context.target_agent is not None:
+      return context.target_agent == agent_name
+    if context.type == 'root':
+      return True
+    if context.handled_by:
+      return False
+    context.handled_by.append(agent_name)
+    return True

@@ -14,13 +14,24 @@
 
 from __future__ import annotations
 
+from ..events.event_actions import EscalationContext
 from .tool_context import ToolContext
 
 
 def exit_loop(tool_context: ToolContext) -> None:
-  """Exits the loop.
+  """Exits every enclosing loop.
 
   Call this function only when you are instructed to do so.
   """
   tool_context.actions.escalate = True
+  tool_context.actions.skip_summarization = True
+
+
+def exit_current_loop(tool_context: ToolContext) -> None:
+  """Exits only the nearest enclosing LoopAgent.
+
+  Outer loops keep running. Use ``exit_loop`` to stop every enclosing loop.
+  """
+  tool_context.actions.escalate = True
+  tool_context.actions.escalation_context = EscalationContext(type='parent')
   tool_context.actions.skip_summarization = True

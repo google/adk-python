@@ -21,8 +21,10 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.loop_agent import LoopAgentState
+from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EscalationContext
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
@@ -290,3 +292,261 @@ async def test_run_async_with_pause_preserves_sub_agent_state(
 def test_deprecation_mentions_sub_agent_limitation():
   with pytest.warns(DeprecationWarning, match='sub-agent'):
     LoopAgent(name='deprecated_loop', sub_agents=[])
+
+
+class _CountingAgent(BaseAgent):
+
+  def __init__(self, name: str, bucket: list[str]):
+    super().__init__(name=name)
+    object.__setattr__(self, '_bucket', bucket)
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    self._bucket.append(self.name)
+    yield Event(
+        author=self.name,
+        invocation_id=ctx.invocation_id,
+        content=types.Content(parts=[types.Part(text=self.name)]),
+    )
+
+
+class _ParentEscalateAgent(BaseAgent):
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(
+        author=self.name,
+        invocation_id=ctx.invocation_id,
+        content=types.Content(parts=[types.Part(text='exit inner')]),
+        actions=EventActions(
+            escalate=True,
+            escalation_context=EscalationContext(type='parent'),
+        ),
+    )
+
+
+class _TargetedEscalateAgent(BaseAgent):
+
+  def __init__(self, name: str, target_agent: str):
+    super().__init__(name=name)
+    object.__setattr__(self, '_target_agent', target_agent)
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(
+        author=self.name,
+        invocation_id=ctx.invocation_id,
+        content=types.Content(parts=[types.Part(text='exit named')]),
+        actions=EventActions(
+            escalate=True,
+            escalation_context=EscalationContext(
+                type='parent', target_agent=self._target_agent
+            ),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_nested_loop_root_escalate_stops_every_loop(
+    request: pytest.FixtureRequest,
+):
+  """Bare escalate=True still exits inner and outer loops (issue #2808 default)."""
+  inner_runs: list[str] = []
+  outer_runs: list[str] = []
+  inner = LoopAgent(
+      name=f'{request.function.__name__}_inner',
+      sub_agents=[
+          _CountingAgent(f'{request.function.__name__}_inner_work', inner_runs),
+          _TestingAgentWithEscalateAction(
+              name=f'{request.function.__name__}_root_exit'
+          ),
+      ],
+  )
+  outer = LoopAgent(
+      name=f'{request.function.__name__}_outer',
+      max_iterations=3,
+      sub_agents=[
+          inner,
+          _CountingAgent(f'{request.function.__name__}_outer_work', outer_runs),
+      ],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, outer
+  )
+  _ = [e async for e in outer.run_async(parent_ctx)]
+  assert inner_runs == [f'{request.function.__name__}_inner_work']
+  assert outer_runs == []
+
+
+@pytest.mark.asyncio
+async def test_nested_loop_parent_escalate_exits_only_inner(
+    request: pytest.FixtureRequest,
+):
+  """EscalationContext(type='parent') lets the outer loop keep iterating."""
+  inner_runs: list[str] = []
+  outer_runs: list[str] = []
+  inner_name = f'{request.function.__name__}_inner'
+  inner = LoopAgent(
+      name=inner_name,
+      sub_agents=[
+          _CountingAgent(f'{request.function.__name__}_inner_work', inner_runs),
+          _ParentEscalateAgent(name=f'{request.function.__name__}_parent_exit'),
+      ],
+  )
+  outer = LoopAgent(
+      name=f'{request.function.__name__}_outer',
+      max_iterations=3,
+      sub_agents=[
+          inner,
+          _CountingAgent(f'{request.function.__name__}_outer_work', outer_runs),
+      ],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, outer
+  )
+  events = [e async for e in outer.run_async(parent_ctx)]
+
+  assert inner_runs == [f'{request.function.__name__}_inner_work'] * 3
+  assert outer_runs == [f'{request.function.__name__}_outer_work'] * 3
+  parent_events = [
+      event
+      for event in events
+      if event.actions.escalation_context
+      and event.actions.escalation_context.type == 'parent'
+  ]
+  assert parent_events
+  assert parent_events[0].actions.escalation_context.handled_by == [inner_name]
+
+
+class _EscalateAfterNAgent(BaseAgent):
+  """Escalates with parent scope after this instance has run ``limit`` times."""
+
+  def __init__(self, name: str, limit: int):
+    super().__init__(name=name)
+    object.__setattr__(self, '_limit', limit)
+    object.__setattr__(self, '_calls', 0)
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    self._calls += 1
+    if self._calls >= self._limit:
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='break')]),
+          actions=EventActions(
+              escalate=True,
+              escalation_context=EscalationContext(type='parent'),
+          ),
+      )
+      return
+    yield Event(
+        author=self.name,
+        invocation_id=ctx.invocation_id,
+        content=types.Content(parts=[types.Part(text='continue')]),
+    )
+
+
+class _EscalateEveryNCountsAgent(BaseAgent):
+  """Parent-escalates whenever ``bucket`` length is a multiple of ``n``."""
+
+  def __init__(self, name: str, n: int, bucket: list[str]):
+    super().__init__(name=name)
+    object.__setattr__(self, '_n', n)
+    object.__setattr__(self, '_bucket', bucket)
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    if self._bucket and len(self._bucket) % self._n == 0:
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='break inner')]),
+          actions=EventActions(
+              escalate=True,
+              escalation_context=EscalationContext(type='parent'),
+          ),
+      )
+      return
+    yield Event(
+        author=self.name,
+        invocation_id=ctx.invocation_id,
+        content=types.Content(parts=[types.Part(text='continue')]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_nested_loop_parent_escalate_runs_inner_times_outer(
+    request: pytest.FixtureRequest,
+):
+  """Issue #2808: inner 5 × outer 5 should be 25 inner steps, not 5."""
+  inner_runs: list[str] = []
+  inner = LoopAgent(
+      name=f'{request.function.__name__}_inner',
+      sub_agents=[
+          _CountingAgent(f'{request.function.__name__}_inner_work', inner_runs),
+          _EscalateEveryNCountsAgent(
+              name=f'{request.function.__name__}_inner_break',
+              n=5,
+              bucket=inner_runs,
+          ),
+      ],
+  )
+  outer = LoopAgent(
+      name=f'{request.function.__name__}_outer',
+      sub_agents=[
+          inner,
+          _EscalateAfterNAgent(
+              name=f'{request.function.__name__}_outer_break', limit=5
+          ),
+      ],
+  )
+  root = SequentialAgent(
+      name=f'{request.function.__name__}_root',
+      sub_agents=[outer],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, root
+  )
+  _ = [e async for e in root.run_async(parent_ctx)]
+  assert inner_runs == [f'{request.function.__name__}_inner_work'] * 25
+
+
+@pytest.mark.asyncio
+async def test_nested_loop_target_agent_skips_inner(
+    request: pytest.FixtureRequest,
+):
+  """target_agent on the outer loop leaves the inner loop running until max."""
+  inner_runs: list[str] = []
+  outer_name = f'{request.function.__name__}_outer'
+  inner = LoopAgent(
+      name=f'{request.function.__name__}_inner',
+      max_iterations=2,
+      sub_agents=[
+          _CountingAgent(f'{request.function.__name__}_inner_work', inner_runs),
+          _TargetedEscalateAgent(
+              name=f'{request.function.__name__}_aim_outer',
+              target_agent=outer_name,
+          ),
+      ],
+  )
+  outer = LoopAgent(
+      name=outer_name,
+      max_iterations=5,
+      sub_agents=[inner],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, outer
+  )
+  _ = [e async for e in outer.run_async(parent_ctx)]
+  assert inner_runs == [f'{request.function.__name__}_inner_work'] * 2

@@ -13,10 +13,12 @@
 # limitations under the License.
 
 from .event import Event
+from .event_actions import EscalationContext
 from .event_actions import EventActions
 from .request_input import RequestInput
 
 __all__ = [
+    'EscalationContext',
     'Event',
     'EventActions',
     'RequestInput',

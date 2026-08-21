@@ -57,7 +57,7 @@ def _create_branch_ctx_for_sub_agent(
 
 def _has_escalate_action(event: Event) -> bool:
   """Returns whether the event asks the parent workflow to exit early."""
-  return bool(event.actions.escalate)
+  return event.actions.is_active_escalation()
 
 
 def _cancel_tasks(tasks: list[asyncio.Task[None]]) -> None:

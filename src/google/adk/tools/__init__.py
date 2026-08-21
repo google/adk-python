@@ -30,6 +30,7 @@ if TYPE_CHECKING:
   from .discovery_engine_search_tool import SearchResultMode
   from .enterprise_search_tool import enterprise_web_search_tool as enterprise_web_search
   from .example_tool import ExampleTool
+  from .exit_loop_tool import exit_current_loop
   from .exit_loop_tool import exit_loop
   from .function_tool import FunctionTool
   from .get_user_choice_tool import get_user_choice_tool as get_user_choice
@@ -68,6 +69,7 @@ _LAZY_MAPPING = {
         'enterprise_web_search_tool',
     ),
     'ExampleTool': ('.example_tool', 'ExampleTool'),
+    'exit_current_loop': ('.exit_loop_tool', 'exit_current_loop'),
     'exit_loop': ('.exit_loop_tool', 'exit_loop'),
     'FunctionTool': ('.function_tool', 'FunctionTool'),
     'get_user_choice': ('.get_user_choice_tool', 'get_user_choice_tool'),
