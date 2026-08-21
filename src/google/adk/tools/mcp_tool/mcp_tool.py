@@ -74,6 +74,35 @@ _RESERVED_TOOL_NAMES = frozenset({
     transfer_to_agent.__name__,
 })
 
+_UNSET = object()
+
+
+def _read_field(model: Any, *names: str) -> Any:
+  """Reads the first attribute in ``names`` that ``model`` defines.
+
+  MCP SDK 1.x names its wire fields in camelCase. 2.x renames them to
+  snake_case and drops the camelCase attribute. Reading both spellings keeps
+  ADK working on either.
+
+  Args:
+    model: The MCP model to read from.
+    *names: Attribute names to try, in order.
+
+  Returns:
+    The value of the first attribute that exists.
+
+  Raises:
+    AttributeError: The model defines none of ``names``.
+  """
+  for name in names:
+    value = getattr(model, name, _UNSET)
+    if value is not _UNSET:
+      return value
+  raise AttributeError(
+      f"{type(model).__name__} defines none of {names}. This usually means the"
+      " installed MCP SDK renamed the field again."
+  )
+
 
 @runtime_checkable
 class ProgressCallbackFactory(Protocol):
@@ -222,8 +251,8 @@ class McpTool(BaseAuthenticatedTool):
     Returns:
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
-    input_schema = self._mcp_tool.inputSchema
-    output_schema = self._mcp_tool.outputSchema
+    input_schema = _read_field(self._mcp_tool, "inputSchema", "input_schema")
+    output_schema = _read_field(self._mcp_tool, "outputSchema", "output_schema")
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
       function_decl = FunctionDeclaration(
           name=self.name,
@@ -527,7 +556,12 @@ class McpTool(BaseAuthenticatedTool):
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
-    if isinstance(response, dict) and response.get("isError"):
+    # `response` is a dumped CallToolResult. MCP SDK 1.x names the field
+    # `isError`; 2.x names it `is_error`, so `model_dump` emits the snake_case
+    # key and a lookup of `isError` alone silently stops reporting tool errors.
+    if isinstance(response, dict) and (
+        response.get("isError") or response.get("is_error")
+    ):
       return "MCP_TOOL_ERROR"
     return None
 

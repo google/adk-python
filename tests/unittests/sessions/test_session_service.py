@@ -55,6 +55,12 @@ from . import _conformance
 from ._conformance import session_service  # noqa: F401
 
 
+def test_get_session_config_rejects_negative_num_recent_events():
+  """A negative recent-event limit is rejected at configuration time."""
+  with pytest.raises(ValueError, match='greater than or equal to 0'):
+    GetSessionConfig(num_recent_events=-1)
+
+
 class SessionServiceType(enum.Enum):
   IN_MEMORY = 'IN_MEMORY'
   DATABASE = 'DATABASE'

@@ -14,6 +14,7 @@
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
 from unittest.mock import Mock
@@ -96,6 +97,88 @@ class TestMCPToolLegacy:
     assert declaration.name == "test_tool"
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
+
+
+class _SnakeCaseMCPTool:
+  """Mock MCP tool shaped like SDK 2.x, which renamed the wire fields."""
+
+  def __init__(self, output_schema=None):
+    self.name = "test_tool"
+    self.description = "Test tool description"
+    self.meta = None
+    self.input_schema = {
+        "type": "object",
+        "properties": {"param1": {"type": "string"}},
+        "required": ["param1"],
+    }
+    self.output_schema = output_schema
+
+
+class TestMCPToolFieldSpellings:
+  """ADK must read MCP fields on both SDK 1.x (camelCase) and 2.x (snake)."""
+
+  def _tool(self, mcp_tool_obj):
+    return MCPTool(
+        mcp_tool=mcp_tool_obj,
+        mcp_session_manager=Mock(spec=MCPSessionManager),
+    )
+
+  def test_read_field_prefers_the_first_name_present(self):
+    model = SimpleNamespace(inputSchema={"a": 1})
+
+    assert mcp_tool._read_field(model, "inputSchema", "input_schema") == {
+        "a": 1
+    }
+
+  def test_read_field_falls_back_to_the_later_name(self):
+    model = SimpleNamespace(input_schema={"a": 1})
+
+    assert mcp_tool._read_field(model, "inputSchema", "input_schema") == {
+        "a": 1
+    }
+
+  def test_read_field_returns_falsy_values(self):
+    """An empty schema is a real value, not a missing attribute."""
+    model = SimpleNamespace(input_schema={})
+
+    assert mcp_tool._read_field(model, "inputSchema", "input_schema") == {}
+
+  def test_read_field_raises_when_no_name_matches(self):
+    with pytest.raises(AttributeError, match="defines none of"):
+      mcp_tool._read_field(SimpleNamespace(), "inputSchema", "input_schema")
+
+  def test_get_declaration_reads_snake_case_schemas(self):
+    """SDK 2.x drops the camelCase attribute, so reading it would raise."""
+    tool = self._tool(_SnakeCaseMCPTool())
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      declaration = tool._get_declaration()
+
+    assert declaration.parameters_json_schema == {
+        "type": "object",
+        "properties": {"param1": {"type": "string"}},
+        "required": ["param1"],
+    }
+
+  def test_detect_error_in_response_reads_camel_case(self):
+    tool = self._tool(MockMCPTool())
+
+    assert tool._detect_error_in_response({"isError": True}) == "MCP_TOOL_ERROR"
+
+  def test_detect_error_in_response_reads_snake_case(self):
+    """SDK 2.x dumps `is_error`; reading only `isError` loses tool errors."""
+    tool = self._tool(MockMCPTool())
+
+    assert (
+        tool._detect_error_in_response({"is_error": True}) == "MCP_TOOL_ERROR"
+    )
+
+  def test_detect_error_in_response_returns_none_for_a_clean_result(self):
+    tool = self._tool(MockMCPTool())
+
+    assert tool._detect_error_in_response({"isError": False}) is None
 
 
 class TestMCPToolWithJsonSchema:
