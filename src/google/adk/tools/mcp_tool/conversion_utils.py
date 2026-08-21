@@ -56,7 +56,7 @@ def adk_to_mcp_tool_type(tool: BaseTool) -> mcp_types.Tool:
   return mcp_types.Tool(
       name=tool.name,
       description=tool.description,
-      inputSchema=input_schema,
+      input_schema=input_schema,
   )
 
 

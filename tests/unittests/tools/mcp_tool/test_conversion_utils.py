@@ -41,7 +41,7 @@ class TestAdkToMcpToolType:
     assert isinstance(result, mcp_types.Tool)
     assert result.name == "test_tool"
     assert result.description == "Test tool"
-    assert result.inputSchema == {}
+    assert result.input_schema == {}
 
   def test_tool_with_parameters_schema(self):
     """Test conversion when tool has parameters Schema object."""
@@ -74,14 +74,14 @@ class TestAdkToMcpToolType:
     assert isinstance(result, mcp_types.Tool)
     assert result.name == "get_weather"
     assert result.description == "Gets weather information"
-    assert "type" in result.inputSchema
-    assert result.inputSchema["type"] == "object"
-    assert "properties" in result.inputSchema
-    assert "location" in result.inputSchema["properties"]
-    assert "units" in result.inputSchema["properties"]
-    assert result.inputSchema["properties"]["location"]["type"] == "string"
-    assert "required" in result.inputSchema
-    assert "location" in result.inputSchema["required"]
+    assert "type" in result.input_schema
+    assert result.input_schema["type"] == "object"
+    assert "properties" in result.input_schema
+    assert "location" in result.input_schema["properties"]
+    assert "units" in result.input_schema["properties"]
+    assert result.input_schema["properties"]["location"]["type"] == "string"
+    assert "required" in result.input_schema
+    assert "location" in result.input_schema["required"]
 
   def test_tool_with_parameters_json_schema(self):
     """Test conversion when tool has parameters_json_schema."""
@@ -117,7 +117,7 @@ class TestAdkToMcpToolType:
     assert result.name == "search_database"
     assert result.description == "Searches a database"
     # Should use the JSON schema directly
-    assert result.inputSchema == json_schema
+    assert result.input_schema == json_schema
 
   def test_tool_with_no_parameters(self):
     """Test conversion when tool has declaration but no parameters."""
@@ -136,7 +136,7 @@ class TestAdkToMcpToolType:
     assert isinstance(result, mcp_types.Tool)
     assert result.name == "get_current_time"
     assert result.description == "Gets the current time"
-    assert not result.inputSchema
+    assert not result.input_schema
 
   def test_tool_prefers_json_schema_over_parameters(self):
     """Test that parameters_json_schema is preferred over parameters."""
@@ -168,9 +168,9 @@ class TestAdkToMcpToolType:
     result = adk_to_mcp_tool_type(mock_tool)
 
     # Should use parameters_json_schema, not parameters
-    assert result.inputSchema == json_schema
-    assert "json_param" in result.inputSchema["properties"]
-    assert "schema_param" not in result.inputSchema["properties"]
+    assert result.input_schema == json_schema
+    assert "json_param" in result.input_schema["properties"]
+    assert "schema_param" not in result.input_schema["properties"]
 
   def test_tool_with_complex_nested_schema(self):
     """Test conversion with complex nested parameters_json_schema."""
@@ -208,7 +208,7 @@ class TestAdkToMcpToolType:
     result = adk_to_mcp_tool_type(mock_tool)
 
     assert isinstance(result, mcp_types.Tool)
-    assert result.inputSchema == json_schema
+    assert result.input_schema == json_schema
 
 
 class TestGeminiToJsonSchema:

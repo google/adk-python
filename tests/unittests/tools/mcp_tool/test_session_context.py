@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
-from datetime import timedelta
 import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -26,7 +25,7 @@ from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.session_context import _format_exception
 from google.adk.tools.mcp_tool.session_context import SessionContext
-import httpx
+import httpx2
 from mcp import ClientSession
 import pytest
 
@@ -424,7 +423,7 @@ class TestSessionContext:
       # Verify ClientSession was called with read_timeout_seconds for stdio
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(seconds=5.0)
+      assert call_args.kwargs['read_timeout_seconds'] == 5.0
 
       await session_context.close()
 
@@ -473,9 +472,7 @@ class TestSessionContext:
       # Verify ClientSession was called with sse_read_timeout
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(
-          seconds=300.0
-      )
+      assert call_args.kwargs['read_timeout_seconds'] == 300.0
 
       await session_context.close()
 
@@ -947,9 +944,9 @@ class TestFormatException:
     assert _format_exception(exc) == 'normal error'
 
   def test_format_exception_http_status_error(self):
-    request = httpx.Request('GET', 'http://test')
-    response = httpx.Response(403, request=request, text='Forbidden access')
-    exc = httpx.HTTPStatusError(
+    request = httpx2.Request('GET', 'http://test')
+    response = httpx2.Response(403, request=request, text='Forbidden access')
+    exc = httpx2.HTTPStatusError(
         '403 Forbidden', request=request, response=response
     )
 
@@ -964,9 +961,9 @@ class TestFormatException:
         super().__init__(message)
         self.exceptions = exceptions
 
-    request = httpx.Request('GET', 'http://test')
-    response = httpx.Response(403, request=request, text='Forbidden access')
-    exc1 = httpx.HTTPStatusError(
+    request = httpx2.Request('GET', 'http://test')
+    response = httpx2.Response(403, request=request, text='Forbidden access')
+    exc1 = httpx2.HTTPStatusError(
         '403 Forbidden', request=request, response=response
     )
     exc2 = ValueError('another error')

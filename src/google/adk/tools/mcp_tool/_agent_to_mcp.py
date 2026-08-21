@@ -24,8 +24,8 @@ import weakref
 
 from google.genai import types
 from mcp import types as mcp_types
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import MCPServer
 from mcp.server.session import ServerSession
 
 from ...agents.base_agent import BaseAgent
@@ -70,13 +70,13 @@ def _part_to_content(part: types.Part) -> Optional[mcp_types.ContentBlock]:
     data = base64.b64encode(blob.data).decode("ascii")
     mime = blob.mime_type or "application/octet-stream"
     if mime.startswith("image/"):
-      return mcp_types.ImageContent(type="image", data=data, mimeType=mime)
+      return mcp_types.ImageContent(type="image", data=data, mime_type=mime)
     if mime.startswith("audio/"):
-      return mcp_types.AudioContent(type="audio", data=data, mimeType=mime)
+      return mcp_types.AudioContent(type="audio", data=data, mime_type=mime)
     return mcp_types.EmbeddedResource(
         type="resource",
         resource=mcp_types.BlobResourceContents(
-            uri=_INLINE_RESOURCE_URI, blob=data, mimeType=mime
+            uri=_INLINE_RESOURCE_URI, blob=data, mime_type=mime
         ),
     )
   return None
@@ -173,7 +173,7 @@ def to_mcp_server(
     name: Optional[str] = None,
     instructions: Optional[str] = None,
     runner: Optional[Runner] = None,
-) -> FastMCP:
+) -> MCPServer:
   """Exposes an ADK agent as an MCP server.
 
   The returned server registers a single MCP tool that runs the agent: an MCP
@@ -197,7 +197,7 @@ def to_mcp_server(
       services.
 
   Returns:
-    A ``FastMCP`` server exposing the agent as a single tool.
+    A ``MCPServer`` server exposing the agent as a single tool.
 
   Example::
 
@@ -206,7 +206,7 @@ def to_mcp_server(
       server.run(transport="stdio")
   """
   tool_name = name or agent.name or "adk_agent"
-  server = FastMCP(name=tool_name, instructions=instructions)
+  server = MCPServer(name=tool_name, instructions=instructions)
   agent_runner = runner if runner is not None else _build_runner(agent)
   # Maps each MCP connection to its ADK session; WeakKeyDictionary drops the
   # entry when the connection is garbage-collected. pylint wrongly flags the

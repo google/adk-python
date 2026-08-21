@@ -160,7 +160,7 @@ before answering questions related to the resources.
       try:
         data = base64.b64decode(content.blob)
         # Basic check for mime type or default
-        mime_type = content.mimeType or "application/octet-stream"
+        mime_type = content.mime_type or "application/octet-stream"
         return types.Part.from_bytes(data=data, mime_type=mime_type)
       except Exception:
         return types.Part.from_text(
