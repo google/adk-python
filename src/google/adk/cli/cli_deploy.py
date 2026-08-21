@@ -18,6 +18,7 @@ import importlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import traceback
@@ -40,6 +41,23 @@ _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
 _AGENT_ENGINE_REQUIREMENT: Final[str] = (
     'google-cloud-aiplatform[adk,agent_engines]'
 )
+
+
+def _on_rm_error(func: Callable[..., Any], path: str, exc_info: Any) -> None:
+  """Error handler for shutil.rmtree to handle read-only files on Windows."""
+  os.chmod(path, stat.S_IWRITE)
+  func(path)
+
+
+def _robust_rmtree(path: str) -> None:
+  """Remove a directory tree, handling read-only files on Windows."""
+  if _IS_WINDOWS:
+    if sys.version_info >= (3, 12):
+      shutil.rmtree(path, onexc=lambda fn, p, exc: _on_rm_error(fn, p, None))
+    else:
+      shutil.rmtree(path, onerror=_on_rm_error)
+  else:
+    shutil.rmtree(path)
 
 
 def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
@@ -90,6 +108,8 @@ ENV GOOGLE_CLOUD_LOCATION={gcp_region}
 
 # Install ADK - Start
 RUN pip install "google-adk[a2a]=={adk_version}"
+# Remove dev_server.py to ensure production-safe endpoints only (disabling dev endpoints in production)
+RUN python -c "import os, glob, google.adk.cli as cli; d = os.path.dirname(cli.__file__); [os.remove(f) for f in glob.glob(os.path.join(d, 'dev_server*'))]; [os.remove(f) for f in glob.glob(os.path.join(d, '__pycache__', 'dev_server*'))]" || true
 # Install ADK - End
 
 # Copy agent - Start
@@ -665,6 +685,7 @@ def to_cloud_run(
     a2a: bool = False,
     trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
+    with_cloud_run_sandbox: bool = False,
 ) -> None:
   """Deploys an agent to Google Cloud Run.
 
@@ -701,6 +722,8 @@ def to_cloud_run(
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
+    with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
+      execution.
   """
   app_name = app_name or os.path.basename(agent_folder)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
@@ -712,7 +735,7 @@ def to_cloud_run(
   # remove temp_folder if exists
   if os.path.exists(temp_folder):
     click.echo('Removing existing files')
-    shutil.rmtree(temp_folder)
+    _robust_rmtree(temp_folder)
 
   try:
     # copy agent source code
@@ -780,13 +803,18 @@ def to_cloud_run(
     adk_managed_args = {'--source', '--project', '--port', '--verbosity'}
     if region:
       adk_managed_args.add('--region')
+    if with_cloud_run_sandbox:
+      adk_managed_args.add('--sandbox-launcher')
 
     # Validate that extra gcloud args don't conflict with ADK-managed args
     _validate_gcloud_extra_args(extra_gcloud_args, adk_managed_args)
 
     # Build the command with extra gcloud args
-    gcloud_cmd = [
-        _GCLOUD_CMD,
+    gcloud_cmd = [_GCLOUD_CMD]
+    if with_cloud_run_sandbox:
+      # --sandbox-launcher is only supported on the beta release track.
+      gcloud_cmd.append('beta')
+    gcloud_cmd += [
         'run',
         'deploy',
         service_name,
@@ -799,8 +827,9 @@ def to_cloud_run(
         str(port),
         '--verbosity',
         log_level.lower() if log_level else verbosity,
-        '--sandbox-launcher',
     ]
+    if with_cloud_run_sandbox:
+      gcloud_cmd.append('--sandbox-launcher')
 
     # Handle labels specially - merge user labels with ADK label
     user_labels = []
@@ -828,7 +857,7 @@ def to_cloud_run(
     subprocess.run(gcloud_cmd, check=True)
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
-    shutil.rmtree(temp_folder)
+    _robust_rmtree(temp_folder)
 
 
 def _print_agent_engine_url(resource_name: str) -> None:
@@ -847,6 +876,15 @@ def _print_agent_engine_url(resource_name: str) -> None:
     click.secho(
         f'\n🎉 View your deployed agent here:\n{url}\n', fg='cyan', bold=True
     )
+
+
+def _print_gemini_enterprise_hint() -> None:
+  """Prints a pointer to the Gemini Enterprise registration docs."""
+  click.secho(
+      'To make this agent available in Gemini Enterprise, register it by'
+      ' following:\nhttps://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent\n',
+      fg='cyan',
+  )
 
 
 def to_agent_engine(
@@ -986,7 +1024,7 @@ def to_agent_engine(
   temp_folder_path = os.path.join(parent_folder, temp_folder)
   if os.path.exists(temp_folder_path):
     click.echo('Removing existing files')
-    shutil.rmtree(temp_folder_path)
+    _robust_rmtree(temp_folder_path)
 
   try:
     ignore_func = _get_ignore_patterns_func(agent_folder)
@@ -1293,11 +1331,12 @@ def to_agent_engine(
         click.secho(f'Cleaned up the instance: {resource_name}', fg='green')
       raise e
     _print_agent_engine_url(resource_name)
+    _print_gemini_enterprise_hint()
   finally:
     temp_folder_path = os.path.join(parent_folder, temp_folder)
     click.echo(f'Cleaning up the temp folder: {temp_folder_path}')
     os.chdir(original_cwd)
-    shutil.rmtree(temp_folder_path)
+    _robust_rmtree(temp_folder_path)
 
 
 def to_gke(
@@ -1376,7 +1415,7 @@ def to_gke(
   # remove temp_folder if exists
   if os.path.exists(temp_folder):
     click.echo('  - Removing existing temporary directory...')
-    shutil.rmtree(temp_folder)
+    _robust_rmtree(temp_folder)
 
   try:
     # copy agent source code
@@ -1447,7 +1486,7 @@ def to_gke(
     image_name = f'gcr.io/{project}/{service_name}'
     subprocess.run(
         [
-            'gcloud',
+            _GCLOUD_CMD,
             'builds',
             'submit',
             '--tag',
@@ -1517,7 +1556,7 @@ spec:
     click.echo('  - Getting cluster credentials...')
     subprocess.run(
         [
-            'gcloud',
+            _GCLOUD_CMD,
             'container',
             'clusters',
             'get-credentials',
@@ -1547,7 +1586,7 @@ spec:
   finally:
     click.secho('\nSTEP 5: Cleaning up...', bold=True)
     click.echo(f'  - Removing temporary directory: {temp_folder}')
-    shutil.rmtree(temp_folder)
+    _robust_rmtree(temp_folder)
   click.secho(
       '\n🎉 Deployment to GKE finished successfully!', fg='cyan', bold=True
   )

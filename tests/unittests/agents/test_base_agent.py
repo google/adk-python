@@ -14,6 +14,7 @@
 
 """Testings for the BaseAgent."""
 
+import abc
 from enum import Enum
 from functools import partial
 import logging
@@ -27,11 +28,13 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.workflow import BaseNode
 from google.genai import types
 import pytest
 import pytest_mock
@@ -973,6 +976,32 @@ def test_validate_sub_agents_unique_names_empty_list(
   assert len(parent.sub_agents) == 0
 
 
+@pytest.mark.parametrize('agent_class', [BaseNode, BaseAgent, LlmAgent])
+def test_agent_classes_are_abstract(agent_class: type[BaseNode]):
+  """Each class reaches `abc.ABC` through an explicitly declared base.
+
+  Subclasses declare `@abc.abstractmethod` without inheriting `abc.ABC`
+  themselves. Static type checkers only honor that when a base says `abc.ABC`
+  in source, because they do not see `ABCMeta` through pydantic's
+  `ModelMetaclass`. Losing it makes those subclasses look concrete and their
+  abstract methods look like they return `None`.
+  """
+  assert issubclass(agent_class, abc.ABC)
+
+
+def test_abstract_subclass_cannot_be_instantiated():
+  """A subclass that leaves an abstract method unimplemented still raises."""
+
+  class _Incomplete(LlmAgent):
+
+    @abc.abstractmethod
+    def summarize(self) -> str:
+      """Left unimplemented on purpose."""
+
+  with pytest.raises(TypeError, match='abstract'):
+    _Incomplete(name='incomplete')
+
+
 if __name__ == '__main__':
   pytest.main([__file__])
 
@@ -1078,3 +1107,91 @@ async def test_create_agent_state_event():
   assert event is not None
   assert event.actions.agent_state is None
   assert not event.actions.end_of_agent
+
+
+_OMITTED = object()
+
+# (field name, name of the canonical property that resolves it)
+_CANONICAL_CALLBACK_PROPERTIES = [
+    ('before_agent_callback', 'canonical_before_agent_callbacks'),
+    ('after_agent_callback', 'canonical_after_agent_callbacks'),
+]
+
+
+@pytest.mark.parametrize(
+    'field_name, property_name', _CANONICAL_CALLBACK_PROPERTIES
+)
+@pytest.mark.parametrize('value', [_OMITTED, None], ids=['omitted', 'none'])
+def test_canonical_agent_callbacks_unset_resolves_to_empty_list(
+    field_name, property_name, value
+):
+  """Callers iterate the canonical list directly, so it is never None."""
+  kwargs = {} if value is _OMITTED else {field_name: value}
+  agent = _TestingAgent(name='test_agent', **kwargs)
+
+  assert getattr(agent, property_name) == []
+
+
+@pytest.mark.parametrize(
+    'field_name, property_name', _CANONICAL_CALLBACK_PROPERTIES
+)
+def test_canonical_agent_callbacks_single_callable_resolves_to_one_element_list(
+    field_name, property_name
+):
+  """A bare callable is wrapped so callers only ever handle the list form."""
+  agent = _TestingAgent(
+      name='test_agent', **{field_name: _before_agent_callback_noop}
+  )
+
+  assert getattr(agent, property_name) == [_before_agent_callback_noop]
+
+
+@pytest.mark.parametrize(
+    'field_name, property_name', _CANONICAL_CALLBACK_PROPERTIES
+)
+def test_canonical_agent_callbacks_list_keeps_declaration_order(
+    field_name, property_name
+):
+  """Order matters: the chain stops at the first callback that answers."""
+  callbacks = [
+      _before_agent_callback_noop,
+      _async_before_agent_callback_noop,
+  ]
+  agent = _TestingAgent(name='test_agent', **{field_name: callbacks})
+
+  assert getattr(agent, property_name) == [
+      _before_agent_callback_noop,
+      _async_before_agent_callback_noop,
+  ]
+
+
+def test_find_agent_prefers_self_over_same_named_descendant(
+    request: pytest.FixtureRequest,
+):
+  """find_agent matches self first; only find_sub_agent skips self."""
+  shared_name = f'{request.function.__name__}_shared_name'
+  descendant = _TestingAgent(name=shared_name)
+  agent = _TestingAgent(name=shared_name, sub_agents=[descendant])
+
+  assert agent.find_agent(shared_name) is agent
+  assert agent.find_sub_agent(shared_name) is descendant
+
+
+def test_find_agent_with_duplicate_sub_agent_names_returns_the_first(
+    request: pytest.FixtureRequest,
+):
+  """Duplicate names only warn; the earlier sub-agent shadows the later."""
+  duplicate_name = f'{request.function.__name__}_duplicate'
+  first = _TestingAgent(name=duplicate_name, description='first')
+  second = _TestingAgent(name=duplicate_name, description='second')
+
+  parent = _TestingAgent(
+      name=f'{request.function.__name__}_parent',
+      sub_agents=[first, second],
+  )
+
+  assert parent.sub_agents[0] is first
+  assert parent.sub_agents[1] is second
+  assert first.parent_agent is parent
+  assert second.parent_agent is parent
+  assert parent.find_agent(duplicate_name) is first

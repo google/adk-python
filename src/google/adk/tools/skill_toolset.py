@@ -40,6 +40,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..telemetry import _instrumentation
 from ..utils import instructions_utils
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
@@ -249,17 +250,20 @@ class LoadSkillTool(BaseTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    skill_name = args.get("skill_name")
+    skill_name: str | None = args.get("skill_name")
     if not skill_name:
       return {
           "error": "Argument 'skill_name' is required.",
           "error_code": "INVALID_ARGUMENTS",
       }
 
+    skill_telemetry = _instrumentation.track_skill_load(skill_name)
+
     try:
       skill = await self._toolset._get_or_fetch_skill(
           skill_name, tool_context.invocation_id
       )
+      skill_telemetry.skill = skill
     except Exception as e:
       return {
           "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
@@ -356,10 +360,15 @@ class LoadSkillResourceTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
 
+    skill_telemetry = _instrumentation.track_skill_resource_load(
+        skill_name, file_path
+    )
+
     try:
       skill = await self._toolset._get_or_fetch_skill(
           skill_name, tool_context.invocation_id
       )
+      skill_telemetry.skill = skill
     except Exception as e:
       return {
           "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
@@ -1288,11 +1297,24 @@ class SkillToolset(BaseToolset):
     # Collect all candidate tools from both individual tools and toolsets
     candidate_tools = self._provided_tools_by_name.copy()
     if self._provided_toolsets:
-      ts_results = await asyncio.gather(*(
-          ts.get_tools_with_prefix(readonly_context)
-          for ts in self._provided_toolsets
-      ))
-      for ts_tools in ts_results:
+      ts_results = await asyncio.gather(
+          *(
+              ts.get_tools_with_prefix(readonly_context)
+              for ts in self._provided_toolsets
+          ),
+          return_exceptions=True,
+      )
+      for toolset, ts_tools in zip(self._provided_toolsets, ts_results):
+        if isinstance(ts_tools, Exception):
+          logger.warning(
+              "Skipping toolset %s while resolving skill additional tools: %s",
+              type(toolset).__name__,
+              ts_tools,
+              exc_info=ts_tools,
+          )
+          continue
+        if isinstance(ts_tools, BaseException):
+          raise ts_tools
         for t in ts_tools:
           candidate_tools[t.name] = t
 

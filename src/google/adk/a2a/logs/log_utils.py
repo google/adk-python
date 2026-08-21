@@ -49,14 +49,9 @@ def _is_a2a_task(obj: Any) -> TypeGuard[A2ATask]:
     return type(obj).__name__ == "Task" and hasattr(obj, "status")
 
 
-def _is_a2a_client_event(obj) -> bool:
+def _is_a2a_client_event(obj: object) -> TypeGuard[A2AClientEvent]:
   """Check if an object is an A2A Client Event (Task, UpdateEvent) tuple."""
-  try:
-    return isinstance(obj, tuple) and _is_a2a_task(obj[0])
-  except (TypeError, AttributeError):
-    return (
-        hasattr(obj, "__getitem__") and len(obj) == 2 and _is_a2a_task(obj[0])
-    )
+  return isinstance(obj, tuple) and len(obj) == 2 and _is_a2a_task(obj[0])
 
 
 def _is_a2a_message(obj: Any) -> TypeGuard[A2AMessage]:

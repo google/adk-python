@@ -28,7 +28,8 @@ from google.cloud.bigtable.data.execute_query.metadata import SqlType
 # None for Application Default Credentials
 CREDENTIALS_TYPE = None
 
-# Define Bigtable tool config with read capability set to allowed.
+# Define Bigtable tool settings. The Bigtable tools are read-only; the only
+# setting is `max_query_result_rows`, left at its default here.
 tool_settings = BigtableToolSettings()
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
@@ -104,8 +105,8 @@ def search_hotels_by_location(
       credentials=credentials,
       settings=settings,
       tool_context=tool_context,
-      parameters={"location": location_name},
-      parameter_types={"location": SqlType.String()},
+      parameters={"location_name": location_name},
+      parameter_types={"location_name": SqlType.String()},
   )
 
 
@@ -116,7 +117,7 @@ root_agent = LlmAgent(
     description=(
         "Agent to answer questions about Bigtable database tables and"
         " execute SQL queries."
-    ),  # TODO(b/360128447): Update description
+    ),
     instruction="""\
         You are a data agent with access to several Bigtable tools.
         Make use of those tools to answer the user's questions.

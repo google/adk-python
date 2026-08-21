@@ -17,35 +17,46 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
 import enum
+import inspect
 import os
 import sqlite3
 import time
 from unittest import mock
+import warnings
 
+from google.adk.errors import StaleSessionError
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
-from google.adk.features import FeatureName
-from google.adk.features import override_feature_enabled
 from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.schemas.shared import DynamicJSON
+from google.adk.sessions.schemas.v0 import DynamicPickleType
+from google.adk.sessions.schemas.v1 import StorageSession
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
 from sqlalchemy import delete
+from sqlalchemy import select
 from sqlalchemy import text
+from sqlalchemy import update
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
+
+# Tests below that take `session_service` run once per backend registered in
+# _conformance; each states a behavior every backend owes its callers.
+from . import _conformance
+from ._conformance import session_service  # noqa: F401
 
 
 class SessionServiceType(enum.Enum):
   IN_MEMORY = 'IN_MEMORY'
-  IN_MEMORY_WITH_LIGHT_COPY_ENABLED = 'IN_MEMORY_WITH_LIGHT_COPY_ENABLED'
   DATABASE = 'DATABASE'
   SQLITE = 'SQLITE'
 
@@ -59,33 +70,23 @@ def get_session_service(
     return DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   if service_type == SessionServiceType.SQLITE:
     return SqliteSessionService(str(tmp_path / 'sqlite.db'))
-  if service_type == SessionServiceType.IN_MEMORY_WITH_LIGHT_COPY_ENABLED:
-    return InMemorySessionService()
   return InMemorySessionService()
 
 
-@pytest.fixture(
-    params=[
-        SessionServiceType.IN_MEMORY,
-        SessionServiceType.IN_MEMORY_WITH_LIGHT_COPY_ENABLED,
-        SessionServiceType.DATABASE,
-        SessionServiceType.SQLITE,
-    ]
-)
-async def session_service(request, tmp_path):
-  """Provides a session service and closes database backends on teardown."""
-  if request.param == SessionServiceType.IN_MEMORY_WITH_LIGHT_COPY_ENABLED:
-    override_feature_enabled(
-        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, True
-    )
-  service = get_session_service(request.param, tmp_path)
-  yield service
-  if isinstance(service, DatabaseSessionService):
-    await service.close()
-  if request.param == SessionServiceType.IN_MEMORY_WITH_LIGHT_COPY_ENABLED:
-    override_feature_enabled(
-        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
-    )
+def test_recorded_divergences_name_a_contract_test():
+  """A divergence keyed on anything else silently excuses no backend."""
+  for backend in _conformance.BACKENDS:
+    for test_name in backend.divergences:
+      test_function = globals().get(test_name)
+      assert test_function is not None, (
+          f'{backend.name} records a divergence for {test_name}, which is not'
+          ' a test in this module'
+      )
+      parameters = inspect.signature(test_function).parameters
+      assert 'session_service' in parameters, (
+          f'{backend.name} records a divergence for {test_name}, which does'
+          ' not take the shared contract fixture'
+      )
 
 
 def test_database_session_service_enables_pool_pre_ping_by_default():
@@ -108,6 +109,28 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
     )
 
   assert captured_kwargs.get('pool_pre_ping') is True
+
+
+@pytest.mark.parametrize('decorator', [DynamicJSON, DynamicPickleType])
+def test_session_type_decorators_opt_into_statement_cache(decorator):
+  """Session TypeDecorators must declare cache_ok to stay cacheable.
+
+  SQLAlchemy discards the cache key of any statement whose traversal reaches a
+  TypeDecorator that has not set cache_ok, and warns while doing so. Both types
+  qualify: neither defines __init__, so the key is the bare class, and every
+  method branches only on the dialect, which the compiled cache already keys on.
+  """
+  assert decorator.__dict__.get('cache_ok') is True
+  assert decorator()._static_cache_key == (decorator,)
+
+
+def test_dynamic_json_column_statement_is_cacheable():
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter('always')
+    cache_key = select(StorageSession.state)._generate_cache_key()
+
+  assert cache_key is not None
+  assert not [w for w in caught if 'cache_ok' in str(w.message)]
 
 
 @pytest.mark.parametrize(
@@ -403,6 +426,86 @@ async def test_create_and_list_sessions(session_service):
 
 
 @pytest.mark.asyncio
+async def test_database_session_service_list_sessions_orders_by_update_time_then_id():
+  """Database list_sessions returns least-active sessions first, with stable ties."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    app_name = 'my_app'
+    user_id = 'test_user'
+    session_ids = ['orphan', 'active_b', 'middle', 'active_a']
+    for session_id in session_ids:
+      await service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+      )
+
+    schema = service._get_schema_classes()
+    create_times = {
+        'active_b': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'orphan': datetime(2026, 1, 4, tzinfo=timezone.utc),
+    }
+    update_times = {
+        'orphan': datetime(2026, 1, 1, tzinfo=timezone.utc),
+        'middle': datetime(2026, 1, 2, tzinfo=timezone.utc),
+        'active_a': datetime(2026, 1, 3, tzinfo=timezone.utc),
+        'active_b': datetime(2026, 1, 3, tzinfo=timezone.utc),
+    }
+    async with service.database_session_factory() as sql_session:
+      for session_id, create_time in create_times.items():
+        await sql_session.execute(
+            update(schema.StorageSession)
+            .where(schema.StorageSession.app_name == app_name)
+            .where(schema.StorageSession.user_id == user_id)
+            .where(schema.StorageSession.id == session_id)
+            .values(
+                create_time=create_time,
+                update_time=update_times[session_id],
+            )
+        )
+      await sql_session.commit()
+
+    response = await service.list_sessions(app_name=app_name, user_id=user_id)
+
+    assert [session.id for session in response.sessions] == [
+        'orphan',
+        'middle',
+        'active_a',
+        'active_b',
+    ]
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_ordered_by_last_update_time(session_service):
+  app_name = 'my_app'
+  user_id = 'test_user'
+
+  for session_id in ('a', 'b', 'c'):
+    await session_service.create_session(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+
+  # Make the oldest session the most recently active one.
+  session_a = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='a'
+  )
+  await asyncio.sleep(0.01)
+  await session_service.append_event(
+      session=session_a,
+      event=Event(invocation_id='invocation', author='user'),
+  )
+
+  list_sessions_response = await session_service.list_sessions(
+      app_name=app_name, user_id=user_id
+  )
+  assert [s.id for s in list_sessions_response.sessions] == ['b', 'c', 'a']
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_all_users(session_service):
   app_name = 'my_app'
   user_id_1 = 'user1'
@@ -542,6 +645,454 @@ async def test_session_state_is_not_shared(session_service):
       app_name=app_name, user_id='u1', session_id='s1b'
   )
   assert session1b.state == {}
+
+
+@pytest.mark.asyncio
+async def test_dict_valued_state_delta_replaces_stored_value(session_service):
+  """A dict-valued delta replaces the stored value, it is not deep-merged."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'profile': {'name': 'ada', 'role': 'admin'}},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'profile': {'name': 'bob'}}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('profile') == {'name': 'bob'}
+  assert session.state.get('profile') == {'name': 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_none_valued_state_delta_is_stored_not_dropped(session_service):
+  """A None-valued delta stores null, it does not delete the key."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': True}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'flag': None}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert 'flag' in reloaded.state
+  assert reloaded.state.get('flag') is None
+  assert 'flag' in session.state
+  assert session.state.get('flag') is None
+
+
+@pytest.mark.asyncio
+async def test_boolean_state_survives_unrelated_state_delta(session_service):
+  """An unrelated state_delta must not corrupt a stored boolean's type."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': False}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'new_flag': True}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('new_flag') is True
+  assert reloaded.state.get('flag') is False
+  assert session.state.get('new_flag') is True
+  assert session.state.get('flag') is False
+
+
+@pytest.mark.asyncio
+async def test_dict_valued_state_delta_replaces_stored_value(session_service):
+  """A dict-valued delta replaces the stored value, it is not deep-merged."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'profile': {'name': 'ada', 'role': 'admin'}},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'profile': {'name': 'bob'}}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('profile') == {'name': 'bob'}
+  assert session.state.get('profile') == {'name': 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_none_valued_state_delta_is_stored_not_dropped(session_service):
+  """A None-valued delta stores null, it does not delete the key."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': True}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'flag': None}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert 'flag' in reloaded.state
+  assert reloaded.state.get('flag') is None
+  assert 'flag' in session.state
+  assert session.state.get('flag') is None
+
+
+@pytest.mark.asyncio
+async def test_boolean_state_survives_unrelated_state_delta(session_service):
+  """An unrelated state_delta must not corrupt a stored boolean's type."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': False}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'new_flag': True}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('new_flag') is True
+  assert reloaded.state.get('flag') is False
+  assert session.state.get('new_flag') is True
+  assert session.state.get('flag') is False
+
+
+@pytest.mark.asyncio
+async def test_app_state_dict_valued_delta_replaces_stored_value(
+    session_service,
+):
+  """A dict-valued delta to app: state replaces it, it is not deep-merged."""
+  app_name = 'my_app'
+  session1 = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'app:cfg': {'name': 'ada', 'role': 'admin'}},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'app:cfg': {'name': 'bob'}}),
+  )
+  await session_service.append_event(session=session1, event=event)
+
+  # A different user's session should see the replaced, not merged, value.
+  session2 = await session_service.create_session(
+      app_name=app_name, user_id='u2', session_id='s2'
+  )
+  assert session2.state.get('app:cfg') == {'name': 'bob'}
+  assert session1.state.get('app:cfg') == {'name': 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_user_state_none_valued_delta_is_stored_not_dropped(
+    session_service,
+):
+  """A None-valued delta to user: state stores null, it does not delete it."""
+  app_name = 'my_app'
+  session1 = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'user:pref': 'dark_mode'},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'user:pref': None}),
+  )
+  await session_service.append_event(session=session1, event=event)
+
+  # Another session for the same user should see the null, not a dropped key.
+  session1b = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1b'
+  )
+  assert 'user:pref' in session1b.state
+  assert session1b.state.get('user:pref') is None
+  assert 'user:pref' in session1.state
+  assert session1.state.get('user:pref') is None
+
+
+@pytest.mark.asyncio
+async def test_dict_valued_state_delta_replaces_stored_value(session_service):
+  """A dict-valued delta replaces the stored value, it is not deep-merged."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'profile': {'name': 'ada', 'role': 'admin'}},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'profile': {'name': 'bob'}}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('profile') == {'name': 'bob'}
+  assert session.state.get('profile') == {'name': 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_none_valued_state_delta_is_stored_not_dropped(session_service):
+  """A None-valued delta stores null, it does not delete the key."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': True}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'flag': None}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert 'flag' in reloaded.state
+  assert reloaded.state.get('flag') is None
+  assert 'flag' in session.state
+  assert session.state.get('flag') is None
+
+
+@pytest.mark.asyncio
+async def test_boolean_state_survives_unrelated_state_delta(session_service):
+  """An unrelated state_delta must not corrupt a stored boolean's type."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': False}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'new_flag': True}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('new_flag') is True
+  assert reloaded.state.get('flag') is False
+  assert session.state.get('new_flag') is True
+  assert session.state.get('flag') is False
+
+
+@pytest.mark.asyncio
+async def test_app_state_dict_valued_delta_replaces_stored_value(
+    session_service,
+):
+  """A dict-valued delta to app: state replaces it, it is not deep-merged."""
+  app_name = 'my_app'
+  session1 = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'app:cfg': {'name': 'ada', 'role': 'admin'}},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'app:cfg': {'name': 'bob'}}),
+  )
+  await session_service.append_event(session=session1, event=event)
+
+  # A different user's session should see the replaced, not merged, value.
+  session2 = await session_service.create_session(
+      app_name=app_name, user_id='u2', session_id='s2'
+  )
+  assert session2.state.get('app:cfg') == {'name': 'bob'}
+  assert session1.state.get('app:cfg') == {'name': 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_user_state_none_valued_delta_is_stored_not_dropped(
+    session_service,
+):
+  """A None-valued delta to user: state stores null, it does not delete it."""
+  app_name = 'my_app'
+  session1 = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'user:pref': 'dark_mode'},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'user:pref': None}),
+  )
+  await session_service.append_event(session=session1, event=event)
+
+  # Another session for the same user should see the null, not a dropped key.
+  session1b = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1b'
+  )
+  assert 'user:pref' in session1b.state
+  assert session1b.state.get('user:pref') is None
+  assert 'user:pref' in session1.state
+  assert session1.state.get('user:pref') is None
+
+
+@pytest.mark.asyncio
+async def test_dict_valued_state_delta_replaces_stored_value(session_service):
+  """A dict-valued delta replaces the stored value, it is not deep-merged."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'profile': {'name': 'ada', 'role': 'admin'}},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'profile': {'name': 'bob'}}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('profile') == {'name': 'bob'}
+  assert session.state.get('profile') == {'name': 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_none_valued_state_delta_is_stored_not_dropped(session_service):
+  """A None-valued delta stores null, it does not delete the key."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': True}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'flag': None}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert 'flag' in reloaded.state
+  assert reloaded.state.get('flag') is None
+  assert 'flag' in session.state
+  assert session.state.get('flag') is None
+
+
+@pytest.mark.asyncio
+async def test_boolean_state_survives_unrelated_state_delta(session_service):
+  """An unrelated state_delta must not corrupt a stored boolean's type."""
+  app_name = 'my_app'
+  session = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1', state={'flag': False}
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'new_flag': True}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  reloaded = await session_service.get_session(
+      app_name=app_name, user_id='u1', session_id='s1'
+  )
+  assert reloaded.state.get('new_flag') is True
+  assert reloaded.state.get('flag') is False
+  assert session.state.get('new_flag') is True
+  assert session.state.get('flag') is False
+
+
+@pytest.mark.asyncio
+async def test_app_state_dict_valued_delta_replaces_stored_value(
+    session_service,
+):
+  """A dict-valued delta to app: state replaces it, it is not deep-merged."""
+  app_name = 'my_app'
+  session1 = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'app:cfg': {'name': 'ada', 'role': 'admin'}},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'app:cfg': {'name': 'bob'}}),
+  )
+  await session_service.append_event(session=session1, event=event)
+
+  # A different user's session should see the replaced, not merged, value.
+  session2 = await session_service.create_session(
+      app_name=app_name, user_id='u2', session_id='s2'
+  )
+  assert session2.state.get('app:cfg') == {'name': 'bob'}
+  assert session1.state.get('app:cfg') == {'name': 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_user_state_none_valued_delta_is_stored_not_dropped(
+    session_service,
+):
+  """A None-valued delta to user: state stores null, it does not delete it."""
+  app_name = 'my_app'
+  session1 = await session_service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={'user:pref': 'dark_mode'},
+  )
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(state_delta={'user:pref': None}),
+  )
+  await session_service.append_event(session=session1, event=event)
+
+  # Another session for the same user should see the null, not a dropped key.
+  session1b = await session_service.create_session(
+      app_name=app_name, user_id='u1', session_id='s1b'
+  )
+  assert 'user:pref' in session1b.state
+  assert session1b.state.get('user:pref') is None
+  assert 'user:pref' in session1.state
+  assert session1.state.get('user:pref') is None
 
 
 @pytest.mark.asyncio
@@ -775,6 +1326,41 @@ async def test_append_event_with_requested_tool_confirmations(session_service):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type',
+    [SessionServiceType.DATABASE, SessionServiceType.SQLITE],
+)
+async def test_append_event_with_non_serializable_state_delta(
+    service_type, tmp_path
+):
+  """A value the JSON encoder rejects must not destroy the whole event."""
+  session_service = get_session_service(service_type, tmp_path)
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      actions=EventActions(state_delta={'callback': lambda: 1, 'ok': 2}),
+  )
+  await session_service.append_event(session=session, event=event)
+
+  refreshed_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert refreshed_session is not None
+  assert len(refreshed_session.events) == 1
+  assert refreshed_session.state['ok'] == 2
+  assert isinstance(refreshed_session.state['callback'], str)
+
+  if isinstance(session_service, DatabaseSessionService):
+    await session_service.close()
+
+
+@pytest.mark.asyncio
 async def test_session_last_update_time_updates_on_event(session_service):
   app_name = 'my_app'
   user_id = 'user'
@@ -875,7 +1461,7 @@ async def test_append_event_to_stale_session():
         timestamp=current_time + 3,
         actions=EventActions(state_delta={'sk3': 'v3'}),
     )
-    with pytest.raises(ValueError, match='modified in storage'):
+    with pytest.raises(StaleSessionError, match='modified in storage'):
       await session_service.append_event(original_session, event3)
 
     # If we fetch session from DB, it should only contain the committed events.
@@ -890,6 +1476,35 @@ async def test_append_event_to_stale_session():
         'inv1',
         'inv2',
     ]
+
+
+@pytest.mark.asyncio
+async def test_sqlite_append_event_uses_typed_stale_session_error(tmp_path):
+  """The legacy SQLite backend exposes the shared stale-writer contract."""
+  service = get_session_service(SessionServiceType.SQLITE, tmp_path)
+  session = await service.create_session(app_name='app', user_id='user')
+  stale_session = session.model_copy(deep=True)
+
+  await service.append_event(
+      session,
+      Event(
+          invocation_id='winner',
+          author='user',
+          timestamp=session.last_update_time + 1,
+      ),
+  )
+
+  with pytest.raises(StaleSessionError) as error:
+    await service.append_event(
+        stale_session,
+        Event(
+            invocation_id='stale',
+            author='user',
+            timestamp=session.last_update_time + 1,
+        ),
+    )
+
+  assert isinstance(error.value, ValueError)
 
 
 @pytest.mark.asyncio
@@ -992,7 +1607,7 @@ async def test_append_event_concurrent_stale_sessions_reject_stale_writer():
       ]
       assert len(successes) == 1
       assert len(errors) == 1
-      assert isinstance(errors[0], ValueError)
+      assert isinstance(errors[0], StaleSessionError)
       assert 'modified in storage' in str(errors[0])
 
     session_final = await session_service.get_session(
@@ -2128,6 +2743,48 @@ async def test_database_session_service_requires_one_argument():
     )
 
 
+@pytest.mark.parametrize(
+    'raised_error',
+    [
+        RuntimeError('boom'),
+        ArgumentError('bad argument'),
+        ImportError('no driver'),
+    ],
+)
+def test_database_session_service_engine_error_hides_password(raised_error):
+  """Engine creation errors must not put the DB password in the message."""
+  password = 'sup3r-s3cret'
+  db_url = f'postgresql+asyncpg://user:{password}@localhost:5432/db'
+
+  with mock.patch.object(
+      database_session_service,
+      'create_async_engine',
+      side_effect=raised_error,
+  ):
+    with pytest.raises(ValueError) as exc_info:
+      DatabaseSessionService(db_url)
+
+  message = str(exc_info.value)
+  assert password not in message
+  # The redacted URL is still there, so the error stays diagnosable.
+  assert 'postgresql+asyncpg://user:***@localhost:5432/db' in message
+
+
+def test_database_session_service_malformed_url_reports_usable_error():
+  """A URL too malformed to parse still yields a usable, leak-free error."""
+  # make_url() itself rejects this, so redaction cannot parse it either and
+  # must fall back to a placeholder rather than echoing the raw string.
+  db_url = 'definitely not a url sup3r-s3cret'
+
+  with pytest.raises(ValueError) as exc_info:
+    DatabaseSessionService(db_url)
+
+  message = str(exc_info.value)
+  assert 'sup3r-s3cret' not in message
+  assert 'Invalid database URL format or argument' in message
+  assert isinstance(exc_info.value.__cause__, ArgumentError)
+
+
 @pytest.mark.asyncio
 async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
     tmp_path,
@@ -2284,3 +2941,193 @@ async def test_get_session_orders_tied_timestamps_by_id(
       await service.close()
 
   assert [event.id for event in retrieved_session.events] == event_ids
+
+
+def test_delete_session_sync_removes_only_the_targeted_users_session():
+  """Deleting is scoped to one (app, user, session) triple."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  service.create_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+  service.create_session_sync(app_name=app_name, user_id='u2', session_id='s1')
+
+  service.delete_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+
+  assert (
+      service.get_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+      is None
+  )
+  other_user_session = service.get_session_sync(
+      app_name=app_name, user_id='u2', session_id='s1'
+  )
+  assert other_user_session is not None
+  assert other_user_session.id == 's1'
+
+
+def test_delete_session_sync_unknown_session_is_a_noop():
+  """Deleting something that is not stored leaves the store untouched."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  service.create_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+
+  service.delete_session_sync(
+      app_name=app_name, user_id='u1', session_id='unknown_session'
+  )
+  service.delete_session_sync(
+      app_name=app_name, user_id='unknown_user', session_id='s1'
+  )
+  service.delete_session_sync(
+      app_name='unknown_app', user_id='u1', session_id='s1'
+  )
+
+  assert (
+      service.get_session_sync(app_name=app_name, user_id='u1', session_id='s1')
+      is not None
+  )
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_sync_strips_events_and_merges_scoped_state():
+  """Listed sessions carry merged app/user state but never their events."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  session = await service.create_session(
+      app_name=app_name,
+      user_id='u1',
+      session_id='s1',
+      state={
+          'app:a': 'av',
+          'user:u': 'uv',
+          'sk': 'sv',
+          'temp:t': 'tv',
+      },
+  )
+  await service.append_event(
+      session=session,
+      event=Event(
+          invocation_id='inv1',
+          author='user',
+          actions=EventActions(state_delta={'sk2': 'sv2'}),
+      ),
+  )
+
+  response = service.list_sessions_sync(app_name=app_name, user_id='u1')
+
+  assert [s.id for s in response.sessions] == ['s1']
+  listed = response.sessions[0]
+  # Events are deliberately dropped from the listing.
+  assert listed.events == []
+  # app: and user: values are merged back in under their prefixes, session
+  # state is kept as-is, and temp: state is never stored.
+  assert listed.state == {
+      'app:a': 'av',
+      'user:u': 'uv',
+      'sk': 'sv',
+      'sk2': 'sv2',
+  }
+
+
+def test_list_sessions_sync_unknown_app_or_user_returns_empty_response():
+  """Listing an unknown app or user yields a response with no sessions."""
+  service = InMemorySessionService()
+  service.create_session_sync(app_name='my_app', user_id='u1', session_id='s1')
+
+  assert service.list_sessions_sync(app_name='unknown_app').sessions == []
+  assert (
+      service.list_sessions_sync(
+          app_name='my_app', user_id='unknown_user'
+      ).sessions
+      == []
+  )
+  assert [
+      s.id for s in service.list_sessions_sync(app_name='my_app').sessions
+  ] == ['s1']
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for duplicate-event deduplication (issue #5723)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_service',
+    [InMemorySessionService()],
+    ids=['in_memory'],
+)
+async def test_append_event_is_idempotent_for_same_event_id(session_service):
+  """Re-delivering an event must not duplicate entries or double-apply state.
+
+  A broadcast can re-deliver the same event either as the same object or as
+  an equal copy, so both must be deduplicated.
+  """
+  app_name = 'test_app'
+  user_id = 'user_dup'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='session_dup'
+  )
+
+  event = Event(
+      invocation_id='inv_dup',
+      author='user',
+      actions=EventActions(state_delta={'session:counter': 1}),
+  )
+
+  # Re-deliver as the same object and again as an equal copy (a broadcast
+  # to several concurrent session references can produce either).
+  await session_service.append_event(session=session, event=event)
+  await session_service.append_event(session=session, event=event)
+  await session_service.append_event(
+      session=session, event=event.model_copy(deep=True)
+  )
+
+  # The storage session must contain the event exactly once.
+  retrieved = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_dup'
+  )
+  matching = [e for e in retrieved.events if e.id == event.id]
+  assert (
+      len(matching) == 1
+  ), f'Expected 1 occurrence of event {event.id!r}, got {len(matching)}'
+
+  # State must not be double-applied.
+  assert (
+      retrieved.state.get('session:counter') == 1
+  ), 'State was applied more than once — duplicate event caused double-apply'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'session_service',
+    [InMemorySessionService()],
+    ids=['in_memory'],
+)
+async def test_append_different_events_not_deduplicated(session_service):
+  """Distinct events must both be stored, even when they share an event id.
+
+  Deduplication is keyed on object identity, not event id: a caller can
+  legitimately reuse an id across genuinely different events (e.g. a test
+  that patches uuid4 to a constant), and keying on id alone would silently
+  drop the later events.
+  """
+  app_name = 'test_app'
+  user_id = 'user_multi'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='session_multi'
+  )
+
+  # Two genuinely different events that share an id, as happens when a test
+  # patches uuid generation to a fixed value.
+  shared_id = 'shared-event-id'
+  e1 = Event(id=shared_id, invocation_id='inv_a', author='user')
+  e2 = Event(id=shared_id, invocation_id='inv_b', author='agent')
+
+  await session_service.append_event(session=session, event=e1)
+  await session_service.append_event(session=session, event=e2)
+
+  retrieved = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id='session_multi'
+  )
+  assert (
+      len(retrieved.events) == 2
+  ), f'Expected 2 distinct events, got {len(retrieved.events)}'
+  assert [e.author for e in retrieved.events] == ['user', 'agent']

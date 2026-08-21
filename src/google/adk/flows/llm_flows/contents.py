@@ -14,10 +14,10 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import copy
 import logging
 from typing import AsyncGenerator
-from typing import Optional
 
 from google.genai import types
 from typing_extensions import override
@@ -26,8 +26,14 @@ from ...agents.invocation_context import InvocationContext
 from ...events._branch_path import _BranchPath
 from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
+from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._content_compaction import _process_compaction_events
+from ._content_compaction import _recover_compacted_function_calls
+from ._fencing import _is_other_agent_reply
+from ._fencing import _present_other_agent_message
+from ._invocation_utils import as_llm_agent
 from .functions import AF_FUNCTION_CALL_ID_PREFIX
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -44,7 +50,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   ) -> AsyncGenerator[Event, None]:
     from ...models.google_llm import Gemini
 
-    agent = invocation_context.agent
+    agent = as_llm_agent(invocation_context)
     preserve_function_call_ids = False
     if hasattr(agent, 'canonical_model'):
       canonical_model = agent.canonical_model
@@ -57,7 +63,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
         # Anthropic and LiteLLM-backed providers (e.g. OpenAI) pair tool
         # calls with their results by id, so `adk-*` fallback ids must
         # survive replay.
-        id_pairing_model_types: list[type] = []
+        id_pairing_model_types: list[type[BaseLlm]] = []
         try:
           from ...models.anthropic_llm import AnthropicLlm
 
@@ -119,14 +125,11 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           include_thoughts_from_other_agents=False,
       )
 
-    if (
-        invocation_context.run_config
-        and invocation_context.run_config.model_input_context
-    ):
+    if run_config is not None and run_config.model_input_context:
       _add_model_input_context_to_user_content(
           invocation_context,
           llm_request,
-          copy.deepcopy(invocation_context.run_config.model_input_context),
+          copy.deepcopy(run_config.model_input_context),
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -146,19 +149,42 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
-  function_call_id_to_response_events_index: dict[str, int] = {}
+  # A model may hand out the same function call id more than once in a session,
+  # so an id on its own does not identify a single call. Each response is
+  # attributed to the newest call that precedes it and carries the same id, and
+  # a call then takes the last response attributed to it. Taking the last one
+  # keeps the closing update of a long-running tool, which reports progress
+  # several times under one id, while attributing first stops a reused id from
+  # handing a call the response that belongs to a different call.
+  call_event_indices_by_id: dict[str | None, list[int]] = {}
   for i, event in enumerate(events):
-    function_responses = event.get_function_responses()
-    if function_responses:
-      for function_response in function_responses:
-        function_call_id = function_response.id
-        function_call_id_to_response_events_index[function_call_id] = i
+    if event.get_function_responses():
+      continue
+    for function_call in event.get_function_calls():
+      call_event_indices_by_id.setdefault(function_call.id, []).append(i)
 
-  if not function_call_id_to_response_events_index:
+  response_event_index_by_call: dict[tuple[str | None, int], int] = {}
+  history_has_function_responses = False
+  for i, event in enumerate(events):
+    for function_response in event.get_function_responses():
+      history_has_function_responses = True
+      call_event_indices = call_event_indices_by_id.get(function_response.id)
+      if not call_event_indices:
+        continue
+      # Indices are collected in ascending order, so the call that owns this
+      # response is the one just before it. A response preceding every call
+      # that carries its id keeps the first, as it did before ids could repeat.
+      preceding_calls = bisect_left(call_event_indices, i)
+      owning_call_event_index = call_event_indices[max(preceding_calls - 1, 0)]
+      response_event_index_by_call[
+          (function_response.id, owning_call_event_index)
+      ] = i
+
+  if not history_has_function_responses:
     return events
 
   result_events: list[Event] = []
-  for event in events:
+  for i, event in enumerate(events):
     if event.get_function_responses():
       # function_response should be handled together with function_call below.
       continue
@@ -166,11 +192,11 @@ def _rearrange_events_for_async_function_responses_in_history(
 
       function_response_events_indices = set()
       for function_call in event.get_function_calls():
-        function_call_id = function_call.id
-        if function_call_id in function_call_id_to_response_events_index:
-          function_response_events_indices.add(
-              function_call_id_to_response_events_index[function_call_id]
-          )
+        response_event_index = response_event_index_by_call.get(
+            (function_call.id, i)
+        )
+        if response_event_index is not None:
+          function_response_events_indices.add(response_event_index)
       result_events.append(event)
       if not function_response_events_indices:
         continue
@@ -187,6 +213,67 @@ def _rearrange_events_for_async_function_responses_in_history(
       continue
     else:
       result_events.append(event)
+
+  return result_events
+
+
+def _drop_orphaned_function_responses(
+    events: list[Event],
+) -> list[Event]:
+  """Drops function_response parts that have no matching function_call.
+
+  An orphan can reach this point when the producer of the call is gone, for
+  example a session edited by hand or a history stitched together from more
+  than one source. Left in place, the same orphan behaves differently
+  depending on where it sits: mid-history it is quietly discarded, while as
+  the trailing event it aborts the whole request. Pruning it here makes the
+  outcome the same wherever it appears, and keeps unpaired results from being
+  forwarded to providers that reject them.
+
+  Responses without an id are left alone: ids are stripped on the way out for
+  some model families, so a missing id does not imply a missing call.
+
+  Args:
+    events: The events being assembled into request contents.
+
+  Returns:
+    The events with orphaned function_response parts removed.
+  """
+  call_ids = set()
+  for event in events:
+    for function_call in event.get_function_calls():
+      if function_call.id:
+        call_ids.add(function_call.id)
+
+  orphaned_ids: list[str] = []
+  result_events: list[Event] = []
+  for event in events:
+    parts = event.content.parts if event.content else None
+    if not parts or not event.get_function_responses():
+      result_events.append(event)
+      continue
+
+    kept_parts: list[types.Part] = []
+    for part in parts:
+      response = part.function_response
+      if response and response.id and response.id not in call_ids:
+        orphaned_ids.append(response.id)
+        continue
+      kept_parts.append(part)
+
+    if not kept_parts:
+      continue
+    if len(kept_parts) != len(parts):
+      event = event.model_copy(deep=True)
+      if event.content:
+        event.content.parts = kept_parts
+    result_events.append(event)
+
+  if orphaned_ids:
+    logger.warning(
+        'Dropping function responses with no matching function call: %s',
+        orphaned_ids,
+    )
 
   return result_events
 
@@ -294,19 +381,39 @@ def _is_part_invisible(
 
   A part is invisible if:
   - It has no meaningful content (text, inline_data, file_data, function_call,
-    function_response, executable_code, or code_execution_result), OR
-  - It is marked as a thought AND does not contain function_call or
-    function_response
+    function_response, tool_call, tool_response, executable_code, or
+    code_execution_result), OR
+  - It is marked as a thought AND does not contain function_call,
+    function_response, tool_call, tool_response or thought_signature
 
   Function calls and responses are never invisible, even if marked as thought,
   because they represent actions that need to be executed or results that need
   to be processed.
+
+  A part carrying a thought signature is never invisible either. The signature
+  is opaque state the model expects back verbatim, and it commonly arrives on
+  a part that holds nothing else, which would otherwise read as empty.
+
+  Server-side tool calls and their responses are never invisible either. The
+  model runs those tools itself and the caller is required to echo the parts
+  back on the next request; dropping them makes the model redo the work it
+  already did, or fail because a call has no matching response.
 
   Args:
     p: The part to check.
   """
   # Function calls and responses are never invisible, even if marked as thought
   if p.function_call or p.function_response:
+    return False
+
+  # A thought signature is opaque state the model hands back for us to return
+  # verbatim on the next request. It routinely arrives on a part with no other
+  # content at all, so it has to be checked before the emptiness test below.
+  if p.thought_signature:
+    return False
+
+  # Server-side tool calls/responses must be echoed back to the model.
+  if p.tool_call or p.tool_response:
     return False
 
   return (p.thought and not include_thoughts) or not (
@@ -326,8 +433,9 @@ def _contains_empty_content(
   This can happen to the events that only changed session state.
   When both content and transcriptions are empty, the event will be considered
   as empty. The content is considered empty if none of its parts contain text,
-  inline data, file data, function call, function response, executable code, or
-  code execution result. Parts with only thoughts are also considered empty.
+  inline data, file data, function call, function response, server-side tool
+  call, server-side tool response, executable code, or code execution result.
+  Parts with only thoughts are also considered empty.
 
   Args:
     event: The event to check.
@@ -359,8 +467,8 @@ def _build_task_input_user_content(
     all_events: list[Event],
     isolation_scope: str,
     is_single_turn: bool = False,
-    user_content: Optional[types.Content] = None,
-) -> Optional[types.Content]:
+    user_content: types.Content | None = None,
+) -> types.Content | None:
   """Find the originating task-delegation FC and convert its args to user content.
 
   A task agent runs under ``isolation_scope=<fc_id>``, where ``fc_id``
@@ -410,9 +518,9 @@ def _build_task_input_user_content(
 
 
 def _should_include_event_in_context(
-    current_branch: Optional[str],
+    current_branch: str | None,
     event: Event,
-    isolation_scope: Optional[str] = None,
+    isolation_scope: str | None = None,
     *,
     include_thoughts: bool = False,
 ) -> bool:
@@ -446,198 +554,6 @@ def _should_include_event_in_context(
       or _is_auth_event(event)
       or _is_request_confirmation_event(event)
   )
-
-
-def _process_compaction_events(events: list[Event]) -> list[Event]:
-  """Processes events by applying compaction.
-
-  Identifies compacted ranges and filters out events that are covered by
-  compaction summaries.
-
-  Args:
-    events: A list of events to process.
-
-  Returns:
-    A list of events with compaction applied.
-  """
-  # Example:
-  # [event_1(ts=1), event_2(ts=2), compaction_1(1-2), event_3(ts=4),
-  #  compaction_2(2-4), event_4(ts=6)].
-  #
-  # Overlaps are resolved by keeping only non-subsumed compaction summaries.
-  # A summary event is materialized at its compaction end timestamp, and raw
-  # events inside any kept compaction range are filtered out.
-  compaction_infos: list[tuple[int, float, float]] = []
-  for i, event in enumerate(events):
-    if not (event.actions and event.actions.compaction):
-      continue
-    compaction = event.actions.compaction
-    if (
-        compaction.start_timestamp is None
-        or compaction.end_timestamp is None
-        or compaction.compacted_content is None
-    ):
-      continue
-    compaction_infos.append(
-        (i, compaction.start_timestamp, compaction.end_timestamp)
-    )
-
-  subsumed_compaction_event_indexes: set[int] = set()
-  for event_index, start_ts, end_ts in compaction_infos:
-    for other_index, other_start, other_end in compaction_infos:
-      if other_index == event_index:
-        continue
-      if other_start <= start_ts and other_end >= end_ts:
-        if (
-            other_start < start_ts
-            or other_end > end_ts
-            or other_index > event_index
-        ):
-          subsumed_compaction_event_indexes.add(event_index)
-          break
-
-  compaction_ranges: list[tuple[float, float]] = []
-  processed_items: list[tuple[float, int, Event]] = []
-
-  for i, event in enumerate(events):
-    if event.actions and event.actions.compaction:
-      if i in subsumed_compaction_event_indexes:
-        continue
-      compaction = event.actions.compaction
-      if (
-          compaction.start_timestamp is None
-          or compaction.end_timestamp is None
-          or compaction.compacted_content is None
-      ):
-        continue
-      compaction_ranges.append(
-          (compaction.start_timestamp, compaction.end_timestamp)
-      )
-      processed_items.append((
-          compaction.end_timestamp,
-          i,
-          Event(
-              timestamp=compaction.end_timestamp,
-              author='model',
-              content=compaction.compacted_content,
-              branch=event.branch,
-              invocation_id=event.invocation_id,
-              actions=event.actions,
-          ),
-      ))
-
-  def _is_timestamp_compacted(ts: float) -> bool:
-    for start_ts, end_ts in compaction_ranges:
-      if start_ts <= ts <= end_ts:
-        return True
-    return False
-
-  for i, event in enumerate(events):
-    if event.actions and event.actions.compaction:
-      continue
-    if _is_timestamp_compacted(event.timestamp):
-      continue
-    processed_items.append((event.timestamp, i, event))
-
-  # Keep chronological order and a stable tie-breaker for equal timestamps.
-  processed_items.sort(key=lambda item: (item[0], item[1]))
-  return [event for _, _, event in processed_items]
-
-
-def _recover_compacted_function_calls(
-    events: list[Event],
-    source_events: list[Event],
-) -> list[Event]:
-  """Re-injects function-call events that compaction removed.
-
-  Compaction can summarize away a function_call while a matching
-  function_response survives outside the compacted range. The clearest case
-  is a long-running tool call: the call is compacted along with its
-  intermediate placeholder response, then the real result arrives on resume
-  (a later event not covered by the summary). That surviving response would
-  be orphaned, which breaks call/response pairing during prompt assembly (it
-  raises in `_rearrange_events_for_latest_function_response`).
-
-  For each response whose call is no longer present, this restores the
-  original call event from `source_events` (the pre-compaction list),
-  inserting it immediately before the first surviving response that
-  references it. The whole call event is re-injected verbatim (rather than
-  trimmed to the resumed call) so parallel-call thought signatures, which only
-  the first part carries, are preserved. Any sibling responses that compaction
-  removed are re-injected too, so a sibling is not surfaced as a phantom
-  pending call.
-
-  Args:
-    events: The post-compaction events being assembled into request contents.
-    source_events: The pre-compaction events to recover missing calls from.
-
-  Returns:
-    `events` with any recoverable missing function-call events (and their
-    compacted sibling responses) re-injected; the original list is returned
-    unchanged when nothing needs recovery.
-  """
-  call_ids_present: set[str] = set()
-  response_ids_present: set[str] = set()
-  for event in events:
-    for function_call in event.get_function_calls():
-      if function_call.id:
-        call_ids_present.add(function_call.id)
-    for function_response in event.get_function_responses():
-      if function_response.id:
-        response_ids_present.add(function_response.id)
-
-  orphaned_ids = {
-      response_id
-      for response_id in response_ids_present
-      if response_id not in call_ids_present
-  }
-  if not orphaned_ids:
-    return events
-
-  call_event_by_id: dict[str, Event] = {}
-  for event in source_events:
-    for function_call in event.get_function_calls():
-      if function_call.id in orphaned_ids:
-        call_event_by_id.setdefault(function_call.id, event)
-
-  if not call_event_by_id:
-    return events
-
-  # Keep the highest-timestamp response per id so a sibling that completed
-  # before being compacted contributes its real result, not its stale
-  # placeholder; ties fall back to source order.
-  response_event_by_id: dict[str, Event] = {}
-  for event in source_events:
-    for function_response in event.get_function_responses():
-      if not function_response.id:
-        continue
-      existing = response_event_by_id.get(function_response.id)
-      if existing is None or event.timestamp >= existing.timestamp:
-        response_event_by_id[function_response.id] = event
-
-  result: list[Event] = []
-  reinjected_ids: set[str] = set()
-  for event in events:
-    for function_response in event.get_function_responses():
-      call_event = call_event_by_id.get(function_response.id)
-      if call_event is None or function_response.id in reinjected_ids:
-        continue
-      result.append(call_event)
-      sibling_ids = [
-          function_call.id
-          for function_call in call_event.get_function_calls()
-          if function_call.id
-      ]
-      reinjected_ids.update(sibling_ids)
-      # Recover sibling responses that compaction removed so a parallel sibling
-      # is not left looking like a pending call.
-      for sibling_id in sibling_ids:
-        if sibling_id not in response_ids_present:
-          sibling_response = response_event_by_id.get(sibling_id)
-          if sibling_response is not None:
-            result.append(sibling_response)
-    result.append(event)
-  return result
 
 
 def _copy_content_for_request(
@@ -687,14 +603,14 @@ def _copy_content_for_request(
 
 
 def _get_contents(
-    current_branch: Optional[str],
+    current_branch: str | None,
     events: list[Event],
     agent_name: str = '',
     *,
     preserve_function_call_ids: bool = False,
-    isolation_scope: Optional[str] = None,
+    isolation_scope: str | None = None,
     is_single_turn: bool = False,
-    user_content: Optional[types.Content] = None,
+    user_content: types.Content | None = None,
     include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
@@ -746,7 +662,9 @@ def _get_contents(
   )
 
   if has_compaction_events:
-    events_to_process = _process_compaction_events(raw_filtered_events)
+    events_to_process = _process_compaction_events(
+        raw_filtered_events, agent_name
+    )
     # Compaction may have removed a function_call whose response survives
     # (e.g. a long-running call resumed after it was compacted); restore it so
     # the call/response pairing is intact.
@@ -757,12 +675,14 @@ def _get_contents(
     events_to_process = raw_filtered_events
 
   # Build mapping of function call IDs to their authors
-  fc_author_by_id = {}
+  fc_author_by_id: dict[str, str] = {}
   for e in events_to_process:
     if e.content and e.content.parts:
       for part in e.content.parts:
         if part.function_call:
-          fc_author_by_id[part.function_call.id] = e.author
+          function_call_id = part.function_call.id
+          if function_call_id:
+            fc_author_by_id[function_call_id] = e.author
 
   filtered_events = []
   # aggregate transcription events
@@ -772,11 +692,12 @@ def _get_contents(
       # Convert transcription into normal event
       if event.input_transcription and event.input_transcription.text:
         accumulated_input_transcription += event.input_transcription.text
-        if (
-            i != len(events_to_process) - 1
-            and events_to_process[i + 1].input_transcription
-            and events_to_process[i + 1].input_transcription.text
-        ):
+        next_input_transcription = (
+            events_to_process[i + 1].input_transcription
+            if i != len(events_to_process) - 1
+            else None
+        )
+        if next_input_transcription and next_input_transcription.text:
           continue
         event = event.model_copy(deep=True)
         event.input_transcription = None
@@ -787,11 +708,12 @@ def _get_contents(
         accumulated_input_transcription = ''
       elif event.output_transcription and event.output_transcription.text:
         accumulated_output_transcription += event.output_transcription.text
-        if (
-            i != len(events_to_process) - 1
-            and events_to_process[i + 1].output_transcription
-            and events_to_process[i + 1].output_transcription.text
-        ):
+        next_output_transcription = (
+            events_to_process[i + 1].output_transcription
+            if i != len(events_to_process) - 1
+            else None
+        )
+        if next_output_transcription and next_output_transcription.text:
           continue
         event = event.model_copy(deep=True)
         event.output_transcription = None
@@ -808,7 +730,7 @@ def _get_contents(
       for part in event.content.parts or []:
         if part.function_response:
           resp_id = part.function_response.id
-          call_author = fc_author_by_id.get(resp_id)
+          call_author = fc_author_by_id.get(resp_id) if resp_id else None
           if (
               call_author
               and call_author != agent_name
@@ -826,6 +748,7 @@ def _get_contents(
       filtered_events.append(event)
 
   # Rearrange events for proper function call/response pairing
+  filtered_events = _drop_orphaned_function_responses(filtered_events)
   result_events = _rearrange_events_for_latest_function_response(
       filtered_events
   )
@@ -865,14 +788,14 @@ def _get_contents(
 
 
 def _get_current_turn_contents(
-    current_branch: Optional[str],
+    current_branch: str | None,
     events: list[Event],
     agent_name: str = '',
     *,
     preserve_function_call_ids: bool = False,
     is_single_turn: bool = False,
-    isolation_scope: Optional[str] = None,
-    user_content: Optional[types.Content] = None,
+    isolation_scope: str | None = None,
+    user_content: types.Content | None = None,
     include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
@@ -927,136 +850,6 @@ def _get_current_turn_contents(
   return []
 
 
-def _is_direct_transfer(event: Event) -> bool:
-  """Whether the event is a direct ``transfer_to_agent`` event.
-
-  When ``include_contents='none'`` and control is handed to a sub-agent via
-  ``transfer_to_agent``, the trailing transfer events (the function call and
-  its response) must not be treated as the start of the current turn.
-  Otherwise the sub-agent's turn would anchor on the parent's transfer event
-  and drop the latest user input. Skipping these events lets the turn anchor
-  on the real user input (or a non-transfer model request) instead, while the
-  transfer events are still included as context.
-  """
-  return bool(
-      event.actions.transfer_to_agent
-      or (
-          event.content
-          and event.content.parts
-          and any(
-              p.function_call and p.function_call.name == 'transfer_to_agent'
-              for p in event.content.parts
-          )
-      )
-  )
-
-
-def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
-  """Whether the event is a reply from another agent."""
-  # In live/bidi mode, all events from any agents, including the current
-  # agent, will be marked as other agent's reply. When agent transfers,
-  # the conversation history will be sent to the Live API. If the current
-  # agent previously used `transfer_to_agent` to transfer to another agent,
-  # when the conversation is sent back to the current agent, the history will
-  # contain a `transfer_to_agent` function call event from the current agent.
-  # The Live API marks anything after the function response as model response.
-  # This will confuse the model and cause the model to not respond.
-  #
-  # E.g. when the conversation is transferred from agent A to agent B, then
-  # back to agent A, the history in the last transfer will be:
-  #   User: "Some message that triggers transfer to agent B"
-  #   Model: transfer_to_agent(B)
-  #   User: transfer_to_agent(B) response
-  #   User: "Some message that triggers transfer to agent A"
-  #   User: "For context: [agent B] called transfer_to_agent(A)"
-  #   User: "For context: [agent B] tool transfer_to_agent(A) returned result:"
-  #
-  # In this case, the last three events are marked as model response by the
-  # Live API, instead of user input.
-  if event.live_session_id:
-    return event.author != 'user'
-  return bool(
-      current_agent_name
-      and event.author != current_agent_name
-      and event.author != 'user'
-  )
-
-
-def _present_other_agent_message(
-    event: Event, *, include_thoughts: bool = False
-) -> Optional[Event]:
-  """Presents another agent's message as user context for the current agent.
-
-  Reformats the event with role='user' and adds '[agent_name] said:' prefix
-  to provide context without confusion about authorship.
-
-  Args:
-    event: The event from another agent to present as context.
-    include_thoughts: Whether to include thought parts as explicit text
-      context.
-
-  Returns:
-    Event reformatted as user-role context with agent attribution, or None
-    if no meaningful content remains after filtering.
-  """
-  if not event.content or not event.content.parts:
-    return event
-
-  content = types.Content()
-  content.role = 'user'
-  content.parts = [types.Part(text='For context:')]
-  for part in event.content.parts:
-    if part.thought:
-      if include_thoughts and part.text is not None and part.text.strip():
-        content.parts.append(
-            types.Part(text=f'[{event.author}] thought: {part.text}')
-        )
-      continue
-    elif part.text is not None and part.text.strip():
-      content.parts.append(
-          types.Part(text=f'[{event.author}] said: {part.text}')
-      )
-    elif part.function_call:
-      content.parts.append(
-          types.Part(
-              text=(
-                  f'[{event.author}] called tool `{part.function_call.name}`'
-                  f' with parameters: {part.function_call.args}'
-              )
-          )
-      )
-    elif part.function_response:
-      # Otherwise, create a new text part.
-      content.parts.append(
-          types.Part(
-              text=(
-                  f'[{event.author}] `{part.function_response.name}` tool'
-                  f' returned result: {part.function_response.response}'
-              )
-          )
-      )
-    elif (
-        part.inline_data
-        or part.file_data
-        or part.executable_code
-        or part.code_execution_result
-    ):
-      content.parts.append(part)
-    else:
-      continue
-
-  # Return None when only "For context:" remains.
-  if len(content.parts) == 1:
-    return None
-
-  return Event(
-      timestamp=event.timestamp,
-      author='user',
-      content=content,
-      branch=event.branch,
-  )
-
-
 def _merge_function_response_events(
     function_response_events: list[Event],
 ) -> Event:
@@ -1087,24 +880,29 @@ def _merge_function_response_events(
     raise ValueError('At least one function_response event is required.')
 
   merged_event = function_response_events[0].model_copy(deep=True)
-  parts_in_merged_event: list[types.Part] = merged_event.content.parts  # type: ignore
-
-  if not parts_in_merged_event:
+  merged_content = merged_event.content
+  if merged_content is None or not merged_content.parts:
     raise ValueError('There should be at least one function_response part.')
+  parts_in_merged_event = merged_content.parts
 
-  part_indices_in_merged_event: dict[str, int] = {}
+  # Function-response IDs are optional for legacy and long-running tools.  A
+  # missing ID is therefore a valid correlation key, matching the historical
+  # runtime behavior (with the same documented limitation for parallel calls
+  # that cannot otherwise be distinguished).
+  part_indices_in_merged_event: dict[str | None, int] = {}
   for idx, part in enumerate(parts_in_merged_event):
     if part.function_response:
-      function_call_id: str = part.function_response.id  # type: ignore
+      function_call_id = part.function_response.id
       part_indices_in_merged_event[function_call_id] = idx
 
   for event in function_response_events[1:]:
-    if not event.content.parts:
+    event_content = event.content
+    if event_content is None or not event_content.parts:
       raise ValueError('There should be at least one function_response part.')
 
-    for part in event.content.parts:
+    for part in event_content.parts:
       if part.function_response:
-        function_call_id: str = part.function_response.id  # type: ignore
+        function_call_id = part.function_response.id
         if function_call_id in part_indices_in_merged_event:
           parts_in_merged_event[
               part_indices_in_merged_event[function_call_id]
@@ -1122,7 +920,7 @@ def _merge_function_response_events(
 
 
 def _is_event_belongs_to_branch(
-    invocation_branch: Optional[str], event: Event
+    invocation_branch: str | None, event: Event
 ) -> bool:
   """Check if an event belongs to the current branch.
 
@@ -1162,6 +960,30 @@ def _is_request_confirmation_event(event: Event) -> bool:
 def _is_adk_framework_event(event: Event) -> bool:
   """Checks if the event is an ADK framework event."""
   return _is_function_call_event(event, 'adk_framework')
+
+
+def _is_direct_transfer(event: Event) -> bool:
+  """Whether the event is a direct ``transfer_to_agent`` event.
+
+  When ``include_contents='none'`` and control is handed to a sub-agent via
+  ``transfer_to_agent``, the trailing transfer events (the function call and
+  its response) must not be treated as the start of the current turn.
+  Otherwise the sub-agent's turn would anchor on the parent's transfer event
+  and drop the latest user input. Skipping these events lets the turn anchor
+  on the real user input (or a non-transfer model request) instead, while the
+  transfer events are still included as context.
+  """
+  return bool(
+      event.actions.transfer_to_agent
+      or (
+          event.content
+          and event.content.parts
+          and any(
+              p.function_call and p.function_call.name == 'transfer_to_agent'
+              for p in event.content.parts
+          )
+      )
+  )
 
 
 def _is_live_model_media_event_with_inline_data(event: Event) -> bool:
@@ -1206,16 +1028,6 @@ def _is_live_model_media_event_with_inline_data(event: Event) -> bool:
   return False
 
 
-def _content_contains_function_response(content: types.Content) -> bool:
-  """Checks whether the content includes any function response parts."""
-  if not content.parts:
-    return False
-  for part in content.parts:
-    if part.function_response:
-      return True
-  return False
-
-
 def _add_model_input_context_to_user_content(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
@@ -1256,24 +1068,6 @@ async def _add_instructions_to_user_content(
   """
   if not instruction_contents:
     return
-
-  # Find the insertion point: before the last continuous batch of user content
-  # Walk backwards to find the first non-user content, then insert after it
-  insert_index = len(llm_request.contents)
-
-  if llm_request.contents:
-    for i in range(len(llm_request.contents) - 1, -1, -1):
-      content = llm_request.contents[i]
-      if content.role != 'user':
-        insert_index = i + 1
-        break
-      if _content_contains_function_response(content):
-        insert_index = i + 1
-        break
-      insert_index = i
-  else:
-    # No contents remaining, just append at the end
-    insert_index = 0
-
-  # Insert all instruction contents at the proper position using efficient slicing
-  llm_request.contents[insert_index:insert_index] = instruction_contents
+  llm_request._insert_transient_user_content(  # pylint: disable=protected-access
+      instruction_contents
+  )

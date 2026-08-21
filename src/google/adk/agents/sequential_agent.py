@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import AsyncGenerator
 from typing import ClassVar
@@ -27,15 +28,43 @@ from typing_extensions import override
 from ..events.event import Event
 from ..features import experimental
 from ..features import FeatureName
+from ..tools.base_tool import BaseTool
 from ..utils.context_utils import Aclosing
+from ..utils.instructions_utils import InstructionProvider
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
+from .llm_agent import ToolUnion
+from .readonly_context import ReadonlyContext
 from .sequential_agent_config import SequentialAgentConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _tool_name(tool: ToolUnion) -> str | None:
+  if isinstance(tool, BaseTool):
+    return tool.name
+  if callable(tool):
+    name = getattr(tool, '__name__', None)
+    return name if isinstance(name, str) else None
+  return None
+
+
+def _append_instruction(
+    instruction: str | InstructionProvider, suffix: str
+) -> str | InstructionProvider:
+  if isinstance(instruction, str):
+    return instruction + suffix
+
+  async def combined(context: ReadonlyContext) -> str:
+    resolved = instruction(context)
+    if inspect.isawaitable(resolved):
+      resolved = await resolved
+    return resolved + suffix
+
+  return combined
 
 
 @experimental(FeatureName.AGENT_STATE)
@@ -161,12 +190,18 @@ class SequentialAgent(BaseAgent):
 
       if isinstance(sub_agent, LlmAgent):
         # Use function name to dedupe.
-        if task_completed.__name__ not in sub_agent.tools:
+        if not any(
+            _tool_name(tool) == task_completed.__name__
+            for tool in sub_agent.tools
+        ):
           sub_agent.tools.append(task_completed)
-          sub_agent.instruction += f"""If you finished the user's request
+          completion_instruction = f"""If you finished the user's request
           according to its description, call the {task_completed.__name__} function
           to exit so the next agents can take over. When calling this function,
           do not generate any text other than the function call."""
+          sub_agent.instruction = _append_instruction(
+              sub_agent.instruction, completion_instruction
+          )
 
     for sub_agent in self.sub_agents:
       async with Aclosing(sub_agent.run_live(ctx)) as agen:

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 from typing import MutableMapping
 from typing import Optional
 import weakref
@@ -25,6 +26,7 @@ from google.genai import types
 from mcp import types as mcp_types
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver import MCPServer
+from mcp.server.session import ServerSession
 
 from ...agents.base_agent import BaseAgent
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -80,29 +82,37 @@ def _part_to_content(part: types.Part) -> Optional[mcp_types.ContentBlock]:
   return None
 
 
-def _connection_key(ctx: Context) -> object:
-  """Returns a stable per-connection key for an MCP tool call context.
+def _connection_key(ctx: Context[ServerSession, Any]) -> object:
+  """Returns the object that identifies the MCP connection behind ``ctx``.
 
-  In mcp 2.0, ``ctx.session`` is a new ``ServerSession`` object on every
-  request even over a single connection, so it can no longer key the
-  per-connection ADK session map. The underlying ``Connection`` object is
-  shared by every request on one connection, so we use it when available and
-  fall back to ``ctx.session`` otherwise.
+  The MCP SDK exposes no public per-connection handle. In SDK 1.x
+  ``ctx.session`` is itself one object per connection. In 2.x the server
+  builds a fresh ``ServerSession`` for every inbound message and keeps the
+  connection on its private ``_connection``, so ``ctx.session`` changes on
+  every call. Reading ``_connection`` when it is there gives one key per
+  connection on both versions.
+
+  TODO: Use a public accessor once the SDK adds one. SDK 2.x already defines
+  ``mcp.server.context.Context.connection``, but the server does not hand that
+  class to tool functions yet.
 
   Args:
     ctx: The MCP tool call context.
 
   Returns:
-    A hashable object that is stable across all requests on one connection.
+    The per-connection object, or the per-request session when the SDK gives
+    no connection. That fallback degrades to one agent session per request.
+    It must never fall back to an object shared by all connections, because
+    separate clients would then share one conversation.
   """
-  connection = getattr(ctx.session, "_connection", None)
-  return connection if connection is not None else ctx.session
+  session = ctx.session
+  return getattr(session, "_connection", session)
 
 
 async def _run_agent(
     runner: Runner,
     request: str,
-    ctx: Optional[Context] = None,
+    ctx: Optional[Context[ServerSession, Any]] = None,
     sessions: Optional[MutableMapping[object, str]] = None,
 ) -> list[mcp_types.ContentBlock]:
   """Runs the agent for one request and returns its final response content.
@@ -124,15 +134,17 @@ async def _run_agent(
     images, audio, or other data the agent produced).
   """
   session_id: Optional[str] = None
+  connection: Optional[object] = None
   if ctx is not None and sessions is not None:
-    session_id = sessions.get(_connection_key(ctx))
+    connection = _connection_key(ctx)
+    session_id = sessions.get(connection)
   if session_id is None:
     session = await runner.session_service.create_session(
         app_name=runner.app_name, user_id=_MCP_USER_ID
     )
     session_id = session.id
-    if ctx is not None and sessions is not None:
-      sessions[_connection_key(ctx)] = session_id
+    if sessions is not None and connection is not None:
+      sessions[connection] = session_id
   new_message = types.Content(role="user", parts=[types.Part(text=request)])
   final_content: list[mcp_types.ContentBlock] = []
   async for event in runner.run_async(
@@ -203,7 +215,7 @@ def to_mcp_server(
   sessions: MutableMapping[object, str] = weakref.WeakKeyDictionary()
 
   async def call_agent(
-      request: str, ctx: Context
+      request: str, ctx: Context[ServerSession, Any]
   ) -> list[mcp_types.ContentBlock]:
     return await _run_agent(agent_runner, request, ctx, sessions)
 

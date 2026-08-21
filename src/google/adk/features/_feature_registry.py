@@ -129,10 +129,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOL_CONFIG: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+        FeatureStage.STABLE, default_on=True
     ),
     FeatureName.DYNAMIC_INSTRUCTION_ROUTING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=False
@@ -392,7 +392,7 @@ def temporary_feature_override(
 
   # Save the original override state
   had_override = feature_name in _FEATURE_OVERRIDES
-  original_value = _FEATURE_OVERRIDES.get(feature_name)
+  original_value = _FEATURE_OVERRIDES.get(feature_name, False)
 
   # Apply the temporary override
   _FEATURE_OVERRIDES[feature_name] = enabled

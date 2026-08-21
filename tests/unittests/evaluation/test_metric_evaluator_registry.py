@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 
 from google.adk.agents.common_configs import CodeConfig
 from google.adk.errors.not_found_error import NotFoundError
@@ -42,6 +43,9 @@ from google.adk.evaluation.metric_evaluator_registry import RubricBasedToolUseV1
 from google.adk.evaluation.metric_evaluator_registry import SafetyEvaluatorV1MetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluator
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluatorMetricInfoProvider
+from google.adk.evaluation.metric_info_providers import MultiTurnTaskSuccessV1MetricInfoProvider
+from google.adk.evaluation.metric_info_providers import MultiTurnToolUseQualityV1MetricInfoProvider
+from google.adk.evaluation.metric_info_providers import MultiTurnTrajectoryQualityV1MetricInfoProvider
 from pydantic import ValidationError
 import pytest
 
@@ -168,6 +172,105 @@ class TestMetricEvaluatorRegistry:
     eval_metric = EvalMetric(metric_name="non_existent_metric", threshold=0.5)
     with pytest.raises(NotFoundError):
       registry.get_evaluator(eval_metric)
+
+
+class TestFork:
+  """Test cases for MetricEvaluatorRegistry.fork."""
+
+  _CUSTOM_METRIC_NAME = "custom_metric_for_fork_test"
+
+  def test_fork_carries_over_existing_registrations(self):
+    registry = MetricEvaluatorRegistry()
+    registry.register_evaluator(_DUMMY_METRIC_INFO, DummyEvaluator)
+
+    forked = registry.fork()
+
+    assert isinstance(
+        forked.get_evaluator(
+            EvalMetric(metric_name=_DUMMY_METRIC_NAME, threshold=0.5)
+        ),
+        DummyEvaluator,
+    )
+
+  def test_fork_carries_over_custom_function_paths(self):
+    """A metric registered from a config stays runnable through the fork."""
+    registry = MetricEvaluatorRegistry()
+    register_custom_metrics_from_config(
+        EvalConfig(
+            custom_metrics={
+                self._CUSTOM_METRIC_NAME: CustomMetricConfig(
+                    code_config=CodeConfig(name="math.sqrt")
+                )
+            }
+        ),
+        registry,
+    )
+
+    forked = registry.fork()
+
+    evaluator = forked.get_evaluator(
+        EvalMetric(metric_name=self._CUSTOM_METRIC_NAME, threshold=0.5)
+    )
+    assert evaluator._metric_function is math.sqrt  # pylint: disable=protected-access
+
+  def test_fork_is_quiet_and_keeps_the_registry_type(self):
+    """Forking happens once per eval run, so it must not warn or downcast."""
+    registry = MetricEvaluatorRegistry()
+
+    with warnings.catch_warnings(record=True) as caught:
+      warnings.simplefilter("always")
+      forked = registry.fork()
+
+    assert not caught
+    assert type(forked) is type(registry)
+    assert forked.get_registered_metrics() == registry.get_registered_metrics()
+
+  def test_registrations_on_the_fork_do_not_reach_the_source(self):
+    registry = MetricEvaluatorRegistry()
+    forked = registry.fork()
+
+    forked.register_evaluator(_DUMMY_METRIC_INFO, DummyEvaluator)
+
+    with pytest.raises(NotFoundError):
+      registry.get_evaluator(
+          EvalMetric(metric_name=_DUMMY_METRIC_NAME, threshold=0.5)
+      )
+
+  def test_registrations_on_the_source_do_not_reach_the_fork(self):
+    registry = MetricEvaluatorRegistry()
+    forked = registry.fork()
+
+    registry.register_evaluator(_DUMMY_METRIC_INFO, DummyEvaluator)
+
+    with pytest.raises(NotFoundError):
+      forked.get_evaluator(
+          EvalMetric(metric_name=_DUMMY_METRIC_NAME, threshold=0.5)
+      )
+
+  def test_overriding_a_standard_metric_on_the_fork_leaves_the_source_alone(
+      self,
+  ):
+    """Replacing a standard evaluator on a fork must not affect the source."""
+    registry = MetricEvaluatorRegistry()
+    tool_trajectory = EvalMetric(
+        metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+        threshold=0.5,
+    )
+    forked = registry.fork()
+
+    forked.register_evaluator(
+        _DUMMY_METRIC_INFO.model_copy(
+            update={
+                "metric_name": PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value
+            }
+        ),
+        DummyEvaluator,
+    )
+
+    assert isinstance(forked.get_evaluator(tool_trajectory), DummyEvaluator)
+    assert isinstance(
+        registry.get_evaluator(tool_trajectory), TrajectoryEvaluator
+    )
 
 
 class TestRegisterCustomMetricsFromConfig:
@@ -556,3 +659,75 @@ class TestMetricInfoProviders:
     )
     assert metric_info.metric_value_info.interval.min_value == 0.0
     assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_multi_turn_task_success_v1_metric_info_provider(self):
+    metric_info = MultiTurnTaskSuccessV1MetricInfoProvider().get_metric_info()
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.MULTI_TURN_TASK_SUCCESS_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_multi_turn_trajectory_quality_v1_metric_info_provider(self):
+    metric_info = (
+        MultiTurnTrajectoryQualityV1MetricInfoProvider().get_metric_info()
+    )
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.MULTI_TURN_TRAJECTORY_QUALITY_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_multi_turn_tool_use_quality_v1_metric_info_provider(self):
+    metric_info = (
+        MultiTurnToolUseQualityV1MetricInfoProvider().get_metric_info()
+    )
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.MULTI_TURN_TOOL_USE_QUALITY_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_providers_cover_every_prebuilt_metric_exactly_once(self):
+    metric_names = [
+        provider.get_metric_info().metric_name
+        for provider in [
+            TrajectoryEvaluatorMetricInfoProvider(),
+            ResponseEvaluatorMetricInfoProvider(
+                PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
+            ),
+            ResponseEvaluatorMetricInfoProvider(
+                PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
+            ),
+            SafetyEvaluatorV1MetricInfoProvider(),
+            MultiTurnTaskSuccessV1MetricInfoProvider(),
+            MultiTurnTrajectoryQualityV1MetricInfoProvider(),
+            MultiTurnToolUseQualityV1MetricInfoProvider(),
+            FinalResponseMatchV2EvaluatorMetricInfoProvider(),
+            RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider(),
+            HallucinationsV1EvaluatorMetricInfoProvider(),
+            RubricBasedToolUseV1EvaluatorMetricInfoProvider(),
+            PerTurnUserSimulatorQualityV1MetricInfoProvider(),
+            RubricBasedMultiTurnTrajectoryMetricInfoProvider(),
+        ]
+    ]
+
+    # Two providers claiming the same name would silently overwrite each
+    # other's evaluator when the default registry is built.
+    assert len(metric_names) == len(set(metric_names))
+    assert set(metric_names) == {metric.value for metric in PrebuiltMetrics}
+
+  def test_every_prebuilt_metric_is_registered_by_default(self):
+    registered_names = {
+        metric_info.metric_name
+        for metric_info in (
+            DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+        )
+    }
+
+    # Other tests may add extra metrics to the registry, but no prebuilt
+    # metric may be missing from it.
+    assert {metric.value for metric in PrebuiltMetrics} <= registered_names

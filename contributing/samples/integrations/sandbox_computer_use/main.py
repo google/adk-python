@@ -27,7 +27,7 @@ Prerequisites:
      - VMAAS_SANDBOX_SNAPSHOT_NAME: (Optional) Sandbox snapshot name to create a new sandbox (mutually exclusive with VMAAS_SANDBOX_NAME)
 
 Usage:
-  cd contributing/samples
+  cd contributing/samples/integrations
   python -m sandbox_computer_use.main
 """
 

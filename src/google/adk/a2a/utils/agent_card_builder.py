@@ -15,11 +15,8 @@
 from __future__ import annotations
 
 import logging
-import re
-from typing import Any
 from typing import Dict
 from typing import List
-from typing import Optional
 
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
@@ -55,12 +52,12 @@ class AgentCardBuilder:
       self,
       *,
       agent: BaseAgent | Workflow,
-      rpc_url: Optional[str] = None,
-      capabilities: Optional[AgentCapabilities] = None,
-      doc_url: Optional[str] = None,
-      provider: Optional[AgentProvider] = None,
-      agent_version: Optional[str] = None,
-      security_schemes: Optional[Dict[str, SecurityScheme]] = None,
+      rpc_url: str | None = None,
+      capabilities: AgentCapabilities | None = None,
+      doc_url: str | None = None,
+      provider: AgentProvider | None = None,
+      agent_version: str | None = None,
+      security_schemes: Dict[str, SecurityScheme] | None = None,
   ):
     if not agent:
       raise ValueError('Agent cannot be None or empty.')
@@ -130,8 +127,10 @@ async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
   """Build skills for LLM agent."""
   skills = []
 
-  # 1. Agent skill (main model skill)
-  agent_description = _build_llm_agent_description_with_instructions(agent)
+  # 1. Agent skill (main model skill). The card is a discovery document served
+  # without authentication, so the description comes from the agent's own
+  # public description and never from its instructions.
+  agent_description = _build_agent_description(agent)
   agent_examples = await _extract_examples_from_agent(agent)
 
   skills.append(
@@ -282,7 +281,7 @@ async def _build_non_llm_agent_skills(agent: BaseNode) -> List[AgentSkill]:
 
 def _build_orchestration_skill(
     agent: BaseNode, agent_type: str
-) -> Optional[AgentSkill]:
+) -> AgentSkill | None:
   """Build orchestration skill for agents/workflows with child nodes."""
   sub_agent_descriptions = []
   for sub_agent in _iter_child_nodes(agent):
@@ -350,63 +349,7 @@ def _build_agent_description(agent: BaseNode) -> str:
   )
 
 
-def _build_llm_agent_description_with_instructions(agent: LlmAgent) -> str:
-  """Build agent description including instructions for LlmAgents."""
-  description_parts = []
-
-  # Add agent description
-  if agent.description:
-    description_parts.append(agent.description)
-
-  # Add instruction (with pronoun replacement) - only for LlmAgent
-  if agent.instruction:
-    instruction = _replace_pronouns(agent.instruction)
-    description_parts.append(instruction)
-
-  # Add global instruction (with pronoun replacement) - only for LlmAgent
-  if agent.global_instruction:
-    global_instruction = _replace_pronouns(agent.global_instruction)
-    description_parts.append(global_instruction)
-
-  return (
-      ' '.join(description_parts)
-      if description_parts
-      else _get_default_description(agent)
-  )
-
-
-def _replace_pronouns(text: str) -> str:
-  """Replace pronouns and conjugate common verbs for agent description.
-
-  (e.g., "You are" -> "I am", "your" -> "my").
-  """
-  pronoun_map = {
-      # Longer phrases with verb conjugations
-      'you are': 'I am',
-      'you were': 'I was',
-      "you're": 'I am',
-      "you've": 'I have',
-      # Standalone pronouns
-      'yours': 'mine',
-      'your': 'my',
-      'you': 'I',
-  }
-
-  # Sort keys by length (descending) to ensure longer phrases are matched first.
-  # This prevents "you" in "you are" from being replaced on its own.
-  sorted_keys = sorted(pronoun_map.keys(), key=len, reverse=True)
-
-  pattern = r'\b(' + '|'.join(re.escape(key) for key in sorted_keys) + r')\b'
-
-  return re.sub(
-      pattern,
-      lambda match: pronoun_map[match.group(1).lower()],
-      text,
-      flags=re.IGNORECASE,
-  )
-
-
-def _get_workflow_description(agent: BaseNode) -> Optional[str]:
+def _get_workflow_description(agent: BaseNode) -> str | None:
   """Get workflow-specific description for non-LLM agents and workflows."""
   if not _iter_child_nodes(agent):
     return None
@@ -510,29 +453,32 @@ def _get_default_description(agent: BaseNode) -> str:
 
 
 def _extract_inputs_from_examples(
-    examples: Optional[list[dict[str, Any]]],
+    examples: list[dict[str, object]] | None,
 ) -> list[str]:
   """Extracts only the input strings so they can be added to an AgentSkill."""
   if examples is None:
     return []
 
-  extracted_inputs = []
+  extracted_inputs: list[str] = []
   for example in examples:
     example_input = example.get('input')
-    if not example_input:
+    if not isinstance(example_input, dict):
       continue
 
     parts = example_input.get('parts')
-    if parts is not None:
-      part_texts = []
+    if isinstance(parts, list):
+      part_texts: list[str] = []
       for part in parts:
+        if not isinstance(part, dict):
+          continue
         text = part.get('text')
-        if text is not None:
+        if isinstance(text, str):
           part_texts.append(text)
-      extracted_inputs.append('\n'.join(part_texts))
+      if part_texts:
+        extracted_inputs.append('\n'.join(part_texts))
     else:
       text = example_input.get('text')
-      if text is not None:
+      if isinstance(text, str):
         extracted_inputs.append(text)
 
   return extracted_inputs
@@ -540,8 +486,8 @@ def _extract_inputs_from_examples(
 
 async def _extract_examples_from_agent(
     agent: BaseNode,
-) -> Optional[List[Dict[str, Any]]]:
-  """Extract examples from example_tool if configured; otherwise, from agent instruction."""
+) -> list[dict[str, object]] | None:
+  """Extract examples from example_tool if configured, otherwise none."""
   if not isinstance(agent, LlmAgent):
     return None
 
@@ -550,62 +496,47 @@ async def _extract_examples_from_agent(
     canonical_tools = await agent.canonical_tools()
     for tool in canonical_tools:
       if isinstance(tool, ExampleTool):
-        return _convert_example_tool_examples(tool)
+        examples = _convert_example_tool_examples(tool)
+        if examples is not None:
+          return examples
   except Exception as e:
     logger.warning('Failed to extract examples from tools: %s', e)
 
-  # If no example_tool found, try to extract examples from instruction
-  if agent.instruction:
-    return _extract_examples_from_instruction(agent.instruction)
-
+  # Examples come only from a declared example_tool, never mined out of the
+  # instruction, which is not publishable content.
   return None
 
 
-def _convert_example_tool_examples(tool: ExampleTool) -> List[Dict[str, Any]]:
+def _serialize_example_content(content: object) -> object:
+  model_dump = getattr(content, 'model_dump', None)
+  if callable(model_dump):
+    serialized: object = model_dump()
+    return serialized
+  return content
+
+
+def _convert_example_tool_examples(
+    tool: ExampleTool,
+) -> list[dict[str, object]] | None:
   """Convert ExampleTool examples to the expected format."""
-  examples = []
+  if not isinstance(tool.examples, list):
+    logger.debug(
+        'Skipping dynamic ExampleTool provider when building an agent card'
+    )
+    return None
+
+  examples: list[dict[str, object]] = []
   for example in tool.examples:
     examples.append({
-        'input': (
-            example.input.model_dump()
-            if hasattr(example.input, 'model_dump')
-            else example.input
-        ),
+        'input': _serialize_example_content(example.input),
         'output': [
-            output.model_dump() if hasattr(output, 'model_dump') else output
-            for output in example.output
+            _serialize_example_content(output) for output in example.output
         ],
     })
   return examples
 
 
-def _extract_examples_from_instruction(
-    instruction: str,
-) -> Optional[List[Dict[str, Any]]]:
-  """Extract examples from agent instruction text using regex patterns."""
-  examples = []
-
-  # Look for common example patterns in instructions
-  example_patterns = [
-      r'Example Query:\s*["\']([^"\']+)["\']',
-      r'Example Response:\s*["\']([^"\']+)["\']',
-      r'Example:\s*["\']([^"\']+)["\']',
-  ]
-
-  for pattern in example_patterns:
-    matches = re.findall(pattern, instruction, re.IGNORECASE)
-    if matches:
-      for i in range(0, len(matches), 2):
-        if i + 1 < len(matches):
-          examples.append({
-              'input': {'text': matches[i]},
-              'output': [{'text': matches[i + 1]}],
-          })
-
-  return examples if examples else None
-
-
-def _get_input_modes(agent: BaseNode) -> Optional[List[str]]:
+def _get_input_modes(agent: BaseNode) -> List[str] | None:
   """Get input modes based on agent model."""
   if not isinstance(agent, LlmAgent):
     return None
@@ -615,7 +546,7 @@ def _get_input_modes(agent: BaseNode) -> Optional[List[str]]:
   return None
 
 
-def _get_output_modes(agent: BaseNode) -> Optional[List[str]]:
+def _get_output_modes(agent: BaseNode) -> List[str] | None:
   """Get output modes from Agent.generate_content_config.response_modalities."""
   if not isinstance(agent, LlmAgent):
     return None

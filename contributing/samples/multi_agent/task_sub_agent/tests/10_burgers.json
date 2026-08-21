@@ -64,35 +64,12 @@
       "content": {
         "parts": [
           {
-            "functionResponse": {
-              "id": "fc-3",
-              "name": "adk_request_confirmation",
-              "response": {
-                "confirmed": true,
-                "payload": {}
-              }
-            }
-          }
-        ],
-        "role": "user"
-      },
-      "id": "e-4",
-      "invocationId": "",
-      "nodeInfo": {
-        "path": ""
-      }
-    },
-    {
-      "author": "user",
-      "content": {
-        "parts": [
-          {
             "text": "1234-1234"
           }
         ],
         "role": "user"
       },
-      "id": "e-5",
+      "id": "e-4",
       "invocationId": "i-2",
       "nodeInfo": {
         "path": ""
@@ -110,7 +87,7 @@
         "role": "model"
       },
       "finishReason": "STOP",
-      "id": "e-6",
+      "id": "e-5",
       "invocationId": "i-2",
       "isolationScope": "fc-1",
       "nodeInfo": {
@@ -127,7 +104,7 @@
         ],
         "role": "user"
       },
-      "id": "e-7",
+      "id": "e-6",
       "invocationId": "i-3",
       "nodeInfo": {
         "path": ""
@@ -149,7 +126,7 @@
         "role": "model"
       },
       "finishReason": "STOP",
-      "id": "e-8",
+      "id": "e-7",
       "invocationId": "i-3",
       "isolationScope": "fc-1",
       "longRunningToolIds": [],
@@ -182,7 +159,7 @@
         ],
         "role": "model"
       },
-      "id": "e-9",
+      "id": "e-8",
       "invocationId": "i-3",
       "isolationScope": "fc-1",
       "longRunningToolIds": [
@@ -218,7 +195,7 @@
         ],
         "role": "user"
       },
-      "id": "e-10",
+      "id": "e-9",
       "invocationId": "i-3",
       "isolationScope": "fc-1",
       "nodeInfo": {

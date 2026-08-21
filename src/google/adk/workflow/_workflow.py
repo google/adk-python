@@ -321,7 +321,7 @@ class Workflow(BaseNode):
       # Tasks not found in the sequence (e.g., new executions) will be placed
       # at the end, preserving their original insertion order due to Python's
       # stable sort.
-      def get_recovered_sequence_index(t):
+      def get_recovered_sequence_index(t: asyncio.Task[Context]) -> int | float:
         name = task_to_name.get(t)
         if not name:
           return float("inf")
@@ -588,7 +588,7 @@ class Workflow(BaseNode):
         # emit a fresh checkpoint for a node that only fast-forwarded history.
         loop_state.replayed_nodes.add(node_name)
 
-        async def return_ctx():
+        async def return_ctx() -> Context:
           if loop_state.sequence_barrier:
             await loop_state.sequence_barrier.wait(key)
           return mock_ctx

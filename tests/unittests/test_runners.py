@@ -22,12 +22,18 @@ import textwrap
 from typing import AsyncGenerator
 from typing import Optional
 from unittest.mock import AsyncMock
+from unittest.mock import create_autospec
+from unittest.mock import patch
 
 from google.adk import runners
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
@@ -43,6 +49,8 @@ from google.adk.sessions.session import Session
 from google.adk.tools.base_toolset import BaseToolset
 from google.genai import types
 import pytest
+
+from tests.unittests import testing_utils
 
 TEST_APP_ID = "test_app"
 TEST_USER_ID = "test_user"
@@ -769,6 +777,111 @@ def test_run_passes_state_delta():
   assert user_event.actions.state_delta == state_delta
 
 
+def test_run_reraises_agent_error():
+  """run should re-raise an error the agent raised on the worker thread."""
+
+  class FailingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      raise ValueError("agent failed")
+      yield  # pragma: no cover
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=FailingAgent(name="failing_agent"),
+      session_service=InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  with pytest.raises(ValueError, match="agent failed"):
+    list(
+        runner.run(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    )
+
+
+def test_run_yields_events_before_reraising_agent_error():
+  """run should deliver the events produced before the failure."""
+
+  class FailsAfterOneEventAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[types.Part(text="hi")]),
+      )
+      raise ValueError("agent failed late")
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=FailsAfterOneEventAgent(name="failing_agent"),
+      session_service=InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  events = []
+  with pytest.raises(ValueError, match="agent failed late"):
+    for event in runner.run(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="hello")]
+        ),
+    ):
+      events.append(event)
+
+  assert [e.author for e in events] == ["failing_agent"]
+
+
+def test_run_reports_agent_cancellation_as_runtime_error():
+  """A cancellation is reported without being re-raised as a CancelledError.
+
+  Re-raising it on the calling thread would read as the caller having been
+  cancelled, which an enclosing event loop absorbs silently.
+  """
+
+  class CancelledAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      raise asyncio.CancelledError("agent cancelled")
+      yield  # pragma: no cover
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=CancelledAgent(name="cancelled_agent"),
+      session_service=InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  with pytest.raises(RuntimeError, match="CancelledError") as exc_info:
+    list(
+        runner.run(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    )
+
+  assert isinstance(exc_info.value.__cause__, asyncio.CancelledError)
+
+
 @pytest.mark.asyncio
 async def test_run_async_propagates_invocation_id():
   """run_async should propagate invocation_id to the invocation context and events."""
@@ -1010,6 +1123,150 @@ async def test_run_config_custom_metadata_stamps_user_event_in_chat_mode():
   )
   user_event = next(event for event in session.events if event.author == "user")
   assert user_event.custom_metadata == {"turn_id": "t-1"}
+
+
+@pytest.mark.asyncio
+async def test_runner_root_task_mode_promotes_finish_task_output():
+  """Root LlmAgent(mode='task') promotes the finish_task output onto an event."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(
+      name="task_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="finish_task", args={"result": "the answer"}
+              )
+          ]
+      ),
+      mode="task",
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(
+          role="user", parts=[types.Part(text="do task")]
+      ),
+  ):
+    events.append(event)
+
+  outputs = [e.output for e in events if e.output is not None]
+  assert outputs, f"no event carried .output; events={events}"
+  assert any(
+      isinstance(o, dict) and o.get("result") == "the answer" for o in outputs
+  ), f"finish_task output not promoted onto event.output; got {outputs}"
+
+
+@pytest.mark.asyncio
+async def test_runner_root_task_mode_unwraps_primitive_output():
+  """Root LlmAgent(mode='task') unwraps primitive output schemas on promotion."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(
+      name="task_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="finish_task", args={"result": 42}
+              )
+          ]
+      ),
+      mode="task",
+      output_schema=int,
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(
+          role="user", parts=[types.Part(text="do task")]
+      ),
+  ):
+    events.append(event)
+
+  outputs = [e.output for e in events if e.output is not None]
+  assert outputs == [42], f"finish_task output was not unwrapped; got {outputs}"
+
+
+@pytest.mark.asyncio
+async def test_runner_root_task_mode_writes_output_key_to_session_state():
+  """Root LlmAgent(mode='task') with output_key writes result to session state."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(
+      name="task_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="finish_task", args={"result": "key_value"}
+              )
+          ]
+      ),
+      mode="task",
+      output_key="my_result_key",
+  )
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(
+          role="user", parts=[types.Part(text="do task")]
+      ),
+  ):
+    events.append(event)
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  assert session.state.get("my_result_key") == {"result": "key_value"}
+
+
+@pytest.mark.asyncio
+async def test_runner_raises_on_root_llm_agent_with_single_turn_mode():
+  """Runner raises ValueError if root LlmAgent runs with mode='single_turn'."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(name="single_turn_agent", mode="single_turn")
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          "LlmAgent as root agent must have mode='chat' or 'task', but got"
+          " mode='single_turn'."
+      ),
+  ):
+    async for _ in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="do task")]
+        ),
+    ):
+      pass
 
 
 @pytest.mark.asyncio
@@ -1661,7 +1918,13 @@ class TestRunnerResolveApp:
   def test_resolve_app_rejects_app_and_agent(self):
     """Test that providing both app and agent raises."""
     app = App(name="test_app", root_agent=self.root_agent)
-    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Only one of app, agent, or node may be provided, but got:"
+            r" app=App, agent=MockLlmAgent\. Pass exactly one to Runner\(\)\."
+        ),
+    ):
       Runner(
           app=app,
           agent=self.root_agent,
@@ -1674,7 +1937,13 @@ class TestRunnerResolveApp:
 
     app = App(name="test_app", root_agent=self.root_agent)
     node = BaseNode(name="test_node")
-    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Only one of app, agent, or node may be provided, but got:"
+            r" app=App, node=BaseNode\. Pass exactly one to Runner\(\)\."
+        ),
+    ):
       Runner(
           app=app,
           node=node,
@@ -1686,7 +1955,14 @@ class TestRunnerResolveApp:
     from google.adk.workflow._base_node import BaseNode
 
     node = BaseNode(name="test_node")
-    with pytest.raises(ValueError, match="Only one of app, agent, or node"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Only one of app, agent, or node may be provided, but got:"
+            r" agent=MockLlmAgent, node=BaseNode\. Pass exactly one to"
+            r" Runner\(\)\."
+        ),
+    ):
       Runner(
           app_name="test_app",
           agent=self.root_agent,
@@ -1697,7 +1973,11 @@ class TestRunnerResolveApp:
   def test_resolve_app_rejects_none(self):
     """Test that providing no app, agent, or node raises."""
     with pytest.raises(
-        ValueError, match="One of app, agent, or node must be provided"
+        ValueError,
+        match=(
+            r"One of app, agent, or node must be provided\. Got none\. Pass"
+            r" exactly one to Runner\(\)\."
+        ),
     ):
       Runner(
           app_name="test_app",
@@ -2254,6 +2534,453 @@ async def test_run_async_rejects_user_function_call():
     async with aclosing(agen) as a:
       async for _ in a:
         pass
+
+
+def test_runner_agent_is_a_class_attribute():
+  """``agent`` must stay in ``dir(Runner)`` for callers that mock a Runner."""
+  assert "agent" in dir(Runner)
+  assert Runner.agent is None
+  assert create_autospec(Runner).agent is not None
+
+
+@pytest.mark.asyncio
+async def test_runner_delegation_finds_active_task_scope_on_non_terminal_error():
+  """find_active_task_scope ignores non-terminal errors; remains on active task."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(name="task_agent", mode="task")
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  # Simulate non-terminal error (validation failure)
+  events = [
+      Event(
+          author="task_agent",
+          invocation_id="inv-1",
+          isolation_scope="scope-1",
+          content=types.Content(
+              parts=[
+                  types.Part.from_function_response(
+                      name=FINISH_TASK_TOOL_NAME,
+                      response={"result": "Validation failed; retry"},
+                  )
+              ]
+          ),
+      )
+  ]
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session.events.extend(events)
+  assert runners._find_active_task_scope(session) == ("scope-1", "inv-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result", [FINISH_TASK_SUCCESS_RESULT, FINISH_TASK_ERROR_RESULT]
+)
+async def test_runner_delegation_closes_active_task_scope_on_terminal_results(
+    result,
+):
+  """find_active_task_scope returns None if the task scope has finished with a terminal result."""
+  session_service = InMemorySessionService()
+  agent = LlmAgent(name="task_agent", mode="task")
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=agent, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  # Simulate terminal result
+  events = [
+      Event(
+          author="task_agent",
+          invocation_id="inv-1",
+          isolation_scope="scope-1",
+          content=types.Content(
+              parts=[
+                  types.Part.from_function_response(
+                      name=FINISH_TASK_TOOL_NAME,
+                      response={"result": result},
+                  )
+              ]
+          ),
+      )
+  ]
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session.events.extend(events)
+  assert runners._find_active_task_scope(session) is None
+
+
+@pytest.mark.asyncio
+async def test_runner_picks_coordinator_when_has_remote_a2a_task_subagent():
+  """Runner runs coordinator, not sub-agent, when RemoteA2aAgent is in task mode."""
+  session_service = InMemorySessionService()
+
+  sub_agent = RemoteA2aAgent(
+      name="remote_task_agent",
+      agent_card="https://example.com/rpc",
+      mode="task",
+  )
+
+  # Coordinator LlmAgent in chat mode
+  coordinator = LlmAgent(
+      name="coordinator", mode="chat", sub_agents=[sub_agent]
+  )
+  sub_agent.parent_agent = coordinator
+
+  runner = Runner(
+      app_name=TEST_APP_ID, agent=coordinator, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  # Simulate some events so _find_agent_to_run would be called on resume.
+  events = [
+      Event(
+          author="remote_task_agent",
+          invocation_id="inv-1",
+          isolation_scope="scope-1",
+          content=types.Content(parts=[types.Part(text="task progress")]),
+      )
+  ]
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  session.events.extend(events)
+
+  # Mock _run_node_async to just yield a dummy event and return
+  async def mock_run_node_async(*args, **kwargs):
+    yield Event(
+        author="system",
+        content=types.Content(parts=[types.Part(text="dummy")]),
+    )
+
+  with patch.object(
+      runner, "_run_node_async", side_effect=mock_run_node_async
+  ) as mock_run_node:
+    # Run with new message (resume-like)
+    async for _ in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(parts=[types.Part(text="user reply")]),
+    ):
+      pass
+
+    # Verify that _run_node_async was called with the coordinator (self.agent)
+    # not the sub_agent.
+    assert mock_run_node.call_count == 1
+    called_node = mock_run_node.call_args[1].get("node")
+    assert called_node == coordinator
+
+
+@pytest.mark.asyncio
+async def test_run_async_does_not_leak_context_base_node():
+  """Caller OpenTelemetry context is preserved during run_async iteration for BaseNode."""
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow._base_node import BaseNode
+  from opentelemetry import context as otel_context
+
+  class _TestEchoNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield "echo"
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      node=_TestEchoNode(name="test_node"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  test_key = otel_context.create_key("test_key_node")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_node")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_node"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_run_async_does_not_leak_context_base_agent():
+  """Caller OpenTelemetry context is preserved during run_async iteration for BaseAgent."""
+  from opentelemetry import context as otel_context
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  test_key = otel_context.create_key("test_key_agent")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_agent")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_agent"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_run_node_async_does_not_leak_context():
+  """Caller OpenTelemetry context is preserved during _run_node_async iteration."""
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow._base_node import BaseNode
+  from opentelemetry import context as otel_context
+
+  class _TestEchoNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield "echo"
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      node=_TestEchoNode(name="test_node"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  test_key = otel_context.create_key("test_key_run_node_async")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_run_node_async")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner._run_node_async(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+            yield_user_message=True,
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_run_node_async"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_run_async_does_not_leak_context_llm_agent():
+  """Caller OpenTelemetry context is preserved during run_async iteration for LlmAgent."""
+  from opentelemetry import context as otel_context
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockLlmAgent("test_llm_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  test_key = otel_context.create_key("test_key_llm")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_llm")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_llm"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_run_live_does_not_leak_context():
+  """Caller OpenTelemetry context is preserved during run_live iteration."""
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+  from opentelemetry import context as otel_context
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockLiveAgent("test_live_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  live_queue = LiveRequestQueue()
+  test_key = otel_context.create_key("test_key_live")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_live")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(
+        runner.run_live(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            live_request_queue=live_queue,
+        )
+    ) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert otel_context.get_value(test_key) == "caller_val_live"
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_base_agent_run_async_does_not_leak_context():
+  """Caller OpenTelemetry context is preserved during BaseAgent.run_async iteration."""
+  from google.adk.plugins.plugin_manager import PluginManager
+  from opentelemetry import context as otel_context
+
+  agent = MockAgent("test_agent")
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  inv_ctx = InvocationContext(
+      session=session,
+      session_service=session_service,
+      plugin_manager=PluginManager(),
+      agent=agent,
+      invocation_id="inv_test",
+  )
+
+  test_key = otel_context.create_key("test_key_base_agent_run_async")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_base_agent_run_async")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(agent.run_async(parent_context=inv_ctx)) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert (
+            otel_context.get_value(test_key)
+            == "caller_val_base_agent_run_async"
+        )
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_base_agent_run_live_does_not_leak_context():
+  """Caller OpenTelemetry context is preserved during BaseAgent.run_live iteration."""
+  from google.adk.plugins.plugin_manager import PluginManager
+  from opentelemetry import context as otel_context
+
+  agent = MockLiveAgent("test_live_agent")
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  inv_ctx = InvocationContext(
+      session=session,
+      session_service=session_service,
+      plugin_manager=PluginManager(),
+      agent=agent,
+      invocation_id="inv_test_live",
+  )
+
+  test_key = otel_context.create_key("test_key_base_agent_run_live")
+  token = otel_context.attach(
+      otel_context.set_value(test_key, "caller_val_base_agent_run_live")
+  )
+  caller_ctx = otel_context.get_current()
+  try:
+    events = []
+    async with aclosing(agent.run_live(parent_context=inv_ctx)) as agen:
+      async for event in agen:
+        assert otel_context.get_current() == caller_ctx
+        assert (
+            otel_context.get_value(test_key) == "caller_val_base_agent_run_live"
+        )
+        events.append(event)
+    assert events
+    assert otel_context.get_current() == caller_ctx
+  finally:
+    otel_context.detach(token)
 
 
 if __name__ == "__main__":

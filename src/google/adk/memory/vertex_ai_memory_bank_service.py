@@ -23,6 +23,7 @@ import logging
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.auth.credentials import Credentials
 from google.genai import types
 from typing_extensions import override
 
@@ -42,9 +43,10 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 # Strong references to fire-and-forget tasks to prevent garbage collection.
 # See https://docs.python.org/3/library/asyncio-task.html#creating-tasks
-_background_tasks: set[asyncio.Task] = set()
+_background_tasks: set[asyncio.Task[object]] = set()
 
 _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS = frozenset({
+    'allowed_topics',
     'disable_consolidation',
     'disable_memory_revisions',
     'http_options',
@@ -63,6 +65,7 @@ _CREATE_MEMORY_CONFIG_FALLBACK_KEYS = frozenset({
     'display_name',
     'expire_time',
     'http_options',
+    'memory_id',
     'metadata',
     'revision_labels',
     'revision_expire_time',
@@ -179,6 +182,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       agent_engine_id: Optional[str] = None,
       *,
       express_mode_api_key: Optional[str] = None,
+      credentials: Optional[Credentials] = None,
   ):
     """Initializes a VertexAiMemoryBankService.
 
@@ -195,6 +199,11 @@ class VertexAiMemoryBankService(BaseMemoryService):
         be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true. Do
         not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
+      credentials: The credentials to use when calling the Memory Bank API,
+        e.g. credentials obtained via Workload Identity Federation outside of
+        GCP. If not provided, Application Default Credentials are used.
+        Ignored in Express Mode, which authenticates via
+        express_mode_api_key instead.
     """
     if not agent_engine_id:
       raise ValueError(
@@ -211,6 +220,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
+    self._credentials = credentials
     self._express_mode_api_key = get_express_mode_api_key(
         project, location, express_mode_api_key
     )
@@ -270,6 +280,8 @@ class VertexAiMemoryBankService(BaseMemoryService):
           wait_for_completion: Whether to wait for generation to complete.
           disable_consolidation: Disable memory consolidation.
           disable_memory_revisions: Disable memory revisions.
+          allowed_topics: A sequence of topic names to scope generation to, so
+            only memories matching those topics are extracted.
     """
     _ = session_id
     await self._add_events_to_memory_from_events(
@@ -294,6 +306,11 @@ class VertexAiMemoryBankService(BaseMemoryService):
     If `custom_metadata["enable_consolidation"]` is set to True, this uses
     `memories.generate` with `direct_memories_source` so provided memories are
     consolidated server-side.
+
+    When a `MemoryEntry.id` is set, it is forwarded as the `memory_id` of the
+    created memory, so the caller picks the last component of the memory
+    resource name instead of letting the service generate one. An explicit
+    `custom_metadata["memory_id"]` takes precedence over `MemoryEntry.id`.
     """
     if _is_consolidation_enabled(custom_metadata):
       await self._add_memories_via_generate_direct_memories_source(
@@ -474,6 +491,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       config = _build_create_memory_config(
           memory_metadata,
           memory_revision_labels=memory_revision_labels,
+          memory_id=memory.id,
       )
       operation = await api_client.agent_engines.memories.create(
           name='reasoningEngines/' + self._agent_engine_id,
@@ -521,7 +539,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
       logger.debug('Generate direct memory response: %s', operation)
 
   @override
-  async def search_memory(self, *, app_name: str, user_id: str, query: str):
+  async def search_memory(
+      self, *, app_name: str, user_id: str, query: str
+  ) -> SearchMemoryResponse:
     api_client = self._get_api_client()
     retrieved_memories_iterator = (
         await api_client.agent_engines.memories.retrieve(
@@ -618,10 +638,14 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
     if self._express_mode_api_key:
       return vertexai.Client(api_key=self._express_mode_api_key).aio
-    return vertexai.Client(project=self._project, location=self._location).aio
+    return vertexai.Client(
+        project=self._project,
+        location=self._location,
+        credentials=self._credentials,
+    ).aio
 
 
-def _log_ingest_task_error(task: asyncio.Task) -> None:
+def _log_ingest_task_error(task: asyncio.Task[object]) -> None:
   """Logs errors from fire-and-forget ingest_events tasks."""
   if task.cancelled():
     return
@@ -630,7 +654,7 @@ def _log_ingest_task_error(task: asyncio.Task) -> None:
     logger.error('Background ingest_events task failed: %s', exception)
 
 
-def _should_filter_out_event(content: types.Content) -> bool:
+def _should_filter_out_event(content: types.Content | None) -> bool:
   """Returns whether the event should be filtered out."""
   if not content or not content.parts:
     return True
@@ -730,6 +754,7 @@ def _build_create_memory_config(
     custom_metadata: Mapping[str, object] | None,
     *,
     memory_revision_labels: Mapping[str, str] | None = None,
+    memory_id: str | None = None,
 ) -> dict[str, object]:
   """Builds a valid memories.create config from caller metadata."""
   config: dict[str, object] = {'wait_for_completion': False}
@@ -801,6 +826,15 @@ def _build_create_memory_config(
             sorted(metadata_by_key.keys()),
         )
 
+  if memory_id is not None and 'memory_id' not in config:
+    if 'memory_id' in config_keys:
+      config['memory_id'] = memory_id
+    else:
+      logger.warning(
+          'Ignoring memory_id because installed Vertex SDK does not support'
+          ' create config.memory_id.'
+      )
+
   revision_labels = dict(custom_revision_labels)
   if memory_revision_labels:
     revision_labels.update(memory_revision_labels)
@@ -841,11 +875,12 @@ def _memory_entry_to_fact(
     index: int,
 ) -> str:
   """Builds a memories.create fact payload from MemoryEntry text content."""
-  if _should_filter_out_event(memory.content):
+  parts = memory.content.parts
+  if not parts or _should_filter_out_event(memory.content):
     raise ValueError(f'memories[{index}] must include text.')
 
   text_parts: list[str] = []
-  for part in memory.content.parts:
+  for part in parts:
     if part.inline_data or part.file_data:
       raise ValueError(
           f'memories[{index}] must include text only; inline_data and '

@@ -28,6 +28,7 @@ from typing import Union
 
 from a2a import types as a2a_types
 from google.genai import types as genai_types
+from pydantic import BaseModel
 
 from .. import _compat
 from ...utils.variant_utils import get_google_llm_variant
@@ -46,6 +47,60 @@ A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
 A2A_DATA_PART_TEXT_MIME_TYPE = 'text/plain'
 A2A_DATA_PART_START_TAG = b'<a2a_datapart_json>'
 A2A_DATA_PART_END_TAG = b'</a2a_datapart_json>'
+
+# Per-part fields that qualify the caller's input media: which slice of it to
+# read, at what fidelity. They describe the request the caller made, not the
+# conversation it happens in, so a media part is only faithfully transported if
+# they travel with it. Model conversation state does not belong on this list.
+#
+# Each field is spelled out against its own literal transport key rather than
+# derived in the loops below, so that a reader looking for where a key is
+# written still finds it here.
+_MEDIA_CONTROL_PART_FIELDS: dict[str, str] = {
+    'video_metadata': _get_adk_metadata_key('video_metadata'),
+    'media_resolution': _get_adk_metadata_key('media_resolution'),
+}
+
+
+def _media_control_metadata(part: genai_types.Part) -> dict[str, Any]:
+  """Builds the A2A metadata carrying a part's media control fields."""
+  meta: dict[str, Any] = {}
+  for name, key in _MEDIA_CONTROL_PART_FIELDS.items():
+    value = getattr(part, name, None)
+    if value is None:
+      continue
+    if isinstance(value, BaseModel):
+      value = value.model_dump(mode='json', by_alias=True, exclude_none=True)
+    meta[key] = value
+  return meta
+
+
+def _media_control_fields(meta: Any) -> tuple[dict[str, Any], Any]:
+  """Reads the media control fields an A2A part is carrying, if any.
+
+  Returns the fields to set on the genai part along with the remaining part
+  metadata, which no longer carries the keys that were read: they are the part's
+  own fields now, so leaving them behind would duplicate them on the way back
+  out and make a second hop differ from the first.
+
+  Unknown names are skipped so that a part sent by a peer built against a newer
+  google-genai does not fail to convert here. Their keys stay in the metadata,
+  which is the only place this build can still carry them.
+  """
+  if not meta:
+    return {}, meta
+  fields: dict[str, Any] = {}
+  read_keys: set[str] = set()
+  for name, key in _MEDIA_CONTROL_PART_FIELDS.items():
+    if name not in genai_types.Part.model_fields:
+      continue
+    value = meta.get(key)
+    if value is not None:
+      fields[name] = value
+      read_keys.add(key)
+  if not read_keys:
+    return fields, meta
+  return fields, {k: v for k, v in meta.items() if k not in read_keys}
 
 
 A2APartToGenAIPartConverter = Callable[
@@ -85,6 +140,7 @@ def convert_a2a_part_to_genai_part(
     )
 
   if _compat.is_file_part(a2a_part):
+    media_control, file_meta = _media_control_fields(meta)
     file_uri = _compat.file_part_uri(a2a_part)
     if file_uri is not None:
       return genai_types.Part(
@@ -93,7 +149,8 @@ def convert_a2a_part_to_genai_part(
               mime_type=_compat.file_part_mime_type(a2a_part),
               display_name=_compat.file_part_name(a2a_part),
           ),
-          part_metadata=genai_metadata(meta),
+          part_metadata=genai_metadata(file_meta),
+          **media_control,
       )
     file_bytes = _compat.file_part_bytes(a2a_part)
     if file_bytes is not None:
@@ -103,7 +160,8 @@ def convert_a2a_part_to_genai_part(
               mime_type=_compat.file_part_mime_type(a2a_part),
               display_name=_compat.file_part_name(a2a_part),
           ),
-          part_metadata=genai_metadata(meta),
+          part_metadata=genai_metadata(file_meta),
+          **media_control,
       )
     logger.warning(
         'Cannot convert unsupported file part: %s',
@@ -212,8 +270,10 @@ def convert_genai_part_to_a2a_part(
         mime_type=part.file_data.mime_type or '',
         name=part.file_data.display_name,
     )
+    meta = _media_control_metadata(part)
     if part.part_metadata:
-      apply_meta(p, dict(part.part_metadata))
+      meta.update(part.part_metadata)
+    apply_meta(p, meta)
     return p
 
   if part.inline_data:
@@ -236,13 +296,7 @@ def convert_genai_part_to_a2a_part(
     if part.inline_data.data is None:
       return None
     # Generic binary → bytes-backed file part.
-    meta = {}
-    if part.video_metadata:
-      meta[_get_adk_metadata_key('video_metadata')] = (
-          part.video_metadata.model_dump(
-              mode='json', by_alias=True, exclude_none=True
-          )
-      )
+    meta = _media_control_metadata(part)
     if part.part_metadata:
       meta.update(part.part_metadata)
     p = _compat.make_file_part_with_bytes(

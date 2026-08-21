@@ -36,12 +36,33 @@ def accessors(
   package: str = module_globals['__name__']
 
   def module_getattr(name: str) -> Any:
-    if name not in members:
+    if name in members:
+      module = importlib.import_module(members[name], package)
+      value = getattr(module, name)
+      module_globals[name] = value
+      return value
+
+    # Protocol probes ask for dunders that a package never resolves lazily,
+    # and a failed import is not cached, so answering them here would repeat
+    # the whole finder walk on every copy, pickle or introspection call.
+    if name.startswith('__') and name.endswith('__'):
       raise AttributeError(f'module {package!r} has no attribute {name!r}')
-    module = importlib.import_module(members[name], package)
-    value = getattr(module, name)
-    module_globals[name] = value
-    return value
+
+    # Importing a subpackage eagerly used to bind it on its parent, so
+    # ``package.subpackage`` resolved without importing it by name first.
+    # Resolve it on demand to keep that working, which the import system
+    # then caches by binding the submodule on this package.
+    submodule = f'{package}.{name}'
+    try:
+      return importlib.import_module(submodule)
+    except ModuleNotFoundError as error:
+      # Anything missing deeper than this name is a real dependency error and
+      # has to keep its own message rather than becoming a typo report.
+      if error.name != submodule:
+        raise
+      raise AttributeError(
+          f'module {package!r} has no attribute {name!r}'
+      ) from None
 
   def module_dir() -> list[str]:
     return sorted(set(module_globals) | set(module_globals.get('__all__', ())))

@@ -40,7 +40,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
 
       - name: Run pre-commit checks
         uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
@@ -56,12 +63,13 @@ jobs:
         python-version: ['3.10', '3.11', '3.12', '3.13']
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -69,6 +77,12 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
+
+      - name: Set the dependency resolution cutoff
+        # PyPI uploads a release's wheels one platform at a time, so resolving
+        # mid-upload can select a version whose wheel for this interpreter does
+        # not exist yet and fail the install. Skip the last hour of releases.
+        run: echo "UV_EXCLUDE_NEWER=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
       - name: Generate Baseline
         env:
@@ -127,10 +141,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -139,16 +155,24 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Set the dependency resolution cutoff
+        # PyPI uploads a release's wheels one platform at a time, so resolving
+        # mid-upload can select a version whose wheel for this interpreter does
+        # not exist yet and fail the install. Skip the last hour of releases.
+        run: echo "UV_EXCLUDE_NEWER=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: |
           uv venv .venv
           source .venv/bin/activate
           uv sync --extra test
 
+      - name: List installed packages
+        run: uv pip list
+
       - name: Run unit tests with pytest
         run: |
-          source .venv/bin/activate
-          pytest tests/unittests \
+          uv run pytest tests/unittests \
             -n auto \
             --ignore=tests/unittests/artifacts/test_artifact_service.py \
             --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
@@ -167,10 +191,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -179,16 +205,25 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Set the dependency resolution cutoff
+        # PyPI uploads a release's wheels one platform at a time, so resolving
+        # mid-upload can select a version whose wheel for this interpreter does
+        # not exist yet and fail the install. Skip the last hour of releases.
+        run: echo "UV_EXCLUDE_NEWER=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: |
           uv venv .venv
           source .venv/bin/activate
           uv sync --extra test
 
+      - name: List installed packages (before reinstall)
+        run: uv pip list
+
       - name: Run A2A tests against a2a-sdk v0.3
         run: |
-          source .venv/bin/activate
           uv pip install --reinstall-package a2a-sdk 'a2a-sdk>=0.3.4,<0.4'
-          pytest tests/unittests/a2a \
+          uv pip list
+          uv run pytest tests/unittests/a2a \
             tests/unittests/agents/test_remote_a2a_agent.py \
             tests/unittests/integrations/agent_registry/test_agent_registry.py

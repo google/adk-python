@@ -20,32 +20,39 @@ import inspect
 import logging
 from pathlib import Path
 import queue
-import sys
+from types import TracebackType
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
+from typing import cast
 from typing import Generator
 from typing import List
+from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
+from opentelemetry import context
+from typing_extensions import Self
 
+from .agents.base_agent import _with_caller_context
 from .agents.base_agent import BaseAgent
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
+from .agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from .agents.run_config import RunConfig
 from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
+from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
-from .events.event import EventActions
+from .events.event_actions import EventActions
 from .flows.llm_flows import contents
 from .flows.llm_flows.agent_transfer import _get_transfer_targets
 from .flows.llm_flows.functions import find_event_by_function_call_id
@@ -65,8 +72,11 @@ from .utils._debug_output import print_event
 if TYPE_CHECKING:
   from .apps.app import App
   from .apps.app import ResumabilityConfig
+  from .workflow._base_node import BaseNode
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_EventQueueItem = tuple[object, asyncio.Event | None]
 
 # Silence unused warning.
 # tracer is imported for backwards compatibility, to avoid breaking change in the API.
@@ -98,7 +108,7 @@ async def _notify_run_error(
     )
 
 
-def _find_active_task_scope(session) -> Optional[tuple[str, str]]:
+def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
   """Walk session backwards; find the active paused task agent's scope.
 
   Two flavors of task scope:
@@ -108,12 +118,13 @@ def _find_active_task_scope(session) -> Optional[tuple[str, str]]:
       scope = ``<node_name>@<run_id>``, stamped on every event the
       task agent emits.
 
-  Both close on a SUCCESSFUL ``finish_task`` FunctionResponse —
-  i.e., one whose response is ``FINISH_TASK_SUCCESS_RESULT``.  An
-  error FR (validation failure) does NOT close the scope: the task
-  agent is still active, will see the error, and retry.  Walking
-  backward, the first non-empty scope we encounter that hasn't been
-  closed by a later successful ``finish_task`` is the paused task
+  Both close on a terminal ``finish_task`` FunctionResponse containing a
+  'result' key matching ``FINISH_TASK_SUCCESS_RESULT`` or
+  ``FINISH_TASK_ERROR_RESULT``. A FunctionResponse containing an 'error' key
+  (indicating a tool validation failure) does NOT close the scope: the task
+  agent is still active, will see the validation error, and retry. Walking
+  backward, the first non-empty scope we encounter that hasn't been closed by a
+  later successful or failed terminal ``finish_task`` is the paused task
   awaiting the user's next reply.
 
   Used by ``Runner._append_user_event`` to scope the new user message
@@ -123,8 +134,12 @@ def _find_active_task_scope(session) -> Optional[tuple[str, str]]:
     A tuple of (isolation_scope, invocation_id) for the active task if found,
     or None if no active task scope is found.
   """
+  # Pass 1: Scan forward to find all scopes that have successfully finished.
+  # We must do this in a separate pass because walking backward directly would
+  # hit post-finish events (like status updates or duplicate FRs) before hitting
+  # the older success FR, falsely indicating the scope is still active.
   finished_scopes: set[str] = set()
-  for event in reversed(session.events):
+  for event in session.events:
     scope = event.isolation_scope
     if not scope:
       continue
@@ -133,18 +148,27 @@ def _find_active_task_scope(session) -> Optional[tuple[str, str]]:
         fr = part.function_response
         if fr and fr.name == FINISH_TASK_TOOL_NAME:
           response = fr.response or {}
-          if response.get('result') == FINISH_TASK_SUCCESS_RESULT:
+          if response.get('result') in (
+              FINISH_TASK_SUCCESS_RESULT,
+              FINISH_TASK_ERROR_RESULT,
+          ):
             finished_scopes.add(scope)
           break
+
+  # Pass 2: Walk backward to find the latest active scope that is not finished.
+  for event in reversed(session.events):
+    scope = event.isolation_scope
+    if not scope:
+      continue
     if scope not in finished_scopes:
       return scope, event.invocation_id
   return None
 
 
 def _get_function_responses_from_content(
-    content: types.Content,
+    content: types.Content | None,
 ) -> list[types.FunctionResponse]:
-  if not content:
+  if not content or not content.parts:
     return []
   return [
       part.function_response for part in content.parts if part.function_response
@@ -201,8 +225,17 @@ class Runner:
 
   app_name: str
   """The app name of the runner."""
-  agent: Optional[BaseAgent | 'BaseNode'] = None
-  """The root agent or node to run."""
+  app: App
+  """The normalized application configuration."""
+  agent: BaseNode = None  # type: ignore[assignment]
+  """The root agent or node to run.
+
+  The None default keeps ``Runner.agent`` a real class attribute. Dropping it
+  removes ``agent`` from ``dir(Runner)``, which breaks ``Mock(spec=Runner)``
+  and ``mock.create_autospec(Runner)`` for callers that touch it.
+
+  Instances are never None, so the declared type stays ``BaseNode``.
+  """
   artifact_service: Optional[BaseArtifactService] = None
   """The artifact service for the runner."""
   plugin_manager: PluginManager
@@ -224,7 +257,7 @@ class Runner:
       app: Optional[App] = None,
       app_name: Optional[str] = None,
       agent: Optional[BaseAgent] = None,
-      node: Any = None,
+      node: BaseNode | None = None,
       plugins: Optional[List[BasePlugin]] = None,
       artifact_service: Optional[BaseArtifactService] = None,
       session_service: BaseSessionService,
@@ -232,7 +265,7 @@ class Runner:
       credential_service: Optional[BaseCredentialService] = None,
       plugin_close_timeout: float = 5.0,
       auto_create_session: bool = False,
-  ):
+  ) -> None:
     """Initializes the Runner.
 
     Exactly one of `app`, `agent`, or `node` must be provided. When `agent`
@@ -267,6 +300,8 @@ class Runner:
     # Extract from App — single code path.
     self.app = app
     self.app_name = app_name or app.name
+    if app.root_agent is None:
+      raise ValueError('App root_agent must be provided.')
     self.agent = app.root_agent
     self.context_cache_config = app.context_cache_config
     self.resumability_config = app.resumability_config
@@ -282,7 +317,7 @@ class Runner:
       (
           self._agent_origin_app_name,
           self._agent_origin_dir,
-      ) = self._infer_agent_origin(self.agent)
+      ) = self._infer_agent_origin(cast(BaseAgent, self.agent))
     else:
       self._agent_origin_app_name = None
       self._agent_origin_dir = None
@@ -290,12 +325,20 @@ class Runner:
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
 
+  def _require_root_agent(self) -> BaseAgent:
+    """Returns the root as an agent for agent-only execution paths."""
+    if not isinstance(self.agent, BaseAgent):
+      raise TypeError(
+          f'Runner root {self.agent.name!r} is a node, not an agent.'
+      )
+    return self.agent
+
   @staticmethod
   def _resolve_app(
       app: Optional[App],
       app_name: Optional[str],
       agent: Optional[BaseAgent],
-      node: Any,
+      node: BaseNode | None,
       plugins: Optional[List[BasePlugin]],
   ) -> App:
     """Validates inputs and normalizes to an App instance.
@@ -312,9 +355,23 @@ class Runner:
     # Validate mutual exclusivity.
     provided = sum(x is not None for x in (app, agent, node))
     if provided > 1:
-      raise ValueError('Only one of app, agent, or node may be provided.')
+      provided_args = []
+      if app is not None:
+        provided_args.append(f'app={type(app).__name__}')
+      if agent is not None:
+        provided_args.append(f'agent={type(agent).__name__}')
+      if node is not None:
+        provided_args.append(f'node={type(node).__name__}')
+      args_str = ', '.join(provided_args)
+      raise ValueError(
+          'Only one of app, agent, or node may be provided, but got:'
+          f' {args_str}. Pass exactly one to Runner().'
+      )
     if provided == 0:
-      raise ValueError('One of app, agent, or node must be provided.')
+      raise ValueError(
+          'One of app, agent, or node must be provided. Got none.'
+          ' Pass exactly one to Runner().'
+      )
 
     # Handle deprecated plugins argument.
     if plugins is not None:
@@ -345,11 +402,14 @@ class Runner:
           name=app_name, root_agent=agent, plugins=plugins or []
       )
     if node is not None:
+      node_name: str = getattr(node, 'name', 'default')
       return App.model_construct(
-          name=app_name or getattr(node, 'name', 'default'),
+          name=app_name or node_name,
           root_agent=node,
           plugins=plugins or [],
       )
+    if app is None:
+      raise RuntimeError('Runner app resolution produced no app.')
     return app
 
   @staticmethod
@@ -360,13 +420,15 @@ class Runner:
       plugins: Optional[List[BasePlugin]],
   ) -> tuple[
       str,
-      BaseAgent,
+      BaseNode,
       Optional[ContextCacheConfig],
       Optional[ResumabilityConfig],
       Optional[List[BasePlugin]],
   ]:
     """Deprecated: use _resolve_app instead."""
     resolved = Runner._resolve_app(app, app_name, agent, None, plugins)
+    if resolved.root_agent is None:
+      raise ValueError('App root_agent must be provided.')
     return (
         app_name or resolved.name,
         resolved.root_agent,
@@ -478,13 +540,22 @@ class Runner:
     if not function_responses:
       return invocation_id
 
+    function_response_id = function_responses[0].id
+    if not function_response_id:
+      raise ValueError(
+          'Function response id is required to resume an invocation.'
+      )
     fc_event = find_event_by_function_call_id(
-        session.events, function_responses[0].id
+        session.events, function_response_id
     )
     if not fc_event:
+      fr_id = function_responses[0].id
+      fr_name = function_responses[0].name
       raise ValueError(
-          'Function call event not found for function response id:'
-          f' {function_responses[0].id}'
+          'Function call event not found for function response'
+          f' (id={fr_id!r}, name={fr_name!r}). Ensure the function'
+          ' call ID matches an existing function call in the session'
+          ' history.'
       )
 
     if invocation_id and invocation_id != fc_event.invocation_id:
@@ -517,7 +588,7 @@ class Runner:
       state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
       yield_user_message: bool = False,
-      node: Optional['BaseNode'] = None,
+      node: BaseNode | None = None,
       session: Optional[Session] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a BaseNode through NodeRunner.
@@ -525,185 +596,196 @@ class Runner:
     Events flow through ic._event_queue via NodeRunner.
     """
 
-    with _instrumentation.record_invocation(
-        entrypoint_node=node or self.agent, conversation_id=session_id
-    ):
-      # 1. Setup
-      if session is None:
-        session = await self._get_or_create_session(
-            user_id=user_id,
-            session_id=session_id,
-            get_session_config=(run_config or RunConfig()).get_session_config,
+    caller_ctx = context.get_current()
+
+    async def _run() -> AsyncGenerator[Event, None]:
+      nonlocal invocation_id, new_message, session
+      with _instrumentation.record_invocation(
+          entrypoint_node=node or self.agent, conversation_id=session_id
+      ):
+        # 1. Setup
+        if session is None:
+          session = await self._get_or_create_session(
+              user_id=user_id,
+              session_id=session_id,
+              get_session_config=(run_config or RunConfig()).get_session_config,
+          )
+
+        # Validate and resolve resume inputs
+        resume_inputs = self._extract_resume_inputs(new_message)
+        self._validate_new_message(new_message, resume_inputs)
+
+        if not invocation_id and new_message:
+          invocation_id = self._resolve_invocation_id_from_fr(
+              session, new_message
+          )
+          if not invocation_id:
+            active_scope = _find_active_task_scope(session)
+            if active_scope:
+              _, inv_id = active_scope
+              invocation_id = inv_id
+
+        ic = self._new_invocation_context(
+            session,
+            new_message=new_message,
+            run_config=run_config or RunConfig(),
+            invocation_id=invocation_id,
         )
+        ic._event_queue = asyncio.Queue()
 
-      # Validate and resolve resume inputs
-      resume_inputs = self._extract_resume_inputs(new_message)
-      self._validate_new_message(new_message, resume_inputs)
+        # 2. Append user message to session and resolve node_input
+        node_input = None
+        if resume_inputs or invocation_id:
+          # Resume: recover the original user content. new_message here is a
+          # function response (or None), so it can't populate user_content.
+          node_input = self._find_original_user_content(
+              ic.session, ic.invocation_id
+          )
+          if node_input:
+            ic.user_content = node_input
+        if not node_input:
+          # Fresh: use user message as node_input
+          node_input = new_message
 
-      if not invocation_id and new_message:
-        invocation_id = self._resolve_invocation_id_from_fr(
-            session, new_message
-        )
-        if not invocation_id:
-          active_scope = _find_active_task_scope(session)
-          if active_scope:
-            _, inv_id = active_scope
-            invocation_id = inv_id
-
-      ic = self._new_invocation_context(
-          session,
-          new_message=new_message,
-          run_config=run_config or RunConfig(),
-          invocation_id=invocation_id,
-      )
-      ic._event_queue = asyncio.Queue()
-
-      # 2. Append user message to session and resolve node_input
-      node_input = None
-      if resume_inputs or invocation_id:
-        # Resume: recover the original user content. new_message here is a
-        # function response (or None), so it can't populate user_content.
-        node_input = self._find_original_user_content(
-            ic.session, ic.invocation_id
-        )
-        if node_input:
-          ic.user_content = node_input
-      if not node_input:
-        # Fresh: use user message as node_input
-        node_input = new_message
-
-      # Failures in the setup hooks below (on_user_message_callback, the
-      # user-event session append, and before_run_callback) must also notify
-      # on_run_error_callback: they are part of runner execution even though
-      # they run before the main event loop. Notification-only; the original
-      # exception is always re-raised, and after_run stays success-only.
-      try:
-        # Run callbacks on user message
-        if new_message:
-          modified_user_message = (
-              await ic.plugin_manager.run_on_user_message_callback(
-                  invocation_context=ic, user_message=new_message
+        # Failures in the setup hooks below (on_user_message_callback, the
+        # user-event session append, and before_run_callback) must also notify
+        # on_run_error_callback: they are part of runner execution even though
+        # they run before the main event loop. Notification-only; the original
+        # exception is always re-raised, and after_run stays success-only.
+        run_error = None
+        try:
+          try:
+            # Run callbacks on user message
+            if new_message:
+              modified_user_message = (
+                  await ic.plugin_manager.run_on_user_message_callback(
+                      invocation_context=ic, user_message=new_message
+                  )
               )
-          )
-          if modified_user_message is not None:
-            new_message = modified_user_message
-            ic.user_content = new_message
+              if modified_user_message is not None:
+                new_message = modified_user_message
+                ic.user_content = new_message
 
-        # Append user message to session for history
-        if new_message:
-          user_event = await self._append_user_event(
-              ic, new_message, state_delta=state_delta
-          )
-          if yield_user_message and user_event:
-            yield user_event
+            # Append user message to session for history
+            if new_message:
+              user_event = await self._append_user_event(
+                  ic, new_message, state_delta=state_delta
+              )
+              if yield_user_message and user_event:
+                yield user_event
 
-        # Run before_run callbacks
-        await ic.plugin_manager.run_before_run_callback(invocation_context=ic)
-      except Exception as e:
-        await _notify_run_error(ic.plugin_manager, ic, e)
-        raise
-
-      # 3. Start root node in background
-      from .agents.context import Context
-      from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
-      from .workflow._errors import DynamicNodeFailError
-      from .workflow._errors import NodeInterruptedError
-      from .workflow._workflow import _LoopState
-
-      root_ctx = Context(ic)
-      root_agent = node or self.agent
-      is_agent = isinstance(self.agent, BaseAgent)
-      has_sub_agents = is_agent and bool(
-          getattr(self.agent, 'sub_agents', None)
-      )
-      use_scheduler = is_agent and has_sub_agents
-
-      # The root chat coordinator's isolation_scope stays None: its own
-      # events (FCs, text, synthesized FRs from completed task
-      # delegations) are also unscoped, so the content-builder's
-      # isolation_scope filter lets the coordinator see all of them
-      # across user turns. Task sub-agents are scoped under their
-      # originating function-call id and so remain invisible to the
-      # coordinator's view.
-
-      done_sentinel = object()
-
-      async def _drive_root_node():
-        try:
-          if use_scheduler:
-            # Rehydration warning: DynamicNodeScheduler relies on session.events scanning.
-            # Stateful live EUC/LRO streams may rehydrate freshly if not yet persisted.
-            scheduler = DynamicNodeScheduler(state=_LoopState())
-            root_ctx._workflow_scheduler = scheduler
-
-          try:
-            await root_ctx._run_node_internal(
-                root_agent,
-                node_input=node_input,
-                resume_inputs=resume_inputs,
-            )
-          except NodeInterruptedError:
-            # The node was interrupted (e.g. for HITL).
-            pass
-          except DynamicNodeFailError as e:
-            raise e.error
-        finally:
-          await ic._event_queue.put((done_sentinel, None))
-
-      task = asyncio.create_task(_drive_root_node())
-
-      # 4. Main loop: consume events, persist, yield
-      run_error = None
-      try:
-        try:
-          async with aclosing(
-              self._consume_event_queue(ic, done_sentinel)
-          ) as agen:
-            async for event in agen:
-              yield event
-        finally:
-          # _cleanup_root_task re-raises a root-node Exception (if any) after
-          # the event stream has drained.
-          await self._cleanup_root_task(task, self.agent.name)
-      except Exception as e:
-        # An unhandled exception escaped runner execution. Notify plugins
-        # (notification-only) and re-raise. after_run stays success-only.
-        run_error = e
-        await _notify_run_error(ic.plugin_manager, ic, e)
-        raise
-      finally:
-        # Success path (also caller early-stop via GeneratorExit, which is not
-        # an Exception): run after_run and compaction. _cleanup_root_task has
-        # already run in the inner finally above. A failure in this success
-        # cleanup (e.g. an after_run plugin raising, which PluginManager
-        # surfaces as a RuntimeError) is itself an unhandled runner error, so
-        # notify on_run_error_callback once and re-raise. on_run_error is
-        # notification-only and never raises, so there is no recursive
-        # notification.
-        if run_error is None:
-          try:
-            await ic.plugin_manager.run_after_run_callback(
+            # Run before_run callbacks. A returned Content halts execution and ends
+            # the run with that content (same contract as the non-workflow path).
+            early_exit_result = await ic.plugin_manager.run_before_run_callback(
                 invocation_context=ic
             )
-            if self.app and self.app.events_compaction_config:
-              logger.debug('Running event compactor.')
-              from google.adk.apps.compaction import _run_compaction_for_sliding_window
+            if isinstance(early_exit_result, types.Content):
+              early_exit_event = Event(
+                  invocation_id=ic.invocation_id,
+                  author='model',
+                  content=early_exit_result,
+              )
+              _apply_run_config_custom_metadata(early_exit_event, ic.run_config)
+              if self._should_append_event(
+                  early_exit_event, is_live_call=False
+              ):
+                await self.session_service.append_event(
+                    session=ic.session,
+                    event=early_exit_event,
+                )
+              yield early_exit_event
+            else:
+              # 3. Start root node in background
+              from .agents.context import Context
+              from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
+              from .workflow._errors import DynamicNodeFailError
+              from .workflow._errors import NodeInterruptedError
+              from .workflow._workflow import _LoopState
 
-              async with aclosing(
-                  _run_compaction_for_sliding_window(
-                      self.app,
-                      session,
-                      self.session_service,
-                      skip_token_compaction=ic.token_compaction_checked,
-                  )
-              ) as compaction_events:
-                async for compaction_event in compaction_events:
-                  await self.session_service.append_event(
-                      session=session, event=compaction_event
-                  )
+              root_ctx = Context(ic)
+              root_node = node or self.agent
+              is_agent = isinstance(self.agent, BaseAgent)
+              has_sub_agents = is_agent and bool(
+                  getattr(self.agent, 'sub_agents', None)
+              )
+              use_scheduler = is_agent and has_sub_agents
+
+              # The root chat coordinator's isolation_scope stays None: its own
+              # events (FCs, text, synthesized FRs from completed task
+              # delegations) are also unscoped, so the content-builder's
+              # isolation_scope filter lets the coordinator see all of them
+              # across user turns. Task sub-agents are scoped under their
+              # originating function-call id and so remain invisible to the
+              # coordinator's view.
+
+              done_sentinel = object()
+
+              async def _drive_root_node() -> None:
+                try:
+                  if use_scheduler:
+                    # Rehydration warning: DynamicNodeScheduler relies on session.events scanning.
+                    # Stateful live EUC/LRO streams may rehydrate freshly if not yet persisted.
+                    scheduler = DynamicNodeScheduler(state=_LoopState())
+                    root_ctx._workflow_scheduler = scheduler
+
+                  try:
+                    await root_ctx._run_node_internal(
+                        root_node,
+                        node_input=node_input,
+                        resume_inputs=resume_inputs,
+                    )
+                  except NodeInterruptedError:
+                    # The node was interrupted (e.g. for HITL).
+                    pass
+                  except DynamicNodeFailError as e:
+                    raise e.error
+                finally:
+                  await ic._event_queue.put((done_sentinel, None))
+
+              task = asyncio.create_task(_drive_root_node())
+
+              # 4. Main loop: consume events, persist, yield
+              try:
+                async with aclosing(
+                    self._consume_event_queue(ic, done_sentinel)
+                ) as agen:
+                  async for event in agen:
+                    yield event
+              finally:
+                # _cleanup_root_task re-raises a root-node Exception (if any) after
+                # the event stream has drained.
+                await self._cleanup_root_task(task, self.agent.name)
           except Exception as e:
+            # An unhandled exception escaped runner execution. Notify plugins
+            # (notification-only) and re-raise. after_run stays success-only.
+            run_error = e
             await _notify_run_error(ic.plugin_manager, ic, e)
             raise
+        finally:
+          # Success path (also caller early-stop via GeneratorExit, which is not
+          # an Exception): run after_run and compaction. _cleanup_root_task has
+          # already run in the inner finally above when a root task was created.
+          # A failure in this success cleanup (e.g. an after_run plugin raising,
+          # which PluginManager surfaces as a RuntimeError) is itself an
+          # unhandled runner error, so notify on_run_error_callback once and
+          # re-raise. on_run_error is notification-only and never raises, so
+          # there is no recursive notification.
+          if run_error is None:
+            try:
+              await ic.plugin_manager.run_after_run_callback(
+                  invocation_context=ic
+              )
+              await self._run_post_invocation_compaction(
+                  session=session,
+                  skip_token_compaction=ic.token_compaction_checked,
+              )
+            except Exception as e:
+              await _notify_run_error(ic.plugin_manager, ic, e)
+              raise
+
+    async with aclosing(_with_caller_context(_run(), caller_ctx)) as agen:
+      async for event in agen:
+        yield event
 
   async def _run_node_live(
       self,
@@ -733,7 +815,7 @@ class Runner:
 
     done_sentinel = object()
 
-    async def _drive_root_node():
+    async def _drive_root_node() -> None:
       try:
         if is_workflow:
           scheduler = DynamicNodeScheduler(state=_LoopState())
@@ -826,11 +908,14 @@ class Runner:
     if fr_ids:
       raise ValueError(
           f'Function call not found for function response ids: {fr_ids}.'
+          ' Ensure each function response ID matches an existing function'
+          ' call in the session history.'
       )
     if len(invocation_ids) > 1:
       raise ValueError(
           'Function responses resolve to multiple'
-          f' invocations: {invocation_ids}.'
+          f' invocations: {invocation_ids}. All function responses in a'
+          ' single message must belong to the same invocation.'
       )
     return invocation_ids.pop()
 
@@ -889,11 +974,17 @@ class Runner:
       self, ic: InvocationContext, done_sentinel: object
   ) -> AsyncGenerator[Event, None]:
     """Consume events from ic._event_queue until done_sentinel."""
+    event_queue: asyncio.Queue[_EventQueueItem] | None = ic._event_queue
+    assert event_queue is not None
     while True:
-      event_or_done, processed_signal = await ic._event_queue.get()
+      event_or_done, processed_signal = await event_queue.get()
       if event_or_done is done_sentinel:
         break
-      event: Event = event_or_done
+      if not isinstance(event_or_done, Event):
+        raise TypeError(
+            f'Unexpected node event queue item: {type(event_or_done).__name__}'
+        )
+      event = event_or_done
       # When an LlmAgent node uses ``message_as_output`` (no
       # ``output_schema``), the wrapper sets both ``event.content``
       # (the model's text) AND ``event.output`` (the same text) to
@@ -927,7 +1018,7 @@ class Runner:
         processed_signal.set()
 
   async def _cleanup_root_task(
-      self, task: asyncio.Task, node_name: str
+      self, task: asyncio.Task[None], node_name: str
   ) -> None:
     """Cancel the root task if still running, then await it.
 
@@ -948,6 +1039,45 @@ class Runner:
     except Exception:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
+
+  async def _run_post_invocation_compaction(
+      self,
+      *,
+      session: Session,
+      skip_token_compaction: bool,
+  ) -> None:
+    """Run best-effort derived compaction after a completed invocation.
+
+    A later turn is allowed to update the same session while summarization is
+    running. If that happens, the old summary is discarded rather than making
+    an already answered invocation fail. Raw events remain persisted and a
+    later turn can re-evaluate compaction against its newer snapshot.
+    """
+    if not self.app or not self.app.events_compaction_config:
+      return
+
+    from google.adk.apps.compaction import _run_compaction_for_sliding_window
+
+    logger.debug('Running event compactor.')
+    try:
+      async with aclosing(
+          _run_compaction_for_sliding_window(
+              self.app,
+              session,
+              self.session_service,
+              skip_token_compaction=skip_token_compaction,
+          )
+      ) as compaction_events:
+        async for compaction_event in compaction_events:
+          await self.session_service.append_event(
+              session=session, event=compaction_event
+          )
+    except StaleSessionError:
+      logger.info(
+          'Discarding stale post-invocation compaction for session %s; a'
+          ' newer turn updated the session while summarization was running.',
+          session.id,
+      )
 
   async def _get_or_create_session(
       self,
@@ -1020,29 +1150,40 @@ class Runner:
 
     Yields:
       The events generated by the agent.
+
+    Raises:
+      Exception: Whatever the agent raised, re-raised on the calling thread
+        once the events produced before the failure have been yielded. A
+        failure that is not an Exception, such as a cancellation, is reported
+        as a RuntimeError chained to it, because re-raising it here would tell
+        the caller's own event loop that the caller was cancelled. Nothing is
+        raised if the caller stops iterating before the run finishes.
     """
     run_config = run_config or RunConfig()
-    event_queue = queue.Queue()
+    event_queue: queue.Queue[Event | BaseException | None] = queue.Queue()
 
-    async def _invoke_run_async():
-      try:
-        async with aclosing(
-            self.run_async(
-                user_id=user_id,
-                session_id=session_id,
-                new_message=new_message,
-                state_delta=state_delta,
-                run_config=run_config,
-            )
-        ) as agen:
-          async for event in agen:
-            event_queue.put(event)
-      finally:
-        event_queue.put(None)
+    async def _invoke_run_async() -> None:
+      async with aclosing(
+          self.run_async(
+              user_id=user_id,
+              session_id=session_id,
+              new_message=new_message,
+              state_delta=state_delta,
+              run_config=run_config,
+          )
+      ) as agen:
+        async for event in agen:
+          event_queue.put(event)
 
-    def _asyncio_thread_main():
+    def _asyncio_thread_main() -> None:
       try:
         asyncio.run(_invoke_run_async())
+      except BaseException as e:  # pylint: disable=broad-except
+        # The failure surfaces only on this thread, and the agent may raise
+        # anything, so forward it for the calling thread to report. This
+        # catches BaseException because a cancelled run raises CancelledError,
+        # which would otherwise be lost here.
+        event_queue.put(e)
       finally:
         event_queue.put(None)
 
@@ -1050,14 +1191,26 @@ class Runner:
     thread.start()
 
     # consumes and re-yield the events from background thread.
+    agent_error: BaseException | None = None
     while True:
-      event = event_queue.get()
-      if event is None:
+      item = event_queue.get()
+      if item is None:
+        break
+      elif isinstance(item, BaseException):
+        agent_error = item
         break
       else:
-        yield event
+        yield item
 
     thread.join()
+    if isinstance(agent_error, Exception):
+      raise agent_error
+    if agent_error is not None:
+      # Re-raising a CancelledError here would read as the caller being
+      # cancelled, and a SystemExit would end the caller's process.
+      raise RuntimeError(
+          f'Agent run terminated by {type(agent_error).__name__}.'
+      ) from agent_error
 
   async def run_async(
       self,
@@ -1092,6 +1245,13 @@ class Runner:
     Yields:
       The events generated by the agent.
 
+    Note on Root LlmAgent in Task Mode:
+      A root LlmAgent configured with `mode="task"` is fully supported. The
+      runner drives it to completion via the finish_task tool and promotes the
+      task result onto the terminal event's `output` field, which any caller can
+      consume: a direct `run_async` caller reads it off the event stream, and
+      the server-side `A2aAgentExecutor` wrapper turns it into an A2A artifact.
+
     Raises:
       ValueError: If the session is not found; If both invocation_id and
         new_message are None.
@@ -1104,34 +1264,58 @@ class Runner:
     from .agents.llm_agent import LlmAgent
     from .workflow._base_node import BaseNode
 
+    # Optional dependency: RemoteA2aAgent is only available if a2a is installed.
+    remote_a2a_agent_type: Any = None
+    try:
+      from .agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
+
+      remote_a2a_agent_type = RemoteA2aAgent
+    except ImportError:
+      pass
+
     if isinstance(self.agent, LlmAgent):
       if self.agent.mode is None:
-        # LlmAgent as root agent must have chat mode.
+        # LlmAgent as root agent defaults to chat mode.
         self.agent.mode = 'chat'
 
-      if self.agent.mode == 'chat':
+      # A root LlmAgent runs in chat mode (the default) or task mode. Task mode
+      # is fully supported for any caller: the agent runs to completion via the
+      # finish_task tool and its result is promoted onto the terminal event's
+      # output field (an A2A server turns that into an artifact; a direct caller
+      # reads it off the event stream).
+      if self.agent.mode in ('chat', 'task'):
         session = await self._get_or_create_session(
             user_id=user_id,
             session_id=session_id,
             get_session_config=run_config.get_session_config,
         )
-        # when the chat coordinator has task-mode sub-agents,
-        # the wrapper handles delegation via ctx.run_node. Don't let
-        # the legacy sub-agent picker bypass the coordinator on resume.
-        has_task_subagent = any(
-            isinstance(sa, LlmAgent) and getattr(sa, 'mode', None) == 'task'
-            for sa in self.agent.sub_agents or []
-        )
-        if has_task_subagent:
-          agent_to_run = self.agent
+        if self.agent.mode == 'chat':
+          # when the chat coordinator has task-mode sub-agents,
+          # the wrapper handles delegation via ctx.run_node. Don't let
+          # the legacy sub-agent picker bypass the coordinator on resume.
+          remote_a2a_agent_class = (
+              (remote_a2a_agent_type,)
+              if remote_a2a_agent_type is not None
+              else ()
+          )
+          has_task_subagent = any(
+              isinstance(sa, (LlmAgent,) + remote_a2a_agent_class)
+              and getattr(sa, 'mode', None) == 'task'
+              for sa in self.agent.sub_agents or []
+          )
+          agent_to_run: BaseAgent
+          if has_task_subagent:
+            agent_to_run = self.agent
+          else:
+            agent_to_run = self._find_agent_to_run(session, self.agent)
         else:
-          agent_to_run = self._find_agent_to_run(session, self.agent)
+          agent_to_run = self.agent
 
         # The agent_to_run will be built/cloned inside Context.run_node,
         # so we don't call build_node here to avoid double cloning.
       else:
         raise ValueError(
-            "LlmAgent as root agent must have mode='chat', but got"
+            "LlmAgent as root agent must have mode='chat' or 'task', but got"
             f" mode='{self.agent.mode}'."
         )
       async with aclosing(
@@ -1171,12 +1355,15 @@ class Runner:
           yield event
       return
 
+    root_agent = self._require_root_agent()
+
     async def _run_with_trace(
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
+      caller_ctx_trace = context.get_current()
       with _instrumentation.record_invocation(
-          entrypoint_node=self.agent, conversation_id=session_id
+          entrypoint_node=root_agent, conversation_id=session_id
       ):
         session = await self._get_or_create_session(
             user_id=user_id,
@@ -1184,7 +1371,7 @@ class Runner:
             get_session_config=run_config.get_session_config,
         )
 
-        if not invocation_id and not new_message:
+        if not invocation_id and new_message is None:
           raise ValueError(
               'Running an agent requires either a new_message or an '
               'invocation_id to resume a previous invocation. '
@@ -1194,13 +1381,15 @@ class Runner:
         is_resumable = (
             self.resumability_config and self.resumability_config.is_resumable
         )
-        if not is_resumable and not new_message:
+        if not is_resumable and new_message is None:
           raise ValueError(
               'Running an agent requires a new_message or a resumable app. '
               f'Session: {session_id}, User: {user_id}'
           )
 
         if not is_resumable:
+          if new_message is None:
+            raise ValueError('A new message is required for a new invocation.')
           invocation_context = await self._setup_context_for_new_invocation(
               session=session,
               new_message=new_message,
@@ -1213,6 +1402,10 @@ class Runner:
               session, new_message, invocation_id
           )
           if not invocation_id:
+            if new_message is None:
+              raise ValueError(
+                  'A new message is required when no invocation can be resumed.'
+              )
             invocation_context = await self._setup_context_for_new_invocation(
                 session=session,
                 new_message=new_message,
@@ -1229,24 +1422,35 @@ class Runner:
                     state_delta=state_delta,
                 )
             )
-            if invocation_context.end_of_agents.get(
-                invocation_context.agent.name
-            ):
+            active_agent = invocation_context.agent
+            if not isinstance(active_agent, BaseAgent):
+              raise RuntimeError(
+                  'Resumed agent execution has no active BaseAgent.'
+              )
+            if invocation_context.end_of_agents.get(active_agent.name):
               # Directly return if the current agent in invocation context is
               # already final.
               return
 
-        async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
-          async with aclosing(ctx.agent.run_async(ctx)) as agen:
+        async def execute(
+            ctx: InvocationContext,
+        ) -> AsyncGenerator[Event, None]:
+          active_agent = ctx.agent
+          if not isinstance(active_agent, BaseAgent):
+            raise RuntimeError('Agent execution has no active BaseAgent.')
+          async with aclosing(active_agent.run_async(ctx)) as agen:
             async for event in agen:
               yield event
 
         async with aclosing(
-            self._exec_with_plugin(
-                invocation_context=invocation_context,
-                session=invocation_context.session,
-                execute_fn=execute,
-                is_live_call=False,
+            _with_caller_context(
+                self._exec_with_plugin(
+                    invocation_context=invocation_context,
+                    session=invocation_context.session,
+                    execute_fn=execute,
+                    is_live_call=False,
+                ),
+                caller_ctx_trace,
             )
         ) as agen:
           async for event in agen:
@@ -1254,22 +1458,10 @@ class Runner:
         # Run compaction after all events are yielded from the agent.
         # (We don't compact in the middle of an invocation, we only compact at
         # the end of an invocation.)
-        if self.app and self.app.events_compaction_config:
-          logger.debug('Running event compactor.')
-          from google.adk.apps.compaction import _run_compaction_for_sliding_window
-
-          async with aclosing(
-              _run_compaction_for_sliding_window(
-                  self.app,
-                  invocation_context.session,
-                  self.session_service,
-                  skip_token_compaction=invocation_context.token_compaction_checked,
-              )
-          ) as compaction_events:
-            async for compaction_event in compaction_events:
-              await self.session_service.append_event(
-                  session=invocation_context.session, event=compaction_event
-              )
+        await self._run_post_invocation_compaction(
+            session=invocation_context.session,
+            skip_token_compaction=(invocation_context.token_compaction_checked),
+        )
 
     async with aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
@@ -1388,6 +1580,7 @@ class Runner:
         continue
 
       rewind_artifact_delta[filename] = vn + 1
+      artifact: types.Part
       if vt is None:
         # Artifact did not exist at rewind point. Mark it as inaccessible.
         artifact = types.Part(
@@ -1398,14 +1591,14 @@ class Runner:
       else:
         # Artifact version changed after rewind point. Restore to version at
         # rewind point by loading the actual data via the artifact service.
-        artifact = await self.artifact_service.load_artifact(
+        loaded_artifact = await self.artifact_service.load_artifact(
             app_name=self.app_name,
             user_id=session.user_id,
             session_id=session.id,
             filename=filename,
             version=vt,
         )
-        if artifact is None:
+        if loaded_artifact is None:
           logger.warning(
               'Artifact %s version %d not found during rewind for'
               ' session %s. Replacing with empty data.',
@@ -1418,6 +1611,8 @@ class Runner:
                   mime_type='application/octet-stream', data=b''
               )
           )
+        else:
+          artifact = loaded_artifact
       await self.artifact_service.save_artifact(
           app_name=self.app_name,
           user_id=session.user_id,
@@ -1579,7 +1774,7 @@ class Runner:
       invocation_context: InvocationContext,
       save_input_blobs_as_artifacts: bool = False,
       state_delta: Optional[dict[str, Any]] = None,
-  ):
+  ) -> None:
     """Appends a new message to the session.
 
     Args:
@@ -1708,8 +1903,18 @@ class Runner:
     run_config = run_config or RunConfig()
     # Some native audio models requires the modality to be set. So we set it to
     # AUDIO by default.
+    #
+    # The default goes on a copy rather than on the caller's own RunConfig: a
+    # config that asked for nothing in particular would otherwise come back out
+    # of the run pinned to AUDIO, and a config reused for a later run would
+    # carry that choice into it. The copy is shallow on purpose. Deep copying a
+    # RunConfig raises `TypeError: cannot pickle` when `http_options` holds a
+    # live httpx client, and nothing here writes through into a sub-model.
     if run_config.response_modalities is None:
+      run_config = run_config.model_copy()
       run_config.response_modalities = [types.Modality.AUDIO]
+
+    caller_ctx = context.get_current()
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
@@ -1723,7 +1928,11 @@ class Runner:
           DeprecationWarning,
           stacklevel=2,
       )
-    if not session:
+    if session is None:
+      if user_id is None or session_id is None:
+        raise ValueError(
+            'user_id and session_id are required when session is not provided.'
+        )
       session = await self._get_or_create_session(
           user_id=user_id,
           session_id=session_id,
@@ -1746,28 +1955,34 @@ class Runner:
         async for event in agen:
           yield event
       return
+    root_agent = self._require_root_agent()
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
         run_config=run_config,
     )
 
-    root_agent = self.agent
     invocation_context.agent = self._find_agent_to_run(
         invocation_context.session, root_agent
     )
 
-    async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
-      async with aclosing(ctx.agent.run_live(ctx)) as agen:
+    async def execute(ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+      active_agent = ctx.agent
+      if not isinstance(active_agent, BaseAgent):
+        raise RuntimeError('Live agent execution has no active BaseAgent.')
+      async with aclosing(active_agent.run_live(ctx)) as agen:
         async for event in agen:
           yield event
 
     async with aclosing(
-        self._exec_with_plugin(
-            invocation_context=invocation_context,
-            session=invocation_context.session,
-            execute_fn=execute,
-            is_live_call=True,
+        _with_caller_context(
+            self._exec_with_plugin(
+                invocation_context=invocation_context,
+                session=invocation_context.session,
+                execute_fn=execute,
+                is_live_call=True,
+            ),
+            caller_ctx,
         )
     ) as agen:
       async for event in agen:
@@ -1864,7 +2079,7 @@ class Runner:
     Returns:
         True if the agent can transfer, False otherwise.
     """
-    agent = agent_to_run
+    agent: BaseAgent | None = agent_to_run
     while agent:
       if not hasattr(agent, 'disallow_transfer_to_parent'):
         # Only agents with transfer capability can transfer.
@@ -2021,8 +2236,9 @@ class Runner:
         state_delta=state_delta,
     )
     # Step 3: Set agent to run for the invocation.
+    root_agent = self._require_root_agent()
     invocation_context.agent = self._find_agent_to_run(
-        invocation_context.session, self.agent
+        invocation_context.session, root_agent
     )
     return invocation_context
 
@@ -2031,7 +2247,7 @@ class Runner:
       *,
       session: Session,
       new_message: Optional[types.Content],
-      invocation_id: Optional[str],
+      invocation_id: str,
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
   ) -> InvocationContext:
@@ -2085,9 +2301,10 @@ class Runner:
     # If the root agent is not found in end_of_agents, it means the invocation
     # started from a sub-agent and paused on a sub-agent.
     # We should find the appropriate agent to run to continue the invocation.
-    if self.agent.name not in invocation_context.end_of_agents:
+    root_agent = self._require_root_agent()
+    if root_agent.name not in invocation_context.end_of_agents:
       invocation_context.agent = self._find_agent_to_run(
-          invocation_context.session, self.agent
+          invocation_context.session, root_agent
       )
     return invocation_context
 
@@ -2106,7 +2323,7 @@ class Runner:
         return event.content
     return None
 
-  def _create_invocation_context(self, **kwargs) -> InvocationContext:
+  def _create_invocation_context(self, **kwargs: object) -> InvocationContext:
     """Creates an InvocationContext instance."""
     return InvocationContext(**kwargs)
 
@@ -2135,14 +2352,17 @@ class Runner:
     invocation_id = invocation_id or new_invocation_context_id()
 
     if run_config.support_cfc and hasattr(self.agent, 'canonical_model'):
-      model_name = self.agent.canonical_model.model
+      from .agents.llm_agent import LlmAgent
+
+      cfc_agent = cast(LlmAgent, self.agent)
+      model_name = cfc_agent.canonical_model.model
       if not model_name.startswith('gemini-2'):
         raise ValueError(
             f'CFC is not supported for model: {model_name} in agent:'
-            f' {self.agent.name}'
+            f' {cfc_agent.name}'
         )
-      if not isinstance(self.agent.code_executor, BuiltInCodeExecutor):
-        self.agent.code_executor = BuiltInCodeExecutor()
+      if not isinstance(cfc_agent.code_executor, BuiltInCodeExecutor):
+        cfc_agent.code_executor = BuiltInCodeExecutor()
 
     return self._create_invocation_context(
         artifact_service=self.artifact_service,
@@ -2176,7 +2396,10 @@ class Runner:
     # For live multi-agents system, we need model's text transcription as
     # context for the transferred agent.
     if hasattr(self.agent, 'sub_agents') and self.agent.sub_agents:
-      if types.Modality.AUDIO in run_config.response_modalities:
+      if (
+          run_config.response_modalities
+          and types.Modality.AUDIO in run_config.response_modalities
+      ):
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()
@@ -2230,7 +2453,7 @@ class Runner:
       )
 
   def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
-    toolsets = set()
+    toolsets: set[BaseToolset] = set()
     if hasattr(agent, 'tools'):
       for tool_union in agent.tools:
         if isinstance(tool_union, BaseToolset):
@@ -2240,7 +2463,9 @@ class Runner:
         toolsets.update(self._collect_toolset(sub_agent))
     return toolsets
 
-  async def _cleanup_toolsets(self, toolsets_to_close: set[BaseToolset]):
+  async def _cleanup_toolsets(
+      self, toolsets_to_close: set[BaseToolset]
+  ) -> None:
     """Clean up toolsets with proper task context management."""
     if not toolsets_to_close:
       return
@@ -2299,11 +2524,11 @@ class Runner:
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
-  async def close(self):
+  async def close(self) -> None:
     """Closes the runner."""
     logger.info('Closing runner...')
     # Close Toolsets
-    if self.agent is not None:
+    if isinstance(self.agent, BaseAgent):
       await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
     # Close Plugins
@@ -2316,16 +2541,16 @@ class Runner:
 
     logger.info('Runner closed.')
 
-  if sys.version_info < (3, 11):
-    Self = 'Runner'  # pylint: disable=invalid-name
-  else:
-    from typing import Self  # pylint: disable=g-import-not-at-top
-
   async def __aenter__(self) -> Self:
     """Async context manager entry."""
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb):
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> Literal[False]:
     """Async context manager exit."""
     await self.close()
     return False  # Don't suppress exceptions from the async with block
@@ -2348,12 +2573,12 @@ class InMemoryRunner(Runner):
       self,
       agent: Optional[BaseAgent] = None,
       *,
-      node: Any = None,
+      node: BaseNode | None = None,
       app_name: Optional[str] = None,
       plugins: Optional[list[BasePlugin]] = None,
       app: Optional[App] = None,
       plugin_close_timeout: float = 5.0,
-  ):
+  ) -> None:
     """Initializes the InMemoryRunner.
 
     Args:

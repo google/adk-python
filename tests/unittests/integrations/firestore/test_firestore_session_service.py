@@ -23,6 +23,7 @@ import os
 import time
 from unittest import mock
 
+from google.adk.errors import StaleSessionError
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
@@ -296,6 +297,30 @@ async def test_append_event_session_not_found(mock_firestore_client):
 
 
 @pytest.mark.asyncio
+async def test_append_event_rejects_stale_revision(mock_firestore_client):
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  session._storage_update_marker = "0"
+  event = Event(invocation_id="test_inv", author="user")
+
+  session_doc_snapshot = mock.MagicMock()
+  session_doc_snapshot.exists = True
+  session_doc_snapshot.to_dict.return_value = {"revision": 1}
+  session_doc_ref = (
+      mock_firestore_client.collection.return_value.document.return_value.collection.return_value.document.return_value.collection.return_value.document.return_value
+  )
+  session_doc_ref.get = mock.AsyncMock(return_value=session_doc_snapshot)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    with pytest.raises(StaleSessionError, match="modified in storage"):
+      await service.append_event(session, event)
+
+  transaction = mock_firestore_client.transaction.return_value
+  transaction.set.assert_not_called()
+  transaction.update.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_append_event_with_state_delta(mock_firestore_client):
   service = FirestoreSessionService(client=mock_firestore_client)
   app_name = "test_app"
@@ -339,6 +364,133 @@ async def test_append_event_with_state_delta(mock_firestore_client):
   args, kwargs = transaction.update.call_args
   assert json.loads(args[1]["state"]) == session.state
   assert args[1]["updateTime"] == firestore.SERVER_TIMESTAMP
+
+
+@pytest.mark.asyncio
+async def test_append_event_repeated_non_serializable_state_delta(
+    mock_firestore_client,
+):
+  """The raw delta the base class merges back must not break a later append."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+
+  session_doc_snapshot = mock.MagicMock()
+  session_doc_snapshot.exists = True
+  session_doc_snapshot.to_dict.side_effect = [{"revision": 0}, {"revision": 1}]
+
+  root_coll = mock_firestore_client.collection.return_value
+  app_ref = root_coll.document.return_value
+  users_coll = app_ref.collection.return_value
+  user_ref = users_coll.document.return_value
+  sessions_ref = user_ref.collection.return_value
+  session_doc_ref = sessions_ref.document.return_value
+  session_doc_ref.get = mock.AsyncMock(return_value=session_doc_snapshot)
+
+  # The second delta does not mention "callback", so the only copy of it left
+  # for the second write is the raw one the base class merged into the session.
+  deltas = [{"callback": lambda: 1, "ok": 2}, {"turn": 3}]
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    for state_delta in deltas:
+      await service.append_event(
+          session,
+          Event(
+              invocation_id="test_inv",
+              author="user",
+              actions=EventActions(state_delta=state_delta),
+          ),
+      )
+
+  transaction = mock_firestore_client.transaction.return_value
+  assert transaction.update.call_count == 2
+  persisted_state = json.loads(transaction.update.call_args[0][1]["state"])
+  assert persisted_state["ok"] == 2
+  assert persisted_state["turn"] == 3
+  assert isinstance(persisted_state["callback"], str)
+
+
+@pytest.mark.asyncio
+async def test_append_event_keeps_app_and_user_state_native(
+    mock_firestore_client,
+):
+  """App and user state are written natively, so a datetime stays a datetime."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  when = datetime(2024, 6, 15, 10, 30, tzinfo=timezone.utc)
+
+  session_doc_snapshot = mock.MagicMock()
+  session_doc_snapshot.exists = True
+  session_doc_snapshot.to_dict.return_value = {"revision": 0}
+
+  root_coll = mock_firestore_client.collection.return_value
+  app_ref = root_coll.document.return_value
+  users_coll = app_ref.collection.return_value
+  user_ref = users_coll.document.return_value
+  sessions_ref = user_ref.collection.return_value
+  session_doc_ref = sessions_ref.document.return_value
+  session_doc_ref.get = mock.AsyncMock(return_value=session_doc_snapshot)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    await service.append_event(
+        session,
+        Event(
+            invocation_id="test_inv",
+            author="user",
+            actions=EventActions(
+                state_delta={
+                    "app:started": when,
+                    "user:seen": when,
+                    "session_key": when,
+                }
+            ),
+        ),
+    )
+
+  transaction = mock_firestore_client.transaction.return_value
+  written = {
+      call.args[0]: call.args[1] for call in transaction.set.call_args_list
+  }
+  assert written[app_ref]["started"] == when
+  assert written[user_ref]["seen"] == when
+  # The session bucket is json.dumps'd, so it is still coerced.
+  persisted_state = json.loads(transaction.update.call_args[0][1]["state"])
+  assert isinstance(persisted_state["session_key"], str)
+
+
+@pytest.mark.asyncio
+async def test_create_session_keeps_app_and_user_state_native(
+    mock_firestore_client,
+):
+  """create_session writes app and user state without coercing it."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  when = datetime(2024, 6, 15, 10, 30, tzinfo=timezone.utc)
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    await service.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        state={
+            "app:started": when,
+            "user:seen": when,
+            "session_key": when,
+        },
+    )
+
+  root_coll = mock_firestore_client.collection.return_value
+  app_ref = root_coll.document.return_value
+  users_coll = app_ref.collection.return_value
+  user_ref = users_coll.document.return_value
+
+  transaction = mock_firestore_client.transaction.return_value
+  written = {
+      call.args[0]: call.args[1] for call in transaction.set.call_args_list
+  }
+  assert written[app_ref]["started"] == when
+  assert written[user_ref]["seen"] == when
+  sessions_ref = user_ref.collection.return_value
+  session_doc_ref = sessions_ref.document.return_value
+  persisted_state = json.loads(written[session_doc_ref]["state"])
+  assert isinstance(persisted_state["session_key"], str)
 
 
 @pytest.mark.asyncio

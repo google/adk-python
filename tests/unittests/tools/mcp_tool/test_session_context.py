@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
+import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -24,7 +25,7 @@ from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.session_context import _format_exception
 from google.adk.tools.mcp_tool.session_context import SessionContext
-import httpx
+import httpx2
 from mcp import ClientSession
 import pytest
 
@@ -265,10 +266,13 @@ class TestSessionContext:
         mock_client, timeout=0.1, sse_read_timeout=None
     )
 
+    started = time.monotonic()
     with pytest.raises(ConnectionError) as exc_info:
       await session_context.start()
+    elapsed = time.monotonic() - started
 
     assert 'Failed to create MCP session' in str(exc_info.value)
+    assert elapsed < 1.0, f'start() took {elapsed:.1f}s; timeout was 0.1s'
 
   @pytest.mark.asyncio
   async def test_timeout_during_initialization(self):
@@ -940,9 +944,9 @@ class TestFormatException:
     assert _format_exception(exc) == 'normal error'
 
   def test_format_exception_http_status_error(self):
-    request = httpx.Request('GET', 'http://test')
-    response = httpx.Response(403, request=request, text='Forbidden access')
-    exc = httpx.HTTPStatusError(
+    request = httpx2.Request('GET', 'http://test')
+    response = httpx2.Response(403, request=request, text='Forbidden access')
+    exc = httpx2.HTTPStatusError(
         '403 Forbidden', request=request, response=response
     )
 
@@ -957,9 +961,9 @@ class TestFormatException:
         super().__init__(message)
         self.exceptions = exceptions
 
-    request = httpx.Request('GET', 'http://test')
-    response = httpx.Response(403, request=request, text='Forbidden access')
-    exc1 = httpx.HTTPStatusError(
+    request = httpx2.Request('GET', 'http://test')
+    response = httpx2.Response(403, request=request, text='Forbidden access')
+    exc1 = httpx2.HTTPStatusError(
         '403 Forbidden', request=request, response=response
     )
     exc2 = ValueError('another error')

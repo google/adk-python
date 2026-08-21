@@ -20,12 +20,10 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from pathlib import PureWindowsPath
 import shutil
+import tempfile
 from typing import Any
 from typing import Optional
 from typing import Union
-from urllib.parse import unquote
-from urllib.parse import urlparse
-from urllib.request import url2pathname
 
 from google.genai import types
 from pydantic import alias_generators
@@ -52,22 +50,97 @@ def _iter_artifact_dirs(root: Path) -> list[Path]:
     current = Path(dirpath)
     if (current / "versions").exists():
       artifact_dirs.append(current)
-      dirnames.clear()
+      # An artifact directory doubles as the parent of anything nested under
+      # it ("doc" and "doc/nested"), so keep walking, skipping only the
+      # stored versions of this artifact.
+      dirnames[:] = [name for name in dirnames if name != "versions"]
   return artifact_dirs
 
 
-def _file_uri_to_path(uri: str) -> Optional[Path]:
-  """Converts a file:// URI to a filesystem path."""
-  parsed = urlparse(uri)
-  if parsed.scheme != "file":
-    return None
-  path_str = unquote(parsed.path)
-  if os.name == "nt":
-    path_str = url2pathname(path_str)
-  return Path(path_str)
+def _read_bytes_if_present(path: Path) -> Optional[bytes]:
+  """Reads a binary payload from disk.
 
+  The read is attempted directly instead of being guarded by an `exists()`
+  check so that a concurrent delete cannot be observed as a distinguishable
+  state between the check and the read.
+
+  Args:
+    path: Location of the payload.
+
+  Returns:
+    The file contents, or None if it is not a readable file.
+  """
+  try:
+    return path.read_bytes()
+  except FileNotFoundError:
+    return None
+  except OSError as exc:
+    logger.warning("Unreadable artifact payload at %s: %s", path, exc)
+    return None
+
+
+def _read_text_if_present(path: Path) -> Optional[str]:
+  """Reads a UTF-8 text payload from disk.
+
+  Args:
+    path: Location of the payload.
+
+  Returns:
+    The decoded file contents, or None if it is not a readable file.
+  """
+  try:
+    return path.read_text(encoding="utf-8")
+  except FileNotFoundError:
+    return None
+  except OSError as exc:
+    logger.warning("Unreadable artifact payload at %s: %s", path, exc)
+    return None
+
+
+def _umask_derived_file_mode() -> int:
+  """Returns the mode a normally created file would get from the umask.
+
+  Sampled once at import: reading the umask requires temporarily setting it,
+  which is process-global and would race against concurrent writers if done
+  per-write.
+
+  Returns:
+    The permission bits `open()` would produce for a new file.
+  """
+  umask = os.umask(0)
+  os.umask(umask)
+  return 0o666 & ~umask
+
+
+# Payloads are written through `open()`, which applies the umask, but the
+# metadata document is written through `tempfile.mkstemp`, which hardcodes
+# 0600. Without this the two files in a version directory end up readable by
+# different sets of principals.
+_DEFAULT_FILE_MODE = _umask_derived_file_mode()
 
 _USER_NAMESPACE_PREFIX = "user:"
+
+# Name of the per-version metadata document. A payload is stored alongside it
+# under the artifact directory's own name, so an artifact whose directory is
+# named `metadata.json` would have its payload written over the metadata
+# document. Callers may not use the name for that reason.
+_METADATA_FILENAME = "metadata.json"
+
+
+def _is_reserved_artifact_name(name: str) -> bool:
+  """Checks whether an artifact directory name collides with the metadata doc.
+
+  Compared caselessly because the collision is decided by the filesystem, and
+  the case-insensitive ones ADK supports (APFS, NTFS) resolve `Metadata.json`
+  and `metadata.json` to the same file.
+
+  Args:
+    name: The final path segment of the artifact directory.
+
+  Returns:
+    True if the name is reserved for internal use.
+  """
+  return name.casefold() == _METADATA_FILENAME.casefold()
 
 
 def _file_has_user_namespace(filename: str) -> bool:
@@ -90,14 +163,32 @@ def _to_posix_path(path_value: str) -> PurePosixPath:
   return PurePosixPath(path_value)
 
 
+def _is_rooted_or_drive_qualified(path_value: str) -> bool:
+  """Checks POSIX and Windows rooted or drive-qualified path forms."""
+  # A Windows root covers POSIX absolute paths, UNC and device prefixes alike;
+  # only the drive-relative form (`C:name`) has no root of its own.
+  if artifact_util._is_drive_qualified(path_value):
+    return True
+  return bool(PureWindowsPath(path_value).root)
+
+
+def _has_parent_reference(path_value: str) -> bool:
+  """Checks parent traversal using either platform's separators."""
+  return (
+      ".." in PurePosixPath(path_value).parts
+      or ".." in PureWindowsPath(path_value).parts
+  )
+
+
 def _resolve_scoped_artifact_path(
     scope_root: Path, filename: str
 ) -> tuple[Path, Path]:
   """Returns the absolute artifact directory and its relative path.
 
   The caller is expected to pass the scope root directory (user or session).
-  This helper joins the filename under that root, resolves traversal segments,
-  and guards against paths that escape the scope root.
+  Filenames that are rooted, drive-qualified, or contain a parent reference are
+  rejected outright, including parent references that would resolve back inside
+  the scope root. Whatever remains is joined under the scope root.
 
   Args:
     scope_root: Directory that defines the storage scope.
@@ -108,17 +199,23 @@ def _resolve_scoped_artifact_path(
     to `scope_root`.
 
   Raises:
-    InputValidationError: If `filename` resolves outside of `scope_root`.
+    InputValidationError: If `filename` is rooted, drive-qualified, contains a
+      parent reference, or otherwise resolves outside of `scope_root`.
   """
   stripped = _strip_user_namespace(filename).strip()
-  pure_path = _to_posix_path(stripped)
+
+  if _is_rooted_or_drive_qualified(stripped):
+    raise InputValidationError(
+        f"Rooted or drive-qualified artifact filename {filename!r} is not "
+        "permitted; provide a path relative to the storage scope."
+    )
+  if _has_parent_reference(stripped):
+    raise InputValidationError(
+        f"Artifact filename {filename!r} must not contain parent traversal."
+    )
 
   scope_root_resolved = scope_root.resolve(strict=False)
-  if pure_path.is_absolute():
-    raise InputValidationError(
-        f"Absolute artifact filename {filename!r} is not permitted; "
-        "provide a path relative to the storage scope."
-    )
+  pure_path = _to_posix_path(stripped)
   candidate = scope_root_resolved / Path(pure_path)
 
   candidate = candidate.resolve(strict=False)
@@ -161,13 +258,35 @@ def _versions_dir(artifact_dir: Path) -> Path:
 
 def _metadata_path(artifact_dir: Path, version: int) -> Path:
   """Returns the path to the metadata file for a specific version."""
-  return _versions_dir(artifact_dir) / str(version) / "metadata.json"
+  return _versions_dir(artifact_dir) / str(version) / _METADATA_FILENAME
 
 
 def _canonical_uri(artifact_dir: Path, version: int) -> str:
   """Builds the canonical file:// URI for an artifact payload."""
   payload_path = _versions_dir(artifact_dir) / str(version) / artifact_dir.name
   return payload_path.resolve().as_uri()
+
+
+def _prune_empty_dirs(leaf: Path, stop_at: Path) -> None:
+  """Removes `leaf` and any parents it leaves empty, stopping at `stop_at`.
+
+  Filenames may contain "/", so the directory of an artifact doubles as the
+  parent directory of every artifact nested under it: "doc" is stored at
+  ``{scope}/doc`` and "doc/nested" at ``{scope}/doc/nested``. A directory may
+  therefore only be removed once it holds nothing, or deleting "doc" would
+  take "doc/nested" with it.
+
+  Args:
+    leaf: Directory to remove, if it is empty.
+    stop_at: Scope root. It and everything above it are never removed.
+  """
+  current = leaf
+  while current != stop_at and current.is_relative_to(stop_at):
+    try:
+      current.rmdir()  # Only succeeds on an empty directory.
+    except OSError:
+      return
+    current = current.parent
 
 
 def _list_versions_on_disk(artifact_dir: Path) -> list[int]:
@@ -183,6 +302,29 @@ def _list_versions_on_disk(artifact_dir: Path) -> list[int]:
       except ValueError:
         logger.debug("Skipping non-version directory %s", child)
   return sorted(versions)
+
+
+def _reserve_version_dir(artifact_dir: Path) -> tuple[int, Path, Path]:
+  """Atomically reserves a version and returns its staging and final paths."""
+  versions_dir = _versions_dir(artifact_dir)
+  versions_dir.mkdir(parents=True, exist_ok=True)
+  versions = _list_versions_on_disk(artifact_dir)
+  version = 0 if not versions else versions[-1] + 1
+
+  while True:
+    staging_dir = versions_dir / f".{version}.pending"
+    try:
+      staging_dir.mkdir()
+    except FileExistsError:
+      version += 1
+      continue
+
+    version_dir = versions_dir / str(version)
+    if not version_dir.exists():
+      return version, staging_dir, version_dir
+
+    staging_dir.rmdir()
+    version += 1
 
 
 class FileArtifactVersion(ArtifactVersion):
@@ -218,6 +360,7 @@ class FileArtifactService(BaseArtifactService):
   #                 │       └── artifacts/
   #                 │           └── {artifact_path}/  # from filename
   #                 │               └── versions/
+  #                 │                   ├── .{version}.pending/  # in progress
   #                 │                   └── {version}/
   #                 │                       ├── {original_filename}
   #                 │                       └── metadata.json
@@ -225,13 +368,19 @@ class FileArtifactService(BaseArtifactService):
   #                     └── {artifact_path}/...
   #
   # Releases that predate the `apps/{app_name}` level wrote the same tree
-  # directly under `root/users`. Saves never go there; it is only read from,
-  # and deleted from so a delete cannot be undone by the read fallback.
+  # directly under `root/users`, which records no app name. A root can be
+  # shared by several apps, so that tree cannot be attributed to one of them
+  # and is never read from or deleted.
   #
   # Artifact paths are derived from the provided filenames: separators create
   # nested directories, and path traversal is rejected to keep the layout
   # portable across filesystems. `{artifact_path}` therefore mirrors the
   # sanitized, scope-relative path derived from each filename.
+  #
+  # A save stages into `.{version}.pending` and publishes it with a single
+  # rename, so readers only ever observe complete versions. A staging directory
+  # left behind by a killed save is never read, but it keeps its version number
+  # reserved, so published versions are not guaranteed to be contiguous.
 
   def __init__(self, root_dir: Path | str):
     """Initializes the file-based artifact service.
@@ -242,14 +391,11 @@ class FileArtifactService(BaseArtifactService):
     self.root_dir = Path(root_dir).expanduser().resolve()
     self.root_dir.mkdir(parents=True, exist_ok=True)
 
-  def _base_roots(self, app_name: str, user_id: str) -> tuple[Path, Path]:
-    """Returns the app-scoped root and its pre-app-scoped predecessor."""
+  def _base_root(self, app_name: str, user_id: str) -> Path:
+    """Returns the app-scoped root holding a user's artifacts."""
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
-    return (
-        self.root_dir / "apps" / app_name / "users" / user_id,
-        self.root_dir / "users" / user_id,
-    )
+    return self.root_dir / "apps" / app_name / "users" / user_id
 
   def _scope_root(
       self,
@@ -266,24 +412,6 @@ class FileArtifactService(BaseArtifactService):
       )
     return _session_artifacts_dir(base_root, session_id)
 
-  def _artifact_dirs(
-      self,
-      app_name: str,
-      user_id: str,
-      session_id: Optional[str],
-      filename: str,
-  ) -> tuple[Path, Path]:
-    """Builds the app-scoped artifact directory and its predecessor."""
-    base_root, legacy_root = self._base_roots(app_name, user_id)
-    return (
-        _resolve_scoped_artifact_path(
-            self._scope_root(base_root, session_id, filename), filename
-        )[0],
-        _resolve_scoped_artifact_path(
-            self._scope_root(legacy_root, session_id, filename), filename
-        )[0],
-    )
-
   def _artifact_dir(
       self,
       app_name: str,
@@ -292,30 +420,10 @@ class FileArtifactService(BaseArtifactService):
       filename: str,
   ) -> Path:
     """Builds the directory that stores an artifact for an app."""
-    return self._artifact_dirs(app_name, user_id, session_id, filename)[0]
-
-  def _read_artifact_dir(
-      self,
-      app_name: str,
-      user_id: str,
-      session_id: Optional[str],
-      filename: str,
-  ) -> Path:
-    """Builds the directory an artifact is read from.
-
-    Artifacts written before storage was app-scoped live in a directory shared
-    by every app on this root. They stay readable until they are deleted or
-    replaced; the app-scoped copy always wins and new versions only ever go
-    there.
-    """
-    artifact_dir, legacy_dir = self._artifact_dirs(
-        app_name, user_id, session_id, filename
-    )
-    if not _list_versions_on_disk(artifact_dir) and _list_versions_on_disk(
-        legacy_dir
-    ):
-      return legacy_dir
-    return artifact_dir
+    base_root = self._base_root(app_name, user_id)
+    return _resolve_scoped_artifact_path(
+        self._scope_root(base_root, session_id, filename), filename
+    )[0]
 
   def _build_artifact_version(
       self,
@@ -325,11 +433,11 @@ class FileArtifactService(BaseArtifactService):
       metadata: Optional[FileArtifactVersion],
   ) -> ArtifactVersion:
     """Creates an ArtifactVersion payload using on-disk metadata."""
-    canonical_uri = (
-        metadata.canonical_uri
-        if metadata and metadata.canonical_uri
-        else _canonical_uri(artifact_dir, version)
-    )
+    # Always recomputed from the storage layout rather than read back from the
+    # metadata document. For this service the two are equivalent for data this
+    # service wrote, and recomputing means a tampered document cannot dictate
+    # the URI handed to callers.
+    canonical_uri = _canonical_uri(artifact_dir, version)
     custom_metadata_val = metadata.custom_metadata if metadata else {}
     mime_type = metadata.mime_type if metadata else None
     return ArtifactVersion(
@@ -394,45 +502,62 @@ class FileArtifactService(BaseArtifactService):
         session_id=session_id,
         filename=filename,
     )
+    # Enforced here rather than in `_artifact_dir`, which reads and deletes
+    # share: an artifact stored under this name before the name was rejected
+    # must stay readable and, above all, deletable.
+    if _is_reserved_artifact_name(artifact_dir.name):
+      raise InputValidationError(
+          f"Artifact filename {filename!r} is reserved: an artifact may not be"
+          f" named {_METADATA_FILENAME!r} (in any casing) because its payload"
+          " is stored under the artifact's own name and would overwrite the"
+          " metadata document."
+      )
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    versions = _list_versions_on_disk(artifact_dir)
-    next_version = 0 if not versions else versions[-1] + 1
-    versions_dir = _versions_dir(artifact_dir)
-    versions_dir.mkdir(parents=True, exist_ok=True)
-    version_dir = versions_dir / str(next_version)
-    version_dir.mkdir()
+    next_version, staging_dir, version_dir = _reserve_version_dir(artifact_dir)
 
     stored_filename = artifact_dir.name
-    content_path = version_dir / stored_filename
+    content_path = staging_dir / stored_filename
 
-    display_name: Optional[str] = None
-    if artifact.inline_data:
-      content_path.write_bytes(artifact.inline_data.data)
-      mime_type = (
-          artifact.inline_data.mime_type
-          if artifact.inline_data.mime_type
-          else "application/octet-stream"
-      )
-      display_name = artifact.inline_data.display_name
-    elif artifact.text is not None:
-      content_path.write_text(artifact.text, encoding="utf-8")
-      mime_type = None
-    else:
-      raise InputValidationError(
-          "Artifact must have either inline_data or text content."
-      )
+    # A version directory is only ever observed complete or not at all. A
+    # partially written version -- payload present, metadata missing or
+    # truncated -- is indistinguishable from a valid one on the read path, so
+    # any failure discards the whole staging directory instead of publishing it.
+    try:
+      display_name: Optional[str] = None
+      if artifact.inline_data:
+        data = artifact.inline_data.data
+        if data is None:
+          raise InputValidationError("Artifact inline_data must contain data.")
+        content_path.write_bytes(data)
+        mime_type = (
+            artifact.inline_data.mime_type
+            if artifact.inline_data.mime_type
+            else "application/octet-stream"
+        )
+        display_name = artifact.inline_data.display_name
+      elif artifact.text is not None:
+        content_path.write_text(artifact.text, encoding="utf-8")
+        mime_type = None
+      else:
+        raise InputValidationError(
+            "Artifact must have either inline_data or text content."
+        )
 
-    canonical_uri = _canonical_uri(artifact_dir, next_version)
-    _write_metadata(
-        version_dir / "metadata.json",
-        filename=filename,
-        mime_type=mime_type,
-        version=next_version,
-        canonical_uri=canonical_uri,
-        custom_metadata=custom_metadata,
-        display_name=display_name,
-    )
+      canonical_uri = _canonical_uri(artifact_dir, next_version)
+      _write_metadata(
+          staging_dir / _METADATA_FILENAME,
+          filename=filename,
+          mime_type=mime_type,
+          version=next_version,
+          canonical_uri=canonical_uri,
+          custom_metadata=custom_metadata,
+          display_name=display_name,
+      )
+      os.replace(staging_dir, version_dir)
+    except BaseException:
+      shutil.rmtree(staging_dir, ignore_errors=True)
+      raise
 
     logger.debug(
         "Saved artifact %s version %d to %s",
@@ -470,7 +595,7 @@ class FileArtifactService(BaseArtifactService):
       version: Optional[int],
   ) -> Optional[types.Part]:
     """Loads an artifact from disk."""
-    artifact_dir = self._read_artifact_dir(
+    artifact_dir = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -494,19 +619,22 @@ class FileArtifactService(BaseArtifactService):
     metadata = _read_metadata(_metadata_path(artifact_dir, version_to_load))
     mime_type = metadata.mime_type if metadata else None
     stored_filename = artifact_dir.name
+    # The payload location is derived exclusively from the storage layout. It
+    # must never be taken from the metadata document: that document lives in
+    # the artifact tree and is therefore attacker-influenced input, so honoring
+    # a `canonical_uri` from it would turn this into an arbitrary file read.
     content_path = version_dir / stored_filename
-    if metadata and metadata.canonical_uri and not content_path.exists():
-      uri_path = _file_uri_to_path(metadata.canonical_uri)
-      if uri_path and uri_path.exists():
-        content_path = uri_path
 
+    # Read without a preceding `exists()` check. A separate `delete_artifact`
+    # can unlink the payload between the check and the read, and reacting to
+    # that gap is what previously reached the metadata-supplied path.
     if mime_type:
-      if not content_path.exists():
+      data = _read_bytes_if_present(content_path)
+      if data is None:
         logger.warning(
             "Binary artifact %s missing at %s", filename, content_path
         )
         return None
-      data = content_path.read_bytes()
       return types.Part(
           inline_data=types.Blob(
               mime_type=mime_type,
@@ -515,11 +643,10 @@ class FileArtifactService(BaseArtifactService):
           )
       )
 
-    if not content_path.exists():
+    text = _read_text_if_present(content_path)
+    if text is None:
       logger.warning("Text artifact %s missing at %s", filename, content_path)
       return None
-
-    text = content_path.read_text(encoding="utf-8")
     return types.Part(text=text)
 
   @override
@@ -545,26 +672,26 @@ class FileArtifactService(BaseArtifactService):
   ) -> list[str]:
     """Lists artifact filenames for the given session/user."""
     filenames: set[str] = set()
+    base_root = self._base_root(app_name, user_id)
 
-    for base_root in self._base_roots(app_name, user_id):
-      if session_id is not None:
-        session_root = _session_artifacts_dir(base_root, session_id)
-        for artifact_dir in _iter_artifact_dirs(session_root):
-          metadata = self._latest_metadata(artifact_dir)
-          if metadata and metadata.file_name:
-            filenames.add(str(metadata.file_name))
-          else:
-            rel = artifact_dir.relative_to(session_root)
-            filenames.add(rel.as_posix())
-
-      user_root = _user_artifacts_dir(base_root)
-      for artifact_dir in _iter_artifact_dirs(user_root):
+    if session_id is not None:
+      session_root = _session_artifacts_dir(base_root, session_id)
+      for artifact_dir in _iter_artifact_dirs(session_root):
         metadata = self._latest_metadata(artifact_dir)
         if metadata and metadata.file_name:
           filenames.add(str(metadata.file_name))
         else:
-          rel = artifact_dir.relative_to(user_root)
-          filenames.add(f"user:{rel.as_posix()}")
+          rel = artifact_dir.relative_to(session_root)
+          filenames.add(rel.as_posix())
+
+    user_root = _user_artifacts_dir(base_root)
+    for artifact_dir in _iter_artifact_dirs(user_root):
+      metadata = self._latest_metadata(artifact_dir)
+      if metadata and metadata.file_name:
+        filenames.add(str(metadata.file_name))
+      else:
+        rel = artifact_dir.relative_to(user_root)
+        filenames.add(f"user:{rel.as_posix()}")
 
     return sorted(filenames)
 
@@ -601,14 +728,19 @@ class FileArtifactService(BaseArtifactService):
       filename: str,
       session_id: Optional[str],
   ) -> None:
-    # Both copies go, so a deleted artifact cannot reappear via the read of the
-    # pre-app-scoped layout.
-    for artifact_dir in self._artifact_dirs(
-        app_name, user_id, session_id, filename
-    ):
-      if artifact_dir.exists():
-        shutil.rmtree(artifact_dir)
-        logger.debug("Deleted artifact %s at %s", filename, artifact_dir)
+    artifact_dir = self._artifact_dir(app_name, user_id, session_id, filename)
+    versions_dir = _versions_dir(artifact_dir)
+    if not versions_dir.exists():
+      return
+    # Only this artifact's own versions go. Its directory may also be the
+    # parent of a nested artifact ("doc" vs "doc/nested"), so it is pruned
+    # separately and only if nothing is left under it.
+    shutil.rmtree(versions_dir)
+    scope_root = self._scope_root(
+        self._base_root(app_name, user_id), session_id, filename
+    )
+    _prune_empty_dirs(artifact_dir, scope_root)
+    logger.debug("Deleted artifact %s at %s", filename, artifact_dir)
 
   @override
   async def list_versions(
@@ -635,7 +767,7 @@ class FileArtifactService(BaseArtifactService):
       filename: str,
       session_id: Optional[str],
   ) -> list[int]:
-    artifact_dir = self._read_artifact_dir(
+    artifact_dir = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -668,7 +800,7 @@ class FileArtifactService(BaseArtifactService):
       filename: str,
       session_id: Optional[str],
   ) -> list[ArtifactVersion]:
-    artifact_dir = self._read_artifact_dir(
+    artifact_dir = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -716,7 +848,7 @@ class FileArtifactService(BaseArtifactService):
       session_id: Optional[str],
       version: Optional[int],
   ) -> Optional[ArtifactVersion]:
-    artifact_dir = self._read_artifact_dir(
+    artifact_dir = self._artifact_dir(
         app_name=app_name,
         user_id=user_id,
         session_id=session_id,
@@ -762,20 +894,50 @@ def _write_metadata(
       # artifact services (e.g. GCS).
       custom_metadata=dict(custom_metadata or {}),
   )
-  path.write_text(
-      metadata.model_dump_json(by_alias=True, exclude_none=True),
-      encoding="utf-8",
-  )
+  # Serialize before touching the filesystem: serialization is caller-driven
+  # (`custom_metadata` is arbitrary) and can fail, and it must not be able to
+  # leave a truncated document behind.
+  serialized = metadata.model_dump_json(by_alias=True, exclude_none=True)
+
+  # Write via a uniquely named temporary file in the same directory and rename
+  # it into place, so readers never observe a partial document.
+  fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+  tmp_path = Path(tmp_name)
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+      tmp_file.write(serialized)
+    # `os.replace` carries the temporary file's mode over to the destination,
+    # and mkstemp made it 0600. Restore the mode the payload beside it got.
+    os.chmod(tmp_path, _DEFAULT_FILE_MODE)
+    os.replace(tmp_path, path)
+  except BaseException:
+    tmp_path.unlink(missing_ok=True)
+    raise
 
 
 def _read_metadata(path: Path) -> Optional[FileArtifactVersion]:
-  """Loads a metadata payload from disk."""
-  if not path.exists():
+  """Loads a metadata payload from disk.
+
+  The path is derived from a caller-supplied filename, so it can be made to
+  name a directory rather than a file; that must degrade to "no metadata"
+  instead of raising.
+
+  Args:
+    path: Location of the metadata document.
+
+  Returns:
+    The parsed metadata, or None for anything that is not a readable,
+    well-formed metadata document.
+  """
+  try:
+    raw = path.read_text(encoding="utf-8")
+  except FileNotFoundError:
+    return None
+  except OSError as exc:
+    logger.warning("Unreadable metadata at %s: %s", path, exc)
     return None
   try:
-    return FileArtifactVersion.model_validate_json(
-        path.read_text(encoding="utf-8")
-    )
+    return FileArtifactVersion.model_validate_json(raw)
   except ValidationError as exc:
     logger.warning("Failed to parse metadata at %s: %s", path, exc)
     return None

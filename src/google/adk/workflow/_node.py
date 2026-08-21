@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
+from collections.abc import Mapping
 from typing import Any
 from typing import Literal
 from typing import overload
@@ -220,8 +221,8 @@ class Node(base_node.BaseNode):
 
   @override
   def model_copy(
-      self, *, update: dict[str, Any] | None = None, deep: bool = False
-  ) -> Any:
+      self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+  ) -> Node:
     """Clones the node with updated fields."""
     copied = super().model_copy(update=update, deep=deep)
 

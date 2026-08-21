@@ -30,7 +30,7 @@ graph TD
 Key techniques demonstrated in this sample:
 
 1. **Dynamic Scheduling**: Using a loop to create tasks via `ctx.run_node()`.
-1. **Context Isolation**: Using `sub_branch` in `run_node` to isolate events for each parallel task, preventing context contamination.
+1. **Context Isolation**: Using `use_sub_branch` in `run_node` to isolate events for each parallel task, preventing context contamination.
 1. **`rerun_on_resume=True`**: Required on the orchestrator node to support resumption if any child node interrupts.
 
 ### Code Snippet
@@ -38,12 +38,12 @@ Key techniques demonstrated in this sample:
 ```python
     # Fan-out: Schedule a dynamic node for each topic
     tasks = []
-    for i, topic in enumerate(topics):
+    for topic in topics:
         tasks.append(
             ctx.run_node(
                 generator,
                 node_input=topic,
-                sub_branch=f"branch_{i}"
+                use_sub_branch=True,
             )
         )
 

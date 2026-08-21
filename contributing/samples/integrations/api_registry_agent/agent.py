@@ -15,15 +15,16 @@
 import os
 
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.integrations.api_registry import ApiRegistry
+from google.adk.integrations.agent_registry import AgentRegistry
 
 # TODO: Fill in with your GCloud project id and MCP server name
 PROJECT_ID = "your-google-cloud-project-id"
+LOCATION = "global"
 MCP_SERVER_NAME = "your-mcp-server-name"
 
-api_registry = ApiRegistry(PROJECT_ID)
-registry_tools = api_registry.get_toolset(
-    mcp_server_name=MCP_SERVER_NAME,
+registry = AgentRegistry(project_id=PROJECT_ID, location=LOCATION)
+registry_tools = registry.get_mcp_toolset(
+    f"projects/{PROJECT_ID}/locations/{LOCATION}/mcpServers/{MCP_SERVER_NAME}"
 )
 root_agent = LlmAgent(
     name="bigquery_assistant",

@@ -170,6 +170,110 @@ def test_get_events_for_rehydration_lazily_builds_event_index():
   assert events == [e_a]
 
 
+def _duplicate_user_response_event():
+  """A user function-response event with fixed `id`/`timestamp`.
+
+  Two of these are distinct objects that nonetheless compare equal, which is how
+  a value-based membership test can confuse one for the other.
+  """
+  from google.genai import types
+
+  return Event(
+      author="user",
+      invocation_id="inv-1",
+      id="duplicate-event-id",
+      timestamp=1000.0,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="RequestInput", id="fc-1", response={"result": "ok"}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def test_get_events_for_rehydration_merges_user_prompts_by_identity():
+  """A user prompt is not dropped just because an equal-valued event is indexed.
+
+  `e_user_root` is indexed under root because it arrives before the interrupt id
+  that would route it, while `e_user_routed` arrives after and is indexed under
+  the node path. The two compare equal, so testing membership with `in` treats
+  the root prompt as already present and silently drops it from rehydration.
+  """
+  mgr = ReplayManager()
+  e_user_root = _duplicate_user_response_event()
+  e_node = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/child_a@1"),
+      invocation_id="inv-1",
+      long_running_tool_ids=["fc-1"],
+  )
+  e_user_routed = _duplicate_user_response_event()
+  assert e_user_root == e_user_routed
+  assert e_user_root is not e_user_routed
+
+  session_events = [e_user_root, e_node, e_user_routed]
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = session_events
+
+  events = mgr.get_events_for_rehydration(ctx, "wf@1/child_a@1")
+
+  # Every event is preserved, in session order.
+  assert [id(e) for e in events] == [id(e) for e in session_events]
+
+
+def test_get_events_for_rehydration_does_not_deep_compare_events():
+  """Merging user prompts must not invoke `Event.__eq__`.
+
+  `Event.__eq__` is a recursive deep comparison, so using it for a membership
+  test over a list makes this path quadratic in the number of session events.
+  """
+  eq_calls = 0
+
+  class CountingEvent(Event):
+
+    def __eq__(self, other):
+      nonlocal eq_calls
+      eq_calls += 1
+      return super().__eq__(other)
+
+    __hash__ = None
+
+  mgr = ReplayManager()
+  # A root-indexed user prompt is required for the merge path to run at all.
+  e_user = CountingEvent(**_duplicate_user_response_event().model_dump())
+  session_events = [
+      e_user,
+      *[
+          CountingEvent(
+              author="node",
+              node_info=NodeInfo(path="wf@1/child_a@1"),
+              invocation_id="inv-1",
+          )
+          for _ in range(20)
+      ],
+  ]
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = session_events
+
+  events = mgr.get_events_for_rehydration(ctx, "wf@1/child_a@1")
+
+  # Sanity-check that the merge path actually ran, so `eq_calls == 0` below
+  # means "no deep comparison" rather than "nothing was compared".
+  assert len(events) == len(session_events)
+  assert eq_calls == 0
+
+
 def test_scan_workflow_events_recovers_children_from_transitive_descendant_events():
   """Scanning workflow events recovers child nodes when events are emitted deep in child subtrees."""
   mgr = ReplayManager()
@@ -293,3 +397,99 @@ async def test_scan_workflow_events_sequence_empty_when_all_events_are_prior():
   assert sequence == []
   # An empty sequence must fast-forward rather than deadlock.
   await asyncio.wait_for(mgr.sequence_barrier.wait("anything"), timeout=1)
+
+
+def _recorded_two_step_ctx():
+  """A ctx whose session records alpha completing before beta."""
+  alpha = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/alpha@1", run_id="1"),
+      invocation_id="inv-1",
+      output="alpha_out",
+  )
+  beta = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/beta@1", run_id="1"),
+      invocation_id="inv-1",
+      output="beta_out",
+  )
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [alpha, beta]
+  ctx.node_path = "wf@1"
+  return ctx
+
+
+@pytest.mark.asyncio
+async def test_wait_sequence_holds_second_key_until_first_advances():
+  """Replay follows the recorded order: beta cannot start before alpha ends."""
+  mgr = ReplayManager()
+  ctx = _recorded_two_step_ctx()
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+  assert barrier.sequence == ["alpha@1", "beta@1"]
+
+  # The first recorded key is already open.
+  await asyncio.wait_for(mgr.wait_sequence("wf@1", "alpha@1"), timeout=1)
+
+  beta_started = False
+
+  async def _wait_beta():
+    nonlocal beta_started
+    await mgr.wait_sequence("wf@1", "beta@1")
+    beta_started = True
+
+  task = asyncio.create_task(_wait_beta())
+  await asyncio.sleep(0.05)
+  assert not beta_started
+
+  await mgr.advance_sequence("wf@1", "alpha@1")
+
+  await asyncio.wait_for(task, timeout=1)
+  assert beta_started
+
+
+@pytest.mark.asyncio
+async def test_advance_sequence_with_diverging_key_keeps_barrier_closed():
+  """An out-of-order completion must not open the barrier for the next key.
+
+  Replay diverged from the recording (beta finished before alpha), so the
+  barrier stays shut and the waiter fails loudly instead of proceeding in an
+  order the recording never contained.
+  """
+  mgr = ReplayManager()
+  ctx = _recorded_two_step_ctx()
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+  barrier.timeout_sec = 0.05
+
+  # beta reports completion first — not what was recorded.
+  await mgr.advance_sequence("wf@1", "beta@1")
+
+  assert barrier.current_index == 0
+  with pytest.raises(RuntimeError, match="Replay divergence detected"):
+    await mgr.wait_sequence("wf@1", "beta@1")
+
+
+@pytest.mark.asyncio
+async def test_wait_sequence_without_barrier_for_path_does_not_block():
+  """A parent path with no recorded sequence fast-forwards instead of raising."""
+  mgr = ReplayManager()
+  ctx = _recorded_two_step_ctx()
+  mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+
+  # "other@1" was never prepared, so nothing constrains it.
+  await asyncio.wait_for(mgr.wait_sequence("other@1", "beta@1"), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_advance_sequence_for_unprepared_path_leaves_other_barriers_alone():
+  """Advancing an unprepared parent path is a no-op, not a cross-path advance."""
+  mgr = ReplayManager()
+  ctx = _recorded_two_step_ctx()
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+
+  await mgr.advance_sequence("other@1", "alpha@1")
+
+  assert barrier.current_index == 0
+  assert not barrier.events["beta@1"].is_set()

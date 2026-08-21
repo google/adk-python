@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
+from typing import Any
+from unittest import mock
 from unittest.mock import MagicMock
 
 from google.adk.agents.context import Context
@@ -561,3 +564,115 @@ def test_get_declaration_is_cached_and_returns_independent_copies():
   d1.name = "prefixed_sample_tool"
   d3 = tool._get_declaration()  # pylint: disable=protected-access
   assert d3.name == "sample_tool"
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_async_generator_streaming_tool(mock_tool_context):
+  """Test that run_async returns an AsyncGenerator when wrapped function is an async generator."""
+
+  async def streaming_tool(val: int, tool_context: Context):
+    yield f"item_{val}"
+    yield f"item_{val + 1}"
+
+  tool = FunctionTool(streaming_tool)
+  result = await tool.run_async(
+      args={"val": 10},
+      tool_context=mock_tool_context,
+  )
+
+  items = []
+  async for item in result:
+    items.append(item)
+
+  assert items == ["item_10", "item_11"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_streaming_tool_and_input_stream(
+    mock_tool_context,
+):
+  """Test that run_async injects input_stream into args_to_call for a streaming tool."""
+  mock_stream = mock.MagicMock()
+  mock_stream.read.return_value = "stream_data"
+
+  mock_tool_context._invocation_context = mock.MagicMock()
+  mock_tool_context._invocation_context.active_streaming_tools = {
+      "streaming_tool_input": mock.MagicMock(stream=mock_stream)
+  }
+
+  async def streaming_tool_input(val: int, input_stream: Any):
+    data = input_stream.read()
+    yield f"{data}_{val}"
+
+  tool = FunctionTool(streaming_tool_input)
+  result = await tool.run_async(
+      args={"val": 42},
+      tool_context=mock_tool_context,
+  )
+
+  items = [item async for item in result]
+  assert items == ["stream_data_42"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_streaming_tool_require_confirmation(
+    mock_tool_context,
+):
+  """Test e2e confirmation lifecycle for a streaming tool in run_async."""
+
+  async def streaming_tool_conf(val: int):
+    yield f"confirmed_{val}"
+
+  tool = FunctionTool(streaming_tool_conf, require_confirmation=True)
+  mock_tool_context.function_call_id = "test_function_call_id"
+
+  # Stage 1: Call without confirmation should request confirmation and return error dict
+  mock_tool_context.tool_confirmation = None
+  res_unconfirmed = await tool.run_async(
+      args={"val": 1},
+      tool_context=mock_tool_context,
+  )
+  assert isinstance(res_unconfirmed, dict)
+  assert "error" in res_unconfirmed
+  assert "requires confirmation" in res_unconfirmed["error"]
+  assert (
+      "test_function_call_id"
+      in mock_tool_context.actions.requested_tool_confirmations
+  )
+
+  # Stage 2: Call with rejected confirmation
+  mock_tool_context.tool_confirmation = ToolConfirmation(confirmed=False)
+  res_rejected = await tool.run_async(
+      args={"val": 1},
+      tool_context=mock_tool_context,
+  )
+  assert res_rejected == {"error": "This tool call is rejected."}
+
+  # Stage 3: Call with approved confirmation should return the AsyncGenerator
+  mock_tool_context.tool_confirmation = ToolConfirmation(confirmed=True)
+  res_confirmed = await tool.run_async(
+      args={"val": 1},
+      tool_context=mock_tool_context,
+  )
+  assert inspect.isasyncgen(res_confirmed)
+  items = [item async for item in res_confirmed]
+  assert items == ["confirmed_1"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_streaming_tool_missing_mandatory_arg(
+    mock_tool_context,
+):
+  """Test that missing mandatory parameters in a streaming tool return an error dict."""
+
+  async def streaming_tool_req(req_param: str):
+    yield req_param
+
+  tool = FunctionTool(streaming_tool_req)
+  result = await tool.run_async(
+      args={},
+      tool_context=mock_tool_context,
+  )
+  assert isinstance(result, dict)
+  assert "error" in result
+  assert "mandatory input parameters are not present" in result["error"]

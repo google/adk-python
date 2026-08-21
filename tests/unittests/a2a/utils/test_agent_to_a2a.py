@@ -825,6 +825,22 @@ class TestToA2A:
 
     assert call_order == ["user_startup", "user_shutdown"]
 
+  async def test_to_a2a_does_not_close_caller_runner(self):
+    """A Runner supplied by the caller remains caller-owned."""
+    runner = Mock(spec=Runner)
+    runner.close = AsyncMock()
+
+    with patch.object(_compat, "attach_a2a_routes_to_app"):
+      app = to_a2a(
+          self.mock_agent,
+          runner=runner,
+          agent_card=_make_minimal_agent_card(),
+      )
+      async with app.router.lifespan_context(app):
+        pass
+
+    runner.close.assert_not_awaited()
+
   # ---------------------------------------------------------------------------
   # Validation (version-agnostic).
   # ---------------------------------------------------------------------------

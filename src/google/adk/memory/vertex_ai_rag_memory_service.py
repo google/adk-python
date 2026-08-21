@@ -20,6 +20,7 @@ import base64
 import binascii
 from collections import OrderedDict
 import json
+import logging
 import os
 import tempfile
 from typing import Optional
@@ -34,11 +35,21 @@ from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
 
 if TYPE_CHECKING:
+  import agentplatform
+
   from ..events.event import Event
   from ..sessions.session import Session
 
 
+logger = logging.getLogger("google_adk." + __name__)
+
 _SOURCE_DISPLAY_NAME_PREFIX = "adk-memory-v1."
+
+_RAG_FILE_PAGE_SIZE = 100
+
+# Scoping walks the corpus file list, so it is capped to keep the cost of a
+# search independent of how large a shared corpus grows.
+_MAX_RAG_FILE_PAGES = 10
 
 
 def _encode_source_display_name_part(value: str) -> str:
@@ -88,6 +99,69 @@ def _parse_source_display_name(
   if len(parts) != 3:
     return None
   return parts[0], parts[1], parts[2]
+
+
+async def _scoped_rag_resources(
+    client: agentplatform.AsyncClient,
+    rag_resources: list[types.VertexRagStoreRagResource],
+    app_name: str,
+    user_id: str,
+) -> list[types.VertexRagStoreRagResource] | None:
+  """Returns resources naming only the files owned by one app and user.
+
+  Returns None when a corpus cannot be listed within the page budget, in which
+  case the caller retrieves without narrowing the resources.
+  """
+  from agentplatform import types as agentplatform_types
+
+  scoped_resources: list[types.VertexRagStoreRagResource] = []
+  for rag_resource in rag_resources:
+    rag_corpus = rag_resource.rag_corpus
+    if not rag_corpus:
+      return None
+
+    rag_file_ids: list[str] = []
+    page_token: str | None = None
+    for _ in range(_MAX_RAG_FILE_PAGES):
+      response = await client.rag.list_files(
+          name=rag_corpus,
+          config=agentplatform_types.ListRagFilesConfig(
+              page_size=_RAG_FILE_PAGE_SIZE, page_token=page_token
+          ),
+      )
+      for rag_file in response.rag_files or []:
+        session_info = _parse_source_display_name(rag_file.display_name or "")
+        if (
+            not session_info
+            or session_info[0] != app_name
+            or session_info[1] != user_id
+            or not rag_file.name
+        ):
+          continue
+        # rag_file_ids takes the bare file id, not the full resource name.
+        rag_file_ids.append(rag_file.name.rsplit("/", 1)[-1])
+      page_token = response.next_page_token
+      if not page_token:
+        break
+
+    if page_token:
+      # Scoping to the files seen so far would hide the caller's own memories,
+      # so an incomplete listing is abandoned instead.
+      logger.warning(
+          "Listing %s did not finish within %d pages, so retrieval is not"
+          " scoped to the requesting app and user.",
+          rag_corpus,
+          _MAX_RAG_FILE_PAGES,
+      )
+      return None
+    if rag_file_ids:
+      scoped_resources.append(
+          types.VertexRagStoreRagResource(
+              rag_corpus=rag_corpus, rag_file_ids=rag_file_ids
+          )
+      )
+
+  return scoped_resources
 
 
 class VertexAiRagMemoryService(BaseMemoryService):
@@ -223,12 +297,38 @@ class VertexAiRagMemoryService(BaseMemoryService):
 
     from ..events.event import Event
 
+    rag_resources = self._vertex_rag_store.rag_resources
+    if not rag_resources:
+      raise ValueError("Rag resources must be set.")
+
     client = agentplatform.Client(
         project=self._project, location=self._location
     ).aio
     try:
+      try:
+        scoped_resources = await _scoped_rag_resources(
+            client, rag_resources, app_name, user_id
+        )
+      except Exception:  # pylint: disable=broad-except
+        # Narrowing the resources only improves ranking and transfer; the
+        # response filter below keeps an unnarrowed retrieval correct.
+        logger.warning(
+            "Listing the corpus failed, so retrieval is not scoped to the"
+            " requesting app and user.",
+            exc_info=True,
+        )
+        scoped_resources = None
+
+      vertex_rag_store = self._vertex_rag_store
+      if scoped_resources is not None:
+        if not scoped_resources:
+          return SearchMemoryResponse()
+        vertex_rag_store = self._vertex_rag_store.model_copy(
+            update={"rag_resources": scoped_resources}
+        )
+
       response = await client.rag.retrieve_contexts(
-          vertex_rag_store=self._vertex_rag_store,
+          vertex_rag_store=vertex_rag_store,
           query=agentplatform_types.RagQuery(
               text=query,
               similarity_top_k=self._similarity_top_k,
@@ -241,8 +341,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
     memory_results = []
     session_events_map: OrderedDict[str, list[list[Event]]] = OrderedDict()
     for context in response.contexts.contexts:
-      # filter out context that is not related
-      # TODO: Add server side filtering by app_name and user_id.
+      # Still required: retrieval is unscoped whenever listing did not finish.
       source_display_name = getattr(context, "source_display_name", "")
       if not isinstance(source_display_name, str):
         continue

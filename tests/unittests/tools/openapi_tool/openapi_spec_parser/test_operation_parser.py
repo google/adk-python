@@ -105,6 +105,31 @@ def test_process_request_body(sample_operation):
   assert parser._params[1].param_location == 'body'
 
 
+def test_required_request_body_properties_are_required_parameters():
+  """Required body properties appear in the generated parameter schema."""
+  operation = Operation(
+      operationId='createSpace',
+      requestBody=RequestBody(
+          content={
+              'application/json': MediaType(
+                  schema=Schema(
+                      type='object',
+                      required=['spaceName'],
+                      properties={
+                          'spaceName': Schema(type='string'),
+                          'description': Schema(type='string'),
+                      },
+                  )
+              )
+          }
+      ),
+  )
+
+  parser = OperationParser(operation)
+
+  assert parser.get_json_schema()['required'] == ['space_name']
+
+
 def test_process_request_body_array():
   """Test _process_request_body method with array schema."""
   operation = Operation(

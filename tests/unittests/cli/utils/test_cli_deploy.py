@@ -250,6 +250,19 @@ def test_print_agent_engine_url() -> None:
     assert "playground" in call_args
 
 
+def test_print_gemini_enterprise_hint() -> None:
+  """It should print a pointer to the Gemini Enterprise registration docs."""
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy._print_gemini_enterprise_hint()
+    mocked_secho.assert_called_once()
+    call_args = mocked_secho.call_args[0][0]
+    assert "Gemini Enterprise" in call_args
+    assert (
+        "https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent"
+        in call_args
+    )
+
+
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_to_agent_engine_happy_path(
     monkeypatch: pytest.MonkeyPatch,
@@ -393,7 +406,7 @@ def test_to_gke_happy_path(
 
   build_args = run_recorder.calls[0][0][0]
   expected_build_args = [
-      "gcloud",
+      cli_deploy._GCLOUD_CMD,
       "builds",
       "submit",
       "--tag",
@@ -406,7 +419,7 @@ def test_to_gke_happy_path(
 
   creds_args = run_recorder.calls[1][0][0]
   expected_creds_args = [
-      "gcloud",
+      cli_deploy._GCLOUD_CMD,
       "container",
       "clusters",
       "get-credentials",
@@ -441,6 +454,57 @@ def test_to_gke_happy_path(
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+def test_to_gke_uses_gcloud_cmd_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """On Windows, `to_gke` must invoke gcloud via `_GCLOUD_CMD` (gcloud.cmd).
+
+  Regression test: the GKE deploy path spawns gcloud without a shell, so a bare
+  `gcloud` name is not resolved to the `gcloud.cmd` batch script on Windows and
+  the deploy fails. Both gcloud invocations must use `_GCLOUD_CMD`.
+  """
+  src_dir = agent_dir(False, False)
+  run_recorder = _Recorder()
+
+  monkeypatch.setattr(cli_deploy, "_GCLOUD_CMD", "gcloud.cmd")
+
+  def mock_subprocess_run(*args, **kwargs):
+    run_recorder(*args, **kwargs)
+    command_list = args[0]
+    if command_list and command_list[0:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="deployment created\nservice created")
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+  )
+
+  build_args = run_recorder.calls[0][0][0]
+  assert build_args[0] == "gcloud.cmd"
+  assert build_args[1:3] == ["builds", "submit"]
+
+  creds_args = run_recorder.calls[1][0][0]
+  assert creds_args[0] == "gcloud.cmd"
+  assert creds_args[1:4] == ["container", "clusters", "get-credentials"]
 
 
 # _validate_agent_import tests
@@ -1113,3 +1177,45 @@ def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
   assert (tmp_dir / "requirements.txt").read_text() == (
       "some-unrelated-package\n"
   )
+
+
+# _robust_rmtree / _on_rm_error tests
+
+
+class TestRobustRmtree:
+  """Tests for the _robust_rmtree helper."""
+
+  def test_removes_directory_tree(self, tmp_path: Path) -> None:
+    """It should remove a normal directory tree."""
+    d = tmp_path / "subdir"
+    d.mkdir()
+    (d / "file.txt").write_text("hello")
+    cli_deploy._robust_rmtree(str(d))
+    assert not d.exists()
+
+  def test_removes_readonly_files(self, tmp_path: Path) -> None:
+    """It should remove a tree containing read-only files."""
+    import os
+    import stat
+
+    d = tmp_path / "ro_dir"
+    d.mkdir()
+    ro_file = d / "readonly.txt"
+    ro_file.write_text("locked")
+    ro_file.chmod(stat.S_IREAD)
+    cli_deploy._robust_rmtree(str(d))
+    assert not d.exists()
+
+  def test_on_rm_error_clears_readonly_and_retries(
+      self, tmp_path: Path
+  ) -> None:
+    """_on_rm_error should chmod the file and call the removal function."""
+    import os
+    import stat
+
+    ro_file = tmp_path / "locked.txt"
+    ro_file.write_text("data")
+    ro_file.chmod(stat.S_IREAD)
+
+    cli_deploy._on_rm_error(os.remove, str(ro_file), None)
+    assert not ro_file.exists()

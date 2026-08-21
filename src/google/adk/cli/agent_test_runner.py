@@ -480,7 +480,7 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
     )
     _make_nodes_sequential(root_agent)
 
-    with open(test_file, "r") as f:
+    with open(test_file, "r", encoding="utf-8") as f:
       session_data = json.load(f)
 
     events_data = session_data.get("events", [])
@@ -763,7 +763,7 @@ def rebuild_tests(path: str):
       )
       _make_nodes_sequential(root_agent)
 
-      with open(test_file, "r") as f:
+      with open(test_file, "r", encoding="utf-8") as f:
         session_data = json.load(f)
 
       events_data = session_data.get("events", [])
@@ -963,8 +963,8 @@ def rebuild_tests(path: str):
       session_data.pop("lastUpdateTime", None)
 
       # Write back to file
-      with open(test_file, "w") as f:
-        json.dump(session_data, f, indent=2, sort_keys=True)
+      with open(test_file, "w", encoding="utf-8") as f:
+        json.dump(session_data, f, indent=2, sort_keys=True, ensure_ascii=False)
         f.write("\n")
 
       print(f"Successfully rebuilt {test_file}")

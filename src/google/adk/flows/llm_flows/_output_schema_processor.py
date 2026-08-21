@@ -25,8 +25,9 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...tools.set_model_response_tool import SetModelResponseTool
-from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._invocation_utils import as_llm_agent
+from ._invocation_utils import require_agent_name
 
 
 class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
@@ -37,14 +38,14 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
 
-    agent = invocation_context.agent
+    agent = as_llm_agent(invocation_context)
 
     # Check if we need the processor: output_schema + tools + cannot use output
     # schema with tools
     if (
         not agent.output_schema
         or not agent.tools
-        or can_use_output_schema_with_tools(agent.canonical_model)
+        or agent.canonical_model.capabilities.output_schema_and_tools
         or getattr(agent, 'mode', None) == 'task'
     ):
       return
@@ -83,7 +84,7 @@ def create_final_model_response_event(
 
   # Create a proper model response event
   final_event = Event(
-      author=invocation_context.agent.name,
+      author=require_agent_name(invocation_context),
       invocation_id=invocation_context.invocation_id,
       branch=invocation_context.branch,
   )

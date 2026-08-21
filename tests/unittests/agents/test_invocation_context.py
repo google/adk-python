@@ -17,6 +17,7 @@ from unittest.mock import Mock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.invocation_context import LlmCallsLimitExceededError
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
@@ -732,3 +733,64 @@ class TestFindMatchingFunctionCall:
     assert testing_utils.simplify_content(
         matching_fc_event.content
     ) == testing_utils.simplify_content(fc_event.content)
+
+
+class TestIncrementLlmCallCount:
+  """Test suite for InvocationContext.increment_llm_call_count."""
+
+  def _context(self, run_config=None):
+    kwargs = {} if run_config is None else {'run_config': run_config}
+    return InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        **kwargs,
+    )
+
+  def test_allows_exactly_max_llm_calls_then_raises(self):
+    """The limit is the number of calls allowed, not the count before it."""
+    ctx = self._context(RunConfig(max_llm_calls=2))
+
+    ctx.increment_llm_call_count()
+    ctx.increment_llm_call_count()
+
+    with pytest.raises(LlmCallsLimitExceededError, match='limit of `2`'):
+      ctx.increment_llm_call_count()
+
+  def test_keeps_raising_once_the_limit_is_passed(self):
+    """The limit latches: a caller cannot swallow one error and carry on."""
+    ctx = self._context(RunConfig(max_llm_calls=1))
+    ctx.increment_llm_call_count()
+
+    with pytest.raises(LlmCallsLimitExceededError):
+      ctx.increment_llm_call_count()
+    with pytest.raises(LlmCallsLimitExceededError):
+      ctx.increment_llm_call_count()
+
+  @pytest.mark.parametrize('max_llm_calls', [0, -1])
+  def test_non_positive_limit_is_not_enforced(self, max_llm_calls: int):
+    """A non-positive limit documents 'no enforcement', not 'no calls'."""
+    ctx = self._context(RunConfig(max_llm_calls=max_llm_calls))
+
+    for _ in range(5):
+      ctx.increment_llm_call_count()
+
+  def test_without_run_config_the_limit_is_not_enforced(self):
+    """run_config is optional, so counting must tolerate its absence."""
+    ctx = self._context()
+    assert ctx.run_config is None
+
+    for _ in range(5):
+      ctx.increment_llm_call_count()
+
+  def test_count_is_per_invocation_context(self):
+    """Two invocations must not share a budget."""
+    first = self._context(RunConfig(max_llm_calls=1))
+    second = self._context(RunConfig(max_llm_calls=1))
+
+    first.increment_llm_call_count()
+    second.increment_llm_call_count()
+
+    with pytest.raises(LlmCallsLimitExceededError):
+      second.increment_llm_call_count()

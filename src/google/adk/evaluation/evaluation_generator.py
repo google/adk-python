@@ -20,6 +20,8 @@ import importlib
 import logging
 from typing import Any
 from typing import AsyncGenerator
+from typing import Callable
+from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 import uuid
@@ -30,10 +32,12 @@ from pydantic import BaseModel
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
+from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
 from ..agents.invocation_context import InvocationContext
 from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import Agent
+from ..agents.readonly_context import ReadonlyContext
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
 from ..apps.app import App
@@ -50,6 +54,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ..workflow import BaseNode
 from ._retry_options_utils import EnsureRetryOptionsPlugin
 from .app_details import AgentDetails
 from .app_details import AppDetails
@@ -74,9 +79,36 @@ logger = logging.getLogger("google_adk." + __name__)
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"
 
+# Function calls that end the agent and hand off instead of continuing the turn
+# with a tool response, so their `turn_complete` is real. See
+# `_consume_node_events`.
+_TURN_ENDING_FUNCTION_CALLS = frozenset({
+    "finish_task",
+    "transfer_to_agent",
+    "task_completed",
+})
+
 # Chunk size for streaming audio blobs to the Live API.
 # See https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/live-api#technical-specifications
 _AUDIO_CHUNK_BYTES = 16000
+
+# WebSocket close code for a normal (successful) closure.
+_WEBSOCKET_NORMAL_CLOSURE_CODE = 1000
+
+# Live run config shared by all live drivers. Server-side voice-activity
+# detection is disabled so turn boundaries are controlled explicitly via
+# activity markers around the sent audio.
+_LIVE_RUN_CONFIG = RunConfig(
+    streaming_mode=StreamingMode.BIDI,
+    response_modalities=["AUDIO"],
+    output_audio_transcription=types.AudioTranscriptionConfig(),
+    input_audio_transcription=types.AudioTranscriptionConfig(),
+    realtime_input_config=types.RealtimeInputConfig(
+        automatic_activity_detection=types.AutomaticActivityDetection(
+            disabled=True
+        )
+    ),
+)
 
 
 def _send_audio_to_live(
@@ -134,7 +166,7 @@ _APP_KEY = "app"
 
 
 def _build_eval_runner_kwargs(
-    root_agent: Agent,
+    root_agent: BaseAgent | BaseNode,
     app_name: str,
     app: Optional[App],
     internal_eval_plugins: list[BasePlugin],
@@ -195,7 +227,7 @@ class _LiveSession:
     self.turn_complete_event = asyncio.Event()
     self.live_finished = asyncio.Event()
     self.current_invocation_id = Event.new_id()
-    self.consume_task = None
+    self.consume_task: Optional[asyncio.Task[None]] = None
 
   async def __aenter__(self) -> _LiveSession:
     """Starts the background task."""
@@ -205,34 +237,40 @@ class _LiveSession:
   async def _consume_events(self) -> None:
     """Background task: consume events from run_live."""
     try:
-      run_config = RunConfig(
-          streaming_mode=StreamingMode.BIDI,
-          response_modalities=["AUDIO"],
-          output_audio_transcription=types.AudioTranscriptionConfig(),
-          input_audio_transcription=types.AudioTranscriptionConfig(),
-          # Disable server-side voice-activity detection so turn boundaries are
-          # controlled explicitly via activity markers around the sent audio.
-          realtime_input_config=types.RealtimeInputConfig(
-              automatic_activity_detection=types.AutomaticActivityDetection(
-                  disabled=True
-              )
-          ),
-      )
+      # Workflows have no _llm_flow/run_live; drive through Runner.run_live
+      if isinstance(self.runner.agent, BaseNode) and not isinstance(
+          self.runner.agent, BaseAgent
+      ):
+        await self._consume_node_events()
+        return
+
+      run_config = _LIVE_RUN_CONFIG
+
+      # Non-agent nodes are already routed to _consume_node_events above, so the
+      # root here is a BaseAgent and the resolved agent is expected to be an
+      # LlmAgent driven via _llm_flow.
+      root_agent = self.runner.agent
+      if not isinstance(root_agent, BaseAgent):
+        raise TypeError("Live evaluation requires a root agent or workflow.")
 
       invocation_context = self.runner._new_invocation_context_for_live(
           self.session,
           live_request_queue=self.live_request_queue,
           run_config=run_config,
       )
-      invocation_context.agent = self.runner._find_agent_to_run(
-          self.session, self.runner.agent
-      )
+      agent_to_run = self.runner._find_agent_to_run(self.session, root_agent)
+      if not isinstance(agent_to_run, Agent):
+        raise TypeError(
+            f"Cannot drive {type(agent_to_run).__name__} via the LlmAgent live"
+            " flow."
+        )
+      invocation_context.agent = agent_to_run
 
       callback_context = None
       llm_request = LlmRequest()
 
       async with Aclosing(
-          invocation_context.agent._llm_flow._preprocess_async(
+          agent_to_run._llm_flow._preprocess_async(
               invocation_context, llm_request
           )
       ) as agen:
@@ -250,9 +288,7 @@ class _LiveSession:
       )
 
       in_function_call_loop = False
-      async with Aclosing(
-          invocation_context.agent.run_live(invocation_context)
-      ) as agen:
+      async with Aclosing(agent_to_run.run_live(invocation_context)) as agen:
         async for event in agen:
           assert event is not None
           event.invocation_id = self.current_invocation_id
@@ -272,14 +308,14 @@ class _LiveSession:
             inv_context = InvocationContext(
                 session_service=self.runner.session_service,
                 invocation_id=event.invocation_id,
-                agent=self.runner.agent,
+                agent=root_agent,
                 session=self.session,
                 run_config=run_config,
             )
 
             if isinstance(self.runner.agent, Agent):
               resolved_tools = await self.runner.agent.canonical_tools(
-                  inv_context
+                  ReadonlyContext(inv_context)
               )
               tools_dict = {t.name: t for t in resolved_tools}
             else:
@@ -330,6 +366,141 @@ class _LiveSession:
       self.live_finished.set()
       self.turn_complete_event.set()  # Unblock any waiters
 
+  async def _consume_node_events(self) -> None:
+    """Drives a non-Agent `BaseNode` (e.g. `Workflow`) via `Runner.run_live`."""
+    from google.genai import errors
+
+    # TODO: Remove once the live flow fires before/after_model_callback natively.
+    callback_context_by_author = await self._record_node_app_details()
+
+    # Track tool-call turns so the user simulator isn't prompted before the
+    # agent has actually finished responding.
+    in_function_call_loop = False
+
+    try:
+      async with Aclosing(
+          self.runner.run_live(
+              user_id=self.user_id,
+              session_id=self.session_id,
+              live_request_queue=self.live_request_queue,
+              run_config=_LIVE_RUN_CONFIG,
+          )
+      ) as agen:
+        async for event in agen:
+          event.invocation_id = self.current_invocation_id
+          callback_context = callback_context_by_author.get(event.author)
+          if callback_context is not None:
+            await self.runner.plugin_manager.run_after_model_callback(
+                callback_context=callback_context,
+                llm_response=event,
+            )
+          await self.event_queue.put(event)
+          # Terminal/handoff calls end the agent; the next `turn_complete` is
+          # real, so they must not arm the guard.
+          if any(
+              fc.name not in _TURN_ENDING_FUNCTION_CALLS
+              for fc in event.get_function_calls()
+          ):
+            in_function_call_loop = True
+          if event.turn_complete and event.author != _USER_AUTHOR:
+            if not in_function_call_loop:
+              self.turn_complete_event.set()
+            else:
+              in_function_call_loop = False
+    except (ConnectionClosed, errors.APIError) as e:
+      # A clean session close ends the stream; keep the transcript so far
+      # instead of failing the eval case.
+      if not self._is_normal_closure(e):
+        raise
+      logger.info("Ignored WebSocket normal closure exception: %s", e)
+
+  @staticmethod
+  def _is_normal_closure(exc: BaseException) -> bool:
+    """Reports whether an exception is a normal Live WebSocket closure (1000)."""
+    from google.genai import errors
+
+    return isinstance(exc, ConnectionClosedOK) or (
+        isinstance(exc, errors.APIError)
+        and exc.code == _WEBSOCKET_NORMAL_CLOSURE_CODE
+    )
+
+  @staticmethod
+  async def _record_app_details_for_agent(
+      invocation_context: InvocationContext,
+  ) -> CallbackContext:
+    """Records the agent's live request so the autorater can score it.
+
+    By default, live API calls do not fire before_model_callback, but the
+    plugins rely on it to capture the agent instructions and tool declarations
+    that the autorater needs. We run the callback manually here and return the
+    callback context so callers can replay after_model_callback per event.
+
+    TODO: Remove once the live flow fires before/after_model_callback natively.
+    """
+    agent = invocation_context.agent
+    if not isinstance(agent, Agent):
+      raise TypeError(
+          f"Cannot record app details for {type(agent).__name__}; an LlmAgent"
+          " is required."
+      )
+    llm_request = LlmRequest()
+    async with Aclosing(
+        agent._llm_flow._preprocess_async(invocation_context, llm_request)
+    ) as agen:
+      async for _ in agen:
+        pass
+
+    callback_context = CallbackContext(invocation_context)
+    await invocation_context.plugin_manager.run_before_model_callback(
+        callback_context=callback_context,
+        llm_request=llm_request,
+    )
+    return callback_context
+
+  async def _record_node_app_details(self) -> dict[str, CallbackContext]:
+    """Records live requests for each agent in a node graph root.
+
+    Multi-agent node roots serve several agents over one live stream, so we
+    record each agent's request up front and return a {author: callback_context}
+    map the caller uses to fire after_model_callback for each agent's events. A
+    failure for one agent is logged and skipped so it never aborts the eval run.
+
+    Scope: only top-level ``graph.nodes`` agents are recorded; agents nested in
+    sub-workflows or wrapper nodes are covered once native Live callbacks land.
+
+    TODO: Remove once the live flow fires before/after_model_callback natively.
+    """
+    callback_context_by_author: dict[str, CallbackContext] = {}
+
+    graph = getattr(self.runner.agent, "graph", None)
+    if graph is None:
+      return callback_context_by_author
+
+    base_invocation_context = self.runner._new_invocation_context_for_live(
+        self.session,
+        live_request_queue=self.live_request_queue,
+        run_config=_LIVE_RUN_CONFIG,
+    )
+
+    for node in graph.nodes:
+      if not isinstance(node, Agent):
+        continue
+      try:
+        invocation_context = base_invocation_context.model_copy(
+            update={"agent": node}
+        )
+        callback_context_by_author[node.name] = (
+            await self._record_app_details_for_agent(invocation_context)
+        )
+      except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "Failed to record app details for agent %s.",
+            node.name,
+            exc_info=True,
+        )
+
+    return callback_context_by_author
+
   async def __aexit__(
       self,
       exc_type: type[BaseException] | None,
@@ -340,14 +511,16 @@ class _LiveSession:
     from google.genai import errors
 
     self.live_request_queue.close()
+    consume_task = self.consume_task
+    if consume_task is None:
+      raise RuntimeError("Live session was exited before it was started.")
     try:
-      await asyncio.wait_for(self.consume_task, timeout=30)
+      await asyncio.wait_for(consume_task, timeout=30)
     except asyncio.TimeoutError:
       logger.warning("Timed out waiting for run_live to finish.")
-      assert self.consume_task is not None
-      self.consume_task.cancel()
+      consume_task.cancel()
       try:
-        await self.consume_task
+        await consume_task
       except asyncio.CancelledError:
         pass
     except (ConnectionClosed, errors.APIError) as e:
@@ -355,11 +528,7 @@ class _LiveSession:
       # connection is closed with code 1000. Some client libraries may raise an
       # exception rather than handling it silently. We log this as INFO to
       # avoid false-positive error reports for expected behavior.
-      is_normal_closure = isinstance(e, ConnectionClosedOK) or (
-          isinstance(e, errors.APIError) and e.code == 1000
-      )
-
-      if is_normal_closure:
+      if self._is_normal_closure(e):
         logger.info("Ignored WebSocket normal closure exception: %s", e)
       else:
         raise
@@ -414,7 +583,10 @@ class EvaluationGenerator:
     return results
 
   @staticmethod
-  def generate_responses_from_session(session_path, eval_dataset):
+  def generate_responses_from_session(
+      session_path: str,
+      eval_dataset: list[list[dict[str, object]]],
+  ) -> list[list[dict[str, object]]]:
     """Returns evaluation responses by combining session data with eval data.
 
     Args:
@@ -424,7 +596,7 @@ class EvaluationGenerator:
     """
     results = []
 
-    with open(session_path, "r") as f:
+    with open(session_path, "r", encoding="utf-8") as f:
       session_data = Session.model_validate_json(f.read())
       logger.info("Loaded session %s", session_path)
 
@@ -449,24 +621,38 @@ class EvaluationGenerator:
     """Process a query using the agent and evaluation dataset."""
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
+    agent_package = getattr(agent_module, "agent", None)
     # Prefer the wrapping `App` when the module exposes one, so that
     # `app.plugins`, context-cache, and resumability configs participate
     # in eval runs the same way they do for `adk web` / `adk run`.
-    app_obj = getattr(agent_module.agent, "app", None)
-    root_agent: Any
+    app_obj = getattr(agent_package, "app", None)
     if isinstance(app_obj, App):
       root_agent = app_obj.root_agent
     else:
       app_obj = None
-      root_agent = agent_module.agent.root_agent
+      root_agent = getattr(agent_package, "root_agent", None)
+    if root_agent is None:
+      # Matches the original `agent_module.agent.root_agent` attribute access,
+      # which raised when the module exposed no root. A BaseNode root is a
+      # supported App.root_agent value, so it is not rejected here.
+      raise TypeError(
+          f"Module {module_name!r} does not expose agent.root_agent."
+      )
+    root_agent = cast(BaseAgent, root_agent)
 
-    reset_func = getattr(agent_module.agent, "reset_data", None)
+    reset_candidate = getattr(agent_package, "reset_data", None)
+    reset_func: Optional[Callable[[], object]] = None
+    if reset_candidate is not None:
+      if not callable(reset_candidate):
+        raise TypeError("agent.reset_data must be callable when provided.")
+      reset_func = cast(Callable[[], object], reset_candidate)
 
     agent_to_evaluate = root_agent
     if agent_name:
-      found_agent = root_agent.find_agent(agent_name)
-      assert found_agent, f"Sub-Agent `{agent_name}` not found."
-      agent_to_evaluate = found_agent
+      selected_agent = root_agent.find_agent(agent_name)
+      if selected_agent is None:
+        raise ValueError(f"Sub-Agent {agent_name!r} not found.")
+      agent_to_evaluate = selected_agent
 
     return await EvaluationGenerator._generate_inferences_from_root_agent(
         agent_to_evaluate,
@@ -550,9 +736,9 @@ class EvaluationGenerator:
 
   @staticmethod
   async def _generate_inferences_from_root_agent_live(
-      root_agent: Agent,
+      root_agent: BaseAgent | BaseNode,
       user_simulator: UserSimulator,
-      reset_func: Optional[Any] = None,
+      reset_func: Optional[Callable[[], object]] = None,
       initial_session: Optional[SessionInput] = None,
       session_id: Optional[str] = None,
       session_service: Optional[BaseSessionService] = None,
@@ -630,6 +816,11 @@ class EvaluationGenerator:
               )
           )
           if next_user_message.status == UserSimulatorStatus.SUCCESS:
+            user_message = next_user_message.user_message
+            if user_message is None:
+              raise RuntimeError(
+                  "A successful user-simulator result must include a message."
+              )
             live_session.current_invocation_id = Event.new_id()
             live_session.turn_complete_event.clear()
 
@@ -640,7 +831,7 @@ class EvaluationGenerator:
             ) in EvaluationGenerator._generate_inferences_for_single_user_invocation_live(
                 live_request_queue=live_session.live_request_queue,
                 event_queue=live_session.event_queue,
-                user_message=next_user_message.user_message,
+                user_message=user_message,
                 current_invocation_id=live_session.current_invocation_id,
                 turn_complete_event=live_session.turn_complete_event,
                 live_timeout_seconds=live_timeout_seconds,
@@ -667,9 +858,9 @@ class EvaluationGenerator:
 
   @staticmethod
   async def _generate_inferences_from_root_agent(
-      root_agent: Agent,
+      root_agent: BaseAgent | BaseNode,
       user_simulator: UserSimulator,
-      reset_func: Optional[Any] = None,
+      reset_func: Optional[Callable[[], object]] = None,
       initial_session: Optional[SessionInput] = None,
       session_id: Optional[str] = None,
       session_service: Optional[BaseSessionService] = None,
@@ -738,10 +929,15 @@ class EvaluationGenerator:
             copy.deepcopy(events)
         )
         if next_user_message.status == UserSimulatorStatus.SUCCESS:
+          user_message = next_user_message.user_message
+          if user_message is None:
+            raise RuntimeError(
+                "A successful user-simulator result must include a message."
+            )
           async for (
               event
           ) in EvaluationGenerator._generate_inferences_for_single_user_invocation(
-              runner, user_id, session_id, next_user_message.user_message
+              runner, user_id, session_id, user_message
           ):
             events.append(event)
         else:  # no message generated
@@ -779,7 +975,7 @@ class EvaluationGenerator:
       ):
         app_details = app_details_per_invocation[invocation_id]
 
-      events_to_add = []
+      events_to_add: list[Event] = []
       for event in events:
         current_author = (event.author or _DEFAULT_AUTHOR).lower()
 
@@ -803,6 +999,7 @@ class EvaluationGenerator:
               final_response = event.content
               final_event = event
 
+          should_add_event = event.grounding_metadata is not None
           for p in event.content.parts:
             if (
                 p.function_call
@@ -810,16 +1007,36 @@ class EvaluationGenerator:
                 or p.text
                 or p.inline_data
             ):
-              events_to_add.append(event)
+              should_add_event = True
               break
+          if should_add_event:
+            events_to_add.append(event)
+        elif event.grounding_metadata is not None:
+          events_to_add.append(event)
 
-      invocation_events = [
-          InvocationEvent(author=e.author, content=e.content)
-          for e in events_to_add
-          if final_event is None
-          or e is not final_event
-          or e.get_function_calls()
-      ]
+      invocation_events = []
+      for e in events_to_add:
+        # Keep the final event only when it carries tool calls (so the judge
+        # still sees the function call) or grounding metadata; every other
+        # event is always included.
+        if (
+            final_event is not None
+            and e is final_event
+            and not e.get_function_calls()
+            and not e.grounding_metadata
+        ):
+          continue
+        invocation_events.append(
+            InvocationEvent(
+                author=e.author,
+                content=(
+                    e.content
+                    if e is not final_event or e.get_function_calls()
+                    else None
+                ),
+                grounding_metadata=e.grounding_metadata,
+            )
+        )
       invocations.append(
           Invocation(
               invocation_id=invocation_id,
@@ -873,7 +1090,7 @@ class EvaluationGenerator:
     """Rewrites native-audio Live transcription events into text content events."""
     # Only consolidated (non-partial) transcription events are rewritten,
     # mirroring `contents.py`; every other event passes through untouched.
-    normalized = []
+    normalized: list[Event] = []
     for event in events:
       if event.content is not None or event.partial:
         normalized.append(event)
@@ -900,7 +1117,9 @@ class EvaluationGenerator:
     return normalized
 
   @staticmethod
-  def _collect_events_by_invocation_id(events: list[Event]) -> dict[str, Event]:
+  def _collect_events_by_invocation_id(
+      events: list[Event],
+  ) -> dict[str, list[Event]]:
     # Group Events by invocation id. Events that share the same invocation id
     # belong to the same invocation.
     events_by_invocation_id: dict[str, list[Event]] = {}
@@ -916,16 +1135,21 @@ class EvaluationGenerator:
     return events_by_invocation_id
 
   @staticmethod
-  def _process_query_with_session(session_data, data):
+  def _process_query_with_session(
+      session_data: Session,
+      data: list[dict[str, object]],
+  ) -> list[dict[str, object]]:
     """Process the queries using the existing session data without invoking the runner."""
     responses = data.copy()
 
     # Iterate through the provided queries and align them with the session
     # events
     for index, eval_entry in enumerate(responses):
-      query = eval_entry["query"]
-      actual_tool_uses = []
-      response = None
+      query = eval_entry.get("query")
+      if not isinstance(query, str):
+        raise ValueError("Each evaluation entry must contain a string query.")
+      actual_tool_uses: list[dict[str, object]] = []
+      response: Optional[str] = None
 
       # Search for the corresponding session events
       for event in session_data.events:
@@ -939,15 +1163,19 @@ class EvaluationGenerator:
           # Look for subsequent tool usage or model responses
           for subsequent_event in session_data.events:
             if subsequent_event.invocation_id == event.invocation_id:
+              content = subsequent_event.content
+              if content is None or not content.parts:
+                continue
+              first_part = content.parts[0]
               # Extract tool usage
-              if subsequent_event.content.parts[0].function_call:
-                call = subsequent_event.content.parts[0].function_call
+              if first_part.function_call:
+                call = first_part.function_call
                 actual_tool_uses.append(
                     {"tool_name": call.name, "tool_input": call.args}
                 )
               # Extract final response
               elif subsequent_event.author != "user":
-                response = subsequent_event.content.parts[0].text
+                response = first_part.text
 
       # Update the results for the current query
       responses[index]["actual_tool_use"] = actual_tool_uses

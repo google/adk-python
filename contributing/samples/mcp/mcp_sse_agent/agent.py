@@ -21,7 +21,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.mcp_instruction_provider import McpInstructionProvider
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.tool_context import ToolContext
 
 # Configure logging; the mcp_tool logger must be set to
@@ -59,7 +59,7 @@ root_agent = LlmAgent(
         prompt_name='file_system_prompt',
     ),
     tools=[
-        MCPToolset(
+        McpToolset(
             connection_params=connection_params,
             # don't want agent to do write operation
             # you can also do below
@@ -72,12 +72,8 @@ root_agent = LlmAgent(
             # ],
             tool_filter=[
                 'read_file',
-                'read_multiple_files',
                 'list_directory',
-                'directory_tree',
-                'search_files',
-                'get_file_info',
-                'list_allowed_directories',
+                'get_cwd',
             ],
             require_confirmation=True,
         )

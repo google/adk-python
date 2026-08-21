@@ -55,6 +55,32 @@ async def test_data_agent_toolset_tools_default():
   assert actual_tool_names == expected_tool_names
 
 
+@pytest.mark.asyncio
+async def test_data_agent_toolset_tools_with_mutation_enabled():
+  """Test DataAgentToolset with enable_data_agent_modification=True."""
+  credentials_config = DataAgentCredentialsConfig(
+      client_id="abc", client_secret="def"
+  )
+  config = DataAgentToolConfig(enable_data_agent_modification=True)
+  toolset = DataAgentToolset(
+      credentials_config=credentials_config, data_agent_tool_config=config
+  )
+  tools = await toolset.get_tools()
+  assert tools is not None
+
+  assert len(tools) == 6
+  expected_tool_names = set([
+      "list_accessible_data_agents",
+      "get_data_agent_info",
+      "ask_data_agent",
+      "create_data_agent",
+      "delete_data_agent",
+      "update_data_agent",
+  ])
+  actual_tool_names = {tool.name for tool in tools}
+  assert actual_tool_names == expected_tool_names
+
+
 @pytest.mark.parametrize(
     "selected_tools",
     [
@@ -64,21 +90,22 @@ async def test_data_agent_toolset_tools_default():
             id="list_and_get",
         ),
         pytest.param(["ask_data_agent"], id="ask"),
+        pytest.param(["create_data_agent"], id="create"),
+        pytest.param(["update_data_agent"], id="update"),
+        pytest.param(["delete_data_agent"], id="delete"),
     ],
 )
 @pytest.mark.asyncio
 async def test_data_agent_toolset_tools_selective(selected_tools):
-  """Test DataAgentToolset with filter.
-
-  This test verifies the behavior of the DataAgentToolset when filter is
-  specified. A use case for this would be when the agent builder wants to
-  use only a subset of the tools provided by the toolset.
-  """
+  """Test DataAgentToolset with filter."""
   credentials_config = DataAgentCredentialsConfig(
       client_id="abc", client_secret="def"
   )
+  config = DataAgentToolConfig(enable_data_agent_modification=True)
   toolset = DataAgentToolset(
-      credentials_config=credentials_config, tool_filter=selected_tools
+      credentials_config=credentials_config,
+      tool_filter=selected_tools,
+      data_agent_tool_config=config,
   )
   tools = await toolset.get_tools()
   assert tools is not None
@@ -126,3 +153,24 @@ async def test_data_agent_toolset_unknown_tool(selected_tools, returned_tools):
   expected_tool_names = set(returned_tools)
   actual_tool_names = {tool.name for tool in tools}
   assert actual_tool_names == expected_tool_names
+
+
+@pytest.mark.asyncio
+async def test_data_agent_toolset_tools_selective_modification_disabled():
+  """Tests that modification tools are excluded when modification is disabled even if in tool_filter."""
+  credentials_config = DataAgentCredentialsConfig(
+      client_id="abc", client_secret="def"
+  )
+  tool_config = DataAgentToolConfig(enable_data_agent_modification=False)
+  toolset = DataAgentToolset(
+      credentials_config=credentials_config,
+      data_agent_tool_config=tool_config,
+      tool_filter=[
+          "create_data_agent",
+          "update_data_agent",
+          "delete_data_agent",
+      ],
+  )
+  tools = await toolset.get_tools()
+  assert tools is not None
+  assert len(tools) == 0

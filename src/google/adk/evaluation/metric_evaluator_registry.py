@@ -14,8 +14,11 @@
 
 from __future__ import annotations
 
+import copy
 import logging
+from typing import cast
 from typing import Optional
+from typing import Protocol
 
 from ..errors.not_found_error import NotFoundError
 from ..utils.feature_decorator import experimental
@@ -53,6 +56,12 @@ from .simulation.per_turn_user_simulator_quality_v1 import PerTurnUserSimulatorQ
 from .trajectory_evaluator import TrajectoryEvaluator
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+class _EvalMetricEvaluatorFactory(Protocol):
+
+  def __call__(self, *, eval_metric: EvalMetric) -> Evaluator:
+    """Creates an evaluator for one metric configuration."""
 
 
 @experimental
@@ -94,7 +103,8 @@ class MetricEvaluatorRegistry:
           eval_metric=eval_metric,
           custom_function_path=custom_function_path,
       )
-    return evaluator_type(eval_metric=eval_metric)
+    evaluator_factory = cast(_EvalMetricEvaluatorFactory, evaluator_type)
+    return evaluator_factory(eval_metric=eval_metric)
 
   def _custom_function_path(self, eval_metric: EvalMetric) -> Optional[str]:
     """Returns the module path to import for a custom metric, if known.
@@ -160,6 +170,25 @@ class MetricEvaluatorRegistry:
         evaluator_and_metric_info[1].model_copy(deep=True)
         for _, evaluator_and_metric_info in self._registry.items()
     ]
+
+  def fork(self) -> MetricEvaluatorRegistry:
+    """Returns an isolated copy of this registry.
+
+    The copy starts out with everything registered here, so evaluators that
+    callers registered on `DEFAULT_METRIC_EVALUATOR_REGISTRY` remain
+    resolvable. Registrations made afterwards on either registry are invisible
+    to the other, which is what makes it safe to register the custom metrics of
+    a single eval run without mutating process-wide state.
+    """
+    # Copied rather than constructed: `__init__` would re-register the standard
+    # metrics only for them to be overwritten below, and would emit the
+    # `@experimental` warning on every eval run.
+    forked = copy.copy(self)
+    # pylint: disable=protected-access
+    forked._registry = dict(self._registry)
+    forked._custom_function_paths = dict(self._custom_function_paths)
+    # pylint: enable=protected-access
+    return forked
 
 
 def _register_standard_metrics(

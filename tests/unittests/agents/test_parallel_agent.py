@@ -15,8 +15,11 @@
 """Tests for the ParallelAgent."""
 
 import asyncio
+from types import SimpleNamespace
 from typing import AsyncGenerator
+from unittest.mock import patch
 
+from google.adk.agents import parallel_agent as parallel_agent_module
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.invocation_context import InvocationContext
@@ -26,8 +29,11 @@ from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.telemetry.node_tracing import TelemetryContext
 from google.genai import types
+from opentelemetry import context as context_api
 import pytest
 from typing_extensions import override
 
@@ -37,14 +43,21 @@ class _TestingAgent(BaseAgent):
   delay: float = 0
   """The delay before the agent generates an event."""
 
-  def event(self, ctx: InvocationContext):
+  def event(
+      self,
+      ctx: InvocationContext,
+      *,
+      text: str | None = None,
+      actions: EventActions | None = None,
+  ):
     return Event(
         author=self.name,
         branch=ctx.branch,
         invocation_id=ctx.invocation_id,
         content=types.Content(
-            parts=[types.Part(text=f'Hello, async {self.name}!')]
+            parts=[types.Part(text=text or f'Hello, async {self.name}!')]
         ),
+        actions=actions if actions is not None else EventActions(),
     )
 
   @override
@@ -414,3 +427,221 @@ async def test_merge_agent_run_pre_3_11_no_aclose_error_on_failure():
 def test_deprecation_mentions_sub_agent_limitation():
   with pytest.warns(DeprecationWarning, match='sub-agent'):
     ParallelAgent(name='deprecated_parallel', sub_agents=[])
+
+
+class _TestingAgentWithOpenTelemetryContext(_TestingAgent):
+  """Mock agent for testing opentelemetry contextvars termination."""
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    token = context_api.attach(context_api.set_value('test_key', 'test_val'))
+    try:
+      yield self.event(ctx)
+      yield self.event(ctx)
+    finally:
+      context_api.detach(token)
+
+
+@pytest.mark.asyncio
+async def test_parallel_agent_early_exit_context_cleanup(caplog):
+  """Verify that early breaking out of a ParallelAgent run doesn't crash contextvars."""
+  agent1 = _TestingAgentWithOpenTelemetryContext(name='otel_agent_1')
+  parallel_agent = ParallelAgent(
+      name='otel_parallel_agent',
+      sub_agents=[agent1],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      'otel_test', parallel_agent
+  )
+
+  agen = parallel_agent.run_async(parent_ctx)
+  # Break early to trigger GeneratorExit and cleanup
+  async for _ in agen:
+    break
+
+  # Check it exited successfully without logging open telemetry detachment errors
+  # "ValueError: Token was created in a different Context" usually logged by opentelemetry.
+  assert 'Failed to detach context' not in caplog.text
+  assert 'test_key' not in context_api.get_current()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [True, False])
+@pytest.mark.parametrize('use_pre_3_11_merge', [False, True])
+async def test_run_async_short_circuits_other_agents_on_escalate_action(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    is_resumable: bool,
+    use_pre_3_11_merge: bool,
+):
+  """ParallelAgent stops sibling agents and finishes when a sub-agent escalates."""
+
+  class _TestingAgentWithEscalateAction(_TestingAgent):
+    """Mock agent for testing escalation short-circuit behavior."""
+
+    @override
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      await asyncio.sleep(self.delay)
+      yield self.event(
+          ctx,
+          text=f'Escalating from {self.name}!',
+          actions=EventActions(escalate=True),
+      )
+      yield self.event(
+          ctx, text='This event should be cancelled after escalation.'
+      )
+
+  if use_pre_3_11_merge:
+    monkeypatch.setattr(
+        parallel_agent_module,
+        'sys',
+        SimpleNamespace(version_info=(3, 10)),
+    )
+
+  fast_agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_fast_agent',
+      delay=0.05,
+  )
+  escalating_agent = _TestingAgentWithEscalateAction(
+      name=f'{request.function.__name__}_test_escalating_agent',
+      delay=0.1,
+  )
+  slow_agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_slow_agent',
+      delay=0.5,
+  )
+  parallel_agent = ParallelAgent(
+      name=f'{request.function.__name__}_test_parallel_agent',
+      sub_agents=[fast_agent, escalating_agent, slow_agent],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, parallel_agent, is_resumable=is_resumable
+  )
+
+  events = [e async for e in parallel_agent.run_async(parent_ctx)]
+
+  assert all(event.author != slow_agent.name for event in events)
+  assert all(
+      not event.content
+      or not event.content.parts
+      or event.content.parts[0].text
+      != 'This event should be cancelled after escalation.'
+      for event in events
+  )
+
+  if is_resumable:
+    assert len(events) == 4
+
+    assert events[0].author == parallel_agent.name
+    assert not events[0].actions.end_of_agent
+
+    assert events[1].author == fast_agent.name
+    assert events[1].branch == f'{parallel_agent.name}.{fast_agent.name}'
+    assert events[1].content.parts[0].text == f'Hello, async {fast_agent.name}!'
+
+    assert events[2].author == escalating_agent.name
+    assert events[2].branch == f'{parallel_agent.name}.{escalating_agent.name}'
+    assert events[2].content.parts[0].text == (
+        f'Escalating from {escalating_agent.name}!'
+    )
+    assert events[2].actions.escalate
+
+    assert events[3].author == parallel_agent.name
+    assert events[3].actions.end_of_agent
+  else:
+    assert len(events) == 2
+
+    assert events[0].author == fast_agent.name
+    assert events[0].branch == f'{parallel_agent.name}.{fast_agent.name}'
+    assert events[0].content.parts[0].text == f'Hello, async {fast_agent.name}!'
+
+    assert events[1].author == escalating_agent.name
+    assert events[1].branch == f'{parallel_agent.name}.{escalating_agent.name}'
+    assert events[1].content.parts[0].text == (
+        f'Escalating from {escalating_agent.name}!'
+    )
+    assert events[1].actions.escalate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_resumable', [True, False])
+@pytest.mark.parametrize('use_pre_3_11_merge', [False, True])
+@pytest.mark.parametrize('pause_target', ['fast', 'escalating'])
+async def test_run_async_with_escalate_and_pause_does_not_finalize_agent(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    is_resumable: bool,
+    use_pre_3_11_merge: bool,
+    pause_target: str,
+):
+  """ParallelAgent does not emit end_of_agent when an escalating run is paused."""
+
+  class _TestingAgentWithEscalateAction(_TestingAgent):
+    """Mock agent for testing escalation short-circuit behavior."""
+
+    @override
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      await asyncio.sleep(self.delay)
+      yield self.event(
+          ctx,
+          text=f'Escalating from {self.name}!',
+          actions=EventActions(escalate=True),
+      )
+
+  if use_pre_3_11_merge:
+    monkeypatch.setattr(
+        parallel_agent_module,
+        'sys',
+        SimpleNamespace(version_info=(3, 10)),
+    )
+
+  fast_agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_fast_agent',
+      delay=0.05,
+  )
+  escalating_agent = _TestingAgentWithEscalateAction(
+      name=f'{request.function.__name__}_test_escalating_agent',
+      delay=0.1,
+  )
+  parallel_agent = ParallelAgent(
+      name=f'{request.function.__name__}_test_parallel_agent',
+      sub_agents=[fast_agent, escalating_agent],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, parallel_agent, is_resumable=is_resumable
+  )
+
+  target_agent_name = (
+      fast_agent.name if pause_target == 'fast' else escalating_agent.name
+  )
+
+  def mock_should_pause(event: Event) -> bool:
+    return event.author == target_agent_name
+
+  with patch.object(
+      InvocationContext,
+      'should_pause_invocation',
+      side_effect=mock_should_pause,
+  ):
+    events = [e async for e in parallel_agent.run_async(parent_ctx)]
+
+  assert not any(event.actions.end_of_agent for event in events)
+  assert any(event.actions.escalate for event in events)
+  if is_resumable:
+    assert len(events) == 3
+    assert events[0].author == parallel_agent.name
+    assert not events[0].actions.end_of_agent
+    assert events[1].author == fast_agent.name
+    assert events[2].author == escalating_agent.name
+    assert events[2].actions.escalate
+  else:
+    assert len(events) == 2
+    assert events[0].author == fast_agent.name
+    assert events[1].author == escalating_agent.name
+    assert events[1].actions.escalate

@@ -39,7 +39,6 @@ class GCSToolset(BaseToolset):
   """GCS Toolset contains tools for interacting with GCS storage.
 
   The tool names are:
-    - get_bucket
     - create_object
     - get_object_data
     - get_object_metadata
@@ -75,7 +74,6 @@ class GCSToolset(BaseToolset):
         or Capabilities.READ_WRITE in self._tool_settings.capabilities
     ):
       read_funcs: list[Callable[..., Any]] = [
-          storage_tool.get_bucket,
           storage_tool.get_object_data,
           storage_tool.get_object_metadata,
           storage_tool.list_objects,

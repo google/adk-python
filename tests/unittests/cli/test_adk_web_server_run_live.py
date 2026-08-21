@@ -228,8 +228,11 @@ _WS_BASE_URL = (
 )
 
 
-def _build_ws_client():
-  """Build a TestClient wired to a capturing runner."""
+def _build_ws_client(bind_host=None):
+  """Build a TestClient wired to a capturing runner.
+
+  A loopback *bind_host* turns on the DNS-rebinding guard.
+  """
   session_service = InMemorySessionService()
   asyncio.run(
       session_service.create_session(
@@ -260,8 +263,24 @@ def _build_ws_client():
   fast_api_app = adk_web_server.get_fast_api_app(
       setup_observer=lambda _observer, _server: None,
       tear_down_observer=lambda _observer, _server: None,
+      bind_host=bind_host,
   )
   return TestClient(fast_api_app)
+
+
+def test_run_live_rejects_rebound_host():
+  """A rebound handshake carries the attacker's hostname in Host."""
+  client = _build_ws_client(bind_host="127.0.0.1")
+  with pytest.raises(WebSocketDisconnect) as exc_info:
+    with client.websocket_connect(f"ws://evil.com:8000{_WS_BASE_URL}") as ws:
+      ws.receive_text()
+  assert exc_info.value.code == 1008
+
+
+def test_run_live_allows_loopback_host():
+  client = _build_ws_client(bind_host="127.0.0.1")
+  with client.websocket_connect(f"ws://localhost:8000{_WS_BASE_URL}") as ws:
+    _ = ws.receive_text()
 
 
 def test_run_live_rejects_disallowed_origin():
