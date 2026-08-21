@@ -17,6 +17,7 @@ from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.apps.app import App
 from google.adk.cli.graph.inspector import AgentInspector
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.tools.base_toolset import BaseToolset
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
 
@@ -64,6 +65,24 @@ def test_agent_inspector_includes_application_plugins():
   assert plugin_node.label == "audit"
   assert plugin_node.config["read_only"] is True
   assert plugin_edge.target == "Root"
+
+
+def test_agent_inspector_labels_toolsets_without_an_unstable_object_id():
+  """Toolsets remain visible with a stable read-only capability label."""
+
+  class _ExampleToolset(BaseToolset):
+
+    async def get_tools(self, readonly_context=None):
+      return []
+
+  topology = AgentInspector(
+      LlmAgent(name="Root", tools=[_ExampleToolset()])
+  ).inspect()
+
+  toolset_node = next(node for node in topology.nodes if node.type == "tool")
+  assert toolset_node.label == "_ExampleToolset"
+  assert toolset_node.config["capability"] == "toolset"
+  assert toolset_node.config["read_only"] is True
 
 
 def test_agent_inspector_includes_workflow_nodes_and_routes():

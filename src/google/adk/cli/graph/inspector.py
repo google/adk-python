@@ -32,6 +32,7 @@ from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...apps.app import App
 from ...tools.base_tool import BaseTool
+from ...tools.base_toolset import BaseToolset
 from ...workflow._workflow import Workflow
 
 
@@ -215,7 +216,11 @@ class AgentInspector:
     return workflow_id
 
   def _inspect_tool(self, tool: Union[BaseTool, Any], agent_id: str) -> str:
-    tool_name = getattr(tool, "name", getattr(tool, "__name__", str(id(tool))))
+    tool_name = (
+        getattr(tool, "name", None)
+        or getattr(tool, "__name__", None)
+        or type(tool).__name__
+    )
     tool_id = f"tool_{agent_id}_{tool_name}"
 
     if tool_id not in self.nodes:
@@ -229,10 +234,18 @@ class AgentInspector:
         # dynamically-created callables.  They are intentionally read-only:
         # serializing an invented implementation would make generated code lie.
         config["read_only"] = True
-        config["generation_hint"] = (
-            "This tool's implementation is not available as a Python function. "
-            "Add a Python implementation before generating managed source."
-        )
+        if isinstance(tool, BaseToolset):
+          config["capability"] = "toolset"
+          config["generation_hint"] = (
+              "This ADK toolset resolves tools dynamically and is displayed "
+              "read-only."
+          )
+        else:
+          config["generation_hint"] = (
+              "This tool's implementation is not available as a Python "
+              "function. Add a Python implementation before generating "
+              "managed source."
+          )
       self.nodes[tool_id] = GraphNode(
           id=tool_id,
           type="tool",
