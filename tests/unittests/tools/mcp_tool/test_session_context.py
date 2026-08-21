@@ -25,6 +25,7 @@ from unittest.mock import patch
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.session_context import _format_exception
+from google.adk.tools.mcp_tool.session_context import _read_timeout
 from google.adk.tools.mcp_tool.session_context import SessionContext
 import httpx
 from mcp import ClientSession
@@ -977,3 +978,19 @@ class TestFormatException:
     assert '403 Forbidden' in formatted
     assert 'Forbidden access' in formatted
     assert 'another error' in formatted
+
+
+class TestReadTimeout:
+  """ADK carries timeouts as float seconds and converts at the SDK boundary."""
+
+  def test_none_stays_none(self):
+    assert _read_timeout(None) is None
+
+  def test_seconds_become_the_type_the_sdk_wants(self):
+    assert _read_timeout(30) == timedelta(seconds=30)
+
+  def test_zero_is_a_real_timeout_not_a_missing_one(self):
+    assert _read_timeout(0) == timedelta(seconds=0)
+
+  def test_fractional_seconds_survive(self):
+    assert _read_timeout(0.5) == timedelta(seconds=0.5)
