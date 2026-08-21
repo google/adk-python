@@ -639,7 +639,18 @@ class DatabaseSessionService(BaseSessionService):
           storage_app_state.state, storage_user_state.state, session_state
       )
       # Call to_session before commit to avoid post-commit lazy-load.
-      await sql_session.flush()
+      try:
+        await sql_session.flush()
+      except IntegrityError:
+        # A concurrent caller won the race on this (app_name, user_id,
+        # session_id) primary key: the has_user_provided_id check above is
+        # not atomic with this insert, so two callers can both pass it and
+        # then race the same insert. Same failure mode _get_or_create_state
+        # guards against for app_state/user_state; surface the same clean
+        # error here instead of letting the raw IntegrityError propagate.
+        raise AlreadyExistsError(
+            f"Session with id {session_id} already exists."
+        )
       session = storage_session.to_session(
           state=merged_state, is_sqlite=is_sqlite, is_postgresql=is_postgresql
       )

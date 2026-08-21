@@ -1191,6 +1191,66 @@ async def test_create_session_with_existing_id_raises_error(session_service):
 
 
 @pytest.mark.asyncio
+async def test_create_session_concurrent_same_id_raises_already_exists_error(
+    tmp_path,
+):
+  """Two concurrent create_session() calls for the same caller-provided id.
+
+  The has_user_provided_id existence check in create_session() is not atomic
+  with the insert that follows it, so both callers can pass the check and
+  then race the same INSERT. The loser must see a clean AlreadyExistsError
+  (mirroring the up-front check above and the _get_or_create_state
+  savepoint pattern for app_state/user_state), not a raw IntegrityError.
+
+  Uses a file-backed sqlite db (not ':memory:') so the two concurrent
+  sessions get real, independent connections from the pool instead of
+  sharing the single StaticPool connection ':memory:' relies on to survive
+  across connections -- sharing one physical connection between the two
+  concurrent sessions here made the loser's rollback able to interleave
+  with the winner's commit on the same connection.
+  """
+  db_path = tmp_path / 'race.db'
+  session_service = DatabaseSessionService(f'sqlite+aiosqlite:///{db_path}')
+
+  async with session_service:
+    app_name = 'my_app'
+    user_id = 'user'
+
+    # Pre-warm app_state/user_state with an unrelated session first, so the
+    # race below is purely on the StorageSession primary key and not
+    # confounded by the (separate) app_state/user_state creation race.
+    await session_service.create_session(
+        app_name=app_name, user_id=user_id, session_id='warmup-session'
+    )
+
+    for i in range(5):
+      session_id = f'race-session-{i}'
+      results = await asyncio.gather(
+          session_service.create_session(
+              app_name=app_name, user_id=user_id, session_id=session_id
+          ),
+          session_service.create_session(
+              app_name=app_name, user_id=user_id, session_id=session_id
+          ),
+          return_exceptions=True,
+      )
+      errors = [result for result in results if isinstance(result, Exception)]
+      successes = [
+          result for result in results if not isinstance(result, Exception)
+      ]
+      assert len(successes) == 1
+      assert len(errors) == 1
+      assert isinstance(errors[0], AlreadyExistsError)
+      assert session_id in str(errors[0])
+
+      final_session = await session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      assert final_session is not None
+      assert final_session.id == successes[0].id
+
+
+@pytest.mark.asyncio
 async def test_append_event_bytes(session_service):
   app_name = 'my_app'
   user_id = 'user'
