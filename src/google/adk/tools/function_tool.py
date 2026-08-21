@@ -20,6 +20,7 @@ import functools
 import inspect
 import logging
 from types import UnionType
+from typing import Annotated
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -189,15 +190,20 @@ class FunctionTool(BaseTool):
     for param_name, param in signature.parameters.items():
       if param_name in args:
         target_type = type_hints.get(param_name, param.annotation)
+        if get_origin(target_type) is Annotated:
+          # Strip Annotated to get actual type
+          target_type = get_args(target_type)[0]
         if target_type != inspect.Parameter.empty:
-
           # Handle Optional/Union types (e.g. Optional[PydanticModel], PydanticModel | None)
           origin = get_origin(target_type)
           if origin is Union or origin is UnionType:
             union_args = get_args(target_type)
-            # Find the non-None type in Optional[T] (which is Union[T, None])
+            # Find the non-None type in Optional[T] (which is Union[T, None]).
+            # Handle Optional[Annotated(...)]
             non_none_types = [
-                arg for arg in union_args if arg is not type(None)
+                get_args(arg)[0] if get_origin(arg) is Annotated else arg
+                for arg in union_args
+                if arg is not type(None)
             ]
             if len(non_none_types) == 1:
               target_type = non_none_types[0]

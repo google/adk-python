@@ -63,7 +63,7 @@ def _get_function_fields(
 
   # Get type hints with forward reference resolution
   try:
-    type_hints = get_type_hints(func)
+    type_hints = get_type_hints(func, include_extras=True)
   except TypeError:
     # Can happen with mock objects or complex annotations
     type_hints = {}
@@ -160,7 +160,7 @@ def _build_response_json_schema(
   # Handle string annotations (forward references)
   if isinstance(return_annotation, str):
     try:
-      type_hints = get_type_hints(func)
+      type_hints = get_type_hints(func, include_extras=True)
       return_annotation = type_hints.get('return', return_annotation)
     except TypeError:
       pass

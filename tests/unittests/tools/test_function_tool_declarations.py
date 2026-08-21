@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 from enum import Enum
+from typing import Annotated
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
@@ -637,6 +638,103 @@ class TestNestedObjects(parameterized.TestCase):
     self.assertIsNotNone(decl.response_json_schema)
     self.assertEqual(decl.response_json_schema["type"], "object")
     self.assertIn("status", decl.response_json_schema["properties"])
+
+
+class TestAnnotatedMetadata(parameterized.TestCase):
+  """Tests that Annotated[T, Field(...)] metadata reaches the schema."""
+
+  def test_annotated_field_metadata_in_schema(self):
+    """Test descriptions, constraints and defaults attached via Annotated."""
+
+    def configure(
+        count: Annotated[
+            int, Field(description="How many widgets", ge=1, le=10)
+        ],
+        zip_code: Annotated[str, Field(pattern=r"^\d{5}$")],
+        retries: Annotated[int, Field(description="Retry attempts")] = 3,
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(configure)
+    schema = decl.parameters_json_schema
+
+    self.assertEqual(
+        schema["properties"],
+        {
+            "count": {
+                "description": "How many widgets",
+                "maximum": 10,
+                "minimum": 1,
+                "title": "Count",
+                "type": "integer",
+            },
+            "zip_code": {
+                "pattern": r"^\d{5}$",
+                "title": "Zip Code",
+                "type": "string",
+            },
+            "retries": {
+                "default": 3,
+                "description": "Retry attempts",
+                "title": "Retries",
+                "type": "integer",
+            },
+        },
+    )
+    self.assertEqual(set(schema["required"]), {"count", "zip_code"})
+
+  def test_annotated_optional_model(self):
+    """Test Annotated[Optional[Model], Field(...)] keeps its description."""
+
+    def save(
+        address: Annotated[
+            Optional[Address], Field(description="Where to ship")
+        ] = None,
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(save)
+    address_schema = decl.parameters_json_schema["properties"]["address"]
+
+    self.assertEqual(address_schema["description"], "Where to ship")
+    self.assertIsNone(address_schema["default"])
+    self.assertEqual(
+        address_schema["anyOf"],
+        [{"$ref": "#/$defs/Address"}, {"type": "null"}],
+    )
+
+  def test_annotated_nested_list_constraints(self):
+    """Test Annotated metadata on both a list and its item type."""
+
+    def tally(
+        scores: Annotated[
+            list[Annotated[int, Field(ge=0)]], Field(description="Scores")
+        ],
+    ) -> int:
+      return sum(scores)
+
+    decl = build_function_declaration_with_json_schema(tally)
+    scores_schema = decl.parameters_json_schema["properties"]["scores"]
+
+    self.assertEqual(scores_schema["description"], "Scores")
+    self.assertEqual(scores_schema["type"], "array")
+    self.assertEqual(scores_schema["items"]["type"], "integer")
+    self.assertEqual(scores_schema["items"]["minimum"], 0)
+
+  def test_annotated_return_type_metadata(self):
+    """Test Annotated metadata on the return type."""
+
+    def count_items(
+        items: list[str],
+    ) -> Annotated[int, Field(description="Item count")]:
+      return len(items)
+
+    decl = build_function_declaration_with_json_schema(count_items)
+
+    self.assertEqual(
+        decl.response_json_schema,
+        {"description": "Item count", "type": "integer"},
+    )
 
 
 class TestSpecialCases(parameterized.TestCase):
