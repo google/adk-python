@@ -26,7 +26,9 @@ from typing import Awaitable
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Mapping
 from typing import Optional
+from typing import Sequence
 from typing import TextIO
 from typing import TypeVar
 from typing import Union
@@ -45,6 +47,8 @@ from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import ListResourcesResult
 from ...dependencies._mcp import ListToolsResult
 from ...dependencies._mcp import MessageHandlerFnT
+from ...dependencies._mcp import NotificationBinding
+from ...dependencies._mcp import ResultClaim
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import StdioServerParameters
@@ -179,6 +183,9 @@ class McpToolset(BaseToolset):
       credential_key: str | None = None,
       propagate_grounding_metadata: bool = False,
       message_handler: MessageHandlerFnT | None = None,
+      extensions: dict[str, dict[str, Any]] | None = None,
+      result_claims: Mapping[str, Sequence[ResultClaim[Any]]] | None = None,
+      notification_bindings: Sequence[NotificationBinding[Any]] | None = None,
   ) -> None:
     """Initializes the McpToolset.
 
@@ -240,6 +247,20 @@ class McpToolset(BaseToolset):
         On MCP SDK 1.x it runs inside the session's receive loop, so it must
         not await requests on this toolset (e.g. ``get_tools()``); offload
         follow-up work with ``asyncio.create_task(...)``.
+      extensions: MCP extensions this client advertises, keyed by extension
+        identifier (e.g. ``{"io.modelcontextprotocol/tasks": {}}``). Passing
+        any of the three extension arguments also brings sessions up the way
+        ``MCP_MODERN_PROTOCOL`` does, ``server/discover`` first and
+        ``initialize()`` as the fallback, because a result claim is only
+        active on a modern connection. Requires MCP SDK 2.x, which is where
+        ``ClientSession`` grew the seam; on 1.x this raises rather than going
+        quiet.
+      result_claims: Non-core ``tools/call`` result shapes to accept, keyed by
+        the identifier of the extension that defines them. The toolset
+        resolves a claimed result through its claim before handing it to the
+        agent, so the agent sees an ordinary tool result either way.
+      notification_bindings: Handlers for extension notifications, which
+        ``message_handler`` does not receive.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
@@ -247,6 +268,9 @@ class McpToolset(BaseToolset):
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
+    self._extensions = extensions
+    self._result_claims = result_claims
+    self._notification_bindings = notification_bindings
 
     if not connection_params:
       raise ValueError("Missing connection params in McpToolset.")
@@ -278,6 +302,9 @@ class McpToolset(BaseToolset):
         sampling_capabilities=self._sampling_capabilities,
         elicitation_callback=self._elicitation_callback,
         message_handler=message_handler,
+        extensions=self._extensions,
+        result_claims=self._result_claims,
+        notification_bindings=self._notification_bindings,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential

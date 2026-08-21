@@ -31,6 +31,12 @@ are resolved here, once, rather than at seventeen call sites:
 Try 2.x first. A stale 1.x path that still happens to exist in 2.x would
 otherwise win and bind the wrong object.
 
+Three further names have no 1.x path at all rather than a moved one: the
+client extension seam `ClientSession` grew in 2.x. On 1.x they are bound to a
+placeholder that nothing can construct, so that the modules annotating them
+stay importable there, and the opt-in that would reach them is refused before
+it can (`McpToolset`).
+
 This flavor must never name the internal copy. That name is already taken on
 PyPI by an unrelated project, so a released wheel importing it would bind to
 someone else's package on any machine that happened to have it installed.
@@ -38,10 +44,13 @@ someone else's package on any machine that happened to have it installed.
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Awaitable
 from typing import Callable
+from typing import Generic
 from typing import TYPE_CHECKING
 from typing import TypeAlias
+from typing import TypeVar
 
 from mcp import ClientSession as ClientSession
 from mcp import SamplingCapability as SamplingCapability
@@ -55,6 +64,7 @@ from mcp.client.stdio import stdio_client as stdio_client
 from mcp.client.streamable_http import streamable_http_client as streamable_http_client
 from mcp.server.session import ServerSession as ServerSession
 from mcp.shared._httpx_utils import create_mcp_http_client as create_mcp_http_client
+from mcp.types import CallToolResult as CallToolResult
 from mcp.types import ListResourcesResult as ListResourcesResult
 from mcp.types import ListToolsResult as ListToolsResult
 from mcp.types import Tool as Tool
@@ -65,6 +75,9 @@ if TYPE_CHECKING:
   # The HTTP types the SDK's transports take, which `_httpx` cannot show a type
   # checker: it always binds `httpx`, and 2.x is built against `httpx2`.
   import httpx2
+  from mcp.client.extension import ClaimContext as ClaimContext
+  from mcp.client.extension import NotificationBinding as NotificationBinding
+  from mcp.client.extension import ResultClaim as ResultClaim
   from mcp.server.mcpserver import Context as Context
   from mcp.server.mcpserver import MCPServer as FastMCP
   from mcp.shared._httpx_utils import McpHttpClientFactory as McpHttpClientFactory
@@ -104,8 +117,32 @@ else:
     except ImportError:
       pass
 
+  if IS_MCP_SDK_V2:
+    from mcp.client.extension import ClaimContext as ClaimContext
+    from mcp.client.extension import NotificationBinding as NotificationBinding
+    from mcp.client.extension import ResultClaim as ResultClaim
+  else:
+    _T = TypeVar("_T")
+
+    class _RequiresMcpSdkV2(Generic[_T]):
+      """What the extension seam's names bind to on MCP SDK 1.x.
+
+      Generic, so an annotation that subscripts one still resolves, and
+      impossible to construct, so no instance exists for an `isinstance` to
+      match.
+      """
+
+      def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("The MCP client extension seam requires MCP SDK 2.x.")
+
+    ClaimContext = _RequiresMcpSdkV2
+    NotificationBinding = _RequiresMcpSdkV2
+    ResultClaim = _RequiresMcpSdkV2
+
 __all__ = [
     "IS_MCP_SDK_V2",
+    "CallToolResult",
+    "ClaimContext",
     "ClientSession",
     "Context",
     "ElicitationFnT",
@@ -114,6 +151,8 @@ __all__ = [
     "ListToolsResult",
     "McpError",
     "MessageHandlerFnT",
+    "NotificationBinding",
+    "ResultClaim",
     "SamplingCapability",
     "SamplingFnT",
     "ServerSession",

@@ -36,6 +36,8 @@ import httpx
 from mcp import ClientSession
 import pytest
 
+from ._sdk_compat import requires_sdk_v2
+
 
 class MockClientSession:
   """Mock ClientSession for testing."""
@@ -810,6 +812,25 @@ class TestConnect:
     assert caplog.text.count('no era probe') == 1
 
   @pytest.mark.asyncio
+  async def test_extensions_fall_back_when_probe_unavailable(self, caplog):
+    """An extension that forced the probe is named as a possible cause."""
+    session = Mock()
+    session.initialize = AsyncMock()
+    session.discover_result = None
+
+    with (
+        patch('google.adk.tools.mcp_tool.session_context.negotiate_auto', None),
+        caplog.at_level(logging.WARNING),
+    ):
+      await _connect(session, has_extensions=True)
+
+    session.initialize.assert_awaited_once()
+    assert 'no era probe' in caplog.text
+    # The flag is off here, so the warning must not claim it is on.
+    assert 'MCP_MODERN_PROTOCOL is enabled' not in caplog.text
+    assert 'an MCP extension' in caplog.text
+
+  @pytest.mark.asyncio
   async def test_no_probe_warning_when_disabled(self, caplog):
     """No warning about a missing probe when the flag is off."""
     session = Mock()
@@ -823,6 +844,144 @@ class TestConnect:
 
     session.initialize.assert_awaited_once()
     assert 'no era probe' not in caplog.text
+
+
+class TestSessionContextExtensions:
+  """Tests for the mcp 2.x extension seam and the connect path it takes."""
+
+  def _patch_client_session(self):
+    return patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession',
+        autospec=True,
+    )
+
+  def _patch_probe(self):
+    return patch(
+        'google.adk.tools.mcp_tool.session_context.negotiate_auto',
+        AsyncMock(),
+    )
+
+  @staticmethod
+  def _make_session(mock_client_session_class):
+    session = mock_client_session_class.return_value
+    # The session the context actually uses is what the exit stack enters,
+    # not the constructor's return value.
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.initialize = AsyncMock()
+    return session
+
+  @pytest.mark.asyncio
+  @requires_sdk_v2
+  async def test_passes_extension_arguments_to_client_session(self):
+    """The three extension arguments reach ClientSession verbatim."""
+    extensions = {'io.modelcontextprotocol/tasks': {}}
+    result_claims = {'io.modelcontextprotocol/tasks': ['sentinel-claim']}
+    notification_bindings = ['sentinel-binding']
+
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        extensions=extensions,
+        result_claims=result_claims,
+        notification_bindings=notification_bindings,
+    )
+    with (
+        self._patch_client_session() as mock_client_session_class,
+        self._patch_probe(),
+    ):
+      self._make_session(mock_client_session_class)
+      async with context:
+        pass
+
+    _, kwargs = mock_client_session_class.call_args
+    assert kwargs['extensions'] is extensions
+    assert kwargs['result_claims'] is result_claims
+    assert kwargs['notification_bindings'] is notification_bindings
+
+  @pytest.mark.asyncio
+  async def test_defaults_to_no_extensions(self):
+    """Without extension arguments the three kwargs are not passed at all.
+
+    Absent rather than `None`: MCP SDK 1.x declares none of them, so naming
+    one would be a `TypeError` on the major the default path still runs on.
+    """
+    context = SessionContext(
+        client=MockClient(), timeout=5.0, sse_read_timeout=None
+    )
+    with self._patch_client_session() as mock_client_session_class:
+      self._make_session(mock_client_session_class)
+      async with context:
+        pass
+
+    _, kwargs = mock_client_session_class.call_args
+    assert 'extensions' not in kwargs
+    assert 'result_claims' not in kwargs
+    assert 'notification_bindings' not in kwargs
+
+  @pytest.mark.asyncio
+  async def test_uses_handshake_when_no_extensions(self):
+    """The default path is unchanged: initialize(), and no discover probe."""
+    context = SessionContext(
+        client=MockClient(), timeout=5.0, sse_read_timeout=None
+    )
+    with (
+        self._patch_client_session() as mock_client_session_class,
+        self._patch_probe() as probe,
+    ):
+      session = self._make_session(mock_client_session_class)
+      async with context:
+        pass
+
+    session.initialize.assert_awaited_once()
+    probe.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  @requires_sdk_v2
+  async def test_probes_when_extensions_requested(self):
+    """A result claim is only active on a modern connection, flag or not."""
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        extensions={'io.modelcontextprotocol/tasks': {}},
+    )
+    with (
+        self._patch_client_session() as mock_client_session_class,
+        self._patch_probe() as probe,
+        temporary_feature_override(FeatureName._MCP_MODERN_PROTOCOL, False),
+    ):
+      session = self._make_session(mock_client_session_class)
+      async with context:
+        pass
+
+    probe.assert_awaited_once_with(session)
+    session.initialize.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  async def test_warns_when_extensions_land_on_a_legacy_connection(
+      self, caplog
+  ):
+    """A server too old for server/discover leaves the claims inactive."""
+    session = Mock()
+    session.discover_result = None
+
+    with self._patch_probe(), caplog.at_level(logging.WARNING):
+      await _connect(session, has_extensions=True)
+
+    assert 'stay inactive' in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_no_legacy_warning_on_a_modern_connection(self, caplog):
+    """No warning when the probe reached the modern protocol."""
+    session = Mock()
+    session.discover_result = 'discover-result'
+
+    with self._patch_probe(), caplog.at_level(logging.WARNING):
+      await _connect(session, has_extensions=True)
+
+    assert 'stay inactive' not in caplog.text
 
 
 class TestSessionContextIsTaskAlive:
