@@ -299,7 +299,7 @@ class TestMCPTool:
     )
 
     # Verify the result matches the model_dump output
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=None
     )
@@ -399,7 +399,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=None
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
 
     assert tool_context.actions.render_ui_widgets is not None
     assert len(tool_context.actions.render_ui_widgets) == 1
@@ -438,7 +438,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=credential
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     # Check that headers were passed correctly
     self.mock_session_manager.create_session.assert_called_once()
     call_args = self.mock_session_manager.create_session.call_args
@@ -809,7 +809,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=auth_credential
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     # Check that headers were passed correctly with custom API key header
     self.mock_session_manager.create_session.assert_called_once()
     call_args = self.mock_session_manager.create_session.call_args
@@ -1109,7 +1109,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=None
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     header_provider.assert_called_once()
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=expected_headers
@@ -1145,7 +1145,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=None
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=expected_headers
     )
@@ -1183,7 +1183,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=credential
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     header_provider.assert_called_once()
     self.mock_session_manager.create_session.assert_called_once()
     call_args = self.mock_session_manager.create_session.call_args
@@ -1241,7 +1241,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=None
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=None
     )
@@ -1444,7 +1444,7 @@ class TestMCPTool:
 
     result = await tool.run_async(args=args, tool_context=tool_context)
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
 
     assert "http_debug_info" in metadata_dict
     debug_info = metadata_dict["http_debug_info"]
@@ -1490,7 +1490,7 @@ class TestMCPTool:
 
     result = await tool.run_async(args=args, tool_context=tool_context)
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     assert "http_debug_info" not in metadata_dict
 
   @pytest.mark.asyncio
@@ -1741,7 +1741,7 @@ class TestMCPToolGracefulErrorHandling:
           args={"param1": "x"}, tool_context=tool_context, credential=None
       )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     assert len(stub._run_guarded_called_with) == 1
     # Verify the coro passed in was actually a coroutine (not a Mock).
     assert asyncio.iscoroutine(stub._run_guarded_called_with[0])
@@ -1776,7 +1776,7 @@ class TestMCPToolGracefulErrorHandling:
           args={"param1": "x"}, tool_context=tool_context, credential=None
       )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
 
   @pytest.mark.asyncio
   async def test_run_async_impl_falls_back_when_get_session_context_returns_mock(
@@ -1810,7 +1810,7 @@ class TestMCPToolGracefulErrorHandling:
           args={"param1": "x"}, tool_context=tool_context, credential=None
       )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
 
   @pytest.mark.asyncio
   async def test_run_async_impl_skips_run_guarded_when_flag_off(self):
@@ -1838,5 +1838,5 @@ class TestMCPToolGracefulErrorHandling:
           args={"param1": "x"}, tool_context=tool_context, credential=None
       )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json", by_alias=True)
     self.mock_session_manager._get_session_context.assert_not_called()

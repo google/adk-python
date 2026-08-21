@@ -771,9 +771,11 @@ class TestMcpToolset:
 
     result = await toolset.get_resource_info("data.json")
 
+    # by_alias keeps the camelCase MCP wire key ('mimeType') stable across
+    # the mcp 1.x -> 2.x model rename.
     assert result == {
         "name": "data.json",
-        "mime_type": "application/json",
+        "mimeType": "application/json",
         "uri": "file:///data.json",
     }
     self.mock_session.list_resources.assert_called_once()

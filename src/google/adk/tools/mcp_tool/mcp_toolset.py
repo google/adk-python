@@ -594,7 +594,9 @@ class McpToolset(BaseToolset):
     )
     for resource in result.resources:
       if resource.name == name:
-        return resource.model_dump(mode="json", exclude_none=True)
+        # by_alias keeps the camelCase MCP wire keys ('mimeType', ...) stable
+        # across the mcp 1.x -> 2.x model rename.
+        return resource.model_dump(mode="json", exclude_none=True, by_alias=True)
     raise ValueError(f"Resource with name '{name}' not found.")
 
   async def close(self) -> None:

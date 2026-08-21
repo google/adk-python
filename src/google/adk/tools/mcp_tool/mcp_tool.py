@@ -508,7 +508,11 @@ class McpTool(BaseAuthenticatedTool):
     finally:
       self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
 
-    result = response.model_dump(exclude_none=True, mode="json")
+    # Serialize with camelCase aliases so the payload keeps the MCP wire shape
+    # the model saw on mcp 1.x ('isError', 'structuredContent', ...). Without
+    # by_alias the 2.x snake_case field names would leak into the tool result
+    # and silently break the 'isError' lookup in _detect_error_in_response.
+    result = response.model_dump(exclude_none=True, mode="json", by_alias=True)
 
     # Push UI widget to the event actions if the tool supports it.
     if self.mcp_app_resource_uri:
@@ -527,7 +531,7 @@ class McpTool(BaseAuthenticatedTool):
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
-    if isinstance(response, dict) and response.get("is_error"):
+    if isinstance(response, dict) and response.get("isError"):
       return "MCP_TOOL_ERROR"
     return None
 

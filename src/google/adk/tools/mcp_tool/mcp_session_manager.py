@@ -40,7 +40,7 @@ import urllib.parse
 import google.auth
 import google.auth.credentials
 from google.auth.transport.requests import Request
-import httpx
+import httpx2
 
 try:
   from google.auth.aio.credentials import Credentials as AsyncCredentials
@@ -69,12 +69,11 @@ from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
-try:
-  from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-
-  _HAS_HTTPX_INSTRUMENTOR = True
-except (ImportError, AttributeError):
-  _HAS_HTTPX_INSTRUMENTOR = False
+# NOTE: opentelemetry-instrumentation-httpx only instruments `httpx` clients.
+# mcp 2.x builds its HTTP layer on `httpx2`, and no httpx2 instrumentor exists
+# yet (the only PyPI candidate is a 0.0.0 placeholder), so MCP HTTP client
+# spans are not emitted until one lands. `_meta` trace propagation in
+# mcp_tool.py is unaffected -- it does not go through OTel HTTP instrumentation.
 
 from ...features import FeatureName
 from ...features import is_feature_enabled
@@ -102,18 +101,21 @@ _SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 
 def create_mcp_http_client(
     headers: dict[str, str] | None = None,
-    timeout: httpx.Timeout | None = None,
-    auth: httpx.Auth | None = None,
-) -> httpx.AsyncClient:
-  """Creates MCP HTTP client and instruments it when OTel is available."""
-  client = _create_mcp_http_client(
+    timeout: httpx2.Timeout | None = None,
+    auth: httpx2.Auth | None = None,
+) -> httpx2.AsyncClient:
+  """Creates an MCP HTTP client with the SDK's SSE-friendly defaults.
+
+  The client is an ``httpx2.AsyncClient`` -- mcp 2.x's transports accept
+  nothing else. It is deliberately not OTel-instrumented: the available
+  ``opentelemetry-instrumentation-httpx`` only instruments ``httpx`` (see the
+  note at the top of this module).
+  """
+  return _create_mcp_http_client(
       headers=headers,
       timeout=timeout,
       auth=auth,
   )
-  if _HAS_HTTPX_INSTRUMENTOR:
-    HTTPXClientInstrumentor.instrument_client(client)
-  return client
 
 
 _http_debug_var: contextvars.ContextVar[list[dict[str, Any]] | None] = (
@@ -135,7 +137,7 @@ class _StreamableHttpClientWrapper:
   def __init__(
       self,
       url: str,
-      http_client: httpx.AsyncClient,
+      http_client: httpx2.AsyncClient,
       terminate_on_close: bool = True,
   ):
     self.url = url
@@ -246,14 +248,14 @@ class CheckableMcpHttpClientFactory(Protocol):
   def __call__(
       self,
       headers: dict[str, str] | None = None,
-      timeout: httpx.Timeout | None = None,
-      auth: httpx.Auth | None = None,
-  ) -> httpx.AsyncClient:
+      timeout: httpx2.Timeout | None = None,
+      auth: httpx2.Auth | None = None,
+  ) -> httpx2.AsyncClient:
     ...
 
 
 class _DebugHttpxClientFactory:
-  """A factory wrapper that hooks into the httpx.AsyncClient responses to capture debug info."""
+  """A factory wrapper that hooks into the httpx2.AsyncClient responses to capture debug info."""
 
   def __init__(
       self,
@@ -266,15 +268,15 @@ class _DebugHttpxClientFactory:
   def __call__(
       self,
       headers: dict[str, str] | None = None,
-      timeout: httpx.Timeout | None = None,
-      auth: httpx.Auth | None = None,
-  ) -> httpx.AsyncClient:
+      timeout: httpx2.Timeout | None = None,
+      auth: httpx2.Auth | None = None,
+  ) -> httpx2.AsyncClient:
     client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
     if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
       client.event_hooks.setdefault('response', []).append(self._response_hook)
     return client
 
-  def _extract_session_id(self, response: httpx.Response) -> str | None:
+  def _extract_session_id(self, response: httpx2.Response) -> str | None:
     query_params = urllib.parse.parse_qs(
         urllib.parse.urlparse(str(response.url)).query
     )
@@ -283,7 +285,7 @@ class _DebugHttpxClientFactory:
         or query_params.get('session_id', [None])[0]
     )
 
-  async def _response_hook(self, response: httpx.Response):
+  async def _response_hook(self, response: httpx2.Response):
     debug_list = None
     if self._session_manager is not None:
       session_id = self._extract_session_id(response)
@@ -447,8 +449,8 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
       self._creds.refresh(Request())
 
 
-class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
-  """Adapter to bridge google-auth Response.content with httpx.AsyncByteStream."""
+class _GoogleAuthAsyncByteStream(httpx2.AsyncByteStream):
+  """Adapter to bridge google-auth Response.content with httpx2.AsyncByteStream."""
 
   def __init__(self, auth_response: Any):
     self._auth_response = auth_response
@@ -461,15 +463,15 @@ class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
     await self._auth_response.close()
 
 
-class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
-  """Adapter to bridge google-auth AsyncAuthorizedSession with httpx.AsyncBaseTransport."""
+class _GoogleAuthAsyncTransport(httpx2.AsyncBaseTransport):
+  """Adapter to bridge google-auth AsyncAuthorizedSession with httpx2.AsyncBaseTransport."""
 
   def __init__(self, auth_session: Any):
     self._auth_session = auth_session
 
   async def handle_async_request(
-      self, request: httpx.Request
-  ) -> httpx.Response:
+      self, request: httpx2.Request
+  ) -> httpx2.Response:
     content = await request.aread()
     headers_dict = dict(request.headers)
 
@@ -495,7 +497,7 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
 
     # google-auth-aio uses aiohttp internally, which automatically handles
     # decompression and decodes chunked transfer encoding, but leaves the
-    # headers intact. We must strip these headers so httpx doesn't attempt
+    # headers intact. We must strip these headers so httpx2 doesn't attempt
     # to decompress or parse chunked framing again on the raw stream.
     response_headers = {
         k: v
@@ -504,7 +506,7 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
         not in ('content-encoding', 'content-length', 'transfer-encoding')
     }
 
-    return httpx.Response(
+    return httpx2.Response(
         status_code=auth_response.status_code,
         headers=response_headers,
         stream=_GoogleAuthAsyncByteStream(auth_response),
@@ -514,15 +516,15 @@ class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
     await self._auth_session.close()
 
 
-class _SharedAsyncTransport(httpx.AsyncBaseTransport):
+class _SharedAsyncTransport(httpx2.AsyncBaseTransport):
   """Wrapper transport that prevents the wrapped transport from being closed."""
 
-  def __init__(self, transport: httpx.AsyncBaseTransport):
+  def __init__(self, transport: httpx2.AsyncBaseTransport):
     self._transport = transport
 
   async def handle_async_request(
-      self, request: httpx.Request
-  ) -> httpx.Response:
+      self, request: httpx2.Request
+  ) -> httpx2.Response:
     return await self._transport.handle_async_request(request)
 
   async def aclose(self) -> None:
@@ -530,16 +532,16 @@ class _SharedAsyncTransport(httpx.AsyncBaseTransport):
 
 
 def _create_mtls_client_factory(
-    mtls_transport: httpx.AsyncBaseTransport,
+    mtls_transport: httpx2.AsyncBaseTransport,
 ) -> CheckableMcpHttpClientFactory:
-  """Returns a factory that creates httpx.AsyncClient using the mtls_transport."""
+  """Returns a factory that creates httpx2.AsyncClient using the mtls_transport."""
 
   def factory(
       headers: dict[str, Any] | None = None,
-      timeout: httpx.Timeout | None = None,
-      auth: httpx.Auth | None = None,
-  ) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
+      timeout: httpx2.Timeout | None = None,
+      auth: httpx2.Auth | None = None,
+  ) -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(
         headers=headers,
         auth=auth,
         timeout=timeout,
@@ -1027,7 +1029,7 @@ class MCPSessionManager:
   def _create_client(
       self,
       merged_headers: dict[str, str] | None = None,
-      mtls_transport: httpx.AsyncBaseTransport | None = None,
+      mtls_transport: httpx2.AsyncBaseTransport | None = None,
       *,
       session_key: str | None = None,
   ) -> AbstractAsyncContextManager[Any]:
@@ -1079,7 +1081,7 @@ class MCPSessionManager:
       )
       http_client = debug_factory(
           headers=merged_headers,
-          timeout=httpx.Timeout(
+          timeout=httpx2.Timeout(
               self._connection_params.timeout,
               read=self._connection_params.sse_read_timeout,
           ),
