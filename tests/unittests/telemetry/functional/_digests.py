@@ -14,10 +14,14 @@
 
 """A deterministic digest of the telemetry one scenario run produced.
 
-``TelemetryDigest.build`` turns in-memory spans, logs and metric points
-into a value that can be compared with ``==`` and stored as JSON: the
-span tree with its attributes and per-span logs, plus every metric point
-grouped by metric name.
+``TelemetryDigest.build`` turns in-memory spans, logs and metric points into
+a value that can be compared with ``==`` and stored as JSON: the span tree
+with its attributes and per-span logs, plus every metric point grouped by
+metric name.
+
+This is one recording, of one run, under one instrumentation. That two of
+them may legitimately differ is not this module's concern: see
+``_divergences``.
 """
 
 from __future__ import annotations
@@ -28,14 +32,15 @@ from enum import Enum
 import json
 from typing import TYPE_CHECKING
 
-from opentelemetry.sdk.metrics.export import HistogramDataPoint
-from opentelemetry.sdk.metrics.export import NumberDataPoint
-
 if TYPE_CHECKING:
   from opentelemetry.sdk._logs import ReadableLogRecord
   from opentelemetry.sdk.metrics.export import MetricsData
   from opentelemetry.sdk.trace import ReadableSpan
 
+# Sentinel for a value that cannot be pinned -- a generated id, a wall-clock
+# duration, an elided payload. Substituted on both sides of the comparison, so
+# such a field is only ever asserted to be present.
+PRESENT = "PRESENT"
 
 # Difficult to extract, non deterministic attribute keys.
 # We check only for their presence, instead of their values.
@@ -48,6 +53,13 @@ NON_DETERMINISTIC_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
     "gcp.vertex.agent.session_id",
 })
 
+# Payload fields that carry a generated id rather than anything recorded --
+# ``{"id": "adk-<uuid>", "name": "some_tool", ...}`` in the experimental
+# shape, ``{"function_call": {"id": ...}}`` in the stable one. ADK fills one
+# in when the model doesn't supply one, so it is new on every run. A side
+# that omits it entirely still diverges: PRESENT is not missing.
+NON_DETERMINISTIC_PAYLOAD_FIELDS: frozenset[str] = frozenset({"id"})
+
 # Span attribute keys whose values are JSON-serialized strings.
 # These are parsed back into Python objects before comparison so that JSON
 # property ordering doesn't drive test stability.
@@ -57,15 +69,6 @@ JSON_ATTRIBUTE_KEYS: frozenset[str] = frozenset({
     "gen_ai.system_instructions",
     "gen_ai.tool.definitions",
 })
-
-# Sentinel for a value that cannot be pinned -- a generated id, a wall-clock
-# duration, an elided payload. Substituted on both sides of the comparison, so
-# such a field is only ever asserted to be present.
-PRESENT = "PRESENT"
-
-# ---------------------------------------------------------------------------
-# Digests.
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -82,16 +85,17 @@ class LogDigest:
 
   @classmethod
   def from_log(cls, log: ReadableLogRecord) -> LogDigest:
-    attrs: dict[str, object] = {}
-    for k, v in (log.log_record.attributes or {}).items():
-      if k in NON_DETERMINISTIC_ATTRIBUTE_KEYS:
-        attrs[k] = PRESENT
-      else:
-        attrs[k] = _normalize(v)
     return cls(
         event_name=log.log_record.event_name or "",
         body=_normalize(log.log_record.body),
-        attributes=attrs,
+        attributes={
+            key: (
+                PRESENT
+                if key in NON_DETERMINISTIC_ATTRIBUTE_KEYS
+                else _normalize(value)
+            )
+            for key, value in (log.log_record.attributes or {}).items()
+        },
     )
 
 
@@ -124,17 +128,17 @@ class SpanDigest:
     * All other values pass through ``_normalize`` (tuples → lists,
       enums → ``.value``, ``None`` dict entries dropped).
     """
-    determinized_attributes: dict[str, object] = {}
-    for attr_key, attr_val in (span.attributes or {}).items():
-      if attr_key in NON_DETERMINISTIC_ATTRIBUTE_KEYS:
-        determinized_attributes[attr_key] = PRESENT
-      elif attr_key in JSON_ATTRIBUTE_KEYS and isinstance(attr_val, str):
-        determinized_attributes[attr_key] = _normalize(json.loads(attr_val))
+    attributes: dict[str, object] = {}
+    for key, value in (span.attributes or {}).items():
+      if key in NON_DETERMINISTIC_ATTRIBUTE_KEYS:
+        attributes[key] = PRESENT
+      elif key in JSON_ATTRIBUTE_KEYS and isinstance(value, str):
+        attributes[key] = _normalize(json.loads(value))
       else:
-        determinized_attributes[attr_key] = _normalize(attr_val)
+        attributes[key] = _normalize(value)
     return cls(
         name=span.name,
-        attributes=determinized_attributes,
+        attributes=attributes,
         status=span.status.status_code.name,
     )
 
@@ -146,7 +150,10 @@ class SpanDigest:
   ) -> SpanDigest:
     """Builds the in-memory span tree, attaching logs by span id.
 
-    Used for clear diffs with pytest assertions.
+    Children and logs come out in the order they were emitted -- the scenario
+    runs single-threaded, so that order is deterministic, and it is the order
+    a reader of the golden expects the run to have gone in. The exporter hands
+    spans over as they *end*, so the tree is assembled by start time.
     """
     digest_by_id: dict[int, SpanDigest] = {}
     for span in spans:
@@ -155,7 +162,7 @@ class SpanDigest:
       digest_by_id[span.context.span_id] = cls.from_span(span)
 
     # Attach each log to its enclosing span (matched by span_id).
-    for log in logs:
+    for log in sorted(logs, key=lambda log: log.log_record.observed_timestamp):
       span_id = log.log_record.span_id
       if span_id is None or span_id == 0:
         continue
@@ -165,50 +172,25 @@ class SpanDigest:
       digest.logs.append(LogDigest.from_log(log))
 
     root: SpanDigest | None = None
-    for span in spans:
+    for span in sorted(spans, key=lambda span: span.start_time or 0):
       if span.context is None:
         continue
       digest = digest_by_id[span.context.span_id]
       if span.parent and span.parent.span_id in digest_by_id:
-        parent_digest = digest_by_id[span.parent.span_id]
-        parent_digest.children.append(digest)
+        digest_by_id[span.parent.span_id].children.append(digest)
+      elif root is not None:
+        raise ValueError("Multiple root spans found.")
       else:
-        if root is not None:
-          raise ValueError("Multiple root spans found.")
         root = digest
-
-    # Sort for deterministic comparisons.
-    for digest in digest_by_id.values():
-      digest.children.sort(key=lambda s: s.name)
-      digest.logs[:] = sorted_log_digests(digest.logs)
 
     if root is None:
       raise ValueError("No root span found in the provided spans.")
     return root
 
-  def all_logs(self) -> list[LogDigest]:
-    """Returns all log digests in the tree, sorted deterministically."""
-    collected: list[LogDigest] = []
 
-    def _walk(node: SpanDigest) -> None:
-      collected.extend(node.logs)
-      for child in node.children:
-        _walk(child)
-
-    _walk(self)
-    return sorted_log_digests(collected)
-
-
-def sorted_log_digests(logs: list[LogDigest]) -> list[LogDigest]:
-  """Returns ``logs`` sorted in a stable, content-derived order."""
-  return sorted(
-      logs,
-      key=lambda log: (
-          log.event_name,
-          json.dumps(log.body, sort_keys=True, default=str),
-          json.dumps(log.attributes, sort_keys=True, default=str),
-      ),
-  )
+def json_key(value: object) -> str:
+  """A value's canonical JSON string, for comparing and ordering by."""
+  return json.dumps(value, sort_keys=True, default=str)
 
 
 @dataclass(frozen=True)
@@ -219,10 +201,36 @@ class MetricPoint:
   value: object
 
   def __hash__(self) -> int:
-    return hash((self.sort_key(), self.value))
+    return hash((self.sort_key(), json_key(self.value)))
 
   def sort_key(self) -> str:
-    return json.dumps(self.attributes, sort_keys=True, default=str)
+    return json_key(self.attributes)
+
+
+@dataclass(frozen=True)
+class TelemetryDigest:
+  """The full telemetry surface produced by one scenario run.
+
+  Bundles the root span tree (with per-span logs attached) and every recorded
+  metric point grouped by metric name. Everything is sorted as it is built,
+  so a digest is fully deterministic and round-trips through plain JSON.
+  """
+
+  root_span: SpanDigest
+  metric_points: dict[str, list[MetricPoint]]
+
+  @classmethod
+  def build(
+      cls,
+      spans: tuple[ReadableSpan, ...],
+      logs: tuple[ReadableLogRecord, ...],
+      metrics_data: MetricsData,
+  ) -> TelemetryDigest:
+    """Builds the digest of one recording, from its in-memory telemetry."""
+    return cls(
+        root_span=SpanDigest.build(spans, logs),
+        metric_points=_grouped_metric_points(metrics_data),
+    )
 
 
 def _grouped_metric_points(
@@ -234,6 +242,10 @@ def _grouped_metric_points(
   independent of recording order and can be compared (and serialized) as
   plain lists.
   """
+  # Imported here: only the recording path needs the SDK's point types.
+  from opentelemetry.sdk.metrics.export import HistogramDataPoint  # pylint: disable=g-import-not-at-top
+  from opentelemetry.sdk.metrics.export import NumberDataPoint  # pylint: disable=g-import-not-at-top
+
   grouped: dict[str, set[MetricPoint]] = {}
   for resource_metric in metrics_data.resource_metrics:
     for scope_metric in resource_metric.scope_metrics:
@@ -261,34 +273,6 @@ def _grouped_metric_points(
   }
 
 
-@dataclass(frozen=True)
-class TelemetryDigest:
-  """The full telemetry surface produced by one scenario run.
-
-  Bundles the root span tree (with per-span logs attached) and every recorded
-  metric point grouped by metric name. Everything is sorted as it is built,
-  so a digest is fully deterministic and round-trips through plain JSON:
-  ``build`` produces the actual one; ``functional_test_goldens.load_golden``
-  the recorded one.
-  """
-
-  root_span: SpanDigest
-  metric_points: dict[str, list[MetricPoint]]
-
-  @classmethod
-  def build(
-      cls,
-      spans: tuple[ReadableSpan, ...],
-      logs: tuple[ReadableLogRecord, ...],
-      metrics_data: MetricsData,
-  ) -> TelemetryDigest:
-    """Builds the actual digest from in-memory spans, logs and metrics."""
-    return cls(
-        root_span=SpanDigest.build(spans, logs),
-        metric_points=_grouped_metric_points(metrics_data),
-    )
-
-
 def _normalize(value: object) -> object:
   """Normalizes a value for stable equality.
 
@@ -296,13 +280,21 @@ def _normalize(value: object) -> object:
   * Enums become their ``.value``.
   * Dict entries whose value is ``None`` are dropped (these are inserted by
     pydantic ``model_dump`` for unset fields and would dominate diffs).
+  * A generated id inside a payload collapses to ``PRESENT``, like the
+    attribute-level ones.
   """
   if isinstance(value, Enum):
     return value.value
-  if isinstance(value, tuple):
-    return [_normalize(v) for v in value]
-  if isinstance(value, list):
+  if isinstance(value, (tuple, list)):
     return [_normalize(v) for v in value]
   if isinstance(value, dict):
-    return {k: _normalize(v) for k, v in value.items() if v is not None}
+    return {
+        key: (
+            PRESENT
+            if key in NON_DETERMINISTIC_PAYLOAD_FIELDS
+            else _normalize(item)
+        )
+        for key, item in value.items()
+        if item is not None
+    }
   return value

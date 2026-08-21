@@ -1983,6 +1983,124 @@ def test_message_to_generate_content_response_maps_finish_reason(
   assert response.finish_reason == expected_finish_reason
 
 
+def test_message_to_generate_content_response_reports_cache_creation_tokens():
+  """cache_creation_input_tokens maps to usage_metadata.cache_creation_input_tokens."""
+  from google.adk.models.anthropic_llm import message_to_generate_content_response
+
+  message = anthropic_types.Message(
+      id="msg_cache_creation",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=100,
+          output_tokens=20,
+          cache_creation_input_tokens=50,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert response.usage_metadata.cache_creation_input_tokens == 50
+  dumped = response.model_dump()
+  assert "usage_metadata" in dumped
+
+
+def test_message_to_generate_content_response_no_cache_creation_tokens():
+  """Absent cache_creation_input_tokens yields cache_creation_input_tokens=None."""
+  from google.adk.models.anthropic_llm import message_to_generate_content_response
+
+  message = anthropic_types.Message(
+      id="msg_no_cache_creation",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=100,
+          output_tokens=20,
+          cache_creation_input_tokens=None,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert not hasattr(response.usage_metadata, "cache_creation_input_tokens")
+
+
+@pytest.mark.asyncio
+async def test_streaming_reports_cache_creation_tokens():
+  """Anthropic streaming extracts and attaches cache_creation_input_tokens."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              usage=MagicMock(
+                  input_tokens=100,
+                  output_tokens=0,
+                  cache_creation_input_tokens=50,
+                  cache_read_input_tokens=0,
+              )
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="Hi", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=20),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  assert len(responses) == 2
+  final_response = responses[-1]
+  assert final_response.usage_metadata.cache_creation_input_tokens == 50
+  dumped = final_response.model_dump()
+  assert "usage_metadata" in dumped
+
+
 def test_part_to_message_block_thinking_roundtrip():
   """Part with thought=True and signature creates ThinkingBlockParam."""
   part = Part(

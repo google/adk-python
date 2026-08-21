@@ -135,6 +135,14 @@ def get_request_input_interrupt_ids(event: Event) -> list[str]:
 # Auth credential utilities
 # ---------------------------------------------------------------------------
 
+_OAUTH_STATE_KEY_PREFIX = 'adk_oauth_state:'
+"""Session state prefix under which a generated OAuth state is kept."""
+
+
+def _oauth_state_key(interrupt_id: str) -> str:
+  """Returns the session state key holding the generated OAuth state."""
+  return f'{_OAUTH_STATE_KEY_PREFIX}{interrupt_id}'
+
 
 def _build_auth_message(auth_config: AuthConfig) -> str:
   """Builds a human-readable message describing what credential is needed."""
@@ -158,18 +166,28 @@ def _build_auth_message(auth_config: AuthConfig) -> str:
 def create_auth_request_event(
     auth_config: AuthConfig,
     interrupt_id: str,
+    state: State,
 ) -> Event:
   """Creates an event requesting user authentication credentials.
 
   Args:
     auth_config: The auth configuration for the node.
     interrupt_id: The interrupt ID for this auth request.
+    state: The session state. The OAuth state generated for this request is
+      kept there so the resume response can be checked against it.
 
   Returns:
     An Event containing an ``adk_request_credential`` function call.
   """
   auth_handler = AuthHandler(auth_config)
   auth_request = auth_handler.generate_auth_request()
+  generated_credential = auth_request.exchanged_auth_credential
+  if (
+      generated_credential
+      and generated_credential.oauth2
+      and generated_credential.oauth2.state
+  ):
+    state[_oauth_state_key(interrupt_id)] = generated_credential.oauth2.state
   args = AuthToolArguments(
       function_call_id=interrupt_id,
       auth_config=auth_request,
@@ -223,8 +241,14 @@ async def process_auth_resume(
     response_data: Any,
     auth_config: AuthConfig,
     state: State,
+    interrupt_id: str,
 ) -> None:
   """Stores credentials from an auth resume response into session state.
+
+  Only the credential is read from the response; the node's own auth config
+  decides which scheme the credential is exchanged and stored under. When an
+  OAuth state was generated for this request, the response must carry that
+  same state back.
 
   Accepts multiple response formats (tried in order):
     1. A full AuthConfig dict (from web UI OAuth flow).
@@ -240,17 +264,34 @@ async def process_auth_resume(
     response_data: The unwrapped response from the client.
     auth_config: The original auth configuration for the node.
     state: The session state to store credentials in.
+    interrupt_id: The interrupt ID of the auth request being resumed.
+
+  Raises:
+    ValueError: If the response does not carry back the OAuth state that was
+      generated for this auth request.
   """
   try:
-    response_config = AuthConfig.model_validate(response_data)
+    exchanged_credential = AuthConfig.model_validate(
+        response_data
+    ).exchanged_auth_credential
   except (ValidationError, TypeError):
-    response_config = auth_config.model_copy(deep=True)
-    response_config.exchanged_auth_credential = _build_credential_from_value(
+    exchanged_credential = _build_credential_from_value(
         auth_config, response_data
     )
 
-  response_config.credential_key = auth_config.credential_key
-  await AuthHandler(auth_config=response_config).parse_and_store_auth_response(
+  generated_state = state.get(_oauth_state_key(interrupt_id))
+  if generated_state is not None:
+    oauth2 = exchanged_credential.oauth2 if exchanged_credential else None
+    if not oauth2 or oauth2.state != generated_state:
+      raise ValueError(
+          'The auth response does not carry back the state generated for this'
+          ' auth request. Return the auth config from the credential request'
+          ' with the authorization result filled in.'
+      )
+
+  resumed_config = auth_config.model_copy(deep=True)
+  resumed_config.exchanged_auth_credential = exchanged_credential
+  await AuthHandler(auth_config=resumed_config).parse_and_store_auth_response(
       state=state
   )
 

@@ -1298,6 +1298,7 @@ def test_input_streaming_tool_stream_recreated_after_stop():
   )
 
   call_count = 0
+  streams: list[LiveRequestQueue] = []
 
   async def monitor_video(
       input_stream: LiveRequestQueue,
@@ -1305,6 +1306,7 @@ def test_input_streaming_tool_stream_recreated_after_stop():
     """Simulate an input-streaming tool that tracks invocation count."""
     nonlocal call_count
     call_count += 1
+    streams.append(input_stream)
     yield f"started (call {call_count})"
     while True:
       await asyncio.sleep(0.1)
@@ -1350,13 +1352,18 @@ def test_input_streaming_tool_stream_recreated_after_stop():
       call_names.count("monitor_video") >= 2
   ), f"Expected monitor_video called at least twice, got: {call_names}"
 
-  # After re-invocation, stream should be set again (not None).
+  # After re-invocation the tool is handed a stream again, and a fresh one:
+  # not the queue that stop_streaming tore down. This is asserted from what
+  # the tool was passed rather than from the registry, because the registry
+  # entry is retired when the live run ends.
   assert captured_child_context is not None
-  active_tools = captured_child_context.active_streaming_tools or {}
-  assert "monitor_video" in active_tools
   assert (
-      active_tools["monitor_video"].stream is not None
-  ), "Expected .stream to be recreated after stop + re-invocation"
+      len(streams) >= 2
+  ), f"Expected monitor_video to run twice, got {len(streams)} stream(s)"
+  assert all(stream is not None for stream in streams)
+  assert (
+      streams[0] is not streams[1]
+  ), "Expected a new stream to be created after stop + re-invocation"
 
 
 def test_async_gen_with_input_stream_wrong_annotation_gets_no_stream():

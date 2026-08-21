@@ -26,6 +26,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from typing import Any
 from typing import AsyncIterator
 from typing import Callable
@@ -83,6 +84,21 @@ from .session_context import SessionContext
 logger = logging.getLogger('google_adk.' + __name__)
 
 _MAX_LOG_BODY_LENGTH = 1000
+
+# Pooled sessions unused for this long are closed the next time the pool is
+# touched. The value is a heuristic with no principled derivation: long enough
+# that a session survives the gaps between turns of one conversation, short
+# enough that a credential that has rotated away does not pin a connection for
+# the life of the process. It is not what keeps an in-flight call safe -- a
+# session with a call outstanding is held out of the sweep entirely, however
+# long that call runs.
+_SESSION_IDLE_TTL_SECONDS = 900.0
+
+# A session pinned out of the sweep for longer than this is reported. Nothing
+# is closed on the strength of it: a genuinely long call is allowed to run,
+# this only makes an unpaired `_begin_session_use` visible in the logs instead
+# of silently keeping the session alive forever.
+_SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 
 
 def create_mcp_http_client(
@@ -591,6 +607,29 @@ class MCPSessionManager:
     # Used by McpTool to access `_run_guarded` for transport-crash detection.
     self._session_contexts: dict[str, SessionContext] = {}
 
+    # Monotonic timestamp of the last use of each pooled session. Without
+    # this the pool grows without bound in a long-lived process, because the
+    # session key includes per-user credentials, which rotate. The timestamp
+    # is refreshed when a call finishes, so a session is only "idle" once
+    # nothing has used it since.
+    self._session_last_used: dict[str, float] = {}
+
+    # Number of calls currently in flight against each pooled session. A
+    # session with an outstanding call is never swept: its caller is still
+    # reading from the transport the sweep would close.
+    self._session_use_counts: dict[str, int] = {}
+
+    # Guards the read-modify-write on `_session_use_counts`. This manager is
+    # driven from more than one event loop, so `_session_lock` (which is
+    # per-loop) does not serialize those updates; a lost increment would let
+    # one loop's sweep close a transport with a call in flight on another.
+    self._use_count_lock = threading.Lock()
+
+    # Teardown tasks for sessions that have been evicted from the pool. The
+    # tasks are kept referenced here so they are not garbage collected while
+    # still running.
+    self._eviction_tasks: set[asyncio.Task[None]] = set()
+
     # Map of event loops to their respective locks to prevent race conditions
     # across different event loops in session creation.
     self._session_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
@@ -783,6 +822,42 @@ class MCPSessionManager:
     """
     return self._session_contexts.get(self._session_key_for(headers))
 
+  def _begin_session_use(
+      self, headers: Optional[Dict[str, str]] = None
+  ) -> None:
+    """Records that a call against this session is starting.
+
+    Idleness is measured from the end of the last call, not from when the
+    session was handed out, so a call that outlives the idle TTL must hold the
+    session out of the sweep for its whole duration. Callers must pair this
+    with ``_end_session_use`` in a ``finally``.
+
+    Args:
+        headers: The headers the caller passed to ``create_session``.
+    """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    with self._use_count_lock:
+      self._session_use_counts[session_key] = (
+          self._session_use_counts.get(session_key, 0) + 1
+      )
+
+  def _end_session_use(self, headers: Optional[Dict[str, str]] = None) -> None:
+    """Records that a call against this session has finished.
+
+    Args:
+        headers: The headers the caller passed to ``create_session``.
+    """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    with self._use_count_lock:
+      remaining = self._session_use_counts.get(session_key, 0) - 1
+      if remaining > 0:
+        self._session_use_counts[session_key] = remaining
+      else:
+        self._session_use_counts.pop(session_key, None)
+    # Start the idle clock now, at the end of the call.
+    if session_key in self._sessions:
+      self._session_last_used[session_key] = time.monotonic()
+
   async def _cleanup_session(
       self,
       session_key: str,
@@ -793,6 +868,24 @@ class MCPSessionManager:
 
     Args:
         session_key: The session key to clean up.
+        exit_stack: The AsyncExitStack managing the session resources.
+        stored_loop: The event loop on which the session was created.
+    """
+    try:
+      await self._close_exit_stack(session_key, exit_stack, stored_loop)
+    finally:
+      self._forget_session(session_key)
+
+  async def _close_exit_stack(
+      self,
+      session_key: str,
+      exit_stack: AsyncExitStack,
+      stored_loop: asyncio.AbstractEventLoop,
+  ) -> None:
+    """Tears a session's resources down without touching the pool.
+
+    Args:
+        session_key: The session key the exit stack belongs to, for logging.
         exit_stack: The AsyncExitStack managing the session resources.
         stored_loop: The event loop on which the session was created.
     """
@@ -835,19 +928,89 @@ class MCPSessionManager:
           f'Error during session cleanup for {session_key}: {e}',
           exc_info=True,
       )
-    finally:
-      if session_key in self._sessions:
-        del self._sessions[session_key]
-      # Also drop the SessionContext reference so we don't leak the
-      # SessionContext after its underlying session is gone.
-      if session_key in self._session_contexts:
-        del self._session_contexts[session_key]
-      # Also clean up session ID mapping
-      for sid, skey in list(self._session_id_to_key.items()):
-        if skey == session_key:
-          del self._session_id_to_key[sid]
-      if session_key in self._active_debug_lists:
-        del self._active_debug_lists[session_key]
+
+  def _forget_session(self, session_key: str) -> None:
+    """Drops every pool entry belonging to a session key.
+
+    Args:
+        session_key: The session key to remove from the pool.
+    """
+    # Every drop here is unconditional: this runs on the sweep path, so two
+    # event loops can reach the same key and a check-then-delete would raise
+    # KeyError on the loser.
+    self._sessions.pop(session_key, None)
+    self._session_last_used.pop(session_key, None)
+    # Also drop the SessionContext reference so we don't leak the
+    # SessionContext after its underlying session is gone.
+    self._session_contexts.pop(session_key, None)
+    # Also clean up session ID mapping
+    for sid, skey in list(self._session_id_to_key.items()):
+      if skey == session_key:
+        self._session_id_to_key.pop(sid, None)
+    self._active_debug_lists.pop(session_key, None)
+
+  def _evict_idle_sessions(self, keep_key: str) -> None:
+    """Closes pooled sessions that have been idle past the TTL.
+
+    Must be called from inside the ``_session_lock`` critical section. Stdio
+    pools are skipped: they use a single constant key backed by a local
+    subprocess whose lifetime should not be driven by pool pressure.
+
+    Sessions with a call in flight are skipped, however long that call has
+    been running.
+
+    An idle entry leaves the pool synchronously, but its connection is torn
+    down in a background task rather than awaited here. Each close is bounded
+    by the connection timeout, so awaiting them would hold the session lock
+    for that timeout once per stale entry and park every other caller of this
+    toolset behind unrelated dead sessions.
+
+    Args:
+        keep_key: The session key the caller is about to use, which is never
+          evicted.
+    """
+    if isinstance(self._connection_params, StdioConnectionParams):
+      return
+
+    now = time.monotonic()
+    for session_key in list(self._sessions):
+      if session_key == keep_key:
+        continue
+      idle_for = now - self._session_last_used.get(session_key, now)
+      in_flight = self._session_use_counts.get(session_key)
+      if in_flight:
+        # A call is in flight on this session; closing its transport now would
+        # fail that call mid-flight. An unpaired `_begin_session_use` pins the
+        # key here for the life of the process, so once the pin outlives any
+        # plausible call, say so rather than leaking silently.
+        if idle_for > _SESSION_USE_PIN_WARN_SECONDS:
+          logger.warning(
+              'MCP session %s has been held out of the idle sweep for %.0fs'
+              ' with %d call(s) reported in flight; a call that never'
+              ' finished may be leaking this session.',
+              session_key,
+              idle_for,
+              in_flight,
+          )
+        continue
+      if idle_for < _SESSION_IDLE_TTL_SECONDS:
+        continue
+      entry = self._sessions.get(session_key)
+      if entry is None:
+        # Another loop's sweep took this key between the snapshot above and
+        # here; it owns the teardown.
+        continue
+      logger.info('Evicting idle MCP session: %s', session_key)
+      _, exit_stack, stored_loop = entry
+      # Forget the entry before spawning the teardown, so a later caller that
+      # reuses this key gets a fresh session and the in-flight teardown never
+      # reaches into the pool to drop it.
+      self._forget_session(session_key)
+      task = asyncio.ensure_future(
+          self._close_exit_stack(session_key, exit_stack, stored_loop)
+      )
+      self._eviction_tasks.add(task)
+      task.add_done_callback(self._eviction_tasks.discard)
 
   def _create_client(
       self,
@@ -952,6 +1115,8 @@ class MCPSessionManager:
       if debug_list is not None:
         self._set_active_debug_list(session_key, debug_list)
 
+      self._evict_idle_sessions(keep_key=session_key)
+
       # Check if we have an existing session
       if session_key in self._sessions:
         session, exit_stack, stored_loop = self._sessions[session_key]
@@ -977,6 +1142,7 @@ class MCPSessionManager:
             and ctx_alive
         ):
           # Session is still good, return it
+          self._session_last_used[session_key] = time.monotonic()
           return session
         else:
           # Session is disconnected, dead, or from a different loop; clean up.
@@ -1038,6 +1204,7 @@ class MCPSessionManager:
         # `_run_guarded` on it. Stored separately to avoid changing the
         # shape of `_sessions` (which is a public-ish internal surface).
         self._session_contexts[session_key] = session_context
+        self._session_last_used[session_key] = time.monotonic()
         logger.debug('Created new session: %s', session_key)
         return session
 
@@ -1058,6 +1225,9 @@ class MCPSessionManager:
     # Remove unpicklable entries or those that shouldn't persist across pickle
     state['_sessions'] = {}
     state['_session_contexts'] = {}
+    state['_session_last_used'] = {}
+    state['_session_use_counts'] = {}
+    state['_eviction_tasks'] = set()
     state['_session_lock_map'] = {}
     state['_mtls_transports'] = {}
     state['_session_id_to_key'] = {}
@@ -1065,6 +1235,7 @@ class MCPSessionManager:
 
     # Locks and file-like objects cannot be pickled
     state.pop('_lock_map_lock', None)
+    state.pop('_use_count_lock', None)
     state.pop('_errlog', None)
 
     return state
@@ -1075,25 +1246,49 @@ class MCPSessionManager:
     # Re-initialize members that were not pickled
     self._sessions = {}
     self._session_contexts = {}
+    self._session_last_used = {}
+    self._session_use_counts = {}
+    self._eviction_tasks = set()
     self._session_lock_map = {}
     self._mtls_transports = {}
     self._session_id_to_key = {}
     self._active_debug_lists = {}
     self._lock_map_lock = threading.Lock()
+    self._use_count_lock = threading.Lock()
     # If _errlog was removed during pickling, default to sys.stderr
     if not hasattr(self, '_errlog') or self._errlog is None:
       self._errlog = sys.stderr
 
   async def close(self):
     """Closes all sessions and cleans up resources."""
+    current_loop = asyncio.get_running_loop()
     async with self._session_lock:
       for session_key in list(self._sessions.keys()):
         _, exit_stack, stored_loop = self._sessions[session_key]
         await self._cleanup_session(session_key, exit_stack, stored_loop)
 
+      # Detached eviction teardowns are still in flight. Only the ones on this
+      # loop can be awaited -- this manager is used from more than one loop,
+      # and awaiting a task that belongs to another one raises. Teardowns
+      # owned by another loop are left to it; it is still running, since the
+      # task has not been cancelled.
+      # Snapshot first: the done callback discards from this set and can fire
+      # from another loop's thread, which would break a live iteration.
+      pending = [
+          task
+          for task in list(self._eviction_tasks)
+          if task.get_loop() is current_loop
+      ]
+
       for transport in self._mtls_transports.values():
         await transport.aclose()
       self._mtls_transports.clear()
+
+    # Awaited outside the lock: a wedged teardown must not park every other
+    # caller of this pool, which is the stall detaching them avoided in the
+    # first place.
+    if pending:
+      await asyncio.gather(*pending, return_exceptions=True)
 
 
 SseServerParams = SseConnectionParams

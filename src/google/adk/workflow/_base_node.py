@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 from collections.abc import AsyncGenerator
 from typing import Any
 from typing import final
@@ -33,7 +34,13 @@ if TYPE_CHECKING:
   from ..events.event import Event
 
 
-class BaseNode(BaseModel):
+# The `abc.ABC` base is load-bearing and must not be dropped. Subclasses
+# declare `@abc.abstractmethod` without inheriting `abc.ABC` themselves, relying
+# on this class for the metaclass. Static type checkers do not see `ABCMeta`
+# through pydantic's `ModelMetaclass`, so without an explicit base they treat
+# those subclasses as concrete and report the abstract methods as returning
+# `None`.
+class BaseNode(BaseModel, abc.ABC):
   """A base class for all nodes in the workflow graph."""
 
   model_config = ConfigDict(arbitrary_types_allowed=True)

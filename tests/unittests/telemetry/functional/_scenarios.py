@@ -12,25 +12,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The scenarios the functional tests drive, and the telemetry they run under.
+"""The end-to-end scenarios the functional tests record.
 
-``install_telemetry`` patches in-memory exporters onto ADK's globals;
-the rest builds the canonical agent / workflow / MCP runs that every
-test case replays.
+Three of them -- a plain agent, a workflow of nodes around that agent, and an
+agent whose tools come from an MCP server -- each driven by the same canned
+conversation, and each recorded under both inference instrumentations.
+
+``install_telemetry`` points ADK's telemetry globals at in-memory exporters;
+``inference_under_test`` hands out the model to run with, its instrumentation
+already active.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import aclosing
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal
 from typing import NamedTuple
 from typing import Sequence
 from typing import TYPE_CHECKING
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import InMemoryRunner
 from google.adk.skills.models import Frontmatter
+from google.adk.skills.models import Resources
+from google.adk.skills.models import Script
 from google.adk.skills.models import Skill
 from google.adk.skills.skill_registry import SkillRegistry
 from google.adk.telemetry import _metrics
@@ -42,31 +54,41 @@ from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.skill_toolset import SkillToolset
 from google.adk.workflow._base_node import START
 from google.adk.workflow._workflow import Workflow
+from google.genai.models import AsyncModels
+from google.genai.types import Candidate
 from google.genai.types import Content
 from google.genai.types import FinishReason
+from google.genai.types import GenerateContentResponse
 from google.genai.types import GenerateContentResponseUsageMetadata
 from google.genai.types import Part
 from mcp import ClientSession as McpClientSession
 from mcp import StdioServerParameters
+from mcp.shared.session import ProgressFnT
+from mcp.types import CallToolResult
 from mcp.types import ListToolsResult
 from mcp.types import PaginatedRequestParams
+from mcp.types import TextContent
 from mcp.types import Tool as McpTool
+from opentelemetry.instrumentation._semconv import _OpenTelemetrySemanticConventionStability
+from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk._logs.export import SimpleLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
+from typing_extensions import assert_never
 from typing_extensions import override
-
-if TYPE_CHECKING:
-  from google.adk.events.event import Event
-  from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
-  from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from ...testing_utils import MockModel
 from ...testing_utils import TestInMemoryRunner
+from ._divergences import InferenceInstrumentation
+
+if TYPE_CHECKING:
+  from google.adk.events.event import Event
 
 # ---------------------------------------------------------------------------
 # Env var + semconv constants.
@@ -78,19 +100,15 @@ EXPERIMENTAL_OPT_IN = "gen_ai_latest_experimental"
 ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN = "ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN"
 ADK_EXPERIMENTAL_TELEMETRY = "ADK_EXPERIMENTAL_TELEMETRY"
 
-# Stable semconv event names.
-GEN_AI_SYSTEM_MESSAGE_EVENT = "gen_ai.system.message"
-GEN_AI_USER_MESSAGE_EVENT = "gen_ai.user.message"
-GEN_AI_CHOICE_EVENT = "gen_ai.choice"
-
-# Experimental semconv event name.
-GEN_AI_COMPLETION_DETAILS_EVENT = "gen_ai.client.inference.operation.details"
-
 # Which end-to-end scenario a test case drives.
 Scenario = Literal["agent", "node", "mcp", "skill"]
 
 # The type of skill being used in a test case.
 SkillType = Literal["local", "registry", "nonexistent"]
+SkillResourceType = Literal[
+    "references", "assets", "scripts", "wrong_type", "wrong_name"
+]
+
 
 # ---------------------------------------------------------------------------
 # Telemetry plumbing.
@@ -150,43 +168,46 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class TelemetryProviders:
+  """The in-memory providers ``install_telemetry`` wired up.
+
+  ADK reads its globals, so it needs no provider; the OTel google-genai
+  instrumentor takes them as ``instrument()`` kwargs.
+  """
+
+  tracer_provider: TracerProvider
+  logger_provider: LoggerProvider
+  meter_provider: MeterProvider
+
+
 def install_telemetry(
     monkeypatch: pytest.MonkeyPatch,
     span_exporter: InMemorySpanExporter,
     log_exporter: InMemoryLogRecordExporter,
     metric_reader: InMemoryMetricReader,
-) -> None:
+) -> TelemetryProviders:
   """Installs an in-memory tracer + log exporter + metric reader.
 
   Spans, logs and metric points emitted by ADK during the test are written
   into the provided exporters / reader. All three MUST be passed in so each
   test makes the choice of sink explicit (e.g. ``InMemoryLogRecordExporter``
   vs ``WebUILogExporter``).
+
+  Returns the providers behind them, for instrumentations that are configured
+  with providers rather than by patching ADK's globals.
   """
   tracer_provider = TracerProvider()
   tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
   real_tracer = tracer_provider.get_tracer(__name__)
 
-  monkeypatch.setattr(
-      tracing.tracer,
-      "start_as_current_span",
-      real_tracer.start_as_current_span,
-  )
-  monkeypatch.setattr(
-      tracing.tracer,
-      "start_span",
-      real_tracer.start_span,
-  )
-  monkeypatch.setattr(
-      node_tracing.tracer,
-      "start_as_current_span",
-      real_tracer.start_as_current_span,
-  )
-  monkeypatch.setattr(
-      node_tracing.tracer,
-      "start_span",
-      real_tracer.start_span,
-  )
+  for module in (tracing, node_tracing):
+    monkeypatch.setattr(
+        module.tracer,
+        "start_as_current_span",
+        real_tracer.start_as_current_span,
+    )
+    monkeypatch.setattr(module.tracer, "start_span", real_tracer.start_span)
 
   logger_provider = LoggerProvider()
   logger_provider.add_log_record_processor(
@@ -201,6 +222,12 @@ def install_telemetry(
     monkeypatch.setattr(
         spec.module, spec.attr, meter.create_histogram(spec.metric_name)
     )
+
+  return TelemetryProviders(
+      tracer_provider=tracer_provider,
+      logger_provider=logger_provider,
+      meter_provider=meter_provider,
+  )
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +246,15 @@ FULL_SYSTEM_INSTRUCTION = (
     f' The description about you is "{AGENT_DESCRIPTION}".'
 )
 FINAL_TEXT = "text response"
+# The model both inference instrumentations report. The OTel-instrumented
+# configuration runs a real ``Gemini`` over a mocked SDK; the native one a
+# ``MockModel`` renamed to match, so the two recordings differ only where the
+# instrumentations do and not over the model name.
+MODEL_NAME = "gemini-2.5-flash"
 TOOL_NAME = "some_tool"
 TOOL_DESCRIPTION = "A sample tool."
+# What the scenario's tool raises for a case that asks it to fail.
+TOOL_ERROR = ValueError("This tool always fails")
 TOOL_ARGS = {"arg1": "val1"}
 TOOL_RESULT_PREFIX = "processed "
 TOOL_RESULT = f"{TOOL_RESULT_PREFIX}{TOOL_ARGS['arg1']}"
@@ -237,7 +271,6 @@ NODE_RESULT = "some result"
 NODE_USER_ID = "some_user"
 NODE_APP_NAME = "some_app"
 
-
 # Token usage reported by the two LLM turns. Every count is distinct, both
 # across the two turns and across the buckets within a turn, so that a golden
 # pins down which turn and which bucket a number came from: swapping any two of
@@ -248,6 +281,10 @@ NODE_APP_NAME = "some_app"
 # `gen_ai.usage.output_tokens` bills candidates + thoughts together, so the
 # goldens record an output of 25 for the first turn and 50 for the second, and
 # 250 input / 75 output summed over the invocation.
+#
+# Every turn reports usage: a real provider always does, and without it the two
+# instrumentations would diverge for a reason that is about neither of them
+# (ADK skips the token metric where the OTel instrumentor records zeros).
 FIRST_TURN_PROMPT_TOKEN_COUNT = 100
 FIRST_TURN_CACHED_TOKEN_COUNT = 40
 FIRST_TURN_CANDIDATES_TOKEN_COUNT = 20
@@ -274,48 +311,59 @@ SECOND_TURN_USAGE = GenerateContentResponseUsageMetadata(
     total_token_count=SECOND_TURN_TOTAL_TOKEN_COUNT,
 )
 
+# One canned model response: what it answers, and what it bills for it.
+Turn = tuple[Part, GenerateContentResponseUsageMetadata]
 
-def _make_llm_response(
-    part: Part, usage: GenerateContentResponseUsageMetadata
-) -> LlmResponse:
-  return LlmResponse(
-      content=Content(role="model", parts=[part]),
-      finish_reason=FinishReason.STOP,
-      usage_metadata=usage,
-  )
+# The canonical 2-turn conversation: a call to ``some_tool``, then the answer.
+TOOL_CALLING_TURNS: tuple[Turn, ...] = (
+    (Part.from_function_call(name=TOOL_NAME, args=TOOL_ARGS), FIRST_TURN_USAGE),
+    (Part.from_text(text=FINAL_TEXT), SECOND_TURN_USAGE),
+)
 
 
-def build_test_agent(
-    *, failing: bool = False, model_exception: Exception | None = None
-) -> Agent:
-  """Builds the canonical 1-tool, 2-LLM-turn agent.
+def mock_test_model(
+    *,
+    turns: tuple[Turn, ...] = TOOL_CALLING_TURNS,
+    model_exception: Exception | None = None,
+) -> MockModel:
+  """The canned conversation as a ``MockModel``, for the ADK-native path.
 
-  If ``model_exception`` is provided, the mock model raises it instead of
-  returning any response, exercising the inference-failure telemetry path.
+  With ``model_exception`` the model raises instead of responding: leave the
+  responses empty so the mock never yields.
   """
-  # When the model is meant to raise, leave the responses empty so the mock
-  # never yields; otherwise it returns the canonical 2-turn conversation.
-  mock_model = MockModel.create(
+  model = MockModel.create(
       responses=(
           []
           if model_exception is not None
           else [
-              _make_llm_response(
-                  Part.from_function_call(name=TOOL_NAME, args=TOOL_ARGS),
-                  FIRST_TURN_USAGE,
-              ),
-              _make_llm_response(
-                  Part.from_text(text=FINAL_TEXT), SECOND_TURN_USAGE
-              ),
+              LlmResponse(
+                  content=Content(role="model", parts=[part]),
+                  finish_reason=FinishReason.STOP,
+                  usage_metadata=usage,
+              )
+              for part, usage in turns
           ]
       ),
       error=model_exception,
   )
+  model.model = MODEL_NAME
+  return model
+
+
+def build_test_agent(
+    model: BaseLlm, *, tool_exception: Exception | None = None
+) -> Agent:
+  """Builds the canonical 1-tool, 2-LLM-turn agent around ``model``.
+
+  ``model`` comes from ``inference_under_test``, which pairs it with the
+  matching instrumentation. With ``tool_exception`` the tool raises it
+  instead of returning, exercising the tool-failure telemetry path.
+  """
 
   def some_tool(arg1: str) -> str:
     """A sample tool."""
-    if failing:
-      raise ValueError("This tool always fails")
+    if tool_exception is not None:
+      raise tool_exception
 
     return f"{TOOL_RESULT_PREFIX}{arg1}"
 
@@ -323,27 +371,25 @@ def build_test_agent(
       name=AGENT_NAME,
       description=AGENT_DESCRIPTION,
       instruction=BASE_INSTRUCTION,
-      model=mock_model,
+      model=model,
       tools=[FunctionTool(some_tool)],
   )
 
 
 def build_test_runner(
-    *, failing: bool = False, model_exception: Exception | None = None
+    model: BaseLlm, *, tool_exception: Exception | None = None
 ) -> TestInMemoryRunner:
   """Builds a runner around the canonical agent (no workflow wrapper)."""
   return TestInMemoryRunner(
-      node=build_test_agent(failing=failing, model_exception=model_exception)
+      node=build_test_agent(model, tool_exception=tool_exception)
   )
 
 
 def build_test_workflow(
-    *, failing: bool = False, model_exception: Exception | None = None
+    model: BaseLlm, *, tool_exception: Exception | None = None
 ) -> Workflow:
   """Builds the canonical Workflow: a nested workflow feeding the agent."""
-  test_agent = build_test_agent(
-      failing=failing, model_exception=model_exception
-  )
+  test_agent = build_test_agent(model, tool_exception=tool_exception)
 
   async def some_node(ctx, node_input):
     return NODE_RESULT
@@ -361,15 +407,18 @@ def build_test_workflow(
 
 
 async def run_node_scenario(
-    *, failing: bool = False, event_sink: list[Event] | None = None
+    model: BaseLlm,
+    *,
+    tool_exception: Exception | None = None,
+    event_sink: list[Event] | None = None,
 ) -> list[Event]:
   """Runs the workflow scenario to completion, draining the event stream.
 
   If ``event_sink`` is provided, collected events are appended to it as they
   are drained. This lets callers inspect the events that were emitted before
-  an exception propagates (e.g. when ``failing=True``).
+  an exception propagates (e.g. when ``tool_exception`` is set).
   """
-  workflow = build_test_workflow(failing=failing)
+  workflow = build_test_workflow(model, tool_exception=tool_exception)
   runner = InMemoryRunner(app_name=NODE_APP_NAME, node=workflow)
   session = await runner.session_service.create_session(
       app_name=NODE_APP_NAME, user_id=NODE_USER_ID
@@ -391,15 +440,147 @@ async def run_node_scenario(
   return collected_events
 
 
-async def run_agent_scenario(runner: TestInMemoryRunner) -> None:
-  """Runs the non-node scenario to completion, draining the event stream."""
+async def run_agent_scenario(
+    runner: TestInMemoryRunner, *, event_sink: list[Event] | None = None
+) -> list[Event]:
+  """Runs the non-node scenario to completion, draining the event stream.
+
+  Collects like ``run_node_scenario``: every scenario reports the events it
+  emitted, and an ``event_sink`` keeps the ones that came before an
+  exception.
+  """
+  collected_events: list[Event] = event_sink if event_sink is not None else []
+
   async with aclosing(
       runner.run_async_with_new_session_agen(
           Content(parts=[Part.from_text(text=USER_PROMPT)], role="user")
       )
   ) as agen:
-    async for _ in agen:
-      pass
+    async for event in agen:
+      collected_events.append(event)
+
+  return collected_events
+
+
+# ---------------------------------------------------------------------------
+# Inference instrumentation.
+# ---------------------------------------------------------------------------
+
+
+def gemini_test_model(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    turns: tuple[Turn, ...] = TOOL_CALLING_TURNS,
+    model_exception: Exception | None = None,
+) -> Gemini:
+  """The canned conversation as a real ``Gemini`` over a mocked-out SDK.
+
+  ``AsyncModels.generate_content`` returns the canned responses instead of
+  calling the API, so the model is real, the SDK call path is real, and no
+  request leaves the process.
+
+  With ``model_exception`` the SDK raises it instead of responding,
+  exercising the inference-failure telemetry path.
+  """
+  responses = iter([
+      GenerateContentResponse(
+          candidates=[
+              Candidate(
+                  content=Content(role="model", parts=[part]),
+                  finish_reason=FinishReason.STOP,
+              )
+          ],
+          usage_metadata=usage,
+      )
+      for part, usage in turns
+  ])
+
+  async def mock_generate_content(
+      self: AsyncModels, **kwargs: object
+  ) -> GenerateContentResponse:
+    # The canned responses don't depend on the request; the request is
+    # asserted through the telemetry the instrumentor derives from it.
+    del self, kwargs
+    if model_exception is not None:
+      raise model_exception
+    return next(responses)
+
+  monkeypatch.setattr(AsyncModels, "generate_content", mock_generate_content)
+
+  # ``Gemini`` builds a real ``google.genai.Client``, which opens no
+  # connection -- but without a key it would look for application default
+  # credentials, so pin one to keep the test off the developer's environment.
+  monkeypatch.setenv("GOOGLE_API_KEY", "fake-api-key-for-tests")
+
+  return Gemini(model=MODEL_NAME)
+
+
+@contextmanager
+def otel_instrumentor(
+    monkeypatch: pytest.MonkeyPatch, providers: TelemetryProviders
+) -> Iterator[None]:
+  """Runs opentelemetry-instrumentation-google-genai over the SDK, for a while.
+
+  Whatever it is to wrap has to be in place before this: it patches
+  ``google.genai`` on the way in and restores what it found on the way out.
+  """
+  # PRIVATE: the instrumentation libraries resolve OTEL_SEMCONV_STABILITY_OPT_IN
+  # once per process and cache it here. Reset that cache so the instrumentor
+  # reads THIS case's env vars rather than whichever case ran first. See
+  # ``test_semconv_stability_cache_can_be_reset``.
+  monkeypatch.setattr(
+      _OpenTelemetrySemanticConventionStability, "_initialized", False
+  )
+  monkeypatch.setattr(
+      _OpenTelemetrySemanticConventionStability,
+      "_OTEL_SEMCONV_STABILITY_SIGNAL_MAPPING",
+      {},
+  )
+
+  instrumentor = GoogleGenAiSdkInstrumentor()
+  instrumentor.instrument(
+      tracer_provider=providers.tracer_provider,
+      logger_provider=providers.logger_provider,
+      meter_provider=providers.meter_provider,
+  )
+  try:
+    yield
+  finally:
+    instrumentor.uninstrument()
+
+
+@contextmanager
+def inference_under_test(
+    instrumentation: InferenceInstrumentation,
+    monkeypatch: pytest.MonkeyPatch,
+    providers: TelemetryProviders,
+    *,
+    turns: tuple[Turn, ...] = TOOL_CALLING_TURNS,
+    model_exception: Exception | None = None,
+) -> Iterator[BaseLlm]:
+  """Yields the model to run a scenario with, its instrumentation active.
+
+  Both come from here, so a scenario cannot end up running one
+  instrumentation's model under the other's instrumentation.
+
+  ``native`` yields a ``MockModel`` that never touches ``google.genai``, and
+  ADK instruments it.
+
+  ``otel`` yields a ``Gemini`` over the mocked-out SDK, with the real
+  instrumentor wrapping it -- mocked FIRST so that what the instrumentor
+  wraps is the mock. ADK sees the wrapped SDK and stands down for a Gemini
+  agent, so the inference telemetry recorded is entirely OTel's.
+  """
+  if instrumentation == "native":
+    yield mock_test_model(turns=turns, model_exception=model_exception)
+  elif instrumentation == "otel":
+    model = gemini_test_model(
+        monkeypatch, turns=turns, model_exception=model_exception
+    )
+    with otel_instrumentor(monkeypatch, providers):
+      yield model
+  else:
+    assert_never(instrumentation)
 
 
 # ---------------------------------------------------------------------------
@@ -410,8 +591,22 @@ async def run_agent_scenario(runner: TestInMemoryRunner) -> None:
 # patched to hand it out instead of dialing ``StdioServerParameters``.
 # ---------------------------------------------------------------------------
 
-MCP_TOOL_NAME = "mcp_echo"
+# The MCP server resolves the tool the canned conversation calls, under the
+# same name and signature the agent's own ``some_tool`` has: one conversation
+# then drives every scenario, and what the MCP scenario adds is where the
+# tool came from, not what the model said.
 MCP_TOOL_DESCRIPTION = "Echoes back its input."
+
+# The one tool a ``FakeMcpSession`` resolves, unless given others.
+DEFAULT_MCP_TOOL = McpTool(
+    name=TOOL_NAME,
+    description=MCP_TOOL_DESCRIPTION,
+    inputSchema={
+        "type": "object",
+        "properties": {"arg1": {"type": "string"}},
+        "required": ["arg1"],
+    },
+)
 
 
 class FakeMcpSession(McpClientSession):
@@ -430,7 +625,7 @@ class FakeMcpSession(McpClientSession):
     # live anyio streams + a peer process. ``isinstance`` checks still
     # succeed, which is all ADK's MCP plumbing requires.
     self._tools: list[McpTool] = (
-        tools if tools is not None else [_default_mcp_tool()]
+        tools if tools is not None else [DEFAULT_MCP_TOOL]
     )
     self.list_tools_call_count: int = 0
 
@@ -444,27 +639,35 @@ class FakeMcpSession(McpClientSession):
     self.list_tools_call_count += 1
     return ListToolsResult(tools=list(self._tools))
 
-
-def _default_mcp_tool() -> McpTool:
-  return McpTool(
-      name=MCP_TOOL_NAME,
-      description=MCP_TOOL_DESCRIPTION,
-      inputSchema={
-          "type": "object",
-          "properties": {"text": {"type": "string"}},
-          "required": ["text"],
-      },
-  )
+  @override
+  async def call_tool(
+      self,
+      name: str,
+      arguments: dict[str, object] | None = None,
+      read_timeout_seconds: timedelta | None = None,
+      progress_callback: ProgressFnT | None = None,
+      *,
+      meta: dict[str, object] | None = None,
+  ) -> CallToolResult:
+    """Answers like the agent's own ``some_tool``, over MCP."""
+    argument = (arguments or {}).get("arg1", "")
+    return CallToolResult(
+        content=[
+            TextContent(type="text", text=f"{TOOL_RESULT_PREFIX}{argument}")
+        ]
+    )
 
 
 def build_mcp_test_runner(
-    monkeypatch: pytest.MonkeyPatch, fake_session: FakeMcpSession
+    model: BaseLlm,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_session: FakeMcpSession,
 ) -> TestInMemoryRunner:
-  """Builds a single-turn agent runner whose only tool source is MCP.
+  """Builds an agent runner whose only tool source is a (fake) MCP server.
 
   Patches the toolset's ``MCPSessionManager`` so ``create_session`` returns
-  ``fake_session`` (no socket / subprocess) and ``close`` is a no-op.
-  Single-turn (one ``Part.from_text`` response) so an assertion on
+  ``fake_session`` (no socket / subprocess) and ``close`` is a no-op. The
+  model answers in one turn, so an assertion on
   ``fake_session.list_tools_call_count`` is unambiguous: exactly one agent
   invocation is performed.
   """
@@ -493,13 +696,12 @@ def build_mcp_test_runner(
       toolset._mcp_session_manager, "close", _close
   )  # pyright: ignore[reportPrivateUsage, reportUnknownArgumentType]
 
-  mock_model = MockModel.create(responses=[Part.from_text(text=FINAL_TEXT)])
   return TestInMemoryRunner(
       node=Agent(
           name=AGENT_NAME,
           description=AGENT_DESCRIPTION,
           instruction=BASE_INSTRUCTION,
-          model=mock_model,
+          model=model,
           tools=[toolset],
       )
   )
@@ -530,6 +732,11 @@ def _make_skill(
           metadata={"adk_additional_tools": additional_tools},
       ),
       instructions="skill instructions",
+      resources=Resources(
+          references={"ref1": "ref1_content"},
+          assets={"deeply/hidden/asset1": "asset1_content"},
+          scripts={"script1": Script(src="script1_content")},
+      ),
   )
   if source == "registry":
     skill._uri = f"https://fake-registry.com/skill/{name}"
@@ -557,30 +764,58 @@ class _FakeSkillRegistry(SkillRegistry):
     return []
 
 
-def build_skill_test_runner(
-    *, skills: Sequence[SkillType] | None = None
-) -> TestInMemoryRunner:
-  """Builds a runner whose model calls ``load_skill`` then answers."""
-  skills = skills or []
+_SKILL_CALL_PARTS: dict[SkillType, Part] = {
+    "local": Part.from_function_call(
+        name="load_skill", args={"skill_name": LOCAL_SKILL_NAME}
+    ),
+    "registry": Part.from_function_call(
+        name="load_skill", args={"skill_name": REGISTRY_SKILL_NAME}
+    ),
+    "nonexistent": Part.from_function_call(
+        name="load_skill", args={"skill_name": NONEXISTENT_SKILL_NAME}
+    ),
+}
 
-  part_map: dict[SkillType, Part] = {
-      "local": Part.from_function_call(
-          name="load_skill", args={"skill_name": LOCAL_SKILL_NAME}
-      ),
-      "registry": Part.from_function_call(
-          name="load_skill", args={"skill_name": REGISTRY_SKILL_NAME}
-      ),
-      "nonexistent": Part.from_function_call(
-          name="load_skill", args={"skill_name": NONEXISTENT_SKILL_NAME}
-      ),
-  }
 
-  mock_model = MockModel.create(
-      responses=[
-          *(part_map[skill] for skill in skills),
-          Part.from_text(text=FINAL_TEXT),
-      ]
+def _load_resource(file_path: str) -> Part:
+  return Part.from_function_call(
+      name="load_skill_resource",
+      args={"skill_name": REGISTRY_SKILL_NAME, "file_path": file_path},
   )
+
+
+_SKILL_RESOURCE_PARTS: dict[SkillResourceType, Part] = {
+    "references": _load_resource("references/ref1"),
+    "assets": _load_resource("assets/deeply/hidden/asset1"),
+    "scripts": _load_resource("scripts/script1"),
+    "wrong_type": _load_resource("fake/file/not/existing"),
+    "wrong_name": _load_resource("references/nope/never"),
+}
+
+
+def skill_turns(
+    skills: Sequence[SkillType], resources: Sequence[SkillResourceType] = ()
+) -> tuple[Turn, ...]:
+  """The canned conversation for the skill scenario.
+
+  One ``load_skill`` call per skill the case loads, one
+  ``load_skill_resource`` call per resource, then the answer: the skill
+  scenario's counterpart to ``TOOL_CALLING_TURNS``, which every other
+  scenario shares. Billed like that one, so what the skill cases record
+  differs from the rest only in which tool the model calls.
+  """
+  return (
+      *((_SKILL_CALL_PARTS[skill], FIRST_TURN_USAGE) for skill in skills),
+      *(
+          (_SKILL_RESOURCE_PARTS[resource], FIRST_TURN_USAGE)
+          for resource in resources
+      ),
+      (Part.from_text(text=FINAL_TEXT), SECOND_TURN_USAGE),
+  )
+
+
+def build_skill_test_runner(model: BaseLlm) -> TestInMemoryRunner:
+  """Builds a runner whose model calls ``load_skill`` then answers."""
   registry = _FakeSkillRegistry(
       _make_skill(name=REGISTRY_SKILL_NAME, source="registry"),
   )
@@ -591,7 +826,7 @@ def build_skill_test_runner(
       name=AGENT_NAME,
       description=AGENT_DESCRIPTION,
       instruction=BASE_INSTRUCTION,
-      model=mock_model,
+      model=model,
       tools=[toolset],
   )
   return TestInMemoryRunner(node=test_agent)

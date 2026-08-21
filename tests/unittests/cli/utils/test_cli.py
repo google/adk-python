@@ -525,3 +525,27 @@ async def test_run_interactively_whitespace_and_exit(
 
   # verify: assistant echoed once with 'echo:hello'
   assert any("echo:hello" in m for m in echoed)
+
+
+def test_print_event_preserves_non_ascii_in_jsonl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """_print_event should output unescaped UTF-8 characters when jsonl=True."""
+  from google.adk.events.event import Event
+
+  echoed: list[str] = []
+  monkeypatch.setattr(click, "echo", lambda msg: echoed.append(msg))
+
+  # Built from a dict rather than types.Content/types.Part: the autouse
+  # _patch_types_and_runner fixture swaps those for fakes that Event's pydantic
+  # validation rejects.
+  event = Event.model_validate({
+      "author": "agent",
+      "content": {"role": "model", "parts": [{"text": "日本語の回答"}]},
+  })
+
+  cli._print_event(event, jsonl=True)
+
+  assert len(echoed) == 1
+  assert "日本語の回答" in echoed[0]
+  assert "\\u" not in echoed[0]

@@ -19,9 +19,12 @@ from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
 
+from google.adk import platform as adk_platform
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps.app import App
 from google.adk.events.event import Event
+from google.adk.plugins.base_plugin import BasePlugin
 # Added for the moved test
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -29,8 +32,8 @@ from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
 from google.adk.workflow import START
 from google.adk.workflow._graph import Graph
-from google.adk.workflow._node import node
 from google.adk.workflow._node import Node
+from google.adk.workflow._node import node
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
@@ -586,13 +589,16 @@ async def test_retry_with_jitter(request: pytest.FixtureRequest):
   app = App(name=request.function.__name__, root_agent=agent)
   runner = testing_utils.InMemoryRunner(app=app)
 
-  with (
-      mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep,
-      mock.patch('random.uniform', return_value=-1.0) as mock_random,
-  ):
-    events = await runner.run_async(testing_utils.get_user_content('start'))
-    mock_sleep.assert_any_await(3.0)
-    mock_random.assert_called_once_with(-2.0, 2.0)
+  mock_random = mock.Mock()
+  mock_random.uniform = mock.Mock(return_value=-1.0)
+  adk_platform.set_random_provider(lambda: mock_random)
+  try:
+    with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
+      events = await runner.run_async(testing_utils.get_user_content('start'))
+      mock_sleep.assert_any_await(3.0)
+      mock_random.uniform.assert_called_once_with(-2.0, 2.0)
+  finally:
+    adk_platform.reset_random_provider()
 
   assert simplify_events_with_node(events) == [
       (
@@ -1158,3 +1164,121 @@ async def test_multiple_failures_first_error_wins(
 
   with pytest.raises(ValueError, match='Fail 1'):
     await runner.run_async(testing_utils.get_user_content('start'))
+
+
+@pytest.mark.asyncio
+async def test_workflow_halts_when_before_run_callback_returns_content():
+  """Regression for #6013: a plugin before_run_callback returning Content must
+  halt the workflow run with that content and skip node execution."""
+
+  ran = {'node': False}
+
+  class _RecordingNode(BaseNode):
+
+    @override
+    async def run(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      ran['node'] = True
+      yield Event(output='should not run')
+
+  class _HaltPlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name='halt_plugin')
+
+    async def before_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> types.Content:
+      return types.Content(
+          role='model', parts=[types.Part(text='halted by plugin')]
+      )
+
+  graph = Graph(edges=[Edge(from_node=START, to_node=_RecordingNode(name='A'))])
+  wf = Workflow(name='halt_wf', graph=graph)
+
+  ss = InMemorySessionService()
+  app = App(name='test', root_agent=wf, plugins=[_HaltPlugin()])
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+  msg = types.Content(parts=[types.Part(text='start')], role='user')
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id='u', session_id=session.id, new_message=msg
+      )
+  ]
+
+  # The run halts with the plugin's content and the node never executes.
+  assert ran['node'] is False
+  assert any(
+      e.content
+      and e.content.parts
+      and e.content.parts[0].text == 'halted by plugin'
+      for e in events
+  )
+
+
+@pytest.mark.asyncio
+async def test_workflow_dispatches_after_run_callback_on_before_run_early_exit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A plugin after_run_callback and post-invocation compaction must be dispatched even when before_run_callback early exits with Content."""
+
+  ran = {'node': False, 'after_run': False, 'compaction': False}
+
+  class _RecordingNode(BaseNode):
+
+    @override
+    async def run(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      ran['node'] = True
+      yield Event(output='should not run')
+
+  class _HaltWithAfterRunPlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name='halt_with_after_run_plugin')
+
+    async def before_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> types.Content:
+      return types.Content(
+          role='model', parts=[types.Part(text='halted by plugin')]
+      )
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      ran['after_run'] = True
+
+  graph = Graph(edges=[Edge(from_node=START, to_node=_RecordingNode(name='A'))])
+  wf = Workflow(name='halt_wf', graph=graph)
+
+  ss = InMemorySessionService()
+  app = App(name='test', root_agent=wf, plugins=[_HaltWithAfterRunPlugin()])
+  runner = Runner(app=app, session_service=ss)
+
+  original_compaction = runner._run_post_invocation_compaction
+
+  async def _mock_compaction(*args, **kwargs):
+    ran['compaction'] = True
+    await original_compaction(*args, **kwargs)
+
+  monkeypatch.setattr(
+      runner, '_run_post_invocation_compaction', _mock_compaction
+  )
+
+  session = await ss.create_session(app_name='test', user_id='u')
+  msg = types.Content(parts=[types.Part(text='start')], role='user')
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id='u', session_id=session.id, new_message=msg
+      )
+  ]
+
+  assert ran['node'] is False
+  assert ran['after_run'] is True
+  assert ran['compaction'] is True

@@ -364,33 +364,121 @@ async def test_search_memory_does_not_collide_on_slash_in_identifiers():
   assert not result.memories
 
 
+# --- Non-Latin language tests ---
+
+
 @pytest.mark.asyncio
-async def test_search_memory_matches_non_latin_text():
-  """Tests that search matches non-Latin (e.g. Cyrillic) text."""
-  memory_service = InMemoryMemoryService()
+@pytest.mark.parametrize(
+    'event_text,query,expected_count',
+    [
+        # Japanese (no space delimiters — substring fallback)
+        ('私の名前は太郎です', '太郎', 1),
+        ('私の名前は太郎です', '天気', 0),
+        # Chinese (no space delimiters — substring fallback)
+        ('我喜欢机器学习', '机器学习', 1),
+        ('我喜欢机器学习', '天气预报', 0),
+        # Korean (space-delimited — token match)
+        ('제 이름은 민수입니다', '민수입니다', 1),
+        # Cyrillic (space-delimited — token match)
+        ('Меня зовут Алексей', 'Алексей', 1),
+        # Mixed: non-Latin substring + Latin token in same event
+        ('太郎 works at ABC Corp', '太郎', 1),
+        ('太郎 works at ABC Corp', 'ABC', 1),
+        # Latin partial-word must NOT match (regression guard)
+        ('I like to code in Python.', 'thon', 0),
+    ],
+)
+async def test_search_memory_non_latin(event_text, query, expected_count):
+  """Tests search_memory with non-Latin scripts and mixed content."""
   session = Session(
       app_name=MOCK_APP_NAME,
       user_id=MOCK_USER_ID,
-      id='session-non-latin',
-      last_update_time=5000,
+      id='session-i18n',
+      last_update_time=7000,
       events=[
           Event(
-              id='event-non-latin',
-              invocation_id='inv-non-latin',
+              id='event-i18n',
+              invocation_id='inv-i18n',
               author='user',
-              timestamp=70000,
-              content=types.Content(parts=[types.Part(text='Привет мир')]),
+              timestamp=90000,
+              content=types.Content(parts=[types.Part(text=event_text)]),
           ),
       ],
   )
+  memory_service = InMemoryMemoryService()
   await memory_service.add_session_to_memory(session)
 
   result = await memory_service.search_memory(
-      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='привет'
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query=query
+  )
+  assert len(result.memories) == expected_count
+
+
+def _text_event(tag: str, text: str) -> Event:
+  return Event(
+      id=f'event-{tag}',
+      invocation_id=f'inv-{tag}',
+      author='user',
+      timestamp=1.0,
+      content=types.Content(parts=[types.Part(text=text)]),
   )
 
-  assert len(result.memories) == 1
-  assert result.memories[0].content.parts[0].text == 'Привет мир'
+
+@pytest.mark.asyncio
+async def test_search_memory_ranks_by_number_of_matching_words():
+  """Tests that the events matching the most query words come first."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name=MOCK_APP_NAME,
+          user_id=MOCK_USER_ID,
+          id='session-ranked',
+          last_update_time=1000,
+          events=[
+              _text_event('ranked-a', 'The deploy is ready.'),
+              _text_event('ranked-b', 'Ready.'),
+              _text_event('ranked-c', 'The deploy status is ready.'),
+          ],
+      )
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='deploy status ready'
+  )
+
+  assert [memory.content.parts[0].text for memory in result.memories] == [
+      'The deploy status is ready.',
+      'The deploy is ready.',
+      'Ready.',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_search_memory_returns_at_most_ten_memories():
+  """Tests that a word shared with the whole store cannot return the store."""
+  memory_service = InMemoryMemoryService()
+  events = [_text_event(f'note-{i}', f'note {i} about work') for i in range(20)]
+  events.append(_text_event('backlog', 'the backlog note about work'))
+  await memory_service.add_session_to_memory(
+      Session(
+          app_name=MOCK_APP_NAME,
+          user_id=MOCK_USER_ID,
+          id='session-many',
+          last_update_time=1000,
+          events=events,
+      )
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='work backlog note'
+  )
+
+  texts = [memory.content.parts[0].text for memory in result.memories]
+  # The best match is stored last but ranks first, and the rest tie, so they
+  # keep the order they were added in.
+  assert texts == ['the backlog note about work'] + [
+      f'note {i} about work' for i in range(9)
+  ]
 
 
 def _make_event(tag: str) -> Event:

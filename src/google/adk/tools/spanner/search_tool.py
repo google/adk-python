@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 from typing import Dict
 from typing import List
@@ -30,6 +31,115 @@ from . import utils
 from .settings import APPROXIMATE_NEAREST_NEIGHBORS
 from .settings import EXACT_NEAREST_NEIGHBORS
 from .settings import SpannerToolSettings
+
+# Pattern for valid SQL identifiers: alphanumeric, underscores,
+# dots (for schema-qualified names), and backtick/double-quote quoting.
+# Supports per-part quoting for schema-qualified names.
+_IDENTIFIER_PART_PATTERN = r'(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\]+`|"[^"\\]+")'
+_SAFE_IDENTIFIER_RE = re.compile(
+    rf"^{_IDENTIFIER_PART_PATTERN}(?:\.{_IDENTIFIER_PART_PATTERN})*$"
+)
+
+# Operator allowlist for additional_filter
+_ALLOWED_OPERATORS = r"(?:=|!=|<=|>=|<|>|(?i:\bLIKE\b|\bIS\s+NOT\b|\bIS\b))"
+
+# Value allowlist for additional_filter: numbers, single-quoted strings (no backslashes), booleans, NULL
+_ALLOWED_VALUES = (
+    r"(?:[+-]?\d+(?:\.\d+)?|'[^'\\]*'|(?i:\bTRUE\b|\bFALSE\b|\bNULL\b))"
+)
+
+# IN operator support
+_IN_OPERATOR = r"(?i:\bNOT\s+IN\b|\bIN\b)"
+_IN_VALUES = rf"\(\s*{_ALLOWED_VALUES}(?:\s*,\s*{_ALLOWED_VALUES})*\s*\)"
+
+# BETWEEN operator support
+_BETWEEN_OPERATOR = r"(?i:\bBETWEEN\b)"
+_BETWEEN_VALUE = rf"{_ALLOWED_VALUES}\s+(?i:\bAND\b)\s+{_ALLOWED_VALUES}"
+
+# A single condition (without paren)
+_BASE_COND = (
+    rf"(?:"
+    rf"(?:{_IDENTIFIER_PART_PATTERN}(?:\.{_IDENTIFIER_PART_PATTERN})*)\s*{_ALLOWED_OPERATORS}\s*{_ALLOWED_VALUES}"
+    rf"|(?:{_IDENTIFIER_PART_PATTERN}(?:\.{_IDENTIFIER_PART_PATTERN})*)\s*{_IN_OPERATOR}\s*{_IN_VALUES}"
+    rf"|(?:{_IDENTIFIER_PART_PATTERN}(?:\.{_IDENTIFIER_PART_PATTERN})*)\s*{_BETWEEN_OPERATOR}\s*{_BETWEEN_VALUE}"
+    rf"|{_IDENTIFIER_PART_PATTERN}(?:\.{_IDENTIFIER_PART_PATTERN})*"  # Just identifier (e.g. boolean col)
+    rf"|1\s*=\s*1"  # dummy filter
+    rf")"
+)
+
+_BLOCK_0 = rf"{_BASE_COND}(?:\s+(?i:\bAND\b|\bOR\b)\s+{_BASE_COND})*"
+_COND_1 = rf"(?:{_BASE_COND}|\(\s*{_BLOCK_0}\s*\))"
+_BLOCK_1 = rf"{_COND_1}(?:\s+(?i:\bAND\b|\bOR\b)\s+{_COND_1})*"
+_COND_2 = rf"(?:{_BASE_COND}|\(\s*{_BLOCK_1}\s*\))"
+
+# Full filter pattern: conditions joined by AND/OR, supporting up to 2 levels of nested parens
+_SAFE_FILTER_RE = re.compile(
+    rf"^\s*{_COND_2}(?:\s+(?i:\bAND\b|\bOR\b)\s+{_COND_2})*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _validate_identifier(value: str, param_name: str) -> str:
+  """Validate that a value is a safe SQL identifier.
+
+  Args:
+    value: The identifier string to validate.
+    param_name: Name of the parameter (for error messages).
+
+  Returns:
+    The validated identifier string.
+
+  Raises:
+    ValueError: If the identifier contains unsafe characters.
+  """
+  if not value or not _SAFE_IDENTIFIER_RE.match(value.strip()):
+    raise ValueError(
+        f"Invalid SQL identifier for {param_name}: {value!r}. "
+        "Identifiers must contain only alphanumeric characters, underscores, "
+        "and dots, or be quoted with backticks or double quotes."
+    )
+  return value.strip()
+
+
+def _validate_column_list(columns: List[str], param_name: str) -> List[str]:
+  """Validate that each column name in a list is a safe SQL identifier."""
+  validated = []
+  for col in columns:
+    _validate_identifier(col, param_name)
+    validated.append(col)
+  return validated
+
+
+def _validate_additional_filter(
+    filter_value: Optional[str],
+) -> Optional[str]:
+  """Validate that an additional_filter does not contain injection patterns.
+
+  This is a defense-in-depth measure. The additional_filter field is
+  documented as a developer-trusted value, but since it can be populated
+  by the LLM at runtime via tool calls, we restrict it to an allow-listed
+  grammar.
+
+  Args:
+    filter_value: The filter string to validate.
+
+  Returns:
+    The validated filter string, or None.
+
+  Raises:
+    ValueError: If the filter contains dangerous patterns.
+  """
+  if filter_value is None:
+    return None
+  if not _SAFE_FILTER_RE.match(filter_value):
+    raise ValueError(
+        "additional_filter contains unsafe or unsupported patterns: "
+        f"{filter_value!r}. Only simple filters using =, !=, <=, >=, <, >, "
+        "LIKE, IS, IS NOT, IN, BETWEEN joined by AND or OR (with up to 2 "
+        "levels of nested parentheses) are allowed."
+    )
+  return filter_value
+
 
 # Embedding model settings.
 # Only for Spanner GoogleSQL dialect database, and use Spanner ML.PREDICT
@@ -75,6 +185,8 @@ def _generate_postgresql_for_embedding_query(
     vertex_ai_embedding_model_endpoint: str,
     output_dimensionality: Optional[int],
 ) -> str:
+  if output_dimensionality is not None:
+    output_dimensionality = int(output_dimensionality)
   instances_json = f"""
       'instances',
       JSONB_BUILD_ARRAY(
@@ -166,6 +278,7 @@ def _generate_sql_for_knn(
     top_k: int,
 ) -> str:
   """Generates a SQL query for kNN search."""
+  top_k = int(top_k)
   if dialect == DatabaseDialect.POSTGRESQL:
     distance_function = _get_postgresql_distance_function(distance_type)
     embedding_parameter = f"${_POSTGRESQL_PARAMETER_QUERY_EMBEDDING}"
@@ -174,7 +287,7 @@ def _generate_sql_for_knn(
         distance_type, ann=False
     )
     embedding_parameter = f"@{_GOOGLESQL_PARAMETER_QUERY_EMBEDDING}"
-  columns = columns + [f"""{distance_function}(
+  columns = list(columns) + [f"""{distance_function}(
       {embedding_column_to_search},
       {embedding_parameter}) AS {_DISTANCE_ALIAS}
   """]
@@ -205,13 +318,15 @@ def _generate_sql_for_ann(
     num_leaves_to_search: int,
 ):
   """Generates a SQL query for ANN search."""
+  top_k = int(top_k)
+  num_leaves_to_search = int(num_leaves_to_search)
   if dialect == DatabaseDialect.POSTGRESQL:
     raise NotImplementedError(
         f"{APPROXIMATE_NEAREST_NEIGHBORS} is not supported for PostgreSQL"
         " dialect."
     )
   distance_function = _get_googlesql_distance_function(distance_type, ann=True)
-  columns = columns + [f"""{distance_function}(
+  columns = list(columns) + [f"""{distance_function}(
       {embedding_column_to_search},
       @{_GOOGLESQL_PARAMETER_QUERY_EMBEDDING},
       options => JSON '{{"num_leaves_to_search": {num_leaves_to_search}}}'
@@ -297,7 +412,14 @@ async def similarity_search(
       credentials (Credentials): The credentials to use for the request.
       additional_filter (Optional[str]): An optional filter to apply to the
         search query. If provided, this will be added to the WHERE clause of the
-        final query.
+        final query. Only simple filters are allowed. Supported grammar:
+        - Columns and values compared with: =, !=, <, >, <=, >=, LIKE, IS, IS NOT
+        - Set membership: IN, NOT IN (e.g., col IN (val1, val2))
+        - Range checks: BETWEEN ... AND ... (e.g., col BETWEEN val1 AND val2)
+        - Boolean columns (e.g., col_name) or dummy filter '1=1'
+        - Logical operators: AND, OR (case-insensitive)
+        - Parentheses: up to 2 levels of nesting (e.g., (col1 = val1 OR col2 = val2) AND col3 = val3)
+        Values must be numbers, single-quoted strings (without backslashes), booleans, or NULL.
       search_options (Optional[Dict[str, Any]]): A dictionary of options to use
         for the similarity search. The following options are supported:
         - top_k: The number of most similar documents to return. The
@@ -328,7 +450,7 @@ async def similarity_search(
         ...   project_id="my-project",
         ...   instance_id="my-instance",
         ...   database_id="my-database",
-        ...   table_name="my-product-table",
+        ...   table_name="my_product_table",
         ...   query="Tools that can help me clean my house.",
         ...   embedding_column_to_search="product_description_embedding",
         ...   columns=["product_name", "product_description", "price_in_cents"],
@@ -362,6 +484,67 @@ async def similarity_search(
   """
   # fmt: on
   try:
+    # Validate input arguments to prevent SQL injection
+    _validate_identifier(table_name, "table_name")
+    _validate_identifier(
+        embedding_column_to_search, "embedding_column_to_search"
+    )
+    _validate_column_list(columns, "columns")
+    if additional_filter:
+      _validate_additional_filter(additional_filter)
+
+    opts = embedding_options or {}
+    gsql_model = opts.get(_SPANNER_GSQL_EMBEDDING_MODEL_NAME)
+    if gsql_model:
+      _validate_identifier(gsql_model, _SPANNER_GSQL_EMBEDDING_MODEL_NAME)
+
+    pg_endpoint = opts.get(_SPANNER_PG_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT)
+    if pg_endpoint:
+      if not re.match(
+          r"^projects/[\w-]+/locations/[\w-]+/publishers/[\w-]+/models/[\w.-]+$",
+          pg_endpoint,
+      ):
+        raise ValueError(
+            "Invalid Vertex AI endpoint format: "
+            f"{pg_endpoint!r}. Expected format: "
+            "projects/$project/locations/$location/publishers/google/models/$model"
+        )
+
+    return await _similarity_search_internal(
+        project_id=project_id,
+        instance_id=instance_id,
+        database_id=database_id,
+        table_name=table_name,
+        query=query,
+        embedding_column_to_search=embedding_column_to_search,
+        columns=columns,
+        embedding_options=embedding_options,
+        credentials=credentials,
+        additional_filter=additional_filter,
+        search_options=search_options,
+    )
+  except Exception as ex:
+    return {
+        "status": "ERROR",
+        "error_details": repr(ex),
+    }
+
+
+async def _similarity_search_internal(
+    project_id: str,
+    instance_id: str,
+    database_id: str,
+    table_name: str,
+    query: str,
+    embedding_column_to_search: str,
+    columns: List[str],
+    embedding_options: Dict[str, str],
+    credentials: Credentials,
+    additional_filter: Optional[str] = None,
+    search_options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+  try:
+
     # Get Spanner client
     spanner_client = client.get_spanner_client(
         project=project_id, credentials=credentials
@@ -426,6 +609,14 @@ async def similarity_search(
           " must be specified for PostgreSQL dialect Spanner database."
       )
     output_dimensionality = embedding_options.get(_OUTPUT_DIMENSIONALITY)
+    if output_dimensionality is not None:
+      try:
+        output_dimensionality = int(output_dimensionality)
+      except (ValueError, TypeError):
+        raise ValueError(
+            f"Invalid value for {_OUTPUT_DIMENSIONALITY}:"
+            f" {output_dimensionality!r}. Must be an integer."
+        )
     if (
         output_dimensionality is not None
         and spanner_gsql_embedding_model_name is not None
@@ -607,7 +798,7 @@ async def vector_store_similarity_search(
           settings.vector_store_settings.num_leaves_to_search
       )
 
-    return await similarity_search(
+    return await _similarity_search_internal(
         project_id=settings.vector_store_settings.project_id,
         instance_id=settings.vector_store_settings.instance_id,
         database_id=settings.vector_store_settings.database_id,

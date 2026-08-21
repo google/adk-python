@@ -27,6 +27,8 @@ from sqlalchemy.types import DateTime
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.types import TypeEngine
 
+from ...utils import _json_utils
+
 DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256
 
@@ -77,7 +79,9 @@ class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
       return None
     decoded: object = value
     if dialect.name != "postgresql":
-      decoded = json.loads(cast("str | bytes | bytearray", value))
+      decoded = _json_utils.safe_json_loads(
+          cast("str | bytes | bytearray", value), context="session state"
+      )
     return cast("dict[str, Any]", decoded)
 
 

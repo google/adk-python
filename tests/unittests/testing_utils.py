@@ -28,6 +28,9 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.flows.llm_flows._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
+from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_BEGIN
+from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_END
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models import LlmCapabilities
 from google.adk.models.base_llm import BaseLlm
@@ -182,6 +185,33 @@ def simplify_content(
 
 def get_user_content(message: types.ContentUnion) -> types.Content:
   return message if isinstance(message, types.Content) else UserContent(message)
+
+
+def other_agent_preamble_part() -> types.Part:
+  """Returns the leading part of another agent's message relayed as context."""
+  return types.Part(text=OTHER_AGENT_CONTEXT_PREAMBLE)
+
+
+def other_agent_part(attribution: str, payload: str) -> types.Part:
+  """Builds a relayed part: an attribution line plus the fenced payload.
+
+  Args:
+    attribution: The line naming the speaker, e.g. ``[other_agent] said:``.
+    payload: The relayed text, as it should appear inside the fence.
+
+  Returns:
+    The part the contents processor is expected to produce. The fence is
+    assembled here rather than by calling the code under test, so a change to
+    how relayed content is quoted has to be made deliberately in both places.
+  """
+  return types.Part(
+      text=(
+          f'{attribution}\n'
+          f'{QUOTED_CONTENT_BEGIN}\n'
+          f'{payload}\n'
+          f'{QUOTED_CONTENT_END}'
+      )
+  )
 
 
 class TestInMemoryRunner(AfInMemoryRunner):

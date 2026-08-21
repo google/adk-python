@@ -23,9 +23,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 import pytest
 
 from .functional._aclosing import aclosing_wrapping_assertions
-from .functional._recording import record_case
+from .functional._recording import check_case
 from .functional._scenarios import install_telemetry
+from .functional._scenarios import mock_test_model
 from .functional._scenarios import run_node_scenario
+from .functional._scenarios import TOOL_ERROR
 from .functional_node_test_cases import ALL_NODE_CASES
 
 if TYPE_CHECKING:
@@ -43,12 +45,12 @@ async def test_telemetry_schema(case: FunctionalTestCase) -> None:
   workflow.
 
   Asserts the entire telemetry schema (spans + attributes + per-span logs)
-  matches the hand-written expected shape for the given semconv +
-  content-capture configuration.
+  ADK's own instrumentation records matches the golden, under the case's
+  semconv + content-capture configuration, and that the OTel instrumentor
+  diverges from it only where it already did.
   """
-  recording = await record_case(case)
+  recording = await check_case(case)
 
-  assert recording.digest == case.expected
   _verify_associated_events(recording.spans, recording.events)
 
 
@@ -73,7 +75,7 @@ async def test_async_generators_wrapped_in_aclosing(
   )
 
   with aclosing_wrapping_assertions():
-    _ = await run_node_scenario()
+    _ = await run_node_scenario(mock_test_model())
 
 
 def _verify_associated_events(
@@ -123,7 +125,11 @@ async def test_exception_preserves_attributes(
 
   captured_events: list[Event] = []
   with pytest.raises(ValueError, match="This tool always fails"):
-    await run_node_scenario(failing=True, event_sink=captured_events)
+    await run_node_scenario(
+        mock_test_model(),
+        tool_exception=TOOL_ERROR,
+        event_sink=captured_events,
+    )
 
   # Assert
   spans = span_exporter.get_finished_spans()
@@ -178,7 +184,7 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
       lambda _: True,
   )
 
-  _ = await run_node_scenario()
+  _ = await run_node_scenario(mock_test_model())
 
   # Assert
   spans = span_exporter.get_finished_spans()
