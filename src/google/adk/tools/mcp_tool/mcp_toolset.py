@@ -26,7 +26,9 @@ from typing import Awaitable
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Mapping
 from typing import Optional
+from typing import Sequence
 from typing import TextIO
 from typing import TypeVar
 from typing import Union
@@ -41,8 +43,11 @@ from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
 from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import ListResourcesResult
 from ...dependencies._mcp import ListToolsResult
+from ...dependencies._mcp import NotificationBinding
+from ...dependencies._mcp import ResultClaim
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import StdioServerParameters
@@ -170,6 +175,9 @@ class McpToolset(BaseToolset):
       sampling_callback: SamplingFnT | None = None,
       sampling_capabilities: SamplingCapability | None = None,
       elicitation_callback: ElicitationFnT | None = None,
+      extensions: dict[str, dict[str, Any]] | None = None,
+      result_claims: Mapping[str, Sequence[ResultClaim]] | None = None,
+      notification_bindings: Sequence[NotificationBinding] | None = None,
       credential_key: str | None = None,
   ):
     """Initializes the McpToolset.
@@ -221,6 +229,18 @@ class McpToolset(BaseToolset):
       elicitation_callback: Optional callback to handle elicitation requests
         from the MCP server (``elicitation/create``), including URL-mode
         elicitations used for out-of-band flows such as auth challenges.
+      extensions: MCP extensions this client advertises, keyed by extension
+        identifier (e.g. ``{"io.modelcontextprotocol/tasks": {}}``). Passing
+        any of the three extension arguments also switches session bring-up
+        to ``server/discover``, falling back to ``initialize()``, because an
+        extension capability is only live on a modern connection. Requires
+        MCP SDK 2.x, which is where ``ClientSession`` grew the seam; on 1.x
+        this raises rather than going quiet.
+      result_claims: Non-core ``tools/call`` result shapes to accept, keyed by
+        the identifier of the extension that defines them. The toolset
+        resolves a claimed result through its claim before handing it to the
+        agent, so the agent sees an ordinary tool result either way.
+      notification_bindings: Handlers for extension notifications.
       credential_key: A user specified key used to load and save this credential
         in a credential service. Used with auth_scheme.
     """
@@ -230,6 +250,9 @@ class McpToolset(BaseToolset):
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
     self._elicitation_callback = elicitation_callback
+    self._extensions = extensions
+    self._result_claims = result_claims
+    self._notification_bindings = notification_bindings
 
     if not connection_params:
       raise ValueError("Missing connection params in McpToolset.")
@@ -260,6 +283,9 @@ class McpToolset(BaseToolset):
         sampling_callback=self._sampling_callback,
         sampling_capabilities=self._sampling_capabilities,
         elicitation_callback=self._elicitation_callback,
+        extensions=self._extensions,
+        result_claims=self._result_claims,
+        notification_bindings=self._notification_bindings,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential

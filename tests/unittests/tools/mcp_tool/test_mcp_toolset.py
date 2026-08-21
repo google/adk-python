@@ -19,6 +19,7 @@ import itertools
 import pickle
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
@@ -55,6 +56,9 @@ from mcp.types import ReadResourceResult
 from mcp.types import Resource
 from mcp.types import TextResourceContents
 import pytest
+
+from ._sdk_compat import requires_sdk_v1
+from ._sdk_compat import requires_sdk_v2
 
 
 class MockMCPTool:
@@ -928,6 +932,58 @@ class TestMcpToolset:
     assert called["value"] is True
     assert result["role"] == "assistant"
     assert result["content"]["text"] == "sampling response"
+
+  @requires_sdk_v2
+  def test_extension_arguments_plumbed_to_session_manager(self):
+    """The three extension arguments reach the session manager."""
+    extensions = {"io.modelcontextprotocol/tasks": {}}
+    result_claims = {
+        "io.modelcontextprotocol/tasks": [SimpleNamespace(model=object)]
+    }
+    notification_bindings = ["sentinel-binding"]
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        extensions=extensions,
+        result_claims=result_claims,
+        notification_bindings=notification_bindings,
+    )
+
+    # pylint: disable=protected-access
+    assert toolset._extensions is extensions
+    assert toolset._mcp_session_manager._extensions is extensions
+    assert toolset._mcp_session_manager._result_claims is result_claims
+    assert (
+        toolset._mcp_session_manager._notification_bindings
+        is notification_bindings
+    )
+    # pylint: enable=protected-access
+
+  @requires_sdk_v1
+  def test_extension_arguments_are_refused_on_sdk_v1(self):
+    """An extension opt-in raises where the seam does not exist.
+
+    The alternative would be to accept it and do nothing, which on a tool
+    call the extension exists to make long-running reads as a hang. The
+    message has to name the SDK, because nothing else about the install
+    explains why an argument the signature accepts had no effect.
+    """
+    with pytest.raises(ValueError, match="requires MCP SDK 2.x"):
+      McpToolset(
+          connection_params=self.mock_stdio_params,
+          extensions={"io.modelcontextprotocol/tasks": {}},
+      )
+
+  def test_extension_arguments_default_to_none(self):
+    """A toolset without extensions advertises none."""
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
+
+    # pylint: disable=protected-access
+    assert toolset._extensions is None
+    assert toolset._result_claims is None
+    assert toolset._notification_bindings is None
+    assert not toolset._mcp_session_manager._claims_by_model
+    # pylint: enable=protected-access
 
   @pytest.mark.asyncio
   async def test_elicitation_callback_plumbed_to_session_manager(self):
