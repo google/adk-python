@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import collections
 import threading
 import time
 
@@ -27,10 +28,11 @@ from ... import version
 USER_AGENT = f"adk-pubsub-tool google-adk/{version.__version__}"
 
 _CACHE_TTL = 1800  # 30 minutes
+_CACHE_MAX_SIZE = 10
 
-_publisher_client_cache: dict[
+_publisher_client_cache: collections.OrderedDict[
     object, tuple[pubsub_v1.PublisherClient, float]
-] = {}
+] = collections.OrderedDict()
 _publisher_client_lock = threading.Lock()
 
 
@@ -60,14 +62,28 @@ def get_publisher_client(
     else:
       user_agents_key = tuple(user_agent)
 
-  # Use object identity for credentials and publisher_options as they are not hashable
-  key = (id(credentials), user_agents_key, id(publisher_options))
+  # PublisherOptions is a NamedTuple, so it keys the cache by value and callers
+  # that build an equivalent options object per call still share one client.
+  # Credentials are not hashable and are keyed by identity, which the cached
+  # client keeps valid by holding on to them.
+  key = (id(credentials), user_agents_key, publisher_options)
+  cacheable = True
+  try:
+    hash(key)
+  except TypeError:
+    # Options holding an unhashable field cannot be keyed by value, and keying
+    # them by identity would risk serving a client built for other options.
+    cacheable = False
 
   with _publisher_client_lock:
-    if key in _publisher_client_cache:
-      client, expiration = _publisher_client_cache[key]
-      if expiration > current_time:
-        return client
+    if cacheable:
+      entry = _publisher_client_cache.get(key)
+      if entry is not None:
+        client, expiration = entry
+        if expiration > current_time:
+          _publisher_client_cache.move_to_end(key)
+          return client
+        _publisher_client_cache.pop(key)
 
     user_agents = [USER_AGENT]
     if user_agent:
@@ -88,7 +104,16 @@ def get_publisher_client(
         batch_settings=custom_batch_settings,
     )
 
-    _publisher_client_cache[key] = (publisher_client, current_time + _CACHE_TTL)
+    if cacheable:
+      if len(_publisher_client_cache) >= _CACHE_MAX_SIZE:
+        # The evicted client is dropped rather than closed, since another
+        # thread may still be publishing on it. Its channel closes once the
+        # last reference to it goes.
+        _publisher_client_cache.popitem(last=False)
+      _publisher_client_cache[key] = (
+          publisher_client,
+          current_time + _CACHE_TTL,
+      )
 
     return publisher_client
 

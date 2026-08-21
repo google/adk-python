@@ -14,6 +14,9 @@
 
 """Unit tests for the service account credential exchanger."""
 
+import calendar
+import datetime
+import time
 from unittest.mock import MagicMock
 
 from google.adk.auth.auth_credential import AuthCredential
@@ -23,6 +26,7 @@ from google.adk.auth.auth_credential import ServiceAccountCredential
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import AuthSchemeType
 from google.adk.tools.openapi_tool.auth.credential_exchangers.base_credential_exchanger import AuthCredentialMissingError
+from google.adk.tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import _reset_cache
 from google.adk.tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
 import google.auth
 from google.auth import exceptions as google_auth_exceptions
@@ -41,6 +45,11 @@ _ID_TOKEN_MONKEYPATCH_TARGET = (
 )
 
 _FETCH_ID_TOKEN_MONKEYPATCH_TARGET = "google.oauth2.id_token.fetch_id_token"
+
+
+@pytest.fixture(autouse=True)
+def reset_exchanger_cache():
+  _reset_cache()
 
 
 @pytest.fixture
@@ -391,3 +400,241 @@ def test_model_validator_allows_adc_without_explicit_credential():
   )
   assert sa.service_account_credential is None
   assert sa.use_default_credential is True
+
+
+def test_exchange_access_token_caching(
+    service_account_exchanger, auth_scheme, sa_credential, monkeypatch
+):
+  mock_credentials = MagicMock()
+  mock_credentials.token = "mock_access_token"
+  mock_credentials.expiry = datetime.datetime(2026, 8, 10, 22, 0, 0)
+  mock_credentials.quota_project_id = None
+
+  mock_from_sa_info = MagicMock(return_value=mock_credentials)
+  monkeypatch.setattr(_ACCESS_TOKEN_MONKEYPATCH_TARGET, mock_from_sa_info)
+
+  expiry_timestamp = calendar.timegm(mock_credentials.expiry.utctimetuple())
+  current_time = expiry_timestamp - 600
+  monkeypatch.setattr(time, "time", lambda: current_time)
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          service_account_credential=sa_credential,
+          scopes=_DEFAULT_SCOPES,
+      ),
+  )
+
+  # First call - should exchange
+  result1 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+  assert result1.http.credentials.token == "mock_access_token"
+  assert mock_from_sa_info.call_count == 1
+
+  # Second call - should return cached
+  result2 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+  assert result2.http.credentials.token == "mock_access_token"
+  assert mock_from_sa_info.call_count == 1
+
+  # Third call - time moves forward, close to expiry
+  current_time = expiry_timestamp - 200  # 200s < 300s, so expired
+  monkeypatch.setattr(time, "time", lambda: current_time)
+
+  mock_credentials2 = MagicMock()
+  mock_credentials2.token = "new_mock_access_token"
+  mock_credentials2.expiry = datetime.datetime(2026, 8, 10, 23, 0, 0)
+  mock_credentials2.quota_project_id = None
+  mock_from_sa_info.return_value = mock_credentials2
+
+  result3 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+  assert result3.http.credentials.token == "new_mock_access_token"
+  assert mock_from_sa_info.call_count == 2
+
+  # Fourth call - config changes
+  auth_credential_new_scopes = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          service_account_credential=sa_credential,
+          scopes=["another-scope"],
+      ),
+  )
+  mock_credentials3 = MagicMock()
+  mock_credentials3.token = "another_scope_token"
+  mock_credentials3.expiry = datetime.datetime(2026, 8, 11, 0, 0, 0)
+  mock_credentials3.quota_project_id = None
+  mock_from_sa_info.return_value = mock_credentials3
+
+  result4 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential_new_scopes
+  )
+  assert result4.http.credentials.token == "another_scope_token"
+  assert mock_from_sa_info.call_count == 3
+
+
+def test_exchange_id_token_caching_explicit(
+    service_account_exchanger, auth_scheme, sa_credential, monkeypatch
+):
+  mock_id_credentials = MagicMock()
+  mock_id_credentials.token = "mock_id_token"
+  mock_id_credentials.expiry = datetime.datetime(2026, 8, 10, 22, 0, 0)
+  mock_from_sa_info = MagicMock(return_value=mock_id_credentials)
+  monkeypatch.setattr(_ID_TOKEN_MONKEYPATCH_TARGET, mock_from_sa_info)
+
+  expiry_timestamp = calendar.timegm(mock_id_credentials.expiry.utctimetuple())
+  current_time = expiry_timestamp - 600
+  monkeypatch.setattr(time, "time", lambda: current_time)
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          service_account_credential=sa_credential,
+          scopes=_DEFAULT_SCOPES,
+          use_id_token=True,
+          audience="https://my-service.run.app",
+      ),
+  )
+
+  # First call
+  result1 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+  assert result1.http.credentials.token == "mock_id_token"
+  assert mock_from_sa_info.call_count == 1
+
+  # Second call - cached
+  result2 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+  assert result2.http.credentials.token == "mock_id_token"
+  assert mock_from_sa_info.call_count == 1
+
+  # Third call - expired
+  current_time = expiry_timestamp - 200
+  monkeypatch.setattr(time, "time", lambda: current_time)
+
+  mock_id_credentials2 = MagicMock()
+  mock_id_credentials2.token = "new_mock_id_token"
+  mock_id_credentials2.expiry = datetime.datetime(2026, 8, 10, 23, 0, 0)
+  mock_from_sa_info.return_value = mock_id_credentials2
+
+  result3 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+  assert result3.http.credentials.token == "new_mock_id_token"
+  assert mock_from_sa_info.call_count == 2
+
+
+def test_exchange_id_token_caching_adc(
+    service_account_exchanger, auth_scheme, monkeypatch
+):
+  mock_fetch_id_token = MagicMock(return_value="mock_adc_id_token")
+  monkeypatch.setattr(_FETCH_ID_TOKEN_MONKEYPATCH_TARGET, mock_fetch_id_token)
+
+  expiry_timestamp = 1773268800  # 2026-08-10 22:00:00 UTC
+  mock_jwt_decode = MagicMock(return_value={"exp": expiry_timestamp})
+  monkeypatch.setattr(
+      "google.adk.tools.openapi_tool.auth.credential_exchangers.service_account_exchanger.jwt.decode",
+      mock_jwt_decode,
+  )
+
+  current_time = expiry_timestamp - 600
+  monkeypatch.setattr(time, "time", lambda: current_time)
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          use_default_credential=True,
+          scopes=_DEFAULT_SCOPES,
+          use_id_token=True,
+          audience="https://my-service.run.app",
+      ),
+  )
+
+  # First call
+  result1 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+  assert result1.http.credentials.token == "mock_adc_id_token"
+  assert mock_fetch_id_token.call_count == 1
+  mock_jwt_decode.assert_called_once_with("mock_adc_id_token", verify=False)
+
+  # Second call - cached
+  result2 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+  assert result2.http.credentials.token == "mock_adc_id_token"
+  assert mock_fetch_id_token.call_count == 1
+
+  # Third call - expired
+  current_time = expiry_timestamp - 200
+  monkeypatch.setattr(time, "time", lambda: current_time)
+
+  mock_fetch_id_token.return_value = "new_mock_adc_id_token"
+  mock_jwt_decode.return_value = {"exp": expiry_timestamp + 3600}
+
+  result3 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+  assert result3.http.credentials.token == "new_mock_adc_id_token"
+  assert mock_fetch_id_token.call_count == 2
+
+
+def test_exchange_access_token_caching_different_client_emails(
+    service_account_exchanger, auth_scheme, sa_credential, monkeypatch
+):
+  mock_credentials = MagicMock()
+  mock_credentials.token = "mock_access_token_1"
+  mock_credentials.expiry = datetime.datetime(2026, 8, 10, 22, 0, 0)
+  mock_credentials.quota_project_id = None
+
+  mock_from_sa_info = MagicMock(return_value=mock_credentials)
+  monkeypatch.setattr(_ACCESS_TOKEN_MONKEYPATCH_TARGET, mock_from_sa_info)
+
+  expiry_timestamp = calendar.timegm(mock_credentials.expiry.utctimetuple())
+  current_time = expiry_timestamp - 600
+  monkeypatch.setattr(time, "time", lambda: current_time)
+
+  sa_cred_1 = sa_credential.model_copy(
+      update={"private_key_id": None, "client_email": "sa1@example.com"}
+  )
+  sa_cred_2 = sa_credential.model_copy(
+      update={"private_key_id": None, "client_email": "sa2@example.com"}
+  )
+
+  auth_cred_1 = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          service_account_credential=sa_cred_1,
+          scopes=_DEFAULT_SCOPES,
+      ),
+  )
+  auth_cred_2 = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          service_account_credential=sa_cred_2,
+          scopes=_DEFAULT_SCOPES,
+      ),
+  )
+
+  result1 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_cred_1
+  )
+  assert result1.http.credentials.token == "mock_access_token_1"
+  assert mock_from_sa_info.call_count == 1
+
+  mock_credentials_2 = MagicMock()
+  mock_credentials_2.token = "mock_access_token_2"
+  mock_credentials_2.expiry = datetime.datetime(2026, 8, 10, 22, 0, 0)
+  mock_credentials_2.quota_project_id = None
+  mock_from_sa_info.return_value = mock_credentials_2
+
+  result2 = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_cred_2
+  )
+  assert result2.http.credentials.token == "mock_access_token_2"
+  assert mock_from_sa_info.call_count == 2

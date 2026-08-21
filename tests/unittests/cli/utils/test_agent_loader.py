@@ -287,6 +287,48 @@ class TestAgentLoader:
       assert agent2 is not agent3
       assert agent1.agent_id != agent2.agent_id != agent3.agent_id
 
+  def test_list_agents_skips_directories_without_a_loadable_agent(self):
+    """Stray non-agent directories under agents_dir must not be listed."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      self.create_agent_structure(
+          temp_path, "real_agent", "package_with_agent_module"
+      )
+      # A stray directory with no agent.py or root_agent.yaml,
+      # e.g. one created as a side effect of local storage keyed by an
+      # unmapped app name.
+      (temp_path / "stray_dir").mkdir()
+
+      loader = AgentLoader(str(temp_path))
+
+      assert loader.list_agents() == ["real_agent"]
+
+  def test_list_agents_handles_permission_error(self):
+    """Permission errors on subdirectories must be handled gracefully."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      self.create_agent_structure(
+          temp_path, "real_agent", "package_with_agent_module"
+      )
+
+      # Create a directory that we will simulate permission error on
+      no_perm_dir = temp_path / "no_perm_dir"
+      no_perm_dir.mkdir()
+
+      # We want to mock is_file for paths under no_perm_dir to raise PermissionError
+      original_is_file = Path.is_file
+
+      def mock_is_file(self_path):
+        if no_perm_dir in self_path.parents or self_path == no_perm_dir:
+          raise PermissionError("[Errno 13] Permission denied")
+        return original_is_file(self_path)
+
+      loader = AgentLoader(str(temp_path))
+
+      with mock.patch.object(Path, "is_file", mock_is_file):
+        assert loader.list_agents() == ["real_agent"]
+
   def test_error_messages_use_os_sep_consistently(self):
     """Verify error messages use os.sep instead of hardcoded '/'."""
     del self

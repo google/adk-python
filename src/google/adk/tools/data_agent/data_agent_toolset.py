@@ -73,6 +73,8 @@ class DataAgentToolset(BaseToolset):
     ]
     if self._tool_settings.enable_data_agent_modification:
       funcs.append(data_agent_tool.create_data_agent)
+      funcs.append(data_agent_tool.delete_data_agent)
+      funcs.append(data_agent_tool.update_data_agent)
 
     all_tools = [
         GoogleTool(

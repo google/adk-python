@@ -23,7 +23,7 @@ class DataAgentToolConfig(BaseModel):
   """Configuration for Data Agent tools."""
 
   # Forbid any fields not defined in the model
-  model_config = ConfigDict(extra='forbid')
+  model_config = ConfigDict(extra="forbid")
 
   max_query_result_rows: int = 50
   """Maximum number of rows to return from a query.

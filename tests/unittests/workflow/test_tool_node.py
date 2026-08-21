@@ -14,9 +14,12 @@
 
 """Tests for ToolNode input parsing and execution."""
 
+import itertools
+import re
 from typing import Any
 
 from google.adk.events.event import Event
+from google.adk.platform import uuid as platform_uuid
 from google.adk.tools.base_tool import BaseTool
 from google.adk.workflow import START
 from google.adk.workflow._tool_node import _ToolNode as ToolNode
@@ -139,3 +142,48 @@ async def test_tool_node_rejects_non_dict_content():
       TypeError, match="The input to ToolNode must be a dictionary"
   ):
     await _run_tool_node_wf(content)
+
+
+@pytest.mark.asyncio
+async def test_tool_node_function_call_id_uses_platform_id_provider():
+  """Tests that the tool's function_call_id is minted via the platform seam.
+
+  Frameworks that replay agent workflows (e.g. durable execution engines)
+  install a deterministic id provider; the generated function_call_id must be
+  stable across replays.
+  """
+  captured_ids: list[str] = []
+
+  class CapturingTool(BaseTool):
+    """A tool that records the function_call_id it was invoked with."""
+
+    def __init__(self):
+      super().__init__(name="capturing_tool", description="Captures ids")
+
+    async def run_async(self, *, args: dict[str, Any], tool_context) -> Any:
+      captured_ids.append(tool_context.function_call_id)
+      return {}
+
+  tool_node = ToolNode(tool=CapturingTool())
+
+  def start_node():
+    return Event(output={"param_a": 1})
+
+  wf = Workflow(
+      name="tool_node_id_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+      ],
+  )
+  counter = itertools.count()
+  platform_uuid.set_id_provider(lambda: f"fixed-{next(counter)}")
+  try:
+    app_instance = testing_utils.App(name="test_app", root_agent=wf)
+    runner = testing_utils.InMemoryRunner(app=app_instance)
+    await runner.run_async("start")
+  finally:
+    platform_uuid.reset_id_provider()
+
+  assert len(captured_ids) == 1
+  assert re.fullmatch(r"fixed-\d+", captured_ids[0])

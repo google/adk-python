@@ -22,33 +22,37 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 import pytest
 
 from .functional._aclosing import aclosing_wrapping_assertions
-from .functional._digests import SpanDigest
+from .functional._recording import check_case
 from .functional._recording import FunctionalTestCase
-from .functional._recording import record_case
 from .functional._scenarios import build_mcp_test_runner
 from .functional._scenarios import build_test_runner
 from .functional._scenarios import CAPTURE_CONTENT
 from .functional._scenarios import EXPERIMENTAL_OPT_IN
 from .functional._scenarios import FakeMcpSession
 from .functional._scenarios import install_telemetry
+from .functional._scenarios import mock_test_model
 from .functional._scenarios import OTEL_OPT_IN
 from .functional._scenarios import run_agent_scenario
+from .functional._scenarios import TOOL_ERROR
 from .functional_test_cases import ALL_CASES
 from .functional_test_cases import MCP_CASE
 
+CASES = [*ALL_CASES, MCP_CASE]
 
-@pytest.mark.parametrize("case", ALL_CASES, ids=lambda c: c.test_id)
+
+@pytest.mark.parametrize(
+    "case", CASES, ids=lambda c: f"{c.scenario}-{c.test_id}"
+)
 @pytest.mark.asyncio
 async def test_telemetry_schema(case: FunctionalTestCase) -> None:
   """Tests creation of spans/logs/metrics in an E2E runner invocation.
 
   Asserts the entire telemetry schema (spans + attributes + per-span logs +
-  recorded metric points) matches the shape recorded for the given semconv +
-  content-capture configuration in ``functional_goldens/``.
+  recorded metric points) ADK's own instrumentation records matches the
+  golden, under the case's semconv + content-capture configuration, and that
+  the OTel instrumentor diverges from it only where it already did.
   """
-  recording = await record_case(case)
-
-  assert recording.digest == case.expected
+  await check_case(case)
 
 
 @pytest.mark.asyncio
@@ -72,7 +76,7 @@ async def test_async_generators_wrapped_in_aclosing(
   )
 
   with aclosing_wrapping_assertions():
-    await run_agent_scenario(build_test_runner())
+    await run_agent_scenario(build_test_runner(mock_test_model()))
 
 
 @pytest.mark.asyncio
@@ -90,7 +94,9 @@ async def test_exception_preserves_attributes(
   )
 
   with pytest.raises(ValueError, match="This tool always fails"):
-    _ = await run_agent_scenario(build_test_runner(failing=True))
+    _ = await run_agent_scenario(
+        build_test_runner(mock_test_model(), tool_exception=TOOL_ERROR)
+    )
 
   spans = span_exporter.get_finished_spans()
 
@@ -126,7 +132,7 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
       lambda _: True,
   )
 
-  _ = await run_agent_scenario(build_test_runner())
+  _ = await run_agent_scenario(build_test_runner(mock_test_model()))
 
   spans = span_exporter.get_finished_spans()
   assert not any(span.name.startswith("generate_content") for span in spans)
@@ -210,20 +216,17 @@ async def test_mcp_list_tools_called_once_under_experimental_semconv(
   monkeypatch.setenv(CAPTURE_CONTENT, "span_and_event")
   monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
 
-  span_exporter = InMemorySpanExporter()
-  log_exporter = InMemoryLogRecordExporter()
   install_telemetry(
-      monkeypatch, span_exporter, log_exporter, InMemoryMetricReader()
+      monkeypatch,
+      InMemorySpanExporter(),
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
   )
 
   fake_session = FakeMcpSession()
 
-  await run_agent_scenario(build_mcp_test_runner(monkeypatch, fake_session))
+  await run_agent_scenario(
+      build_mcp_test_runner(mock_test_model(), monkeypatch, fake_session)
+  )
 
   assert fake_session.list_tools_call_count == 1
-
-  digest = SpanDigest.build(
-      span_exporter.get_finished_spans(),
-      log_exporter.get_finished_logs(),
-  )
-  assert digest == MCP_CASE.expected.root_span

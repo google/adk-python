@@ -60,6 +60,8 @@ of contents; a guide missing from it is unreachable.
 
 - One minimal example under "Get started", with enough of the surrounding
   classes to show where the call belongs. Start from a unit test if one exists.
+- Omit top-level `import` statements and `asyncio.run(main())` runner
+  boilerplate from example code snippets to keep the guide focused on the unit.
 - Do not set `model=` on a sample agent — guides stay model-agnostic, and no
   guide in `docs/guides/` currently pins a model.
 - For workflow nodes, show the logic as a plain Python function rather than a

@@ -15,6 +15,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import sys
 import time
 from unittest.mock import ANY
@@ -29,6 +30,8 @@ from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFacto
 from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
 from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
+from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
+from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_USE_PIN_WARN_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import _SharedAsyncTransport
 from google.adk.tools.mcp_tool.mcp_session_manager import _StreamableHttpClientWrapper
 from google.adk.tools.mcp_tool.mcp_session_manager import create_mcp_http_client
@@ -109,6 +112,18 @@ class HangingClient:
 
   async def __aexit__(self, exc_type, exc_val, exc_tb):
     return False
+
+
+class HangingAsyncExitStack:
+  """Mock AsyncExitStack whose teardown blocks until it is released."""
+
+  def __init__(self):
+    self.aclose_started = asyncio.Event()
+    self.release = asyncio.Event()
+
+  async def aclose(self):
+    self.aclose_started.set()
+    await self.release.wait()
 
 
 class TestMCPSessionManager:
@@ -479,6 +494,415 @@ class TestMCPSessionManager:
 
     # Should not create new session
     existing_session.initialize.assert_not_called()
+
+    # Reuse must refresh the idle timestamp, otherwise a busy session would
+    # eventually be evicted while it is still in use.
+    assert "stdio_session" in manager._session_last_used
+
+  @pytest.mark.asyncio
+  async def test_create_session_evicts_idle_sessions(self):
+    """Sessions idle past the TTL are closed when the pool is next touched."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+    loop = asyncio.get_running_loop()
+
+    stale_key = manager._generate_session_key(
+        manager._merge_headers({"Authorization": "Bearer stale"})
+    )
+    stale_stack = MockAsyncExitStack()
+    manager._sessions[stale_key] = (MockClientSession(), stale_stack, loop)
+    manager._session_last_used[stale_key] = (
+        time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+    )
+
+    active_key = manager._generate_session_key(
+        manager._merge_headers({"Authorization": "Bearer active"})
+    )
+    active_stack = MockAsyncExitStack()
+    manager._sessions[active_key] = (MockClientSession(), active_stack, loop)
+    manager._session_last_used[active_key] = time.monotonic()
+
+    new_session = MockClientSession()
+    with patch.object(
+        manager, "_get_mtls_transport", AsyncMock(return_value=None)
+    ):
+      with patch.object(manager, "_create_client", return_value=Mock()):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ) as mock_session_context_class:
+          mock_session_context_class.return_value = MockSessionContext(
+              session=new_session
+          )
+          await manager.create_session(headers={"Authorization": "Bearer new"})
+
+    # The idle entry leaves the pool synchronously; its teardown is detached,
+    # so wait for it before asserting the connection was actually closed.
+    assert stale_key not in manager._sessions
+    assert stale_key not in manager._session_last_used
+    await asyncio.gather(*manager._eviction_tasks)
+    stale_stack.aclose.assert_called_once()
+
+    # The recently used entry survives.
+    assert active_key in manager._sessions
+    active_stack.aclose.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_create_session_does_not_evict_the_requested_session(self):
+    """The key being requested is never swept, even if it looks idle."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+    headers = {"Authorization": "Bearer idle"}
+    session_key = manager._generate_session_key(manager._merge_headers(headers))
+    exit_stack = MockAsyncExitStack()
+    existing_session = MockClientSession()
+    manager._sessions[session_key] = (
+        existing_session,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+    manager._session_last_used[session_key] = (
+        time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+    )
+
+    session = await manager.create_session(headers=headers)
+
+    assert session is existing_session
+    exit_stack.aclose.assert_not_called()
+    # ... and reusing it refreshes the timestamp.
+    assert (
+        time.monotonic() - manager._session_last_used[session_key]
+        < _SESSION_IDLE_TTL_SECONDS
+    )
+
+  @pytest.mark.asyncio
+  async def test_hung_eviction_does_not_block_other_callers(self):
+    """A wedged teardown on an evicted session must not stall the pool."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+
+    stale_key = manager._generate_session_key(
+        manager._merge_headers({"Authorization": "Bearer stale"})
+    )
+    wedged_stack = HangingAsyncExitStack()
+    manager._sessions[stale_key] = (
+        MockClientSession(),
+        wedged_stack,
+        asyncio.get_running_loop(),
+    )
+    manager._session_last_used[stale_key] = (
+        time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+    )
+
+    new_session = MockClientSession()
+    with patch.object(
+        manager, "_get_mtls_transport", AsyncMock(return_value=None)
+    ):
+      with patch.object(manager, "_create_client", return_value=Mock()):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ) as mock_session_context_class:
+          mock_session_context_class.return_value = MockSessionContext(
+              session=new_session
+          )
+          with temporary_feature_override(
+              FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+          ):
+            # The bound turns a regression into a failure rather than a hang:
+            # if the sweep awaits the teardown, this never returns.
+            session = await asyncio.wait_for(
+                manager.create_session(headers={"Authorization": "Bearer new"}),
+                timeout=5.0,
+            )
+            # Let the detached teardown reach its first await.
+            await asyncio.sleep(0)
+
+    assert session is new_session
+
+    # The teardown really is still wedged, and the pool is already consistent
+    # without it.
+    assert wedged_stack.aclose_started.is_set()
+    assert not wedged_stack.release.is_set()
+    assert stale_key not in manager._sessions
+    assert stale_key not in manager._session_last_used
+
+    for task in list(manager._eviction_tasks):
+      task.cancel()
+      try:
+        await task
+      except asyncio.CancelledError:
+        pass
+
+  @pytest.mark.asyncio
+  async def test_evicted_teardown_does_not_drop_a_recreated_session(self):
+    """A slow teardown must not reach back into the pool it already left."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+
+    recycled_headers = {"Authorization": "Bearer recycled"}
+    recycled_key = manager._generate_session_key(
+        manager._merge_headers(recycled_headers)
+    )
+    wedged_stack = HangingAsyncExitStack()
+    manager._sessions[recycled_key] = (
+        MockClientSession(),
+        wedged_stack,
+        asyncio.get_running_loop(),
+    )
+    manager._session_last_used[recycled_key] = (
+        time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+    )
+
+    recreated = MockClientSession()
+    with patch.object(
+        manager, "_get_mtls_transport", AsyncMock(return_value=None)
+    ):
+      with patch.object(manager, "_create_client", return_value=Mock()):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ) as mock_session_context_class:
+          with temporary_feature_override(
+              FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+          ):
+            # An unrelated caller sweeps the idle entry out of the pool. The
+            # outer bound turns a regression into a failure rather than a
+            # hang: if the sweep awaits the teardown, this never returns.
+            mock_session_context_class.return_value = MockSessionContext(
+                session=MockClientSession()
+            )
+            await asyncio.wait_for(
+                manager.create_session(
+                    headers={"Authorization": "Bearer other"}
+                ),
+                timeout=5.0,
+            )
+            await asyncio.sleep(0)
+            assert wedged_stack.aclose_started.is_set()
+
+            # The same credentials come back and get a fresh session.
+            mock_session_context_class.return_value = MockSessionContext(
+                session=recreated
+            )
+            assert (
+                await manager.create_session(headers=recycled_headers)
+                is recreated
+            )
+
+            # Only now does the old teardown finish.
+            wedged_stack.release.set()
+            await asyncio.gather(*manager._eviction_tasks)
+
+    assert manager._sessions[recycled_key][0] is recreated
+    assert recycled_key in manager._session_last_used
+
+  @pytest.mark.asyncio
+  async def test_session_with_a_call_in_flight_is_not_evicted(self):
+    """A session in use is never idle, however old its last-use stamp is."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+    loop = asyncio.get_running_loop()
+
+    busy_headers = {"Authorization": "Bearer busy"}
+    busy_key = manager._generate_session_key(
+        manager._merge_headers(busy_headers)
+    )
+    busy_stack = MockAsyncExitStack()
+    manager._sessions[busy_key] = (MockClientSession(), busy_stack, loop)
+    # A long-running call started well over a TTL ago. The stamp records when
+    # the session was handed out, so on its own it says "maximally idle".
+    manager._session_last_used[busy_key] = (
+        time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+    )
+    manager._begin_session_use(busy_headers)
+
+    async def _sweep_from_another_caller(tag: str):
+      # A different key each time, so every sweep takes the create-a-session
+      # path rather than the reuse path.
+      with patch.object(
+          manager, "_get_mtls_transport", AsyncMock(return_value=None)
+      ):
+        with patch.object(manager, "_create_client", return_value=Mock()):
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+          ) as mock_session_context_class:
+            mock_session_context_class.return_value = MockSessionContext(
+                session=MockClientSession()
+            )
+            with temporary_feature_override(
+                FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+            ):
+              await manager.create_session(
+                  headers={"Authorization": f"Bearer {tag}"}
+              )
+
+    await _sweep_from_another_caller("unrelated-1")
+
+    assert busy_key in manager._sessions
+    busy_stack.aclose.assert_not_called()
+    assert not manager._eviction_tasks
+
+    # Ending the call restarts the idle clock, so the next sweep spares it too.
+    manager._end_session_use(busy_headers)
+    assert (
+        time.monotonic() - manager._session_last_used[busy_key]
+        < _SESSION_IDLE_TTL_SECONDS
+    )
+    await _sweep_from_another_caller("unrelated-2")
+    assert busy_key in manager._sessions
+
+    # Once it really has been idle for a TTL, it goes.
+    manager._session_last_used[busy_key] = (
+        time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+    )
+    await _sweep_from_another_caller("unrelated-3")
+    assert busy_key not in manager._sessions
+    await asyncio.gather(*manager._eviction_tasks)
+    busy_stack.aclose.assert_called_once()
+
+  def test_session_pinned_out_of_the_sweep_is_reported(self, caplog):
+    """An unpaired begin pins a session forever, so the sweep says so."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+    pinned_headers = {"Authorization": "Bearer pinned"}
+    pinned_key = manager._generate_session_key(
+        manager._merge_headers(pinned_headers)
+    )
+    manager._sessions[pinned_key] = (
+        MockClientSession(),
+        MockAsyncExitStack(),
+        None,
+    )
+    manager._begin_session_use(pinned_headers)
+
+    # A long call is still a call: nothing to report while the pin is plausible.
+    manager._session_last_used[pinned_key] = (
+        time.monotonic() - 0.5 * _SESSION_USE_PIN_WARN_SECONDS
+    )
+    with caplog.at_level(logging.WARNING):
+      manager._evict_idle_sessions(keep_key="unrelated")
+    assert not caplog.records
+
+    manager._session_last_used[pinned_key] = (
+        time.monotonic() - 2 * _SESSION_USE_PIN_WARN_SECONDS
+    )
+    with caplog.at_level(logging.WARNING):
+      manager._evict_idle_sessions(keep_key="unrelated")
+    assert pinned_key in manager._sessions
+    assert any(pinned_key in record.getMessage() for record in caplog.records)
+
+  @pytest.mark.asyncio
+  async def test_sweep_tolerates_a_key_another_loop_already_took(self):
+    """The session lock is per-loop, so two sweeps can share one pool."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+    loop = asyncio.get_running_loop()
+
+    stale = time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+    for key in ("first", "second"):
+      manager._sessions[key] = (MockClientSession(), MockAsyncExitStack(), loop)
+      manager._session_last_used[key] = stale
+
+    real_forget = manager._forget_session
+
+    def forget_and_race(session_key: str) -> None:
+      # Stands in for the other loop's sweep, which reaches "second" while this
+      # one is still working through the snapshot it took at entry.
+      manager._sessions.pop("second", None)
+      real_forget(session_key)
+
+    with patch.object(manager, "_forget_session", side_effect=forget_and_race):
+      manager._evict_idle_sessions(keep_key="unrelated")
+
+    assert not manager._sessions
+    # And the loser of that race can still forget its own key afterwards.
+    manager._forget_session("second")
+
+    await asyncio.gather(*manager._eviction_tasks)
+
+  @pytest.mark.asyncio
+  async def test_close_ignores_teardowns_owned_by_another_loop(self):
+    """close() must not gather teardown tasks belonging to a foreign loop."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+
+    # The loop only has to OWN the task, not run it: close() partitions on
+    # task.get_loop(), so an idle second loop reproduces the foreign-loop case
+    # without a second thread.
+    other_loop = asyncio.new_event_loop()
+    sleeper = asyncio.sleep(3600)
+    foreign_task = other_loop.create_task(sleeper)
+    assert foreign_task.get_loop() is not asyncio.get_running_loop()
+
+    try:
+      manager._eviction_tasks.add(foreign_task)
+      transport = AsyncMock()
+      manager._mtls_transports[asyncio.get_running_loop()] = transport
+
+      await asyncio.wait_for(manager.close(), timeout=5.0)
+
+      # The cleanup below the gather must still have run.
+      transport.aclose.assert_awaited_once()
+      assert not manager._mtls_transports
+    finally:
+      foreign_task.cancel()
+      other_loop.close()
+      sleeper.close()
+
+  @pytest.mark.asyncio
+  async def test_close_releases_the_lock_while_awaiting_teardowns(self):
+    """A wedged teardown must not park other callers behind close()."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+
+    wedged_stack = HangingAsyncExitStack()
+    teardown = asyncio.ensure_future(
+        manager._close_exit_stack(
+            "stale", wedged_stack, asyncio.get_running_loop()
+        )
+    )
+    manager._eviction_tasks.add(teardown)
+    teardown.add_done_callback(manager._eviction_tasks.discard)
+    await asyncio.wait_for(wedged_stack.aclose_started.wait(), timeout=5.0)
+
+    closing = asyncio.ensure_future(manager.close())
+    # Let close() run up to the point where it waits for the teardown.
+    await asyncio.sleep(0)
+    assert not closing.done()
+
+    new_session = MockClientSession()
+    with patch.object(
+        manager, "_get_mtls_transport", AsyncMock(return_value=None)
+    ):
+      with patch.object(manager, "_create_client", return_value=Mock()):
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ) as mock_session_context_class:
+          mock_session_context_class.return_value = MockSessionContext(
+              session=new_session
+          )
+          with temporary_feature_override(
+              FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+          ):
+            # The outer bound turns a regression into a failure rather than a
+            # hang: if close() held the lock, this would never return.
+            session = await asyncio.wait_for(
+                manager.create_session(headers={"Authorization": "Bearer new"}),
+                timeout=5.0,
+            )
+
+    assert session is new_session
+    assert not closing.done()
+
+    wedged_stack.release.set()
+    await asyncio.wait_for(closing, timeout=5.0)
 
   @pytest.mark.asyncio
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
@@ -895,6 +1319,7 @@ class TestMCPSessionManager:
 
     # Verify transient/unpicklable members are re-initialized or cleared
     assert unpickled._sessions == {}
+    assert unpickled._session_last_used == {}
     assert unpickled._session_lock_map == {}
     assert isinstance(unpickled._lock_map_lock, type(manager._lock_map_lock))
     assert unpickled._lock_map_lock is not manager._lock_map_lock

@@ -12,13 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Record/replay storage for the telemetry of the functional test cases.
+"""Record/replay storage for the functional tests.
 
-One golden per test case, named after it:
-``functional_goldens/<scenario>/<test_id>.json``. It is a plain serialization
-of the ``TelemetryDigest`` the case emits -- the span tree with its
-attributes, per-span logs and recorded metric points -- with every value that
-cannot be pinned stored as the ``"PRESENT"`` literal.
+One golden per test case, ``functional_goldens/<scenario>/<test_id>.json``:
+what ADK's own instrumentation recorded, in full. Values that cannot be
+pinned are stored as ``"PRESENT"``.
+
+How the OTel instrumentor's recording of the same runs differs is not in the
+goldens but in ``functional_divergences.json`` -- one group per span, log or
+metric, with the ``kind`` and ``reason`` a developer owes for each gap (see
+``_divergences``).
 
 Re-record everything after an intentional telemetry change with::
 
@@ -27,26 +30,29 @@ Re-record everything after an intentional telemetry change with::
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import TypeAdapter
 
 from .functional._digests import TelemetryDigest
-from .functional._scenarios import Scenario
+from .functional._divergences import DivergenceGroup
 
 GOLDENS_DIR = Path(__file__).parent / "functional_goldens"
+DIVERGENCES_PATH = Path(__file__).parent / "functional_divergences.json"
 
-# ``TelemetryDigest`` is a plain (recursive) dataclass tree, so pydantic can
-# serialize and rebuild it without any hand-written conversion.
-_DIGEST_JSON = TypeAdapter(TelemetryDigest)
+_DIVERGENCES: TypeAdapter[list[DivergenceGroup]] = TypeAdapter(
+    list[DivergenceGroup]
+)
+_DIGEST: TypeAdapter[TelemetryDigest] = TypeAdapter(TelemetryDigest)
 
 
-def golden_path(scenario: Scenario, test_id: str) -> Path:
+def golden_path(scenario: str, test_id: str) -> Path:
   """Returns the path of the recording of one test case."""
   return GOLDENS_DIR / scenario / f"{test_id}.json"
 
 
-def load_golden(scenario: Scenario, test_id: str) -> TelemetryDigest:
+def load_golden(scenario: str, test_id: str) -> TelemetryDigest:
   """Loads the telemetry recorded for one test case."""
   path = golden_path(scenario, test_id)
   if not path.exists():
@@ -54,14 +60,47 @@ def load_golden(scenario: Scenario, test_id: str) -> TelemetryDigest:
         f"Missing golden {path}; record it with"
         " `python -m tests.unittests.telemetry.regenerate`."
     )
-  return _DIGEST_JSON.validate_json(path.read_bytes())
+  return _DIGEST.validate_json(path.read_bytes())
 
 
-def write_golden(
-    scenario: Scenario, test_id: str, digest: TelemetryDigest
-) -> Path:
-  """Records ``digest`` as the golden for one test case."""
+def write_golden(scenario: str, test_id: str, golden: TelemetryDigest) -> Path:
+  """Records ``golden`` for one test case."""
   path = golden_path(scenario, test_id)
   path.parent.mkdir(parents=True, exist_ok=True)
-  path.write_bytes(_DIGEST_JSON.dump_json(digest, indent=2) + b"\n")
+  path.write_bytes(_DIGEST.dump_json(golden, indent=2) + b"\n")
   return path
+
+
+def load_divergences() -> list[DivergenceGroup]:
+  """Loads every divergence the goldens are recorded with."""
+  if not DIVERGENCES_PATH.exists():
+    return []
+  return _DIVERGENCES.validate_json(DIVERGENCES_PATH.read_bytes())
+
+
+def write_divergences(divergences: list[DivergenceGroup]) -> Path:
+  """Records ``divergences``, replacing the previous list.
+
+  In the order given, which is the order the recordings emitted them: the
+  file reads down the run, and a divergence keeps its place when a sibling
+  before it gains or loses one.
+  """
+  DIVERGENCES_PATH.write_bytes(
+      _DIVERGENCES.dump_json(divergences, indent=2) + b"\n"
+  )
+  return DIVERGENCES_PATH
+
+
+def unexplained_locations() -> list[str]:
+  """Returns ``path:line`` for every divergence still missing an explanation."""
+  path = os.path.relpath(DIVERGENCES_PATH)
+  lines = DIVERGENCES_PATH.read_text().splitlines()
+  entry_line = 0
+  unexplained: list[int] = []
+  for number, line in enumerate(lines, start=1):
+    # The innermost object open before the null: one divergence's entry.
+    if line.strip() == "{":
+      entry_line = number
+    if '"reason": null' in line or '"kind": null' in line:
+      unexplained.append(entry_line)
+  return [f"{path}:{line}" for line in sorted(set(unexplained))]

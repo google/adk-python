@@ -22,8 +22,9 @@ Each case pins one combination of:
 
 The telemetry each case is expected to emit is NOT written here: it is the
 recording in ``functional_goldens/<scenario>/<test_id>.json``, reachable as
-``case.expected``. Values that cannot be pinned (generated ids, wall-clock
-durations, elided payloads) are stored as the ``"PRESENT"`` literal.
+``case.expected(instrumentation)``. Values that cannot be pinned (generated
+ids, wall-clock durations, elided payloads) are stored as the ``"PRESENT"``
+literal.
 
 After an intentional telemetry change, re-record every case with::
 
@@ -42,6 +43,7 @@ from google.genai import errors as genai_errors
 from .functional._recording import FunctionalTestCase
 from .functional._scenarios import EXPERIMENTAL_OPT_IN
 from .functional._scenarios import Scenario
+from .functional._scenarios import TOOL_ERROR
 
 
 @dataclass(frozen=True)
@@ -81,19 +83,16 @@ def semconv_matrix(scenario: Scenario) -> list[FunctionalTestCase]:
   ]
 
 
-# ``google.genai`` collapses every 4xx into ``ClientError`` / 5xx into
-# ``ServerError``, so historically every such failure reported
-# ``error.type=ClientError``. ADK now uses the provider's HTTP status code
-# (e.g. ``429``), falling back to the exception class name for non-API errors
-# (e.g. ``ValueError``).
+# An API error, reported as its HTTP status code (`429`). Non-API errors fall
+# back to the exception class name (see the `ValueError` case below).
 RESOURCE_EXHAUSTED = genai_errors.ClientError(
     429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}
 )
 
 
 ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
-    # Inference failures: the mock raises before responding, so the invocation
-    # aborts mid-flight and the failure surfaces on ``error.type``.
+    # Inference failures: the model raises before responding, so the
+    # invocation aborts mid-flight and the failure surfaces on ``error.type``.
     FunctionalTestCase(
         test_id="inference-error-resource-exhausted-schema-v1",
         scenario="agent",
@@ -126,9 +125,28 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         semconv_opt_in=None,
         capture_content="false",
         schema_version=2,
-        tool_fails=True,
+        tool_exception=TOOL_ERROR,
     ),
     # Skill telemetry scenarios.
+    FunctionalTestCase(
+        test_id="skill-telemetry-disabled-schema-v1",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=False,
+        capture_content="false",
+        schema_version=1,
+        loaded_skills=["local", "registry"],
+    ),
+    FunctionalTestCase(
+        test_id="skill-telemetry-disabled-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=False,
+        capture_content="false",
+        schema_version=2,
+        loaded_skills=["local", "registry"],
+    ),
+    ## Skill loading scenarios.
     FunctionalTestCase(
         test_id="skill-telemetry-schema-v1",
         scenario="skill",
@@ -165,21 +183,49 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         loaded_skills=["nonexistent"],
     ),
+    ## Skill resource telemetry scenarios.
     FunctionalTestCase(
-        test_id="skill-telemetry-disabled-schema-v1",
+        test_id="skill-resource-telemetry-schema-v1",
         scenario="skill",
         semconv_opt_in=None,
-        experimental_telemetry=False,
+        experimental_telemetry=True,
         capture_content="false",
         schema_version=1,
-        loaded_skills=["local", "registry"],
+        loaded_resources=["references", "assets", "scripts"],
+    ),
+    FunctionalTestCase(
+        test_id="skill-resource-telemetry-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=2,
+        loaded_resources=["references", "assets", "scripts"],
+    ),
+    FunctionalTestCase(
+        test_id="invalid-skill-resource-schema-v1",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=1,
+        loaded_resources=["wrong_type", "wrong_name"],
+    ),
+    FunctionalTestCase(
+        test_id="invalid-skill-resource-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=2,
+        loaded_resources=["wrong_type", "wrong_name"],
     ),
 ]
 
-# The MCP integration case: an agent whose only tool source is a (fake) MCP
-# server. Used by ``test_functional.py`` to pin that the MCP-resolved tool
-# definitions surface intact in the experimental telemetry, without the
-# semconv builder issuing a ``list_tools()`` call of its own.
+# The MCP case: an agent whose only tool source is a (fake) MCP server. Pins
+# that the tool definitions an MCP server resolved reach the telemetry intact,
+# without the semconv builder issuing a ``list_tools()`` call of its own. The
+# model answers in one turn, so the tools are only ever advertised.
 MCP_CASE = FunctionalTestCase(
     test_id="experimental-span-and-event",
     scenario="mcp",

@@ -16,7 +16,7 @@ from google.adk import Agent
 from google.genai import types
 
 
-def concat_number_and_string(num: int, s: str) -> str:
+def concat_number_and_string(num: float, s: str) -> str:
   """Concatenate a number and a string.
 
   Args:

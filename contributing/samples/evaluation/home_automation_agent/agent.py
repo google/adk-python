@@ -60,7 +60,7 @@ def get_temperature(location: str) -> str:
   return f"{_TEMPERATURES[location]}"
 
 
-def set_temperature(location: str, temperature: int) -> str:
+def set_temperature(location: str, temperature: float) -> str:
   """Sets the target temperature (Celsius) for a location.
 
   Acceptable range is 18-30 Celsius. Do not call this tool with a value
