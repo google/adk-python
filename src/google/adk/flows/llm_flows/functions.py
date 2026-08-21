@@ -337,7 +337,17 @@ def build_auth_request_event(
   parts: list[types.Part] = []
   long_running_tool_ids: set[str] = set()
 
+  deduplicated_requests: dict[str, AuthConfig] = {}
+  seen_keys = set()
   for function_call_id, auth_config in auth_requests.items():
+    key = auth_config.credential_key
+    if not key:
+      deduplicated_requests[function_call_id] = auth_config
+    elif key not in seen_keys:
+      seen_keys.add(key)
+      deduplicated_requests[function_call_id] = auth_config
+
+  for function_call_id, auth_config in deduplicated_requests.items():
     request_id = generate_client_function_call_id()
     request_euc_function_call = types.FunctionCall(
         name=REQUEST_EUC_FUNCTION_CALL_NAME,
@@ -1489,6 +1499,17 @@ def _build_function_response_content(
     function_response_parts: Optional[list[types.FunctionResponsePart]] = None,
 ) -> types.Content:
   """Builds the content carrying a tool result as a FunctionResponse."""
+  # A streaming tool that wants a different Live scheduling mode for one
+  # particular chunk hands back a FunctionResponse holding that chunk's
+  # payload and mode. Only those two fields are read: `id` and `name` have to
+  # address the function call being answered, which a tool cannot know, so ADK
+  # keeps owning them. Unwrapped before the extraction below so that media in
+  # the payload is still reachable.
+  scheduling_override = None
+  if isinstance(function_result, types.FunctionResponse):
+    scheduling_override = function_result.scheduling
+    function_result = function_result.response
+
   if function_response_parts is None:
     function_result, function_response_parts = _extract_multimodal_parts(
         function_result
@@ -1507,8 +1528,15 @@ def _build_function_response_content(
   if function_response is None:
     raise RuntimeError('Function response part was not created.')
   function_response.id = function_call_id
-  if tool.response_scheduling is not None:
-    function_response.scheduling = tool.response_scheduling
+  # A scheduling asked for on this one result wins over the tool-wide default,
+  # which is the fallback for every result that does not name one.
+  effective_scheduling = (
+      scheduling_override
+      if scheduling_override is not None
+      else tool.response_scheduling
+  )
+  if effective_scheduling is not None:
+    function_response.scheduling = effective_scheduling
 
   return types.Content(role='user', parts=[part_function_response])
 

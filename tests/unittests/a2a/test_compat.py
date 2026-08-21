@@ -400,8 +400,7 @@ def test_set_event_metadata_empty_leaves_existing_metadata_intact(metadata):
   assert event.metadata == {'already': 'here'}
 
 
-def test_set_event_metadata_v1_copies_into_the_struct_field(monkeypatch):
-  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+def test_set_event_metadata_v1_copies_into_the_struct_field():
   event = _FakeStructEvent()
 
   _compat.set_event_metadata(event, {'a': 'b'})

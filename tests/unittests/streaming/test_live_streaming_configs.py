@@ -835,3 +835,33 @@ def test_streaming_with_explicit_vad_signal():
   assert (
       llm_request_sent_to_mock.live_connect_config.explicit_vad_signal is True
   )
+
+
+def test_run_live_does_not_write_the_audio_default_into_the_run_config():
+  """The AUDIO default must not be stamped onto the caller's RunConfig.
+
+  `run_live` fills in AUDIO for a caller that expressed no preference. Writing
+  that back into the caller's own RunConfig would hand them a config pinned to
+  AUDIO, so a config reused for a later text run would silently ask for audio.
+  """
+
+  mock_model = testing_utils.MockModel.create([LlmResponse(turn_complete=True)])
+
+  root_agent = Agent(name='root_agent', model=mock_model, tools=[])
+  runner = testing_utils.InMemoryRunner(root_agent=root_agent)
+
+  run_config = RunConfig()
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  )
+  runner.run_live(live_request_queue, run_config)
+
+  assert run_config.response_modalities is None
+  assert 'response_modalities' not in run_config.model_fields_set
+  # The run itself still gets the default.
+  assert len(mock_model.requests) == 1
+  assert mock_model.requests[0].live_connect_config.response_modalities == [
+      types.Modality.AUDIO
+  ]

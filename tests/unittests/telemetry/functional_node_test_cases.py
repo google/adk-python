@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The cases driving the node scenario: a workflow run end to end."""
+"""The node/workflow functional test matrix.
+
+The same grid as ``functional_test_cases.py``, run against the canonical
+Workflow + nested workflow + node + agent + tool scenario.
+"""
 
 from __future__ import annotations
 

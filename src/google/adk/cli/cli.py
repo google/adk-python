@@ -145,7 +145,7 @@ def _prompt_for_function_call(
     schema = args.get('response_schema')
     click.echo(f'[HITL input] {message}')
     if schema:
-      click.echo(f'  Schema: {json.dumps(schema)}')
+      click.echo(f'  Schema: {json.dumps(schema, ensure_ascii=False)}')
   elif fc_name == _REQUEST_CONFIRMATION:
     tool_confirmation = args.get('toolConfirmation', {})
     hint = tool_confirmation.get('hint', '')
@@ -381,7 +381,7 @@ def _print_event(
     for k, v in event_dict.items():
       if k not in ordered_dict:
         ordered_dict[k] = v
-    click.echo(json.dumps(ordered_dict))
+    click.echo(json.dumps(ordered_dict, ensure_ascii=False))
   else:
     # Human readable mode
     author = event.author or 'unknown'

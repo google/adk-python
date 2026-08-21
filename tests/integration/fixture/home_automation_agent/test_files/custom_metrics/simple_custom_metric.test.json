@@ -1,0 +1,65 @@
+{
+  "eval_set_id": "custom_metrics_eval_set",
+  "name": "custom_metrics_eval_set",
+  "description": "Custom metric evaluation sample.",
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/home_automation_agent/test_files/custom_metrics/simple_custom_metric.test.json",
+      "conversation": [
+        {
+          "invocation_id": "a9e4f840-7f1e-4b69-b9c1-3b85c03a60a4",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Turn off device_2 in the Bedroom."
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "I have set the device_2 status to off."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "location": "Bedroom",
+                  "device_id": "device_2",
+                  "status": "OFF"
+                },
+                "name": "set_device_info"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747337309.2360144
+        }
+      ],
+      "session_input": null,
+      "creation_timestamp": 1747337309.2360282
+    }
+  ],
+  "creation_timestamp": 1747337309.2360387
+}

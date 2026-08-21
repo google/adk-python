@@ -1,0 +1,370 @@
+[
+  {
+    "owner_type": "span",
+    "owner_name": "generate_content gemini-2.5-flash",
+    "affected_tests": "*",
+    "divergences": [
+      {
+        "path": [
+          "attributes",
+          "gen_ai.usage.output_tokens"
+        ],
+        "example_native_instrumentation_value": 25,
+        "example_otel_instrumentation_value": 20,
+        "kind": "otel_bug",
+        "reason": "ADK bills thought tokens as output; the instrumentor counts candidates only."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.usage.cache_read.input_tokens"
+        ],
+        "example_native_instrumentation_value": 40,
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor doesn't report the cache-read token bucket."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.usage.reasoning.output_tokens"
+        ],
+        "example_native_instrumentation_value": 5,
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor doesn't report the reasoning token bucket."
+      },
+      {
+        "path": [
+          "attributes",
+          "code.function.name"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": "google.genai.AsyncModels.generate_content",
+        "kind": "desired_behavior",
+        "reason": "The instrumentor names the SDK function it wrapped; ADK wraps nothing, so it has no such name to report."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.tool.definitions",
+          "parameters"
+        ],
+        "example_native_instrumentation_value": {
+          "properties": {
+            "arg1": {
+              "title": "Arg1",
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg1"
+          ],
+          "title": "some_toolParams",
+          "type": "object"
+        },
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor reads `FunctionDeclaration.parameters`, which ADK leaves unset in favour of `parameters_json_schema`, so it advertises the tools by name and description but without their schema."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.usage.input_tokens"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": 0,
+        "kind": "otel_bug",
+        "reason": "On a call that failed the instrumentor records zero input tokens for a response it never got."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.response.finish_reasons"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": [],
+        "kind": "otel_bug",
+        "reason": "On a call that failed the instrumentor records an empty finish-reason list for a response it never got."
+      },
+      {
+        "path": [
+          "attributes",
+          "error.type"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": "ClientError",
+        "kind": "adk_bug",
+        "reason": "ADK reports a failed call on the enclosing spans and on the duration metric, but leaves `error.type` off the inference span itself."
+      }
+    ]
+  },
+  {
+    "owner_type": "metric",
+    "owner_name": "gen_ai.client.operation.duration",
+    "affected_tests": "*",
+    "divergences": [
+      {
+        "path": [
+          "attributes",
+          "gen_ai.agent.name"
+        ],
+        "example_native_instrumentation_value": "some_root_agent",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "Only ADK dimensions the metric by the agent that made the call."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.provider.name"
+        ],
+        "example_native_instrumentation_value": "gemini",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "Only ADK dimensions by `gen_ai.provider.name`, the replacement for `gen_ai.system`."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.response.model"
+        ],
+        "example_native_instrumentation_value": "gemini-2.5-flash",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "Only ADK dimensions by the model that answered."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.system"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": "gemini",
+        "kind": "otel_bug",
+        "reason": "The instrumentor still dimensions by the deprecated `gen_ai.system`."
+      },
+      {
+        "path": [
+          "attributes",
+          "error.type"
+        ],
+        "example_native_instrumentation_value": "429",
+        "example_otel_instrumentation_value": "ClientError",
+        "kind": "desired_behavior",
+        "reason": "ADK dimensions by the provider's HTTP status code (`429`); the instrumentor by the exception class (`ClientError`), which `google.genai` collapses every 4xx into."
+      }
+    ]
+  },
+  {
+    "owner_type": "metric",
+    "owner_name": "gen_ai.client.token.usage",
+    "affected_tests": "*",
+    "divergences": [
+      {
+        "path": [
+          "attributes",
+          "gen_ai.agent.name"
+        ],
+        "example_native_instrumentation_value": "some_root_agent",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "Only ADK dimensions the metric by the agent that made the call."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.provider.name"
+        ],
+        "example_native_instrumentation_value": "gemini",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "Only ADK dimensions by `gen_ai.provider.name`, the replacement for `gen_ai.system`."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.response.model"
+        ],
+        "example_native_instrumentation_value": "gemini-2.5-flash",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "Only ADK dimensions by the model that answered."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.system"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": "gemini",
+        "kind": "otel_bug",
+        "reason": "The instrumentor still dimensions by the deprecated `gen_ai.system`."
+      },
+      {
+        "path": [
+          "value"
+        ],
+        "example_native_instrumentation_value": 75,
+        "example_otel_instrumentation_value": 55,
+        "kind": "otel_bug",
+        "reason": "ADK bills thought tokens as output; the instrumentor counts candidates only."
+      },
+      {
+        "path": [],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": [
+          {
+            "attributes": {
+              "gen_ai.token.type": "input",
+              "gen_ai.system": "gemini",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gen_ai.operation.name": "generate_content"
+            },
+            "value": 0
+          },
+          {
+            "attributes": {
+              "gen_ai.token.type": "output",
+              "gen_ai.system": "gemini",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gen_ai.operation.name": "generate_content"
+            },
+            "value": 0
+          }
+        ],
+        "kind": "otel_bug",
+        "reason": "On a call that failed the instrumentor records a zeroed usage point; ADK records no usage at all."
+      }
+    ]
+  },
+  {
+    "owner_type": "log",
+    "owner_name": "gen_ai.user.message",
+    "affected_tests": "*",
+    "divergences": [
+      {
+        "path": [
+          "attributes",
+          "user.id"
+        ],
+        "example_native_instrumentation_value": "test_user",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK passes `user.id` as a log-only attribute; the instrumentor honours span extras only, so it drops it."
+      }
+    ]
+  },
+  {
+    "owner_type": "log",
+    "owner_name": "gen_ai.client.inference.operation.details",
+    "affected_tests": "*",
+    "divergences": [
+      {
+        "path": [
+          "attributes",
+          "gen_ai.usage.output_tokens"
+        ],
+        "example_native_instrumentation_value": 25,
+        "example_otel_instrumentation_value": 20,
+        "kind": "otel_bug",
+        "reason": "ADK bills thought tokens as output; the instrumentor counts candidates only."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.usage.cache_read.input_tokens"
+        ],
+        "example_native_instrumentation_value": 40,
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor doesn't report the cache-read token bucket."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.usage.reasoning.output_tokens"
+        ],
+        "example_native_instrumentation_value": 5,
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor doesn't report the reasoning token bucket."
+      },
+      {
+        "path": [
+          "attributes",
+          "user.id"
+        ],
+        "example_native_instrumentation_value": "test_user",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "ADK passes `user.id` as a log-only attribute; the instrumentor honours span extras only, so it drops it."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.tool.definitions",
+          "parameters"
+        ],
+        "example_native_instrumentation_value": {
+          "properties": {
+            "arg1": {
+              "title": "Arg1",
+              "type": "string"
+            }
+          },
+          "required": [
+            "arg1"
+          ],
+          "title": "some_toolParams",
+          "type": "object"
+        },
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "The instrumentor reads `FunctionDeclaration.parameters`, which ADK leaves unset in favour of `parameters_json_schema`, so it advertises the tools by name and description but without their schema."
+      }
+    ]
+  }
+]
