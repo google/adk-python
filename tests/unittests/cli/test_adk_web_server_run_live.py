@@ -61,7 +61,7 @@ class _CapturingRunner:
     yield Event(author="runner")
 
 
-def test_run_live_applies_run_config_query_options():
+def test_run_live_applies_server_and_query_run_config_options():
   session_service = InMemorySessionService()
   asyncio.run(
       session_service.create_session(
@@ -82,6 +82,7 @@ def test_run_live_applies_run_config_query_options():
       eval_sets_manager=types.SimpleNamespace(),
       eval_set_results_manager=types.SimpleNamespace(),
       agents_dir=".",
+      max_llm_calls=37,
   )
 
   async def _get_runner_async(_self, _app_name: str):
@@ -122,6 +123,7 @@ def test_run_live_applies_run_config_query_options():
   assert run_config.session_resumption.transparent is True
   assert run_config.save_live_blob is True
   assert run_config.explicit_vad_signal is True
+  assert run_config.max_llm_calls == 37
 
 
 @pytest.mark.parametrize(
