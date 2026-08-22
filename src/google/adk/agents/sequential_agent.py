@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import inspect
 import logging
+import sys
 from typing import AsyncGenerator
 from typing import ClassVar
 from typing import Type
 
+from pydantic import model_validator
 from typing_extensions import deprecated
 from typing_extensions import override
 
@@ -41,6 +43,13 @@ from .readonly_context import ReadonlyContext
 from .sequential_agent_config import SequentialAgentConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _is_remote_a2a_agent(agent: BaseAgent) -> bool:
+  """Checks the agent type without importing the optional A2A dependency."""
+  remote_module = sys.modules.get('google.adk.agents.remote_a2a_agent')
+  remote_type = getattr(remote_module, 'RemoteA2aAgent', None)
+  return remote_type is not None and isinstance(agent, remote_type)
 
 
 def _tool_name(tool: ToolUnion) -> str | None:
@@ -94,6 +103,28 @@ class SequentialAgent(BaseAgent):
   DEPRECATED: This attribute is deprecated and will be removed in a future
   version, along with the AgentConfig YAML loader.
   """
+
+  @model_validator(mode='after')
+  def _warn_on_output_key_handoff_to_remote(self) -> SequentialAgent:
+    """Warns when caller session state is expected to cross A2A."""
+    for current_agent, next_agent in zip(self.sub_agents, self.sub_agents[1:]):
+      if (
+          isinstance(current_agent, LlmAgent)
+          and current_agent.output_key
+          and _is_remote_a2a_agent(next_agent)
+      ):
+        logger.warning(
+            "SequentialAgent '%s' runs LlmAgent '%s' with output_key '%s'"
+            " immediately before RemoteA2aAgent '%s'. The output is saved in"
+            " the caller's session and is not available in the remote"
+            ' session; include values needed by the remote agent in event'
+            ' content instead.',
+            self.name,
+            current_agent.name,
+            current_agent.output_key,
+            next_agent.name,
+        )
+    return self
 
   @override
   async def _run_async_impl(

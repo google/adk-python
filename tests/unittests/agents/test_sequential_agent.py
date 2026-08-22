@@ -18,6 +18,8 @@ from typing import AsyncGenerator
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps import ResumabilityConfig
@@ -206,3 +208,61 @@ async def test_run_live(request: pytest.FixtureRequest):
 def test_deprecation_mentions_sub_agent_limitation():
   with pytest.warns(DeprecationWarning, match='sub-agent'):
     SequentialAgent(name='deprecated_sequential', sub_agents=[])
+
+
+def test_output_key_handoff_to_remote_warns(caplog: pytest.LogCaptureFixture):
+  """An output_key hand-off to a remote agent warns about session scope."""
+  writer = LlmAgent(name='writer', output_key='result')
+  remote = RemoteA2aAgent(
+      name='remote', agent_card='https://example.com/agent-card.json'
+  )
+
+  with caplog.at_level('WARNING'):
+    SequentialAgent(name='pipeline', sub_agents=[writer, remote])
+
+  assert "output_key 'result'" in caplog.text
+  assert "RemoteA2aAgent 'remote'" in caplog.text
+  assert 'not available in the remote session' in caplog.text
+
+
+def test_output_key_after_remote_does_not_warn(
+    caplog: pytest.LogCaptureFixture,
+):
+  """An output_key retained after a remote step does not cross A2A."""
+  remote = RemoteA2aAgent(
+      name='remote', agent_card='https://example.com/agent-card.json'
+  )
+  writer = LlmAgent(name='writer', output_key='result')
+
+  with caplog.at_level('WARNING'):
+    SequentialAgent(name='pipeline', sub_agents=[remote, writer])
+
+  assert 'not available in the remote session' not in caplog.text
+
+
+def test_remote_handoff_without_output_key_does_not_warn(
+    caplog: pytest.LogCaptureFixture,
+):
+  """A content-only hand-off to a remote agent does not warn."""
+  writer = LlmAgent(name='writer')
+  remote = RemoteA2aAgent(
+      name='remote', agent_card='https://example.com/agent-card.json'
+  )
+
+  with caplog.at_level('WARNING'):
+    SequentialAgent(name='pipeline', sub_agents=[writer, remote])
+
+  assert 'not available in the remote session' not in caplog.text
+
+
+def test_local_output_key_handoff_does_not_warn(
+    caplog: pytest.LogCaptureFixture,
+):
+  """An output_key hand-off between local agents remains in one session."""
+  writer = LlmAgent(name='writer', output_key='result')
+  reader = LlmAgent(name='reader')
+
+  with caplog.at_level('WARNING'):
+    SequentialAgent(name='pipeline', sub_agents=[writer, reader])
+
+  assert 'not available in the remote session' not in caplog.text
