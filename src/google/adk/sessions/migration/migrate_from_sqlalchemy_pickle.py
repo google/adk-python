@@ -148,9 +148,14 @@ def _row_to_event(
   actions = None
   if actions_val is not None:
     try:
-      if isinstance(actions_val, bytes):
+      # The source rows are read with raw SQL, so SQLAlchemy has no column
+      # type to coerce with and whatever the driver produced for the binary
+      # column arrives here untouched. psycopg2 produces a memoryview rather
+      # than bytes, so match every bytes-like form instead of one driver's.
+      if isinstance(actions_val, (bytes, bytearray, memoryview)):
         actions = _restricted_pickle_loads(
-            actions_val, allow_unsafe_unpickling=allow_unsafe_unpickling
+            bytes(actions_val),
+            allow_unsafe_unpickling=allow_unsafe_unpickling,
         )
       else:  # for spanner - it might return object directly
         actions = actions_val

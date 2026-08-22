@@ -1219,3 +1219,178 @@ class TestRobustRmtree:
 
     cli_deploy._on_rm_error(os.remove, str(ro_file), None)
     assert not ro_file.exists()
+
+
+_VALID_WORKER_POOL = (
+    "projects/my-gcp-project/locations/us-central1/workerPools/my-private-pool"
+)
+
+
+def test_validate_worker_pool_accepts_full_resource_name() -> None:
+  """A well-formed Cloud Build worker pool resource name is accepted."""
+  assert cli_deploy._validate_worker_pool(_VALID_WORKER_POOL) == (
+      _VALID_WORKER_POOL
+  )
+
+
+@pytest.mark.parametrize(
+    "bad_pool",
+    [
+        "",
+        "   ",
+        "my-private-pool",
+        "projects/p/locations/l/workerPools/",
+        "projects/p/locations/l/pools/my-pool",
+        "projects/p/workerPools/my-pool",
+    ],
+)
+def test_validate_worker_pool_rejects_malformed_names(bad_pool: str) -> None:
+  """Malformed worker pool resource names raise a clear ClickException."""
+  with pytest.raises(click.ClickException):
+    cli_deploy._validate_worker_pool(bad_pool)
+
+
+def test_apply_worker_pool_nests_cli_value_into_build_config() -> None:
+  """CLI worker_pool is nested under build_config for the Vertex SDK."""
+  agent_config: Dict[str, Any] = {}
+  cli_deploy._apply_worker_pool_to_agent_config(
+      agent_config, _VALID_WORKER_POOL
+  )
+  assert agent_config["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+  assert "worker_pool" not in agent_config
+
+
+def test_apply_worker_pool_pops_top_level_config_key() -> None:
+  """Top-level worker_pool in .agent_engine_config.json is nested and removed."""
+  agent_config: Dict[str, Any] = {"worker_pool": _VALID_WORKER_POOL}
+  cli_deploy._apply_worker_pool_to_agent_config(agent_config, None)
+  assert agent_config["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+  assert "worker_pool" not in agent_config
+
+
+def test_apply_worker_pool_cli_overrides_config_file() -> None:
+  """Explicit CLI worker_pool overrides values from the config file."""
+  override = "projects/other/locations/europe-west1/workerPools/compliance-pool"
+  agent_config: Dict[str, Any] = {
+      "build_config": {"worker_pool": _VALID_WORKER_POOL},
+  }
+  cli_deploy._apply_worker_pool_to_agent_config(agent_config, override)
+  assert agent_config["build_config"]["worker_pool"] == override
+
+
+def test_apply_worker_pool_preserves_other_build_config_fields() -> None:
+  """Existing build_config.service_account is kept when adding worker_pool."""
+  agent_config: Dict[str, Any] = {
+      "build_config": {
+          "service_account": "builder@example.iam.gserviceaccount.com",
+      },
+  }
+  cli_deploy._apply_worker_pool_to_agent_config(
+      agent_config, _VALID_WORKER_POOL
+  )
+  assert agent_config["build_config"] == {
+      "service_account": "builder@example.iam.gserviceaccount.com",
+      "worker_pool": _VALID_WORKER_POOL,
+  }
+
+
+def test_to_agent_engine_forwards_worker_pool_in_update_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """to_agent_engine puts worker_pool under build_config on agent_engines.update."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      worker_pool=_VALID_WORKER_POOL,
+  )
+
+  assert len(captured) == 1
+  assert captured[0]["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+
+
+def test_to_agent_engine_reads_worker_pool_from_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """worker_pool from .agent_engine_config.json is forwarded on deploy."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  (src_dir / ".agent_engine_config.json").write_text(
+      json.dumps({"worker_pool": _VALID_WORKER_POOL})
+  )
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  assert captured[0]["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+  assert "worker_pool" not in captured[0]
+
+
+def test_to_agent_engine_rejects_invalid_worker_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """An invalid --worker_pool value fails before calling Agent Engine APIs."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        worker_pool="not-a-resource-name",
+    )
+
+  assert "Invalid worker_pool" in str(exc_info.value)
+  assert captured == []
+
+
+def test_cli_deploy_agent_engine_passes_worker_pool(tmp_path: Path) -> None:
+  """--worker_pool reaches to_agent_engine as a keyword argument."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            f"--worker_pool={_VALID_WORKER_POOL}",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["worker_pool"] == _VALID_WORKER_POOL
