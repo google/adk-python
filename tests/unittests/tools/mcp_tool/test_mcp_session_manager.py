@@ -390,6 +390,47 @@ class TestMCPSessionManager:
     session._read_stream._closed = True
     assert manager._is_session_disconnected(session)
 
+  def test_is_session_disconnected_write_stream_closed(self):
+    """The write stream closing counts too, not just the read stream."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    session = MockClientSession()
+    session._write_stream._closed = True
+    assert manager._is_session_disconnected(session)
+
+  def test_is_session_disconnected_without_streams(self):
+    """A session that holds no streams reads as connected, and does not raise.
+
+    Both attributes are private to the SDK. A release is free to move the
+    streams off `ClientSession`, and this must degrade to the
+    `SessionContext` task check rather than take down every tool call with an
+    `AttributeError`.
+
+    The stand-in is a bare class on purpose: a `Mock` would answer to
+    `_read_stream` and pass this vacuously.
+    """
+
+    class SessionWithoutStreams:
+      pass
+
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    assert not manager._is_session_disconnected(SessionWithoutStreams())
+
+  def test_is_session_disconnected_with_streams_that_have_no_flag(self):
+    """A stream that stops reporting a closed flag reads as connected too."""
+
+    class StreamWithoutFlag:
+      pass
+
+    class SessionWithBareStreams:
+
+      def __init__(self):
+        self._read_stream = StreamWithoutFlag()
+        self._write_stream = StreamWithoutFlag()
+
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    assert not manager._is_session_disconnected(SessionWithBareStreams())
+
   @pytest.mark.asyncio
   async def test_create_session_stdio_new(self):
     """Test creating a new stdio session."""
