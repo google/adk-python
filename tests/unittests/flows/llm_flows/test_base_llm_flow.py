@@ -2903,6 +2903,48 @@ async def _drive_one_llm_call(flow, invocation_context):
 
 
 @pytest.mark.asyncio
+async def test_preprocess_final_response_skips_llm_call():
+  """A final response from preprocessing must finish the current step."""
+  agent = Agent(
+      name='root_agent', model=testing_utils.MockModel.create(responses=[])
+  )
+  flow = BaseLlmFlowForTesting()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='resume'
+  )
+  function_response_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part.from_function_response(
+                  name='resumed_tool', response={'result': 'done'}
+              )
+          ],
+      ),
+  )
+  function_response_event.actions.skip_summarization = True
+
+  async def mock_preprocess(_ctx, _request):
+    yield function_response_event
+
+  async def fail_if_llm_called(*_args, **_kwargs):
+    raise AssertionError('LLM should not be called after a final response')
+    yield  # pylint: disable=unreachable
+
+  with (
+      mock.patch.object(flow, '_preprocess_async', side_effect=mock_preprocess),
+      mock.patch.object(
+          flow, '_call_llm_async', side_effect=fail_if_llm_called
+      ),
+  ):
+    events = [event async for event in flow.run_async(invocation_context)]
+
+  assert events == [function_response_event]
+
+
+@pytest.mark.asyncio
 async def test_cfc_llm_calls_are_counted_against_max_llm_calls():
   """support_cfc must not exempt a run from the max_llm_calls spend cap."""
   agent = Agent(
