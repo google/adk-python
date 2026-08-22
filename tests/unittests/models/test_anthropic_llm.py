@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import base64
 import json
 import os
 import re
-import sys
+import threading
 from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -38,7 +39,6 @@ from google.adk.models.anthropic_llm import to_google_genai_finish_reason
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
-from google.genai import version as genai_version
 from google.genai.types import Content
 from google.genai.types import Part
 import httpx
@@ -149,6 +149,34 @@ def test_claude_anthropic_client_creation_with_full_resource_name():
     _, kwargs = mock_client_class.call_args
     assert kwargs["project_id"] == "test-project"
     assert kwargs["region"] == "test-location"
+
+
+@pytest.mark.asyncio
+async def test_claude_anthropic_client_creation_runs_off_event_loop():
+  model = Claude(
+      model="projects/test-project/locations/test-location/publishers/anthropic/models/claude-3-5-sonnet-v2@20241022"
+  )
+  event_loop_thread = threading.get_ident()
+  construction_threads = []
+  client = MagicMock()
+
+  def create_client(**kwargs):
+    del kwargs
+    construction_threads.append(threading.get_ident())
+    return client
+
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropicVertex",
+      side_effect=create_client,
+  ) as mock_client_class:
+    clients = await asyncio.gather(
+        model._get_anthropic_client(),
+        model._get_anthropic_client(),
+    )
+
+  assert clients == [client, client]
+  mock_client_class.assert_called_once()
+  assert construction_threads[0] != event_loop_thread
 
 
 def test_supported_models():

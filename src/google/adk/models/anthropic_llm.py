@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import dataclasses
@@ -46,6 +47,7 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
+from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..utils import _json_utils
@@ -829,6 +831,8 @@ class AnthropicLlm(BaseLlm):
   )
   """An optional pre-configured Anthropic client."""
 
+  _client_init_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
+
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
@@ -952,15 +956,16 @@ class AnthropicLlm(BaseLlm):
     thinking = _build_anthropic_thinking_param(llm_request.config)
 
     try:
+      client = await self._get_anthropic_client()
       if not stream:
         kwargs = self._build_anthropic_kwargs(
             llm_request, messages, tools, tool_choice, thinking
         )
-        message = await self._anthropic_client.messages.create(**kwargs)
+        message = await client.messages.create(**kwargs)
         yield message_to_generate_content_response(message)
       else:
         async for response in self._generate_content_streaming(
-            llm_request, messages, tools, tool_choice, thinking
+            llm_request, messages, tools, tool_choice, thinking, client
         ):
           yield response
     except RateLimitError as rate_limit_error:
@@ -978,6 +983,7 @@ class AnthropicLlm(BaseLlm):
           anthropic_types.ThinkingConfigAdaptiveParam,
           NotGiven,
       ] = NOT_GIVEN,
+      client: AsyncAnthropic | AsyncAnthropicVertex | None = None,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from Anthropic models.
 
@@ -995,7 +1001,9 @@ class AnthropicLlm(BaseLlm):
     kwargs = self._build_anthropic_kwargs(
         llm_request, messages, tools, tool_choice, thinking
     )
-    raw_stream = await self._anthropic_client.messages.create(
+    if client is None:
+      client = await self._get_anthropic_client()
+    raw_stream = await client.messages.create(
         stream=True,
         **kwargs,
     )
@@ -1153,6 +1161,27 @@ class AnthropicLlm(BaseLlm):
         finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
     )
+
+  async def _get_anthropic_client(
+      self,
+  ) -> AsyncAnthropic | AsyncAnthropicVertex:
+    """Returns the client without blocking the caller's event loop.
+
+    The Anthropic SDK may perform synchronous credential discovery while
+    constructing a client. Agent Engine invokes this model from its serving
+    event loop, so doing that work inline can also block health checks. Keep
+    construction off the event loop and serialize concurrent first access so
+    the cached property creates only one client.
+    """
+    cached_client = self.__dict__.get("_anthropic_client")
+    if cached_client is not None:
+      return cast(AsyncAnthropic | AsyncAnthropicVertex, cached_client)
+
+    async with self._client_init_lock:
+      cached_client = self.__dict__.get("_anthropic_client")
+      if cached_client is not None:
+        return cast(AsyncAnthropic | AsyncAnthropicVertex, cached_client)
+      return await asyncio.to_thread(lambda: self._anthropic_client)
 
   @cached_property
   def _anthropic_client(self) -> AsyncAnthropic | AsyncAnthropicVertex:
