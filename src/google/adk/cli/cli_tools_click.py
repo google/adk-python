@@ -49,6 +49,7 @@ from .utils import logs
 
 if TYPE_CHECKING:
   from fastapi import FastAPI
+  from google.genai import types
 
   from ..agents.llm_agent import LlmAgent
 
@@ -83,6 +84,37 @@ def _parse_streaming_mode(
   if mode is None:
     raise click.BadParameter(f"unknown streaming mode {value!r}", param=param)
   return mode
+
+
+def _parse_avatar_config(
+    _ctx: click.Context,
+    param: click.Parameter,
+    value: str | None,
+) -> types.AvatarConfig | None:
+  """Parses an inline JSON object or JSON file into an avatar config."""
+  if value is None:
+    return None
+
+  if value.lstrip().startswith("{"):
+    config_json = value
+  else:
+    try:
+      config_json = Path(value).read_text(encoding="utf-8")
+    except OSError as exc:
+      raise click.BadParameter(
+          f"could not read avatar configuration file {value!r}: {exc}",
+          param=param,
+      ) from exc
+
+  from google.genai import types
+
+  try:
+    return types.AvatarConfig.model_validate_json(config_json)
+  except ValueError as exc:
+    raise click.BadParameter(
+        f"avatar configuration must be a valid AvatarConfig JSON object: {exc}",
+        param=param,
+    ) from exc
 
 
 def _logging_options():
@@ -1927,6 +1959,16 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--avatar_config",
+        type=str,
+        callback=_parse_avatar_config,
+        help=(
+            "Optional. AvatarConfig as an inline JSON object or a path to a"
+            " JSON file. Applied to live sessions."
+        ),
+        default=None,
+    )
     # Parsed into list[str] by the wrapper below (server commands need a list).
     @click.option(
         "--trigger_sources",
@@ -2012,6 +2054,7 @@ def cli_web(
     logo_text: str | None = None,
     logo_image_url: str | None = None,
     trigger_sources: list[str] | None = None,
+    avatar_config: types.AvatarConfig | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -2082,6 +2125,7 @@ def cli_web(
       logo_image_url=logo_image_url,
       trigger_sources=trigger_sources,
       default_llm_model=default_llm_model,
+      avatar_config=avatar_config,
   )
   config = uvicorn.Config(
       app,
@@ -2163,6 +2207,7 @@ def cli_api_server(
     with_ui: bool = False,
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
+    avatar_config: types.AvatarConfig | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -2223,6 +2268,7 @@ def cli_api_server(
           trigger_sources=trigger_sources,
           gemini_enterprise_app_name=gemini_enterprise_app_name,
           express_mode=express_mode,
+          avatar_config=avatar_config,
           lifespan=_lifespan,
       ),
       host=host,

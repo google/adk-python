@@ -1589,6 +1589,28 @@ def test_cli_api_server_invokes_uvicorn(
   assert _patch_uvicorn.calls, "uvicorn.Server.run must be called"
 
 
+@pytest.mark.parametrize("command", ["web", "api_server"])
+def test_cli_server_passes_avatar_config(
+    tmp_path: Path,
+    _patch_uvicorn: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+  """Both server commands pass parsed avatar configuration to the app."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  mock_get_app = _Recorder()
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [command, "--avatar_config", '{"avatarName":"Kai"}', str(agents_dir)],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert mock_get_app.calls[0][1]["avatar_config"].avatar_name == "Kai"
+
+
 def test_cli_web_passes_service_uris(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_uvicorn: _Recorder
 ) -> None:
@@ -2632,8 +2654,39 @@ def test_fast_api_common_options_documented_defaults() -> None:
   assert captured["a2a"] is False
   assert captured["allow_origins"] == ()
   assert captured["log_level"] == "INFO"
+  assert captured["avatar_config"] is None
   # --verbose is consumed while folding it into log_level.
   assert "verbose" not in captured
+
+
+@pytest.mark.parametrize("from_file", [False, True])
+def test_fast_api_common_options_parses_avatar_config(
+    tmp_path: Path, from_file: bool
+) -> None:
+  """Avatar configuration accepts either inline JSON or a JSON file."""
+  command, captured = _fast_api_command()
+  config_json = '{"avatarName":"Kai","videoBitrateBps":1000000}'
+  value = config_json
+  if from_file:
+    config_path = tmp_path / "avatar.json"
+    config_path.write_text(config_json, encoding="utf-8")
+    value = str(config_path)
+
+  result = CliRunner().invoke(command, ["--avatar_config", value])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["avatar_config"].avatar_name == "Kai"
+  assert captured["avatar_config"].video_bitrate_bps == 1000000
+
+
+def test_fast_api_common_options_rejects_invalid_avatar_config() -> None:
+  """Invalid inline avatar JSON fails before either server starts."""
+  command, _ = _fast_api_command()
+
+  result = CliRunner().invoke(command, ["--avatar_config", "{invalid}"])
+
+  assert result.exit_code == 2
+  assert "valid AvatarConfig JSON object" in result.output
 
 
 # adk test

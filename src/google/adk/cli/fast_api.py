@@ -35,6 +35,7 @@ from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
+from google.genai import types
 from opentelemetry import context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import export
@@ -122,6 +123,7 @@ def get_fast_api_app(
     default_llm_model: str | None = None,
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
+    avatar_config: types.AvatarConfig | None = None,
 ) -> FastAPI:
   """Constructs and returns a FastAPI application for serving ADK agents.
 
@@ -178,6 +180,7 @@ def get_fast_api_app(
     gemini_enterprise_app_name: The Gemini Enterprise app name to use for the
       agent.
     express_mode: Whether to enable express mode.
+    avatar_config: Avatar configuration to apply to live agent runs.
 
   Returns:
     The configured FastAPI application instance.
@@ -300,6 +303,7 @@ def get_fast_api_app(
       auto_create_session=auto_create_session,
       trigger_sources=trigger_sources,
       default_llm_model=default_llm_model,
+      avatar_config=avatar_config,
   )
 
   # In single agent mode, use that agent as the default app.

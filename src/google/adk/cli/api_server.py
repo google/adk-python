@@ -839,6 +839,7 @@ class ApiServer:
       auto_create_session: bool = False,
       trigger_sources: Optional[list[str]] = None,
       default_llm_model: Optional[str] = None,
+      avatar_config: Optional[types.AvatarConfig] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -859,6 +860,7 @@ class ApiServer:
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
     self.default_llm_model = default_llm_model
+    self.avatar_config = avatar_config
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
 
   async def get_runner_async(self, app_name: str) -> Runner:
@@ -2061,6 +2063,7 @@ class ApiServer:
             ),
             save_live_blob=save_live_blob,
             explicit_vad_signal=explicit_vad_signal,
+            avatar_config=self.avatar_config,
         )
         async with Aclosing(
             runner.run_live(
