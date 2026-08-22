@@ -175,10 +175,10 @@ def test_gemini_live_api_client_creation_with_projects_prefix():
       model="projects/test-project/locations/test-location/publishers/google/models/gemini-2.5-pro"
   )
   with mock.patch("google.genai.Client", autospec=True) as mock_client:
-    _ = model._live_api_client
+    _ = model.live_api_client
     assert mock_client.call_count == 2
 
-    # Second call is for _live_api_client
+    # Second call is for live_api_client.
     _, kwargs = mock_client.call_args_list[1]
     assert kwargs["enterprise"] is True
 
@@ -206,7 +206,7 @@ def test_gemini_api_client_creation_with_client_kwargs():
     assert kwargs["credentials"] == mock_credentials
 
   with mock.patch("google.genai.Client", autospec=True) as mock_client:
-    _ = model._live_api_client
+    _ = model.live_api_client
     mock_client.assert_called_once()
     _, kwargs = mock_client.call_args
     assert kwargs["enterprise"] is True
@@ -252,7 +252,7 @@ def test_gemini_api_client_when_client_kwargs_missing_from_dict():
     mock_client.assert_called_once()
 
   with mock.patch("google.genai.Client", autospec=True) as mock_client:
-    _ = model._live_api_client
+    _ = model.live_api_client
     mock_client.assert_called_once()
 
 
@@ -634,7 +634,7 @@ async def test_connect(gemini_llm, llm_request):
   mock_live_session = mock.AsyncMock()
 
   # Patch the live API client boundary so the real connect() body runs.
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -948,13 +948,13 @@ def test_live_api_version_ignores_configured_field():
 
 
 def test_live_api_client_ignores_configured_field():
-  """Test that _live_api_client http_options ignores the api_version field."""
+  """Test that live_api_client http_options ignores the api_version field."""
   gemini_llm = Gemini(model="gemini-2.5-flash", api_version="v1")
 
   with mock.patch.object(
       gemini_llm, "_api_backend", GoogleLLMVariant.VERTEX_AI
   ):
-    client = gemini_llm._live_api_client
+    client = gemini_llm.live_api_client
 
     assert client._api_client._http_options.api_version == "v1beta1"
 
@@ -997,7 +997,7 @@ def test_live_api_client_uses_api_version_from_google_base_url(
       base_url=base_url,
   )
 
-  client = gemini_llm._live_api_client
+  client = gemini_llm.live_api_client
   http_options = client._api_client._http_options
 
   assert http_options.base_url == expected_base_url
@@ -1005,11 +1005,11 @@ def test_live_api_client_uses_api_version_from_google_base_url(
 
 
 def test_live_api_client_properties(gemini_llm):
-  """Test that _live_api_client is properly configured with tracking headers and API version."""
+  """Test that live_api_client has tracking headers and the API version."""
   with mock.patch.object(
       gemini_llm, "_api_backend", GoogleLLMVariant.VERTEX_AI
   ):
-    client = gemini_llm._live_api_client
+    client = gemini_llm.live_api_client
 
     # Verify that the client has the correct headers and API version
     http_options = client._api_client._http_options
@@ -1020,6 +1020,42 @@ def test_live_api_client_properties(gemini_llm):
     for key, value in tracking_headers.items():
       assert key in http_options.headers
       assert value in http_options.headers[key]
+
+
+def test_live_api_client_private_alias(gemini_llm):
+  """The former private property remains an alias for compatibility."""
+  assert gemini_llm._live_api_client is gemini_llm.live_api_client
+
+
+def test_live_api_client_public_override():
+  """A subclass can customize only the client used by Live connections."""
+  custom_client = mock.MagicMock()
+
+  class CustomGemini(Gemini):
+
+    @property
+    def live_api_client(self):
+      return custom_client
+
+  gemini_llm = CustomGemini(model="gemini-2.5-flash")
+
+  assert gemini_llm.live_api_client is custom_client
+  assert gemini_llm._live_api_client is custom_client
+
+
+def test_live_api_client_legacy_private_override():
+  """A subclass overriding the former private property still takes effect."""
+  custom_client = mock.MagicMock()
+
+  class CustomGemini(Gemini):
+
+    @property
+    def _live_api_client(self):
+      return custom_client
+
+  gemini_llm = CustomGemini(model="gemini-2.5-flash")
+
+  assert gemini_llm.live_api_client is custom_client
 
 
 @pytest.mark.asyncio
@@ -1033,8 +1069,8 @@ async def test_connect_with_custom_headers(gemini_llm, llm_request):
 
   mock_live_session = mock.AsyncMock()
 
-  # Mock the _live_api_client to return a mock client
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  # Mock the live_api_client to return a mock client
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
     # Create a mock context manager
     class MockLiveConnect:
 
@@ -1076,7 +1112,7 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1120,7 +1156,7 @@ async def test_connect_forwards_thinking_config(gemini_llm, llm_request):
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1159,7 +1195,7 @@ async def test_connect_forwards_safety_settings(gemini_llm, llm_request):
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1202,7 +1238,7 @@ async def test_connect_keeps_existing_live_safety_settings(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1239,7 +1275,7 @@ async def test_connect_keeps_empty_live_safety_settings(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1267,7 +1303,7 @@ async def test_connect_safety_settings_remain_none_when_unset(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -2644,7 +2680,7 @@ async def test_connect_uses_gemini_speech_config_when_request_is_none(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -2692,7 +2728,7 @@ async def test_connect_uses_request_speech_config_when_gemini_is_none(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -2746,7 +2782,7 @@ async def test_connect_request_gemini_config_overrides_speech_config(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -2787,7 +2823,7 @@ async def test_connect_speech_config_remains_none_when_both_are_none(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -3000,7 +3036,7 @@ async def test_connect_does_not_log_request_headers(
   mock_live_session = mock.AsyncMock()
 
   with caplog.at_level(logging.DEBUG, logger="google_adk"):
-    with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+    with mock.patch.object(gemini_llm, "live_api_client") as mock_live_client:
 
       class MockLiveConnect:
 
