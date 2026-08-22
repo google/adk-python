@@ -121,6 +121,19 @@ class Gemini(BaseLlm):
     one per event loop. Overriding the ``api_client`` property instead pins a
     single client to the model for its lifetime, which reaches into a closed
     loop as soon as a second loop uses the model.
+
+  Customizing the Live API Client:
+    Live API connections use a separate client. To customize only Live API
+    connections, subclass ``Gemini`` and override the ``live_api_client``
+    property. The default implementation is cached once per event loop; a
+    custom override is responsible for its own client lifecycle::
+
+        from google.genai import Client
+
+        class RegionalLiveGemini(Gemini):
+          @property
+          def live_api_client(self) -> Client:
+            return Client(enterprise=True, location="europe-central2")
   """
 
   # Pydantic exempts functools.cached_property by module name rather than by
@@ -499,8 +512,7 @@ class Gemini(BaseLlm):
       # use v1alpha for using API KEY from Google AI Studio
       return 'v1alpha'
 
-  @PerLoopCachedProperty
-  def _live_api_client(self) -> Client:
+  def _build_live_api_client(self) -> Client:
     if self.client:
       return self.client
 
@@ -523,6 +535,31 @@ class Gemini(BaseLlm):
       kwargs.update(client_kwargs)
 
     return Client(**kwargs)
+
+  def _uses_legacy_live_api_client_override(self) -> bool:
+    for cls in type(self).__mro__:
+      if '_live_api_client' in cls.__dict__:
+        return cls is not Gemini
+    return False
+
+  @PerLoopCachedProperty
+  def live_api_client(self) -> Client:
+    """Provides the Live API client.
+
+    Subclasses can override this property to customize the client used for
+    Live API connections.
+
+    Returns:
+      The Live API client.
+    """
+    if self._uses_legacy_live_api_client_override():
+      return self._live_api_client
+    return self._build_live_api_client()
+
+  @property
+  def _live_api_client(self) -> Client:
+    """Compatibility alias for the former private Live API client property."""
+    return self.live_api_client
 
   @contextlib.asynccontextmanager
   async def connect(
@@ -623,7 +660,7 @@ class Gemini(BaseLlm):
     model = llm_request.model
     if model is None:
       raise ValueError('Live Gemini requests require a model name.')
-    async with self._live_api_client.aio.live.connect(
+    async with self.live_api_client.aio.live.connect(
         model=model, config=llm_request.live_connect_config
     ) as live_session:
       yield GeminiLlmConnection(
