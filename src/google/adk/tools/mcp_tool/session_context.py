@@ -38,6 +38,24 @@ logger = logging.getLogger('google_adk.' + __name__)
 _T = TypeVar('_T')
 
 
+def _read_timeout(seconds: Optional[float]) -> Optional[timedelta]:
+  """Converts a timeout in seconds to the type ``ClientSession`` expects.
+
+  ADK carries every timeout as float seconds. MCP SDK 1.x wants a
+  ``timedelta`` here, while 2.x wants the float. Converting in one place keeps
+  that difference to a single function.
+
+  Args:
+    seconds: The timeout in seconds, or None for no timeout.
+
+  Returns:
+    The timeout in the form the installed SDK expects, or None.
+  """
+  if seconds is None:
+    return None
+  return timedelta(seconds=seconds)
+
+
 def _format_exception(exc: BaseException | None) -> str:
   """Formats an exception into a readable string representation.
 
@@ -346,9 +364,7 @@ class SessionContext:
           session = await exit_stack.enter_async_context(
               ClientSession(
                   *transports[:2],
-                  read_timeout_seconds=timedelta(seconds=self._timeout)
-                  if self._timeout is not None
-                  else None,
+                  read_timeout_seconds=_read_timeout(self._timeout),
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
@@ -360,9 +376,7 @@ class SessionContext:
           session = await exit_stack.enter_async_context(
               ClientSession(
                   *transports[:2],
-                  read_timeout_seconds=timedelta(seconds=self._sse_read_timeout)
-                  if self._sse_read_timeout is not None
-                  else None,
+                  read_timeout_seconds=_read_timeout(self._sse_read_timeout),
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
