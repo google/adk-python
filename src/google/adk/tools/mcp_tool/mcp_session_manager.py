@@ -796,13 +796,30 @@ class MCPSessionManager:
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
+    Reads two attributes ADK does not own: the SDK holds the transport streams
+    on the session privately, and each stream reports its own closed flag. A
+    session that lacks either one reads as connected rather than raising,
+    because a release is free to restructure both away and this probe is not
+    the only thing standing between a dead session and a caller.
+
+    `create_session` pairs this with `SessionContext._is_task_alive`, which
+    ADK owns and which catches strictly more: a crashed transport can leave
+    the streams open while the task behind them is already dead. That pairing
+    runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
+    kill switch drops it and leaves this probe on its own.
+
     Args:
         session: The ClientSession to check.
 
     Returns:
-        True if the session is disconnected, False otherwise.
+        True if the session is known to be disconnected, False otherwise.
     """
-    return session._read_stream._closed or session._write_stream._closed
+    read_stream = getattr(session, '_read_stream', None)
+    write_stream = getattr(session, '_write_stream', None)
+    return bool(
+        getattr(read_stream, '_closed', False)
+        or getattr(write_stream, '_closed', False)
+    )
 
   def _get_session_context(
       self, headers: Optional[Dict[str, str]] = None
