@@ -563,6 +563,11 @@ def _build_auth_interceptors(
 class RemoteA2aAgent(BaseAgent):
   """Agent that communicates with a remote A2A agent via A2A client.
 
+  Session state is local to each side of an A2A boundary. Only event content is
+  included in requests, and state deltas from a remote peer are not applied to
+  the caller's session. Put values needed by the peer in event content and
+  return values needed by the caller as content or task output.
+
   This agent supports multiple ways to specify the remote agent:
   1. Direct AgentCard object
   2. URL to agent card JSON
@@ -1101,6 +1106,18 @@ class RemoteA2aAgent(BaseAgent):
     """
     message_parts: list[A2APart] = []
     context_id = None
+
+    if ctx.session.events:
+      last_event = ctx.session.events[-1]
+      has_state_delta = bool(last_event.actions.state_delta)
+      has_content = bool(last_event.content and last_event.content.parts)
+      if has_state_delta and not has_content:
+        logger.warning(
+            "RemoteA2aAgent '%s' cannot forward the preceding state-only"
+            " event across A2A. Session state is local to each agent; include"
+            " the required values in event content instead.",
+            self.name,
+        )
 
     events_to_process = []
     task_scope = ctx.isolation_scope if self.mode == "task" else None
