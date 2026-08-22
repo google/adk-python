@@ -1971,6 +1971,39 @@ def _function_response_event(call_id: str, name: str, result: str) -> Event:
   )
 
 
+def _model_text_event(text: str) -> Event:
+  return Event(
+      invocation_id="inv1",
+      author="test_agent",
+      content=types.ModelContent(text),
+  )
+
+
+def test_rearrange_async_function_responses_drops_stale_model_reply():
+  """A model reply to a superseded tool update must not remain in history."""
+  events = [
+      _function_call_event("call_1", "watch"),
+      _function_response_event("call_1", "watch", "progress"),
+      _model_text_event("Still working."),
+      _function_response_event("call_1", "watch", "done"),
+      _model_text_event("Finished."),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("What happened?"),
+      ),
+  ]
+
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+
+  assert len(result) == 4
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2].content.parts[0].text == "Finished."
+  assert result[3].content.parts[0].text == "What happened?"
+
+
 def test_rearrange_async_function_responses_reused_id_across_tools():
   """A reused call id must not pair a call with a different tool's response."""
   events = [
