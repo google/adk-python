@@ -709,6 +709,7 @@ def message_to_generate_content_response(
           role="model",
           parts=parts,
       ),
+      model_version=message.model,
       usage_metadata=usage_metadata,
       finish_reason=to_google_genai_finish_reason(message.stop_reason),
   )
@@ -1012,6 +1013,7 @@ class AnthropicLlm(BaseLlm):
     cached_input_tokens: int | None = None
     cache_creation_tokens: int | None = None
     stop_reason: Optional[anthropic_types.StopReason] = None
+    model_version: str | None = None
 
     async for event in raw_stream:
       if event.type == "message_start":
@@ -1019,6 +1021,10 @@ class AnthropicLlm(BaseLlm):
         output_tokens = event.message.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.message.usage)
         cached_input_tokens = _extract_cached_token_count(event.message.usage)
+        # Guard on str: keeps partial/mock streams that omit the field from
+        # poisoning model_version with a non-string.
+        if isinstance(event.message.model, str):
+          model_version = event.message.model
         cache_creation_tokens = _extract_cache_creation_token_count(
             event.message.usage
         )
@@ -1149,6 +1155,7 @@ class AnthropicLlm(BaseLlm):
 
     yield LlmResponse(
         content=types.Content(role="model", parts=all_parts),
+        model_version=model_version,
         usage_metadata=usage_metadata,
         finish_reason=to_google_genai_finish_reason(stop_reason),
         partial=False,
