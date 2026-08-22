@@ -196,6 +196,46 @@ def test_to_cloud_run_happy_path(
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
 
 
+def test_to_cloud_run_stages_extra_packages(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  extra_package = tmp_path / "shared_package"
+  extra_package.mkdir()
+  (extra_package / "helpers.py").write_text("VALUE = 1\n")
+  deployment_dir = tmp_path / "deployment"
+
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(deployment_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="2.7.1",
+      extra_packages=[str(extra_package)],
+  )
+
+  assert (deployment_dir / "shared_package" / "helpers.py").is_file()
+  dockerfile = (deployment_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "shared_package/" "/app/shared_package/"'
+      in dockerfile
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile
+
+
 def test_to_cloud_run_cleans_temp_dir(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: AgentDirFixture,

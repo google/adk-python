@@ -456,6 +456,51 @@ def test_to_gke_happy_path(
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
 
 
+def test_to_gke_stages_extra_packages(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  src_dir = agent_dir(False, False)
+  extra_package = tmp_path / "shared_package"
+  extra_package.mkdir()
+  (extra_package / "helpers.py").write_text("VALUE = 1\n")
+  deployment_dir = tmp_path / "deployment"
+
+  def mock_subprocess_run(*args, **kwargs):
+    if args[0][:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="deployment created")
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="cluster",
+      service_name="svc",
+      app_name="agent",
+      temp_folder=str(deployment_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      adk_version="2.7.1",
+      extra_packages=[str(extra_package)],
+  )
+
+  assert (deployment_dir / "shared_package" / "helpers.py").is_file()
+  dockerfile = (deployment_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "shared_package/" "/app/shared_package/"'
+      in dockerfile
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile
+
+
 def test_to_gke_uses_gcloud_cmd_on_windows(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool, bool], Path],
@@ -1195,7 +1240,6 @@ class TestRobustRmtree:
 
   def test_removes_readonly_files(self, tmp_path: Path) -> None:
     """It should remove a tree containing read-only files."""
-    import os
     import stat
 
     d = tmp_path / "ro_dir"
