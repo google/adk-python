@@ -1589,6 +1589,28 @@ def test_cli_api_server_invokes_uvicorn(
   assert _patch_uvicorn.calls, "uvicorn.Server.run must be called"
 
 
+@pytest.mark.parametrize("command", ["web", "api_server"])
+def test_cli_server_passes_max_llm_calls(
+    tmp_path: Path,
+    _patch_uvicorn: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+  """Both server commands pass the requested LLM call limit to the app."""
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  mock_get_app = _Recorder()
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [command, "--max_llm_calls", "37", str(agents_dir)],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert mock_get_app.calls[0][1]["max_llm_calls"] == 37
+
+
 def test_cli_web_passes_service_uris(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_uvicorn: _Recorder
 ) -> None:
@@ -2632,8 +2654,19 @@ def test_fast_api_common_options_documented_defaults() -> None:
   assert captured["a2a"] is False
   assert captured["allow_origins"] == ()
   assert captured["log_level"] == "INFO"
+  assert captured["max_llm_calls"] is None
   # --verbose is consumed while folding it into log_level.
   assert "verbose" not in captured
+
+
+def test_fast_api_common_options_parses_max_llm_calls() -> None:
+  """The common server option parses an explicit per-run LLM call limit."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, ["--max_llm_calls", "37"])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["max_llm_calls"] == 37
 
 
 # adk test

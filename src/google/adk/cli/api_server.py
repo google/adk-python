@@ -839,6 +839,7 @@ class ApiServer:
       auto_create_session: bool = False,
       trigger_sources: Optional[list[str]] = None,
       default_llm_model: Optional[str] = None,
+      max_llm_calls: Optional[int] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -859,6 +860,7 @@ class ApiServer:
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
     self.default_llm_model = default_llm_model
+    self.max_llm_calls = max_llm_calls
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
 
   async def get_runner_async(self, app_name: str) -> Runner:
@@ -1807,11 +1809,12 @@ class ApiServer:
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
-      run_config = (
-          RunConfig(custom_metadata=req.custom_metadata)
-          if req.custom_metadata
-          else None
-      )
+      run_config_kwargs: dict[str, Any] = {}
+      if req.custom_metadata:
+        run_config_kwargs["custom_metadata"] = req.custom_metadata
+      if self.max_llm_calls is not None:
+        run_config_kwargs["max_llm_calls"] = self.max_llm_calls
+      run_config = RunConfig(**run_config_kwargs) if run_config_kwargs else None
 
       async def worker():
         try:
@@ -1907,6 +1910,11 @@ class ApiServer:
                   run_config=RunConfig(
                       streaming_mode=stream_mode,
                       custom_metadata=req.custom_metadata,
+                      **(
+                          {"max_llm_calls": self.max_llm_calls}
+                          if self.max_llm_calls is not None
+                          else {}
+                      ),
                   ),
                   invocation_id=req.invocation_id,
               )
@@ -2061,6 +2069,11 @@ class ApiServer:
             ),
             save_live_blob=save_live_blob,
             explicit_vad_signal=explicit_vad_signal,
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
+            ),
         )
         async with Aclosing(
             runner.run_live(
