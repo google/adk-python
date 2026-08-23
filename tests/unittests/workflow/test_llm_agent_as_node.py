@@ -239,6 +239,39 @@ async def test_single_turn_input_event_inherits_branch_and_scope(
   assert event.isolation_scope == 'scope-1'
 
 
+@pytest.mark.asyncio
+async def test_single_turn_input_skipped_when_resuming(
+    request: pytest.FixtureRequest,
+):
+  """Resuming a single-turn agent node skips duplicate user input and retains initial input."""
+  from google.adk.workflow._llm_agent_wrapper import prepare_llm_agent_input
+
+  agent = _make_agent(mode='single_turn')
+  ic = await create_parent_invocation_context(request.function.__name__, agent)
+  ic.branch = 'parent.worker@1'
+  # Pre-populate session with turn 1's initial user input
+  original_event = Event(
+      author='user',
+      branch='parent.worker@1',
+      content=types.Content(
+          role='user', parts=[types.Part(text='turn 1 initial input')]
+      ),
+  )
+  ic.session.events.append(original_event)
+
+  ctx = Context(
+      invocation_context=ic, resume_inputs={'worker@1': {'confirmed': True}}
+  )
+
+  initial_len = len(ic.session.events)
+  prepare_llm_agent_input(agent, ctx, 'hello')
+
+  # Verify no duplicate user input was appended on resume
+  assert len(ic.session.events) == initial_len
+  # Verify the resumed node still sees the initial user input from turn 1
+  assert ic.session.events[-1].content.parts[0].text == 'turn 1 initial input'
+
+
 # --- build_node auto-wrapping ---
 
 
