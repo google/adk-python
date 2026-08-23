@@ -62,6 +62,53 @@ def _make_a2a_part_for_test(metadata=None):
     return m
 
 
+def _tool_activity_part_converter(part):
+  """Turns the "fc"/"fr" marker parts below into real tool activity."""
+  text = _compat.part_text(part)
+  if text == "fc":
+    return [
+        genai_types.Part(
+            function_call=genai_types.FunctionCall(
+                id="call-1", name="divide", args={"a": 10, "b": 0}
+            )
+        )
+    ]
+  if text == "fr":
+    return [
+        genai_types.Part(
+            function_response=genai_types.FunctionResponse(
+                id="call-1",
+                name="divide",
+                response={"error": "cannot divide by zero"},
+            )
+        )
+    ]
+  return [genai_types.Part.from_text(text=text)]
+
+
+def _make_task_with_tool_activity(state):
+  """A non-streaming peer turn: narration, a tool call, its result, an answer.
+
+  This is what `message/send` returns for a peer whose card leaves
+  `capabilities.streaming` at False, which is the default for `to_a2a(...)`.
+  """
+  return Task(
+      id="task-1",
+      context_id="context-1",
+      status=_compat.make_task_status(state, timestamp="2024-01-01T00:00:00Z"),
+      artifacts=[
+          _compat.make_artifact(
+              artifact_id=f"art-{index}",
+              artifact_type="message",
+              parts=[_compat.make_text_part(text)],
+          )
+          for index, text in enumerate(
+              ["Let me divide that.", "fc", "fr", "You cannot divide by zero."]
+          )
+      ],
+  )
+
+
 class TestToAdk:
   """Test suite for to_adk functions."""
 
@@ -178,6 +225,71 @@ class TestToAdk:
     assert event.invocation_id == "test-invocation"
     assert len(event.content.parts) == 1
     assert event.content.parts[0] == mock_genai_part
+
+  @pytest.mark.parametrize(
+      "terminal_state",
+      [_compat.TS_COMPLETED, _compat.TS_FAILED, _compat.TS_CANCELED],
+  )
+  def test_convert_a2a_task_to_event_terminal_task_is_final_response(
+      self, terminal_state
+  ):
+    """A terminal task carrying tool activity must read as a final response."""
+    task = _make_task_with_tool_activity(terminal_state)
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=_tool_activity_part_converter,
+    )
+
+    # The peer's tool activity is still carried on the event ...
+    assert len(event.get_function_calls()) == 1
+    assert len(event.get_function_responses()) == 1
+    # ... but the turn is over, so the caller can detect the close.
+    assert event.actions.skip_summarization is True
+    assert event.is_final_response() is True
+
+  @pytest.mark.parametrize(
+      "non_terminal_state",
+      [_compat.TS_SUBMITTED, _compat.TS_WORKING],
+  )
+  def test_convert_a2a_task_to_event_non_terminal_task_is_not_final(
+      self, non_terminal_state
+  ):
+    """An in-flight task must keep reporting that the turn is still open."""
+    task = _make_task_with_tool_activity(non_terminal_state)
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=_tool_activity_part_converter,
+    )
+
+    assert event.actions.skip_summarization is None
+    assert event.is_final_response() is False
+
+  @pytest.mark.parametrize(
+      "pause_state",
+      [_compat.TS_INPUT_REQUIRED, _compat.TS_AUTH_REQUIRED],
+  )
+  def test_convert_a2a_task_to_event_pause_state_left_untouched(
+      self, pause_state
+  ):
+    """input/auth-required already resolve via the mock call; leave them be."""
+    task = _make_task_with_tool_activity(pause_state)
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=_tool_activity_part_converter,
+    )
+
+    assert event.actions.skip_summarization is None
+    assert event.long_running_tool_ids
+    assert event.is_final_response() is True
 
   def test_convert_a2a_task_to_event_returns_action_only_event(self):
     """Test A2A task conversion returns action-only events."""

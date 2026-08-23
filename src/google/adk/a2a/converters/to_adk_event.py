@@ -290,6 +290,19 @@ metadata uses the camelCase aliases, so both spellings are listed.
 """
 
 
+_TERMINAL_TASK_STATES = frozenset({
+    _compat.TS_COMPLETED,
+    _compat.TS_FAILED,
+    _compat.TS_CANCELED,
+})
+"""Task states that mean the peer's turn is over.
+
+``input_required`` and ``auth_required`` are deliberately excluded: those pause
+the turn to ask the caller for something, and they already reach
+``is_final_response()`` through the mock function call built for them.
+"""
+
+
 def _extract_event_actions(metadata: Any) -> EventActions:
   """Extracts ADK event actions from A2A metadata.
 
@@ -533,6 +546,17 @@ def convert_a2a_task_to_event(
             a2a_task.status.state, output_parts, long_running_function_ids
         )
     )
+
+    if a2a_task.status.state in _TERMINAL_TASK_STATES:
+      # A terminal task is the whole of the peer's turn, so the event carries
+      # the peer's tool activity alongside its closing text. Without this,
+      # `Event.is_final_response()` sees those function calls/responses and
+      # reports False, and a caller that closes the turn on that helper never
+      # closes it. `skip_summarization` is the existing signal for "this event
+      # is final despite carrying tool activity"; it is also already trusted
+      # from the peer (`_PEER_SETTABLE_ACTION_FIELDS`), so setting it here does
+      # not widen what an A2A response can influence.
+      event_actions.skip_summarization = True
 
     return _create_event(
         output_parts,
