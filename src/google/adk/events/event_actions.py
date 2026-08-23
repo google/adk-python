@@ -45,14 +45,71 @@ logger = logging.getLogger('google_adk.' + __name__)
 def _make_json_serializable(obj: Any) -> Any:
   """Converts an object into a JSON-serializable form.
 
-  Used as a fallback when the default Pydantic serialization fails. Delegates to
+  Used as a fallback when the default Pydantic serialization fails. Walks the
+  structure recursively and delegates each leaf to
   `pydantic_core.to_jsonable_python` so rich types (e.g. datetimes, Pydantic
   models) are serialized faithfully instead of being discarded. Values that
-  pydantic-core cannot serialize (e.g. Python callables stored in session state)
-  are replaced with their `repr` via `serialize_unknown=True` so the overall
-  structure can still be persisted without crashing.
+  pydantic-core cannot serialize (e.g. Python callables stored in session
+  state, or Pydantic models whose serializer was not built yet) are replaced
+  with their `repr` so the overall structure can still be persisted without
+  crashing.
   """
-  return to_jsonable_python(obj, serialize_unknown=True)
+  failed_paths: list[str] = []
+
+  def _convert_key(key: Any) -> str:
+    if isinstance(key, bool):
+      return 'true' if key else 'false'
+    if isinstance(key, tuple):
+      return ','.join(_convert_key(element) for element in key)
+    try:
+      converted = to_jsonable_python(key, serialize_unknown=True)
+      # pydantic-core unwraps enum keys before key inference and converts
+      # tuples to lists; comma-join the unwrapped sequence so e.g. an enum
+      # with a tuple value renders like the equivalent plain tuple key would.
+      if isinstance(converted, (tuple, list)):
+        return ','.join(_convert_key(element) for element in converted)
+    except Exception:  # pylint: disable=broad-except
+      return repr(key)
+    return converted if isinstance(converted, str) else str(converted)
+
+  def _record_failure(path: tuple[Any, ...]) -> None:
+    failed_paths.append('.'.join(str(segment) for segment in path) or '<root>')
+
+  def _convert(value: Any, path: tuple[Any, ...] = ()) -> Any:
+    if isinstance(value, dict):
+      try:
+        return {
+            _convert_key(key): _convert(item, path + (key,))
+            for key, item in value.items()
+        }
+      except Exception:  # pylint: disable=broad-except
+        # Container subclasses can override protocol methods in a way that
+        # breaks iteration; fall back instead of letting it escape.
+        _record_failure(path)
+        return repr(value)
+    if isinstance(value, (list, tuple, set, frozenset)):
+      try:
+        return [
+            _convert(item, path + (index,)) for index, item in enumerate(value)
+        ]
+      except Exception:  # pylint: disable=broad-except
+        _record_failure(path)
+        return repr(value)
+    try:
+      return to_jsonable_python(value, serialize_unknown=True)
+    except Exception:  # pylint: disable=broad-except
+      _record_failure(path)
+      return repr(value)
+
+  result = _convert(obj)
+  if failed_paths:
+    logger.warning(
+        'Some values in the state are not JSON-serializable and were'
+        ' replaced with their string representation in the persisted event.'
+        ' Affected paths: %s',
+        ', '.join(failed_paths),
+    )
+  return result
 
 
 class EventCompaction(BaseModel):  # type: ignore[misc]
