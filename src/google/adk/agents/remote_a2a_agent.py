@@ -865,7 +865,7 @@ class RemoteA2aAgent(BaseAgent):
 
       with path.open("r", encoding="utf-8") as f:
         agent_json_data = json.load(f)
-        return _compat.parse_agent_card(agent_json_data)
+      return _compat.parse_agent_card(agent_json_data)
     except json.JSONDecodeError as e:
       raise AgentCardResolutionError(
           f"Invalid JSON in agent card file {file_path}: {e}"
@@ -1107,18 +1107,6 @@ class RemoteA2aAgent(BaseAgent):
     message_parts: list[A2APart] = []
     context_id = None
 
-    if ctx.session.events:
-      last_event = ctx.session.events[-1]
-      has_state_delta = bool(last_event.actions.state_delta)
-      has_content = bool(last_event.content and last_event.content.parts)
-      if has_state_delta and not has_content:
-        logger.warning(
-            "RemoteA2aAgent '%s' cannot forward the preceding state-only"
-            " event across A2A. Session state is local to each agent; include"
-            " the required values in event content instead.",
-            self.name,
-        )
-
     events_to_process = []
     task_scope = ctx.isolation_scope if self.mode == "task" else None
     broke_loop = False
@@ -1188,6 +1176,18 @@ class RemoteA2aAgent(BaseAgent):
           f" triggering FunctionCall for isolation scope '{task_scope}' in"
           " session history. Workflow path scopes are not supported."
       )
+
+    if events_to_process:
+      last_event = events_to_process[0]
+      has_state_delta = bool(last_event.actions.state_delta)
+      has_content = bool(last_event.content and last_event.content.parts)
+      if has_state_delta and not has_content:
+        logger.warning(
+            "RemoteA2aAgent '%s' cannot forward the preceding state-only"
+            " event across A2A. Session state is local to each agent; include"
+            " the required values in event content instead.",
+            self.name,
+        )
 
     # Collect all FC IDs emitted by this remote agent in the task scope.
     remote_fc_ids = set()
