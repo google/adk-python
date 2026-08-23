@@ -2455,9 +2455,24 @@ def _message_to_generate_content_response(
     for tool_call in tool_calls:
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
+        try:
+          args = _parse_tool_call_arguments(tool_call.function.arguments)
+        except json.JSONDecodeError as exc:
+          # Malformed tool-call arguments are treated as a recoverable model
+          # error rather than a crash: surface empty args so downstream tool
+          # dispatch reports the mismatch back to the model for a retry.
+          logger.warning(
+              "Failed to parse arguments of tool call %r for function %r as"
+              " JSON (%s). Falling back to empty args so the model can"
+              " retry.",
+              tool_call.id,
+              tool_call.function.name,
+              exc,
+          )
+          args = {}
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=_parse_tool_call_arguments(tool_call.function.arguments),
+            args=args,
         )
         function_call = part.function_call
         if function_call is None:
