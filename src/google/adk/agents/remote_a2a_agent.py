@@ -576,7 +576,6 @@ class RemoteA2aAgent(BaseAgent):
   The agent handles:
   - Agent card resolution and validation
   - HTTP client management with proper resource cleanup
-  - A2A message conversion and error handling
   - Session state management across requests
   """
 
@@ -865,7 +864,7 @@ class RemoteA2aAgent(BaseAgent):
 
       with path.open("r", encoding="utf-8") as f:
         agent_json_data = json.load(f)
-      return _compat.parse_agent_card(agent_json_data)
+        return _compat.parse_agent_card(agent_json_data)
     except json.JSONDecodeError as e:
       raise AgentCardResolutionError(
           f"Invalid JSON in agent card file {file_path}: {e}"
