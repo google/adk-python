@@ -291,7 +291,9 @@ def prepare_llm_agent_input(
   """Prepares the input for running LlmAgent as a node.
 
   For ``single_turn`` mode, append a user-role event with the input
-  directly to session.events (legacy behavior).
+  directly to session.events (legacy behavior). When resuming with
+  ``resume_inputs``, skip appending to avoid injecting duplicate synthetic
+  user events that shadow user function responses.
 
   For ``task`` mode, the input is the parent's task-delegation FC
   args.  Those are NOT appended here — the content-builder
@@ -305,7 +307,17 @@ def prepare_llm_agent_input(
   For workflow nodes running in a sub-branch, stamp the input event with that
   branch. A private node input should not look like the shared root user turn.
   """
-  if node_input is None or agent.mode != 'single_turn':
+  # Skip injection if:
+  # 1. No input was provided.
+  # 2. Agent is not single_turn (task mode handles its own leading turn).
+  # 3. Resuming from pause/interrupt (e.g. HITL confirmation): node is re-run
+  #    with resume_inputs; injecting synthetic user input would shadow the
+  #    user's FunctionResponse on the branch tail and cause infinite loops.
+  if (
+      node_input is None
+      or agent.mode != 'single_turn'
+      or bool(ctx.resume_inputs)
+  ):
     return
   agent_input = to_user_content(node_input)
   user_event = Event(author='user', message=agent_input)
