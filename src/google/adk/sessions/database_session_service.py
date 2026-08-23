@@ -606,7 +606,7 @@ class DatabaseSessionService(BaseSessionService):
       )
 
       # Extract state deltas
-      state_deltas = _session_util.extract_state_delta(state or {})
+      state_deltas = _session_util.extract_json_safe_state_delta(state or {})
       app_state_delta = state_deltas["app"]
       user_state_delta = state_deltas["user"]
       session_state = state_deltas["session"]
@@ -850,7 +850,7 @@ class DatabaseSessionService(BaseSessionService):
     use_row_level_locking = self._supports_row_level_locking()
 
     state_delta = event.actions.state_delta if event.actions.state_delta else {}
-    state_deltas = _session_util.extract_state_delta(state_delta)
+    state_deltas = _session_util.extract_json_safe_state_delta(state_delta)
     has_app_delta = bool(state_deltas["app"])
     has_user_delta = bool(state_deltas["user"])
 

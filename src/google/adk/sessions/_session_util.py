@@ -15,12 +15,18 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+from typing import cast
 from typing import TypeVar
 
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 
+from ..events.event_actions import _make_json_serializable
 from .state import State
+
+logger = logging.getLogger("google_adk." + __name__)
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -56,3 +62,38 @@ def extract_state_delta(
       elif not key.startswith(State.TEMP_PREFIX):
         deltas["session"][key] = state[key]
   return deltas
+
+
+def make_json_safe_state(state: dict[str, Any]) -> dict[str, Any]:
+  """Coerces a state dictionary into a JSON-serializable form.
+
+  Rich types such as datetimes and Pydantic models are serialized faithfully.
+  Only when that fails is the dictionary re-serialized with the offending values
+  (e.g. callables) replaced by their string representation, and a warning
+  logged, so that a lossy write is diagnosable rather than silent.
+  """
+  try:
+    return cast(dict[str, Any], to_jsonable_python(state))
+  except Exception:  # pylint: disable=broad-except
+    logger.warning(
+        "Failed to serialize session state; some values are not"
+        " JSON-serializable (e.g. callables) and will be replaced with a"
+        " string representation in the persisted state.",
+        exc_info=True,
+    )
+    return cast(dict[str, Any], _make_json_serializable(state))
+
+
+def extract_json_safe_state_delta(
+    state: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+  """Extracts state deltas coerced into a JSON-serializable form.
+
+  Services that persist state to a JSON column must use this rather than
+  `extract_state_delta`: a value that cannot be serialized is replaced with its
+  string representation instead of failing the whole write.
+  """
+  return cast(
+      dict[str, dict[str, Any]],
+      make_json_safe_state(extract_state_delta(state)),
+  )

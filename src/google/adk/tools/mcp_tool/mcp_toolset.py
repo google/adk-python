@@ -395,15 +395,19 @@ class McpToolset(BaseToolset):
     if headers is None:
       headers = await self._build_headers(readonly_context)
 
+    session_headers = headers if headers else None
     try:
       session = await self._mcp_session_manager.create_session(
-          headers=headers if headers else None
+          headers=session_headers
       )
       timeout_in_seconds = (
           self._connection_params.timeout
           if hasattr(self._connection_params, "timeout")
           else None
       )
+      # Hold the session out of the pool's idle sweep while it is in use, so
+      # another caller's sweep cannot close the transport mid-call.
+      self._mcp_session_manager._begin_session_use(session_headers)  # pylint: disable=protected-access
       try:
         return await asyncio.wait_for(
             coroutine_func(session), timeout=timeout_in_seconds
@@ -413,6 +417,8 @@ class McpToolset(BaseToolset):
             f"Exception during MCP session execution: {error_message}: {e}"
         )
         raise ConnectionError(f"{error_message}: {e}") from e
+      finally:
+        self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access
     finally:
       if debug_token is not None:
         _http_debug_var.reset(debug_token)

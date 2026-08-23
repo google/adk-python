@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import AsyncGenerator
 from typing import cast
+from typing import Final
 from typing import Union
 
 from google.genai import types
@@ -40,6 +41,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
   from google.genai import live
+
+# Minimal placeholder text sent to Gemini 3.x Live to trigger a response to
+# history that was just replayed. See `GeminiLlmConnection.send_history`.
+_RESPONSE_TRIGGER_TEXT: Final[str] = '.'
 
 
 class GeminiLlmConnection(BaseLlmConnection):
@@ -94,10 +99,25 @@ class GeminiLlmConnection(BaseLlmConnection):
     if contents:
       logger.debug('Sending history to live connection: %s', contents)
       turns: list[types.Content | types.ContentDict] = [*contents]
+      turn_complete = contents[-1].role == 'user'
       await self._gemini_session.send_client_content(
           turns=turns,
-          turn_complete=contents[-1].role == 'user',
+          turn_complete=turn_complete,
       )
+      if turn_complete and self._is_gemini_3_x_live:
+        # When `initial_history_in_client_content` is set to True, after
+        # receiving `turn_complete=True` from client, Gemini 3.x Live only
+        # starts generating once it receives new user input, so the replayed
+        # history alone leaves the model waiting. Sending a placeholder text
+        # triggers the response that the caller expects, e.g. right after an
+        # agent transfer.
+        logger.debug(
+            'Sending placeholder realtime input to trigger the Gemini 3.x Live'
+            ' response.'
+        )
+        await self._gemini_session.send_realtime_input(
+            text=_RESPONSE_TRIGGER_TEXT
+        )
     else:
       logger.info('no content is sent')
 

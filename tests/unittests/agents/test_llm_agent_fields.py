@@ -33,6 +33,7 @@ from google.adk.models.registry import LLMRegistry
 from google.adk.planners.built_in_planner import BuiltInPlanner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.enterprise_search_tool import EnterpriseWebSearchTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.google_search_tool import GoogleSearchTool
@@ -556,6 +557,115 @@ class TestCanonicalTools:
     assert len(tools) == 1
     assert tools[0].name == 'vertex_ai_search'
     assert tools[0].__class__.__name__ == 'VertexAiSearchTool'
+
+  async def test_handle_google_search_in_hierarchy_with_bypass(self):
+    """Test that google_search with bypass is wrapped when in an agent hierarchy."""
+    search_agent = LlmAgent(
+        name='search_agent',
+        model='gemini-pro',
+        tools=[GoogleSearchTool(bypass_multi_tools_limit=True)],
+    )
+    _ = LlmAgent(
+        name='root_agent',
+        model='gemini-pro',
+        sub_agents=[search_agent],
+    )
+    ctx = await _create_readonly_context(search_agent)
+    tools = await search_agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'google_search_agent'
+    assert tools[0].__class__.__name__ == 'GoogleSearchAgentTool'
+
+  async def test_handle_google_search_in_hierarchy_no_bypass(self):
+    """Test that google_search without bypass is not wrapped even in a hierarchy."""
+    search_agent = LlmAgent(
+        name='search_agent',
+        model='gemini-pro',
+        tools=[google_search],
+    )
+    _ = LlmAgent(
+        name='root_agent',
+        model='gemini-pro',
+        sub_agents=[search_agent],
+    )
+    ctx = await _create_readonly_context(search_agent)
+    tools = await search_agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'google_search'
+    assert tools[0].__class__.__name__ == 'GoogleSearchTool'
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_handle_vais_in_hierarchy_with_bypass(self):
+    """Test that VertexAiSearchTool with bypass is replaced when in an agent hierarchy."""
+    search_agent = LlmAgent(
+        name='search_agent',
+        model='gemini-pro',
+        tools=[
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+            ),
+        ],
+    )
+    _ = LlmAgent(
+        name='root_agent',
+        model='gemini-pro',
+        sub_agents=[search_agent],
+    )
+    ctx = await _create_readonly_context(search_agent)
+    tools = await search_agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'discovery_engine_search'
+    assert tools[0].__class__.__name__ == 'DiscoveryEngineSearchTool'
+
+  async def test_handle_vais_in_hierarchy_no_bypass(self):
+    """Test that VertexAiSearchTool without bypass is not replaced even in a hierarchy."""
+    search_agent = LlmAgent(
+        name='search_agent',
+        model='gemini-pro',
+        tools=[
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=False,
+            ),
+        ],
+    )
+    _ = LlmAgent(
+        name='root_agent',
+        model='gemini-pro',
+        sub_agents=[search_agent],
+    )
+    ctx = await _create_readonly_context(search_agent)
+    tools = await search_agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'vertex_ai_search'
+    assert tools[0].__class__.__name__ == 'VertexAiSearchTool'
+
+  async def test_handle_enterprise_web_search_in_hierarchy(self):
+    """Enterprise web search without bypass remains a built-in search tool in a hierarchy."""
+    search_agent = LlmAgent(
+        name='search_agent',
+        model='gemini-pro',
+        tools=[EnterpriseWebSearchTool()],
+    )
+    _ = LlmAgent(
+        name='root_agent',
+        model='gemini-pro',
+        sub_agents=[search_agent],
+    )
+    ctx = await _create_readonly_context(search_agent)
+    tools = await search_agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'enterprise_web_search'
+    assert tools[0].__class__.__name__ == 'EnterpriseWebSearchTool'
 
   async def test_multiple_tools_resolution(self):
     """Test that multiple tools are resolved correctly."""

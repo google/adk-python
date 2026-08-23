@@ -82,6 +82,33 @@ def _part_to_content(part: types.Part) -> Optional[mcp_types.ContentBlock]:
   return None
 
 
+def _connection_key(ctx: Context[ServerSession, Any]) -> object:
+  """Returns the object that identifies the MCP connection behind ``ctx``.
+
+  The MCP SDK exposes no public per-connection handle. In SDK 1.x
+  ``ctx.session`` is itself one object per connection. In 2.x the server
+  builds a fresh ``ServerSession`` for every inbound message and keeps the
+  connection on its private ``_connection``, so ``ctx.session`` changes on
+  every call. Reading ``_connection`` when it is there gives one key per
+  connection on both versions.
+
+  TODO: Use a public accessor once the SDK adds one. SDK 2.x already defines
+  ``mcp.server.context.Context.connection``, but the server does not hand that
+  class to tool functions yet.
+
+  Args:
+    ctx: The MCP tool call context.
+
+  Returns:
+    The per-connection object, or the per-request session when the SDK gives
+    no connection. That fallback degrades to one agent session per request.
+    It must never fall back to an object shared by all connections, because
+    separate clients would then share one conversation.
+  """
+  session = ctx.session
+  return getattr(session, "_connection", session)
+
+
 async def _run_agent(
     runner: Runner,
     request: str,
@@ -107,15 +134,17 @@ async def _run_agent(
     images, audio, or other data the agent produced).
   """
   session_id: Optional[str] = None
+  connection: Optional[object] = None
   if ctx is not None and sessions is not None:
-    session_id = sessions.get(ctx.session)
+    connection = _connection_key(ctx)
+    session_id = sessions.get(connection)
   if session_id is None:
     session = await runner.session_service.create_session(
         app_name=runner.app_name, user_id=_MCP_USER_ID
     )
     session_id = session.id
-    if ctx is not None and sessions is not None:
-      sessions[ctx.session] = session_id
+    if sessions is not None and connection is not None:
+      sessions[connection] = session_id
   new_message = types.Content(role="user", parts=[types.Part(text=request)])
   final_content: list[mcp_types.ContentBlock] = []
   async for event in runner.run_async(

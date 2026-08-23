@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import multiprocessing
 import os
 import signal
+import subprocess
 import textwrap
 import time
 from unittest.mock import MagicMock
@@ -47,6 +47,31 @@ def _is_alive(pid: int) -> bool:
   except OSError:
     return False
   return state != "Z"
+
+
+def _execute_within(
+    executor: UnsafeLocalCodeExecutor,
+    invocation_context: InvocationContext,
+    code: str,
+    seconds: float,
+) -> CodeExecutionResult:
+  """Executes `code` under a wall-clock bound.
+
+  Several callers below cover code that dies without reporting a result, which
+  is precisely the case the old executor could wait on forever. The bound is
+  the executor's own timeout rather than a watchdog around it: a child that
+  dies closes its pipes, so the wait ends on its own, and passing the timeout
+  through also exercises the path that enforces it.
+  """
+  started = time.monotonic()
+  result = executor.execute_code(
+      invocation_context, CodeExecutionInput(code=code)
+  )
+  elapsed = time.monotonic() - started
+  assert (
+      elapsed < seconds * 4
+  ), f"the executor took {elapsed:.1f}s against a {seconds}s timeout"
+  return result
 
 
 @pytest.fixture
@@ -156,6 +181,185 @@ class TestUnsafeLocalCodeExecutor:
     assert result.stdout == ""
     assert "Code execution timed out after 1 seconds." in result.stderr
 
+  def test_execute_code_main_guard_runs(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """Code guarded on `__main__` runs, as it did in the previous child."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code=textwrap.dedent("""
+        if __name__ == '__main__':
+          print('guarded')
+        """))
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stdout == "guarded\n"
+    assert result.stderr == ""
+
+  def test_execute_code_without_main_guard_is_not_main(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """Code that does not ask to be `__main__` is not given the name."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code="print(globals().get('__name__'))")
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stdout == "None\n"
+
+  def test_execute_code_separates_stdout_from_stderr(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """Each stream lands in its own field rather than being interleaved."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code=textwrap.dedent("""
+        import sys
+        sys.stdout.write('to out')
+        sys.stderr.write('to err')
+        sys.exit(0)
+        """))
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stdout == "to out"
+    # The program wrote to stderr but succeeded. A non-empty stderr is what
+    # marks a result failed and drives the retry counter, so a warning must not
+    # be reported as a failure.
+    assert result.stderr == ""
+
+  def test_execute_code_nonzero_exit_is_reported_as_a_failure(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """A program that exits non-zero fails even when it says nothing."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code="import sys\nsys.exit(3)")
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stdout == ""
+    assert result.stderr == "Code execution exited with status 3."
+
+  def test_execute_code_reports_a_crash_rather_than_hanging(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """Code that exits without reporting anything still returns a result."""
+    executor = UnsafeLocalCodeExecutor()
+
+    result = _execute_within(
+        executor,
+        mock_invocation_context,
+        "import os\nprint('before', flush=True)\nos._exit(3)",
+        seconds=30,
+    )
+
+    assert result.stdout == "before\n"
+    assert result.stderr == "Code execution exited with status 3."
+
+  @pytest.mark.skipif(
+      not hasattr(signal, "SIGKILL"),
+      reason="Death by signal is checked on POSIX only.",
+  )
+  def test_execute_code_reports_death_by_signal(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """Code killed outright -- by a segfault or the OOM killer -- returns."""
+    executor = UnsafeLocalCodeExecutor()
+
+    result = _execute_within(
+        executor,
+        mock_invocation_context,
+        "import os, signal\nos.kill(os.getpid(), signal.SIGKILL)",
+        seconds=30,
+    )
+
+    assert result.stdout == ""
+    assert result.stderr == (
+        f"Code execution exited with status {-signal.SIGKILL}."
+    )
+
+  def test_execute_code_traceback_omits_this_module(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """A failure shows the model its own code, not a frame from this package."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(
+        code="def divide():\n  return 1 / 0\n\ndivide()"
+    )
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert "ZeroDivisionError" in result.stderr
+    assert "unsafe_local_code_executor" not in result.stderr
+    # Both frames of the executed code survive; only the wrapper's is dropped.
+    assert result.stderr.count('File "<code>"') == 2
+
+  def test_execute_code_preserves_unicode(
+      self, mock_invocation_context: InvocationContext
+  ):
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code="print('你好, café')")
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stdout == "你好, café\n"
+    assert result.stderr == ""
+
+  def test_execute_code_output_encoding_does_not_follow_the_host_locale(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """Otherwise a program printing non-ASCII dies encoding its own output."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(
+        code="import sys\nprint(sys.stdout.encoding)"
+    )
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stdout.strip().lower() == "utf-8"
+
+  def test_execute_code_large_output(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """Output far larger than a pipe buffer is read out rather than deadlocked."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code="print('x' * 1000000)")
+
+    result = _execute_within(
+        executor, mock_invocation_context, code_input.code, seconds=60
+    )
+
+    assert result.stdout == "x" * 1000000 + "\n"
+    assert result.stderr == ""
+
+  def test_execute_code_large_program(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """A program carrying its own data is not capped by an argument limit."""
+    executor = UnsafeLocalCodeExecutor()
+    payload = "a" * 300000
+    code_input = CodeExecutionInput(
+        code=f"data = {payload!r}\nprint(len(data))"
+    )
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stdout == f"{len(payload)}\n"
+    assert result.stderr == ""
+
+  def test_execute_code_imports_resolve_from_the_agent_path(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """Code importing what the application can import still resolves."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code="import google.adk\nprint('imported')")
+
+    result = _execute_within(
+        executor, mock_invocation_context, code_input.code, seconds=120
+    )
+
+    assert result.stdout == "imported\n"
+    assert result.stderr == ""
+
   def test_kill_execution_signals_group_before_killing_it(self, monkeypatch):
     """The group gets SIGTERM and its grace period before SIGKILL."""
     signalled = []
@@ -163,26 +367,40 @@ class TestUnsafeLocalCodeExecutor:
         unsafe_local_code_executor.os,
         "killpg",
         lambda group, sig: signalled.append((group, sig)),
-    )
-    monkeypatch.setattr(
-        unsafe_local_code_executor,
-        "_execution_group",
-        lambda process: 4321,
+        raising=False,
     )
     process = MagicMock()
-    process.is_alive.return_value = False
+    process.pid = 4321
     process.terminate.side_effect = lambda: signalled.append(("child", "term"))
+    process.kill.side_effect = lambda: signalled.append(("child", "kill"))
+    process.communicate.return_value = ("out", "err")
 
-    unsafe_local_code_executor._kill_execution(process)
+    assert unsafe_local_code_executor._kill_execution(process) == ("out", "err")
 
     assert signalled == [
         (4321, signal.SIGTERM),
         ("child", "term"),
         (4321, signal.SIGKILL),
+        ("child", "kill"),
     ]
-    process.join.assert_any_call(
+    process.wait.assert_called_once_with(
         unsafe_local_code_executor._TERMINATE_GRACE_SECONDS
     )
+
+  def test_kill_execution_gives_up_on_pipes_that_never_close(self, monkeypatch):
+    """A pipe held open by something unkillable does not block the agent."""
+    monkeypatch.setattr(
+        unsafe_local_code_executor.os,
+        "killpg",
+        lambda group, sig: None,
+        raising=False,
+    )
+    process = MagicMock()
+    process.pid = 4321
+    process.wait.side_effect = subprocess.TimeoutExpired("cmd", 5)
+    process.communicate.side_effect = subprocess.TimeoutExpired("cmd", 5)
+
+    assert unsafe_local_code_executor._kill_execution(process) == ("", "")
 
   @pytest.mark.skipif(
       not hasattr(os, "killpg")
@@ -190,8 +408,10 @@ class TestUnsafeLocalCodeExecutor:
       or not os.path.isdir("/proc"),
       reason="Process-group teardown is checked on POSIX with /proc only.",
   )
-  def test_kill_execution_kills_what_the_code_spawned(self, tmp_path):
-    """Killing a live execution takes the processes it spawned with it."""
+  def test_timeout_kills_what_the_code_spawned(
+      self, mock_invocation_context: InvocationContext, tmp_path
+  ):
+    """A timed-out execution takes the processes it spawned with it."""
     pid_file = tmp_path / "spawned.pid"
     # Forked rather than spawned through `sys.executable`, so the descendant
     # exists within milliseconds and the test never waits on interpreter
@@ -208,29 +428,18 @@ class TestUnsafeLocalCodeExecutor:
           f.write(str(spawned))
         time.sleep(60)
         """)
-    ctx = multiprocessing.get_context("spawn")
-    result_queue = ctx.Queue()
-    process = ctx.Process(
-        target=unsafe_local_code_executor._execute_in_process,
-        args=(code, {}, result_queue),
-        daemon=True,
-    )
-    process.start()
+    executor = UnsafeLocalCodeExecutor(timeout_seconds=5)
+
     spawned_pid = None
     try:
-      # Waiting for the pid to be written rather than for a fixed duration:
-      # the only thing that has to have happened is the fork. The file exists
-      # from the moment it is opened, so its content is what is polled for.
-      deadline = time.time() + 30
-      while time.time() < deadline and not _written_pid(pid_file):
-        time.sleep(0.05)
+      result = _execute_within(
+          executor, mock_invocation_context, code, seconds=60
+      )
+      assert "Code execution timed out after 5 seconds." in result.stderr
+
       spawned_pid = _written_pid(pid_file)
       if spawned_pid is None:
         pytest.skip("this environment could not start the execution process")
-
-      unsafe_local_code_executor._kill_execution(process)
-
-      assert not process.is_alive()
       deadline = time.time() + 10
       while time.time() < deadline and _is_alive(spawned_pid):
         time.sleep(0.05)
@@ -241,7 +450,3 @@ class TestUnsafeLocalCodeExecutor:
           os.kill(spawned_pid, signal.SIGKILL)
         except OSError:
           pass
-      if process.is_alive():
-        process.kill()
-      process.join()
-      result_queue.close()

@@ -66,6 +66,30 @@ def test_create_test(test_client, tmp_path):
   assert (agent_dir / "tests" / "my_test.json").exists()
 
 
+def test_create_test_preserves_non_ascii(test_client, tmp_path):
+  """Saved tests keep non-ASCII event text readable, not \\uXXXX escapes."""
+  agent_dir = tmp_path / "test_app"
+  agent_dir.mkdir()
+
+  payload = {
+      "session_data": {
+          "events": [{
+              "author": "user",
+              "content": {"parts": [{"text": "日本語の質問"}]},
+          }]
+      }
+  }
+
+  response = test_client.put(
+      "/dev/apps/test_app/tests/unicode.json", json=payload
+  )
+  assert response.status_code == 200
+
+  saved = (agent_dir / "tests" / "unicode.json").read_text(encoding="utf-8")
+  assert "日本語の質問" in saved
+  assert "\\u" not in saved
+
+
 def test_list_tests_not_empty(test_client, tmp_path):
   agent_dir = tmp_path / "test_app"
   tests_dir = agent_dir / "tests"

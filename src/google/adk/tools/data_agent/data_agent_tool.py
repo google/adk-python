@@ -269,13 +269,17 @@ async def _mutate_data_agent(
   kwargs = {}
   loc = location or (
       settings.location
-      if settings and isinstance(getattr(settings, "location", None), str)
+      if settings and isinstance(settings.location, str)
       else None
   )
   if loc:
     kwargs["location"] = loc
-  api_endpoint = getattr(settings, "api_endpoint", None)
-  if isinstance(api_endpoint, str):
+  api_endpoint = (
+      settings.api_endpoint
+      if settings and isinstance(settings.api_endpoint, str)
+      else None
+  )
+  if api_endpoint:
     kwargs["api_endpoint"] = api_endpoint
   session, endpoint = _gda_stream_util.get_gda_session(credentials, **kwargs)
   base_url = f"{endpoint}/v1"
@@ -326,12 +330,17 @@ def list_accessible_data_agents(
     project_id: str,
     credentials: Credentials,
     settings: DataAgentToolConfig | None = None,
+    *,
+    location: str | None = None,
 ) -> dict[str, Any]:
   """Lists accessible data agents in a project.
 
   Args:
       project_id: The project to list agents in.
       credentials: The credentials to use for the request.
+      location: Optional Google Cloud location to list agents from (e.g. "eu" or
+        "us"). If omitted, uses the toolset's configured location, falling back
+        to "global".
       settings: Optional tool settings containing location or custom endpoint.
 
   Returns:
@@ -355,7 +364,7 @@ def list_accessible_data_agents(
             "updateTime": "2025-10-01T22:44:23.094541325Z",
             "dataAnalyticsAgent": {
               "publishedContext": {
-                "datasourceReferences": [{
+                "datasourceReferences": {
                   "bq": {
                     "tableReferences": [{
                       "projectId": "my-project",
@@ -363,7 +372,7 @@ def list_accessible_data_agents(
                       "tableId": "table1"
                     }]
                   }
-                }]
+                }
               }
             }
           },
@@ -375,7 +384,7 @@ def list_accessible_data_agents(
             "updateTime": "2025-06-23T20:23:49.437095391Z",
             "dataAnalyticsAgent": {
               "publishedContext": {
-                "datasourceReferences": [{
+                "datasourceReferences": {
                   "bq": {
                     "tableReferences": [{
                       "projectId": "another-project",
@@ -383,7 +392,7 @@ def list_accessible_data_agents(
                       "tableId": "table2"
                     }]
                   }
-                }],
+                },
                 "systemInstruction": "You are a helpful assistant.",
                 "options": {"analysis": {"python": {"enabled": True}}}
               }
@@ -393,11 +402,20 @@ def list_accessible_data_agents(
       }
   """
   try:
-    location = (
+    config_location = (
         settings.location
         if settings and isinstance(settings.location, str)
         else None
     )
+    effective_location = location or config_location or "global"
+    for val, name in (
+        (project_id, "project_id"),
+        (effective_location, "location"),
+    ):
+      invalid_segment_error = _validate_path_segment(val, name)
+      if invalid_segment_error:
+        return invalid_segment_error
+
     api_endpoint = (
         settings.api_endpoint
         if settings and isinstance(settings.api_endpoint, str)
@@ -405,15 +423,15 @@ def list_accessible_data_agents(
     )
 
     kwargs: dict[str, str] = {}
-    if location:
-      kwargs["location"] = location
+    if effective_location:
+      kwargs["location"] = effective_location
     if api_endpoint:
       kwargs["api_endpoint"] = api_endpoint
 
     session, endpoint = _gda_stream_util.get_gda_session(credentials, **kwargs)
     base_url = f"{endpoint}/v1"
-    target_location = location or "global"
-    list_url = f"{base_url}/projects/{project_id}/locations/{target_location}/dataAgents:listAccessible"
+
+    list_url = f"{base_url}/projects/{project_id}/locations/{effective_location}/dataAgents:listAccessible"
     with session:
       resp = session.get(
           list_url,
@@ -445,14 +463,12 @@ def _get_data_agent_info(
     extracted_location = _extract_location_from_resource_name(data_agent_name)
     location = extracted_location or (
         real_settings.location
-        if real_settings
-        and isinstance(getattr(real_settings, "location", None), str)
+        if real_settings and isinstance(real_settings.location, str)
         else None
     )
     api_endpoint = (
         real_settings.api_endpoint
-        if real_settings
-        and isinstance(getattr(real_settings, "api_endpoint", None), str)
+        if real_settings and isinstance(real_settings.api_endpoint, str)
         else None
     )
 
@@ -785,7 +801,7 @@ async def create_data_agent(
 
     config_location = (
         settings.location
-        if settings and isinstance(getattr(settings, "location", None), str)
+        if settings and isinstance(settings.location, str)
         else None
     )
     effective_location = location or config_location or "global"

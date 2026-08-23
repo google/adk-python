@@ -16,7 +16,8 @@ depend on it, and the developer problems it solves.
 ## Get started
 
 A single minimal implementation demonstrating the unit, with enough of the
-surrounding classes to show where the call belongs.
+surrounding classes to show where the call belongs. Omit top-level imports and
+main() runner boilerplate to keep the code snippet focused.
 
 ## How it works
 

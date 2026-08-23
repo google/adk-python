@@ -98,12 +98,10 @@ def convert_a2a_request_to_agent_run_request(
   if not request.message:
     raise ValueError('Request message cannot be None')
 
-  # Always mark the invocation as A2A-originated, even when the peer sent no
-  # protocol metadata. Trust decisions downstream (e.g. refusing a
-  # human-in-the-loop tool confirmation that arrived from a remote peer) key
-  # off the PRESENCE of this marker, so it must not depend on the peer
-  # choosing to send metadata.
-  custom_metadata = {A2A_METADATA_KEY: _compat.meta_to_dict(request.metadata)}
+  custom_metadata = {}
+  request_metadata = _compat.meta_to_dict(request.metadata)
+  if request_metadata:
+    custom_metadata[A2A_METADATA_KEY] = request_metadata
 
   output_parts = []
   for a2a_part in request.message.parts:
