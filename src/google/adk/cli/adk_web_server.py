@@ -827,6 +827,8 @@ class AdkWebServer:
       runner_dict: A dict of instantiated runners for each app.
   """
 
+  _allow_special_agents: bool = False
+
   def __init__(
       self,
       *,
@@ -866,6 +868,9 @@ class AdkWebServer:
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
+    # Rejected before any cleanup, cache lookup or .env walk, so a refused
+    # name cannot reach those paths.
+    self._reject_special_agent(app_name)
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
@@ -878,7 +883,7 @@ class AdkWebServer:
 
     # Create new runner
     envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
-    agent_or_app = self.agent_loader.load_agent(app_name)
+    agent_or_app = self._load_agent_or_app(app_name)
 
     # Instantiate extra plugins if configured
     extra_plugins_instances = self._instantiate_extra_plugins()
@@ -933,6 +938,22 @@ class AdkWebServer:
     runner = self._create_runner(agentic_app)
     self.runner_dict[app_name] = runner
     return runner
+
+  def _reject_special_agent(self, app_name: str) -> None:
+    """Refuses internal special agents unless they are explicitly enabled."""
+    if app_name.startswith("__") and not self._allow_special_agents:
+      raise HTTPException(
+          status_code=403,
+          detail=(
+              "Access to internal special agents is disabled in API server"
+              " mode."
+          ),
+      )
+
+  def _load_agent_or_app(self, app_name: str) -> BaseAgent | App:
+    """Loads an agent, refusing internal special agents unless enabled."""
+    self._reject_special_agent(app_name)
+    return self.agent_loader.load_agent(app_name)
 
   def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
     """Extract root agent from either a BaseAgent or App object."""
@@ -1200,7 +1221,7 @@ class AdkWebServer:
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      agent_or_app = self._load_agent_or_app(app_name)
       root_agent = self._get_root_agent(agent_or_app)
       if isinstance(root_agent, LlmAgent):
         return AppInfo(
@@ -1612,7 +1633,7 @@ class AdkWebServer:
       invocations = evals.convert_session_to_eval_invocations(session)
 
       # Populate the session with initial session state.
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      agent_or_app = self._load_agent_or_app(app_name)
       root_agent = self._get_root_agent(agent_or_app)
       initial_session_state = create_empty_state(root_agent)
 
@@ -1759,7 +1780,7 @@ class AdkWebServer:
               status_code=400, detail=f"Eval set `{eval_set_id}` not found."
           )
 
-        agent_or_app = self.agent_loader.load_agent(app_name)
+        agent_or_app = self._load_agent_or_app(app_name)
         root_agent = self._get_root_agent(agent_or_app)
 
         eval_case_results = []
@@ -2195,7 +2216,7 @@ class AdkWebServer:
         app_name: The name of the agent/app
         dark_mode: Whether to use dark theme background color
       """
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      agent_or_app = self._load_agent_or_app(app_name)
       root_agent = self._get_root_agent(agent_or_app)
 
       # Get graph with NO highlights (empty list) and specified theme
@@ -2227,7 +2248,7 @@ class AdkWebServer:
 
       function_calls = event.get_function_calls()
       function_responses = event.get_function_responses()
-      agent_or_app = self.agent_loader.load_agent(app_name)
+      agent_or_app = self._load_agent_or_app(app_name)
       root_agent = self._get_root_agent(agent_or_app)
       dot_graph = None
       if function_calls:
