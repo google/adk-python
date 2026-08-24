@@ -800,7 +800,9 @@ def test_validate_session_id_rejects_invalid_chars():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
-async def test_get_session_accepts_a_full_resource_name():
+async def test_get_session_accepts_a_full_resource_name(
+    mock_api_client_instance,
+):
   """Agent Engine passes the full resource name, not the short id."""
   session_service = mock_vertex_ai_session_service()
   resource_name = (
@@ -813,6 +815,12 @@ async def test_get_session_accepts_a_full_resource_name():
   )
 
   assert session.id == '1'
+  # The resolved session id alone cannot tell a correctly built resource name
+  # from one that embedded the full name and happens to end in the same
+  # segment, so assert the name that actually went out.
+  mock_api_client_instance.agent_engines.sessions.get.assert_called_once_with(
+      name='reasoningEngines/123/sessions/1'
+  )
 
 
 @pytest.mark.asyncio
