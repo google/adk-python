@@ -14,14 +14,22 @@
 
 """Tests for _schema_utils module."""
 
+from datetime import datetime
+from decimal import Decimal
+from enum import Enum
+import json
+from typing import Annotated
+
 from google.adk.utils._schema_utils import get_list_inner_type
 from google.adk.utils._schema_utils import is_basemodel_schema
 from google.adk.utils._schema_utils import is_list_of_basemodel
 from google.adk.utils._schema_utils import schema_to_json_schema
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
+from google.adk.workflow._base_node import BaseNode
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import PlainSerializer
 from pydantic import ValidationError
 import pytest
 
@@ -257,6 +265,58 @@ class TestValidateNodeData:
     """Bypasses JSON parsing if schema is str."""
     result = validate_node_data(str, 'hello')
     assert result == 'hello'
+
+  def test_json_mode_serializers_are_applied_for_decimal(self):
+    """when_used='json' serializers run so validated node data is JSON-safe."""
+    JsonDecimal = Annotated[
+        Decimal, PlainSerializer(float, return_type=float, when_used='json')
+    ]
+
+    class Price(BaseModel):
+      amount: JsonDecimal
+
+    class Payload(BaseModel):
+      price: Price
+
+    result = validate_node_data(Payload, {'price': {'amount': '29.99'}})
+    assert result == {'price': {'amount': 29.99}}
+    assert isinstance(result['price']['amount'], float)
+    assert json.dumps(result) == '{"price": {"amount": 29.99}}'
+
+  def test_datetime_and_enum_fields_are_json_serializable(self):
+    """Python-mode types that json.dumps rejects become JSON-safe values."""
+
+    class Color(Enum):
+      RED = 1
+
+    class Payload(BaseModel):
+      stamped_at: datetime
+      color: Color
+
+    result = validate_node_data(
+        Payload,
+        {'stamped_at': '2026-01-02T03:04:05', 'color': 1},
+    )
+    assert result['color'] == 1
+    assert isinstance(result['stamped_at'], str)
+    json.dumps(result)
+
+  def test_base_node_output_validation_is_json_serializable(self):
+    """BaseNode output_schema validation returns JSON-serializable dicts."""
+    JsonDecimal = Annotated[
+        Decimal, PlainSerializer(float, return_type=float, when_used='json')
+    ]
+
+    class Price(BaseModel):
+      amount: JsonDecimal
+
+    class Payload(BaseModel):
+      price: Price
+
+    node = BaseNode(name='pricing', output_schema=Payload)
+    result = node._validate_output_data({'price': {'amount': '29.99'}})
+    assert result == {'price': {'amount': 29.99}}
+    json.dumps(result)
 
 
 class TestSchemaToJsonSchema:

@@ -205,7 +205,7 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
         model_instance = TypeAdapter(DynamicModel).validate_python(
             response_data
         )
-        return model_instance.model_dump()
+        return model_instance.model_dump(mode='json')
       except ValidationError as e:
         raise ValueError(f'Validation failed for object schema: {e}') from e
 
