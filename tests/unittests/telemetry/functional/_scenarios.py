@@ -165,6 +165,37 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
         attr="_invoke_agent_tool_calls",
         metric_name="gen_ai.invoke_agent.tool_calls",
     ),
+    # Per-agent token spend, recorded once per agent invocation.
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_input_tokens",
+        metric_name="adk.experimental.invoke_agent.input_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_output_tokens",
+        metric_name="adk.experimental.invoke_agent.output_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_total_tokens",
+        metric_name="adk.experimental.invoke_agent.total_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_cache_read_input_tokens",
+        metric_name="adk.experimental.invoke_agent.cache_read.input_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_reasoning_output_tokens",
+        metric_name="adk.experimental.invoke_agent.reasoning.output_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_tool_input_tokens",
+        metric_name="adk.experimental.invoke_agent.tool.input_tokens",
+    ),
 )
 
 

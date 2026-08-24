@@ -14,6 +14,7 @@
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import sys
@@ -34,6 +35,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECO
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_USE_PIN_WARN_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import _SharedAsyncTransport
 from google.adk.tools.mcp_tool.mcp_session_manager import _StreamableHttpClientWrapper
+from google.adk.tools.mcp_tool.mcp_session_manager import CheckableMcpHttpClientFactory
 from google.adk.tools.mcp_tool.mcp_session_manager import create_mcp_http_client
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
@@ -1975,6 +1977,51 @@ class TestGoogleAuthAsyncByteStream:
     stream = _GoogleAuthAsyncByteStream(mock_auth_response)
     await stream.aclose()
     mock_auth_response.close.assert_called_once()
+
+
+class TestCheckableMcpHttpClientFactory:
+  """Tests for the http-client-factory protocol ADK declares."""
+
+  def test_no_sdk_class_in_the_protocol_ancestry(self):
+    """The protocol must not be built on the SDK's private one.
+
+    `McpHttpClientFactory` lives in `mcp.shared._httpx_utils` and reaches ADK
+    only through a re-export. Drop that re-export and a subclass stops
+    importing.
+    """
+    sdk_ancestors = [
+        klass
+        for klass in CheckableMcpHttpClientFactory.__mro__
+        if klass.__module__ == "mcp" or klass.__module__.startswith("mcp.")
+    ]
+    assert not sdk_ancestors
+
+  def test_same_call_signature_as_the_sdk_protocol(self):
+    """ADK's protocol must keep accepting what the SDK accepts.
+
+    `_DebugHttpxClientFactory` wraps the given factory and calls it by
+    keyword, and `sse_client` receives that wrapper typed with the SDK's
+    protocol. Both hold only while the two signatures agree.
+    """
+    sdk_protocol = pytest.importorskip(
+        "mcp.shared._httpx_utils"
+    ).McpHttpClientFactory
+
+    ours = inspect.signature(CheckableMcpHttpClientFactory.__call__)
+    theirs = inspect.signature(sdk_protocol.__call__)
+    assert [p.name for p in ours.parameters.values()] == [
+        p.name for p in theirs.parameters.values()
+    ]
+    assert [p.default for p in ours.parameters.values()] == [
+        p.default for p in theirs.parameters.values()
+    ]
+
+  def test_the_default_factory_conforms(self):
+    """Isinstance must work, because pydantic validates the field with it.
+
+    Drop `@runtime_checkable` and this raises `TypeError`.
+    """
+    assert isinstance(create_mcp_http_client, CheckableMcpHttpClientFactory)
 
 
 class TestDebugHttpxClientFactory:

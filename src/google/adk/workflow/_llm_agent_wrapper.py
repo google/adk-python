@@ -281,7 +281,9 @@ def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   )
   agent_ctx.isolation_scope = ctx.isolation_scope
 
-  ic.session = ic.session.model_copy(deep=False)
+  # Share the parent's `session` object (don't copy it): a mid-invocation
+  # write such as compaction must be visible to later nodes, or the DB
+  # service rejects their write as stale.
   return agent_ctx
 
 

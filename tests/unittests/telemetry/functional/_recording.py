@@ -81,6 +81,9 @@ class FunctionalTestCase:
   # When set, the tool raises this instead of returning, and the scenario is
   # expected to propagate it (tool-failure telemetry path).
   tool_exception: Exception | None = None
+  # Opts the turn in to experimental telemetry. Off everywhere else, which is
+  # what pins the gate: a row that does not ask for it records none of the
+  # ``adk.experimental.*`` metrics, whatever the rest of its config.
   experimental_telemetry: bool = False
   loaded_skills: list[SkillType] = field(default_factory=list)
   loaded_resources: list[SkillResourceType] = field(default_factory=list)

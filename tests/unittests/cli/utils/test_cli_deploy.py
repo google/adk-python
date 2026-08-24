@@ -1179,6 +1179,48 @@ def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
   )
 
 
+@pytest.mark.parametrize(
+    "adk_version, expect_flag",
+    [
+        ("2.1.0", False),
+        ("2.1.99", False),
+        ("2.2.0", True),
+        ("2.3.0", True),
+    ],
+)
+def test_to_agent_engine_gates_gemini_enterprise_flag_by_version(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    adk_version: str,
+    expect_flag: bool,
+) -> None:
+  """The api_server flag is only emitted for versions that accept it."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version=adk_version,
+    )
+
+  dockerfile = (tmp_dir / "Dockerfile").read_text()
+  assert ("--gemini_enterprise_app_name" in dockerfile) is expect_flag
+  warned = any(
+      "Omitting --gemini_enterprise_app_name" in call.args[0]
+      for call in mocked_secho.call_args_list
+  )
+  assert warned is not expect_flag
+
+
 # _robust_rmtree / _on_rm_error tests
 
 
