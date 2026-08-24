@@ -46,6 +46,8 @@ from ...telemetry import _instrumentation
 from ...telemetry.tracing import trace_merged_tool_calls
 from ...telemetry.tracing import tracer
 from ...tools.base_tool import BaseTool
+from ...tools.function_tool import _use_sync_callable_runner
+from ...tools.function_tool import FunctionTool
 from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
@@ -138,9 +140,6 @@ async def _call_tool_in_thread_pool(
   Returns:
     The result of running the tool.
   """
-  from ...tools.function_tool import _use_sync_callable_runner
-  from ...tools.function_tool import FunctionTool
-
   loop = asyncio.get_running_loop()
   executor = _get_tool_thread_pool(max_workers)
 
