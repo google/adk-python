@@ -63,6 +63,28 @@ _CUSTOM_METADATA_FIELDS = (
 
 _REFUSAL_PREFIX = '[[REFUSAL]]: '
 
+# Timeouts, in seconds, for the completions HTTP client. httpx applies no
+# timeout at all unless one is given, so a stalled proxy would otherwise hold
+# the connection and the streaming loop open indefinitely.
+_CONNECT_TIMEOUT_SECONDS = 30.0
+_REQUEST_TIMEOUT_SECONDS = 600.0
+
+
+def _httpx_timeout(timeout_seconds: Optional[float] = None) -> httpx.Timeout:
+  """Returns the httpx timeout budget for a completions request.
+
+  A bare float would spend the caller's whole budget on the connect phase too,
+  so the connect budget is always kept short enough to fail fast on an
+  unreachable proxy.
+
+  Args:
+    timeout_seconds: The total budget for the request, or None for the default.
+  """
+  return httpx.Timeout(
+      _REQUEST_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds,
+      connect=_CONNECT_TIMEOUT_SECONDS,
+  )
+
 
 class ApigeeLlm(Gemini):
   """A BaseLlm implementation for calling Apigee proxy.
@@ -427,8 +449,8 @@ class CompletionsHTTPClient:
     client = httpx.AsyncClient(
         base_url=self._base_url,
         headers=self._headers,
-        timeout=None,
-        follow_redirects=True,
+        timeout=_httpx_timeout(),
+        follow_redirects=False,
     )
     atexit.register(self._cleanup_client, client)
     return client
@@ -519,6 +541,7 @@ class CompletionsHTTPClient:
   ) -> AsyncGenerator[LlmResponse, None]:
     """Generates content using the OpenAI-compatible HTTP API."""
     payload = self._construct_payload(llm_request, stream)
+    timeout = self._get_request_timeout_seconds(llm_request)
     headers = self._headers.copy()
     headers['Content-Type'] = 'application/json'
 
@@ -530,26 +553,50 @@ class CompletionsHTTPClient:
       url = f"{url.rstrip('/')}/chat/completions"
 
     if stream:
-      async for stream_res in self._handle_streaming(url, payload, headers):
+      async for stream_res in self._handle_streaming(
+          url, payload, headers, timeout=timeout
+      ):
         yield stream_res
     else:
-      response = await self._httpx_post_with_retry(url, payload, headers)
+      response = await self._httpx_post_with_retry(
+          url, payload, headers, timeout=timeout
+      )
       data = response.json()
       yield self._parse_response(data)
 
+  @staticmethod
+  def _get_request_timeout_seconds(llm_request: LlmRequest) -> float | None:
+    """Returns the request timeout converted from milliseconds to seconds."""
+    if not llm_request.config or not llm_request.config.http_options:
+      return None
+    timeout_ms = llm_request.config.http_options.timeout
+    return timeout_ms / 1000 if timeout_ms is not None else None
+
   async def _httpx_post_with_retry(
-      self, url: str, payload: dict[str, Any], headers: dict[str, str]
+      self,
+      url: str,
+      payload: dict[str, Any],
+      headers: dict[str, str],
+      *,
+      timeout: float | None,
   ) -> httpx.Response:
     """Sends a POST request and handles retries."""
     retry_kwargs = self._get_retry_kwargs()
     async for attempt in tenacity.AsyncRetrying(**retry_kwargs):
       with attempt:
-        response = await self._client.post(url, json=payload, headers=headers)
+        response = await self._client.post(
+            url, json=payload, headers=headers, timeout=_httpx_timeout(timeout)
+        )
         response.raise_for_status()
         return response
 
   async def _handle_streaming(
-      self, url: str, payload: dict[str, Any], headers: dict[str, str]
+      self,
+      url: str,
+      payload: dict[str, Any],
+      headers: dict[str, str],
+      *,
+      timeout: float | None,
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming response from OpenAI-compatible API."""
     accumulator = ChatCompletionsResponseHandler()
@@ -558,6 +605,7 @@ class CompletionsHTTPClient:
         url,
         json=payload,
         headers=headers,
+        timeout=_httpx_timeout(timeout),
     ) as resp:
       resp.raise_for_status()
       async for line in resp.aiter_lines():
