@@ -705,6 +705,7 @@ def message_to_generate_content_response(
     )
 
   return LlmResponse(
+      model_version=message.model,
       content=types.Content(
           role="model",
           parts=parts,
@@ -1011,10 +1012,14 @@ class AnthropicLlm(BaseLlm):
     thinking_tokens: int | None = None
     cached_input_tokens: int | None = None
     cache_creation_tokens: int | None = None
+    model_version: str | None = None
     stop_reason: Optional[anthropic_types.StopReason] = None
 
     async for event in raw_stream:
       if event.type == "message_start":
+        event_model = getattr(event.message, "model", None)
+        if isinstance(event_model, str):
+          model_version = event_model
         input_tokens = _extract_prompt_token_count(event.message.usage)
         output_tokens = event.message.usage.output_tokens
         thinking_tokens = _extract_thinking_token_count(event.message.usage)
@@ -1148,6 +1153,7 @@ class AnthropicLlm(BaseLlm):
       )
 
     yield LlmResponse(
+        model_version=model_version,
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=usage_metadata,
         finish_reason=to_google_genai_finish_reason(stop_reason),

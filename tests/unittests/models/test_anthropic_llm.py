@@ -3457,3 +3457,71 @@ def test_anthropic_config_allows_thinking_budget_without_thinking_level():
   assert config.effort == "high"
   assert config.thinking_config.thinking_budget == 2048
   assert config.thinking_config.thinking_level is None
+
+
+def test_message_to_generate_content_response_sets_model_version(
+    generate_content_response,
+):
+  """The non-streaming response preserves the resolved Anthropic model."""
+  response = message_to_generate_content_response(generate_content_response)
+
+  assert response.model_version == generate_content_response.model
+
+
+@pytest.mark.asyncio
+async def test_streaming_sets_model_version_from_message_start():
+  """The final streaming response preserves the resolved Anthropic model."""
+  requested_model = "claude-sonnet-4"
+  resolved_model = "claude-sonnet-4-20250514"
+  llm = AnthropicLlm(model=requested_model)
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model=resolved_model,
+              usage=MagicMock(input_tokens=5, output_tokens=0),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(
+              text="Hello",
+              type="text_delta",
+          ),
+      ),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=1),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_request = LlmRequest(
+      model=requested_model,
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=types.GenerateContentConfig(system_instruction="Test"),
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request,
+            stream=True,
+        )
+    ]
+
+  assert responses[-1].model_version == resolved_model
