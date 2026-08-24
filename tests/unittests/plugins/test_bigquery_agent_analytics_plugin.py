@@ -7874,9 +7874,7 @@ class TestExternalUriSanitization:
         parts=[
             types.Part(
                 file_data=types.FileData(
-                    file_uri=(
-                        "https://api.example.com/v1/access-token/s3cr3t/d"
-                    ),
+                    file_uri="https://api.example.com/v1/access-token/s3cr3t/d",
                     mime_type="application/pdf",
                 )
             )
