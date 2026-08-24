@@ -702,6 +702,37 @@ def test_get_runner_async_rejects_internal_special_agent_name(
   )
 
 
+def test_get_runner_async_rejects_special_agent_already_in_the_cache(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """A cached runner must not let a refused name bypass the 403."""
+  adk_web_server = _create_adk_web_server(
+      tmp_path,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  adk_web_server.runner_dict["__adk_agent_builder_assistant"] = MagicMock()
+
+  from fastapi import HTTPException
+
+  with pytest.raises(HTTPException) as exc_info:
+    asyncio.run(
+        adk_web_server.get_runner_async("__adk_agent_builder_assistant")
+    )
+
+  assert exc_info.value.status_code == 403
+
+
 def test_get_runner_async_accepts_internal_special_agent_name_when_enabled(
     tmp_path,
     mock_session_service,

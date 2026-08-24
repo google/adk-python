@@ -731,6 +731,9 @@ class AdkWebServer:
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
+    # Rejected before any cleanup, cache lookup or .env walk, so a refused
+    # name cannot reach those paths.
+    self._reject_special_agent(app_name)
     # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
@@ -799,8 +802,8 @@ class AdkWebServer:
     self.runner_dict[app_name] = runner
     return runner
 
-  def _load_agent_or_app(self, app_name: str) -> BaseAgent | App:
-    """Loads an agent, refusing internal special agents unless enabled."""
+  def _reject_special_agent(self, app_name: str) -> None:
+    """Refuses internal special agents unless they are explicitly enabled."""
     if app_name.startswith("__") and not self._allow_special_agents:
       raise HTTPException(
           status_code=403,
@@ -809,6 +812,10 @@ class AdkWebServer:
               " mode."
           ),
       )
+
+  def _load_agent_or_app(self, app_name: str) -> BaseAgent | App:
+    """Loads an agent, refusing internal special agents unless enabled."""
+    self._reject_special_agent(app_name)
     return self.agent_loader.load_agent(app_name)
 
   def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
