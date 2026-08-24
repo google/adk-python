@@ -14,10 +14,12 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import dataclasses
 import json
 import os
+from types import MappingProxyType
 from unittest import mock
 
 from google.adk.agents import base_agent
@@ -400,7 +402,7 @@ def test_recursive_smart_truncate_redaction():
   """Test that sensitive keys and temp: state keys are redacted."""
   obj = {
       "client_secret": "super-secret-123",
-      "access_token": "ya29.blah",
+      "access_token": "access-token-fixture",
       "refresh_token": "1//0g",
       "id_token": "eyJhb",
       "api_key": "AIza",
@@ -427,6 +429,70 @@ def test_recursive_smart_truncate_redaction():
   assert truncated["temp:auth_state"] == "[REDACTED]"
   assert truncated["nested"]["CLIENT_SECRET"] == "[REDACTED]"
   assert truncated["nested"]["normal"] == "value"
+
+
+def test_recursive_smart_truncate_redacts_hyphenated_keys():
+  """Header-shaped keys name the same secrets as their underscore form."""
+  obj = {
+      "api-key": "AIza",
+      "access-token": "access-token-fixture",
+      "refresh-token": "1//0g",
+      "safe-key": "value",
+  }
+
+  truncated, _ = bigquery_agent_analytics_plugin._recursive_smart_truncate(
+      obj, 1000
+  )
+
+  assert truncated["api-key"] == "[REDACTED]"
+  assert truncated["access-token"] == "[REDACTED]"
+  assert truncated["refresh-token"] == "[REDACTED]"
+  assert truncated["safe-key"] == "value"
+
+
+def test_recursive_smart_truncate_redacts_keys_of_a_mapping_view():
+  """A Mapping that is not a dict must not skip the redaction loop."""
+  obj = MappingProxyType({"api_key": "AIza", "safe": "value"})
+
+  truncated, _ = bigquery_agent_analytics_plugin._recursive_smart_truncate(
+      obj, 1000
+  )
+
+  assert truncated == {"api_key": "[REDACTED]", "safe": "value"}
+  assert "AIza" not in str(truncated)
+
+
+def test_recursive_smart_truncate_keeps_a_namedtuple_row():
+  """A namedtuple must not raise TypeError and lose the whole row."""
+  point = collections.namedtuple("point", ["x", "y"])(1, 2)
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(point, 1000)
+  )
+
+  assert truncated == [1, 2]
+  assert not is_truncated
+
+
+def test_recursive_smart_truncate_settles_a_dumping_mock_at_the_fallback():
+  """A model_dump that yields another Mock must not churn to the depth cap."""
+
+  class _SelfDumping:
+
+    def model_dump(self):
+      return _SelfDumping()
+
+    def __str__(self):
+      return "self-dumping"
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(
+          _SelfDumping(), 1000
+      )
+  )
+
+  assert truncated == "self-dumping"
+  assert not is_truncated
 
 
 def test_recursive_smart_truncate_bounds_self_generating_objects():
@@ -7758,12 +7824,12 @@ class TestExternalUriSanitization:
     )
 
   @pytest.mark.asyncio
-  async def test_signed_gcs_uri_loses_its_signature(self):
-    """A signed GCS URL is stored without its query string."""
+  async def test_signed_uri_loses_its_signature(self):
+    """A signed object URL is stored without its query string."""
     signed = (
-        "https://storage.googleapis.com/bucket/report.pdf"
-        "?X-Goog-Algorithm=GOOG4-RSA-SHA256"
-        "&X-Goog-Signature=deadbeefcafe"
+        "https://storage.example.com/bucket/report.pdf"
+        "?Signature=deadbeefcafe"
+        "&Expires=1700000000"
     )
     content = types.Content(
         parts=[
@@ -7778,8 +7844,8 @@ class TestExternalUriSanitization:
     _, parts, is_truncated = await self._parser()._parse_content_object(content)
 
     assert parts[0]["storage_mode"] == "EXTERNAL_URI"
-    assert parts[0]["uri"] == "https://storage.googleapis.com/bucket/report.pdf"
-    assert "X-Goog-Signature" not in parts[0]["uri"]
+    assert parts[0]["uri"] == "https://storage.example.com/bucket/report.pdf"
+    assert "Signature" not in parts[0]["uri"]
     assert "deadbeefcafe" not in parts[0]["uri"]
     assert is_truncated
 
@@ -7800,6 +7866,27 @@ class TestExternalUriSanitization:
     _, parts, _ = await self._parser()._parse_content_object(content)
 
     assert parts[0]["uri"] == "[REDACTED_SENSITIVE_URI]"
+
+  @pytest.mark.asyncio
+  async def test_credential_in_the_path_is_redacted(self):
+    """A token sitting in a path segment must not be stored in the clear."""
+    content = types.Content(
+        parts=[
+            types.Part(
+                file_data=types.FileData(
+                    file_uri=(
+                        "https://api.example.com/v1/access-token/s3cr3t/d"
+                    ),
+                    mime_type="application/pdf",
+                )
+            )
+        ]
+    )
+
+    _, parts, _ = await self._parser()._parse_content_object(content)
+
+    assert "s3cr3t" not in parts[0]["uri"]
+    assert parts[0]["uri"].endswith("/d")
 
   @pytest.mark.asyncio
   async def test_plain_uri_is_unchanged(self):
