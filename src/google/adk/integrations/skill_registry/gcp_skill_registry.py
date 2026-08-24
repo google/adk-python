@@ -64,8 +64,11 @@ class GCPSkillRegistry(SkillRegistry):
     # be a single path segment before it is interpolated into the resource
     # path. Accept the same character set skill names are already held to; the
     # snake-or-kebab pattern is the superset of the two accepted spellings.
+    # fullmatch, not match: the pattern ends in `$`, which outside MULTILINE
+    # also matches just before a trailing newline, so `match` would let
+    # "my-skill\n" through into the resource name.
     # pylint: disable-next=protected-access
-    if not models._SNAKE_OR_KEBAB_NAME_PATTERN.match(name):
+    if not models._SNAKE_OR_KEBAB_NAME_PATTERN.fullmatch(name):
       raise ValueError(
           f"Invalid skill name {name!r}: name must be lowercase kebab-case"
           " (a-z, 0-9, hyphens) or snake_case (a-z, 0-9, underscores), with"

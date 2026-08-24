@@ -190,6 +190,34 @@ async def test_add_session_cleans_temp_file_when_cancelled(mocker, temp_dir):
 
 
 @pytest.mark.asyncio
+async def test_failed_temp_file_removal_does_not_mask_the_upload_error(
+    mocker, temp_dir
+):
+  """Cleanup runs in a finally, so it must not displace the real exception.
+
+  A cancelled upload can leave the worker thread still holding the file, and
+  on some platforms the remove then fails. Raising from the finally block
+  would replace the exception already propagating.
+  """
+
+  def upload_file(**_kwargs):
+    raise RuntimeError("upload failed")
+
+  mocker.patch(
+      "google.adk.dependencies.vertexai.rag",
+      SimpleNamespace(upload_file=upload_file),
+  )
+  mocker.patch(
+      "google.adk.memory.vertex_ai_rag_memory_service.os.remove",
+      side_effect=PermissionError("file still in use"),
+  )
+  memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
+
+  with pytest.raises(RuntimeError, match="upload failed"):
+    await memory_service.add_session_to_memory(_session())
+
+
+@pytest.mark.asyncio
 async def test_add_session_leaves_no_temp_file_when_corpus_missing(temp_dir):
   memory_service = VertexAiRagMemoryService(rag_corpus=None)
 
