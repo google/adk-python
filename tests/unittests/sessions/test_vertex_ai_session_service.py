@@ -31,6 +31,8 @@ from google.adk.events.event_actions import EventCompaction
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
+from google.adk.sessions.vertex_ai_session_service import _extract_short_session_id
+from google.adk.sessions.vertex_ai_session_service import _validate_session_id
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
@@ -762,6 +764,78 @@ async def test_session_id_path_traversal_rejected():
       await session_service.get_session(
           app_name='123', user_id='user', session_id=bad_id
       )
+
+
+def test_extract_short_session_id_short_id():
+  assert _extract_short_session_id('123') == '123'
+  assert _extract_short_session_id('session-123_abc') == 'session-123_abc'
+
+
+def test_extract_short_session_id_strips_full_resource_name():
+  resource_name = (
+      'projects/test-project/locations/test-location/'
+      'reasoningEngines/123/sessions/3'
+  )
+  assert _extract_short_session_id(resource_name) == '3'
+  assert (
+      _extract_short_session_id(resource_name, expected_engine_id='123') == '3'
+  )
+
+
+def test_extract_short_session_id_mismatch():
+  resource_name = (
+      'projects/test-project/locations/test-location/'
+      'reasoningEngines/wrong/sessions/3'
+  )
+  with pytest.raises(ValueError, match='Session resource name mismatch'):
+    _extract_short_session_id(resource_name, expected_engine_id='123')
+
+
+def test_validate_session_id_rejects_invalid_chars():
+  with pytest.raises(ValueError, match='Invalid session_id'):
+    _validate_session_id('invalid@id')
+  with pytest.raises(ValueError, match='Invalid session_id'):
+    _validate_session_id('invalid/id')
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_accepts_a_full_resource_name(
+    mock_api_client_instance,
+):
+  """Agent Engine passes the full resource name, not the short id."""
+  session_service = mock_vertex_ai_session_service()
+  resource_name = (
+      'projects/test-project/locations/test-location/'
+      'reasoningEngines/123/sessions/1'
+  )
+
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id=resource_name
+  )
+
+  assert session.id == '1'
+  # The resolved session id alone cannot tell a correctly built resource name
+  # from one that embedded the full name and happens to end in the same
+  # segment, so assert the name that actually went out.
+  mock_api_client_instance.agent_engines.sessions.get.assert_called_once_with(
+      name='reasoningEngines/123/sessions/1'
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_rejects_a_resource_name_for_another_engine():
+  session_service = mock_vertex_ai_session_service()
+  resource_name = (
+      'projects/test-project/locations/test-location/'
+      'reasoningEngines/456/sessions/1'
+  )
+
+  with pytest.raises(ValueError, match='Session resource name mismatch'):
+    await session_service.get_session(
+        app_name='123', user_id='user', session_id=resource_name
+    )
 
 
 @pytest.mark.asyncio
