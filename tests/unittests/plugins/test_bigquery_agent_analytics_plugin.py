@@ -14,10 +14,12 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import dataclasses
 import json
 import os
+from types import MappingProxyType
 from unittest import mock
 
 from google.adk.agents import base_agent
@@ -74,6 +76,9 @@ def mock_agent():
   # Mock the 'name' property
   type(mock_a).name = mock.PropertyMock(return_value="MyTestAgent")
   type(mock_a).instruction = mock.PropertyMock(return_value="Test Instruction")
+  # root_agent returns itself (no parent), so root_agent.name is a real name
+  # rather than a bare mock.
+  mock_a.root_agent = mock_a
   return mock_a
 
 
@@ -397,7 +402,7 @@ def test_recursive_smart_truncate_redaction():
   """Test that sensitive keys and temp: state keys are redacted."""
   obj = {
       "client_secret": "super-secret-123",
-      "access_token": "ya29.blah",
+      "access_token": "access-token-fixture",
       "refresh_token": "1//0g",
       "id_token": "eyJhb",
       "api_key": "AIza",
@@ -424,6 +429,169 @@ def test_recursive_smart_truncate_redaction():
   assert truncated["temp:auth_state"] == "[REDACTED]"
   assert truncated["nested"]["CLIENT_SECRET"] == "[REDACTED]"
   assert truncated["nested"]["normal"] == "value"
+
+
+def test_recursive_smart_truncate_redacts_hyphenated_keys():
+  """Header-shaped keys name the same secrets as their underscore form."""
+  obj = {
+      "api-key": "AIza",
+      "access-token": "access-token-fixture",
+      "refresh-token": "1//0g",
+      "safe-key": "value",
+  }
+
+  truncated, _ = bigquery_agent_analytics_plugin._recursive_smart_truncate(
+      obj, 1000
+  )
+
+  assert truncated["api-key"] == "[REDACTED]"
+  assert truncated["access-token"] == "[REDACTED]"
+  assert truncated["refresh-token"] == "[REDACTED]"
+  assert truncated["safe-key"] == "value"
+
+
+def test_recursive_smart_truncate_redacts_keys_of_a_mapping_view():
+  """A Mapping that is not a dict must not skip the redaction loop."""
+  obj = MappingProxyType({"api_key": "AIza", "safe": "value"})
+
+  truncated, _ = bigquery_agent_analytics_plugin._recursive_smart_truncate(
+      obj, 1000
+  )
+
+  assert truncated == {"api_key": "[REDACTED]", "safe": "value"}
+  assert "AIza" not in str(truncated)
+
+
+def test_recursive_smart_truncate_keeps_a_namedtuple_row():
+  """A namedtuple must not raise TypeError and lose the whole row."""
+  point = collections.namedtuple("point", ["x", "y"])(1, 2)
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(point, 1000)
+  )
+
+  assert truncated == [1, 2]
+  assert not is_truncated
+
+
+def test_recursive_smart_truncate_settles_a_dumping_mock_at_the_fallback():
+  """A model_dump that yields another Mock must not churn to the depth cap."""
+
+  class _SelfDumping:
+
+    def model_dump(self):
+      return _SelfDumping()
+
+    def __str__(self):
+      return "self-dumping"
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(
+          _SelfDumping(), 1000
+      )
+  )
+
+  assert truncated == "self-dumping"
+  assert not is_truncated
+
+
+def test_recursive_smart_truncate_bounds_self_generating_objects():
+  """An object that makes a fresh wrapper on each access stops at the cap."""
+
+  class Endless:
+    """to_dict() hands back a new object every time, so ids never repeat."""
+
+    def to_dict(self):
+      return {"next": Endless()}
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(
+          {"root": Endless()}, 1000
+      )
+  )
+
+  assert is_truncated
+  flattened = json.dumps(truncated)
+  assert "[MAX_DEPTH_EXCEEDED]" in flattened
+
+
+def test_recursive_smart_truncate_bounds_branching_self_generating_objects():
+  """The depth cap alone does not bound an object that branches.
+
+  Every access hands back two fresh children, so ids never repeat and the
+  50-level cap still leaves tens of millions of nodes below it. The node
+  budget is what stops the walk.
+  """
+  max_nodes = bigquery_agent_analytics_plugin._MAX_SANITIZE_NODES
+  # Stop manufacturing children well past the budget, so a walk that is not
+  # bounded fails this test in a second or two rather than the minute-plus
+  # it takes to exhaust the depth cap on its own.
+  safety_limit = 5 * max_nodes
+  visited = 0
+
+  class Branching:
+    """to_dict() hands back two new objects every time."""
+
+    def to_dict(self):
+      nonlocal visited
+      visited += 1
+      if visited > safety_limit:
+        return {"left": "stopped", "right": "stopped"}
+      return {"left": Branching(), "right": Branching()}
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(
+          {"root": Branching()}, 1000
+      )
+  )
+
+  assert is_truncated
+  assert visited <= max_nodes
+  assert "[SANITIZE_BUDGET_EXCEEDED]" in json.dumps(truncated)
+
+
+def test_recursive_smart_truncate_elides_the_remainder_of_a_wide_value():
+  """A wide value stops at the budget and leaves one remainder sentinel."""
+  max_nodes = bigquery_agent_analytics_plugin._MAX_SANITIZE_NODES
+  wide = list(range(max_nodes * 2))
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(
+          {"wide": wide}, 1000
+      )
+  )
+
+  assert is_truncated
+  assert truncated["wide"][-1] == "[SANITIZE_BUDGET_EXCEEDED]"
+  assert truncated["wide"].count("[SANITIZE_BUDGET_EXCEEDED]") == 1
+  # Bounded output: budget entries plus the single remainder sentinel.
+  assert len(truncated["wide"]) <= max_nodes + 1
+
+
+def test_recursive_smart_truncate_charges_directly_redacted_keys():
+  """Redacted keys cost budget, so a wide temp: mapping cannot bypass it."""
+  max_nodes = bigquery_agent_analytics_plugin._MAX_SANITIZE_NODES
+  wide_temp = {f"temp:{i}": i for i in range(max_nodes * 2)}
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(wide_temp, 1000)
+  )
+
+  assert is_truncated
+  assert len(truncated) <= max_nodes + 1
+  assert "[SANITIZE_BUDGET_EXCEEDED]" in truncated
+
+
+def test_recursive_smart_truncate_keeps_ordinary_nesting():
+  """Nesting well inside the cap is copied through untouched."""
+  obj = {"a": {"b": {"c": {"d": "leaf"}}}}
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(obj, 1000)
+  )
+
+  assert not is_truncated
+  assert truncated == obj
 
 
 class TestBigQueryAgentAnalyticsPlugin:
@@ -685,7 +853,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       dummy_arrow_schema,
       mock_asyncio_to_thread,
   ):
-    """Test content formatter error handling."""
+    """A formatter that raises must not let the original content through."""
     _ = mock_auth_default
     _ = mock_bq_client
 
@@ -710,8 +878,9 @@ class TestBigQueryAgentAnalyticsPlugin:
       log_entry = await _get_captured_event_dict_async(
           mock_write_client, dummy_arrow_schema
       )
-      # If formatter fails, it logs a warning and continues with original content.
-      assert log_entry["content"] == '{"text_summary": "Secret message"}'
+      # The formatter is the redaction boundary, so its failure fails closed:
+      # a sentinel is written and the payload never reaches the row.
+      assert log_entry["content"] == "[FORMATTER_FAILED]"
 
   @pytest.mark.asyncio
   async def test_max_content_length(
@@ -1754,6 +1923,44 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert attributes["custom_tags"] == custom_tags
 
   @pytest.mark.asyncio
+  async def test_custom_tags_and_extra_attributes_are_redacted(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Sensitive keys are redacted wherever they sit in the attributes tree."""
+    bq_plugin_inst.config.custom_tags = {
+        "env": "prod",
+        "api_key": "sk-live-should-not-be-stored",
+    }
+
+    await bq_plugin_inst._log_event(
+        "TEST_EVENT",
+        callback_context,
+        raw_content="test content",
+        event_data=bigquery_agent_analytics_plugin.EventData(
+            extra_attributes={
+                "tool": "search",
+                "nested": {"refresh_token": "rt-should-not-be-stored"},
+            }
+        ),
+    )
+    await asyncio.sleep(0.01)
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+    attributes_json = log_entry["attributes"]
+    assert "should-not-be-stored" not in attributes_json
+    attributes = json.loads(attributes_json)
+    assert attributes["custom_tags"]["api_key"] == "[REDACTED]"
+    assert attributes["custom_tags"]["env"] == "prod"
+    assert attributes["nested"]["refresh_token"] == "[REDACTED]"
+    assert attributes["tool"] == "search"
+
+  @pytest.mark.asyncio
   async def test_on_model_error_callback_logs_correctly(
       self,
       bq_plugin_inst,
@@ -2778,27 +2985,34 @@ class TestParserReuse:
     assert bq_plugin_inst.parser is parser_after_init
 
   @pytest.mark.asyncio
-  async def test_parser_trace_id_updated_per_call(
+  async def test_parser_ids_are_not_mutated_per_call(
       self,
       bq_plugin_inst,
       mock_write_client,
       invocation_context,
       dummy_arrow_schema,
   ):
-    """trace_id and span_id on the parser should update per _log_event."""
+    """_log_event passes the ids per call instead of writing them on the
+
+    shared parser.
+    """
     parser = bq_plugin_inst.parser
     original_trace_id = parser.trace_id
+    original_span_id = parser.span_id
 
-    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
-    await bq_plugin_inst.on_user_message_callback(
-        invocation_context=invocation_context,
-        user_message=types.Content(parts=[types.Part(text="Test")]),
-    )
-    await asyncio.sleep(0.01)
+    with mock.patch.object(parser, "parse", wraps=parser.parse) as mock_parse:
+      bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+      await bq_plugin_inst.on_user_message_callback(
+          invocation_context=invocation_context,
+          user_message=types.Content(parts=[types.Part(text="Test")]),
+      )
+      await asyncio.sleep(0.01)
 
-    # After logging, trace_id/span_id should have been updated
-    # (they're derived from TraceManager, not the initial empty strings)
-    assert parser.span_id != ""
+    assert parser.trace_id == original_trace_id
+    assert parser.span_id == original_span_id
+    _, kwargs = mock_parse.call_args
+    assert kwargs["span_id"] != ""
+    assert kwargs["span_id"] != original_span_id
 
   @pytest.mark.asyncio
   async def test_parser_not_recreated_with_constructor(
@@ -7593,6 +7807,198 @@ class TestOffloadUnitSeparation:
     assert is_truncated
     assert parts[0]["storage_mode"] == "INLINE"
     assert "TRUNCATED" in parts[0]["text"]
+
+
+# ================================================================
+# TEST CLASS: external URI sanitization
+# ================================================================
+class TestExternalUriSanitization:
+  """Tests that credentials are removed from stored external URIs."""
+
+  def _parser(self):
+    return bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=-1,
+    )
+
+  @pytest.mark.asyncio
+  async def test_signed_uri_loses_its_signature(self):
+    """A signed object URL is stored without its query string."""
+    signed = (
+        "https://storage.example.com/bucket/report.pdf"
+        "?Signature=deadbeefcafe"
+        "&Expires=1700000000"
+    )
+    content = types.Content(
+        parts=[
+            types.Part(
+                file_data=types.FileData(
+                    file_uri=signed, mime_type="application/pdf"
+                )
+            )
+        ]
+    )
+
+    _, parts, is_truncated = await self._parser()._parse_content_object(content)
+
+    assert parts[0]["storage_mode"] == "EXTERNAL_URI"
+    assert parts[0]["uri"] == "https://storage.example.com/bucket/report.pdf"
+    assert "Signature" not in parts[0]["uri"]
+    assert "deadbeefcafe" not in parts[0]["uri"]
+    assert is_truncated
+
+  @pytest.mark.asyncio
+  async def test_uri_with_userinfo_is_replaced(self):
+    """A URI carrying user:password@ is replaced wholesale."""
+    content = types.Content(
+        parts=[
+            types.Part(
+                file_data=types.FileData(
+                    file_uri="https://alice:hunter2@example.com/a.png",
+                    mime_type="image/png",
+                )
+            )
+        ]
+    )
+
+    _, parts, _ = await self._parser()._parse_content_object(content)
+
+    assert parts[0]["uri"] == "[REDACTED_SENSITIVE_URI]"
+
+  @pytest.mark.asyncio
+  async def test_credential_in_the_path_is_redacted(self):
+    """A token sitting in a path segment must not be stored in the clear."""
+    content = types.Content(
+        parts=[
+            types.Part(
+                file_data=types.FileData(
+                    file_uri="https://api.example.com/v1/access-token/s3cr3t/d",
+                    mime_type="application/pdf",
+                )
+            )
+        ]
+    )
+
+    _, parts, _ = await self._parser()._parse_content_object(content)
+
+    assert "s3cr3t" not in parts[0]["uri"]
+    assert parts[0]["uri"].endswith("/d")
+
+  @pytest.mark.asyncio
+  async def test_plain_uri_is_unchanged(self):
+    """A URI with no query, fragment or userinfo is stored verbatim."""
+    content = types.Content(
+        parts=[
+            types.Part(
+                file_data=types.FileData(
+                    file_uri="gs://bucket/photo.png", mime_type="image/png"
+                )
+            )
+        ]
+    )
+
+    _, parts, is_truncated = await self._parser()._parse_content_object(content)
+
+    assert parts[0]["uri"] == "gs://bucket/photo.png"
+    assert not is_truncated
+
+  @pytest.mark.asyncio
+  async def test_missing_uri_stays_none(self):
+    """file_data with no file_uri still records None, not a sentinel."""
+    content = types.Content(
+        parts=[types.Part(file_data=types.FileData(mime_type="image/png"))]
+    )
+
+    _, parts, _ = await self._parser()._parse_content_object(content)
+
+    assert parts[0]["uri"] is None
+
+  def test_overlong_uri_is_replaced(self):
+    """A URI beyond the inspection bound is not parsed at all."""
+    long_uri = "https://example.com/" + "a" * 9000
+
+    safe_uri, removed = self._parser()._sanitize_external_uri(long_uri)
+
+    assert safe_uri == "[REDACTED_SENSITIVE_URI]"
+    assert removed
+
+
+# ================================================================
+# TEST CLASS: GCS offload path identity
+# ================================================================
+class TestOffloadPathIdentity:
+  """Tests that offload paths come from the call, not shared parser state."""
+
+  @pytest.mark.asyncio
+  async def test_concurrent_parses_keep_their_own_identity(self):
+    """Two parses in flight at once do not write under each other's prefix."""
+    paths = []
+    first_upload_started = asyncio.Event()
+
+    async def upload_content(data, mime_type, path):
+      paths.append(path)
+      if len(paths) == 1:
+        # Hold the first upload open until the second has begun, so both
+        # parses are suspended inside _parse_content_object at once.
+        first_upload_started.set()
+        await asyncio.sleep(0.05)
+      return f"gs://bucket/{path}"
+
+    offloader = mock.MagicMock()
+    offloader.upload_content = upload_content
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=offloader,
+        trace_id="",
+        span_id="",
+        max_length=10,
+    )
+    content = types.Content(parts=[types.Part(text="X" * 200)])
+
+    async def parse_as(trace_id, span_id):
+      return await parser.parse(content, trace_id=trace_id, span_id=span_id)
+
+    task_a = asyncio.create_task(parse_as("trace-a", "span-a"))
+    await asyncio.wait_for(first_upload_started.wait(), timeout=5)
+    task_b = asyncio.create_task(parse_as("trace-b", "span-b"))
+    await asyncio.gather(task_a, task_b)
+
+    assert len(paths) == 2
+    assert sum("trace-a/span-a" in p for p in paths) == 1
+    assert sum("trace-b/span-b" in p for p in paths) == 1
+    assert parser.trace_id == ""
+    assert parser.span_id == ""
+
+  @pytest.mark.asyncio
+  async def test_same_part_index_in_two_messages_does_not_collide(self):
+    """Two messages in one request get distinct object names."""
+    paths = []
+
+    async def upload_content(data, mime_type, path):
+      paths.append(path)
+      return f"gs://bucket/{path}"
+
+    offloader = mock.MagicMock()
+    offloader.upload_content = upload_content
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=offloader,
+        trace_id="t",
+        span_id="s",
+        max_length=10,
+    )
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[
+            types.Content(parts=[types.Part(text="A" * 200)]),
+            types.Content(parts=[types.Part(text="B" * 200)]),
+        ],
+    )
+
+    await parser.parse(llm_request, trace_id="t1", span_id="s1")
+
+    assert len(paths) == 2
+    assert paths[0] != paths[1]
 
 
 # ================================================================
