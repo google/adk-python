@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk.tools._gemini_schema_util import _dereference_schema
 from google.adk.tools._gemini_schema_util import _sanitize_schema_formats_for_gemini
 from google.adk.tools._gemini_schema_util import _to_gemini_schema
 from google.adk.tools._gemini_schema_util import _to_snake_case
@@ -997,6 +998,42 @@ class TestToGeminiSchema:
     assert (
         gemini_schema.properties["b"].properties["prop_b"].type == Type.STRING
     )
+
+  def test_json_pointer_ref(self):
+    """Test JSON Pointer reference (#/properties/...) resolution."""
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "#/properties/b"},
+            "b": {"type": "string"},
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.properties["a"].type == Type.STRING
+
+  def test_circular_json_pointer_ref(self):
+    """Test circular JSON Pointer reference."""
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "#/properties/b"},
+            "b": {"$ref": "#/properties/a"},
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert "Circular ref" in gemini_schema.properties["a"].description
+
+  def test_json_pointer_to_array_element(self):
+    """Test JSON Pointer to an array element via _dereference_schema."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "#/properties/b/0"},
+            "b": [{"type": "string"}],
+        },
+    }
+    result = _dereference_schema(schema)
+    assert result["properties"]["a"]["type"] == "string"
 
 
 class TestToSnakeCase:

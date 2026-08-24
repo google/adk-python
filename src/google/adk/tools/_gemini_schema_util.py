@@ -129,6 +129,27 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
   # `$defs` takes precedence on the (pathological) key collision.
   defs = {**schema.get("definitions", {}), **schema.get("$defs", {})}
 
+  def _resolve_json_pointer(ref_path: str, root: dict[str, Any]) -> Any:
+    """Resolves a JSON Pointer reference path."""
+    if not ref_path.startswith("#/"):
+      return None
+    parts = ref_path[2:].split("/")
+    current = root
+    for part in parts:
+      part = part.replace("~1", "/").replace("~0", "~")
+      if isinstance(current, dict):
+        if part not in current:
+          return None
+        current = current[part]
+      elif isinstance(current, list):
+        try:
+          current = current[int(part)]
+        except (ValueError, IndexError):
+          return None
+      else:
+        return None
+    return current
+
   def _resolve_refs(sub_schema: Any, path_refs: frozenset[str]) -> Any:
     if isinstance(sub_schema, dict):
       if "$ref" in sub_schema:
@@ -152,9 +173,17 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
           resolved.update(sub_schema_copy)
           # Recursively resolve refs in the newly inserted part.
           return _resolve_refs(resolved, new_path)
-        else:
-          # Reference not found, return as is.
-          return sub_schema
+
+        # Try to resolve as a JSON Pointer reference (e.g. #/properties/foo).
+        resolved = _resolve_json_pointer(ref_uri, schema)
+        if resolved is not None:
+          resolved_copy = (
+              resolved.copy() if isinstance(resolved, dict) else resolved
+          )
+          return _resolve_refs(resolved_copy, new_path)
+
+        # Reference not found, return as is.
+        return sub_schema
       else:
         # No $ref, so traverse deeper into the dictionary.
         return {
