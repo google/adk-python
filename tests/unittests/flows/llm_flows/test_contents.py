@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -1765,6 +1767,47 @@ async def test_adk_function_call_ids_preserved_for_openai_responses_model():
   user_fr_part = llm_request.contents[2].parts[0]
   assert user_fr_part.function_response is not None
   assert user_fr_part.function_response.id == function_call_id
+
+
+def test_id_pairing_model_types_probes_optional_providers_once():
+  """An install without the optional providers must not retry their imports.
+
+  Python does not cache a failed import, so resolving these three inline meant
+  re-running the finder and re-executing the shim module bodies on every LLM
+  request.
+  """
+  optional_modules = (
+      "google.adk.models.anthropic_llm",
+      "google.adk.models.lite_llm",
+      "google.adk.labs.openai",
+  )
+  probed = []
+
+  class _ProvidersAbsent:
+    """Makes the optional providers look uninstalled, and counts the probes."""
+
+    def find_spec(self, name, path=None, target=None):
+      if name in optional_modules:
+        probed.append(name)
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+      return None
+
+  saved = {name: sys.modules.pop(name, None) for name in optional_modules}
+  contents._id_pairing_model_types.cache_clear()
+  sys.meta_path.insert(0, _ProvidersAbsent())
+  try:
+    first = contents._id_pairing_model_types()
+    second = contents._id_pairing_model_types()
+  finally:
+    sys.meta_path.pop(0)
+    for name, module in saved.items():
+      if module is not None:
+        sys.modules[name] = module
+    contents._id_pairing_model_types.cache_clear()
+
+  assert first == ()
+  assert second is first
+  assert probed == list(optional_modules)
 
 
 @pytest.mark.asyncio

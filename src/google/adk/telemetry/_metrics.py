@@ -20,7 +20,14 @@ from typing import TYPE_CHECKING
 
 from google.adk import version
 from google.adk.telemetry import tracing
+from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
+from google.adk.telemetry._token_usage import INPUT_TOKENS_MEANING
+from google.adk.telemetry._token_usage import InvocationTokenTotals
+from google.adk.telemetry._token_usage import OUTPUT_TOKENS_MEANING
+from google.adk.telemetry._token_usage import REASONING_OUTPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import TokenUsage
+from google.adk.telemetry._token_usage import TOOL_INPUT_TOKENS_MEANING
+from google.adk.telemetry._token_usage import TOTAL_TOKENS_MEANING
 from opentelemetry import metrics
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
@@ -136,6 +143,98 @@ _invoke_agent_tool_calls = meter.create_histogram(
     ],
 )
 
+# Bounds are upper inclusive, so the leading 0 buckets exact zeros on their own.
+_INPUT_TOKEN_BUCKET_BOUNDS = [
+    0,
+    128,
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+    262144,
+    524288,
+    1048576,
+]
+_OUTPUT_TOKEN_BUCKET_BOUNDS = [
+    0,
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+]
+
+
+def _create_invocation_token_histogram(
+    name: str,
+    description: str,
+    bounds: list[int],
+) -> metrics.Histogram:
+  """Creates one of the per-agent-invocation token histograms.
+
+  Args:
+    name: The metric name.
+    description: What the count covers. `_token_usage` owns the definitions
+      these are built from, so the descriptions and the arithmetic follow the
+      same source.
+    bounds: The advisory bucket boundaries.
+
+  Returns:
+    The histogram.
+  """
+  return meter.create_histogram(
+      name,
+      unit="{token}",
+      description=description,
+      explicit_bucket_boundaries_advisory=bounds,
+  )
+
+
+_invoke_agent_input_tokens = _create_invocation_token_histogram(
+    "adk.experimental.invoke_agent.input_tokens",
+    f"{INPUT_TOKENS_MEANING} Summed over one agent invocation.",
+    _INPUT_TOKEN_BUCKET_BOUNDS,
+)
+_invoke_agent_output_tokens = _create_invocation_token_histogram(
+    "adk.experimental.invoke_agent.output_tokens",
+    f"{OUTPUT_TOKENS_MEANING} Summed over one agent invocation.",
+    _OUTPUT_TOKEN_BUCKET_BOUNDS,
+)
+_invoke_agent_total_tokens = _create_invocation_token_histogram(
+    "adk.experimental.invoke_agent.total_tokens",
+    f"{TOTAL_TOKENS_MEANING} Summed over one agent invocation.",
+    _INPUT_TOKEN_BUCKET_BOUNDS,
+)
+_invoke_agent_cache_read_input_tokens = _create_invocation_token_histogram(
+    "adk.experimental.invoke_agent.cache_read.input_tokens",
+    f"{CACHE_READ_INPUT_TOKENS_MEANING} Summed over one agent invocation.",
+    _INPUT_TOKEN_BUCKET_BOUNDS,
+)
+_invoke_agent_reasoning_output_tokens = _create_invocation_token_histogram(
+    "adk.experimental.invoke_agent.reasoning.output_tokens",
+    f"{REASONING_OUTPUT_TOKENS_MEANING} Summed over one agent invocation.",
+    _OUTPUT_TOKEN_BUCKET_BOUNDS,
+)
+_invoke_agent_tool_input_tokens = _create_invocation_token_histogram(
+    "adk.experimental.invoke_agent.tool.input_tokens",
+    f"{TOOL_INPUT_TOKENS_MEANING} Summed over one agent invocation.",
+    _INPUT_TOKEN_BUCKET_BOUNDS,
+)
+
 
 def record_agent_invocation_duration(
     agent_name: str,
@@ -180,6 +279,31 @@ def record_invoke_agent_tool_calls(agent_name: str, count: int) -> None:
   """Records the number of tool calls in an agent invocation."""
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
   _invoke_agent_tool_calls.record(count, attributes=attrs)
+
+
+def record_invoke_agent_token_usage(
+    agent_name: str,
+    totals: InvocationTokenTotals,
+) -> None:
+  """Records the token spend accumulated over one agent invocation.
+
+  Args:
+    agent_name: The agent whose invocation these totals belong to.
+    totals: Token counts summed over the invocation's model calls.
+  """
+  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
+  _invoke_agent_input_tokens.record(totals.input_tokens, attributes=attrs)
+  _invoke_agent_output_tokens.record(totals.output_tokens, attributes=attrs)
+  _invoke_agent_total_tokens.record(totals.total_tokens, attributes=attrs)
+  _invoke_agent_cache_read_input_tokens.record(
+      totals.cache_read_input_tokens, attributes=attrs
+  )
+  _invoke_agent_reasoning_output_tokens.record(
+      totals.reasoning_output_tokens, attributes=attrs
+  )
+  _invoke_agent_tool_input_tokens.record(
+      totals.tool_input_tokens, attributes=attrs
+  )
 
 
 def record_tool_execution_duration(

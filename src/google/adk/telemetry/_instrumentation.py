@@ -29,6 +29,7 @@ from typing_extensions import assert_never
 
 from . import _adk_attributes
 from . import _metrics
+from . import _token_usage
 from . import tracing
 from ._schema_version import resolve_schema_version
 from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
@@ -152,6 +153,7 @@ class TelemetryContext:
   error_type: str | None = None
   span: tracing.GenerateContentSpan | trace.Span | None = None
   skill_telemetry: SkillTelemetry | None = None
+  token_totals: _token_usage.InvocationTokenTotals | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
   _inference_span_ended: bool = False
   _inference_call_count: int = 0
@@ -216,7 +218,9 @@ def _record_agent_metrics(
 def _flush_invoke_agent_metrics(
     tel_ctx: TelemetryContext, agent_name: str
 ) -> None:
-  """Flushes this span's accumulated inference/tool-call metrics."""
+  """Flushes this span's accumulated inference/tool-call and token metrics."""
+  if tel_ctx.token_totals is not None:
+    _metrics.record_invoke_agent_token_usage(agent_name, tel_ctx.token_totals)
   _metrics.record_invoke_agent_inference_calls(
       agent_name, tel_ctx.inference_call_count
   )
@@ -296,6 +300,33 @@ def attach_skill_telemetry(
         "Tool execution already has attached skill telemetry, overwriting."
     )
   tel_ctx.skill_telemetry = skill_telemetry
+
+
+def _accumulate_invoke_agent_tokens(responses: list[LlmResponse]) -> None:
+  """Adds one model call's token usage to the active invoke_agent span.
+
+  Args:
+    responses: The responses produced by a single model call, in order.
+  """
+  # Each report is cumulative for the call so far, which makes the newest one
+  # the whole figure and summing them a double count. Taking the newest report
+  # rather than the last response keeps a cut-short stream's usage, which a
+  # trailing chunk that carries none would otherwise drop.
+  reported = [
+      response.usage_metadata
+      for response in responses
+      if response.usage_metadata
+  ]
+  if not reported:
+    return
+  usage = _token_usage.TokenUsage(reported[-1])
+  if usage.input_token_count is None and usage.output_token_count is None:
+    return
+  span_tel_ctx = _active_invoke_agent_tel_ctx()
+  if span_tel_ctx is not None:
+    if span_tel_ctx.token_totals is None:
+      span_tel_ctx.token_totals = _token_usage.InvocationTokenTotals()
+    span_tel_ctx.token_totals.add(usage)
 
 
 @contextlib.asynccontextmanager
@@ -413,6 +444,12 @@ async def record_inference_telemetry(
   finally:
     inference_error = sys.exc_info()[1]
     _accumulate_invoke_agent_inference_call()
+    # Skipped when not opted in: the token metrics keyed on it are experimental,
+    # so a run without the opt-in does no bookkeeping and flushes nothing.
+    if tracing._telemetry_config_from_invocation_context(
+        invocation_context
+    ).should_emit_experimental_telemetry:
+      _accumulate_invoke_agent_tokens(tel_ctx.llm_responses)
     agent = invocation_context.agent
     elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:

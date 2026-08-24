@@ -60,7 +60,7 @@ root_agent = Workflow(
 `JoinNode` inherits from `BaseNode` and overrides key behaviors to support synchronization:
 
 1.  **Waiting for Predecessors**: It sets `_requires_all_predecessors` to `True`. The workflow orchestrator checks this property and ensures that `JoinNode` is only executed after all nodes pointing to it have completed.
-2.  **Input Aggregation**: When executed, the orchestrator provides `JoinNode` with a dictionary containing the outputs of all its predecessors. The keys of this dictionary are the names of the predecessor nodes, and the values are their respective outputs.
+2.  **Input Aggregation**: When executed, the orchestrator provides `JoinNode` with a dictionary containing the outputs of all its predecessors. The keys of this dictionary are the names of the predecessor nodes, and the values are their respective outputs. A direct edge from `START` counts as a predecessor like any other: it is satisfied as soon as the workflow begins, and contributes the workflow's input under the key `__START__`.
 3.  **Pass-through Execution**: The `JoinNode`'s `_run_impl` simply yields this aggregated dictionary as its output event.
 4.  **Branch Merging**: In parallel execution, nodes might run in different branch contexts (e.g., `NodeA@1`, `NodeB@1`). `JoinNode` computes the common branch prefix of all incoming triggers. If they ran in parallel branches of the same iteration, they are merged back into the parent branch context.
 

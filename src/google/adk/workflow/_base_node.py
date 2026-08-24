@@ -211,6 +211,7 @@ class BaseNode(BaseModel, abc.ABC):
 START = BaseNode(name='__START__')
 """Sentinel node marking the entry point of a workflow graph.
 
-START is never executed — ``Workflow._seed_start_triggers`` bypasses it
-and seeds triggers for its successors directly.
+START is never executed. ``Workflow._seed_start_triggers`` records the
+workflow's input and branch under START's name, then seeds triggers for
+its successors directly.
 """
