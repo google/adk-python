@@ -24,7 +24,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from collections.abc import Callable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
@@ -66,6 +65,10 @@ from .. import version
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.model_name_utils import extract_model_name
 from ..utils.model_name_utils import is_gemini_model
+from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT
+from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
+from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
+from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
@@ -101,6 +104,7 @@ if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
   from ..events.event import Event
+  from ..models.cache_metadata import CacheMetadata
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
@@ -354,6 +358,32 @@ def _set_usage_metadata_attributes(
   span.set_attributes(TokenUsage(usage_metadata).to_attributes())
 
 
+def _set_context_cache_attributes(
+    span: Span,
+    cache_metadata: CacheMetadata | None,
+    telemetry_config: TelemetryConfig,
+) -> None:
+  """Records context cache state on the given span."""
+  if cache_metadata is None:
+    return
+  # The fingerprint is a content hash, so these attributes stay behind the
+  # experimental opt-in rather than landing on every span by default.
+  if not telemetry_config.should_emit_experimental_telemetry:
+    return
+  attributes: dict[str, AttributeValue] = {
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: cache_metadata.cache_name is not None,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT: cache_metadata.fingerprint,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT: (
+          cache_metadata.contents_count
+      ),
+  }
+  if cache_metadata.invocations_used is not None:
+    attributes[ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED] = (
+        cache_metadata.invocations_used
+    )
+  span.set_attributes(attributes)
+
+
 def trace_call_llm(
     invocation_context: InvocationContext,
     event_id: str,
@@ -442,6 +472,9 @@ def trace_call_llm(
     span.set_attribute("gcp.vertex.agent.llm_response", "{}")
 
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
+  _set_context_cache_attributes(
+      span, getattr(llm_response, "cache_metadata", None), telemetry_config
+  )
   if llm_response.finish_reason:
     try:
       finish_reason_str = llm_response.finish_reason.value.lower()
@@ -704,10 +737,6 @@ async def use_inference_span(
   if invocation_context.session.user_id is not None:
     log_only_common_attributes[USER_ID] = invocation_context.session.user_id
   if _should_emit_native_telemetry(invocation_context.agent):
-    # Unwound through an ExitStack rather than a nested `with`, so that
-    # `GenerateContentSpan.end()` can close the span (and emit its completion
-    # details) as soon as the inference is done, instead of when the caller is
-    # done with the response.
     with ExitStack() as stack:
       gc_span = stack.enter_context(
           _use_native_generate_content_span(
@@ -717,6 +746,7 @@ async def use_inference_span(
               telemetry_config=telemetry_config,
           )
       )
+      gc_span._exit_stack = stack  # pylint: disable=protected-access
       if telemetry_config.should_use_experimental_genai_semconv:
         set_operation_details_common_attributes(
             gc_span.operation_details_common_attributes,
@@ -725,7 +755,7 @@ async def use_inference_span(
             log_only_attributes=log_only_common_attributes,
         )
       # Registered last, so it unwinds first: while the span is still open.
-      stack.callback(
+      _ = gc_span._exit_stack.callback(
           lambda: maybe_log_completion_details(
               gc_span.span,
               otel_logger,
@@ -733,10 +763,7 @@ async def use_inference_span(
               gc_span.operation_details_common_attributes,
               telemetry_config,
           )
-      )
-      # `ExitStack.close()` empties the stack, so calling it again (here on
-      # exit, after `_end()` already did) is a no-op.
-      gc_span._close = stack.close  # pyright: ignore[reportPrivateUsage]
+      )  # pylint: disable=protected-access
       yield gc_span
   else:
     with _use_extra_generate_content_attributes(
@@ -912,13 +939,11 @@ class GenerateContentSpan:
     self.span: Final = span
     self.operation_details_attributes: dict[str, AttributeValue] = {}
     self.operation_details_common_attributes: dict[str, AttributeValue] = {}
-    # Ends the span, idempotently, without waiting for `use_inference_span` to
-    # exit. Installed by span, which owns it. Calling it as soon as the
-    # inference is done keeps what the caller then does with the response
-    # (running the tool it asked for) out of the span, like
-    # opentelemetry-instrumentation-google-genai, whose span ends when the SDK
-    # call returns.
-    self._close: Callable[[], None] = lambda: None
+    # Ends underlying span and records completion details log record.
+    # Used over contextmanager to end the underlying span as soon as the
+    # inference is done, instead of when the caller is done with the response.
+    # Matches opentelemetry-instrumentation-google-genai behavior.
+    self._exit_stack: ExitStack | None = None
 
 
 @deprecated(
@@ -971,6 +996,11 @@ def trace_inference_result(
   if finish_reason := llm_response.finish_reason:
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
+  # Callers outside adk pass their own response objects here, which are only
+  # required to carry the fields this function already read.
+  _set_context_cache_attributes(
+      span, getattr(llm_response, "cache_metadata", None), telemetry_config
+  )
 
   if telemetry_config.should_use_experimental_genai_semconv and isinstance(
       gc_span, GenerateContentSpan

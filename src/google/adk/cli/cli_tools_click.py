@@ -276,6 +276,10 @@ def _warn_if_with_ui(with_ui: bool) -> None:
 class TelemetryGroup(click.Group):
   """Custom Click Group to wrap execution for telemetry tracking."""
 
+  def main(self, *args, **kwargs):
+    kwargs.setdefault("windows_expand_args", False)
+    return super().main(*args, **kwargs)
+
   def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
     ctx.telemetry_args = list(args)  # type: ignore[attr-defined]
     return super().parse_args(ctx, args)
@@ -2704,6 +2708,19 @@ def cli_migrate_session(
         " Repeatable."
     ),
 )
+@click.option(
+    "--worker_pool",
+    type=str,
+    default=None,
+    help=(
+        "Optional. Cloud Build private worker pool resource name used to build"
+        " the Agent Engine container image. Format:"
+        " projects/{project}/locations/{location}/workerPools/{pool}."
+        " Required for VPC-SC / private-network environments that cannot use"
+        " the default public Cloud Build pool. Overrides `worker_pool` or"
+        " `build_config.worker_pool` in `.agent_engine_config.json`."
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2738,6 +2755,7 @@ def cli_deploy_agent_engine(
     session_service_uri: str | None = None,
     use_local_storage: bool = False,
     extra_packages: tuple[str, ...] = (),
+    worker_pool: str | None = None,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -2751,6 +2769,12 @@ def cli_deploy_agent_engine(
     # With Google Cloud Project and Region
     adk deploy agent_engine --project=[project] --region=[region]
       --display_name=[app_name] my_agent
+
+    \b
+    # With a private Cloud Build worker pool (VPC-SC / private network)
+    adk deploy agent_engine --project=[project] --region=[region]
+      --worker_pool=projects/[project]/locations/[region]/workerPools/[pool]
+      my_agent
   """
   logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
   try:
@@ -2785,6 +2809,7 @@ def cli_deploy_agent_engine(
         session_service_uri=session_service_uri,
         adk_version=adk_version,
         extra_packages=list(extra_packages),
+        worker_pool=worker_pool,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

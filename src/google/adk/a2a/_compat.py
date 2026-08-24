@@ -28,6 +28,7 @@ from datetime import datetime
 from datetime import timezone
 import importlib
 import json
+import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -56,6 +57,30 @@ from google.protobuf.json_format import ParseDict
 
 from ..utils.context_utils import Aclosing
 
+# -----------------------------------------------------------------------------
+# Version detection
+# -----------------------------------------------------------------------------
+try:
+  from a2a.types import StreamResponse as _StreamResponse  # noqa: F401
+
+  IS_A2A_V1 = True
+except ImportError:
+  IS_A2A_V1 = False
+
+
+# -----------------------------------------------------------------------------
+# Protobuf WKT helpers (1.x.x only)
+# -----------------------------------------------------------------------------
+if IS_A2A_V1:
+  try:
+    from google.protobuf import timestamp_pb2
+    from google.protobuf.struct_pb2 import Struct
+    from google.protobuf.struct_pb2 import Value
+  except ModuleNotFoundError as e:
+    logging.getLogger("google_adk." + __name__).warning(
+        "google protobuf WKT unavailable %s", e
+    )
+
 
 def _dynamic_type(module_name: str, type_name: str) -> type[Any]:
   """Loads a type that exists only in one supported A2A SDK generation."""
@@ -79,20 +104,15 @@ def _as_factory(target: type[_T]) -> Callable[..., _T]:
 
 def _make_proto_timestamp(dt: Optional[datetime] = None) -> Any:
   """Build a google.protobuf.Timestamp from a datetime (or now). 1.x only."""
-  from google.protobuf import timestamp_pb2
-
-  ts = timestamp_pb2.Timestamp()
+  ts = timestamp_pb2.Timestamp()  # type: ignore[possibly-undefined]
   ts.FromDatetime(dt or datetime.now(timezone.utc))
   return ts
 
 
 def _make_proto_value_from_dict(d: dict[str, Any]) -> Any:
   """Wrap a plain dict as a google.protobuf.Value (struct_value). 1.x only."""
-  from google.protobuf.struct_pb2 import Struct
-  from google.protobuf.struct_pb2 import Value
-
-  v = Value()
-  s = Struct()
+  v = Value()  # type: ignore[possibly-undefined]
+  s = Struct()  # type: ignore[possibly-undefined]
   ParseDict(d, s)
   v.struct_value.CopyFrom(s)
   return v
@@ -102,17 +122,6 @@ def _proto_to_dict(msg: Any) -> dict[str, Any]:
   """Convert a protobuf message (e.g. Struct/Value) to a plain dict."""
   result: dict[str, Any] = MessageToDict(msg)
   return result
-
-
-# -----------------------------------------------------------------------------
-# Version detection
-# -----------------------------------------------------------------------------
-try:
-  from a2a.types import StreamResponse as _StreamResponse  # noqa: F401
-
-  IS_A2A_V1 = True
-except ImportError:
-  IS_A2A_V1 = False
 
 
 # -----------------------------------------------------------------------------
@@ -250,9 +259,7 @@ def part_metadata(p: Part) -> dict[str, Any]:
 def set_part_metadata(p: Part, metadata: dict[str, Any]) -> None:
   """Writes a Part's metadata."""
   if IS_A2A_V1:
-    from google.protobuf.struct_pb2 import Struct
-
-    p.metadata.CopyFrom(ParseDict(metadata, Struct()))
+    p.metadata.CopyFrom(ParseDict(metadata, Struct()))  # type: ignore[possibly-undefined]
   else:
     p.root.metadata = metadata
 
@@ -744,12 +751,11 @@ async def send_message(
   """
   if IS_A2A_V1:
     from a2a.types import SendMessageRequest
-    from google.protobuf.struct_pb2 import Struct
 
     smr = SendMessageRequest()
     smr.message.CopyFrom(request)
     if request_metadata:
-      smr.metadata.CopyFrom(ParseDict(request_metadata, Struct()))
+      smr.metadata.CopyFrom(ParseDict(request_metadata, Struct()))  # type: ignore[possibly-undefined]
     async with Aclosing(client.send_message(smr, context=context)) as agen:
       async for item in agen:
         yield item
@@ -1117,9 +1123,7 @@ def set_event_metadata(event: Any, metadata: dict[str, Any]) -> None:
   if not metadata:
     return
   if IS_A2A_V1:
-    from google.protobuf.struct_pb2 import Struct
-
-    event.metadata.CopyFrom(ParseDict(metadata, Struct()))
+    event.metadata.CopyFrom(ParseDict(metadata, Struct()))  # type: ignore[possibly-undefined]
   else:
     event.metadata = metadata
 
@@ -1170,9 +1174,7 @@ def set_struct_metadata(obj: Any, metadata: dict[str, Any]) -> None:
   if not metadata:
     return
   if IS_A2A_V1:
-    from google.protobuf.struct_pb2 import Struct
-
-    obj.metadata.CopyFrom(ParseDict(dict(metadata), Struct()))
+    obj.metadata.CopyFrom(ParseDict(dict(metadata), Struct()))  # type: ignore[possibly-undefined]
   else:
     obj.metadata = dict(metadata)
 

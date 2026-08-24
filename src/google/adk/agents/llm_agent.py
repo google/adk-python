@@ -783,7 +783,9 @@ class LlmAgent(BaseAgent, abc.ABC):
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO: Remove once the workaround is no longer needed.
-    multiple_tools = len(self.tools) > 1
+    from ..flows.llm_flows.agent_transfer import _get_transfer_targets
+
+    multiple_tools = len(self.tools) > 1 or bool(_get_transfer_targets(self))
     model = self.canonical_model
 
     results = await asyncio.gather(*(

@@ -415,3 +415,40 @@ def test_legacy_credential_key_is_stable_across_redirect_uri():
   assert store._get_legacy_credential_key(
       scheme, credential_local
   ) == store._get_legacy_credential_key(scheme, credential_deployed)
+
+
+def test_legacy_credential_migration(
+    openid_connect_scheme, openid_connect_credential
+):
+  """Test that credentials stored under legacy keys are migrated to new keys."""
+  tool_context = create_mock_tool_context()
+  store = ToolContextCredentialStore(tool_context=tool_context)
+
+  legacy_key = store._get_legacy_credential_key(
+      openid_connect_scheme, openid_connect_credential
+  )
+  new_key = store.get_credential_key(
+      openid_connect_scheme, openid_connect_credential
+  )
+  assert legacy_key != new_key
+
+  legacy_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme='bearer',
+          credentials=HttpCredentials(token='legacy_token'),
+      ),
+  )
+  store.store_credential(legacy_key, legacy_credential)
+
+  assert new_key not in tool_context.state
+
+  retrieved = store.get_credential(
+      openid_connect_scheme, openid_connect_credential
+  )
+
+  assert retrieved == legacy_credential
+  assert new_key in tool_context.state
+  assert tool_context.state[new_key] == legacy_credential.model_dump(
+      exclude_none=True
+  )

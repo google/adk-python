@@ -20,11 +20,11 @@
             "status": "ERROR",
             "children": [
               {
-                "name": "generate_content mock",
+                "name": "generate_content gemini-2.5-flash",
                 "attributes": {
                   "gen_ai.system": "gemini",
                   "gen_ai.operation.name": "generate_content",
-                  "gen_ai.request.model": "mock",
+                  "gen_ai.request.model": "gemini-2.5-flash",
                   "gen_ai.agent.name": "some_root_agent",
                   "gen_ai.conversation.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
@@ -69,7 +69,7 @@
           "gen_ai.agent.name": "some_root_agent",
           "gen_ai.operation.name": "generate_content",
           "gen_ai.provider.name": "gemini",
-          "gen_ai.request.model": "mock",
+          "gen_ai.request.model": "gemini-2.5-flash",
           "error.type": "429"
         },
         "value": "PRESENT"

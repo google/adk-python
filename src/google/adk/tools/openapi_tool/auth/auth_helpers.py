@@ -26,6 +26,8 @@ from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import HTTPBase
 from fastapi.openapi.models import HTTPBearer
 from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowClientCredentials
+from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import OpenIdConnect
 from fastapi.openapi.models import Schema
 import httpx
@@ -152,13 +154,40 @@ def token_to_scheme_credential(
     raise ValueError(f"Invalid security scheme type: {type}")
 
 
+def _service_account_auth_scheme() -> OAuth2:
+  """Auth scheme for Google Service Account credentials.
+
+  CredentialManager only auto-loads raw non-interactive credentials when the
+  scheme is an OAuth2/OIDC client-credentials flow. An HTTPBearer scheme makes
+  ``_is_client_credentials_flow`` return False, so ``get_auth_credential``
+  returns None and the tool falls back to ``adk_request_credential`` instead of
+  exchanging the service account for a token.
+
+  The token URL is unused by ServiceAccountCredentialExchanger (ADC / JWT
+  assertion), but is required by the OAuth2 client-credentials model.
+  """
+  return OAuth2(
+      flows=OAuthFlows(
+          clientCredentials=OAuthFlowClientCredentials(
+              # Placeholder only; SA exchange does not call this endpoint.
+              # Use the mTLS host form for compliance with Google API endpoint
+              # requirements.
+              tokenUrl="https://oauth2.mtls.googleapis.com/token",
+              scopes={},
+          )
+      )
+  )
+
+
 def service_account_dict_to_scheme_credential(
     config: Dict[str, Any],
     scopes: List[str],
 ) -> Tuple[AuthScheme, AuthCredential]:
   """Creates AuthScheme and AuthCredential for Google Service Account.
 
-  Returns a bearer token scheme, and a service account credential.
+  Returns an OAuth2 client-credentials scheme (so CredentialManager can
+  exchange the service account) and a service account credential. After
+  exchange the credential is an HTTP bearer token.
 
   Args:
       config: A ServiceAccount object containing the Google Service Account
@@ -168,7 +197,6 @@ def service_account_dict_to_scheme_credential(
   Returns:
       Tuple: (AuthScheme, AuthCredential)
   """
-  auth_scheme = HTTPBearer(bearerFormat="JWT")
   service_account = ServiceAccount(
       service_account_credential=ServiceAccountCredential.model_construct(
           **config
@@ -179,7 +207,7 @@ def service_account_dict_to_scheme_credential(
       auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
       service_account=service_account,
   )
-  return auth_scheme, auth_credential
+  return _service_account_auth_scheme(), auth_credential
 
 
 def service_account_scheme_credential(
@@ -187,7 +215,9 @@ def service_account_scheme_credential(
 ) -> Tuple[AuthScheme, AuthCredential]:
   """Creates AuthScheme and AuthCredential for Google Service Account.
 
-  Returns a bearer token scheme, and a service account credential.
+  Returns an OAuth2 client-credentials scheme (so CredentialManager can
+  exchange the service account) and a service account credential. After
+  exchange the credential is an HTTP bearer token.
 
   Args:
       config: A ServiceAccount object containing the Google Service Account
@@ -196,11 +226,10 @@ def service_account_scheme_credential(
   Returns:
       Tuple: (AuthScheme, AuthCredential)
   """
-  auth_scheme = HTTPBearer(bearerFormat="JWT")
   auth_credential = AuthCredential(
       auth_type=AuthCredentialTypes.SERVICE_ACCOUNT, service_account=config
   )
-  return auth_scheme, auth_credential
+  return _service_account_auth_scheme(), auth_credential
 
 
 def openid_dict_to_scheme_credential(

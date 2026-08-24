@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import copy
 import logging
 from typing import AsyncGenerator
@@ -28,6 +29,10 @@ from ...events.event import Event
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._content_compaction import _process_compaction_events
+from ._content_compaction import _recover_compacted_function_calls
+from ._fencing import _is_other_agent_reply
+from ._fencing import _present_other_agent_message
 from ._invocation_utils import as_llm_agent
 from .functions import AF_FUNCTION_CALL_ID_PREFIX
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
@@ -144,19 +149,42 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
-  function_call_id_to_response_events_index: dict[str | None, int] = {}
+  # A model may hand out the same function call id more than once in a session,
+  # so an id on its own does not identify a single call. Each response is
+  # attributed to the newest call that precedes it and carries the same id, and
+  # a call then takes the last response attributed to it. Taking the last one
+  # keeps the closing update of a long-running tool, which reports progress
+  # several times under one id, while attributing first stops a reused id from
+  # handing a call the response that belongs to a different call.
+  call_event_indices_by_id: dict[str | None, list[int]] = {}
   for i, event in enumerate(events):
-    function_responses = event.get_function_responses()
-    if function_responses:
-      for function_response in function_responses:
-        function_call_id = function_response.id
-        function_call_id_to_response_events_index[function_call_id] = i
+    if event.get_function_responses():
+      continue
+    for function_call in event.get_function_calls():
+      call_event_indices_by_id.setdefault(function_call.id, []).append(i)
 
-  if not function_call_id_to_response_events_index:
+  response_event_index_by_call: dict[tuple[str | None, int], int] = {}
+  history_has_function_responses = False
+  for i, event in enumerate(events):
+    for function_response in event.get_function_responses():
+      history_has_function_responses = True
+      call_event_indices = call_event_indices_by_id.get(function_response.id)
+      if not call_event_indices:
+        continue
+      # Indices are collected in ascending order, so the call that owns this
+      # response is the one just before it. A response preceding every call
+      # that carries its id keeps the first, as it did before ids could repeat.
+      preceding_calls = bisect_left(call_event_indices, i)
+      owning_call_event_index = call_event_indices[max(preceding_calls - 1, 0)]
+      response_event_index_by_call[
+          (function_response.id, owning_call_event_index)
+      ] = i
+
+  if not history_has_function_responses:
     return events
 
   result_events: list[Event] = []
-  for event in events:
+  for i, event in enumerate(events):
     if event.get_function_responses():
       # function_response should be handled together with function_call below.
       continue
@@ -164,11 +192,11 @@ def _rearrange_events_for_async_function_responses_in_history(
 
       function_response_events_indices = set()
       for function_call in event.get_function_calls():
-        function_call_id = function_call.id
-        if function_call_id in function_call_id_to_response_events_index:
-          function_response_events_indices.add(
-              function_call_id_to_response_events_index[function_call_id]
-          )
+        response_event_index = response_event_index_by_call.get(
+            (function_call.id, i)
+        )
+        if response_event_index is not None:
+          function_response_events_indices.add(response_event_index)
       result_events.append(event)
       if not function_response_events_indices:
         continue
@@ -528,206 +556,6 @@ def _should_include_event_in_context(
   )
 
 
-def _process_compaction_events(
-    events: list[Event], agent_name: str = ''
-) -> list[Event]:
-  """Processes events by applying compaction.
-
-  Identifies compacted ranges and filters out events that are covered by
-  compaction summaries.
-
-  Args:
-    events: A list of events to process.
-    agent_name: The name of the agent the history is being assembled for. The
-      materialized summary is attributed to it so the agent reads its own
-      compacted history as its own prior turns.
-
-  Returns:
-    A list of events with compaction applied.
-  """
-  # Example:
-  # [event_1(ts=1), event_2(ts=2), compaction_1(1-2), event_3(ts=4),
-  #  compaction_2(2-4), event_4(ts=6)].
-  #
-  # Overlaps are resolved by keeping only non-subsumed compaction summaries.
-  # A summary event is materialized at its compaction end timestamp, and raw
-  # events inside any kept compaction range are filtered out.
-  compaction_infos: list[tuple[int, float, float]] = []
-  for i, event in enumerate(events):
-    if not (event.actions and event.actions.compaction):
-      continue
-    compaction = event.actions.compaction
-    if (
-        compaction.start_timestamp is None
-        or compaction.end_timestamp is None
-        or compaction.compacted_content is None
-    ):
-      continue
-    compaction_infos.append(
-        (i, compaction.start_timestamp, compaction.end_timestamp)
-    )
-
-  subsumed_compaction_event_indexes: set[int] = set()
-  for event_index, start_ts, end_ts in compaction_infos:
-    for other_index, other_start, other_end in compaction_infos:
-      if other_index == event_index:
-        continue
-      if other_start <= start_ts and other_end >= end_ts:
-        if (
-            other_start < start_ts
-            or other_end > end_ts
-            or other_index > event_index
-        ):
-          subsumed_compaction_event_indexes.add(event_index)
-          break
-
-  compaction_ranges: list[tuple[float, float]] = []
-  processed_items: list[tuple[float, int, Event]] = []
-
-  for i, event in enumerate(events):
-    if event.actions and event.actions.compaction:
-      if i in subsumed_compaction_event_indexes:
-        continue
-      compaction = event.actions.compaction
-      if (
-          compaction.start_timestamp is None
-          or compaction.end_timestamp is None
-          or compaction.compacted_content is None
-      ):
-        continue
-      compaction_ranges.append(
-          (compaction.start_timestamp, compaction.end_timestamp)
-      )
-      processed_items.append((
-          compaction.end_timestamp,
-          i,
-          Event(
-              timestamp=compaction.end_timestamp,
-              author=agent_name or 'model',
-              content=compaction.compacted_content,
-              branch=event.branch,
-              invocation_id=event.invocation_id,
-              actions=event.actions,
-          ),
-      ))
-
-  def _is_timestamp_compacted(ts: float) -> bool:
-    for start_ts, end_ts in compaction_ranges:
-      if start_ts <= ts <= end_ts:
-        return True
-    return False
-
-  for i, event in enumerate(events):
-    if event.actions and event.actions.compaction:
-      continue
-    if _is_timestamp_compacted(event.timestamp):
-      continue
-    processed_items.append((event.timestamp, i, event))
-
-  # Keep chronological order and a stable tie-breaker for equal timestamps.
-  processed_items.sort(key=lambda item: (item[0], item[1]))
-  return [event for _, _, event in processed_items]
-
-
-def _recover_compacted_function_calls(
-    events: list[Event],
-    source_events: list[Event],
-) -> list[Event]:
-  """Re-injects function-call events that compaction removed.
-
-  Compaction can summarize away a function_call while a matching
-  function_response survives outside the compacted range. The clearest case
-  is a long-running tool call: the call is compacted along with its
-  intermediate placeholder response, then the real result arrives on resume
-  (a later event not covered by the summary). That surviving response would
-  be orphaned, which breaks call/response pairing during prompt assembly (it
-  raises in `_rearrange_events_for_latest_function_response`).
-
-  For each response whose call is no longer present, this restores the
-  original call event from `source_events` (the pre-compaction list),
-  inserting it immediately before the first surviving response that
-  references it. The whole call event is re-injected verbatim (rather than
-  trimmed to the resumed call) so parallel-call thought signatures, which only
-  the first part carries, are preserved. Any sibling responses that compaction
-  removed are re-injected too, so a sibling is not surfaced as a phantom
-  pending call.
-
-  Args:
-    events: The post-compaction events being assembled into request contents.
-    source_events: The pre-compaction events to recover missing calls from.
-
-  Returns:
-    `events` with any recoverable missing function-call events (and their
-    compacted sibling responses) re-injected; the original list is returned
-    unchanged when nothing needs recovery.
-  """
-  call_ids_present: set[str] = set()
-  response_ids_present: set[str] = set()
-  for event in events:
-    for function_call in event.get_function_calls():
-      if function_call.id:
-        call_ids_present.add(function_call.id)
-    for function_response in event.get_function_responses():
-      if function_response.id:
-        response_ids_present.add(function_response.id)
-
-  orphaned_ids = {
-      response_id
-      for response_id in response_ids_present
-      if response_id not in call_ids_present
-  }
-  if not orphaned_ids:
-    return events
-
-  call_event_by_id: dict[str, Event] = {}
-  for event in source_events:
-    for function_call in event.get_function_calls():
-      if function_call.id in orphaned_ids:
-        call_event_by_id.setdefault(function_call.id, event)
-
-  if not call_event_by_id:
-    return events
-
-  # Keep the highest-timestamp response per id so a sibling that completed
-  # before being compacted contributes its real result, not its stale
-  # placeholder; ties fall back to source order.
-  response_event_by_id: dict[str, Event] = {}
-  for event in source_events:
-    for function_response in event.get_function_responses():
-      if not function_response.id:
-        continue
-      existing = response_event_by_id.get(function_response.id)
-      if existing is None or event.timestamp >= existing.timestamp:
-        response_event_by_id[function_response.id] = event
-
-  result: list[Event] = []
-  reinjected_ids: set[str] = set()
-  for event in events:
-    for function_response in event.get_function_responses():
-      function_response_id = function_response.id
-      if not function_response_id:
-        continue
-      call_event = call_event_by_id.get(function_response_id)
-      if call_event is None or function_response_id in reinjected_ids:
-        continue
-      result.append(call_event)
-      sibling_ids = [
-          function_call.id
-          for function_call in call_event.get_function_calls()
-          if function_call.id
-      ]
-      reinjected_ids.update(sibling_ids)
-      # Recover sibling responses that compaction removed so a parallel sibling
-      # is not left looking like a pending call.
-      for sibling_id in sibling_ids:
-        if sibling_id not in response_ids_present:
-          sibling_response = response_event_by_id.get(sibling_id)
-          if sibling_response is not None:
-            result.append(sibling_response)
-    result.append(event)
-  return result
-
-
 def _copy_content_for_request(
     content: types.Content,
     *,
@@ -1022,142 +850,6 @@ def _get_current_turn_contents(
   return []
 
 
-def _is_direct_transfer(event: Event) -> bool:
-  """Whether the event is a direct ``transfer_to_agent`` event.
-
-  When ``include_contents='none'`` and control is handed to a sub-agent via
-  ``transfer_to_agent``, the trailing transfer events (the function call and
-  its response) must not be treated as the start of the current turn.
-  Otherwise the sub-agent's turn would anchor on the parent's transfer event
-  and drop the latest user input. Skipping these events lets the turn anchor
-  on the real user input (or a non-transfer model request) instead, while the
-  transfer events are still included as context.
-  """
-  return bool(
-      event.actions.transfer_to_agent
-      or (
-          event.content
-          and event.content.parts
-          and any(
-              p.function_call and p.function_call.name == 'transfer_to_agent'
-              for p in event.content.parts
-          )
-      )
-  )
-
-
-def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
-  """Whether the event is a reply from another agent."""
-  # In live/bidi mode, all events from any agents, including the current
-  # agent, will be marked as other agent's reply. When agent transfers,
-  # the conversation history will be sent to the Live API. If the current
-  # agent previously used `transfer_to_agent` to transfer to another agent,
-  # when the conversation is sent back to the current agent, the history will
-  # contain a `transfer_to_agent` function call event from the current agent.
-  # The Live API marks anything after the function response as model response.
-  # This will confuse the model and cause the model to not respond.
-  #
-  # E.g. when the conversation is transferred from agent A to agent B, then
-  # back to agent A, the history in the last transfer will be:
-  #   User: "Some message that triggers transfer to agent B"
-  #   Model: transfer_to_agent(B)
-  #   User: transfer_to_agent(B) response
-  #   User: "Some message that triggers transfer to agent A"
-  #   User: "For context: [agent B] called transfer_to_agent(A)"
-  #   User: "For context: [agent B] tool transfer_to_agent(A) returned result:"
-  #
-  # In this case, the last three events are marked as model response by the
-  # Live API, instead of user input.
-  if event.live_session_id:
-    return event.author != 'user'
-  return bool(
-      current_agent_name
-      and event.author != current_agent_name
-      and event.author != 'user'
-  )
-
-
-def _present_other_agent_message(
-    event: Event, *, include_thoughts: bool = False
-) -> Event | None:
-  """Presents another agent's message as user context for the current agent.
-
-  Reformats the event with role='user' and adds '[agent_name] said:' prefix
-  to provide context without confusion about authorship.
-
-  Args:
-    event: The event from another agent to present as context.
-    include_thoughts: Whether to include thought parts as explicit text
-      context.
-
-  Returns:
-    Event reformatted as user-role context with agent attribution, or None
-    if no meaningful content remains after filtering.
-  """
-  if not event.content or not event.content.parts:
-    return event
-
-  content = types.Content()
-  content.role = 'user'
-  content.parts = [types.Part(text='For context:')]
-  for part in event.content.parts:
-    if part.thought:
-      if include_thoughts and part.text is not None and part.text.strip():
-        content.parts.append(
-            types.Part(text=f'[{event.author}] thought: {part.text}')
-        )
-      continue
-    elif part.text is not None and part.text.strip():
-      content.parts.append(
-          types.Part(text=f'[{event.author}] said: {part.text}')
-      )
-    elif part.function_call:
-      # Sort args by key so the rendered dict is deterministic across runs.
-      args = (
-          dict(sorted(part.function_call.args.items()))
-          if part.function_call.args
-          else part.function_call.args
-      )
-      content.parts.append(
-          types.Part(
-              text=(
-                  f'[{event.author}] called tool `{part.function_call.name}`'
-                  f' with parameters: {args}'
-              )
-          )
-      )
-    elif part.function_response:
-      # Otherwise, create a new text part.
-      content.parts.append(
-          types.Part(
-              text=(
-                  f'[{event.author}] `{part.function_response.name}` tool'
-                  f' returned result: {part.function_response.response}'
-              )
-          )
-      )
-    elif (
-        part.inline_data
-        or part.file_data
-        or part.executable_code
-        or part.code_execution_result
-    ):
-      content.parts.append(part)
-    else:
-      continue
-
-  # Return None when only "For context:" remains.
-  if len(content.parts) == 1:
-    return None
-
-  return Event(
-      timestamp=event.timestamp,
-      author='user',
-      content=content,
-      branch=event.branch,
-  )
-
-
 def _merge_function_response_events(
     function_response_events: list[Event],
 ) -> Event:
@@ -1268,6 +960,30 @@ def _is_request_confirmation_event(event: Event) -> bool:
 def _is_adk_framework_event(event: Event) -> bool:
   """Checks if the event is an ADK framework event."""
   return _is_function_call_event(event, 'adk_framework')
+
+
+def _is_direct_transfer(event: Event) -> bool:
+  """Whether the event is a direct ``transfer_to_agent`` event.
+
+  When ``include_contents='none'`` and control is handed to a sub-agent via
+  ``transfer_to_agent``, the trailing transfer events (the function call and
+  its response) must not be treated as the start of the current turn.
+  Otherwise the sub-agent's turn would anchor on the parent's transfer event
+  and drop the latest user input. Skipping these events lets the turn anchor
+  on the real user input (or a non-transfer model request) instead, while the
+  transfer events are still included as context.
+  """
+  return bool(
+      event.actions.transfer_to_agent
+      or (
+          event.content
+          and event.content.parts
+          and any(
+              p.function_call and p.function_call.name == 'transfer_to_agent'
+              for p in event.content.parts
+          )
+      )
+  )
 
 
 def _is_live_model_media_event_with_inline_data(event: Event) -> bool:

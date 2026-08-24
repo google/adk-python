@@ -235,8 +235,10 @@ async def test_include_contents_none_multi_agent_current_turn():
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == "user"
   assert llm_request.contents[0].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[another_agent] said: Another agent responds"),
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part(
+          "[another_agent] said:", "Another agent responds"
+      ),
   ]
   assert llm_request.contents[1] == types.ModelContent("Current agent in turn")
 
@@ -288,8 +290,10 @@ async def test_include_contents_none_multi_branch_current_turn():
   assert len(llm_request.contents) == 1
   assert llm_request.contents[0].role == "user"
   assert llm_request.contents[0].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[sibling_agent] said: Sibling agent response"),
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part(
+          "[sibling_agent] said:", "Sibling agent response"
+      ),
   ]
 
 
@@ -361,24 +365,20 @@ async def test_events_with_transfer_to_agent_are_included():
       types.UserContent("First user message"),
       types.Content(
           parts=[
-              types.Part(text="For context:"),
-              types.Part(
-                  text=(
-                      "[parent] called tool `transfer_to_agent` with"
-                      " parameters: {'agent_name': 'test_agent'}"
-                  )
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part(
+                  "[parent] called tool `transfer_to_agent` with parameters:",
+                  "{'agent_name': 'test_agent'}",
               ),
           ],
           role="user",
       ),
       types.Content(
           parts=[
-              types.Part(text="For context:"),
-              types.Part(
-                  text=(
-                      "[parent] `transfer_to_agent` tool returned result:"
-                      " {'result': None}"
-                  )
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part(
+                  "[parent] `transfer_to_agent` tool returned result:",
+                  "{'result': None}",
               ),
           ],
           role="user",
@@ -1699,33 +1699,6 @@ async def test_adk_function_call_ids_preserved_for_lite_llm_model():
   assert user_fr_part.function_response.id == function_call_id
 
 
-def test_is_other_agent_reply_live_session():
-  """Test _is_other_agent_reply when live_session_id is present."""
-  event = Event(author="another_agent", live_session_id="session_123")
-  assert contents._is_other_agent_reply("current_agent", event) is True
-
-  event = Event(author="user", live_session_id="session_123")
-  assert contents._is_other_agent_reply("current_agent", event) is False
-
-  event = Event(author="current_agent", live_session_id="session_123")
-  assert contents._is_other_agent_reply("current_agent", event) is True
-
-
-def test_is_other_agent_reply_non_live_session():
-  """Test _is_other_agent_reply when live_session_id is not present."""
-  event = Event(author="another_agent")
-  assert contents._is_other_agent_reply("current_agent", event) is True
-
-  event = Event(author="user")
-  assert contents._is_other_agent_reply("current_agent", event) is False
-
-  event = Event(author="current_agent")
-  assert contents._is_other_agent_reply("current_agent", event) is False
-
-  event = Event(author="another_agent")
-  assert contents._is_other_agent_reply("", event) is False
-
-
 @pytest.mark.asyncio
 async def test_adk_function_call_ids_preserved_for_openai_responses_model():
   """Responses API replay needs call_id values to match tool outputs."""
@@ -1964,6 +1937,99 @@ def test_rearrange_async_function_responses_early_returns_when_no_responses():
   assert result is events
 
 
+def _function_call_event(call_id: str, name: str) -> Event:
+  return Event(
+      invocation_id="inv1",
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id, name=name, args={}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def _function_response_event(call_id: str, name: str, result: str) -> Event:
+  return Event(
+      invocation_id="inv1",
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=call_id, name=name, response={"result": result}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def test_rearrange_async_function_responses_reused_id_across_tools():
+  """A reused call id must not pair a call with a different tool's response."""
+  events = [
+      _function_call_event("call_807", "site_posture"),
+      _function_response_event("call_807", "site_posture", "site"),
+      _function_call_event("call_807", "fleet_summary"),
+      _function_response_event("call_807", "fleet_summary", "fleet"),
+  ]
+
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "site_posture"
+  assert result[1].get_function_responses()[0].name == "site_posture"
+  assert result[2].get_function_calls()[0].name == "fleet_summary"
+  assert result[3].get_function_responses()[0].name == "fleet_summary"
+
+
+def test_rearrange_async_function_responses_reused_id_same_tool():
+  """A call id reused by one tool must keep each call's own response."""
+  events = [
+      _function_call_event("call_42", "lookup"),
+      _function_response_event("call_42", "lookup", "first"),
+      _function_call_event("call_42", "lookup"),
+      _function_response_event("call_42", "lookup", "second"),
+  ]
+
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+
+  assert len(result) == 4
+  assert result[1].get_function_responses()[0].response == {"result": "first"}
+  assert result[3].get_function_responses()[0].response == {"result": "second"}
+
+
+def test_rearrange_async_function_responses_reused_id_keeps_last_update():
+  """A call reporting progress twice keeps its last update, not a later call's."""
+  events = [
+      _function_call_event("call_7", "watch"),
+      _function_response_event("call_7", "watch", "progress"),
+      _function_response_event("call_7", "watch", "done"),
+      _function_call_event("call_7", "watch"),
+      _function_response_event("call_7", "watch", "second_call"),
+  ]
+
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+
+  assert len(result) == 4
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[3].get_function_responses()[0].response == {
+      "result": "second_call"
+  }
+
+
 def _long_running_call_event() -> Event:
   return Event(
       invocation_id="inv2",
@@ -1999,109 +2065,6 @@ def _long_running_response_event(response: dict[str, str]) -> Event:
           ],
       ),
   )
-
-
-def test_recover_compacted_function_calls_reinjects_missing_call():
-  """A response whose call was compacted gets its call re-injected before it."""
-  summary_event = Event(
-      invocation_id="compacted",
-      author="model",
-      timestamp=3.0,
-      content=types.Content(role="model", parts=[types.Part(text="summary")]),
-  )
-  call_event = _long_running_call_event()
-  resume_response = _long_running_response_event({"result": "done"})
-
-  # After compaction the call is gone from the effective list but survives in
-  # the source (pre-compaction) list.
-  effective = [summary_event, resume_response]
-  source = [call_event, resume_response]
-
-  result = contents._recover_compacted_function_calls(effective, source)  # pylint: disable=protected-access
-
-  assert result == [summary_event, call_event, resume_response]
-
-
-def test_recover_compacted_function_calls_noop_when_call_present():
-  """No change when every response already has its call in the list."""
-  call_event = _long_running_call_event()
-  resume_response = _long_running_response_event({"result": "done"})
-  effective = [call_event, resume_response]
-
-  result = contents._recover_compacted_function_calls(effective, effective)  # pylint: disable=protected-access
-
-  assert result is effective
-
-
-def test_recover_compacted_function_calls_uses_latest_sibling_response():
-  """A recovered sibling contributes its real result, not a stale placeholder.
-
-  Two long-running calls (lr-1, lr-2) are issued together. lr-2 resumes and
-  completes (placeholder then real result), then the whole exchange is
-  compacted; lr-1 resumes later and survives. Recovering lr-2's compacted
-  response must pick its latest (real) result, not the earlier placeholder.
-  """
-
-  def _response_event(
-      call_id: str, response: dict[str, str], timestamp: float
-  ) -> Event:
-    return Event(
-        invocation_id="inv2",
-        author="user",
-        timestamp=timestamp,
-        content=types.Content(
-            role="user",
-            parts=[
-                types.Part(
-                    function_response=types.FunctionResponse(
-                        id=call_id, name="lr_tool", response=response
-                    )
-                )
-            ],
-        ),
-    )
-
-  parallel_call = Event(
-      invocation_id="inv2",
-      author="model",
-      timestamp=2.0,
-      long_running_tool_ids={"lr-1", "lr-2"},
-      content=types.Content(
-          role="model",
-          parts=[
-              types.Part(
-                  function_call=types.FunctionCall(
-                      id="lr-1", name="lr_tool_1", args={}
-                  )
-              ),
-              types.Part(
-                  function_call=types.FunctionCall(
-                      id="lr-2", name="lr_tool_2", args={}
-                  )
-              ),
-          ],
-      ),
-  )
-  lr2_placeholder = _response_event("lr-2", {"status": "pending"}, 3.0)
-  lr2_result = _response_event("lr-2", {"result": "done-2"}, 4.0)
-  summary_event = Event(
-      invocation_id="compacted",
-      author="model",
-      timestamp=5.0,
-      content=types.Content(role="model", parts=[types.Part(text="summary")]),
-  )
-  lr1_result = _response_event("lr-1", {"result": "done-1"}, 7.0)
-
-  # After compaction the call event and both lr-2 responses are gone; only
-  # lr-1's later result survives. Both lr-2 responses remain in the source.
-  effective = [summary_event, lr1_result]
-  source = [parallel_call, lr2_placeholder, lr2_result, lr1_result]
-
-  result = contents._recover_compacted_function_calls(effective, source)  # pylint: disable=protected-access
-
-  assert result == [summary_event, parallel_call, lr2_result, lr1_result]
-  # The recovered lr-2 response is the real result, not the pending placeholder.
-  assert result[2].get_function_responses()[0].response == {"result": "done-2"}
 
 
 def test_get_contents_attributes_compaction_summary_to_current_agent():

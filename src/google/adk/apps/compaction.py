@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import AsyncGenerator
 
@@ -65,13 +66,36 @@ async def _summarize_events_with_trace(
     return compaction_event
 
 
-def _count_text_chars_in_content(content: types.Content | None) -> int:
-  """Returns the number of text characters in a content object."""
+def _count_chars_in_content(content: types.Content | None) -> int:
+  """Returns the number of characters in a content object."""
   total_chars = 0
   if content and content.parts:
     for part in content.parts:
       if part.text:
         total_chars += len(part.text)
+      if part.function_call:
+        total_chars += len(part.function_call.name or '')
+        if part.function_call.args:
+          try:
+            total_chars += len(json.dumps(part.function_call.args))
+          except Exception:  # pylint: disable=broad-exception-caught
+            logger.debug(
+                'Failed to serialize function_call.args, falling back to str',
+                exc_info=True,
+            )
+            total_chars += len(str(part.function_call.args))
+      if part.function_response:
+        total_chars += len(part.function_response.name or '')
+        if part.function_response.response:
+          try:
+            total_chars += len(json.dumps(part.function_response.response))
+          except Exception:  # pylint: disable=broad-exception-caught
+            logger.debug(
+                'Failed to serialize function_response.response, falling back'
+                ' to str',
+                exc_info=True,
+            )
+            total_chars += len(str(part.function_response.response))
   return total_chars
 
 
@@ -146,7 +170,7 @@ def _estimate_prompt_token_count(
   )
   total_chars = 0
   for content in effective_contents:
-    total_chars += _count_text_chars_in_content(content)
+    total_chars += _count_chars_in_content(content)
 
   if total_chars <= 0:
     return None

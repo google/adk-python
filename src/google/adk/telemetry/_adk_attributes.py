@@ -27,9 +27,20 @@ from __future__ import annotations
 
 ADK_EXPERIMENTAL_SKILL_NAME = 'adk.experimental.skill.name'
 ADK_EXPERIMENTAL_SKILL_SOURCE_TYPE = 'adk.experimental.skill.source.type'
-ADK_EXPERIMENTAL_SKILL_CACHE_HIT = 'adk.experimental.skill.cache_hit'
 ADK_EXPERIMENTAL_SKILL_DESCRIPTION = 'adk.experimental.skill.description'
 ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS = (
     'adk.experimental.skill.additional_tools'
 )
 ADK_EXPERIMENTAL_SKILL_SOURCE_URI = 'adk.experimental.skill.source.uri'
+ADK_EXPERIMENTAL_SKILL_RESOURCE_PATH = 'adk.experimental.skill.resource.path'
+
+ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT = 'adk.experimental.context_cache.hit'
+ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT = (
+    'adk.experimental.context_cache.fingerprint'
+)
+ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT = (
+    'adk.experimental.context_cache.contents_count'
+)
+ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED = (
+    'adk.experimental.context_cache.invocations_used'
+)

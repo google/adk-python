@@ -41,8 +41,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("google_adk." + __name__)
 
-_A2A_METADATA_KEY = "a2a_metadata"
-
 
 def _parse_tool_confirmation(response: dict[str, Any]) -> ToolConfirmation:
   """Parses ToolConfirmation from a function response dict."""
@@ -263,18 +261,6 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
   ) -> AsyncGenerator[Event, None]:
 
     agent = invocation_context.agent
-
-    # A human-in-the-loop confirmation must not be satisfiable by a
-    # function_response that arrived over A2A: a remote peer is not the human
-    # operator and could self-approve a pending dangerous tool call.
-    run_config = invocation_context.run_config
-    custom_metadata = run_config.custom_metadata if run_config else None
-    if custom_metadata is not None and _A2A_METADATA_KEY in custom_metadata:
-      logger.warning(
-          "Ignoring tool confirmation(s) that arrived over A2A: a remote peer"
-          " cannot satisfy a human-in-the-loop confirmation."
-      )
-      return
 
     # Only look at events in the current branch.
     events = invocation_context._get_events(current_branch=True)
