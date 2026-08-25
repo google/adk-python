@@ -3289,7 +3289,11 @@ class LiteLlm(BaseLlm):
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
-            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+            thought_parts=(
+                _aggregate_streaming_thought_parts(reasoning_parts)
+                if reasoning_parts
+                else None
+            ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
         llm_response.finish_reason = mapped_finish_reason
@@ -3313,7 +3317,11 @@ class LiteLlm(BaseLlm):
                 content=message_content,
             ),
             model_version=model_version,
-            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+            thought_parts=(
+                _aggregate_streaming_thought_parts(reasoning_parts)
+                if reasoning_parts
+                else None
+            ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
         llm_response.finish_reason = mapped_finish_reason

@@ -5010,6 +5010,78 @@ async def test_generate_content_async_stream_with_reasoning_tokens(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_aggregates_reasoning_deltas(
+    mock_completion, lite_llm_instance
+):
+  """Per-token reasoning deltas must collapse into one thought part.
+
+  Regression test: the streaming finalizers passed the raw per-delta thought
+  parts straight through, so a model that streams reasoning token by token
+  (e.g. xai/grok via LiteLLM) produced one `types.Part(thought=True)` per
+  delta in the final, non-partial response instead of one part per thinking
+  block -- the same shape the non-streaming path already produces.
+  """
+  streaming_reasoning_response = [
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", reasoning_content="The"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", reasoning_content=" user"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", reasoning_content=" wants"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hi!"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason="stop")],
+      ),
+  ]
+  mock_completion.return_value = iter(streaming_reasoning_response)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert final_response.partial is not True
+  thought_parts = [
+      part for part in final_response.content.parts if part.thought
+  ]
+  assert len(thought_parts) == 1
+  assert thought_parts[0].text == "The user wants"
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream_with_usage_metadata(
     mock_completion, lite_llm_instance
 ):
