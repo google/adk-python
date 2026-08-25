@@ -31,17 +31,21 @@ network, and never use it for a production or multi-user deployment.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 import json
 import logging
 import os
 from pathlib import Path
 import shutil
+import signal
+import subprocess
 import sys
 import time
 from typing import Any
 from typing import Iterator
 from typing import Optional
 
+import anyio
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
@@ -86,6 +90,10 @@ from .utils.state import create_empty_state
 logger = logging.getLogger("google_adk." + __name__)
 
 _EVAL_SET_FILE_EXTENSION = ".evalset.json"
+_PROCESS_TERMINATION_GRACE_SECONDS = 0.5
+_PROCESS_TERMINATOR_TIMEOUT_SECONDS = 1.0
+_TEST_OUTPUT_CHUNK_BYTES = 64 * 1024
+_IS_WINDOWS = os.name == "nt"
 
 TAG_DEBUG = "Debug"
 TAG_EVALUATION = "Evaluation"
@@ -284,6 +292,126 @@ def _check_code_reference(
         f" {app_name!r} shadows an importable Python module, so a reference to"
         " the app cannot be told apart from one that leaves it."
     )
+
+
+async def _signal_process_tree(
+    process: asyncio.subprocess.Process,
+    *,
+    force: bool,
+) -> None:
+  """Requests termination of a subprocess and its descendants."""
+  if _IS_WINDOWS:
+    command = ["taskkill", "/PID", str(process.pid), "/T"]
+    if force:
+      command.append("/F")
+    try:
+      terminator = await asyncio.create_subprocess_exec(
+          *command,
+          stdout=asyncio.subprocess.DEVNULL,
+          stderr=asyncio.subprocess.DEVNULL,
+      )
+      try:
+        await asyncio.wait_for(
+            terminator.wait(), timeout=_PROCESS_TERMINATOR_TIMEOUT_SECONDS
+        )
+      except asyncio.TimeoutError:
+        terminator.kill()
+        try:
+          await asyncio.wait_for(
+              terminator.wait(), timeout=_PROCESS_TERMINATION_GRACE_SECONDS
+          )
+        except asyncio.TimeoutError:
+          logger.warning("taskkill did not exit for process %d", process.pid)
+    except OSError:
+      logger.warning("Unable to run taskkill for process %d", process.pid)
+      if force and process.returncode is None:
+        process.kill()
+    return
+
+  kill_process_group = getattr(os, "killpg", None)
+  if kill_process_group is not None:
+    try:
+      kill_process_group(
+          process.pid,
+          (
+              getattr(signal, "SIGKILL", signal.SIGTERM)
+              if force
+              else signal.SIGTERM
+          ),
+      )
+      return
+    except ProcessLookupError:
+      # No such group: everything already exited, or the child never led one.
+      # The returncode check below tells those apart.
+      pass
+    except OSError:
+      logger.warning("Unable to signal process group %d", process.pid)
+  if process.returncode is None:
+    (process.kill if force else process.terminate)()
+
+
+async def _terminate_process_tree(
+    process: asyncio.subprocess.Process,
+) -> None:
+  """Terminates a process tree within bounded waits."""
+  if process.returncode is not None:
+    return
+
+  for force in (False, True):
+    await _signal_process_tree(process, force=force)
+    try:
+      await asyncio.wait_for(
+          process.wait(), timeout=_PROCESS_TERMINATION_GRACE_SECONDS
+      )
+      return
+    except asyncio.TimeoutError:
+      pass
+
+  logger.error("Process tree %d did not terminate cleanly", process.pid)
+
+
+async def _stream_test_output(
+    *,
+    agent_dir: str,
+    test_name: str | None,
+) -> AsyncIterator[bytes]:
+  """Runs pytest and yields bounded output chunks until completion."""
+  cmd_args = [
+      sys.executable,
+      "-m",
+      "pytest",
+      os.path.join(os.path.dirname(__file__), "agent_test_runner.py"),
+      "-s",
+      "-vv",
+  ]
+  if test_name:
+    name_to_use = test_name[:-5] if test_name.endswith(".json") else test_name
+    cmd_args.extend(["-k", name_to_use])
+
+  env = os.environ.copy()
+  env["ADK_TEST_FOLDER"] = agent_dir
+  process = await asyncio.create_subprocess_exec(
+      *cmd_args,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.STDOUT,
+      env=env,
+      creationflags=(
+          getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+          if _IS_WINDOWS
+          else 0
+      ),
+      start_new_session=not _IS_WINDOWS,
+  )
+
+  try:
+    if process.stdout is None:
+      raise RuntimeError("pytest output pipe was not created")
+    while chunk := await process.stdout.read(_TEST_OUTPUT_CHUNK_BYTES):
+      yield chunk
+    await process.wait()
+  finally:
+    with anyio.CancelScope(shield=True):
+      await _terminate_process_tree(process)
 
 
 class DevServer(ApiServer):
@@ -801,60 +929,10 @@ class DevServer(ApiServer):
     ) -> StreamingResponse:
       """Runs tests and streams pytest output."""
       agent_dir = self._get_agent_dir(app_name)
-
-      import subprocess
-
-      queue: asyncio.Queue[str | None] = asyncio.Queue()
-
-      async def run_pytest_subprocess():
-        cmd_args = [
-            sys.executable,
-            "-m",
-            "pytest",
-            os.path.join(os.path.dirname(__file__), "agent_test_runner.py"),
-            "-s",
-            "-vv",
-        ]
-        if test_name:
-          name_to_use = (
-              test_name[:-5] if test_name.endswith(".json") else test_name
-          )
-          cmd_args.extend(["-k", name_to_use])
-
-        # Ensure environment variable is set
-        env = os.environ.copy()
-        env["ADK_TEST_FOLDER"] = agent_dir
-
-        try:
-          process = await asyncio.create_subprocess_exec(
-              *cmd_args,
-              stdout=subprocess.PIPE,
-              stderr=subprocess.STDOUT,
-              env=env,
-          )
-
-          while True:
-            line = await process.stdout.readline()
-            if not line:
-              break
-            await queue.put(line.decode("utf-8"))
-
-          await process.wait()
-        finally:
-          # Signal completion to generator
-          await queue.put(None)
-
-      # Start pytest in a background task
-      asyncio.create_task(run_pytest_subprocess())
-
-      async def generate():
-        while True:
-          item = await queue.get()
-          if item is None:
-            break
-          yield item.encode("utf-8")
-
-      return StreamingResponse(generate(), media_type="text/plain")
+      return StreamingResponse(
+          _stream_test_output(agent_dir=agent_dir, test_name=test_name),
+          media_type="text/plain",
+      )
 
     @app.put("/dev/apps/{app_name}/tests/{test_name}")
     async def create_test(

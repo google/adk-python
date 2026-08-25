@@ -25,6 +25,7 @@ from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.ui_widget import UiWidget
+from google.adk.flows.llm_flows.functions import _collect_function_call_ids
 from google.adk.flows.llm_flows.functions import AF_FUNCTION_CALL_ID_PREFIX
 from google.adk.flows.llm_flows.functions import deep_merge_dicts
 from google.adk.flows.llm_flows.functions import find_event_by_function_call_id
@@ -2514,6 +2515,20 @@ def test_find_event_by_function_call_id_returns_none_when_id_absent():
   result = find_event_by_function_call_id([contentless, other_call], 'call_a')
 
   assert result is None
+
+
+def test_collect_function_call_ids_collects_all_unique_ids():
+  """Returns every non-empty function call id across events."""
+  event_a = _model_call_event('inv_1', 'call_a')
+  event_b = _model_call_event('inv_2', 'call_b')
+  event_dup = _model_call_event('inv_3', 'call_a')
+  contentless = Event(invocation_id='inv_4', author='root_agent')
+
+  result = _collect_function_call_ids(
+      [event_a, event_b, event_dup, contentless]
+  )
+
+  assert result == {'call_a', 'call_b'}
 
 
 def test_get_long_running_function_calls_returns_only_long_running_call_ids():

@@ -73,7 +73,7 @@ async def _merge_agent_run(
   """Merges agent runs using asyncio.TaskGroup on Python 3.11+."""
   sentinel = _AgentRunComplete()
   queue: asyncio.Queue[
-      tuple[Event | _AgentRunComplete, asyncio.Event | None]
+      tuple[Event | _AgentRunComplete, asyncio.Event | BaseException | None]
   ] = asyncio.Queue()
   tasks: list[asyncio.Task[None]] = []
 
@@ -82,6 +82,7 @@ async def _merge_agent_run(
   async def process_an_agent(
       events_for_one_agent: AsyncGenerator[Event, None],
   ) -> None:
+    error: BaseException | None = None
     try:
       async with Aclosing(events_for_one_agent):
         async for event in events_for_one_agent:
@@ -92,10 +93,16 @@ async def _merge_agent_run(
     except asyncio.CancelledError:
       logger.info('Agent run cancelled.')
       raise
+    except Exception as e:
+      # Reported through the queue rather than by failing the task: this
+      # generator stays suspended at `yield` for as long as the caller is busy,
+      # and a task group aborting around a suspended frame cancels the caller
+      # instead of handing it the error.
+      error = e
     finally:
-      # Mark agent as finished.
+      # Mark agent as finished, carrying the failure that ended it, if any.
       try:
-        await queue.put((sentinel, None))
+        await queue.put((sentinel, error))
       except Exception as e:
         logger.warning('Failed to put sentinel on queue: %s', e)
 
@@ -106,21 +113,23 @@ async def _merge_agent_run(
     sentinel_count = 0
     # Run until all agents finished processing.
     while sentinel_count < len(agent_runs):
-      event, resume_signal = await queue.get()
+      event, payload = await queue.get()
       # Agent finished processing.
       if isinstance(event, _AgentRunComplete):
         sentinel_count += 1
+        if isinstance(payload, BaseException):
+          raise payload
       else:
         yield event
         if _has_escalate_action(event):
           _cancel_tasks(tasks)
           return
         # Signal to agent that it should generate next event.
-        if resume_signal is None:
+        if not isinstance(payload, asyncio.Event):
           raise RuntimeError(
               'Parallel-agent event is missing its resume signal.'
           )
-        resume_signal.set()
+        payload.set()
 
 
 # TODO - remove once Python <3.11 is no longer supported.
@@ -140,22 +149,15 @@ async def _merge_agent_run_pre_3_11(
   """
   sentinel = _AgentRunComplete()
   queue: asyncio.Queue[
-      tuple[Event | _AgentRunComplete, asyncio.Event | None]
+      tuple[Event | _AgentRunComplete, asyncio.Event | BaseException | None]
   ] = asyncio.Queue()
-
-  def propagate_exceptions(tasks: list[asyncio.Task[None]]) -> None:
-    # Propagate exceptions and errors from tasks.
-    for task in tasks:
-      if task.done():
-        # Ignore the result (None) of correctly finished tasks and re-raise
-        # exceptions and errors.
-        task.result()
 
   # Agents are processed in parallel.
   # Events for each agent are put on queue sequentially.
   async def process_an_agent(
       events_for_one_agent: AsyncGenerator[Event, None],
   ) -> None:
+    error: BaseException | None = None
     try:
       async with Aclosing(events_for_one_agent):
         async for event in events_for_one_agent:
@@ -163,9 +165,14 @@ async def _merge_agent_run_pre_3_11(
           await queue.put((event, resume_signal))
           # Wait for upstream to consume event before generating new events.
           await resume_signal.wait()
+    except asyncio.CancelledError:
+      # Cancellation is not a branch failure; keep it off the queue.
+      raise
+    except Exception as e:
+      error = e
     finally:
-      # Mark agent as finished.
-      await queue.put((sentinel, None))
+      # Mark agent as finished, carrying the failure that ended it, if any.
+      await queue.put((sentinel, error))
 
   tasks: list[asyncio.Task[None]] = []
   try:
@@ -175,11 +182,12 @@ async def _merge_agent_run_pre_3_11(
     sentinel_count = 0
     # Run until all agents finished processing.
     while sentinel_count < len(agent_runs):
-      propagate_exceptions(tasks)
-      event, resume_signal = await queue.get()
+      event, payload = await queue.get()
       # Agent finished processing.
       if isinstance(event, _AgentRunComplete):
         sentinel_count += 1
+        if isinstance(payload, BaseException):
+          raise payload
       else:
         yield event
         if _has_escalate_action(event):
@@ -187,11 +195,11 @@ async def _merge_agent_run_pre_3_11(
           return
         # Signal to agent that event has been processed by runner and it can
         # continue now.
-        if resume_signal is None:
+        if not isinstance(payload, asyncio.Event):
           raise RuntimeError(
               'Parallel-agent event is missing its resume signal.'
           )
-        resume_signal.set()
+        payload.set()
   finally:
     _cancel_tasks(tasks)
     if tasks:

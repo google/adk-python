@@ -3572,6 +3572,41 @@ class TestSafeCallbackDecorator:
       assert result is None
 
 
+@pytest.mark.asyncio
+async def test_lazy_setup_creates_executor_for_preconfigured_client(
+    monkeypatch,
+):
+  """GCS setup must not depend on whether the BQ client was preconfigured."""
+  config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+      gcs_bucket_name="test-bucket"
+  )
+  plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+      PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+  )
+  plugin.client = mock.MagicMock()
+  monkeypatch.setattr(plugin, "_ensure_schema_exists", mock.Mock())
+  monkeypatch.setattr(plugin, "_get_loop_state", mock.AsyncMock())
+  monkeypatch.setattr(
+      bigquery_agent_analytics_plugin,
+      "to_arrow_schema",
+      lambda _: pa.schema([pa.field("event_type", pa.string())]),
+  )
+  monkeypatch.setattr(
+      bigquery_agent_analytics_plugin.cloud_storage,
+      "Client",
+      mock.MagicMock(),
+  )
+
+  try:
+    await plugin._lazy_setup()
+
+    assert plugin._executor is not None
+    assert plugin.offloader is not None
+    assert plugin.offloader.executor is plugin._executor
+  finally:
+    await plugin.shutdown()
+
+
 class TestParserReuse:
   """Tests that HybridContentParser is reused, not recreated per event."""
 
@@ -7707,6 +7742,18 @@ class TestStackLeakSafety:
     provider.shutdown()
 
 
+def test_init_trace_clears_stale_root_name_without_current_agent():
+  callback_context = mock.MagicMock()
+  callback_context._invocation_context.agent = None
+  bigquery_agent_analytics_plugin._root_agent_name_ctx.set("stale-root")
+
+  bigquery_agent_analytics_plugin.TraceManager.init_trace(callback_context)
+
+  assert (
+      bigquery_agent_analytics_plugin.TraceManager.get_root_agent_name() is None
+  )
+
+
 class TestRootAgentNameAcrossInvocations:
   """Regression: root_agent_name must refresh across invocations."""
 
@@ -8759,6 +8806,23 @@ class TestForkDetectionAfterPickle:
 # ================================================================
 # TEST CLASS: GCS offload unit mismatch fix
 # ================================================================
+@pytest.mark.asyncio
+async def test_content_parser_accepts_content_without_parts():
+  parser = bigquery_agent_analytics_plugin.HybridContentParser(
+      offloader=None,
+      trace_id="trace",
+      span_id="span",
+  )
+
+  summary, parts, is_truncated = await parser._parse_content_object(
+      types.Content(role="user")
+  )
+
+  assert summary == ""
+  assert parts == []
+  assert not is_truncated
+
+
 class TestOffloadUnitSeparation:
   """Tests that byte-based inline limit and character-based truncation
 
@@ -8851,6 +8915,45 @@ class TestOffloadUnitSeparation:
     _, parts, _ = await parser._parse_content_object(content)
 
     mock_offloader.upload_content.assert_not_called()
+    assert parts[0]["storage_mode"] == "INLINE"
+
+  @pytest.mark.asyncio
+  async def test_list_content_is_unpacked_into_parts(self):
+    """A list system_instruction keeps the text of every part it holds."""
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=50000,
+    )
+
+    summary, parts, is_truncated = await parser._parse_content_object(
+        [types.Part(text="hi"), types.Part(text="there")]
+    )
+
+    assert summary == "hi | there"
+    assert not is_truncated
+    assert [part["text"] for part in parts] == ["hi", "there"]
+    assert parts[0]["storage_mode"] == "INLINE"
+
+  @pytest.mark.asyncio
+  async def test_non_content_union_member_does_not_raise(self):
+    """A member carrying no part fields yields an empty entry, not an error."""
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="t",
+        span_id="s",
+        max_length=50000,
+    )
+
+    summary, parts, is_truncated = await parser._parse_content_object(
+        types.File(name="f")
+    )
+
+    assert summary == ""
+    assert not is_truncated
+    assert len(parts) == 1
+    assert parts[0]["text"] is None
     assert parts[0]["storage_mode"] == "INLINE"
 
   @pytest.mark.asyncio

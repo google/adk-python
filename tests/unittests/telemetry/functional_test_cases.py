@@ -91,6 +91,22 @@ RESOURCE_EXHAUSTED = genai_errors.ClientError(
 
 
 ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
+    FunctionalTestCase(
+        test_id="experimental-telemetry-stable-no-capture-schema-v1",
+        scenario="agent",
+        semconv_opt_in=None,
+        capture_content="false",
+        schema_version=1,
+        experimental_telemetry=True,
+    ),
+    FunctionalTestCase(
+        test_id="experimental-telemetry-stable-no-capture-schema-v2",
+        scenario="agent",
+        semconv_opt_in=None,
+        capture_content="false",
+        schema_version=2,
+        experimental_telemetry=True,
+    ),
     # Inference failures: the model raises before responding, so the
     # invocation aborts mid-flight and the failure surfaces on ``error.type``.
     FunctionalTestCase(

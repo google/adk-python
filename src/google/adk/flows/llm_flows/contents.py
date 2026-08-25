@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 import copy
+import functools
 import logging
 from typing import AsyncGenerator
 
@@ -41,6 +42,38 @@ from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+@functools.cache
+def _id_pairing_model_types() -> tuple[type[BaseLlm], ...]:
+  """Returns the installed model types that pair tool calls with results by id.
+
+  Each provider is optional, so an absent one is simply left out. The result is
+  memoized because Python does not cache a failed import: without this, an
+  install that has none of these packages re-runs three doomed imports on every
+  LLM request. Installing a provider into a running interpreter therefore has no
+  effect until restart, which is already true of a successful import.
+  """
+  model_types: list[type[BaseLlm]] = []
+  try:
+    from ...models.anthropic_llm import AnthropicLlm
+
+    model_types.append(AnthropicLlm)
+  except (ImportError, OSError):
+    pass
+  try:
+    from ...models.lite_llm import LiteLlm
+
+    model_types.append(LiteLlm)
+  except (ImportError, OSError):
+    pass
+  try:
+    from ...labs.openai import OpenAIResponsesLlm
+
+    model_types.append(OpenAIResponsesLlm)
+  except (ImportError, OSError):
+    pass
+  return tuple(model_types)
+
+
 class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   """Builds the contents for the LLM request."""
 
@@ -63,26 +96,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
         # Anthropic and LiteLLM-backed providers (e.g. OpenAI) pair tool
         # calls with their results by id, so `adk-*` fallback ids must
         # survive replay.
-        id_pairing_model_types: list[type[BaseLlm]] = []
-        try:
-          from ...models.anthropic_llm import AnthropicLlm
-
-          id_pairing_model_types.append(AnthropicLlm)
-        except (ImportError, OSError):
-          pass
-        try:
-          from ...models.lite_llm import LiteLlm
-
-          id_pairing_model_types.append(LiteLlm)
-        except (ImportError, OSError):
-          pass
-        try:
-          from ...labs.openai import OpenAIResponsesLlm
-
-          id_pairing_model_types.append(OpenAIResponsesLlm)
-        except (ImportError, OSError):
-          pass
-        if isinstance(canonical_model, tuple(id_pairing_model_types)):
+        if isinstance(canonical_model, _id_pairing_model_types()):
           preserve_function_call_ids = True
 
     # Preserve all contents that were added by instruction processor

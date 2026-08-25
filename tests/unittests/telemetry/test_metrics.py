@@ -17,6 +17,7 @@
 from unittest import mock
 
 from google.adk.telemetry import _metrics
+from google.adk.telemetry import _token_usage
 from google.genai import types
 from opentelemetry import metrics
 import pytest
@@ -31,12 +32,24 @@ def _mock_meter_setup(monkeypatch):
   tool_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   client_duration_hist = mock.MagicMock(spec=metrics.Histogram)
   client_token_usage_hist = mock.MagicMock(spec=metrics.Histogram)
+  input_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  output_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  total_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  cache_read_input_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  reasoning_output_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  tool_input_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
 
   agent_duration_hist.name = "agent_invocation_duration"
   workflow_duration_hist.name = "workflow_invocation_duration"
   tool_duration_hist.name = "tool_execution_duration"
   client_duration_hist.name = "client_operation_duration"
   client_token_usage_hist.name = "client_token_usage"
+  input_tokens_hist.name = "invoke_agent_input_tokens"
+  output_tokens_hist.name = "invoke_agent_output_tokens"
+  total_tokens_hist.name = "invoke_agent_total_tokens"
+  cache_read_input_tokens_hist.name = "invoke_agent_cache_read_input_tokens"
+  reasoning_output_tokens_hist.name = "invoke_agent_reasoning_output_tokens"
+  tool_input_tokens_hist.name = "invoke_agent_tool_input_tokens"
 
   def create_histogram_side_effect(name, **_kwargs):
     if name == "gen_ai.invoke_agent.duration":
@@ -49,6 +62,18 @@ def _mock_meter_setup(monkeypatch):
       return client_duration_hist
     elif name == "gen_ai.client.token.usage":
       return client_token_usage_hist
+    elif name == "adk.experimental.invoke_agent.input_tokens":
+      return input_tokens_hist
+    elif name == "adk.experimental.invoke_agent.output_tokens":
+      return output_tokens_hist
+    elif name == "adk.experimental.invoke_agent.total_tokens":
+      return total_tokens_hist
+    elif name == "adk.experimental.invoke_agent.cache_read.input_tokens":
+      return cache_read_input_tokens_hist
+    elif name == "adk.experimental.invoke_agent.reasoning.output_tokens":
+      return reasoning_output_tokens_hist
+    elif name == "adk.experimental.invoke_agent.tool.input_tokens":
+      return tool_input_tokens_hist
     raise ValueError(f"Unknown metric name: {name}")
 
   mock_meter.create_histogram.side_effect = create_histogram_side_effect
@@ -66,6 +91,24 @@ def _mock_meter_setup(monkeypatch):
       _metrics, "_client_operation_duration", client_duration_hist
   )
   monkeypatch.setattr(_metrics, "_client_token_usage", client_token_usage_hist)
+  monkeypatch.setattr(_metrics, "_invoke_agent_input_tokens", input_tokens_hist)
+  monkeypatch.setattr(
+      _metrics, "_invoke_agent_output_tokens", output_tokens_hist
+  )
+  monkeypatch.setattr(_metrics, "_invoke_agent_total_tokens", total_tokens_hist)
+  monkeypatch.setattr(
+      _metrics,
+      "_invoke_agent_cache_read_input_tokens",
+      cache_read_input_tokens_hist,
+  )
+  monkeypatch.setattr(
+      _metrics,
+      "_invoke_agent_reasoning_output_tokens",
+      reasoning_output_tokens_hist,
+  )
+  monkeypatch.setattr(
+      _metrics, "_invoke_agent_tool_input_tokens", tool_input_tokens_hist
+  )
 
   return {
       "meter": mock_meter,
@@ -74,6 +117,12 @@ def _mock_meter_setup(monkeypatch):
       "tool_duration": tool_duration_hist,
       "client_duration": client_duration_hist,
       "client_token_usage": client_token_usage_hist,
+      "input_tokens": input_tokens_hist,
+      "output_tokens": output_tokens_hist,
+      "total_tokens": total_tokens_hist,
+      "cache_read_input_tokens": cache_read_input_tokens_hist,
+      "reasoning_output_tokens": reasoning_output_tokens_hist,
+      "tool_input_tokens": tool_input_tokens_hist,
   }
 
 
@@ -377,3 +426,40 @@ def test_record_invoke_agent_call_counts_records_zero(call_count_histograms):
 
   assert call_count_histograms["inference_calls"].record.call_args[0][0] == 0
   assert call_count_histograms["tool_calls"].record.call_args[0][0] == 0
+
+
+def test_record_invoke_agent_token_usage(mock_meter_setup):
+  """Each token bucket is recorded once, keyed by agent, zeros included."""
+  # Recording genuine zeros is what keeps "what share of invocations read
+  # nothing from cache" answerable. An invocation that called no model is kept
+  # out by its caller, which never builds an `InvocationTokenTotals` at all.
+  input_tokens = 1000
+  output_tokens = 200
+  cache_read_input_tokens = 750
+  _metrics.record_invoke_agent_token_usage(
+      "sub_agent",
+      _token_usage.InvocationTokenTotals(
+          input_tokens=input_tokens,
+          output_tokens=output_tokens,
+          cache_read_input_tokens=cache_read_input_tokens,
+          reasoning_output_tokens=0,
+          tool_input_tokens=0,
+      ),
+  )
+
+  want = {
+      "input_tokens": input_tokens,
+      "output_tokens": output_tokens,
+      "total_tokens": input_tokens + output_tokens,
+      "cache_read_input_tokens": cache_read_input_tokens,
+      "reasoning_output_tokens": 0,
+      "tool_input_tokens": 0,
+  }
+  for bucket, want_value in want.items():
+    hist = mock_meter_setup[bucket]
+    hist.record.assert_called_once()
+    args, kwargs = hist.record.call_args
+    assert args[0] == want_value, f"wrong value for {bucket}"
+    assert kwargs["attributes"] == {
+        "gen_ai.agent.name": "sub_agent"
+    }, f"wrong attributes for {bucket}"

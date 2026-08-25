@@ -51,10 +51,13 @@ from .auth.credential_service.base_credential_service import BaseCredentialServi
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
+from .events._branch_path import _BranchPath
+from .events._node_path_builder import _NodePathBuilder
 from .events.event import Event
 from .events.event_actions import EventActions
 from .flows.llm_flows import contents
 from .flows.llm_flows.agent_transfer import _get_transfer_targets
+from .flows.llm_flows.functions import _collect_function_call_ids
 from .flows.llm_flows.functions import find_event_by_function_call_id
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
@@ -631,6 +634,11 @@ class Runner:
             run_config=run_config or RunConfig(),
             invocation_id=invocation_id,
         )
+        if node and node is not self.agent:
+          ic.agent = node
+          self._restore_branch_from_history(
+              ic, node, root=self.agent, invocation_id=invocation_id
+          )
         ic._event_queue = asyncio.Queue()
 
         # 2. Append user message to session and resolve node_input
@@ -951,6 +959,8 @@ class Runner:
         event.isolation_scope, _ = active_scope
     _apply_run_config_custom_metadata(event, ic.run_config)
     ic.stamp_event_branch_context(event)
+    if event.branch:
+      ic.branch = event.branch
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -1968,6 +1978,10 @@ class Runner:
     invocation_context.agent = self._find_agent_to_run(
         invocation_context.session, root_agent
     )
+    if invocation_context.agent and invocation_context.agent is not root_agent:
+      self._restore_branch_from_history(
+          invocation_context, invocation_context.agent, root=root_agent
+      )
 
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event, None]:
       active_agent = ctx.agent
@@ -2264,6 +2278,67 @@ class Runner:
 
     return collected_events
 
+  def _restore_branch_from_history(
+      self,
+      invocation_context: InvocationContext,
+      node: BaseNode,
+      *,
+      root: BaseNode,
+      invocation_id: Optional[str] = None,
+  ) -> None:
+    """Restores a non-root node's branch from its latest matching event.
+
+    A freshly created ``InvocationContext`` has no branch, so a node that
+    previously ran on a sub-branch (e.g. a resumed sub-agent, or an agent
+    resolved by ``_find_agent_to_run``) would otherwise continue on the root
+    branch.
+
+    Tool branches are skipped. A tool's user-facing message is authored under
+    the agent's name (``functions.py``) and stamped with the agent's node path
+    (``base_agent.py``), so it is indistinguishable from the agent's own turns
+    by author or path; what gives it away is its branch, which the same code
+    builds as ``<tool>@<function_call_id>`` from a call in this session. Such a
+    branch is therefore recognised and skipped, while every other event the node
+    authored -- including a plain text turn, which is all a non-resumable
+    sub-agent may leave behind -- still carries ``ctx.branch`` and is eligible.
+    A branch whose leaf names the node itself is kept even when its id is a
+    function call id, since that is how ``AgentTool`` scopes a real sub-agent.
+
+    Nodes are matched by their static path (run ids stripped) so that two nodes
+    sharing a name (e.g. the same sub-agent mounted under two parents) are
+    disambiguated; events that predate node paths fall back to author/name
+    matching. When ``invocation_id`` is provided (resuming a known invocation),
+    only that invocation's events are considered, so a resumed node cannot
+    inherit a stale branch authored in an earlier invocation. When it is None
+    (a fresh direct-node turn, or a new invocation continuing a sub-agent), the
+    most recent matching event across the session is used.
+    """
+    from .workflow._base_node import find_static_node_path
+
+    expected_static_path = find_static_node_path(root, node)
+    tool_call_ids = _collect_function_call_ids(
+        invocation_context.session.events
+    )
+    for event in reversed(invocation_context.session.events):
+      if invocation_id is not None and event.invocation_id != invocation_id:
+        continue
+      if not event.branch:
+        continue
+      if _BranchPath.is_tool_branch(event.branch, node.name, tool_call_ids):
+        continue
+      matched = False
+      if expected_static_path and event.node_info.path:
+        event_static_path = _NodePathBuilder.from_string(
+            event.node_info.path
+        ).static_path
+        if event_static_path == expected_static_path:
+          matched = True
+      elif event.author == node.name or event.node_info.name == node.name:
+        matched = True
+      if matched:
+        invocation_context.branch = event.branch
+        break
+
   async def _setup_context_for_new_invocation(
       self,
       *,
@@ -2306,6 +2381,10 @@ class Runner:
     invocation_context.agent = self._find_agent_to_run(
         invocation_context.session, root_agent
     )
+    if invocation_context.agent and invocation_context.agent is not root_agent:
+      self._restore_branch_from_history(
+          invocation_context, invocation_context.agent, root=root_agent
+      )
     return invocation_context
 
   async def _setup_context_for_resumed_invocation(
@@ -2372,6 +2451,16 @@ class Runner:
       invocation_context.agent = self._find_agent_to_run(
           invocation_context.session, root_agent
       )
+      if (
+          invocation_context.agent
+          and invocation_context.agent is not root_agent
+      ):
+        self._restore_branch_from_history(
+            invocation_context,
+            invocation_context.agent,
+            root=root_agent,
+            invocation_id=invocation_context.invocation_id,
+        )
     return invocation_context
 
   def _find_user_message_for_invocation(
