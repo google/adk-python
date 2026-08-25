@@ -66,32 +66,6 @@ def _derive_conversation_id(session_id: str, agent_name: str) -> str:
   return hashlib.sha256(f'{session_id}/{agent_name}'.encode()).hexdigest()
 
 
-def _final_model_text(event: Event, author: str) -> str | None:
-  """Returns an event's user-visible model text, or None if it carries none.
-
-  Partials, other authors, and thought/function parts do not count.
-
-  Args:
-    event: The event to inspect.
-    author: The agent name whose events count as model output.
-
-  Returns:
-    The concatenated user-visible text, or None if the event carries none.
-  """
-  if event.partial or event.author != author or not event.content:
-    return None
-  parts = event.content.parts or []
-  chunks = [
-      part.text
-      for part in parts
-      if part.text
-      and not part.thought
-      and not part.function_call
-      and not part.function_response
-  ]
-  return ''.join(chunks) if chunks else None
-
-
 class AntigravityAgent(BaseAgent):
   """Runs a Google Antigravity SDK agent as an ADK agent.
 
@@ -275,7 +249,8 @@ class AntigravityAgent(BaseAgent):
         ctx.event_author = event.author
       if not event.node_info.path and event.author == self.name:
         event.node_info.path = ctx.node_path
-      if (text := _final_model_text(event, self.name)) is not None:
+      text = _event_converter.final_model_text(event, self.name)
+      if text is not None:
         last_text = text
       yield event
 

@@ -24,10 +24,16 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.errors.tool_execution_error import ToolErrorType
 from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.events.event import Event
+from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.telemetry import TelemetryConfig
 from google.adk.telemetry import tracing
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
 from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
 from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
@@ -102,7 +108,9 @@ def mock_event_fixture():
 
 
 async def _create_invocation_context(
-    agent: LlmAgent, state: Optional[dict[str, object]] = None
+    agent: LlmAgent,
+    state: Optional[dict[str, object]] = None,
+    run_config: Optional[RunConfig] = None,
 ) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -113,7 +121,7 @@ async def _create_invocation_context(
       agent=agent,
       session=session,
       session_service=session_service,
-      run_config=RunConfig(),
+      run_config=run_config or RunConfig(),
   )
   return invocation_context
 
@@ -285,6 +293,203 @@ async def test_trace_call_llm_with_no_usage_metadata(
   assert mock_span_fixture.set_attribute.call_count == 10
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
+  )
+
+
+_EXPERIMENTAL_TELEMETRY_ON = RunConfig(
+    telemetry=TelemetryConfig(adk_experimental_telemetry_opt_in=True)
+)
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_with_active_context_cache(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_call_llm records the state of an active context cache."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(
+      agent, run_config=_EXPERIMENTAL_TELEMETRY_ON
+  )
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          types.Content(role='user', parts=[types.Part(text='Hello')]),
+      ],
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(
+          cache_name='projects/p/locations/l/cachedContents/c',
+          expire_time=1893456000.0,
+          fingerprint='fp-123',
+          invocations_used=3,
+          contents_count=5,
+      ),
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  mock_span_fixture.set_attributes.assert_any_call({
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: True,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT: 'fp-123',
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT: 5,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED: 3,
+  })
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_with_fingerprint_only_context_cache(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_call_llm records a miss when no cache is active."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(
+      agent, run_config=_EXPERIMENTAL_TELEMETRY_ON
+  )
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          types.Content(role='user', parts=[types.Part(text='Hello')]),
+      ],
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(fingerprint='fp-123', contents_count=8),
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  # The exact dict also pins that invocations_used is left out when unset.
+  mock_span_fixture.set_attributes.assert_any_call({
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: False,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT: 'fp-123',
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT: 8,
+  })
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_omits_context_cache_without_opt_in(
+    monkeypatch, mock_span_fixture
+):
+  """Test context cache attributes stay off unless experimental is opted in."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          types.Content(role='user', parts=[types.Part(text='Hello')]),
+      ],
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(
+          cache_name='projects/p/locations/l/cachedContents/c',
+          expire_time=1893456000.0,
+          fingerprint='fp-123',
+          invocations_used=3,
+          contents_count=5,
+      ),
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  # The span is still traced; only the experimental attributes are withheld.
+  mock_span_fixture.set_attribute.assert_any_call(
+      'gen_ai.system', 'gcp.vertex.agent'
+  )
+  set_keys = [
+      call.args[0] for call in mock_span_fixture.set_attribute.call_args_list
+  ]
+  for call in mock_span_fixture.set_attributes.call_args_list:
+    set_keys.extend(call.args[0])
+  assert not [key for key in set_keys if key.startswith('adk.experimental.')]
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_with_context_cache(mock_span_fixture):
+  """Test the generate_content span also carries context cache state."""
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(
+      agent, run_config=_EXPERIMENTAL_TELEMETRY_ON
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(
+          cache_name='projects/p/locations/l/cachedContents/c',
+          expire_time=1893456000.0,
+          fingerprint='fp-123',
+          invocations_used=3,
+          contents_count=5,
+      ),
+  )
+
+  trace_inference_result(invocation_context, mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attributes.assert_any_call({
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: True,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT: 'fp-123',
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT: 5,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED: 3,
+  })
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_omits_context_cache_without_opt_in(
+    mock_span_fixture,
+):
+  """Test the generate_content span withholds cache state without opt-in."""
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(fingerprint='fp-123', contents_count=5),
+  )
+
+  trace_inference_result(invocation_context, mock_span_fixture, llm_response)
+
+  set_keys = []
+  for call in mock_span_fixture.set_attributes.call_args_list:
+    set_keys.extend(call.args[0])
+  assert not [key for key in set_keys if key.startswith('adk.experimental.')]
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_allows_a_response_without_cache_metadata(
+    mock_span_fixture,
+):
+  """Test a caller's own response object without cache_metadata is accepted."""
+
+  class ResponseWithoutCacheMetadata:
+    """Stands in for a caller's response type outside adk."""
+
+    partial = False
+    finish_reason = types.FinishReason.STOP
+    usage_metadata = None
+    content = None
+    model_version = 'gemini-pro'
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_inference_result(
+      invocation_context, mock_span_fixture, ResponseWithoutCacheMetadata()
   )
 
 

@@ -19,7 +19,7 @@ from enum import Enum
 import inspect
 import logging
 import types as typing_types
-from typing import _GenericAlias
+from typing import _GenericAlias  # type: ignore[attr-defined]
 from typing import Any
 from typing import cast
 from typing import get_args
@@ -188,9 +188,9 @@ def _generate_json_schema_for_parameter(
 
 
 def _is_builtin_primitive_or_compound(
-    annotation: inspect.Parameter.annotation,
+    annotation: object,
 ) -> bool:
-  return annotation in _py_builtin_type_to_schema_type.keys()
+  return annotation in _py_builtin_type_to_schema_type
 
 
 def _raise_for_any_of_if_mldev(schema: types.Schema) -> None:
@@ -219,13 +219,13 @@ def _raise_if_schema_unsupported(
 
 
 def _is_default_value_compatible(
-    default_value: Any, annotation: inspect.Parameter.annotation
+    default_value: object, annotation: object
 ) -> bool:
   # None type is expected to be handled external to this function
   if annotation is Any:
     return True
   if _is_builtin_primitive_or_compound(annotation):
-    return isinstance(default_value, annotation)
+    return isinstance(default_value, cast(type, annotation))
 
   if (
       isinstance(annotation, _GenericAlias)

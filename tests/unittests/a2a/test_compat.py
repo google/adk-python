@@ -26,6 +26,7 @@ expects. Branches that import 1.x-only SDK symbols are not reachable here.
 
 from __future__ import annotations
 
+import base64
 import json
 
 from a2a.client.client_factory import ClientFactory
@@ -35,6 +36,8 @@ from a2a.types import AgentSkill
 from a2a.types import Artifact
 from a2a.types import TaskArtifactUpdateEvent
 from google.adk.a2a import _compat
+from google.protobuf import descriptor_pb2
+from google.protobuf import proto_builder
 from google.protobuf.json_format import ParseDict
 from google.protobuf.struct_pb2 import Struct
 import pytest
@@ -453,3 +456,69 @@ def test_part_kind_label_is_fixed_on_v03_and_concrete_on_v1(monkeypatch):
   # 1.x has no wrapper type, so the label is the concrete class name.
   monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
   assert _compat.part_kind_label(file_part) == 'Part'
+
+
+# -----------------------------------------------------------------------------
+# a2a_to_dict
+# -----------------------------------------------------------------------------
+_FILE_PAYLOAD = b'attachment-payload-bytes' * 20
+_ENCODED_PAYLOAD = base64.b64encode(_FILE_PAYLOAD).decode('utf-8')
+
+
+def _v1_file_part():
+  """A real proto message shaped like the flat 1.x file Part.
+
+  The 1.x ``Part`` is not importable here, but ``a2a_to_dict``'s 1.x branch
+  only runs ``MessageToDict``, so any message carrying the same field names
+  exercises it.
+  """
+  field = descriptor_pb2.FieldDescriptorProto
+  part_type = proto_builder.MakeSimpleProtoClass(
+      {
+          'raw': field.TYPE_BYTES,
+          'media_type': field.TYPE_STRING,
+          'filename': field.TYPE_STRING,
+      },
+      full_name='google.adk.tests.a2a.FlatFilePart',
+  )
+  return part_type(
+      raw=_FILE_PAYLOAD, media_type='application/pdf', filename='invoice.pdf'
+  )
+
+
+@v03_only
+def test_a2a_to_dict_v03_excludes_the_nested_file_bytes():
+  part = _compat.make_file_part_with_bytes(
+      data=_FILE_PAYLOAD, mime_type='application/pdf', name='invoice.pdf'
+  )
+
+  dumped = _compat.a2a_to_dict(part, exclude_file_bytes=True)
+
+  assert _ENCODED_PAYLOAD not in json.dumps(dumped)
+  assert dumped['file'] == {
+      'mimeType': 'application/pdf',
+      'name': 'invoice.pdf',
+  }
+
+
+@v03_only
+def test_a2a_to_dict_v03_keeps_the_file_bytes_by_default():
+  part = _compat.make_file_part_with_bytes(data=_FILE_PAYLOAD)
+
+  assert _compat.a2a_to_dict(part)['file']['bytes'] == _ENCODED_PAYLOAD
+
+
+def test_a2a_to_dict_v1_excludes_the_flat_raw_field(monkeypatch):
+  # 1.x holds the payload in a flat ``raw`` field, so a caller naming the
+  # 0.3.x ``file.bytes`` path itself would drop nothing and leak it here.
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+
+  dumped = _compat.a2a_to_dict(_v1_file_part(), exclude_file_bytes=True)
+
+  assert dumped == {'mediaType': 'application/pdf', 'filename': 'invoice.pdf'}
+
+
+def test_a2a_to_dict_v1_keeps_the_flat_raw_field_by_default(monkeypatch):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+
+  assert _compat.a2a_to_dict(_v1_file_part())['raw'] == _ENCODED_PAYLOAD

@@ -515,9 +515,13 @@ class FunctionNode(BaseNode):
       interrupt_id = f'wf_auth:{ctx.node_path}'
       auth_response = ctx.resume_inputs.get(interrupt_id)
       if auth_response is not None:
-        await process_auth_resume(auth_response, self.auth_config, ctx.state)
+        await process_auth_resume(
+            auth_response, self.auth_config, ctx.state, interrupt_id
+        )
       elif not has_auth_credential(self.auth_config, ctx.state):
-        yield create_auth_request_event(self.auth_config, interrupt_id)
+        yield create_auth_request_event(
+            self.auth_config, interrupt_id, ctx.state
+        )
         return
 
     kwargs = self._bind_parameters(ctx, node_input)

@@ -219,6 +219,54 @@
     "logs": []
   },
   "metric_points": {
+    "adk.experimental.invoke_agent.cache_read.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 100
+      }
+    ],
+    "adk.experimental.invoke_agent.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 250
+      }
+    ],
+    "adk.experimental.invoke_agent.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 75
+      }
+    ],
+    "adk.experimental.invoke_agent.reasoning.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 20
+      }
+    ],
+    "adk.experimental.invoke_agent.tool.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 0
+      }
+    ],
+    "adk.experimental.invoke_agent.total_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 325
+      }
+    ],
     "gen_ai.client.operation.duration": [
       {
         "attributes": {

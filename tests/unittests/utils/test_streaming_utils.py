@@ -934,3 +934,136 @@ class TestStreamingThoughtSignature:
         p.thought_signature for p in closed.content.parts if p.thought_signature
     ]
     assert signatures == [b"call-context"]
+
+
+def _streaming_fc_response(
+    partial_args: list[types.PartialArg],
+    *,
+    name: str | None = None,
+    will_continue: bool = True,
+) -> types.GenerateContentResponse:
+  """Builds a response carrying a single streaming function-call chunk."""
+  return types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  parts=[
+                      types.Part(
+                          function_call=types.FunctionCall(
+                              name=name,
+                              partial_args=partial_args,
+                              will_continue=will_continue,
+                          )
+                      )
+                  ]
+              )
+          )
+      ]
+  )
+
+
+class TestStreamingFunctionCallArgs:
+  """Tests for how streamed function call arguments are accumulated."""
+
+  @pytest.mark.asyncio
+  async def test_many_chunks_into_one_arg_accumulate_linearly(self):
+    """Chunks of one argument are joined once, not re-concatenated per chunk."""
+    chunk_count = 500
+    chunk = "x" * 64
+    expected = chunk * chunk_count
+
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      # Total characters written into the args dict. An accumulator that
+      # concatenates per chunk writes back every prefix, so the total is
+      # quadratic in the final length; buffering writes the value once.
+      written_chars = 0
+      set_value = aggregator._set_value_by_json_path
+
+      def counting_set_value(json_path, value):
+        nonlocal written_chars
+        if isinstance(value, str):
+          written_chars += len(value)
+        set_value(json_path, value)
+
+      aggregator._set_value_by_json_path = counting_set_value
+
+      for i in range(chunk_count):
+        response = _streaming_fc_response(
+            [types.PartialArg(json_path="$.document", string_value=chunk)],
+            name="write_file" if i == 0 else None,
+            will_continue=i < chunk_count - 1,
+        )
+        async for _ in aggregator.process_response(response):
+          pass
+
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    fc = closed_response.content.parts[0].function_call
+    assert fc.name == "write_file"
+    assert fc.args == {"document": expected}
+    assert written_chars <= 2 * len(expected)
+
+  @pytest.mark.asyncio
+  async def test_scalar_replaces_buffered_string_on_same_path(self):
+    """A scalar arriving after string chunks on the same path wins."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      responses = [
+          _streaming_fc_response(
+              [types.PartialArg(json_path="$.value", string_value="12")],
+              name="my_tool",
+          ),
+          _streaming_fc_response(
+              [types.PartialArg(json_path="$.value", string_value="34")]
+          ),
+          _streaming_fc_response(
+              [types.PartialArg(json_path="$.value", number_value=99)],
+              will_continue=False,
+          ),
+      ]
+      for response in responses:
+        async for _ in aggregator.process_response(response):
+          pass
+
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    assert closed_response.content.parts[0].function_call.args == {"value": 99}
+
+  @pytest.mark.asyncio
+  async def test_interleaved_args_keep_arrival_order(self):
+    """Args keep the order their paths first appeared in the stream."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+      responses = [
+          _streaming_fc_response(
+              [types.PartialArg(json_path="$.a", string_value="hello")],
+              name="my_tool",
+          ),
+          _streaming_fc_response(
+              [types.PartialArg(json_path="$.b", number_value=7)]
+          ),
+          _streaming_fc_response(
+              [types.PartialArg(json_path="$.a", string_value=" world")],
+              will_continue=False,
+          ),
+      ]
+      for response in responses:
+        async for _ in aggregator.process_response(response):
+          pass
+
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    args = closed_response.content.parts[0].function_call.args
+    assert args == {"a": "hello world", "b": 7}
+    assert list(args.keys()) == ["a", "b"]

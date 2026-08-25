@@ -80,6 +80,89 @@ async def test_join_node_waits_for_all_inputs(request: pytest.FixtureRequest):
 
 
 @pytest.mark.asyncio
+async def test_join_node_waits_when_start_is_a_predecessor(
+    request: pytest.FixtureRequest,
+):
+  """Tests JoinNode with a direct START edge alongside parallel branches."""
+  node_a = workflow_testing_utils.TestingNode(name='NodeA', output={'a': 1})
+  node_b = workflow_testing_utils.TestingNode(name='NodeB', output={'b': 2})
+  node_join = join_node.JoinNode(name='NodeJoin')
+  node_capture = workflow_testing_utils.InputCapturingNode(name='NodeCapture')
+  agent = workflow.Workflow(
+      name='test_join_node_start_predecessor',
+      edges=[
+          workflow_graph.Edge(from_node=base_node.START, to_node=node_a),
+          workflow_graph.Edge(from_node=base_node.START, to_node=node_b),
+          workflow_graph.Edge(from_node=base_node.START, to_node=node_join),
+          workflow_graph.Edge(from_node=node_a, to_node=node_join),
+          workflow_graph.Edge(from_node=node_b, to_node=node_join),
+          workflow_graph.Edge(from_node=node_join, to_node=node_capture),
+      ],
+  )
+  app_instance = app.App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+
+  user_content = testing_utils.get_user_content('start')
+  await runner.run_async(user_content)
+
+  assert node_capture.received_inputs == [{
+      base_node.START.name: user_content,
+      'NodeA': {'a': 1},
+      'NodeB': {'b': 2},
+  }]
+
+
+@pytest.mark.asyncio
+async def test_join_node_start_predecessor_keeps_nested_branch(
+    request: pytest.FixtureRequest,
+):
+  """Tests a START-fed JoinNode emits on its own workflow's branch."""
+  node_a = workflow_testing_utils.TestingNode(name='NodeA', output={'a': 1})
+  node_b = workflow_testing_utils.TestingNode(name='NodeB', output={'b': 2})
+  node_join = join_node.JoinNode(name='NodeJoin')
+  node_capture = workflow_testing_utils.InputCapturingNode(name='NodeCapture')
+  inner = workflow.Workflow(
+      name='Inner',
+      edges=[
+          workflow_graph.Edge(from_node=base_node.START, to_node=node_a),
+          workflow_graph.Edge(from_node=base_node.START, to_node=node_b),
+          workflow_graph.Edge(from_node=base_node.START, to_node=node_join),
+          workflow_graph.Edge(from_node=node_a, to_node=node_join),
+          workflow_graph.Edge(from_node=node_b, to_node=node_join),
+          workflow_graph.Edge(from_node=node_join, to_node=node_capture),
+      ],
+  )
+  # A second START edge in the outer workflow gives Inner a sub-branch of its
+  # own, so the join's predecessors run under 'Inner@1.<node>@1'.
+  node_sibling = workflow_testing_utils.TestingNode(name='Sibling')
+  outer = workflow.Workflow(
+      name='Outer',
+      edges=[
+          workflow_graph.Edge(from_node=base_node.START, to_node=inner),
+          workflow_graph.Edge(from_node=base_node.START, to_node=node_sibling),
+      ],
+  )
+  app_instance = app.App(name=request.function.__name__, root_agent=outer)
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  a_events = [e for e in events if 'NodeA' in e.node_info.path]
+  assert any(e.branch == 'Inner@1.NodeA@1' for e in a_events)
+
+  # START contributes Inner's own branch, so the common prefix of
+  # ['Inner@1', 'Inner@1.NodeA@1', 'Inner@1.NodeB@1'] is still 'Inner@1'.
+  # Recording an empty branch for START would collapse it to the root.
+  join_events = [
+      e
+      for e in events
+      if 'NodeJoin' in e.node_info.path and e.output is not None
+  ]
+  assert len(join_events) == 1
+  assert join_events[0].branch == 'Inner@1'
+
+
+@pytest.mark.asyncio
 async def test_join_node_with_none_state(request: pytest.FixtureRequest):
   """Tests JoinNode with fan-in when node state is None."""
   node_capture, runner = _build_join_node_workflow(request)
