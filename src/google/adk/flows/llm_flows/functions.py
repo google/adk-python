@@ -1714,6 +1714,16 @@ def find_event_by_function_call_id(
   return None
 
 
+def _collect_function_call_ids(events: list[Event]) -> set[str]:
+  """Returns the ids of every function call recorded in ``events``."""
+  call_ids: set[str] = set()
+  for event in events:
+    for function_call in event.get_function_calls():
+      if function_call.id:
+        call_ids.add(function_call.id)
+  return call_ids
+
+
 def find_matching_function_call(
     events: list[Event],
 ) -> Optional[Event]:

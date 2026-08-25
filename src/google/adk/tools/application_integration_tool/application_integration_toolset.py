@@ -19,7 +19,6 @@ from typing import Any
 from typing import cast
 from typing import List
 from typing import Optional
-from typing import Union
 
 from fastapi.openapi.models import HTTPBearer
 from typing_extensions import override
@@ -45,8 +44,7 @@ from .integration_connector_tool import IntegrationConnectorTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-# TODO: Apply a common toolset interface
-class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
+class ApplicationIntegrationToolset(BaseToolset):
   """ApplicationIntegrationToolset generates tools from a given Application
   Integration or Integration Connector resource.
 
@@ -87,23 +85,23 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
       self,
       project: str,
       location: str,
-      connection_template_override: Optional[str] = None,
-      integration: Optional[str] = None,
-      triggers: Optional[List[str]] = None,
-      connection: Optional[str] = None,
-      entity_operations: Optional[str] = None,
-      actions: Optional[list[str]] = None,
+      connection_template_override: str | None = None,
+      integration: str | None = None,
+      triggers: list[str] | None = None,
+      connection: str | None = None,
+      entity_operations: dict[str, list[str]] | None = None,
+      actions: list[str] | None = None,
       # Optional parameter for the toolset. This is prepended to the generated
       # tool/python function name.
-      tool_name_prefix: Optional[str] = "",
+      tool_name_prefix: str | None = "",
       # Optional parameter for the toolset. This is appended to the generated
       # tool/python function description.
-      tool_instructions: Optional[str] = "",
-      service_account_json: Optional[str] = None,
-      auth_scheme: Optional[AuthScheme] = None,
-      auth_credential: Optional[AuthCredential] = None,
-      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
-      credential_key: Optional[str] = None,
+      tool_instructions: str | None = "",
+      service_account_json: str | None = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+      tool_filter: ToolPredicate | list[str] | None = None,
+      credential_key: str | None = None,
   ):
     """Args:
 
@@ -143,14 +141,14 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
     self._connection = connection
     self._entity_operations = entity_operations
     self._actions = actions
-    self._tool_instructions = tool_instructions
+    self._tool_instructions = tool_instructions or ""
     self._service_account_json = service_account_json
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._credential_key = credential_key
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
-    self._auth_config: Optional[AuthConfig] = (
+    self._auth_config: AuthConfig | None = (
         AuthConfig(
             auth_scheme=auth_scheme,
             raw_auth_credential=auth_credential,
@@ -171,7 +169,7 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
         actions,
         service_account_json,
     )
-    connection_details = {}
+    connection_details: dict[str, Any] = {}
     if integration:
       spec = integration_client.get_openapi_spec_for_integration()
     elif connection and (entity_operations or actions):
@@ -180,15 +178,15 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
       )
       connection_details = connections_client.get_connection_details()
       spec = integration_client.get_openapi_spec_for_connection(
-          tool_name_prefix,
-          tool_instructions,
+          tool_name_prefix or "",
+          self._tool_instructions,
       )
     else:
       raise ValueError(
           "Invalid request, Either integration or (connection and"
           " (entity_operations or actions)) should be provided."
       )
-    self._openapi_toolset: Optional[OpenAPIToolset] = None
+    self._openapi_toolset: OpenAPIToolset | None = None
     self._tools: list[IntegrationConnectorTool] = []
     self._parse_spec_to_toolset(spec, connection_details)
 
@@ -232,13 +230,18 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
     operations = OpenApiSpecParser().parse(spec_dict)
 
     for open_api_operation in operations:
-      operation = getattr(open_api_operation.operation, "x-operation")
-      entity = None
-      action = None
+      # These three come from a spec this package generates itself, where
+      # x-operation is always set to a string, so they are cast rather than
+      # checked. A check here could only ever reject a hand-built spec.
+      operation = cast(
+          str, getattr(open_api_operation.operation, "x-operation")
+      )
+      entity: Optional[str] = None
+      action: Optional[str] = None
       if hasattr(open_api_operation.operation, "x-entity"):
-        entity = getattr(open_api_operation.operation, "x-entity")
+        entity = cast(str, getattr(open_api_operation.operation, "x-entity"))
       elif hasattr(open_api_operation.operation, "x-action"):
-        action = getattr(open_api_operation.operation, "x-action")
+        action = cast(str, getattr(open_api_operation.operation, "x-action"))
       rest_api_tool = RestApiTool.from_parsed_operation(open_api_operation)
       if auth_scheme:
         rest_api_tool.configure_auth_scheme(auth_scheme)
@@ -299,18 +302,19 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
         rest_api_tool=tool._rest_api_tool,
         auth_scheme=tool._auth_scheme,
         auth_credential=auth_credential,
+        credential_key=tool._credential_key,
     )
 
   @override
+  # typing.List rather than list, so the released annotation is unchanged.
   async def get_tools(
       self,
-      readonly_context: Optional[ReadonlyContext] = None,
+      readonly_context: ReadonlyContext | None = None,
   ) -> List[BaseTool]:
     if self._openapi_toolset is not None:
-      return cast(
-          List[BaseTool],
-          await self._openapi_toolset.get_tools(readonly_context),
-      )
+      # A new list, because list is invariant and the toolset hands back the
+      # narrower list[RestApiTool].
+      return list(await self._openapi_toolset.get_tools(readonly_context))
 
     exchanged_auth_credential = (
         self._auth_config.exchanged_auth_credential
@@ -318,7 +322,7 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
         else None
     )
 
-    selected_tools = [
+    selected_tools: list[BaseTool] = [
         tool
         for tool in self._tools
         if self._is_tool_selected(tool, readonly_context)
@@ -327,7 +331,7 @@ class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
     if not exchanged_auth_credential:
       return selected_tools
 
-    resolved_tools: List[BaseTool] = []
+    resolved_tools: list[BaseTool] = []
     for tool in selected_tools:
       if isinstance(tool, IntegrationConnectorTool) and tool._auth_scheme:
         resolved_tools.append(

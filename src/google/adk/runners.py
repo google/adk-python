@@ -51,11 +51,13 @@ from .auth.credential_service.base_credential_service import BaseCredentialServi
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
+from .events._branch_path import _BranchPath
+from .events._node_path_builder import _NodePathBuilder
 from .events.event import Event
 from .events.event_actions import EventActions
 from .flows.llm_flows import contents
 from .flows.llm_flows.agent_transfer import _get_transfer_targets
-from .flows.llm_flows.functions import find_event_by_function_call_id
+from .flows.llm_flows.functions import _collect_function_call_ids
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
 from .platform.thread import create_thread
@@ -536,36 +538,33 @@ class Runner:
       invocation_id: Optional[str],
   ) -> Optional[str]:
     """Infers invocation_id from new_message if it is a function response."""
+    if new_message is None:
+      return invocation_id
     function_responses = _get_function_responses_from_content(new_message)
     if not function_responses:
       return invocation_id
 
-    function_response_id = function_responses[0].id
-    if not function_response_id:
+    if not function_responses[0].id:
       raise ValueError(
           'Function response id is required to resume an invocation.'
       )
-    fc_event = find_event_by_function_call_id(
-        session.events, function_response_id
+    # Resolve through the shared helper so every response in the message is
+    # checked, not just the first one. A message answering several calls at
+    # once (parallel tool calls) must resolve to a single invocation; taking
+    # `function_responses[0]` alone would silently attribute the rest of the
+    # responses to whichever invocation happened to come first.
+    resolved_invocation_id = self._resolve_invocation_id_from_fr(
+        session, new_message
     )
-    if not fc_event:
-      fr_id = function_responses[0].id
-      fr_name = function_responses[0].name
-      raise ValueError(
-          'Function call event not found for function response'
-          f' (id={fr_id!r}, name={fr_name!r}). Ensure the function'
-          ' call ID matches an existing function call in the session'
-          ' history.'
-      )
 
-    if invocation_id and invocation_id != fc_event.invocation_id:
+    if invocation_id and invocation_id != resolved_invocation_id:
       logger.warning(
           'Provided invocation_id %s is ignored because new_message has a '
           'function response with invocation_id %s.',
           invocation_id,
-          fc_event.invocation_id,
+          resolved_invocation_id,
       )
-    return fc_event.invocation_id
+    return resolved_invocation_id
 
   def _format_session_not_found_message(self, session_id: str) -> str:
     message = f'Session not found: {session_id}'
@@ -631,6 +630,11 @@ class Runner:
             run_config=run_config or RunConfig(),
             invocation_id=invocation_id,
         )
+        if node and node is not self.agent:
+          ic.agent = node
+          self._restore_branch_from_history(
+              ic, node, root=self.agent, invocation_id=invocation_id
+          )
         ic._event_queue = asyncio.Queue()
 
         # 2. Append user message to session and resolve node_input
@@ -638,8 +642,8 @@ class Runner:
         if resume_inputs or invocation_id:
           # Resume: recover the original user content. new_message here is a
           # function response (or None), so it can't populate user_content.
-          node_input = self._find_original_user_content(
-              ic.session, ic.invocation_id
+          node_input = self._find_user_message_for_invocation(
+              ic.session.events, ic.invocation_id
           )
           if node_input:
             ic.user_content = node_input
@@ -951,15 +955,24 @@ class Runner:
         event.isolation_scope, _ = active_scope
     _apply_run_config_custom_metadata(event, ic.run_config)
     ic.stamp_event_branch_context(event)
+    if event.branch:
+      ic.branch = event.branch
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
 
-  def _find_original_user_content(
-      self, session: Session, invocation_id: str
+  def _find_user_message_for_invocation(
+      self, events: list[Event], invocation_id: str
   ) -> types.Content | None:
-    """Find the original user text message for a given invocation_id."""
-    for event in session.events:
+    """Finds the user message that started a specific invocation.
+
+    A part carrying text anywhere in the message qualifies, not just the first
+    one: a multimodal turn commonly leads with an image and puts the question
+    after it, and requiring text in ``parts[0]`` would miss it. Resuming such an
+    invocation used to fail outright, because the caller treats "not found" as
+    an error.
+    """
+    for event in events:
       if (
           event.invocation_id == invocation_id
           and event.author == 'user'
@@ -1968,6 +1981,10 @@ class Runner:
     invocation_context.agent = self._find_agent_to_run(
         invocation_context.session, root_agent
     )
+    if invocation_context.agent and invocation_context.agent is not root_agent:
+      self._restore_branch_from_history(
+          invocation_context, invocation_context.agent, root=root_agent
+      )
 
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event, None]:
       active_agent = ctx.agent
@@ -2264,6 +2281,67 @@ class Runner:
 
     return collected_events
 
+  def _restore_branch_from_history(
+      self,
+      invocation_context: InvocationContext,
+      node: BaseNode,
+      *,
+      root: BaseNode,
+      invocation_id: Optional[str] = None,
+  ) -> None:
+    """Restores a non-root node's branch from its latest matching event.
+
+    A freshly created ``InvocationContext`` has no branch, so a node that
+    previously ran on a sub-branch (e.g. a resumed sub-agent, or an agent
+    resolved by ``_find_agent_to_run``) would otherwise continue on the root
+    branch.
+
+    Tool branches are skipped. A tool's user-facing message is authored under
+    the agent's name (``functions.py``) and stamped with the agent's node path
+    (``base_agent.py``), so it is indistinguishable from the agent's own turns
+    by author or path; what gives it away is its branch, which the same code
+    builds as ``<tool>@<function_call_id>`` from a call in this session. Such a
+    branch is therefore recognised and skipped, while every other event the node
+    authored -- including a plain text turn, which is all a non-resumable
+    sub-agent may leave behind -- still carries ``ctx.branch`` and is eligible.
+    A branch whose leaf names the node itself is kept even when its id is a
+    function call id, since that is how ``AgentTool`` scopes a real sub-agent.
+
+    Nodes are matched by their static path (run ids stripped) so that two nodes
+    sharing a name (e.g. the same sub-agent mounted under two parents) are
+    disambiguated; events that predate node paths fall back to author/name
+    matching. When ``invocation_id`` is provided (resuming a known invocation),
+    only that invocation's events are considered, so a resumed node cannot
+    inherit a stale branch authored in an earlier invocation. When it is None
+    (a fresh direct-node turn, or a new invocation continuing a sub-agent), the
+    most recent matching event across the session is used.
+    """
+    from .workflow._base_node import find_static_node_path
+
+    expected_static_path = find_static_node_path(root, node)
+    tool_call_ids = _collect_function_call_ids(
+        invocation_context.session.events
+    )
+    for event in reversed(invocation_context.session.events):
+      if invocation_id is not None and event.invocation_id != invocation_id:
+        continue
+      if not event.branch:
+        continue
+      if _BranchPath.is_tool_branch(event.branch, node.name, tool_call_ids):
+        continue
+      matched = False
+      if expected_static_path and event.node_info.path:
+        event_static_path = _NodePathBuilder.from_string(
+            event.node_info.path
+        ).static_path
+        if event_static_path == expected_static_path:
+          matched = True
+      elif event.author == node.name or event.node_info.name == node.name:
+        matched = True
+      if matched:
+        invocation_context.branch = event.branch
+        break
+
   async def _setup_context_for_new_invocation(
       self,
       *,
@@ -2306,6 +2384,10 @@ class Runner:
     invocation_context.agent = self._find_agent_to_run(
         invocation_context.session, root_agent
     )
+    if invocation_context.agent and invocation_context.agent is not root_agent:
+      self._restore_branch_from_history(
+          invocation_context, invocation_context.agent, root=root_agent
+      )
     return invocation_context
 
   async def _setup_context_for_resumed_invocation(
@@ -2372,22 +2454,17 @@ class Runner:
       invocation_context.agent = self._find_agent_to_run(
           invocation_context.session, root_agent
       )
-    return invocation_context
-
-  def _find_user_message_for_invocation(
-      self, events: list[Event], invocation_id: str
-  ) -> Optional[types.Content]:
-    """Finds the user message that started a specific invocation."""
-    for event in events:
       if (
-          event.invocation_id == invocation_id
-          and event.author == 'user'
-          and event.content
-          and event.content.parts
-          and event.content.parts[0].text
+          invocation_context.agent
+          and invocation_context.agent is not root_agent
       ):
-        return event.content
-    return None
+        self._restore_branch_from_history(
+            invocation_context,
+            invocation_context.agent,
+            root=root_agent,
+            invocation_id=invocation_context.invocation_id,
+        )
+    return invocation_context
 
   def _create_invocation_context(self, **kwargs: object) -> InvocationContext:
     """Creates an InvocationContext instance."""

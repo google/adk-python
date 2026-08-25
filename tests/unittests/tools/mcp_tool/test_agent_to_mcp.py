@@ -25,8 +25,9 @@ from google.adk.tools.mcp_tool._agent_to_mcp import _connection_key
 from google.adk.tools.mcp_tool._agent_to_mcp import _run_agent
 from google.adk.tools.mcp_tool._agent_to_mcp import to_mcp_server
 from google.genai import types
-from mcp.shared.memory import create_connected_server_and_client_session
 import pytest
+
+from ._in_memory_session import connected_client_session
 
 
 class _EchoAgent(BaseAgent):
@@ -153,7 +154,7 @@ async def test_call_tool_runs_agent_end_to_end():
   agent = _EchoAgent(name="assistant")
   server = to_mcp_server(agent)
 
-  async with create_connected_server_and_client_session(server) as client:
+  async with connected_client_session(server) as client:
     result = await client.call_tool("assistant", {"request": "hi"})
 
   assert not result.isError
@@ -275,7 +276,7 @@ async def test_call_tool_reuses_session_across_calls_on_one_connection():
   runner = _FakeRunner([_text_event("ok")])
   server = to_mcp_server(agent, runner=runner)
 
-  async with create_connected_server_and_client_session(server) as client:
+  async with connected_client_session(server) as client:
     await client.call_tool("assistant", {"request": "first"})
     await client.call_tool("assistant", {"request": "second"})
 

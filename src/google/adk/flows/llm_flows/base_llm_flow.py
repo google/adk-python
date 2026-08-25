@@ -1599,6 +1599,16 @@ class BaseLlmFlow(ABC):
         if response := await self._handle_before_model_callback(
             invocation_context, llm_request, model_response_event
         ):
+          # The model was never called, but the span still has to carry its
+          # attributes: trace consumers key off the event id attribute and
+          # drop spans that lack it.
+          trace_call_llm(
+              invocation_context,
+              model_response_event.id,
+              llm_request,
+              response,
+              span,
+          )
           yield response
           return
 

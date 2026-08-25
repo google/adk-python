@@ -1221,6 +1221,44 @@ def test_to_agent_engine_gates_gemini_enterprise_flag_by_version(
   assert warned is not expect_flag
 
 
+def test_to_agent_engine_env_vars_override_reports_names_only(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """The env_vars override notice names the variables without their values."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  (src_dir / ".env").write_text(
+      'GOOGLE_API_KEY="secret-key-value"\nOTHER_VAR="other-secret-value"\n'
+  )
+  config_file = src_dir.parent / "config.json"
+  config_file.write_text(json.dumps({"env_vars": {"FROM_CONFIG": "kept"}}))
+
+  with mock.patch("click.echo") as mocked_echo:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        agent_engine_config_file=str(config_file),
+    )
+
+  messages = [str(c[0][0]) for c in mocked_echo.call_args_list if c[0]]
+  assert not [m for m in messages if "secret-key-value" in m]
+  assert not [m for m in messages if "other-secret-value" in m]
+  override_messages = [m for m in messages if "Overriding env_vars" in m]
+  assert len(override_messages) == 1
+  assert "GOOGLE_API_KEY" in override_messages[0]
+  assert "OTHER_VAR" in override_messages[0]
+  # The values are still deployed, only the terminal output omits them.
+  assert captured[0]["env_vars"]["GOOGLE_API_KEY"] == "secret-key-value"
+
+
 # _robust_rmtree / _on_rm_error tests
 
 

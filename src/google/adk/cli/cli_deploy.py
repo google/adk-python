@@ -1292,8 +1292,11 @@ def to_agent_engine(
         )
     if env_vars:
       if 'env_vars' in agent_config:
+        # sorted() over a dict iterates its keys, so this prints the variable
+        # names only and never their values.
         click.echo(
-            f'Overriding env_vars in agent platform config with {env_vars}'
+            'Overriding env_vars in agent platform config with'
+            f' {sorted(env_vars)}'
         )
       agent_config['env_vars'] = env_vars
     # Set env_vars in agent_config to None if it is not set.

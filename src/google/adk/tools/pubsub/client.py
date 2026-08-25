@@ -17,10 +17,12 @@ from __future__ import annotations
 import collections
 import threading
 import time
+from typing import cast
+from typing import Protocol
 
 from google.api_core.gapic_v1.client_info import ClientInfo
 from google.auth.credentials import Credentials
-from google.cloud import pubsub_v1
+import google.cloud.pubsub_v1 as pubsub_v1
 from google.cloud.pubsub_v1.types import BatchSettings
 
 from ... import version
@@ -30,8 +32,22 @@ USER_AGENT = f"adk-pubsub-tool google-adk/{version.__version__}"
 _CACHE_TTL = 1800  # 30 minutes
 _CACHE_MAX_SIZE = 10
 
+
+class _ClientInfoFactory(Protocol):
+
+  def __call__(self, *, user_agent: str) -> ClientInfo:
+    ...
+
+
+def _make_client_info(user_agents: list[str]) -> ClientInfo:
+  """Build client metadata while containing google-api-core's typing gap."""
+  factory = cast(_ClientInfoFactory, ClientInfo)
+  return factory(user_agent=" ".join(user_agents))
+
+
 _publisher_client_cache: collections.OrderedDict[
-    object, tuple[pubsub_v1.PublisherClient, float]
+    tuple[int, tuple[str, ...] | None, pubsub_v1.types.PublisherOptions | None],
+    tuple[pubsub_v1.PublisherClient, float],
 ] = collections.OrderedDict()
 _publisher_client_lock = threading.Lock()
 
@@ -55,7 +71,7 @@ def get_publisher_client(
   global _publisher_client_cache
   current_time = time.time()
 
-  user_agents_key = None
+  user_agents_key: tuple[str, ...] | None = None
   if user_agent:
     if isinstance(user_agent, str):
       user_agents_key = (user_agent,)
@@ -92,7 +108,7 @@ def get_publisher_client(
       else:
         user_agents.extend(ua for ua in user_agent if ua)
 
-    client_info = ClientInfo(user_agent=" ".join(user_agents))
+    client_info = _make_client_info(user_agents)
 
     # Since we synchronously publish messages, we want to disable batching to
     # remove any delay.
@@ -119,7 +135,8 @@ def get_publisher_client(
 
 
 _subscriber_client_cache: dict[
-    object, tuple[pubsub_v1.SubscriberClient, float]
+    tuple[int, tuple[str, ...] | None],
+    tuple[pubsub_v1.SubscriberClient, float],
 ] = {}
 _subscriber_client_lock = threading.Lock()
 
@@ -141,7 +158,7 @@ def get_subscriber_client(
   global _subscriber_client_cache
   current_time = time.time()
 
-  user_agents_key = None
+  user_agents_key: tuple[str, ...] | None = None
   if user_agent:
     if isinstance(user_agent, str):
       user_agents_key = (user_agent,)
@@ -164,7 +181,7 @@ def get_subscriber_client(
       else:
         user_agents.extend(ua for ua in user_agent if ua)
 
-    client_info = ClientInfo(user_agent=" ".join(user_agents))
+    client_info = _make_client_info(user_agents)
 
     subscriber_client = pubsub_v1.SubscriberClient(
         credentials=credentials,

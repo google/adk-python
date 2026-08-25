@@ -443,14 +443,25 @@ def data_part_blob_bytes(p: Part) -> bytes:
 # -----------------------------------------------------------------------------
 # Serialization helper (model_dump → MessageToDict)
 # -----------------------------------------------------------------------------
-def a2a_to_dict(obj: Any) -> dict[str, Any]:
-  """Serializes an A2A object to a plain dict."""
+def a2a_to_dict(
+    obj: Any, *, exclude_file_bytes: bool = False
+) -> dict[str, Any]:
+  """Serializes an A2A object to a plain dict.
+
+  ``exclude_file_bytes`` drops a file Part's raw payload, which the two SDK
+  generations keep in different places: a flat ``raw`` field on 1.x, nested
+  under ``file.bytes`` on 0.3.x. It leaves the descriptive file fields alone.
+  """
   if IS_A2A_V1:
     proto_dict: dict[str, Any] = MessageToDict(obj)
+    if exclude_file_bytes:
+      proto_dict.pop("raw", None)
     return proto_dict
   else:
     model_dict: dict[str, Any] = obj.model_dump(
-        exclude_none=True, by_alias=True
+        exclude_none=True,
+        by_alias=True,
+        exclude={"file": {"bytes"}} if exclude_file_bytes else None,
     )
     return model_dict
 
