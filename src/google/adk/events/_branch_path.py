@@ -134,6 +134,39 @@ class _BranchPath:
     return _BranchPath(self._segments + new_segments)
 
   @classmethod
+  def is_tool_branch(
+      cls, branch: str, node_name: str, tool_call_ids: set[str]
+  ) -> bool:
+    """Whether ``branch`` is the sub-branch a tool message is published on.
+
+    A tool's user-facing message is published on ``<tool>@<function_call_id>``
+    while being authored under the agent's name and carrying the agent's node
+    path, so the branch is the only thing that identifies it; a function call id
+    in the leaf segment distinguishes it from an ordinary node branch, whose
+    leaf carries a run id instead.
+
+    A function call id in the leaf is not sufficient on its own: an agent run as
+    a tool is scoped on ``<parent>.<agent name>@<function call id>``, which is
+    that agent's own branch. A leaf naming the node itself is therefore never
+    treated as a tool branch.
+
+    Args:
+      branch: The branch to classify.
+      node_name: Name of the node the branch is being considered for.
+      tool_call_ids: Ids of the function calls recorded in the session.
+
+    Returns:
+      True if the branch belongs to a tool message rather than to the node.
+    """
+    segments = cls.from_string(branch).segments
+    if not segments:
+      return False
+    leaf_name, separator, trailing_id = segments[-1].rpartition("@")
+    if not separator or trailing_id not in tool_call_ids:
+      return False
+    return leaf_name != node_name
+
+  @classmethod
   def create_sub_branch(
       cls,
       base_branch: str | None,

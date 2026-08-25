@@ -33,6 +33,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features import override_feature_enabled
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import _TaskAgentTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
@@ -1202,6 +1203,145 @@ async def test_chat_mode_yields_events_directly():
   assert len(events) == 1
   assert events[0].content.parts[0].text == 'Hello from chat'
   assert events[0].output is None
+
+
+@pytest.mark.asyncio
+async def test_chat_mode_delegates_from_completed_event_not_fragment():
+  """A task FC on a fragment is dispatched only once the full args arrive."""
+  specialist = LlmAgent(
+      name='specialist', model='gemini-2.5-flash', mode='task'
+  )
+  coordinator = LlmAgent(
+      name='coordinator',
+      model='gemini-2.5-flash',
+      mode='chat',
+      sub_agents=[specialist],
+      tools=[_TaskAgentTool(specialist)],
+  )
+
+  def _delegation_event(request: str, *, partial: bool) -> Event:
+    return Event(
+        invocation_id='inv',
+        author='coordinator',
+        partial=partial,
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name='specialist',
+                        id='task-1',
+                        args={'request': request},
+                    )
+                )
+            ],
+        ),
+    )
+
+  rounds = 0
+
+  async def mock_run_async(*args, **kwargs):
+    nonlocal rounds
+    rounds += 1
+    if rounds == 1:
+      yield _delegation_event('write a p', partial=True)
+      yield _delegation_event('write a poem', partial=False)
+
+  object.__setattr__(coordinator, 'run_async', mock_run_async)
+
+  from unittest.mock import AsyncMock
+  from unittest.mock import MagicMock
+
+  dispatched_inputs = []
+
+  async def fake_run_node(node, *, node_input, **kwargs):
+    dispatched_inputs.append(node_input)
+    return {'poem': 'roses are red'}
+
+  ctx = MagicMock(spec=Context)
+  ic = MagicMock()
+  ctx.get_invocation_context.return_value = ic
+  ic.model_copy.return_value = ic
+  ic.plugin_manager.run_before_agent_callback = AsyncMock(return_value=None)
+  ic.plugin_manager.run_after_agent_callback = AsyncMock(return_value=None)
+  ctx.node_path = 'wf'
+  ctx.session = Session(id='s', appName='app', userId='u')
+  ctx.run_node = fake_run_node
+
+  events = []
+  async for e in coordinator._run_impl(ctx=ctx, node_input='hello'):
+    events.append(e)
+
+  assert dispatched_inputs == [{'request': 'write a poem'}]
+  # The fragment, the completed event, then the synthesized function response.
+  assert len(events) == 3
+  assert events[0].partial is True
+  assert events[1].partial is False
+  assert events[2].get_function_responses()[0].response == {
+      'poem': 'roses are red'
+  }
+
+
+@pytest.mark.asyncio
+async def test_task_mode_does_not_promote_fragment_args_as_output():
+  """finish_task args seen only on a fragment are not the task output."""
+  agent = _make_v1_agent(mode='task')
+  wrapper = build_node(agent)
+
+  async def mock_run_async(*args, **kwargs):
+    yield Event(
+        invocation_id='inv',
+        author='test_v1_agent',
+        partial=True,
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name='finish_task',
+                        id='ft-4',
+                        args={'output': 'done_ou'},
+                    )
+                )
+            ],
+        ),
+    )
+    yield Event(
+        invocation_id='inv',
+        author='test_v1_agent',
+        content=types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name='finish_task',
+                        id='ft-4',
+                        response={'result': 'Task completed.'},
+                    )
+                )
+            ],
+        ),
+    )
+
+  object.__setattr__(wrapper, 'run_async', mock_run_async)
+
+  from unittest.mock import AsyncMock
+  from unittest.mock import MagicMock
+
+  ctx = MagicMock(spec=Context)
+  ic = MagicMock()
+  ctx.get_invocation_context.return_value = ic
+  ic.model_copy.return_value = ic
+  ic.plugin_manager.run_before_agent_callback = AsyncMock(return_value=None)
+  ic.plugin_manager.run_after_agent_callback = AsyncMock(return_value=None)
+  ctx.node_path = 'wf'
+
+  events = []
+  async for e in wrapper._run_impl(ctx=ctx, node_input='hello'):
+    events.append(e)
+
+  assert len(events) == 2
+  assert events[1].output is None
 
 
 def test_chat_mode_agent_following_non_start_raises_validation_error():

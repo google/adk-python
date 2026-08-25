@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from typing import Literal
 from typing import Optional
 
 from google.genai.types import JSONSchema
@@ -24,6 +25,7 @@ from google.genai.types import Schema
 from pydantic import Field
 
 from ..utils.variant_utils import get_google_llm_variant
+from ..utils.variant_utils import GoogleLLMVariant
 
 
 class _ExtendedJSONSchema(JSONSchema):
@@ -129,7 +131,7 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
   # `$defs` takes precedence on the (pathological) key collision.
   defs = {**schema.get("definitions", {}), **schema.get("$defs", {})}
 
-  def _resolve_refs(sub_schema: Any, path_refs: frozenset[str]) -> Any:
+  def _resolve_refs(sub_schema: object, path_refs: frozenset[str]) -> object:
     if isinstance(sub_schema, dict):
       if "$ref" in sub_schema:
         ref_uri = sub_schema["$ref"]
@@ -169,6 +171,10 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
       return sub_schema
 
   dereferenced_schema = _resolve_refs(schema, frozenset())
+  if not isinstance(dereferenced_schema, dict) or not all(
+      isinstance(key, str) for key in dereferenced_schema
+  ):
+    raise TypeError("Dereferenced JSON schema must remain an object.")
   # Remove the definition blocks after resolving so the leftover keywords do
   # not leak into the Gemini schema (which would otherwise raise a KeyError).
   for defs_keyword in ("$defs", "definitions"):
@@ -271,7 +277,11 @@ def _to_gemini_schema(openapi_schema: dict[str, Any]) -> Schema:
 
   dereferenced_schema = _dereference_schema(openapi_schema)
   sanitized_schema = _sanitize_schema_formats_for_gemini(dereferenced_schema)
+  variant = get_google_llm_variant()
+  api_option: Literal["VERTEX_AI", "GEMINI_API"] = (
+      "VERTEX_AI" if variant is GoogleLLMVariant.VERTEX_AI else "GEMINI_API"
+  )
   return Schema.from_json_schema(
       json_schema=_ExtendedJSONSchema.model_validate(sanitized_schema),
-      api_option=get_google_llm_variant(),
+      api_option=api_option,
   )

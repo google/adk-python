@@ -240,7 +240,7 @@ class Workflow(BaseNode):
           self.name,
       )
 
-    self._seed_start_triggers(loop_state, node_input)
+    self._seed_start_triggers(loop_state, ctx, node_input)
 
     # Create closure for dynamic node scheduling
     loop_state.schedule_dynamic_node = self._make_schedule_dynamic_node(
@@ -374,6 +374,7 @@ class Workflow(BaseNode):
   def _seed_start_triggers(
       self,
       loop_state: _LoopState,
+      ctx: Context,
       node_input: Any,
   ) -> None:
     """Seed triggers for START's direct successors."""
@@ -384,6 +385,15 @@ class Workflow(BaseNode):
     ]
     use_sub_branch = len(start_edges) > 1
     for edge in start_edges:
+      if edge.to_node._requires_all_predecessors:
+        # A wait-for-all node must still wait for its other predecessors, so
+        # record START's contribution and let the barrier decide when to fire.
+        loop_state.node_outputs[START.name] = node_input
+        loop_state.node_branches[START.name] = (
+            ctx._invocation_context.branch or ""
+        )
+        self._buffer_barrier_trigger(loop_state, edge.to_node.name)
+        continue
       loop_state.trigger_buffer.setdefault(edge.to_node.name, []).append(
           Trigger(
               input=node_input,
@@ -763,6 +773,40 @@ class Workflow(BaseNode):
         child_ctx._invocation_context.branch,
     )
 
+  def _buffer_barrier_trigger(
+      self, loop_state: _LoopState, target_name: str
+  ) -> None:
+    """Buffer a trigger for target_name once all predecessors have completed.
+
+    No-op while any predecessor is still outstanding.
+    """
+    assert self.graph is not None
+    predecessors = {
+        e.from_node.name
+        for e in self.graph.edges
+        if e.to_node.name == target_name
+    }
+    # START never executes, so it is satisfied as soon as the workflow begins.
+    if not all(
+        p == START.name
+        or (
+            loop_state.nodes.get(p)
+            and loop_state.nodes[p].status == NodeStatus.COMPLETED
+        )
+        for p in predecessors
+    ):
+      return
+
+    outputs = {p: loop_state.node_outputs.get(p) for p in predecessors}
+    branches = [loop_state.node_branches.get(p, "") for p in predecessors]
+    loop_state.trigger_buffer.setdefault(target_name, []).append(
+        Trigger(
+            input=outputs,
+            use_sub_branch=False,
+            branch=get_common_branch_prefix(branches),
+        )
+    )
+
   def _buffer_downstream_triggers(
       self,
       loop_state: _LoopState,
@@ -782,29 +826,7 @@ class Workflow(BaseNode):
       target_node = self._get_static_node_by_name(target_name)
 
       if target_node._requires_all_predecessors:
-        # Wait for all predecessors
-        predecessors = {
-            e.from_node.name
-            for e in self.graph.edges
-            if e.to_node.name == target_name
-        }
-        if all(
-            loop_state.nodes.get(p)
-            and loop_state.nodes[p].status == NodeStatus.COMPLETED
-            for p in predecessors
-        ):
-          # All predecessors have completed!
-          outputs = {p: loop_state.node_outputs.get(p) for p in predecessors}
-          branches = [loop_state.node_branches.get(p, "") for p in predecessors]
-          common_branch = get_common_branch_prefix(branches)
-
-          loop_state.trigger_buffer.setdefault(target_name, []).append(
-              Trigger(
-                  input=outputs,
-                  use_sub_branch=False,
-                  branch=common_branch,
-              )
-          )
+        self._buffer_barrier_trigger(loop_state, target_name)
       else:
         # Normal node logic
         loop_state.trigger_buffer.setdefault(target_name, []).append(

@@ -405,6 +405,66 @@ async def _failing_agent():
   yield  # pragma: no cover
 
 
+class _TestingAgentFailingAfterDelay(_TestingAgent):
+  """Emits one event, then fails while the caller is still busy with it."""
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield self.event(ctx)
+    await asyncio.sleep(0.01)
+    raise ValueError('simulated sub-agent failure')
+
+
+def _flatten(error: BaseException) -> list[BaseException]:
+  """Flattens exception groups, which only the Python 3.11+ merge raises."""
+  nested = getattr(error, 'exceptions', None)
+  if not nested:
+    return [error]
+  return [leaf for e in nested for leaf in _flatten(e)]
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_failure_reaches_busy_caller(
+    request: pytest.FixtureRequest,
+):
+  # A caller such as an HTTP streaming response awaits on every event it
+  # receives, so a sub-agent typically fails while the merged generator is
+  # suspended at a yield. The failure must still reach the caller.
+  parallel_agent = ParallelAgent(
+      name=f'{request.function.__name__}_test_parallel_agent',
+      sub_agents=[
+          _TestingAgentFailingAfterDelay(
+              name=f'{request.function.__name__}_test_agent_1'
+          ),
+          _TestingAgentInfiniteEvents(
+              name=f'{request.function.__name__}_test_agent_2'
+          ),
+      ],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, parallel_agent
+  )
+
+  with pytest.raises(BaseException) as exc_info:
+    async for _ in parallel_agent.run_async(parent_ctx):
+      await asyncio.sleep(0.1)
+
+  assert any(
+      isinstance(e, ValueError) and 'simulated sub-agent failure' in str(e)
+      for e in _flatten(exc_info.value)
+  )
+
+
+@pytest.mark.asyncio
+async def test_merge_agent_run_pre_3_11_surfaces_failure_without_events():
+  """A branch failing before it emits anything must not look successful."""
+  with pytest.raises(ValueError, match='simulated sub-agent failure'):
+    async for _ in _merge_agent_run_pre_3_11([_failing_agent()]):
+      pass
+
+
 @pytest.mark.asyncio
 async def test_merge_agent_run_pre_3_11_no_aclose_error_on_failure():
   """Regression test for Python 3.10 RuntimeError: aclose() already running.

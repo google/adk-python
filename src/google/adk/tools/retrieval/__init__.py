@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import TYPE_CHECKING
+
 from .base_retrieval_tool import BaseRetrievalTool
+
+if TYPE_CHECKING:
+  from .files_retrieval import FilesRetrieval as FilesRetrieval
+  from .llama_index_retrieval import LlamaIndexRetrieval as LlamaIndexRetrieval
+  from .vertex_ai_rag_retrieval import VertexAiRagRetrieval as VertexAiRagRetrieval
 
 __all__ = [
     "BaseRetrievalTool",
@@ -22,7 +29,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
   if name == "FilesRetrieval":
     try:
       from .files_retrieval import FilesRetrieval

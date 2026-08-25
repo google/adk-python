@@ -65,7 +65,6 @@ from mcp.client.session import SamplingFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
-from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -236,8 +235,30 @@ class SseConnectionParams(BaseModel):
 
 
 @runtime_checkable
-class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
-  pass
+class CheckableMcpHttpClientFactory(Protocol):
+  """The call signature the `httpx_client_factory` fields accept.
+
+  `@runtime_checkable` is required, not decorative. Pydantic compiles a
+  Protocol-annotated field into an `is-instance` validator, and that validator
+  cannot be built against a protocol without the decorator.
+
+  This copies the SDK's `McpHttpClientFactory` instead of subclassing it,
+  because that protocol lives in the private `mcp.shared._httpx_utils`.
+  Structural typing means a factory written against either one satisfies both.
+
+  The signature stays identical to the SDK's for two reasons.
+  `_DebugHttpxClientFactory` wraps the given factory and calls it by keyword,
+  and that wrapper is what `sse_client` receives, typed there with the SDK's
+  own protocol.
+  """
+
+  def __call__(
+      self,
+      headers: dict[str, str] | None = None,
+      timeout: httpx.Timeout | None = None,
+      auth: httpx.Auth | None = None,
+  ) -> httpx.AsyncClient:
+    ...
 
 
 class _DebugHttpxClientFactory:

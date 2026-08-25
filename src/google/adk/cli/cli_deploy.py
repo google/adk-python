@@ -39,6 +39,7 @@ from .utils import _onboarding
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
+_GEMINI_ENTERPRISE_FLAG_MIN_VERSION: Final[str] = '2.2.0'
 _AGENT_ENGINE_REQUIREMENT: Final[str] = (
     'google-cloud-aiplatform[adk,agent_engines]'
 )
@@ -1291,8 +1292,11 @@ def to_agent_engine(
         )
     if env_vars:
       if 'env_vars' in agent_config:
+        # sorted() over a dict iterates its keys, so this prints the variable
+        # names only and never their values.
         click.echo(
-            f'Overriding env_vars in agent platform config with {env_vars}'
+            'Overriding env_vars in agent platform config with'
+            f' {sorted(env_vars)}'
         )
       agent_config['env_vars'] = env_vars
     # Set env_vars in agent_config to None if it is not set.
@@ -1360,6 +1364,16 @@ def to_agent_engine(
         copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
         extra_packages_copy = '\n'.join(copy_lines)
       agent_engine_uri = f'agentengine://{resource_name}'
+      supports_gemini_enterprise_flag = parse(adk_version) >= parse(
+          _GEMINI_ENTERPRISE_FLAG_MIN_VERSION
+      )
+      if not supports_gemini_enterprise_flag:
+        click.secho(
+            'Omitting --gemini_enterprise_app_name as it requires adk_version'
+            f' {_GEMINI_ENTERPRISE_FLAG_MIN_VERSION} or later, and'
+            f' {adk_version} was requested',
+            fg='yellow',
+        )
       dockerfile_content = _DOCKERFILE_TEMPLATE.format(
           gcp_project_id=project,
           gcp_region=region,
@@ -1381,7 +1395,11 @@ def to_agent_engine(
           host_option='--host=0.0.0.0',
           a2a_option='--a2a',
           trigger_sources_option=trigger_sources_option,
-          gemini_enterprise_option=f'--gemini_enterprise_app_name={app_name}',
+          gemini_enterprise_option=(
+              f'--gemini_enterprise_app_name={app_name}'
+              if supports_gemini_enterprise_flag
+              else ''
+          ),
           express_mode_option=(
               ' --express_mode' if api_key and not project else ''
           ),

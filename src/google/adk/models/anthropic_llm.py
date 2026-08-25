@@ -48,6 +48,7 @@ from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import override
 
+from . import _prompt_cache
 from ..utils import _json_utils
 from ..utils._google_client_headers import get_tracking_headers
 from .base_llm import BaseLlm
@@ -55,6 +56,7 @@ from .interactions_utils import extract_system_instruction
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
+  from ..agents.context_cache_config import ContextCacheConfig
   from .llm_request import LlmRequest
 
 __all__ = ["AnthropicLlm", "Claude", "AnthropicGenerateContentConfig"]
@@ -99,6 +101,9 @@ _RATE_LIMIT_POSSIBLE_FIX_MESSAGE = (
     "On how to mitigate this issue, please refer to:\n\n"
     "https://docs.anthropic.com/en/api/errors#http-errors"
 )
+
+# Claude rejects a cache breakpoint on a reasoning block.
+_UNCACHEABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
 
 
 # anthropic is an optional dependency, so mypy resolves the base class to Any.
@@ -805,6 +810,108 @@ def function_declaration_to_tool_param(
   )
 
 
+def _to_cache_control(
+    cache_config: ContextCacheConfig,
+) -> anthropic_types.CacheControlEphemeralParam:
+  """Maps the configured cache lifetime onto one Claude actually offers."""
+  if _prompt_cache.use_one_hour_ttl(cache_config):
+    return anthropic_types.CacheControlEphemeralParam(
+        type="ephemeral", ttl="1h"
+    )
+  return anthropic_types.CacheControlEphemeralParam(type="ephemeral")
+
+
+def _set_cache_control(
+    block: anthropic_types.ToolUnionParam | _MessageBlockParam,
+    cache_control: anthropic_types.CacheControlEphemeralParam,
+) -> None:
+  """Attaches a cache breakpoint to a tool definition or a content block.
+
+  Every param the Anthropic SDK accepts is a plain dict at runtime; the unions
+  of TypedDicts only describe their shape.
+  """
+  cast(dict[str, Any], block)["cache_control"] = cache_control
+
+
+def _mark_last_cacheable_message_block(
+    messages: list[anthropic_types.MessageParam],
+    cache_control: anthropic_types.CacheControlEphemeralParam,
+) -> None:
+  """Puts a cache breakpoint at the end of the conversation so far.
+
+  The search runs backwards because a turn can end in a reasoning block, which
+  Claude refuses to cache, or carry no blocks at all once parts Claude cannot
+  receive have been dropped.
+
+  Args:
+    messages: Conversation to mark, modified in place.
+    cache_control: Breakpoint to attach.
+  """
+  for message in reversed(messages):
+    content = message.get("content")
+    if not isinstance(content, list):
+      continue
+    for block in reversed(content):
+      block_type = cast(dict[str, Any], block).get("type")
+      if block_type in _UNCACHEABLE_BLOCK_TYPES:
+        continue
+      _set_cache_control(block, cache_control)
+      return
+
+
+def _apply_cache_breakpoints(
+    *,
+    cache_config: ContextCacheConfig,
+    system: str | NotGiven,
+    messages: list[anthropic_types.MessageParam],
+    tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven,
+) -> str | list[anthropic_types.TextBlockParam] | NotGiven:
+  """Marks the reusable prefix of a request so Claude bills it as a cache hit.
+
+  Claude charges the full input rate for the whole prompt on every turn unless
+  a block carries a breakpoint. A breakpoint tells it to store the prefix
+  ending at that block and to serve that prefix at the much lower cache-read
+  rate on later turns.
+
+  Claude reads the prompt as tools, then system, then messages, so a breakpoint
+  on each of the three keeps the levels above a change still cached: editing
+  the conversation leaves the tools and the system instruction cached, and
+  editing the system instruction leaves the tools cached. Claude allows four
+  breakpoints per request and these are three of them.
+
+  The conversation breakpoint moves to the end of each request, and Claude
+  finds the previous one by looking back at most twenty blocks. A turn that
+  adds more blocks than that, such as one calling nine or more tools at once,
+  therefore rewrites the conversation cache instead of reading it. The tools
+  and system breakpoints are unaffected, so the stable head of the prompt is
+  still served from the cache.
+
+  Args:
+    cache_config: Cache configuration for the request.
+    system: System instruction to mark.
+    messages: Conversation to mark, modified in place.
+    tools: Tool definitions to mark, modified in place.
+
+  Returns:
+    The system instruction to send. Carrying a breakpoint turns it into a
+    block list, so it is returned rather than modified in place.
+  """
+  cache_control = _to_cache_control(cache_config)
+
+  if isinstance(tools, list) and tools:
+    _set_cache_control(tools[-1], cache_control)
+
+  _mark_last_cacheable_message_block(messages, cache_control)
+
+  if isinstance(system, str):
+    return [
+        anthropic_types.TextBlockParam(
+            type="text", text=system, cache_control=cache_control
+        )
+    ]
+  return system
+
+
 class AnthropicLlm(BaseLlm):
   """Integration with Claude models via the Anthropic API.
 
@@ -865,10 +972,20 @@ class AnthropicLlm(BaseLlm):
       if system_str:
         system = system_str
 
+    system_param: str | list[anthropic_types.TextBlockParam] | NotGiven = system
+    cache_config = _prompt_cache.resolve_cache_config(llm_request)
+    if cache_config is not None:
+      system_param = _apply_cache_breakpoints(
+          cache_config=cache_config,
+          system=system,
+          messages=messages,
+          tools=tools,
+      )
+
     model_to_use = self._resolve_model_name(llm_request.model)
     kwargs: dict[str, Any] = {
         "model": model_to_use,
-        "system": system,
+        "system": system_param,
         "messages": messages,
         "tools": tools,
         "tool_choice": tool_choice,

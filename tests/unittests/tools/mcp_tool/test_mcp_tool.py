@@ -1920,3 +1920,74 @@ class TestMCPToolGracefulErrorHandling:
 
     assert result == mcp_response.model_dump(exclude_none=True, mode="json")
     self.mock_session_manager._get_session_context.assert_not_called()
+
+
+class TestResultDictKeys:
+  """Pins the literal keys of the dict `run_async` hands back to the caller.
+
+  `_run_async_impl` returns `CallToolResult.model_dump(...)` straight through,
+  so the SDK's field names are ADK's response contract. The tests elsewhere in
+  this file all compare the result against `model_dump` of the same object,
+  which holds whatever the SDK calls its fields and so cannot notice a rename.
+  These name the keys.
+  """
+
+  def setup_method(self):
+    self.mock_mcp_tool = MockMCPTool(name="test_tool")
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session = AsyncMock()
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+
+  async def _run(self, mcp_response):
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+    return await tool._run_async_impl(
+        args={}, tool_context=tool_context, credential=None
+    )
+
+  @pytest.mark.asyncio
+  async def test_error_flag_reaches_the_caller_as_is_error_camel_case(self):
+    """`isError` is the key callers read. A rename is a breaking change.
+
+    `_detect_error_in_response` already reads both spellings, so telemetry
+    survives a rename with no test failing. The caller's copy does not.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[TextContent(type="text", text="nope")], isError=True
+        )
+    )
+
+    assert "isError" in result
+    assert result["isError"] is True
+
+  @pytest.mark.asyncio
+  async def test_content_entries_keep_their_wire_names(self):
+    """The content list is handed to the model, so its keys are contractual."""
+    result = await self._run(
+        CallToolResult(content=[TextContent(type="text", text="hello")])
+    )
+
+    assert result["content"] == [{"type": "text", "text": "hello"}]
+
+  @pytest.mark.asyncio
+  async def test_no_snake_case_alias_leaks_alongside_the_camel_case_key(self):
+    """Both spellings at once would be worse than either alone.
+
+    A caller switching on `isError` and a caller switching on `is_error` would
+    both work, and the pair would outlive whichever migration introduced it.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[TextContent(type="text", text="nope")], isError=True
+        )
+    )
+
+    assert "is_error" not in result

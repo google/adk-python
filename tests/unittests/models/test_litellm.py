@@ -27,6 +27,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 import warnings
 
+from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.models.lite_llm import _aggregate_streaming_thought_parts
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _BraceDepthTracker
@@ -7212,3 +7213,129 @@ async def test_generate_content_async_omits_tool_choice_when_functions_override(
   _, kwargs = mock_acompletion.call_args
   assert kwargs.get("tools") is None
   assert "tool_choice" not in kwargs
+
+
+def _cache_llm_request(cache_config=None):
+  return LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Cache this")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          system_instruction="You are a helpful assistant",
+      ),
+      cache_config=cache_config,
+  )
+
+
+def _injection_points(mock_acompletion):
+  _, kwargs = mock_acompletion.call_args
+  return kwargs.get("cache_control_injection_points")
+
+
+@pytest.mark.asyncio
+async def test_no_cache_config_sends_no_injection_points(
+    lite_llm_instance, mock_acompletion
+):
+  """Caching stays off unless the app configured it."""
+  async for _ in lite_llm_instance.generate_content_async(_cache_llm_request()):
+    pass
+
+  assert _injection_points(mock_acompletion) is None
+
+
+@pytest.mark.asyncio
+async def test_cache_config_marks_system_and_last_message(
+    lite_llm_instance, mock_acompletion
+):
+  """The stable head of the prompt and the conversation each get a point."""
+  async for _ in lite_llm_instance.generate_content_async(
+      _cache_llm_request(ContextCacheConfig())
+  ):
+    pass
+
+  assert _injection_points(mock_acompletion) == [
+      {
+          "location": "message",
+          "role": "system",
+          "control": {"type": "ephemeral"},
+      },
+      {
+          "location": "message",
+          "index": -1,
+          "control": {"type": "ephemeral"},
+      },
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ttl_seconds,expected_control",
+    [
+        (300, {"type": "ephemeral"}),
+        (1800, {"type": "ephemeral"}),
+        (3599, {"type": "ephemeral"}),
+        (3600, {"type": "ephemeral", "ttl": "1h"}),
+        (86400, {"type": "ephemeral", "ttl": "1h"}),
+    ],
+)
+async def test_cache_ttl_maps_onto_an_offered_lifetime(
+    lite_llm_instance, mock_acompletion, ttl_seconds, expected_control
+):
+  """Five minutes or an hour; a shorter ask gets five minutes."""
+  async for _ in lite_llm_instance.generate_content_async(
+      _cache_llm_request(ContextCacheConfig(ttl_seconds=ttl_seconds))
+  ):
+    pass
+
+  points = _injection_points(mock_acompletion)
+  assert [point["control"] for point in points] == [expected_control] * 2
+
+
+@pytest.mark.asyncio
+async def test_cache_config_below_min_tokens_sends_no_injection_points(
+    lite_llm_instance, mock_acompletion
+):
+  """A prompt the app called too small to cache is sent unmarked."""
+  llm_request = _cache_llm_request(ContextCacheConfig(min_tokens=5000))
+  llm_request.cacheable_contents_token_count = 4999
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  assert _injection_points(mock_acompletion) is None
+
+
+@pytest.mark.asyncio
+async def test_cache_config_at_min_tokens_sends_injection_points(
+    lite_llm_instance, mock_acompletion
+):
+  """Reaching the configured minimum is enough to start caching."""
+  llm_request = _cache_llm_request(ContextCacheConfig(min_tokens=5000))
+  llm_request.cacheable_contents_token_count = 5000
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  assert len(_injection_points(mock_acompletion)) == 2
+
+
+@pytest.mark.asyncio
+async def test_injection_points_given_at_construction_are_kept(
+    mock_client, mock_acompletion
+):
+  """A caller who named their own points knows their provider better."""
+  chosen = [{"location": "tool_config"}]
+  lite_llm_instance = LiteLlm(
+      model="test_model",
+      llm_client=mock_client,
+      cache_control_injection_points=chosen,
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(
+      _cache_llm_request(ContextCacheConfig())
+  ):
+    pass
+
+  assert _injection_points(mock_acompletion) == chosen

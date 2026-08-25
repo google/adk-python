@@ -39,6 +39,36 @@ GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS = (
 # from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_REASONING_OUTPUT_TOKENS
 GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = 'gen_ai.usage.reasoning.output_tokens'
 
+# What each token count means. This module owns the definition: the properties
+# below implement it and `_metrics` interpolates it into the published metric
+# descriptions, so the two cannot drift apart.
+INPUT_TOKENS_MEANING = (
+    'Input (prompt) tokens, summing the prompt itself and the results of'
+    ' server-side tool calls. Prompt tokens served from a cache are part of the'
+    ' prompt count, so they are included here too.'
+)
+OUTPUT_TOKENS_MEANING = (
+    'Output (completion) tokens, summing candidate and reasoning tokens. The'
+    ' tokens a model spends emitting a tool call are candidate tokens, so they'
+    ' count here.'
+)
+TOTAL_TOKENS_MEANING = (
+    'Input plus output tokens, derived from those two rather than taken from'
+    ' the model-reported total.'
+)
+CACHE_READ_INPUT_TOKENS_MEANING = (
+    'Input tokens served from a provider-managed cache.'
+)
+REASONING_OUTPUT_TOKENS_MEANING = (
+    'Output tokens spent on reasoning (chain-of-thought / extended thinking).'
+)
+TOOL_INPUT_TOKENS_MEANING = (
+    'Input tokens from server-side tool results the model fed back to itself'
+    ' within one request, such as code execution or search grounding. Zero for'
+    ' client-side function tools, whose responses arrive as ordinary content on'
+    ' the next request and bill as plain prompt tokens.'
+)
+
 
 @dataclasses.dataclass
 class TokenUsage:
@@ -72,6 +102,27 @@ class TokenUsage:
       return None
     return (candidates_tokens or 0) + (thoughts_tokens or 0)
 
+  @property
+  def cache_read_input_token_count(self) -> int | None:
+    """Subset of `input_token_count`; see `CACHE_READ_INPUT_TOKENS_MEANING`."""
+    if self.usage_metadata is None:
+      return None
+    return self.usage_metadata.cached_content_token_count
+
+  @property
+  def tool_input_token_count(self) -> int | None:
+    """Subset of `input_token_count`; see `TOOL_INPUT_TOKENS_MEANING`."""
+    if self.usage_metadata is None:
+      return None
+    return self.usage_metadata.tool_use_prompt_token_count
+
+  @property
+  def reasoning_output_token_count(self) -> int | None:
+    """Subset of `output_token_count`; see `REASONING_OUTPUT_TOKENS_MEANING`."""
+    if self.usage_metadata is None:
+      return None
+    return self.usage_metadata.thoughts_token_count
+
   def to_attributes(self) -> dict[str, AttributeValue]:
     """Returns a dictionary of OpenTelemetry token usage attributes."""
     attrs: dict[str, AttributeValue] = {}
@@ -104,3 +155,34 @@ class TokenUsage:
         )
 
     return attrs
+
+
+@dataclasses.dataclass
+class InvocationTokenTotals:
+  """Token usage summed over every model call in a single agent invocation.
+
+  `cache_read_input_tokens` and `tool_input_tokens` are subsets of
+  `input_tokens`; `reasoning_output_tokens` is a subset of `output_tokens`.
+  """
+
+  input_tokens: int = 0
+  output_tokens: int = 0
+  cache_read_input_tokens: int = 0
+  reasoning_output_tokens: int = 0
+  tool_input_tokens: int = 0
+
+  @property
+  def total_tokens(self) -> int:
+    """Derived, so it always agrees with the two directions it sums.
+
+    The model's own reported total is deliberately not used.
+    """
+    return self.input_tokens + self.output_tokens
+
+  def add(self, usage: TokenUsage) -> None:
+    """Folds one model call's usage into the running invocation totals."""
+    self.input_tokens += usage.input_token_count or 0
+    self.output_tokens += usage.output_token_count or 0
+    self.cache_read_input_tokens += usage.cache_read_input_token_count or 0
+    self.reasoning_output_tokens += usage.reasoning_output_token_count or 0
+    self.tool_input_tokens += usage.tool_input_token_count or 0
