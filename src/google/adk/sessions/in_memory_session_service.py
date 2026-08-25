@@ -114,6 +114,7 @@ class InMemorySessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
+    session_id = session_id.strip() if session_id else None
     if session_id and self._get_session_impl(
         app_name=app_name, user_id=user_id, session_id=session_id
     ):
@@ -129,11 +130,7 @@ class InMemorySessionService(BaseSessionService):
           user_state_delta
       )
 
-    session_id = (
-        session_id.strip()
-        if session_id and session_id.strip()
-        else platform_uuid.new_uuid()
-    )
+    session_id = session_id or platform_uuid.new_uuid()
     session = Session(
         app_name=app_name,
         user_id=user_id,
