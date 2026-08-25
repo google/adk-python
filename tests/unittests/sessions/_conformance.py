@@ -135,7 +135,20 @@ async def _make_per_agent_database(
 BACKENDS = [
     _Backend('in_memory', _make_in_memory),
     _Backend('in_memory_light_copy', _make_in_memory_light_copy),
-    _Backend('database', _make_database),
+    _Backend(
+        'database',
+        _make_database,
+        divergences={
+            'test_create_session_id_is_matched_after_trimming': (
+                'Database stores the client-supplied id as-is, so a padded id'
+                ' is a different session from its trimmed form.'
+            ),
+            'test_create_session_with_blank_id_generates_one': (
+                'Database stores a blank id as an empty string instead of'
+                ' generating one.'
+            ),
+        },
+    ),
     _Backend('sqlite', _make_sqlite),
     # Two more Redis divergences have no contract test to hang an xfail on
     # yet: it builds its key scan pattern from a truthiness check on the user
@@ -153,6 +166,14 @@ BACKENDS = [
             'test_session_last_update_time_updates_on_event': (
                 'Redis stamps the session with the wall clock instead of the'
                 " appended event's timestamp."
+            ),
+            'test_create_session_id_is_matched_after_trimming': (
+                'Redis stores the client-supplied id as-is, so a padded id'
+                ' is a different session from its trimmed form.'
+            ),
+            'test_create_session_with_blank_id_generates_one': (
+                'Redis stores a blank id as whitespace instead of generating'
+                ' one.'
             ),
         },
     ),

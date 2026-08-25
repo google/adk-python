@@ -1197,6 +1197,44 @@ async def test_create_session_with_existing_id_raises_error(session_service):
 
 
 @pytest.mark.asyncio
+async def test_create_session_id_is_matched_after_trimming(session_service):
+  """A padded id names the same session as its trimmed form.
+
+  Whichever form a backend stores, the two must not become two sessions, and
+  the second create must not silently replace the first.
+  """
+  await session_service.create_session(
+      app_name='my_app',
+      user_id='test_user',
+      session_id='existing_session',
+      state={'keep': 'original'},
+  )
+
+  with pytest.raises(AlreadyExistsError):
+    await session_service.create_session(
+        app_name='my_app',
+        user_id='test_user',
+        session_id='  existing_session  ',
+        state={'keep': 'clobbered'},
+    )
+
+  session = await session_service.get_session(
+      app_name='my_app', user_id='test_user', session_id='existing_session'
+  )
+  assert session is not None
+  assert session.state['keep'] == 'original'
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_blank_id_generates_one(session_service):
+  """A blank client-supplied id is treated as "no id given"."""
+  session = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id='   '
+  )
+  assert session.id.strip()
+
+
+@pytest.mark.asyncio
 async def test_append_event_bytes(session_service):
   app_name = 'my_app'
   user_id = 'user'
