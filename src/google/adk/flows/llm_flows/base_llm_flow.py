@@ -18,7 +18,6 @@ from abc import ABC
 import asyncio
 import inspect
 import logging
-from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
@@ -492,7 +491,9 @@ async def _process_agent_tools(
     return
   agent = cast('LlmAgent', raw_agent)
 
-  multiple_tools = len(agent.tools) > 1
+  from .agent_transfer import _get_transfer_targets
+
+  multiple_tools = len(agent.tools) > 1 or bool(_get_transfer_targets(agent))
   model = agent.canonical_model
 
   from ...agents.llm_agent import _convert_tool_union_to_tools
@@ -614,6 +615,26 @@ class BaseLlmFlow(ABC):
           len(llm_request.contents),
           llm_request.live_connect_config.response_modalities,
       )
+
+      # A caller can resume an earlier live session by handing the flow a
+      # handle it obtained from a previous run, which request assembly has by
+      # now put on the connect config (from `RunConfig.session_resumption`).
+      # Seed the invocation with it so the very first connection is treated as
+      # a resumption like any mid-session reconnect: the history the server
+      # already holds is not replayed, and if this connection drops before the
+      # server has pushed its first `session_resumption_update`, the reconnect
+      # path still has the caller's handle to retry with instead of failing the
+      # run. Without this the handle only reached the connect config while the
+      # rest of the run still behaved as if the session were new.
+      session_resumption = llm_request.live_connect_config.session_resumption
+      if (
+          not invocation_context.live_session_resumption_handle
+          and session_resumption is not None
+          and session_resumption.handle
+      ):
+        invocation_context.live_session_resumption_handle = (
+            session_resumption.handle
+        )
 
       attempt = 1
       while True:
@@ -1134,6 +1155,7 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[Event, None]:
     """One step means one LLM call."""
     llm_request = LlmRequest()
+    run_config = _require_run_config(invocation_context)
 
     # Preprocess before calling the LLM.
     async with Aclosing(
@@ -1201,6 +1223,14 @@ class BaseLlmFlow(ABC):
         )
     ) as agen:
       async for llm_response in agen:
+        if run_config.support_cfc:
+          # When support_cfc is True, _call_llm_async delegates to run_live,
+          # which already performs full live postprocessing (including tool
+          # execution via handle_function_calls_live). Yield the event directly
+          # to prevent duplicate tool execution in _postprocess_async.
+          yield cast(Event, llm_response)
+          continue
+
         # Postprocess after calling the LLM.
         async with Aclosing(
             self._postprocess_async(
@@ -1569,6 +1599,16 @@ class BaseLlmFlow(ABC):
         if response := await self._handle_before_model_callback(
             invocation_context, llm_request, model_response_event
         ):
+          # The model was never called, but the span still has to carry its
+          # attributes: trace consumers key off the event id attribute and
+          # drop spans that lack it.
+          trace_call_llm(
+              invocation_context,
+              model_response_event.id,
+              llm_request,
+              response,
+              span,
+          )
           yield response
           return
 
@@ -1588,37 +1628,36 @@ class BaseLlmFlow(ABC):
         # execution is stopped right here, and exception is thrown.
         invocation_context.increment_llm_call_count()
 
-        responses_generator: AsyncGenerator[Any, None]
         if run_config.support_cfc:
-          invocation_context.live_request_queue = LiveRequestQueue()
-          responses_generator = self.run_live(invocation_context)
+          if invocation_context.live_request_queue is None:
+            invocation_context.live_request_queue = LiveRequestQueue()
           async with Aclosing(
               self._run_and_handle_error(
-                  responses_generator,
+                  self.run_live(invocation_context),
                   invocation_context,
                   llm_request,
                   model_response_event,
                   call_llm_span=span,
               )
           ) as agen:
-            async for llm_response in agen:
+            async for event in agen:
               # Rebind to call_llm span for after_model_callback.
               with trace.use_span(span, end_on_exit=False):
                 if altered := (
                     await self._handle_after_model_callback(
                         invocation_context,
-                        llm_response,
+                        event,
                         model_response_event,
                     )
                 ):
-                  llm_response = altered
+                  event = altered
               # only yield partial response in SSE streaming mode
               if (
                   run_config.streaming_mode == StreamingMode.SSE
-                  or not llm_response.partial
+                  or not event.partial
               ):
-                yield llm_response
-              if llm_response.turn_complete:
+                yield event
+              if event.turn_complete:
                 queue = invocation_context.live_request_queue
                 assert queue is not None
                 queue.close()

@@ -17,16 +17,45 @@ from __future__ import annotations
 import pickle
 from unittest import mock
 
+from google.adk.events.event_actions import EventActions
+from google.adk.sessions.schemas.v0 import Base
 from google.adk.sessions.schemas.v0 import DynamicPickleType
+from google.adk.sessions.schemas.v0 import StorageEvent
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy import select
+from sqlalchemy import text
 from sqlalchemy.dialects import mysql
+from sqlalchemy.orm import sessionmaker
+
+_EXECUTED_PAYLOAD_TAGS: list[str] = []
+
+
+def _record_payload_execution(tag: str) -> str:
+  """Stands in for the arbitrary callable a crafted blob would reach."""
+  _EXECUTED_PAYLOAD_TAGS.append(tag)
+  return tag
+
+
+class _CraftedActionsBlob:
+  """Pickles into a call of a global that the actions allowlist omits."""
+
+  def __reduce__(self):
+    return (_record_payload_execution, ("executed",))
 
 
 @pytest.fixture
 def pickle_type():
   """Fixture for DynamicPickleType instance."""
   return DynamicPickleType()
+
+
+@pytest.fixture
+def crafted_blob():
+  """Fixture for a pickled blob that runs code when loaded unrestricted."""
+  _EXECUTED_PAYLOAD_TAGS.clear()
+  yield pickle.dumps(_CraftedActionsBlob())
+  _EXECUTED_PAYLOAD_TAGS.clear()
 
 
 def test_load_dialect_impl_mysql(pickle_type):
@@ -185,3 +214,72 @@ def test_roundtrip_pickle_dialects(pickle_type, dialect_name):
   # Simulate result (DB -> Python)
   result_value = pickle_type.process_result_value(bound_value, mock_dialect)
   assert result_value == original_data
+
+
+@pytest.mark.parametrize(
+    "dialect_name",
+    [
+        pytest.param("mysql", id="mysql"),
+        pytest.param("spanner+spanner", id="spanner"),
+    ],
+)
+def test_process_result_value_rejects_disallowed_global(
+    pickle_type, dialect_name, crafted_blob
+):
+  """MySQL and Spanner blobs may only name globals on the allowlist."""
+  mock_dialect = mock.Mock()
+  mock_dialect.name = dialect_name
+
+  with pytest.raises(pickle.UnpicklingError):
+    pickle_type.process_result_value(crafted_blob, mock_dialect)
+
+  assert _EXECUTED_PAYLOAD_TAGS == []
+
+
+def test_reading_event_rejects_actions_blob_with_disallowed_global(
+    crafted_blob,
+):
+  """Dialects handled by SQLAlchemy's PickleType are restricted too."""
+  engine = create_engine("sqlite://")
+  Base.metadata.create_all(engine)
+  with engine.begin() as conn:
+    conn.execute(
+        text(
+            "INSERT INTO events (id, app_name, user_id, session_id,"
+            " invocation_id, author, actions, timestamp) VALUES ('event1',"
+            " 'app1', 'user1', 'session1', 'invoke1', 'user', :actions,"
+            " '2026-01-01 00:00:00')"
+        ),
+        {"actions": crafted_blob},
+    )
+
+  with sessionmaker(bind=engine)() as sql_session:
+    with pytest.raises(pickle.UnpicklingError):
+      sql_session.execute(select(StorageEvent)).scalars().first()
+
+  assert _EXECUTED_PAYLOAD_TAGS == []
+
+
+def test_reading_event_still_loads_stored_actions():
+  """Allowlisted action payloads keep round-tripping through the database."""
+  engine = create_engine("sqlite://")
+  Base.metadata.create_all(engine)
+  Session = sessionmaker(bind=engine)
+  with Session() as sql_session:
+    sql_session.add(
+        StorageEvent(
+            id="event1",
+            app_name="app1",
+            user_id="user1",
+            session_id="session1",
+            invocation_id="invoke1",
+            author="user",
+            actions=EventActions(state_delta={"key": "value"}),
+        )
+    )
+    sql_session.commit()
+
+  with Session() as sql_session:
+    stored = sql_session.execute(select(StorageEvent)).scalars().first()
+    assert stored is not None
+    assert stored.actions.state_delta == {"key": "value"}

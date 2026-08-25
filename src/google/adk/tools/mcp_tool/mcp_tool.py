@@ -74,6 +74,35 @@ _RESERVED_TOOL_NAMES = frozenset({
     transfer_to_agent.__name__,
 })
 
+_UNSET = object()
+
+
+def _read_field(model: Any, *names: str) -> Any:
+  """Reads the first attribute in ``names`` that ``model`` defines.
+
+  MCP SDK 1.x names its wire fields in camelCase. 2.x renames them to
+  snake_case and drops the camelCase attribute. Reading both spellings keeps
+  ADK working on either.
+
+  Args:
+    model: The MCP model to read from.
+    *names: Attribute names to try, in order.
+
+  Returns:
+    The value of the first attribute that exists.
+
+  Raises:
+    AttributeError: The model defines none of ``names``.
+  """
+  for name in names:
+    value = getattr(model, name, _UNSET)
+    if value is not _UNSET:
+      return value
+  raise AttributeError(
+      f"{type(model).__name__} defines none of {names}. This usually means the"
+      " installed MCP SDK renamed the field again."
+  )
+
 
 @runtime_checkable
 class ProgressCallbackFactory(Protocol):
@@ -222,8 +251,8 @@ class McpTool(BaseAuthenticatedTool):
     Returns:
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
-    input_schema = self._mcp_tool.inputSchema
-    output_schema = self._mcp_tool.outputSchema
+    input_schema = _read_field(self._mcp_tool, "inputSchema", "input_schema")
+    output_schema = _read_field(self._mcp_tool, "outputSchema", "output_schema")
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
       function_decl = FunctionDeclaration(
           name=self.name,
@@ -474,31 +503,39 @@ class McpTool(BaseAuthenticatedTool):
         meta=meta_trace_context,
     )
 
-    if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
-      # Race the tool call against the background session task so that
-      # transport crashes (e.g. non-2xx HTTP responses from an AGW with
-      # Model Armor) surface immediately instead of hanging until
-      # sse_read_timeout (default 5 minutes) expires. ConnectionError is
-      # intentionally NOT caught here. Replaying a tool call after an
-      # ambiguous transport failure could duplicate a remote side effect, so
-      # the failure surfaces to the run_async wrapper without an automatic
-      # retry.
-      #
-      # The isinstance check is intentional: tests and external subclasses
-      # may inject mock session managers whose `_get_session_context`
-      # returns a Mock instead of a real SessionContext (or None). Falling
-      # back to the direct await keeps those callers working.
-      session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
-          headers=final_headers
-      )
-      if isinstance(session_context, SessionContext):
-        response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+    # Hold the session out of the pool's idle sweep for as long as the call
+    # runs. A tool call can easily outlive the idle TTL, and a session that
+    # only looks idle because its call has not come back yet must not have
+    # its transport closed underneath it.
+    self._mcp_session_manager._begin_session_use(final_headers)  # pylint: disable=protected-access
+    try:
+      if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+        # Race the tool call against the background session task so that
+        # transport crashes (e.g. non-2xx HTTP responses from an AGW with
+        # Model Armor) surface immediately instead of hanging until
+        # sse_read_timeout (default 5 minutes) expires. ConnectionError is
+        # intentionally NOT caught here. Replaying a tool call after an
+        # ambiguous transport failure could duplicate a remote side effect, so
+        # the failure surfaces to the run_async wrapper without an automatic
+        # retry.
+        #
+        # The isinstance check is intentional: tests and external subclasses
+        # may inject mock session managers whose `_get_session_context`
+        # returns a Mock instead of a real SessionContext (or None). Falling
+        # back to the direct await keeps those callers working.
+        session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
+            headers=final_headers
+        )
+        if isinstance(session_context, SessionContext):
+          response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+        else:
+          response = await call_coro
       else:
+        # Pre-fix behavior: await the call directly. This is what causes the
+        # ~300s hang when the underlying transport crashes.
         response = await call_coro
-    else:
-      # Pre-fix behavior: await the call directly. This is what causes the
-      # ~300s hang when the underlying transport crashes.
-      response = await call_coro
+    finally:
+      self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
 
     result = response.model_dump(exclude_none=True, mode="json")
 
@@ -519,7 +556,12 @@ class McpTool(BaseAuthenticatedTool):
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
-    if isinstance(response, dict) and response.get("isError"):
+    # `response` is a dumped CallToolResult. MCP SDK 1.x names the field
+    # `isError`; 2.x names it `is_error`, so `model_dump` emits the snake_case
+    # key and a lookup of `isError` alone silently stops reporting tool errors.
+    if isinstance(response, dict) and (
+        response.get("isError") or response.get("is_error")
+    ):
       return "MCP_TOOL_ERROR"
     return None
 

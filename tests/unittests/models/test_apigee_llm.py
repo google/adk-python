@@ -779,6 +779,77 @@ async def test_streaming_chat_completions_without_request_timeout_stays_bounded(
 
 
 @pytest.mark.asyncio
+async def test_streaming_chat_completions_malformed_json_skipped():
+  """Malformed JSON chunks in the stream are skipped, but stream continues."""
+  request = LlmRequest(
+      model='apigee/openai/gpt-4o',
+      contents=[],
+  )
+
+  async def stream_lines():
+    yield 'data: {"choices": [{"delta": {"content": "Hello"}}]}'
+    yield 'data: {invalid json}'
+    yield 'data: {"choices": [{"delta": {"content": " World"}}]}'
+    yield 'data: [DONE]'
+
+  response = mock.MagicMock()
+  response.aiter_lines = stream_lines
+  stream_context = mock.MagicMock()
+  stream_context.__aenter__ = AsyncMock(return_value=response)
+  stream_context.__aexit__ = AsyncMock(return_value=None)
+  http_client = mock.MagicMock()
+  http_client.stream.return_value = stream_context
+
+  with mock.patch(
+      'google.adk.models.apigee_llm.httpx.AsyncClient',
+      return_value=http_client,
+  ):
+    client = CompletionsHTTPClient(base_url=PROXY_URL)
+    responses = [
+        item async for item in client.generate_content_async(request, True)
+    ]
+
+  assert len(responses) == 2
+  assert responses[0].content.parts[0].text == 'Hello'
+  assert responses[1].content.parts[0].text == ' World'
+
+
+@pytest.mark.asyncio
+async def test_streaming_chat_completions_malformed_tool_call_args_raises():
+  """Malformed tool call arguments raise ValueError and abort the stream."""
+  request = LlmRequest(
+      model='apigee/openai/gpt-4o',
+      contents=[],
+  )
+
+  async def stream_lines():
+    yield (
+        'data: {"choices": [{"delta": {"role": "assistant", "tool_calls":'
+        ' [{"index": 0, "id": "call_1", "type": "function", "function":'
+        ' {"name": "test_func", "arguments": "{\\"a\\":"}}]}}]}'
+    )
+    yield 'data: [DONE]'
+
+  response = mock.MagicMock()
+  response.aiter_lines = stream_lines
+  stream_context = mock.MagicMock()
+  stream_context.__aenter__ = AsyncMock(return_value=response)
+  stream_context.__aexit__ = AsyncMock(return_value=None)
+  http_client = mock.MagicMock()
+  http_client.stream.return_value = stream_context
+
+  with mock.patch(
+      'google.adk.models.apigee_llm.httpx.AsyncClient',
+      return_value=http_client,
+  ):
+    client = CompletionsHTTPClient(base_url=PROXY_URL)
+    with pytest.raises(ValueError) as exc_info:
+      _ = [item async for item in client.generate_content_async(request, True)]
+
+  assert 'tool call arguments: {"a":' in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     'model',
     [

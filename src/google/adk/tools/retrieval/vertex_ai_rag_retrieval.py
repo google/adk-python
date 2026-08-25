@@ -19,11 +19,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from typing import cast
 from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
 
+from ...models.llm_request import LlmRequest
 from ...utils.model_name_utils import is_gemini_model
 from ...utils.model_name_utils import is_gemini_model_id_check_disabled
 from ..tool_context import ToolContext
@@ -31,7 +33,6 @@ from .base_retrieval_tool import BaseRetrievalTool
 
 if TYPE_CHECKING:
   from ...dependencies.vertexai import rag
-  from ...models import LlmRequest
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -44,15 +45,21 @@ class VertexAiRagRetrieval(BaseRetrievalTool):
       *,
       name: str,
       description: str,
-      rag_corpora: list[str] = None,
-      rag_resources: list[rag.RagResource] = None,
-      similarity_top_k: int = None,
-      vector_distance_threshold: float = None,
+      rag_corpora: list[str] | None = None,
+      rag_resources: list[rag.RagResource] | None = None,
+      similarity_top_k: int | None = None,
+      vector_distance_threshold: float | None = None,
   ):
     super().__init__(name=name, description=description)
+    # VertexRagStore validates from attributes, so it rebuilds each resource as
+    # its own type and the originals are unrecoverable from it. retrieval_query
+    # needs the vertexai ones, so keep them.
+    self._rag_resources = rag_resources
     self.vertex_rag_store = types.VertexRagStore(
         rag_corpora=rag_corpora,
-        rag_resources=rag_resources,
+        rag_resources=cast(
+            'list[types.VertexRagStoreRagResource] | None', rag_resources
+        ),
         similarity_top_k=similarity_top_k,
         vector_distance_threshold=vector_distance_threshold,
     )
@@ -95,10 +102,14 @@ class VertexAiRagRetrieval(BaseRetrievalTool):
   ) -> Any:
     from ...dependencies.vertexai import rag
 
+    query = args.get('query')
+    if not isinstance(query, str):
+      raise ValueError("Vertex AI RAG retrieval requires a string 'query'.")
+
     response = await asyncio.to_thread(
         rag.retrieval_query,
-        text=args['query'],
-        rag_resources=self.vertex_rag_store.rag_resources,
+        text=query,
+        rag_resources=self._rag_resources,
         rag_corpora=self.vertex_rag_store.rag_corpora,
         similarity_top_k=self.vertex_rag_store.similarity_top_k,
         vector_distance_threshold=self.vertex_rag_store.vector_distance_threshold,

@@ -27,6 +27,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 import warnings
 
+from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.models.lite_llm import _aggregate_streaming_thought_parts
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _BraceDepthTracker
@@ -1908,6 +1909,46 @@ async def test_generate_content_async_with_usage_metadata(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_with_bedrock_cache_tokens(
+    lite_llm_instance, mock_acompletion
+):
+  mock_response_with_usage_metadata = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="Test response",
+              )
+          )
+      ],
+      usage={
+          "prompt_tokens": 10,
+          "completion_tokens": 5,
+          "total_tokens": 15,
+          "cache_read_input_tokens": 8,
+          "cache_creation_input_tokens": 4,
+      },
+  )
+  mock_acompletion.return_value = mock_response_with_usage_metadata
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          ),
+      ],
+  )
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.usage_metadata.prompt_token_count == 10
+    assert response.usage_metadata.candidates_token_count == 5
+    assert response.usage_metadata.total_token_count == 15
+    assert response.usage_metadata.cached_content_token_count == 8
+    assert response.usage_metadata.cache_creation_input_tokens == 4
+
+  mock_acompletion.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_ollama_chat_preserves_multimodal_content(
     mock_acompletion, mock_completion
 ):
@@ -2104,6 +2145,23 @@ async def test_content_to_message_param_user_message():
   message = await _content_to_message_param(content)
   assert message["role"] == "user"
   assert message["content"] == "Test prompt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_user_message_without_parts(parts):
+  # parts must not raise.
+  content = types.Content(role="user", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts", [None, []])
+async def test_content_to_message_param_assistant_message_without_parts(parts):
+  content = types.Content(role="assistant", parts=parts)
+  message = await _content_to_message_param(content)
+  assert message is None
 
 
 @pytest.mark.asyncio
@@ -4581,6 +4639,46 @@ async def test_generate_content_async_stream_with_usage_metadata(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_with_bedrock_cache_tokens(
+    mock_completion, lite_llm_instance
+):
+  streaming_model_response_with_usage_metadata = [
+      *STREAMING_MODEL_RESPONSE,
+      ModelResponseStream(
+          usage={
+              "prompt_tokens": 10,
+              "completion_tokens": 5,
+              "total_tokens": 15,
+              "cache_read_input_tokens": 8,
+              "cache_creation_input_tokens": 4,
+          },
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+              )
+          ],
+      ),
+  ]
+
+  mock_completion.return_value = iter(
+      streaming_model_response_with_usage_metadata
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  assert len(responses) == 4
+  assert responses[3].usage_metadata.prompt_token_count == 10
+  assert responses[3].usage_metadata.candidates_token_count == 5
+  assert responses[3].usage_metadata.total_token_count == 15
+  assert responses[3].usage_metadata.cached_content_token_count == 8
+  assert responses[3].usage_metadata.cache_creation_input_tokens == 4
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_multiple_function_calls(
     mock_completion, lite_llm_instance
 ):
@@ -5448,7 +5546,7 @@ async def test_get_content_pdf_openai_uses_file_id(mocker):
   assert "file_data" not in content[0]["file"]
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="openai",
   )
@@ -5480,7 +5578,7 @@ async def test_get_content_pdf_proxied_azure_uses_file_id(mocker):
   assert "file_data" not in content[0]["file"]
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="openai",
   )
@@ -5520,9 +5618,44 @@ async def test_get_content_pdf_azure_uses_file_id(mocker):
   assert content[0]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="azure",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_guess_extension_fallback(mocker):
+  """Test that guess_extension fallback is used when guess_extension returns None."""
+  import mimetypes
+
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-docx123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  # Mock mimetypes.guess_extension to simulate environment without mime db
+  mocker.patch.object(mimetypes, "guess_extension", return_value=None)
+
+  parts = [
+      types.Part.from_bytes(
+          data=b"test_docx_data",
+          mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      )
+  ]
+  content = await _get_content(parts, provider="openai")
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-docx123"
+
+  mock_acreate_file.assert_called_once_with(
+      file=(
+          "document.docx",
+          b"test_docx_data",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ),
+      purpose="assistants",
+      custom_llm_provider="openai",
   )
 
 
@@ -5565,7 +5698,11 @@ async def test_get_completion_inputs_openai_file_upload(mocker):
   assert content[1]["file"]["file_id"] == "file-uploaded123"
   assert content[1]["file"]["format"] == "application/pdf"
 
-  mock_acreate_file.assert_called_once()
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_content", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+  )
 
 
 @pytest.mark.asyncio
@@ -7137,3 +7274,129 @@ async def test_generate_content_async_omits_tool_choice_when_functions_override(
   _, kwargs = mock_acompletion.call_args
   assert kwargs.get("tools") is None
   assert "tool_choice" not in kwargs
+
+
+def _cache_llm_request(cache_config=None):
+  return LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Cache this")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          system_instruction="You are a helpful assistant",
+      ),
+      cache_config=cache_config,
+  )
+
+
+def _injection_points(mock_acompletion):
+  _, kwargs = mock_acompletion.call_args
+  return kwargs.get("cache_control_injection_points")
+
+
+@pytest.mark.asyncio
+async def test_no_cache_config_sends_no_injection_points(
+    lite_llm_instance, mock_acompletion
+):
+  """Caching stays off unless the app configured it."""
+  async for _ in lite_llm_instance.generate_content_async(_cache_llm_request()):
+    pass
+
+  assert _injection_points(mock_acompletion) is None
+
+
+@pytest.mark.asyncio
+async def test_cache_config_marks_system_and_last_message(
+    lite_llm_instance, mock_acompletion
+):
+  """The stable head of the prompt and the conversation each get a point."""
+  async for _ in lite_llm_instance.generate_content_async(
+      _cache_llm_request(ContextCacheConfig())
+  ):
+    pass
+
+  assert _injection_points(mock_acompletion) == [
+      {
+          "location": "message",
+          "role": "system",
+          "control": {"type": "ephemeral"},
+      },
+      {
+          "location": "message",
+          "index": -1,
+          "control": {"type": "ephemeral"},
+      },
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ttl_seconds,expected_control",
+    [
+        (300, {"type": "ephemeral"}),
+        (1800, {"type": "ephemeral"}),
+        (3599, {"type": "ephemeral"}),
+        (3600, {"type": "ephemeral", "ttl": "1h"}),
+        (86400, {"type": "ephemeral", "ttl": "1h"}),
+    ],
+)
+async def test_cache_ttl_maps_onto_an_offered_lifetime(
+    lite_llm_instance, mock_acompletion, ttl_seconds, expected_control
+):
+  """Five minutes or an hour; a shorter ask gets five minutes."""
+  async for _ in lite_llm_instance.generate_content_async(
+      _cache_llm_request(ContextCacheConfig(ttl_seconds=ttl_seconds))
+  ):
+    pass
+
+  points = _injection_points(mock_acompletion)
+  assert [point["control"] for point in points] == [expected_control] * 2
+
+
+@pytest.mark.asyncio
+async def test_cache_config_below_min_tokens_sends_no_injection_points(
+    lite_llm_instance, mock_acompletion
+):
+  """A prompt the app called too small to cache is sent unmarked."""
+  llm_request = _cache_llm_request(ContextCacheConfig(min_tokens=5000))
+  llm_request.cacheable_contents_token_count = 4999
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  assert _injection_points(mock_acompletion) is None
+
+
+@pytest.mark.asyncio
+async def test_cache_config_at_min_tokens_sends_injection_points(
+    lite_llm_instance, mock_acompletion
+):
+  """Reaching the configured minimum is enough to start caching."""
+  llm_request = _cache_llm_request(ContextCacheConfig(min_tokens=5000))
+  llm_request.cacheable_contents_token_count = 5000
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  assert len(_injection_points(mock_acompletion)) == 2
+
+
+@pytest.mark.asyncio
+async def test_injection_points_given_at_construction_are_kept(
+    mock_client, mock_acompletion
+):
+  """A caller who named their own points knows their provider better."""
+  chosen = [{"location": "tool_config"}]
+  lite_llm_instance = LiteLlm(
+      model="test_model",
+      llm_client=mock_client,
+      cache_control_injection_points=chosen,
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(
+      _cache_llm_request(ContextCacheConfig())
+  ):
+    pass
+
+  assert _injection_points(mock_acompletion) == chosen

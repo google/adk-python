@@ -2563,7 +2563,7 @@ def test_build_request_log_function_declarations_in_second_tool():
 
 
 def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
-  """Test that _build_request_log falls back to repr() if model_dump fails."""
+  """Test that _build_request_log falls back to placeholder if model_dump fails."""
 
   llm_request = LlmRequest(
       model="gemini-2.5-flash",
@@ -2584,9 +2584,45 @@ def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
 
   log_output = _build_request_log(llm_request)
 
-  # Should still succeed using repr()
+  # Should still succeed using the placeholder
   assert "Config:" in log_output
-  assert "GenerateContentConfig" in log_output
+  assert "<error building config log>" in log_output
+
+
+def test_build_request_log_redacts_http_options_credentials():
+  """Test that _build_request_log redacts sensitive fields in http_options."""
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          http_options=types.HttpOptions(
+              headers={"Authorization": "Bearer secret_token"},
+              extra_body={"secret_key": "some_secret"},
+              client_args={"token": "arg_secret"},
+              async_client_args={"token": "async_secret"},
+              base_url="https://example.com/api",
+          ),
+      ),
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  assert "Config:" in log_output
+  # base_url should be present
+  assert "https://example.com/api" in log_output
+  # sensitive http_options fields should NOT be present in log_output
+  assert "secret_token" not in log_output
+  assert "secret_key" not in log_output
+  assert "arg_secret" not in log_output
+  assert "async_secret" not in log_output
+  assert "'headers'" not in log_output
+  assert "'extra_body'" not in log_output
+  assert "'client_args'" not in log_output
+  assert "'async_client_args'" not in log_output
+  assert "'httpx_client'" not in log_output
+  assert "'httpx_async_client'" not in log_output
+  assert "'aiohttp_client'" not in log_output
 
 
 @pytest.mark.asyncio

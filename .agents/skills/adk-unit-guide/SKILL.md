@@ -22,6 +22,10 @@ ships on adk.dev — so detail that would bloat the published documentation has
 somewhere to live. The reader wants to call the unit from an application, so
 lead with working code.
 
+Unit guides focus on public APIs and caller-visible behavior. Do not
+discuss internal implementation details (such as private methods, internal state
+mechanisms, or unexported helpers).
+
 ## Inputs
 
 Require the source file, or a class or method named inside it. Also read, when
@@ -34,6 +38,9 @@ document at `docs/design/{topic}/{unit}/index.md`.
 - Which classes depend on it, and which it depends on.
 - Configuration options the unit itself introduces, ignoring inherited ones.
 - Known limitations.
+- Exclude internal implementation details such as private methods and
+  attributes, internal helper functions, private execution state, or internal
+  data structures.
 
 ## Where the guide goes
 
@@ -60,6 +67,8 @@ of contents; a guide missing from it is unreachable.
 
 - One minimal example under "Get started", with enough of the surrounding
   classes to show where the call belongs. Start from a unit test if one exists.
+- Omit top-level `import` statements and `asyncio.run(main())` runner
+  boilerplate from example code snippets to keep the guide focused on the unit.
 - Do not set `model=` on a sample agent — guides stay model-agnostic, and no
   guide in `docs/guides/` currently pins a model.
 - For workflow nodes, show the logic as a plain Python function rather than a

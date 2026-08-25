@@ -20,6 +20,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import Field
+from pydantic import field_validator
 
 from ..events.event import Event
 from .session import Session
@@ -32,7 +33,8 @@ class GetSessionConfig(BaseModel):
   Attributes:
     num_recent_events: The limit of recent events to get for the session.
       Optional: if None, the filter is not applied; if greater than 0, returns
-        at most given number of recent events; if 0, no events are returned.
+        at most given number of recent events; if 0, no events are returned;
+        if negative, a ValueError is raised.
     after_timestamp: The earliest timestamp of events to get for the session.
       Optional: if None, the filter is not applied; otherwise, returns events
         with timestamp >= the given time.
@@ -40,6 +42,13 @@ class GetSessionConfig(BaseModel):
 
   num_recent_events: Optional[int] = None
   after_timestamp: Optional[float] = None
+
+  @field_validator('num_recent_events')
+  @classmethod
+  def _validate_num_recent_events(cls, value: Optional[int]) -> Optional[int]:
+    if value is not None and value < 0:
+      raise ValueError('num_recent_events must be greater than or equal to 0.')
+    return value
 
 
 class ListSessionsResponse(BaseModel):
