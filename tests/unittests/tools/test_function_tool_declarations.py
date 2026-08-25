@@ -73,6 +73,13 @@ class Person(BaseModel):
   address: Optional[Address] = None
 
 
+class AnnotatedAddress(BaseModel):
+  """A Pydantic model whose fields carry Annotated metadata."""
+
+  city: Annotated[str, Field(description="City name")]
+  zip_code: Annotated[str, Field(description="US ZIP code", pattern=r"^\d{5}$")]
+
+
 @pyd_dataclass
 class Window:
   """A Pydantic dataclass for testing."""
@@ -705,6 +712,42 @@ class TestAnnotatedMetadata(parameterized.TestCase):
         address_schema["anyOf"],
         [{"$ref": "#/$defs/Address"}, {"type": "null"}],
     )
+
+  def test_optional_annotated_field_metadata(self):
+    """Test Optional[Annotated[T, Field(...)]] keeps metadata inside the anyOf."""
+
+    def forecast(
+        days: Optional[
+            Annotated[int, Field(description="Number of days", ge=1)]
+        ] = None,
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(forecast)
+    days_schema = decl.parameters_json_schema["properties"]["days"]
+
+    self.assertIsNone(days_schema["default"])
+    self.assertEqual(
+        days_schema["anyOf"],
+        [
+            {"description": "Number of days", "minimum": 1, "type": "integer"},
+            {"type": "null"},
+        ],
+    )
+
+  def test_nested_model_annotated_field_metadata(self):
+    """Test a nested model's Annotated field metadata reaches its $defs entry."""
+
+    def register(address: AnnotatedAddress) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(register)
+    address_def = decl.parameters_json_schema["$defs"]["AnnotatedAddress"]
+    props = address_def["properties"]
+
+    self.assertEqual(props["city"]["description"], "City name")
+    self.assertEqual(props["zip_code"]["description"], "US ZIP code")
+    self.assertEqual(props["zip_code"]["pattern"], r"^\d{5}$")
 
   def test_annotated_nested_list_constraints(self):
     """Test Annotated metadata on both a list and its item type."""
