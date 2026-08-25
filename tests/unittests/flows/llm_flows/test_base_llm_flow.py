@@ -2707,7 +2707,7 @@ async def test_send_to_model_rejects_function_call():
   with pytest.raises(
       ValueError, match='User message cannot contain function calls'
   ):
-    await flow._send_to_model(mock_connection, invocation_context)
+    await flow._send_to_model(mock_connection, invocation_context, LlmRequest())
 
 
 @pytest.mark.asyncio

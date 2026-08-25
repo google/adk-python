@@ -28,11 +28,13 @@ from __future__ import annotations
 
 import enum
 import os
+from typing import Any
 from typing import Literal
 from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import PrivateAttr
 from pydantic import StrictBool
 
 ADK_TELEMETRY_IGNORE_RUN_CONFIG = 'ADK_TELEMETRY_IGNORE_RUN_CONFIG'
@@ -80,6 +82,48 @@ def _is_span_bearing(mode: ContentCapturingMode) -> bool:
   )
 
 
+def _read_experimental_genai_semconv() -> bool:
+  """Reads ``OTEL_SEMCONV_STABILITY_OPT_IN``."""
+  opt_ins = os.getenv(OTEL_SEMCONV_STABILITY_OPT_IN)
+  if not opt_ins:
+    return False
+  return _GENAI_EXPERIMENTAL_OPT_IN in (x.strip() for x in opt_ins.split(','))
+
+
+def _read_content_capturing_mode() -> ContentCapturingMode:
+  """Reads ``OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT``."""
+  stripped = os.getenv(
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, ''
+  ).strip()
+  # Back-compat: the old env path was boolean; a truthy value means EVENT_ONLY.
+  if stripped.lower() in _TRUTHY_ENV_VALUES:
+    return ContentCapturingMode.EVENT_ONLY
+  try:
+    return ContentCapturingMode(stripped.upper())
+  except ValueError:
+    return ContentCapturingMode.NO_CONTENT
+
+
+def _read_add_content_to_legacy_spans() -> bool:
+  """Reads ``ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS`` (defaults on)."""
+  env_value = (
+      os.getenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'true').strip().lower()
+  )
+  return env_value not in _FALSY_ENV_VALUES
+
+
+def _read_emit_experimental_telemetry() -> bool:
+  """Reads ``ADK_EXPERIMENTAL_TELEMETRY`` (defaults off)."""
+  env_value = os.getenv(ADK_EXPERIMENTAL_TELEMETRY, 'false').strip().lower()
+  return env_value in _TRUTHY_ENV_VALUES
+
+
+def _read_ignore_per_request() -> bool:
+  """Reads ``ADK_TELEMETRY_IGNORE_RUN_CONFIG`` (defaults off)."""
+  lock = os.getenv(ADK_TELEMETRY_IGNORE_RUN_CONFIG, '').strip().lower()
+  return lock in _TRUTHY_ENV_VALUES
+
+
 class TelemetryConfig(BaseModel):
   """Per-request OpenTelemetry configuration.
 
@@ -88,8 +132,10 @@ class TelemetryConfig(BaseModel):
   default-on ``ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS`` for legacy spans, and
   default-off ``ADK_EXPERIMENTAL_TELEMETRY`` for experimental telemetry).
   ``frozen=True`` lets the same config be shared safely across concurrent
-  invocations; the resolution properties read env lazily, so later
-  ``os.environ`` changes are still picked up.
+  invocations. Every env fallback is read once, at construction, so a config
+  is a decision rather than a live view of the environment and no
+  ``os.environ`` change can gate half of one run's telemetry. Construct a new
+  config to pick up a new environment.
 
   Limitations:
     * When ``opentelemetry-instrumentation-google-genai`` is installed and
@@ -120,15 +166,38 @@ class TelemetryConfig(BaseModel):
   capture_message_content: Optional[ContentCapturingMode] = None
   adk_experimental_telemetry_opt_in: Optional[StrictBool] = None
 
+  _env_experimental_genai_semconv: bool = PrivateAttr()
+  _env_content_capturing_mode: ContentCapturingMode = PrivateAttr()
+  _env_add_content_to_legacy_spans: bool = PrivateAttr()
+  _env_emit_experimental_telemetry: bool = PrivateAttr()
+  _env_ignore_per_request: bool = PrivateAttr()
+
+  def model_post_init(self, context: Any, /) -> None:
+    """Resolves the env-backed answers now, rather than on first read."""
+    del context  # Unused.
+    self._env_experimental_genai_semconv = _read_experimental_genai_semconv()
+    self._env_content_capturing_mode = _read_content_capturing_mode()
+    self._env_add_content_to_legacy_spans = _read_add_content_to_legacy_spans()
+    self._env_emit_experimental_telemetry = _read_emit_experimental_telemetry()
+    self._env_ignore_per_request = _read_ignore_per_request()
+
+  def __eq__(self, other: object) -> bool:
+    """Compares the fields, ignoring the env fallbacks cached beside them."""
+    if other.__class__ is not self.__class__:
+      return NotImplemented
+    return self.__dict__ == other.__dict__
+
+  def __hash__(self) -> int:
+    return hash((self.__class__, tuple(self.__dict__.values())))
+
   @property
   def _ignore_per_request(self) -> bool:
-    """Whether the admin lock (``ADK_TELEMETRY_IGNORE_RUN_CONFIG``) is set.
+    """Whether the admin lock (``ADK_TELEMETRY_IGNORE_RUN_CONFIG``) was set.
 
     When set, the per-request fields are ignored and resolution falls back to
     the ``OTEL_*`` env vars.
     """
-    lock = os.getenv(ADK_TELEMETRY_IGNORE_RUN_CONFIG, '').strip().lower()
-    return lock in _TRUTHY_ENV_VALUES
+    return self._env_ignore_per_request
 
   @property
   def should_use_experimental_genai_semconv(self) -> bool:
@@ -142,10 +211,7 @@ class TelemetryConfig(BaseModel):
         and self.genai_semconv_stability_opt_in is not None
     ):
       return self.genai_semconv_stability_opt_in == 'experimental'
-    opt_ins = os.getenv(OTEL_SEMCONV_STABILITY_OPT_IN)
-    if not opt_ins:
-      return False
-    return _GENAI_EXPERIMENTAL_OPT_IN in (x.strip() for x in opt_ins.split(','))
+    return self._env_experimental_genai_semconv
 
   @property
   def resolved_content_capturing_mode(self) -> ContentCapturingMode:
@@ -161,16 +227,7 @@ class TelemetryConfig(BaseModel):
         and self.capture_message_content is not None
     ):
       return self.capture_message_content
-    stripped = os.getenv(
-        OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, ''
-    ).strip()
-    # Back-compat: the old env path was boolean; a truthy value means EVENT_ONLY.
-    if stripped.lower() in _TRUTHY_ENV_VALUES:
-      return ContentCapturingMode.EVENT_ONLY
-    try:
-      return ContentCapturingMode(stripped.upper())
-    except ValueError:
-      return ContentCapturingMode.NO_CONTENT
+    return self._env_content_capturing_mode
 
   @property
   def content_capturing_mode_value(self) -> str:
@@ -213,10 +270,7 @@ class TelemetryConfig(BaseModel):
         and self.capture_message_content is not None
     ):
       return _is_span_bearing(self.capture_message_content)
-    env_value = (
-        os.getenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'true').strip().lower()
-    )
-    return env_value not in _FALSY_ENV_VALUES
+    return self._env_add_content_to_legacy_spans
 
   @property
   def should_emit_experimental_telemetry(self) -> bool:
@@ -235,6 +289,4 @@ class TelemetryConfig(BaseModel):
         and self.adk_experimental_telemetry_opt_in is not None
     ):
       return self.adk_experimental_telemetry_opt_in
-
-    env_value = os.getenv(ADK_EXPERIMENTAL_TELEMETRY, 'false').strip().lower()
-    return env_value in _TRUTHY_ENV_VALUES
+    return self._env_emit_experimental_telemetry

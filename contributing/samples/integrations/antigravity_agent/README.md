@@ -10,20 +10,23 @@ delegated to the Antigravity
 runner, and its trajectory steps (model text, tool calls, and tool responses)
 are streamed back as standard ADK events recorded in the session.
 
-`AntigravityAgent` must be used as a **standalone root agent** (the SDK currently
-only supports local mode). See the
+This sample uses `AntigravityAgent` as a **standalone ADK root agent**. It may
+also have ADK `sub_agents` of its own, and may itself be nested under an ADK
+parent if it sets `mode='single_turn'`. See the
 [package README](../../../../src/google/adk/labs/antigravity/README.md)
 for the full setup, limitations, and API details.
 
 ## Prerequisites
 
-- Install the SDK: `pip install "google-adk[antigravity]"`
+- Install the Antigravity SDK: `pip install "google-adk[antigravity]"`
 - Set a Gemini API key: `export GEMINI_API_KEY="your-api-key"`
   (required by the Antigravity SDK, which drives the model)
 
-The agent writes generated games into a `game_repo/` directory and persists
-conversation trajectories (for cross-turn resumption) into a `trajectories/`
-directory, both next to `agent.py` and created automatically on import.
+The Antigravity agent writes generated games into a `game_repo/` directory, and
+points the Antigravity SDK's `save_dir` at a `trajectories/` directory so the
+harness keeps its own scratch files there rather than in a fresh temporary
+directory per connection.
+Both sit next to `agent.py` and are created automatically on import.
 
 ## Sample Inputs
 
@@ -45,8 +48,8 @@ directory, both next to `agent.py` and created automatically on import.
 
 ## Graph
 
-Each turn, the wrapper delegates to the SDK agent's local Go harness and maps
-the trajectory steps it streams back into ADK events:
+Each turn, the wrapper delegates to the Antigravity agent's local Go harness
+and maps the trajectory steps it streams back into ADK events:
 
 ```mermaid
 graph LR
@@ -71,12 +74,16 @@ root_agent = AntigravityAgent(
 )
 ```
 
-The SDK agent enables its built-in file tools by default; the
+The Antigravity agent enables its built-in file tools by default; the
 `policy.workspace_only([...])` policy keeps all file reads and writes contained
-to `game_repo/`. Internally, `AntigravityAgent._run_async_impl` deep-copies the
-config per turn (the SDK's `AsyncExitStack` is single-use), enters a fresh SDK
-`Agent`, sends the latest user prompt, and converts each streamed Step into ADK
-events.
+to `game_repo/`. Internally, `AntigravityAgent` runs each turn on a fresh
+Antigravity SDK `Agent`, resuming the conversation the previous turn created:
+the conversation id is kept in ADK session state, so resumption survives a
+process restart. Each turn sends the latest user prompt and converts each
+streamed Step into ADK events.
 
-The root-only restriction is enforced at construction time: giving the agent
-`sub_agents`, or adopting it under a parent agent, raises a `ValueError`.
+The root-only restriction is enforced at construction time: adopting the
+Antigravity agent under an ADK parent raises a `ValueError` unless it sets
+`mode='single_turn'`. Giving it `sub_agents` is allowed -- each ADK child is
+bridged to the Antigravity harness as a client-side tool, so each child needs a
+non-empty `description`.

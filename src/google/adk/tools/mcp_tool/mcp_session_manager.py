@@ -78,6 +78,7 @@ except (ImportError, AttributeError):
 
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...telemetry import tracing
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -122,11 +123,33 @@ _http_debug_var: contextvars.ContextVar[list[dict[str, Any]] | None] = (
 
 
 def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
-  sensitive_keys = {'authorization', 'cookie', 'set-cookie', 'x-goog-api-key'}
+  sensitive_keys = {
+      'api-key',
+      'authorization',
+      'cookie',
+      'proxy-authorization',
+      'set-cookie',
+      'x-api-key',
+      'x-goog-api-key',
+  }
   return {
       k: '<redacted>' if k.lower() in sensitive_keys else v
       for k, v in headers.items()
   }
+
+
+def _sanitize_url(url: httpx.URL, *, redact_query: bool = False) -> str:
+  """Renders `url` for recording, with any userinfo credential dropped."""
+  sanitized = url.copy_with(userinfo=b'')
+  # The `url.full` convention wants query values redacted. The session id, the
+  # one value worth keeping, is recorded separately as `mcp.session.id`.
+  if redact_query and url.query:
+    redacted = '&'.join(
+        f'{key}=REDACTED'
+        for key in urllib.parse.parse_qs(url.query.decode(errors='replace'))
+    )
+    sanitized = sanitized.copy_with(query=redacted.encode())
+  return str(sanitized)
 
 
 class _StreamableHttpClientWrapper:
@@ -262,7 +285,15 @@ class CheckableMcpHttpClientFactory(Protocol):
 
 
 class _DebugHttpxClientFactory:
-  """A factory wrapper that hooks into the httpx.AsyncClient responses to capture debug info."""
+  """A factory wrapper that hooks into the httpx.AsyncClient responses to capture debug info.
+
+  Each exchange goes to two independently gated sinks:
+
+    - `custom_metadata['http_debug_info']`, whenever a caller has stashed a list
+      in `_http_debug_var` (which `McpTool` / `McpToolset` do at DEBUG);
+    - an `adk.experimental.mcp.http.client.response.end` OTel log record,
+      whenever `ADK_EXPERIMENTAL_TELEMETRY` opts in to experimental telemetry.
+  """
 
   def __init__(
       self,
@@ -293,25 +324,32 @@ class _DebugHttpxClientFactory:
     )
 
   async def _response_hook(self, response: httpx.Response):
+    session_id = self._extract_session_id(response)
+
     debug_list = None
-    if self._session_manager is not None:
-      session_id = self._extract_session_id(response)
-      if session_id:
-        debug_list = self._session_manager._get_active_debug_list_by_session_id(
-            session_id
-        )
+    if self._session_manager is not None and session_id:
+      debug_list = self._session_manager._get_active_debug_list_by_session_id(
+          session_id
+      )
 
     if debug_list is None:
       debug_list = _http_debug_var.get(None)
 
-    if debug_list is None:
+    report_to_otel = tracing._should_report_mcp_http_exchanges()  # pylint: disable=protected-access
+    if debug_list is None and not report_to_otel:
       return
 
-    content_type = response.headers.get('content-type', '')
+    # The legacy buffer always keeps the payload; the OTel record only does when
+    # body capture is on. A body no sink will keep is not worth decoding.
+    capture_bodies = debug_list is not None or (
+        report_to_otel and tracing._should_capture_mcp_http_bodies()  # pylint: disable=protected-access
+    )
+
+    content_type = response.headers.get('content-type', '').lower()
     is_sse = 'text/event-stream' in content_type
 
     request_body = None
-    if response.request.content:
+    if capture_bodies and response.request.content:
       try:
         request_body = response.request.content.decode(
             'utf-8', errors='replace'
@@ -321,7 +359,11 @@ class _DebugHttpxClientFactory:
       except Exception:  # pylint: disable=broad-exception-caught
         request_body = '<binary>'
 
-    if not is_sse:
+    response_body = None
+    if is_sse:
+      # Reading an SSE body would starve the transport of its events.
+      response_body = '<SSE stream>'
+    elif capture_bodies:
       try:
         await response.aread()
         response_body = response.text
@@ -331,19 +373,50 @@ class _DebugHttpxClientFactory:
           )
       except Exception as e:  # pylint: disable=broad-exception-caught
         response_body = f'<failed to read body: {e}>'
-    else:
-      response_body = '<SSE stream>'
 
-    debug_info = {
-        'url': str(response.url),
-        'status_code': response.status_code,
-        'method': response.request.method,
-        'request_headers': _redact_headers(dict(response.request.headers)),
-        'request_body': request_body,
-        'response_headers': _redact_headers(dict(response.headers)),
-        'response_body': response_body,
-    }
-    debug_list.append(debug_info)
+    request_headers = _redact_headers(dict(response.request.headers))
+    response_headers = _redact_headers(dict(response.headers))
+
+    if debug_list is not None:
+      debug_list.append({
+          'url': _sanitize_url(response.url),
+          'status_code': response.status_code,
+          'method': response.request.method,
+          'request_headers': request_headers,
+          'request_body': request_body,
+          'response_headers': response_headers,
+          'response_body': response_body,
+      })
+
+    if report_to_otel:
+      try:
+        tracing._trace_mcp_http_exchange(  # pylint: disable=protected-access
+            method=response.request.method,
+            url=_sanitize_url(response.url, redact_query=True),
+            server_address=response.url.host,
+            server_port=response.url.port,
+            status_code=response.status_code,
+            # Three transports put the id in three places: the legacy
+            # `?sessionId=` query, the initialize response, and every later
+            # request the client echoes it on.
+            mcp_session_id=(
+                session_id
+                or response.headers.get('mcp-session-id')
+                or response.request.headers.get('mcp-session-id')
+            ),
+            mcp_protocol_version=(
+                response.headers.get('mcp-protocol-version')
+                or response.request.headers.get('mcp-protocol-version')
+            ),
+            request_headers=request_headers,
+            request_body=request_body,
+            response_headers=response_headers,
+            response_body=response_body,
+        )
+      except Exception:  # pylint: disable=broad-exception-caught
+        # httpx re-raises whatever an event hook raises, so a broken log
+        # processor would otherwise fail the MCP call.
+        logger.warning('Failed to report MCP HTTP exchange', exc_info=True)
 
 
 class StreamableHTTPConnectionParams(BaseModel):

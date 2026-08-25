@@ -600,7 +600,9 @@ class Runner:
     async def _run() -> AsyncGenerator[Event, None]:
       nonlocal invocation_id, new_message, session
       with _instrumentation.record_invocation(
-          entrypoint_node=node or self.agent, conversation_id=session_id
+          entrypoint_node=node or self.agent,
+          conversation_id=session_id,
+          run_config=run_config or RunConfig(),
       ):
         # 1. Setup
         if session is None:
@@ -1376,7 +1378,9 @@ class Runner:
     ) -> AsyncGenerator[Event, None]:
       caller_ctx_trace = context.get_current()
       with _instrumentation.record_invocation(
-          entrypoint_node=root_agent, conversation_id=session_id
+          entrypoint_node=root_agent,
+          conversation_id=session_id,
+          run_config=run_config,
       ):
         session = await self._get_or_create_session(
             user_id=user_id,

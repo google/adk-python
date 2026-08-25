@@ -33,6 +33,7 @@ from . import _token_usage
 from . import tracing
 from ._schema_version import resolve_schema_version
 from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
+from .context import TelemetryConfig
 
 # pylint: disable=g-import-not-at-top
 if TYPE_CHECKING:
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
 
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
+  from ..agents.run_config import RunConfig
   from ..events import event as event_lib
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
@@ -53,12 +55,61 @@ _INVOKE_AGENT_TELEMETRY_KEY = context_api.create_key("invoke_agent_telemetry")
 _TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
     "tool_execution_telemetry"
 )
+_WORKFLOW_SCOPE_KEY = context_api.create_key("adk_workflow_scope")
+
+
+@dataclasses.dataclass
+class _WorkflowScope:
+  """State accumulated across one `invoke_workflow`, root or nested.
+
+  Exactly one `invoke_workflow` per turn is unnested, so the root instance is
+  the turn and the two need no separate types. Totals are inclusive of the
+  workflows nested inside, so summing across datapoints double counts unless
+  the query pins `gen_ai.workflow.nested`.
+  """
+
+  root_agent_name: str
+  """The agent the turn entered at, not the app. A sticky `transfer_to_agent`
+  moves it from one turn to the next."""
+
+  telemetry_config: TelemetryConfig
+  """The config the turn was claimed under, inherited by the workflows nested
+  inside it, so one turn shares one config."""
+
+  workflow_name: str | None
+  """The name the datapoint is filed under. Set by the reporting span."""
+
+  parent: _WorkflowScope | None
+  """The enclosing scope, None on the root. Its presence is what
+  `gen_ai.workflow.nested` reports."""
+
+  token_totals: _token_usage.InvocationTokenTotals | None = None
+  """The accumulator, empty to begin with unlike the fields above."""
+
+  inference_call_count: int = 0
+  """Model calls made anywhere inside this workflow."""
+
+  tool_call_count: int = 0
+  """Tool calls made anywhere inside this workflow, including the
+  `transfer_to_agent` calls that route between its agents."""
+
+  def self_and_enclosing(self) -> Iterator[_WorkflowScope]:
+    """Yields this scope, then each one enclosing it, outermost last.
+
+    What a call spends belongs to every workflow it ran inside, so anything
+    accumulated per call walks this chain rather than stopping here.
+    """
+    scope: _WorkflowScope | None = self
+    while scope is not None:
+      yield scope
+      scope = scope.parent
 
 
 @contextlib.contextmanager
 def record_invocation(
     entrypoint_node: BaseNode | None,
     conversation_id: str,
+    run_config: RunConfig | None = None,
 ) -> Iterator[None]:
   """Top-level invocation span for a runner invocation.
 
@@ -72,6 +123,8 @@ def record_invocation(
   Args:
     entrypoint_node: The runner's root agent/node.
     conversation_id: Session/conversation id (stamped on the v2 span).
+    run_config: The run's config, whose telemetry settings carry the
+      experimental opt-in the span's token scope is gated on.
 
   Yields:
     Nothing; the span (if any) is active for the duration of the block.
@@ -90,7 +143,11 @@ def record_invocation(
     return
 
   entrypoint_name = entrypoint_node.name if entrypoint_node else ""
-  with node_tracing._use_invoke_workflow_span(entrypoint_name, conversation_id):
+  with node_tracing._use_invoke_workflow_span(
+      entrypoint_name,
+      conversation_id,
+      telemetry_config=run_config.telemetry if run_config else None,
+  ):
     yield
 
 
@@ -227,24 +284,92 @@ def _flush_invoke_agent_metrics(
   _metrics.record_invoke_agent_tool_calls(agent_name, tel_ctx.tool_call_count)
 
 
-def _active_invoke_agent_tel_ctx() -> TelemetryContext | None:
-  """Returns the TelemetryContext of the active invoke_agent span."""
+def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
+  """Flushes one workflow's metrics; called once, by the scope's owner."""
+  if not scope.telemetry_config.should_emit_experimental_telemetry:
+    return
+  nested = scope.parent is not None
+  # We always record call counts because a count of 0 is a valid, accurate
+  # measurement. For tokens, `None` means usage just wasn't reported, which
+  # isn't the same as knowing the spend was exactly zero. So we skip tokens if
+  # they are `None`.
+  if scope.token_totals is not None:
+    _metrics.record_invoke_workflow_token_usage(
+        root_agent_name=scope.root_agent_name,
+        workflow_name=scope.workflow_name,
+        totals=scope.token_totals,
+        nested=nested,
+    )
+  _metrics.record_invoke_workflow_inference_calls(
+      root_agent_name=scope.root_agent_name,
+      workflow_name=scope.workflow_name,
+      count=scope.inference_call_count,
+      nested=nested,
+  )
+  _metrics.record_invoke_workflow_tool_calls(
+      root_agent_name=scope.root_agent_name,
+      workflow_name=scope.workflow_name,
+      count=scope.tool_call_count,
+      nested=nested,
+  )
+
+
+def _invoke_agent_tel_ctx() -> TelemetryContext | None:
+  """Returns the invoke_agent span's TelemetryContext."""
   value = context_api.get_value(_INVOKE_AGENT_TELEMETRY_KEY)
   return value if isinstance(value, TelemetryContext) else None
 
 
+def _workflow_scope(
+    otel_context: context_api.Context | None = None,
+) -> _WorkflowScope | None:
+  """Returns the innermost workflow scope, whose totals these are.
+
+  Args:
+    otel_context: Context to read from; defaults to the one in force.
+  """
+  value = context_api.get_value(_WORKFLOW_SCOPE_KEY, otel_context)
+  return value if isinstance(value, _WorkflowScope) else None
+
+
 def _accumulate_invoke_agent_tool_call() -> None:
-  """Counts one tool call against the active invoke_agent span."""
-  span_tel_ctx = _active_invoke_agent_tel_ctx()
+  """Counts one tool call against the invoke_agent span."""
+  span_tel_ctx = _invoke_agent_tel_ctx()
   if span_tel_ctx is not None:
     span_tel_ctx.increment_tool_calls()
 
 
 def _accumulate_invoke_agent_inference_call() -> None:
-  """Counts one model call against the active invoke_agent span."""
-  span_tel_ctx = _active_invoke_agent_tel_ctx()
+  """Counts one model call against the invoke_agent span."""
+  span_tel_ctx = _invoke_agent_tel_ctx()
   if span_tel_ctx is not None:
     span_tel_ctx.increment_inference_calls()
+
+
+def _accumulate_invoke_workflow_tool_call(scope: _WorkflowScope | None) -> None:
+  """Counts one tool call against every workflow enclosing it.
+
+  Args:
+    scope: The workflow the call ran inside.
+  """
+  if scope is None:
+    return
+  for enclosing in scope.self_and_enclosing():
+    enclosing.tool_call_count += 1
+
+
+def _accumulate_invoke_workflow_inference_call(
+    scope: _WorkflowScope | None,
+) -> None:
+  """Counts one model call against every workflow enclosing it.
+
+  Args:
+    scope: The workflow the call ran inside.
+  """
+  if scope is None:
+    return
+  for enclosing in scope.self_and_enclosing():
+    enclosing.inference_call_count += 1
 
 
 def _active_tool_execution_tel_ctx() -> TelemetryContext | None:
@@ -302,31 +427,36 @@ def attach_skill_telemetry(
   tel_ctx.skill_telemetry = skill_telemetry
 
 
-def _accumulate_invoke_agent_tokens(responses: list[LlmResponse]) -> None:
-  """Adds one model call's token usage to the active invoke_agent span.
+def _accumulate_invoke_agent_tokens(usage: _token_usage.TokenUsage) -> None:
+  """Adds one model call's token usage to the active invoke_agent span."""
+  span_tel_ctx = _invoke_agent_tel_ctx()
+  if span_tel_ctx is None:
+    return
+  if span_tel_ctx.token_totals is None:
+    span_tel_ctx.token_totals = _token_usage.InvocationTokenTotals()
+  span_tel_ctx.token_totals.add(usage)
+
+
+def _accumulate_invoke_workflow_tokens(
+    usage: _token_usage.TokenUsage,
+    scope: _WorkflowScope | None,
+) -> None:
+  """Adds one model call's token usage to every workflow enclosing the call.
+
+  The turn included: several aggregations of one call, not double counting.
+  Where an agent's total is exclusive to that agent, a workflow's is inclusive
+  of everything that ran in it.
 
   Args:
-    responses: The responses produced by a single model call, in order.
+    usage: What the call spent.
+    scope: The workflow the call ran inside.
   """
-  # Each report is cumulative for the call so far, which makes the newest one
-  # the whole figure and summing them a double count. Taking the newest report
-  # rather than the last response keeps a cut-short stream's usage, which a
-  # trailing chunk that carries none would otherwise drop.
-  reported = [
-      response.usage_metadata
-      for response in responses
-      if response.usage_metadata
-  ]
-  if not reported:
+  if scope is None:
     return
-  usage = _token_usage.TokenUsage(reported[-1])
-  if usage.input_token_count is None and usage.output_token_count is None:
-    return
-  span_tel_ctx = _active_invoke_agent_tel_ctx()
-  if span_tel_ctx is not None:
-    if span_tel_ctx.token_totals is None:
-      span_tel_ctx.token_totals = _token_usage.InvocationTokenTotals()
-    span_tel_ctx.token_totals.add(usage)
+  for enclosing in scope.self_and_enclosing():
+    if enclosing.token_totals is None:
+      enclosing.token_totals = _token_usage.InvocationTokenTotals()
+    enclosing.token_totals.add(usage)
 
 
 @contextlib.asynccontextmanager
@@ -370,6 +500,7 @@ async def record_tool_execution(
 ) -> AsyncIterator[TelemetryContext]:
   """Unified context manager for consolidated tool execution telemetry."""
   start_time = time.monotonic()
+  workflow_scope = _workflow_scope()
   caught_error: Exception | None = None
   detected_error_type: str | None = None
   span: trace.Span | None = None
@@ -409,6 +540,11 @@ async def record_tool_execution(
           )
   finally:
     _accumulate_invoke_agent_tool_call()
+    # Workflow-grain metrics are experimental, skip counting if not opted-in.
+    if tracing._telemetry_config_from_invocation_context(
+        invocation_context
+    ).should_emit_experimental_telemetry:
+      _accumulate_invoke_workflow_tool_call(workflow_scope)
     try:
       _metrics.record_tool_execution_duration(
           tool_name=tool.name,
@@ -432,6 +568,7 @@ async def record_inference_telemetry(
 ) -> AsyncIterator[TelemetryContext]:
   """Unified async context manager for consolidated inference metrics."""
   start_time = time.monotonic()
+  workflow_scope = _workflow_scope()
   tel_ctx: TelemetryContext = TelemetryContext()
   try:
     async with tracing.use_inference_span(
@@ -449,7 +586,11 @@ async def record_inference_telemetry(
     if tracing._telemetry_config_from_invocation_context(
         invocation_context
     ).should_emit_experimental_telemetry:
-      _accumulate_invoke_agent_tokens(tel_ctx.llm_responses)
+      _accumulate_invoke_workflow_inference_call(workflow_scope)
+      usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
+      if usage is not None:
+        _accumulate_invoke_agent_tokens(usage)
+        _accumulate_invoke_workflow_tokens(usage, workflow_scope)
     agent = invocation_context.agent
     elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:

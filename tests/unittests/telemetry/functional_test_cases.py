@@ -37,6 +37,8 @@ makes, in the shape users will see it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+from typing import Sequence
 
 from google.genai import errors as genai_errors
 
@@ -83,6 +85,39 @@ def semconv_matrix(scenario: Scenario) -> list[FunctionalTestCase]:
   ]
 
 
+def experimental_adk_matrix(
+    scenario: Scenario,
+    *,
+    schema_versions: Sequence[Literal[1, 2]] = (1, 2),
+) -> list[FunctionalTestCase]:
+  """Returns the ``adk.experimental.*`` opt-in x schema version, for one scenario.
+
+  Both sides of the opt-in are recorded, since a golden pins what a case emits
+  and what it does not: the opted-in rows hold the experimental metrics, and
+  the rows beside them hold the same run without them.
+
+  Args:
+    scenario: The scenario to run under each configuration.
+    schema_versions: Schema versions to record, for a scenario whose telemetry
+      the version does not gate.
+  """
+  return [
+      FunctionalTestCase(
+          test_id=(
+              f"{'' if experimental_telemetry else 'no-'}"
+              f"experimental-telemetry-schema-v{schema_version}"
+          ),
+          scenario=scenario,
+          semconv_opt_in=None,
+          capture_content="false",
+          schema_version=schema_version,
+          experimental_telemetry=experimental_telemetry,
+      )
+      for experimental_telemetry in (True, False)
+      for schema_version in schema_versions
+  ]
+
+
 # An API error, reported as its HTTP status code (`429`). Non-API errors fall
 # back to the exception class name (see the `ValueError` case below).
 RESOURCE_EXHAUSTED = genai_errors.ClientError(
@@ -91,6 +126,9 @@ RESOURCE_EXHAUSTED = genai_errors.ClientError(
 
 
 ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
+    # Opted in to what the ``stable-no-capture`` rows above run without, and
+    # named for them: those rows are this pair's opt-in-less twin, so the two
+    # goldens together are what pins the gate for this scenario.
     FunctionalTestCase(
         test_id="experimental-telemetry-stable-no-capture-schema-v1",
         scenario="agent",
@@ -107,6 +145,10 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         experimental_telemetry=True,
     ),
+    # Two agents in the one turn. The per-agent metrics split the spend
+    # between them; the turn-grain ones sum it, and land on the same numbers
+    # as the two rows above, which spend the same usages inside one agent.
+    *experimental_adk_matrix("multi_agent"),
     # Inference failures: the model raises before responding, so the
     # invocation aborts mid-flight and the failure surfaces on ``error.type``.
     FunctionalTestCase(
@@ -248,4 +290,32 @@ MCP_CASE = FunctionalTestCase(
     semconv_opt_in=EXPERIMENTAL_OPT_IN,
     capture_content="span_and_event",
     schema_version=1,
+)
+
+# The same agent, with the tool call also posted to a canned MCP server over
+# ADK's instrumented httpx client. Pins the transport record --
+# `adk.experimental.mcp.http.client.response.end` -- in full: the attributes
+# it carries, the payload the body opt-in admits, the one header the OTel
+# capture env var names, and that it lands on the `execute_tool` span. Fully
+# opted in, because everything about the record is off by default.
+MCP_HTTP_CASE = FunctionalTestCase(
+    test_id="http-exchange",
+    scenario="mcp",
+    semconv_opt_in=EXPERIMENTAL_OPT_IN,
+    capture_content="span_and_event",
+    schema_version=1,
+    experimental_telemetry=True,
+    mcp_over_http=True,
+    env={
+        "ADK_CAPTURE_MCP_HTTP_BODIES": "true",
+        # `authorization` is allowlisted deliberately: the golden then shows
+        # what asking for a credential header gets you, which is the redaction
+        # marker rather than the credential.
+        "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST": (
+            "authorization"
+        ),
+        "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE": (
+            "content-type"
+        ),
+    },
 )

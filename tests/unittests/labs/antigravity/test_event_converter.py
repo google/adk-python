@@ -579,8 +579,8 @@ _RESPONSE_PART = genai_types.Part(
         pytest.param(_event(parts=[_TEXT_PART]), 'answer', id='text'),
         pytest.param(
             _event(parts=[_TEXT_PART, _TEXT_PART]),
-            'answeranswer',
-            id='text_parts_concatenated',
+            'answer\nanswer',
+            id='text_parts_joined_with_newline',
         ),
         pytest.param(
             _event(parts=[_THOUGHT_PART, _TEXT_PART]),
@@ -609,3 +609,9 @@ _RESPONSE_PART = genai_types.Part(
 def test_final_model_text_filters(event, expected):
   """Only this agent's own, complete, user-visible text counts."""
   assert _event_converter.final_model_text(event, 'agy') == expected
+
+
+def test_final_model_text_without_an_author_accepts_any_author():
+  event = _event(author='some_other_agent', parts=[_TEXT_PART])
+
+  assert _event_converter.final_model_text(event) == 'answer'

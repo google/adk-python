@@ -377,19 +377,24 @@ def convert_step_to_events(
   ]
 
 
-def final_model_text(event: Event, author: str) -> str | None:
+def final_model_text(event: Event, author: str | None = None) -> str | None:
   """Returns an event's user-visible model text, or None if it carries none.
 
-  Partials, other authors, and thought/function parts do not count.
+  Partials and thought/function parts never count.
 
   Args:
     event: The event to inspect.
-    author: The agent name whose events count as model output.
+    author: If given, only this ADK agent's own events count. A composite ADK
+      agent authors its events under its sub-agents' names, so leave this unset
+      to accept whatever the ADK agent tree produced.
 
   Returns:
-    The concatenated user-visible text, or None if the event carries none.
+    The user-visible text, its parts joined with newlines as ``AgentTool``
+    does, or None if the event carries none.
   """
-  if event.partial or event.author != author or not event.content:
+  if event.partial or not event.content:
+    return None
+  if author is not None and event.author != author:
     return None
   parts = event.content.parts or []
   chunks = [
@@ -400,4 +405,4 @@ def final_model_text(event: Event, author: str) -> str | None:
       and not part.function_call
       and not part.function_response
   ]
-  return ''.join(chunks) if chunks else None
+  return '\n'.join(chunks) if chunks else None
