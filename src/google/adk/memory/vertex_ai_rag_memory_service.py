@@ -20,6 +20,7 @@ import base64
 import binascii
 from collections import OrderedDict
 import json
+import logging
 import os
 import tempfile
 from typing import Optional
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
   from ..events.event import Event
   from ..sessions.session import Session
 
+logger = logging.getLogger("google_adk." + __name__)
 
 _SOURCE_DISPLAY_NAME_PREFIX = "adk-memory-v1."
 
@@ -178,8 +180,15 @@ class VertexAiRagMemoryService(BaseMemoryService):
       if temp_file_path:
         try:
           os.remove(temp_file_path)
-        except FileNotFoundError:
-          pass
+        except OSError:
+          # Best effort: this runs in a finally, so raising here would
+          # displace the exception already propagating, and a cancelled
+          # upload can leave the worker thread still holding the file.
+          logger.warning(
+              "Could not remove the temporary transcript at %s",
+              temp_file_path,
+              exc_info=True,
+          )
 
   @override
   async def search_memory(

@@ -50,7 +50,10 @@ def _iter_artifact_dirs(root: Path) -> list[Path]:
     current = Path(dirpath)
     if (current / "versions").exists():
       artifact_dirs.append(current)
-      dirnames.clear()
+      # An artifact directory doubles as the parent of anything nested under
+      # it ("doc" and "doc/nested"), so keep walking, skipping only the
+      # stored versions of this artifact.
+      dirnames[:] = [name for name in dirnames if name != "versions"]
   return artifact_dirs
 
 
@@ -291,6 +294,28 @@ def _canonical_uri(artifact_dir: Path, version: int) -> str:
   """Builds the canonical file:// URI for an artifact payload."""
   payload_path = _versions_dir(artifact_dir) / str(version) / artifact_dir.name
   return payload_path.resolve().as_uri()
+
+
+def _prune_empty_dirs(leaf: Path, stop_at: Path) -> None:
+  """Removes `leaf` and any parents it leaves empty, stopping at `stop_at`.
+
+  Filenames may contain "/", so the directory of an artifact doubles as the
+  parent directory of every artifact nested under it: "doc" is stored at
+  ``{scope}/doc`` and "doc/nested" at ``{scope}/doc/nested``. A directory may
+  therefore only be removed once it holds nothing, or deleting "doc" would
+  take "doc/nested" with it.
+
+  Args:
+    leaf: Directory to remove, if it is empty.
+    stop_at: Scope root. It and everything above it are never removed.
+  """
+  current = leaf
+  while current != stop_at and current.is_relative_to(stop_at):
+    try:
+      current.rmdir()  # Only succeeds on an empty directory.
+    except OSError:
+      return
+    current = current.parent
 
 
 def _list_versions_on_disk(artifact_dir: Path) -> list[int]:
@@ -703,9 +728,18 @@ class FileArtifactService(BaseArtifactService):
         session_id=session_id,
         filename=filename,
     )
-    if artifact_dir.exists():
-      shutil.rmtree(artifact_dir)
-      logger.debug("Deleted artifact %s at %s", filename, artifact_dir)
+    versions_dir = _versions_dir(artifact_dir)
+    if not versions_dir.exists():
+      return
+    # Only this artifact's own versions go. Its directory may also be the
+    # parent of a nested artifact ("doc" vs "doc/nested"), so it is pruned
+    # separately and only if nothing is left under it.
+    shutil.rmtree(versions_dir)
+    scope_root = self._scope_root(
+        self._base_root(app_name, user_id), session_id, filename
+    )
+    _prune_empty_dirs(artifact_dir, scope_root)
+    logger.debug("Deleted artifact %s at %s", filename, artifact_dir)
 
   @override
   async def list_versions(

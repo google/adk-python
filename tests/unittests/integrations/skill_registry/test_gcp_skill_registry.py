@@ -196,6 +196,10 @@ async def test_get_skill_raises_on_invalid_skill_name(mock_vertex_client):
         "my-skill/revisions/rev-123",
         "My-Skill",
         "",
+        # The pattern ends in `$`, which outside MULTILINE also matches just
+        # before a trailing newline, so `match` let this reach the resource
+        # name.
+        "my-skill\n",
     ],
 )
 @pytest.mark.asyncio
