@@ -232,8 +232,7 @@ async def _convert_tool_union_to_tools(
 
 
 # GenerateContentConfig fields that already have a dedicated LlmAgent argument.
-# Passing them as LlmAgent kwargs should point at that argument rather than
-# folding into generate_content_config (which would then fail later).
+# Passing them as LlmAgent kwargs should point at that argument.
 _GENERATE_CONTENT_FIELDS_OWNED_BY_AGENT: dict[str, str] = {
     'system_instruction': 'instruction',
     'response_schema': 'output_schema',
@@ -255,25 +254,41 @@ def _generate_content_field_name(key: str) -> Optional[str]:
   return _GENERATE_CONTENT_FIELD_NAMES.get(key)
 
 
-def _existing_generate_content_as_dict(
-    existing: Any,
-) -> Optional[dict[str, Any]]:
-  """Normalize generate_content_config input to a snake_case dict.
+def _agent_input_names(cls: type[BaseModel]) -> set[str]:
+  """Field names and aliases accepted by this agent class."""
+  names = set(cls.model_fields)
+  for field in cls.model_fields.values():
+    if field.alias is not None:
+      names.add(field.alias)
+  return names
 
-  Returns None when the value is not a recognized config shape so the
-  generate_content_config field validator can report the type error.
-  """
-  if existing is None:
-    return {}
-  if isinstance(existing, types.GenerateContentConfig):
-    return existing.model_dump(exclude_unset=True)
-  if isinstance(existing, dict):
-    normalized: dict[str, Any] = {}
-    for key, value in existing.items():
-      canonical = _generate_content_field_name(key) or key
-      normalized[canonical] = value
-    return normalized
-  return None
+
+def _redirect_kwargs_message(redirected: list[tuple[str, str]]) -> str:
+  details = '. '.join(
+      f'`{src}` must be set via LlmAgent.{dest}, not via LlmAgent({src}=...)'
+      for src, dest in redirected
+  )
+  return details + '.'
+
+
+def _misplaced_config_kwargs_message(misplaced: list[str]) -> str:
+  example = ', '.join(f'{name}=...' for name in misplaced)
+  if len(misplaced) == 1:
+    return (
+        f'{misplaced[0]} is a GenerateContentConfig field. Pass'
+        ' generate_content_config=types.GenerateContentConfig('
+        f'{example}) instead.'
+    )
+  named = ', '.join(misplaced)
+  return (
+      f'{named} are GenerateContentConfig fields. Pass'
+      ' generate_content_config=types.GenerateContentConfig('
+      f'{example}) instead.'
+  )
+
+
+def _extra_inputs_message(extras: list[str]) -> str:
+  return 'Extra inputs are not permitted: ' + ', '.join(extras) + '.'
 
 
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
@@ -281,20 +296,18 @@ def _existing_generate_content_as_dict(
 class LlmAgent(BaseAgent, abc.ABC):
   """LLM-based Agent.
 
-  Generation settings from ``google.genai.types.GenerateContentConfig``
-  such as ``temperature``, ``top_p``, and ``max_output_tokens`` can be
-  passed directly as keyword arguments. They are merged into
-  ``generate_content_config``.
+  Generation settings such as ``temperature``, ``top_p``, and
+  ``max_output_tokens`` belong on ``generate_content_config``:
 
-  Example:
     ```python
     from google.adk.agents import LlmAgent
+    from google.genai import types
 
     agent = LlmAgent(
         name='grader',
         model='gemini-3.5-flash',
         instruction='Grade the exam.',
-        temperature=0.1,
+        generate_content_config=types.GenerateContentConfig(temperature=0.1),
     )
     ```
   """
@@ -418,13 +431,11 @@ class LlmAgent(BaseAgent, abc.ABC):
   generate_content_config: Optional[types.GenerateContentConfig] = None
   """The additional content generation configurations.
 
-  Generation knobs such as temperature, top_p, and max_output_tokens may
-  also be passed directly as LlmAgent keyword arguments; they are merged
-  into this config.
-
   NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
-  thinking_config can be configured here or via the `planner`. If both are
-  set, the planner's configuration takes precedence.
+  thinking_config can be configured here or via the `planner`. If both are set, the planner's configuration takes precedence.
+
+  For example: use this config to adjust model temperature, configure safety
+  settings, etc.
   """
 
   mode: Literal['chat', 'task', 'single_turn'] | None = None
@@ -1153,69 +1164,50 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   @model_validator(mode='before')
   @classmethod
-  def _fold_generate_content_kwargs(cls, data: Any) -> Any:
-    """Fold GenerateContentConfig fields passed as LlmAgent kwargs.
+  def _reject_misplaced_generate_content_kwargs(cls, data: Any) -> Any:
+    """Redirect GenerateContentConfig fields passed as LlmAgent kwargs.
 
-    Users coming from google-genai often pass temperature= (and similar
-    generation knobs) on LlmAgent. Merge those into generate_content_config
-    so construction succeeds, and point reserved fields at the LlmAgent
-    argument that owns them.
+    Unknown keys that match a GenerateContentConfig field get an error
+    that names ``generate_content_config``. Reserved fields that already
+    have an LlmAgent argument (system_instruction, response_schema) point
+    at that argument. Other unknown keys are left for extra_forbidden
+    unless they arrive together with a config-field error, in which case
+    they are included in the same ValueError.
     """
     if not isinstance(data, dict):
       return data
 
-    convenience_kwargs: dict[str, Any] = {}
+    agent_names = _agent_input_names(cls)
     redirected: list[tuple[str, str]] = []
-    for key, value in data.items():
+    misplaced: list[str] = []
+    seen_misplaced: set[str] = set()
+    extras: list[str] = []
+    for key in data:
+      # Known LlmAgent fields, including tools (which is also a
+      # GenerateContentConfig name), must not be hijacked.
+      if key in agent_names:
+        continue
       gcc_field = _generate_content_field_name(key)
-      if gcc_field is None or gcc_field in cls.model_fields:
+      if gcc_field is None:
+        extras.append(key)
         continue
       agent_field = _GENERATE_CONTENT_FIELDS_OWNED_BY_AGENT.get(gcc_field)
       if agent_field is not None:
         redirected.append((key, agent_field))
         continue
-      if gcc_field in convenience_kwargs:
-        raise ValueError(
-            f'Generation setting `{gcc_field}` was passed more than once'
-            ' (including via its GenerateContentConfig alias). Set it in'
-            ' only one place.'
-        )
-      convenience_kwargs[gcc_field] = value
+      if gcc_field not in seen_misplaced:
+        seen_misplaced.add(gcc_field)
+        misplaced.append(gcc_field)
 
+    parts: list[str] = []
     if redirected:
-      details = '. '.join(
-          f'`{src}` must be set via LlmAgent.{dest}, not via'
-          f' LlmAgent({src}=...)'
-          for src, dest in redirected
-      )
-      raise ValueError(details + '.')
-
-    if not convenience_kwargs:
-      return data
-
-    existing_dict = _existing_generate_content_as_dict(
-        data.get('generate_content_config')
-    )
-    if existing_dict is None:
-      return data
-
-    conflicts = sorted(
-        key for key in convenience_kwargs if key in existing_dict
-    )
-    if conflicts:
-      conflict_list = ', '.join(f'`{key}`' for key in conflicts)
-      raise ValueError(
-          f'Cannot set {conflict_list} both as an LlmAgent argument and'
-          ' inside generate_content_config. Set each field in only one'
-          ' place.'
-      )
-
-    for key in list(data.keys()):
-      gcc_field = _generate_content_field_name(key)
-      if gcc_field is not None and gcc_field in convenience_kwargs:
-        del data[key]
-    existing_dict.update(convenience_kwargs)
-    data['generate_content_config'] = existing_dict
+      parts.append(_redirect_kwargs_message(redirected))
+    if misplaced:
+      parts.append(_misplaced_config_kwargs_message(misplaced))
+    if parts:
+      if extras:
+        parts.append(_extra_inputs_message(extras))
+      raise ValueError(' '.join(parts))
     return data
 
   @model_validator(mode='before')

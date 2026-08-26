@@ -407,68 +407,6 @@ def test_validate_generate_content_config_http_options_allowed():
   assert agent.generate_content_config.http_options.extra_body == extra_body
 
 
-def test_temperature_kwarg_folds_into_generate_content_config():
-  """LlmAgent(temperature=...) is stored on generate_content_config."""
-
-  class Grade(BaseModel):
-    score: int
-
-  agent = LlmAgent(
-      name='grader',
-      model='gemini-3.5-flash-lite',
-      instruction='Grade the exam.',
-      output_schema=Grade,
-      temperature=0.1,
-  )
-
-  assert agent.generate_content_config.temperature == pytest.approx(0.1)
-
-
-def test_generation_kwargs_fold_together_into_generate_content_config():
-  """Common generation knobs passed as kwargs land on the same config."""
-  agent = LlmAgent(
-      name='test_agent',
-      temperature=0.2,
-      top_p=0.95,
-      max_output_tokens=256,
-  )
-
-  assert agent.generate_content_config.temperature == pytest.approx(0.2)
-  assert agent.generate_content_config.top_p == pytest.approx(0.95)
-  assert agent.generate_content_config.max_output_tokens == 256
-
-
-def test_generation_kwargs_merge_with_existing_generate_content_config():
-  """Kwargs fill fields that generate_content_config left unset."""
-  agent = LlmAgent(
-      name='test_agent',
-      generate_content_config=types.GenerateContentConfig(top_p=0.9),
-      temperature=0.1,
-  )
-
-  assert agent.generate_content_config.temperature == pytest.approx(0.1)
-  assert agent.generate_content_config.top_p == pytest.approx(0.9)
-
-
-def test_camel_case_generation_kwarg_folds_into_generate_content_config():
-  """JSON-style GenerateContentConfig aliases are folded the same way."""
-  agent = LlmAgent.model_validate(
-      {'name': 'test_agent', 'maxOutputTokens': 256}
-  )
-
-  assert agent.generate_content_config.max_output_tokens == 256
-
-
-def test_thinking_config_kwarg_folds_into_generate_content_config():
-  """thinking_config can be passed directly as an LlmAgent kwarg."""
-  agent = LlmAgent(
-      name='test_agent',
-      thinking_config=types.ThinkingConfig(include_thoughts=True),
-  )
-
-  assert agent.generate_content_config.thinking_config.include_thoughts is True
-
-
 def test_allow_transfer_by_default():
   sub_agent = LlmAgent(name='sub_agent')
   agent = LlmAgent(name='test_agent', sub_agents=[sub_agent])

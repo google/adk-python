@@ -149,7 +149,35 @@ class TestValidateGenerateContentConfigErrors:
 
 
 class TestGenerateContentKwargErrors:
-  """Tests for LlmAgent generation-kwarg folding error messages."""
+  """Tests for misplaced GenerateContentConfig kwargs on LlmAgent."""
+
+  def test_temperature_kwarg_names_generate_content_config(self):
+    """temperature= should name the generate_content_config destination."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            r'temperature is a GenerateContentConfig field\. Pass\n?'
+            r' *generate_content_config=types\.GenerateContentConfig\(temperature=\.\.\.\)'
+        ),
+    ):
+      LlmAgent(name='test_agent', temperature=0.2)
+
+  def test_multiple_generation_kwargs_named_in_one_error(self):
+    """temperature= and top_p= should both appear in a single error."""
+    with pytest.raises(ValueError, match=r'temperature.*top_p') as exc_info:
+      LlmAgent(name='test_agent', temperature=0.2, top_p=0.95)
+    message = str(exc_info.value)
+    assert 'generate_content_config=types.GenerateContentConfig(' in message
+    assert 'temperature=...' in message
+    assert 'top_p=...' in message
+
+  def test_camel_case_alias_names_canonical_field(self):
+    """JSON-style aliases should still name the snake_case config field."""
+    with pytest.raises(
+        ValueError,
+        match=r'max_output_tokens is a GenerateContentConfig field',
+    ):
+      LlmAgent.model_validate({'name': 'test_agent', 'maxOutputTokens': 256})
 
   def test_system_instruction_kwarg_points_to_instruction(self):
     """system_instruction= should tell users to use instruction=."""
@@ -161,39 +189,64 @@ class TestGenerateContentKwargErrors:
     with pytest.raises(ValueError, match=r'LlmAgent.output_schema'):
       LlmAgent(name='test_agent', response_schema={'type': 'string'})
 
-  def test_generation_kwarg_conflict_with_generate_content_config(self):
-    """The same field set twice should name both sources."""
-    with pytest.raises(
-        ValueError,
-        match=(
-            r'both as an LlmAgent argument and inside generate_content_config'
-        ),
-    ):
-      LlmAgent(
-          name='test_agent',
-          generate_content_config=types.GenerateContentConfig(temperature=0.5),
-          temperature=0.1,
-      )
-
-  def test_camel_case_config_dict_conflict_with_snake_case_kwarg(self):
-    """Aliased dict keys still conflict with the snake_case kwarg."""
-    with pytest.raises(ValueError, match=r'`max_output_tokens`'):
-      LlmAgent(
-          name='test_agent',
-          generate_content_config={'maxOutputTokens': 10},
-          max_output_tokens=20,
-      )
+  def test_typo_still_extra_forbidden(self):
+    """A real typo must stay extra_forbidden, not a config lecture."""
+    misspelled = 'temperature'[:-1]
+    with pytest.raises(ValueError, match='Extra inputs are not permitted'):
+      LlmAgent(name='test_agent', **{misspelled: 0.2})
 
   def test_unknown_extra_kwarg_still_forbidden(self):
     """Unrecognized kwargs remain extra_forbidden."""
     with pytest.raises(ValueError, match='Extra inputs are not permitted'):
       LlmAgent(name='test_agent', not_a_real_field=True)
 
-  def test_duplicate_snake_and_camel_generation_kwargs_raise(self):
-    """The same generation field via name and alias is rejected."""
-    with pytest.raises(ValueError, match=r'max_output_tokens'):
-      LlmAgent.model_validate({
-          'name': 'test_agent',
-          'max_output_tokens': 10,
-          'maxOutputTokens': 20,
-      })
+  def test_tools_and_generate_content_config_still_construct(self):
+    """tools is on both models and must not be treated as a config field."""
+
+    def _a_tool():
+      pass
+
+    agent = LlmAgent(
+        name='test_agent',
+        tools=[_a_tool],
+        generate_content_config=types.GenerateContentConfig(temperature=0.2),
+    )
+    assert agent.tools
+    assert agent.generate_content_config.temperature == pytest.approx(0.2)
+
+  def test_subclass_inherits_the_validator(self):
+    """Subclasses of LlmAgent should get the same redirect."""
+
+    class ChildAgent(LlmAgent):
+      pass
+
+    with pytest.raises(
+        ValueError, match=r'temperature is a GenerateContentConfig field'
+    ):
+      ChildAgent(name='test_agent', temperature=0.1)
+
+  def test_typo_and_config_field_named_together(self):
+    """A typo arriving with a config field should be named in the same error."""
+    misspelled = 'temperature'[:-1]
+    with pytest.raises(ValueError) as exc_info:
+      LlmAgent(name='test_agent', **{misspelled: 0.2, 'top_k': 5})
+    message = str(exc_info.value)
+    assert 'top_k is a GenerateContentConfig field' in message
+    assert 'generate_content_config=types.GenerateContentConfig(top_k=...)' in (
+        message
+    )
+    assert 'Extra inputs are not permitted' in message
+    assert misspelled in message
+
+  def test_redirect_and_config_field_named_together(self):
+    """Reserved-field redirects and config fields share one error."""
+    with pytest.raises(ValueError) as exc_info:
+      LlmAgent(
+          name='test_agent',
+          system_instruction='You are helpful.',
+          temperature=0.1,
+      )
+    message = str(exc_info.value)
+    assert 'LlmAgent.instruction' in message
+    assert 'temperature is a GenerateContentConfig field' in message
+    assert 'generate_content_config=types.GenerateContentConfig(' in message
