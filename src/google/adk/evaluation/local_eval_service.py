@@ -62,10 +62,14 @@ from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
 
-EVAL_SESSION_ID_PREFIX = "___eval___session___"
+EVAL_SESSION_ID_PREFIX = "eval-session-"
 
 
 def _get_session_id() -> str:
+  # uuid4's default str form is lowercase hex with hyphens, so together
+  # with the prefix this always matches Vertex AI Agent Engine's session
+  # id constraint ([a-z0-9-], alnum first/last char) as well as every
+  # other session service's id format.
   return f"{EVAL_SESSION_ID_PREFIX}{str(uuid.uuid4())}"
 
 
