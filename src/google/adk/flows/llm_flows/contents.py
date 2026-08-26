@@ -35,6 +35,8 @@ from ._fencing import _is_other_agent_reply
 from ._fencing import _present_other_agent_message
 from ._invocation_utils import as_llm_agent
 from ._tool_call_rearranger import _drop_orphaned_function_responses
+from ._tool_call_rearranger import _pair_unanswered_function_calls
+from ._tool_call_rearranger import _pending_call_ids
 from ._tool_call_rearranger import _rearrange_events_for_async_function_responses_in_history
 from ._tool_call_rearranger import _rearrange_events_for_latest_function_response
 from .functions import AF_FUNCTION_CALL_ID_PREFIX
@@ -553,6 +555,12 @@ def _get_contents(
               strip_client_function_call_ids=not preserve_function_call_ids,
           )
       )
+
+  # Ids are read after the conversion so a stripped call id is answered by a
+  # response with the same stripped id.
+  contents = _pair_unanswered_function_calls(
+      contents, _pending_call_ids(result_events)
+  )
 
   # for scoped agents (task / single_turn), prepend a
   # synthetic user-role content built from the originating FC's args.
