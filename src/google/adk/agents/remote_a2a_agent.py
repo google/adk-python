@@ -990,10 +990,13 @@ class RemoteA2aAgent(BaseAgent):
       if not self._agent_card:
 
         # Resolve agent card if needed
-        self._agent_card = await self._resolve_agent_card(ctx)
+        resolved_agent_card = await self._resolve_agent_card(ctx)
 
-        # Validate agent card
-        await self._validate_agent_card(self._agent_card)
+        # Validate agent card before caching it. If validation fails, the
+        # card must not be cached, or a subsequent invocation would skip
+        # resolution and validation entirely and reuse the invalid card.
+        await self._validate_agent_card(resolved_agent_card)
+        self._agent_card = resolved_agent_card
 
         # Update description if empty
         if not self.description and self._agent_card.description:

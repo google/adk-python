@@ -698,6 +698,47 @@ class TestRemoteA2aAgentResolution:
     assert mock_resolve.await_count == 1
 
   @pytest.mark.asyncio
+  async def test_ensure_resolved_does_not_cache_card_on_validation_failure(
+      self,
+  ):
+    """A card that fails validation must not be cached.
+
+    Otherwise a later invocation sees `self._agent_card` already set, skips
+    resolution and validation entirely, and reuses the invalid card.
+    """
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://example.com/agent.json",
+    )
+
+    with patch.object(
+        agent, "_resolve_agent_card", new_callable=AsyncMock
+    ) as mock_resolve:
+      mock_resolve.return_value = self.agent_card
+      with patch.object(
+          agent, "_validate_agent_card", new_callable=AsyncMock
+      ) as mock_validate:
+        mock_validate.side_effect = ValueError("invalid rpc url")
+
+        with pytest.raises(AgentCardResolutionError):
+          await agent._ensure_resolved(Mock())
+
+        assert agent._agent_card is None
+
+        mock_validate.side_effect = None
+        with patch.object(agent, "_ensure_httpx_client") as mock_ensure:
+          mock_ensure.return_value = AsyncMock()
+          mock_factory = Mock()
+          mock_factory.create.return_value = Mock()
+          agent._a2a_client_factory = mock_factory
+
+          await agent._ensure_resolved(Mock())
+
+    assert mock_resolve.await_count == 2
+    assert mock_validate.await_count == 2
+    assert agent._agent_card is self.agent_card
+
+  @pytest.mark.asyncio
   async def test_ensure_resolved_without_ctx_uses_cached_path(self):
     """_ensure_resolved() is callable with no ctx (backward compatible)."""
     agent = RemoteA2aAgent(
