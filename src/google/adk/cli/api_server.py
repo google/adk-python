@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+from collections import deque
 from contextlib import asynccontextmanager
 import importlib
 import json
@@ -455,10 +456,25 @@ class _DefaultAppRewriteMiddleware:
     await self._app(scope, receive, send)
 
 
+# Debug-UI buffers. Production (`web=False`) does not install these exporters.
+# Caps keep `adk web` from retaining every span for the life of the process.
+# See https://github.com/google/adk-python/issues/6915
+_DEBUG_TRACE_EVENT_LIMIT = 512
+_DEBUG_SPAN_LIMIT = 4096
+_DEBUG_SESSION_TRACE_LIMIT = 512
+
+
+def _evict_oldest(store: dict[Any, Any], max_size: int) -> None:
+  """Drop insertion-oldest keys until store fits in max_size."""
+  while len(store) > max_size:
+    store.pop(next(iter(store)))
+
+
 class ApiServerSpanExporter(export_lib.SpanExporter):
 
-  def __init__(self, trace_dict):
+  def __init__(self, trace_dict, *, max_events: int = _DEBUG_TRACE_EVENT_LIMIT):
     self.trace_dict = trace_dict
+    self._max_events = max_events
 
   def export(
       self, spans: typing.Sequence[ReadableSpan]
@@ -474,6 +490,7 @@ class ApiServerSpanExporter(export_lib.SpanExporter):
         attributes["span_id"] = span.get_span_context().span_id
         if attributes.get("gcp.vertex.agent.event_id", None):
           self.trace_dict[attributes["gcp.vertex.agent.event_id"]] = attributes
+          _evict_oldest(self.trace_dict, self._max_events)
     return export_lib.SpanExportResult.SUCCESS
 
   def force_flush(self, timeout_millis: int = 30000) -> bool:
@@ -482,10 +499,17 @@ class ApiServerSpanExporter(export_lib.SpanExporter):
 
 class InMemoryExporter(export_lib.SpanExporter):
 
-  def __init__(self, trace_dict):
+  def __init__(
+      self,
+      trace_dict,
+      *,
+      max_spans: int = _DEBUG_SPAN_LIMIT,
+      max_sessions: int = _DEBUG_SESSION_TRACE_LIMIT,
+  ):
     super().__init__()
-    self._spans = []
+    self._spans = deque(maxlen=max_spans)
     self.trace_dict = trace_dict
+    self._max_sessions = max_sessions
 
   @override
   def export(
@@ -501,6 +525,7 @@ class InMemoryExporter(export_lib.SpanExporter):
         trace_ids = self.trace_dict.setdefault(session_id, [])
         if trace_id not in trace_ids:
           trace_ids.append(trace_id)
+        _evict_oldest(self.trace_dict, self._max_sessions)
     self._spans.extend(spans)
     return export_lib.SpanExportResult.SUCCESS
 
@@ -820,6 +845,11 @@ class ApiServer:
   """
 
   _allow_special_agents: bool = False
+
+  # Only DevServer reads the debug trace data these exporters accumulate
+  # (`/dev/apps/.../debug/trace`). Registering them on ApiServer retains
+  # every span for the life of the process with no consumer (#6915).
+  _registers_debug_trace_exporters: bool = False
 
   def __init__(
       self,
@@ -1170,12 +1200,17 @@ class ApiServer:
     memory_exporter = InMemoryExporter(session_trace_dict)
     self._memory_exporter = memory_exporter
 
-    _setup_telemetry(
-        otel_to_cloud=otel_to_cloud,
-        internal_exporters=[
+    debug_trace_exporters = (
+        [
             export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
             export_lib.SimpleSpanProcessor(memory_exporter),
-        ],
+        ]
+        if self._registers_debug_trace_exporters
+        else []
+    )
+    _setup_telemetry(
+        otel_to_cloud=otel_to_cloud,
+        internal_exporters=debug_trace_exporters,
     )
     if web_assets_dir:
       self._setup_runtime_config(web_assets_dir)
