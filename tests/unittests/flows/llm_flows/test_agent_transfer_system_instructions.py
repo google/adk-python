@@ -20,10 +20,17 @@ implementation.
 """
 
 from typing import AsyncGenerator
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
+from a2a.types import AgentCard
+from google.adk.a2a import _compat
+from google.adk.a2a.agent.config import A2aRemoteAgentConfig
+from google.adk.a2a.agent.config import CardRequestInterceptor
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import agent_transfer
@@ -45,6 +52,16 @@ class _NonLlmAgent(BaseAgent):
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     yield Event(author=self.name, invocation_id=ctx.invocation_id)
+
+
+def _make_agent_card(description: str) -> AgentCard:
+  return _compat.build_agent_card(
+      name='remote_agent',
+      description=description,
+      version='1.0',
+      url='https://example.com/rpc',
+      protocol_binding='JSONRPC',
+  )
 
 
 async def create_test_invocation_context(agent: Agent) -> InvocationContext:
@@ -342,3 +359,150 @@ async def test_agent_transfer_with_non_llm_peer_agent():
 
   instructions = llm_request.config.system_instruction
   assert 'non_llm_peer' in instructions
+
+
+@pytest.mark.asyncio
+async def test_agent_transfer_loads_remote_card_description_before_selection():
+  """A remote card description is available for the first transfer decision."""
+  mock_model = testing_utils.MockModel.create(responses=[])
+  remote_agent = RemoteA2aAgent(
+      name='remote_agent',
+      agent_card='https://example.com/agent-card.json',
+  )
+  main_agent = Agent(
+      name='main_agent',
+      model=mock_model,
+      sub_agents=[remote_agent],
+  )
+  invocation_context = await create_test_invocation_context(main_agent)
+  llm_request = LlmRequest()
+
+  with patch.object(
+      remote_agent,
+      '_resolve_agent_card',
+      new=AsyncMock(return_value=_make_agent_card('Handles remote research.')),
+  ):
+    async for _ in agent_transfer.request_processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+  instructions = llm_request.config.system_instruction
+  assert 'Agent description: Handles remote research.' in instructions
+
+
+@pytest.mark.asyncio
+async def test_agent_transfer_prefers_explicit_remote_description():
+  """An explicit remote description remains authoritative for transfers."""
+  mock_model = testing_utils.MockModel.create(responses=[])
+  remote_agent = RemoteA2aAgent(
+      name='remote_agent',
+      agent_card='https://example.com/agent-card.json',
+      description='Locally configured routing description.',
+  )
+  main_agent = Agent(
+      name='main_agent',
+      model=mock_model,
+      sub_agents=[remote_agent],
+  )
+  invocation_context = await create_test_invocation_context(main_agent)
+  llm_request = LlmRequest()
+
+  with patch.object(
+      remote_agent, '_resolve_agent_card', new_callable=AsyncMock
+  ) as resolve_card:
+    async for _ in agent_transfer.request_processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+  instructions = llm_request.config.system_instruction
+  assert (
+      'Agent description: Locally configured routing description.'
+      in instructions
+  )
+  resolve_card.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_transfer_keeps_authenticated_descriptions_per_invocation():
+  """Authenticated card descriptions do not leak between invocations."""
+  mock_model = testing_utils.MockModel.create(responses=[])
+  remote_agent = RemoteA2aAgent(
+      name='remote_agent',
+      agent_card='https://example.com/agent-card.json',
+      config=A2aRemoteAgentConfig(
+          card_request_interceptors=[CardRequestInterceptor()]
+      ),
+  )
+  main_agent = Agent(
+      name='main_agent',
+      model=mock_model,
+      sub_agents=[remote_agent],
+  )
+  first_context = await create_test_invocation_context(main_agent)
+  second_context = await create_test_invocation_context(main_agent)
+  first_request = LlmRequest()
+  second_request = LlmRequest()
+
+  with patch.object(
+      remote_agent,
+      '_resolve_agent_card',
+      new=AsyncMock(
+          side_effect=[
+              _make_agent_card('First session description.'),
+              _make_agent_card('Second session description.'),
+          ]
+      ),
+  ):
+    async for _ in agent_transfer.request_processor.run_async(
+        first_context, first_request
+    ):
+      pass
+    async for _ in agent_transfer.request_processor.run_async(
+        second_context, second_request
+    ):
+      pass
+
+  first_instructions = first_request.config.system_instruction
+  second_instructions = second_request.config.system_instruction
+  assert 'Agent description: First session description.' in first_instructions
+  assert 'Second session description.' not in first_instructions
+  assert 'Agent description: Second session description.' in second_instructions
+  assert 'First session description.' not in second_instructions
+  assert remote_agent.description == ''
+
+
+@pytest.mark.asyncio
+async def test_agent_transfer_continues_when_remote_card_is_unavailable(caplog):
+  """An unavailable remote card does not block the parent model request."""
+  mock_model = testing_utils.MockModel.create(responses=[])
+  remote_agent = RemoteA2aAgent(
+      name='remote_agent',
+      agent_card='https://example.com/agent-card.json',
+  )
+  main_agent = Agent(
+      name='main_agent',
+      model=mock_model,
+      sub_agents=[remote_agent],
+  )
+  invocation_context = await create_test_invocation_context(main_agent)
+  llm_request = LlmRequest()
+
+  with patch.object(
+      remote_agent,
+      '_resolve_agent_card',
+      new=AsyncMock(side_effect=OSError('card service unavailable')),
+  ):
+    async for _ in agent_transfer.request_processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+  instructions = llm_request.config.system_instruction
+  assert 'Agent name: remote_agent' in instructions
+  assert 'Agent description: ' in instructions
+  assert (
+      'Failed to load transfer description for agent remote_agent'
+      in caplog.text
+  )

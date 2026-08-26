@@ -192,6 +192,11 @@ class BaseAgent(BaseNode, abc.ABC):
       will be appended to event history as an additional agent response.
   """
 
+  async def _get_transfer_description(self, ctx: InvocationContext) -> str:
+    """Returns the description used to select this transfer target."""
+    del ctx
+    return self.description
+
   def _load_agent_state(
       self,
       ctx: InvocationContext,

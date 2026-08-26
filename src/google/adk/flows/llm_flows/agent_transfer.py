@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import typing
 from typing import AsyncGenerator
 from typing import Sequence
@@ -33,6 +35,9 @@ from ._invocation_utils import as_llm_agent
 if typing.TYPE_CHECKING:
   from ...agents.base_agent import BaseAgent
   from ...agents.llm_agent import LlmAgent
+
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -56,11 +61,16 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
 
     transfer_to_agent_tool = _build_transfer_tool(transfer_targets)
 
+    transfer_target_infos = await asyncio.gather(*[
+        _build_transfer_target_info(target, invocation_context)
+        for target in transfer_targets
+    ])
+
     llm_request.append_instructions([
         _build_transfer_instructions(
             transfer_to_agent_tool.name,
             agent,
-            transfer_targets,
+            transfer_target_infos,
         )
     ])
 
@@ -79,6 +89,34 @@ request_processor = _AgentTransferLlmRequestProcessor()
 class _AgentLike(typing.Protocol):
   name: str
   description: str
+
+
+class _TransferTargetInfo:
+  """Invocation-scoped metadata used to build transfer instructions."""
+
+  def __init__(self, *, name: str, description: str) -> None:
+    self.name = name
+    self.description = description
+
+
+async def _build_transfer_target_info(
+    target_agent: BaseAgent,
+    ctx: InvocationContext,
+) -> _TransferTargetInfo:
+  """Builds transfer metadata without mutating invocation-scoped values."""
+  try:
+    description = await target_agent._get_transfer_description(ctx)
+  except Exception as e:
+    logger.warning(
+        'Failed to load transfer description for agent %s: %s',
+        target_agent.name,
+        e,
+    )
+    description = target_agent.description
+  return _TransferTargetInfo(
+      name=target_agent.name,
+      description=description,
+  )
 
 
 def _build_target_agents_info(target_agent: _AgentLike) -> str:
@@ -136,7 +174,7 @@ call.
 def _build_transfer_instructions(
     tool_name: str,
     agent: LlmAgent,
-    target_agents: Sequence[BaseAgent],
+    target_agents: Sequence[_AgentLike],
 ) -> str:
   """Build instructions for agent transfer (agent-tree variant).
 
