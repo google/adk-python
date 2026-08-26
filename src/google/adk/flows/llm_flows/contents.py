@@ -378,7 +378,7 @@ def _pair_unanswered_function_calls(
 
   Args:
     contents: The contents built for the request. Not mutated in place, except
-      that a placeholder is appended to the ``parts`` list of a content that
+      that a placeholder is inserted into the ``parts`` list of a content that
       already answers part of a turn.
     pending_ids: The ids of the calls ADK is holding open.
 
@@ -386,7 +386,7 @@ def _pair_unanswered_function_calls(
     The contents, with a placeholder response for every unanswered call.
   """
   paired: list[types.Content] = []
-  synthesized = 0
+  lost = 0
   for index, content in enumerate(contents):
     paired.append(content)
 
@@ -403,39 +403,70 @@ def _pair_unanswered_function_calls(
     unanswered = _unanswered_calls(calls, answered_ids)
     if not unanswered:
       continue
-    synthesized += len(unanswered)
 
-    parts = [
-        types.Part(
-            function_response=types.FunctionResponse(
-                id=call.id,
-                name=call.name,
-                response={
-                    'result': (
-                        _PENDING_FUNCTION_RESULT
-                        if call.id and call.id in pending_ids
-                        else _MISSING_FUNCTION_RESULT
-                    )
-                },
-            )
-        )
-        for call in unanswered
-    ]
+    parts: list[types.Part] = []
+    for call in unanswered:
+      is_pending = bool(call.id) and call.id in pending_ids
+      if not is_pending:
+        lost += 1
+      parts.append(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=call.id,
+                  name=call.name,
+                  response={
+                      'result': (
+                          _PENDING_FUNCTION_RESULT
+                          if is_pending
+                          else _MISSING_FUNCTION_RESULT
+                      )
+                  },
+              )
+          )
+      )
 
     # Join a turn that already answers this call event, so the results stay in
     # one message; otherwise the results need a turn of their own, before
     # whatever currently follows.
-    if following is not None and answered_ids:
-      following.parts = list(following.parts or []) + parts
+    if answered_ids:
+      following.parts = _with_results_inserted(following.parts, parts)
     else:
       paired.append(types.Content(role='user', parts=parts))
 
-  if synthesized:
-    logger.info(
-        'Paired %d unanswered function call(s) before the model request',
-        synthesized,
+  if lost:
+    logger.warning(
+        'Supplied a placeholder result for %d function call(s) with no'
+        ' recorded response',
+        lost,
     )
   return paired
+
+
+def _with_results_inserted(
+    parts: list[types.Part] | None,
+    results: list[types.Part],
+) -> list[types.Part]:
+  """Returns ``parts`` with ``results`` added to its leading run of responses.
+
+  Anthropic requires every tool result to precede any other block in the
+  message that carries it, so a placeholder appended after a trailing text part
+  would be rejected for the same reason the missing result was.
+
+  Args:
+    parts: The parts of the content that already answers part of the turn.
+    results: The placeholder function response parts to insert.
+
+  Returns:
+    A new list of parts, with the placeholders before the first part that is
+    not a function response.
+  """
+  existing = list(parts or [])
+  insert_index = len(existing)
+  for index, part in enumerate(existing):
+    if not part.function_response:
+      insert_index = index
+      break
+  return existing[:insert_index] + results + existing[insert_index:]
 
 
 def _rearrange_events_for_latest_function_response(

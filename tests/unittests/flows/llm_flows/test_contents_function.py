@@ -966,7 +966,11 @@ async def test_paired_contents_satisfy_the_anthropic_invariant():
 
 
 def _assert_tool_use_blocks_are_answered(messages) -> None:
-  """Asserts each tool_use block is answered by the next message."""
+  """Asserts each tool_use block is answered by the next message.
+
+  Also asserts the placement Anthropic requires: every tool_result block comes
+  before any other block in the message that carries it.
+  """
   for index, message in enumerate(messages):
     tool_use_ids = [
         block["id"]
@@ -976,16 +980,89 @@ def _assert_tool_use_blocks_are_answered(messages) -> None:
     if not tool_use_ids:
       continue
     following = messages[index + 1] if index + 1 < len(messages) else None
-    result_ids = (
-        [
-            block["tool_use_id"]
-            for block in following["content"]
-            if isinstance(block, dict) and block.get("type") == "tool_result"
-        ]
-        if following
-        else []
-    )
+    blocks = following["content"] if following else []
+    types_in_order = [
+        block.get("type") for block in blocks if isinstance(block, dict)
+    ]
+    result_ids = [
+        block["tool_use_id"]
+        for block in blocks
+        if isinstance(block, dict) and block.get("type") == "tool_result"
+    ]
     assert sorted(tool_use_ids) == sorted(result_ids)
+    leading_results = 0
+    for block_type in types_in_order:
+      if block_type != "tool_result":
+        break
+      leading_results += 1
+    assert leading_results == len(result_ids)
+
+
+@pytest.mark.asyncio
+async def test_placeholder_stays_ahead_of_a_trailing_text_part():
+  """A placeholder joins the leading run of results, not the end of the turn."""
+  anthropic_llm = pytest.importorskip("google.adk.models.anthropic_llm")
+
+  agent = Agent(model="claude-sonnet-4-5", name="test_agent")
+  llm_request = LlmRequest(model="claude-sonnet-4-5")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  answered_call = types.FunctionCall(
+      id="call_1", name="search_tool", args={"query": "test"}
+  )
+  lost_call = types.FunctionCall(
+      id="call_2", name="fetch_tool", args={"url": "http://example.com"}
+  )
+  function_response = types.FunctionResponse(
+      id="call_1", name="search_tool", response={"results": ["item1"]}
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Search and fetch"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([
+              types.Part(function_call=answered_call),
+              types.Part(function_call=lost_call),
+          ]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent([
+              types.Part(function_response=function_response),
+              types.Part(text="and please hurry"),
+          ]),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents[-1].parts == [
+      types.Part(function_response=function_response),
+      types.Part(
+          function_response=types.FunctionResponse(
+              id="call_2",
+              name="fetch_tool",
+              response={"result": contents._MISSING_FUNCTION_RESULT},
+          )
+      ),
+      types.Part(text="and please hurry"),
+  ]
+  _assert_tool_use_blocks_are_answered([
+      anthropic_llm.content_to_message_param(content)
+      for content in llm_request.contents
+  ])
 
 
 @pytest.mark.asyncio
