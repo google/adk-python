@@ -48,7 +48,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 _COMPACTION_CUSTOM_METADATA_KEY = '_compaction'
 _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 
-_SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+_SESSION_ID_PATTERN = re.compile(r'^[a-z0-9]([a-z0-9-]*[a-z0-9])?$')
 
 
 def _extract_short_session_id(
@@ -568,10 +568,15 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     event_dict = copy.deepcopy(raw_event_dict)
     timestamp_obj = getattr(api_event_obj, 'timestamp', None)
     event_dict.update({
-        'id': api_event_obj.name.split('/')[-1],
         'invocation_id': getattr(api_event_obj, 'invocation_id', None),
         'author': getattr(api_event_obj, 'author', None),
     })
+    # Preserve the original ADK event id persisted inside raw_event (the
+    # same id streamed to the caller during the live run). Only fall back
+    # to the Vertex resource name for events written before raw_event
+    # carried an id.
+    if not event_dict.get('id'):
+      event_dict['id'] = api_event_obj.name.split('/')[-1]
     if timestamp_obj:
       event_dict['timestamp'] = timestamp_obj.timestamp()
     return Event.model_validate(event_dict)
