@@ -114,7 +114,12 @@ class InMemorySessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
-    if session_id and self._get_session_impl(
+    session_id = (
+        session_id.strip()
+        if session_id and session_id.strip()
+        else platform_uuid.new_uuid()
+    )
+    if self._get_session_impl(
         app_name=app_name, user_id=user_id, session_id=session_id
     ):
       raise AlreadyExistsError(f'Session with id {session_id} already exists.')
@@ -129,11 +134,6 @@ class InMemorySessionService(BaseSessionService):
           user_state_delta
       )
 
-    session_id = (
-        session_id.strip()
-        if session_id and session_id.strip()
-        else platform_uuid.new_uuid()
-    )
     session = Session(
         app_name=app_name,
         user_id=user_id,
