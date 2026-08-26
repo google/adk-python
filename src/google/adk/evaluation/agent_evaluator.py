@@ -28,6 +28,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Protocol
+from typing import TYPE_CHECKING
 from typing import Union
 import uuid
 
@@ -60,10 +61,10 @@ from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
-from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
-from .metric_evaluator_registry import MetricEvaluatorRegistry
-from .metric_evaluator_registry import register_custom_metrics_from_config
 from .simulation.user_simulator_provider import UserSimulatorProvider
+
+if TYPE_CHECKING:
+  from .metric_evaluator_registry import MetricEvaluatorRegistry  # pylint: disable=g-import-not-at-top
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -208,6 +209,12 @@ class AgentEvaluator:
     # on the default registry resolvable, which is the only way to plug in a
     # custom `Evaluator` subclass since an eval config can only name a scoring
     # function.
+    try:
+      from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY  # pylint: disable=g-import-not-at-top
+      from .metric_evaluator_registry import register_custom_metrics_from_config  # pylint: disable=g-import-not-at-top
+    except ModuleNotFoundError as e:
+      raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
+
     metric_evaluator_registry = register_custom_metrics_from_config(
         eval_config, DEFAULT_METRIC_EVALUATOR_REGISTRY.fork()
     )
@@ -546,8 +553,8 @@ class AgentEvaluator:
       threshold: float,
   ) -> None:
     try:
-      from pandas import pandas as pd
-      from tabulate import tabulate
+      import pandas as pd  # pylint: disable=g-import-not-at-top
+      from tabulate import tabulate  # pylint: disable=g-import-not-at-top
     except ModuleNotFoundError as e:
       raise ModuleNotFoundError(MISSING_EVAL_DEPENDENCIES_MESSAGE) from e
     print(
