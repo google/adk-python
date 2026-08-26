@@ -85,6 +85,16 @@ def check_cli_import(content: str, filename: str) -> bool:
   return not pattern.search(content)
 
 
+# An internal shortlink resolves for nobody reading this repository. Anchored
+# so that a public URL with a '/go/' path segment, or a Go file name, is not
+# mistaken for one.
+_INTERNAL_LINK_RE = re.compile(r'(?<![/.\w])go/[a-z0-9][-a-z0-9_]*')
+
+
+def check_internal_links(content: str) -> bool:
+  return not _INTERNAL_LINK_RE.search(content)
+
+
 def check_mtls(content: str, filename: str) -> bool:
   if filename in _EXCLUDED_FROM_MTLS:
     return True
@@ -142,6 +152,13 @@ def main() -> None:
       print(
           f'❌ {f}: Found hardcoded googleapis.com endpoints without mTLS'
           ' support.'
+      )
+      failed = True
+
+    if not check_internal_links(content):
+      print(
+          f'❌ {f}: Found an internal shortlink, which resolves for nobody'
+          ' reading this repository. Say what it says in plain words instead.'
       )
       failed = True
 

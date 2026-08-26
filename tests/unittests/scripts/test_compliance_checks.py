@@ -55,3 +55,37 @@ def test_mtls_exclusions_are_all_still_needed() -> None:
       'These files pass the mTLS check on their own; drop them from'
       f' _EXCLUDED_FROM_MTLS: {redundant}'
   )
+
+
+# Assembled rather than written out, so that this file does not trip the very
+# check it is testing.
+_INTERNAL_LINK = 'go' + '/some-design-doc'
+
+
+def test_check_internal_links_detects_a_shortlink() -> None:
+  content = f'# lives in the experimental namespace of {_INTERNAL_LINK}\n'
+  assert not compliance_checks.check_internal_links(content)
+
+
+def test_check_internal_links_allows_a_public_url_with_a_go_path() -> None:
+  content = 'url = "https://example.com/go/somewhere"\n'
+  assert compliance_checks.check_internal_links(content)
+
+
+def test_check_internal_links_allows_a_go_file_name() -> None:
+  content = 'path = "internal/registry.go/../main.go"\n'
+  assert compliance_checks.check_internal_links(content)
+
+
+def test_no_shipped_source_file_has_an_internal_link() -> None:
+  offenders = [
+      str(path.relative_to(_REPO_ROOT))
+      for path in sorted((_REPO_ROOT / 'src').rglob('*.py'))
+      if not compliance_checks.check_internal_links(
+          path.read_text(encoding='utf-8')
+      )
+  ]
+  assert not offenders, (
+      'These files ship an internal shortlink that no reader outside Google'
+      f' can resolve: {offenders}'
+  )
