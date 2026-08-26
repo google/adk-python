@@ -14,9 +14,14 @@
 
 from __future__ import annotations
 
+import collections
 import datetime
+import decimal
+import os
+import pathlib
 import pickle
 from unittest import mock
+import uuid
 
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
@@ -73,6 +78,39 @@ class _Payload:
 
   def __reduce__(self):
     return (_detonate, ())
+
+
+def _call_global_payload(module: str, name: str, argument: str) -> bytes:
+  """Handcrafts a pickle that calls `module.name(argument)` when loaded.
+
+  `pickle.dumps` cannot express a global the writing process does not hold, and
+  it resolves `os.system` to its `posix` alias, so the payloads an attacker
+  would actually write have to be assembled by hand.
+
+  Args:
+      module: The module the payload resolves the callable from.
+      name: The callable's name within that module.
+      argument: The single string argument the payload passes.
+
+  Returns:
+      The handcrafted pickle payload.
+  """
+
+  def short_unicode(value: str) -> bytes:
+    encoded = value.encode()
+    return pickle.SHORT_BINUNICODE + bytes([len(encoded)]) + encoded
+
+  return b"".join([
+      pickle.PROTO,
+      b"\x04",
+      short_unicode(module),
+      short_unicode(name),
+      pickle.STACK_GLOBAL,
+      short_unicode(argument),
+      pickle.TUPLE1,
+      pickle.REDUCE,
+      pickle.STOP,
+  ])
 
 
 def _fully_populated_event_actions() -> EventActions:
@@ -176,6 +214,14 @@ def _fully_populated_event_actions() -> EventActions:
           "set": {1, 2},
           "datetime": datetime.datetime.now(datetime.timezone.utc),
           "timedelta": datetime.timedelta(seconds=1),
+          "date": datetime.date(2026, 1, 1),
+          "time": datetime.time(12, 30, tzinfo=datetime.timezone.utc),
+          "ordered_dict": collections.OrderedDict(a=1, b=2),
+          "default_dict": collections.defaultdict(list, a=[1]),
+          "uuid": uuid.UUID("12345678-1234-5678-1234-567812345678"),
+          "decimal": decimal.Decimal("1.5"),
+          "path": pathlib.PurePosixPath("/data/artifact.txt"),
+          "complex": complex(1, 2),
       },
       artifact_delta={"artifact.txt": 1},
       transfer_to_agent="another_agent",
@@ -585,3 +631,60 @@ def test_allowed_globals_are_derived_from_the_model_tree(
       _restricted_pickle._STATIC_ALLOWED_GLOBALS
   )
   assert (module_name, class_name) in _restricted_pickle._allowed_globals()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(collections.OrderedDict(a=1, b=2), id="ordered_dict"),
+        pytest.param(collections.defaultdict(list, a=[1]), id="default_dict"),
+        pytest.param(datetime.date(2026, 1, 1), id="date"),
+        pytest.param(datetime.time(12, 30), id="time"),
+        pytest.param(
+            datetime.time(12, 30, tzinfo=datetime.timezone.utc), id="time_tz"
+        ),
+        pytest.param(
+            uuid.UUID("12345678-1234-5678-1234-567812345678"), id="uuid"
+        ),
+        pytest.param(decimal.Decimal("1.5"), id="decimal"),
+        pytest.param(pathlib.PurePosixPath("/data/x.txt"), id="pure_path"),
+        pytest.param(pathlib.Path("/data/x.txt"), id="path"),
+        pytest.param(complex(1, 2), id="complex"),
+    ],
+)
+def test_plain_stdlib_state_values_still_load(value):
+  """State written by an earlier ADK holds these, so they must keep loading."""
+  assert _restricted_pickle.loads(pickle.dumps(value)) == value
+
+
+@pytest.mark.parametrize(
+    "module_name,attribute_name",
+    [
+        pytest.param("os", "system", id="os_system"),
+        pytest.param("builtins", "eval", id="builtins_eval"),
+        pytest.param("pathlib", "os.system", id="via_pathlib"),
+        pytest.param("uuid", "os.system", id="via_uuid"),
+        pytest.param("collections", "OrderedDict.fromkeys", id="via_ordered"),
+    ],
+)
+def test_dangerous_globals_stay_refused(module_name, attribute_name):
+  """Widening the allowlist must not reach a callable through a module on it."""
+  payload = _call_global_payload(module_name, attribute_name, "echo unreached")
+
+  with pytest.raises(pickle.UnpicklingError):
+    _restricted_pickle.loads(payload)
+
+
+def test_call_global_payload_would_execute_unrestricted():
+  """Guards the adversarial cases above from silently becoming inert."""
+  # The unrestricted load is the assertion: it proves the handcrafted payload
+  # really does reach a callable, so the restricted loader refusing it above
+  # means something. The payload evaluates "1 + 1" and touches nothing else.
+  payload = _call_global_payload("builtins", "eval", "1 + 1")
+  assert pickle.loads(payload) == 2  # pylint: disable=g-unsafe-pickle-load
+
+
+def test_defaultdict_factory_must_itself_be_allowlisted():
+  """A `defaultdict` carries a callable, which the allowlist must cover too."""
+  with pytest.raises(pickle.UnpicklingError):
+    _restricted_pickle.loads(pickle.dumps(collections.defaultdict(os.system)))

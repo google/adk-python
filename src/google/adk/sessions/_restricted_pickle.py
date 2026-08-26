@@ -25,9 +25,9 @@ The allowed set is the union of two parts:
   are inert data types: unpickling one only calls `__setstate__` or the enum
   constructor. Deriving them keeps the set correct as the ADK and `google.genai`
   models gain fields, which a hand-written list does not.
-* A static part, for globals the walk cannot see: primitives and `datetime`
-  types, which are not Pydantic models, and model classes reachable only by
-  subclassing rather than through an annotation.
+* A static part, for globals the walk cannot see: the builtin and stdlib data
+  types a `state_delta` holds, which are not Pydantic models, and model
+  classes reachable only by subclassing rather than through an annotation.
 
 Anything else - notably arbitrary callables that older versions allowed into
 `state_delta` - is refused rather than resolved. See `_RestrictedUnpickler`.
@@ -62,9 +62,31 @@ _STATIC_ALLOWED_GLOBALS: frozenset[tuple[str, str]] = frozenset({
     ("builtins", "int"),
     ("builtins", "float"),
     ("builtins", "bool"),
+    ("builtins", "complex"),
+    # Stdlib data types. Each reconstructs by calling the type on plain data,
+    # so resolving one cannot run attacker-chosen code. A `defaultdict`'s
+    # factory is only stored while loading, never called, and it has to be a
+    # global this allowlist already admits.
+    ("collections", "OrderedDict"),
+    ("collections", "defaultdict"),
+    ("datetime", "date"),
     ("datetime", "datetime"),
+    ("datetime", "time"),
     ("datetime", "timedelta"),
     ("datetime", "timezone"),
+    ("decimal", "Decimal"),
+    ("uuid", "UUID"),
+    # Python 3.13 moved the concrete `pathlib` classes into a private
+    # submodule, and a payload names whichever module the interpreter that
+    # wrote it recorded.
+    ("pathlib", "PurePosixPath"),
+    ("pathlib", "PureWindowsPath"),
+    ("pathlib", "PosixPath"),
+    ("pathlib", "WindowsPath"),
+    ("pathlib._local", "PurePosixPath"),
+    ("pathlib._local", "PureWindowsPath"),
+    ("pathlib._local", "PosixPath"),
+    ("pathlib._local", "WindowsPath"),
     # Auth models reachable only by subclassing or as a union base, so the
     # annotation walk below does not reach them.
     ("fastapi.openapi.models", "OAuthFlow"),
