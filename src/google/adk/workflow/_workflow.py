@@ -360,14 +360,61 @@ class Workflow(BaseNode):
         logger.debug("node %s execute loop end.", ctx.node_path)
         return
 
-    # Await fire-and-forget dynamic tasks.
-    # TODO: Handle dynamic task failures and interrupts here.
-    # Currently, dynamic node completion is handled inline in the
-    # _schedule_dynamic_node_callback closure. But failures are not caught.
+    # Await dynamic nodes that were started without awaiting ctx.run_node()
+    # (a detached "fire-and-forget" run). Their error or interrupt escapes
+    # the normal completion path, so surface it instead of finishing clean.
     dynamic_tasks = loop_state.get_dynamic_tasks()
     if dynamic_tasks:
       await asyncio.wait(dynamic_tasks)
+      self._surface_detached_dynamic_outcome(dynamic_tasks, loop_state, ctx)
     logger.debug("node %s execute loop end.", ctx.node_path)
+
+  def _surface_detached_dynamic_outcome(
+      self,
+      dynamic_tasks: list[asyncio.Task[Context]],
+      loop_state: _LoopState,
+      ctx: Context,
+  ) -> None:
+    """Fail the workflow if a detached dynamic node errored or interrupted.
+
+    A dynamic node started without awaiting ctx.run_node() bypasses the
+    normal completion path, so its error or interrupt would otherwise be
+    dropped and the workflow would report success. A detached node cannot
+    be resumed, so an interrupt is surfaced as an error too. The first bad
+    outcome wins, mirroring the static completion path.
+    """
+    for task in dynamic_tasks:
+      if task.cancelled():
+        continue
+      error: Exception | None = None
+      error_node_path = ctx.node_path
+      raised = task.exception()
+      if raised is not None:
+        # A standalone run normally returns a context with .error set rather
+        # than raising; a raised exception here is unexpected but must not be
+        # swallowed.
+        error = (
+            raised
+            if isinstance(raised, Exception)
+            else RuntimeError(str(raised))
+        )
+      else:
+        child_ctx = task.result()
+        if child_ctx.error:
+          error = child_ctx.error
+          error_node_path = child_ctx.error_node_path
+        elif child_ctx.interrupt_ids:
+          error = RuntimeError(
+              "A dynamic node started without awaiting ctx.run_node()"
+              " requested human input, but a detached node cannot be"
+              " resumed. Await ctx.run_node() directly."
+          )
+          error_node_path = child_ctx.node_path
+      if error is not None:
+        ctx._error = error
+        ctx._error_node_path = error_node_path
+        loop_state.error_shut_down = True
+        return
 
   # --- Scheduling ---
 

@@ -3441,5 +3441,239 @@ async def test_run_async_with_mock_session_service_does_not_corrupt_branch():
   assert events[0].branch is None
 
 
+@pytest.mark.asyncio
+async def test_resume_finds_user_message_whose_text_is_not_the_first_part():
+  """A multimodal user turn can be resumed even when text is not `parts[0]`.
+
+  A user who attaches an image and then asks about it produces
+  `[image, text]`. Matching only `parts[0].text` misses that message, and the
+  resume path turns "not found" into a hard error.
+  """
+  session_service = InMemorySessionService()
+  root_agent = MockLlmAgent("coordinator")
+  app = App(
+      name="test_app",
+      root_agent=root_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = Runner(app=app, session_service=session_service)
+  session = await session_service.create_session(
+      app_name="test_app", user_id="user_1", session_id="session_1"
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_1",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      inline_data=types.Blob(
+                          mime_type="image/png", data=b"\x89PNG"
+                      )
+                  ),
+                  types.Part(text="what is in this picture?"),
+              ],
+          ),
+      ),
+  )
+
+  ic = await runner._setup_context_for_resumed_invocation(
+      session=session,
+      new_message=None,
+      invocation_id="inv_1",
+      run_config=RunConfig(),
+      state_delta=None,
+  )
+
+  assert ic.user_content is not None
+  assert ic.user_content.parts[1].text == "what is in this picture?"
+
+
+def test_find_user_message_for_invocation_requires_some_text():
+  """A message with no text at all is still not treated as the user message."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app=App(name="test_app", root_agent=MockLlmAgent("coordinator")),
+      session_service=session_service,
+  )
+  image_only = Event(
+      invocation_id="inv_1",
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(mime_type="image/png", data=b"\x89PNG")
+              )
+          ],
+      ),
+  )
+  assert runner._find_user_message_for_invocation([image_only], "inv_1") is None
+
+
+def _fc_part(name: str, call_id: str) -> types.Part:
+  return types.Part(
+      function_call=types.FunctionCall(name=name, id=call_id, args={})
+  )
+
+
+def _fr_part(name: str, call_id: str) -> types.Part:
+  return types.Part(
+      function_response=types.FunctionResponse(
+          name=name, id=call_id, response={}
+      )
+  )
+
+
+@pytest.mark.asyncio
+async def test_resolve_invocation_id_rejects_responses_from_two_invocations():
+  """Every response is checked, not just the first one.
+
+  A message answering several calls at once must resolve to a single
+  invocation. Inspecting only `function_responses[0]` would attribute the
+  remaining responses to whichever invocation happened to come first.
+  """
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app=App(name="test_app", root_agent=MockLlmAgent("root")),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s"
+  )
+  for inv, call_id in (("inv_a", "fc-a"), ("inv_b", "fc-b")):
+    await session_service.append_event(
+        session,
+        Event(
+            invocation_id=inv,
+            author="root",
+            content=types.Content(parts=[_fc_part("t", call_id)]),
+        ),
+    )
+
+  both = types.Content(
+      role="user", parts=[_fr_part("t", "fc-a"), _fr_part("t", "fc-b")]
+  )
+  with pytest.raises(ValueError, match="resolve to multiple invocations"):
+    runner._resolve_invocation_id(session, both, None)
+
+
+@pytest.mark.asyncio
+async def test_resolve_invocation_id_accepts_responses_from_one_invocation():
+  """Several responses to calls from the same invocation still resolve."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app=App(name="test_app", root_agent=MockLlmAgent("root")),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s"
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_a",
+          author="root",
+          content=types.Content(
+              parts=[_fc_part("t", "fc-a"), _fc_part("t", "fc-b")]
+          ),
+      ),
+  )
+
+  both = types.Content(
+      role="user", parts=[_fr_part("t", "fc-a"), _fr_part("t", "fc-b")]
+  )
+  assert runner._resolve_invocation_id(session, both, None) == "inv_a"
+
+
+@pytest.mark.asyncio
+async def test_run_node_prefers_the_response_owner_over_a_supplied_invocation_id():
+  """A caller-supplied invocation id is reconciled against the response.
+
+  Resuming under an id that does not own the call means the call is not found
+  and the tool result is discarded. `run_async` already prefers the response's
+  own invocation; the node path must agree.
+  """
+  session_service = InMemorySessionService()
+  node_agent = MockLlmAgent("solo")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node_agent),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s"
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_real",
+          author="solo",
+          content=types.Content(parts=[_fc_part("t", "fc-1")]),
+      ),
+  )
+
+  used: dict[str, str] = {}
+  original = runner._new_invocation_context
+
+  def _capture(*args, **kwargs):
+    ctx = original(*args, **kwargs)
+    used.setdefault("invocation_id", ctx.invocation_id)
+    return ctx
+
+  runner._new_invocation_context = _capture
+
+  async for _ in runner._run_node_async(
+      user_id="u",
+      session_id="s",
+      invocation_id="inv_wrong",
+      new_message=types.Content(role="user", parts=[_fr_part("t", "fc-1")]),
+      node=node_agent,
+  ):
+    pass
+
+  assert used["invocation_id"] == "inv_real"
+
+
+@pytest.mark.asyncio
+async def test_run_node_rejects_responses_straddling_two_invocations():
+  """A supplied id does not buy leniency the no-id path does not give.
+
+  Taking only the first response's owner would silently resume under one
+  invocation and discard the other tool result.
+  """
+  session_service = InMemorySessionService()
+  node_agent = MockLlmAgent("solo")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node_agent),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s"
+  )
+  for invocation_id, call_id in (("inv_a", "fc-1"), ("inv_b", "fc-2")):
+    await session_service.append_event(
+        session,
+        Event(
+            invocation_id=invocation_id,
+            author="solo",
+            content=types.Content(parts=[_fc_part("t", call_id)]),
+        ),
+    )
+
+  with pytest.raises(ValueError, match="multiple"):
+    async for _ in runner._run_node_async(
+        user_id="u",
+        session_id="s",
+        invocation_id="inv_wrong",
+        new_message=types.Content(
+            role="user", parts=[_fr_part("t", "fc-1"), _fr_part("t", "fc-2")]
+        ),
+        node=node_agent,
+    ):
+      pass
+
+
 if __name__ == "__main__":
   pytest.main([__file__])

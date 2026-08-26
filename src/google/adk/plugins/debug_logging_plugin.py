@@ -16,8 +16,12 @@
 
 from __future__ import annotations
 
+from datetime import date
 from datetime import datetime
+from datetime import time
+from enum import Enum
 import logging
+import os
 from pathlib import Path
 from typing import Any
 from typing import TYPE_CHECKING
@@ -30,9 +34,16 @@ import yaml
 
 from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
+from ..auth.auth_credential import AuthCredential
+from ..auth.auth_credential import HttpAuth
+from ..auth.auth_credential import HttpCredentials
+from ..auth.auth_credential import OAuth2Auth
+from ..auth.auth_credential import ServiceAccount
+from ..auth.auth_credential import ServiceAccountCredential
 from ..events.event import Event
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
+from ..sessions.state import State
 from ..tools.base_tool import BaseTool
 from .base_plugin import BasePlugin
 
@@ -41,6 +52,103 @@ if TYPE_CHECKING:
   from ..tools.tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_REDACTED = "[REDACTED]"
+
+# Models that exist to carry a secret; an instance is replaced wholesale
+# rather than dumped field by field.
+_CREDENTIAL_MODELS = (
+    AuthCredential,
+    HttpAuth,
+    HttpCredentials,
+    OAuth2Auth,
+    ServiceAccount,
+    ServiceAccountCredential,
+)
+
+# Mapping keys whose value is a secret, for credentials that reach the plugin
+# as plain dicts rather than as models: session state rehydrated from a session
+# service, or the already dumped credential the OpenAPI tool auth handler keeps
+# in state. Starts from the set bigquery_agent_analytics_plugin applies, plus
+# the OAuth2 authorization-code fields, which ADK itself populates and which
+# are enough on their own to complete a token exchange.
+_SENSITIVE_KEYS = frozenset({
+    "access_token",
+    "api_key",
+    "auth_code",
+    "auth_response_uri",
+    "authorization",
+    "client_secret",
+    "code_verifier",
+    "google_access_id",
+    "id_token",
+    "password",
+    "private_key",
+    "private_key_id",
+    "proxy_authorization",
+    "refresh_token",
+    "secret",
+    "sig",
+    "signature",
+    "token",
+    "x_amz_credential",
+    "x_amz_signature",
+    "x_api_key",
+    "x_goog_credential",
+    "x_goog_security_token",
+    "x_goog_signature",
+})
+
+# The debug file is written with the process umask otherwise, which commonly
+# leaves it world-readable.
+_OUTPUT_FILE_MODE = 0o600
+
+# Bounds both walks below, which are otherwise unterminated on a
+# self-referential object. Deeper than any credential model nests.
+_MAX_WALK_DEPTH = 20
+
+
+def _is_sensitive_key(key: Any) -> bool:
+  """Whether a mapping key names a credential-bearing value."""
+  if not isinstance(key, str):
+    return False
+  # `str.__str__` drops a subclass override of `lower`; hyphens are folded so
+  # that header spellings such as `X-Api-Key` match, as the analytics plugin
+  # does.
+  normalized = str.__str__(key).lower().replace("-", "_")
+  # ADK stores exchanged auth credentials under a `temp:`-prefixed state key.
+  return normalized in _SENSITIVE_KEYS or normalized.startswith(
+      State.TEMP_PREFIX
+  )
+
+
+def _model_items(model: BaseModel) -> list[tuple[str, Any]]:
+  """The (name, value) pairs held by a model, including any extra fields."""
+  return [
+      *model.__dict__.items(),
+      *(model.__pydantic_extra__ or {}).items(),
+  ]
+
+
+def _holds_credential(obj: Any, depth: int = 0) -> bool:
+  """Whether a credential model instance is reachable from `obj`.
+
+  Dumping a model flattens a credential nested inside it into a plain dict, at
+  which point only its key name could still identify it. A model that carries
+  one anywhere below it therefore has to be walked field by field instead.
+  """
+  if depth > _MAX_WALK_DEPTH:
+    return False
+  if isinstance(obj, _CREDENTIAL_MODELS):
+    return True
+  child_depth = depth + 1
+  if isinstance(obj, BaseModel):
+    return any(_holds_credential(v, child_depth) for _, v in _model_items(obj))
+  if isinstance(obj, dict):
+    return any(_holds_credential(v, child_depth) for v in obj.values())
+  if isinstance(obj, (list, tuple, set, frozenset)):
+    return any(_holds_credential(v, child_depth) for v in obj)
+  return False
 
 
 class _DebugEntry(BaseModel):
@@ -77,7 +185,14 @@ class DebugLoggingPlugin(BasePlugin):
 
   The output is written as YAML format for human readability. Each invocation
   is appended to the file as a separate YAML document (separated by ---).
-  This format is easy to read and can be shared for debugging purposes.
+  This format is easy to read. Credentials are redacted, but the file still
+  holds whole prompts and responses, so it is created readable only by its
+  owner and is not safe to hand around.
+
+  Redaction covers credential models wherever they appear, mapping keys that
+  name a secret, and every `temp:`-prefixed state key. That last rule blanks
+  all temporary state, not only credentials, so an intermediate value passed
+  between agents under a `temp:` key reads as `[REDACTED]` here.
 
   Example:
       >>> debug_plugin = DebugLoggingPlugin(output_path="/tmp/adk_debug.yaml")
@@ -113,6 +228,7 @@ class DebugLoggingPlugin(BasePlugin):
     self._include_session_state = include_session_state
     self._include_system_instruction = include_system_instruction
     self._invocation_states: dict[str, _InvocationDebugState] = {}
+    self._warned_about_output_mode = False
 
   def _get_timestamp(self) -> str:
     """Get current timestamp in ISO format."""
@@ -135,7 +251,7 @@ class DebugLoggingPlugin(BasePlugin):
           part_data["function_call"] = {
               "id": part.function_call.id,
               "name": part.function_call.name,
-              "args": part.function_call.args,
+              "args": self._safe_serialize(part.function_call.args),
           }
         if part.function_response:
           part_data["function_response"] = {
@@ -170,21 +286,64 @@ class DebugLoggingPlugin(BasePlugin):
 
     return {"role": content.role, "parts": parts}
 
-  def _safe_serialize(self, obj: Any) -> Any:
-    """Safely serialize an object to JSON-compatible format."""
+  def _safe_serialize(self, obj: Any, depth: int = 0) -> Any:
+    """Safely serialize an object to JSON-compatible format.
+
+    A credential model is replaced with a redaction marker wherever it sits:
+    at the top level, or nested inside a dict, list, tuple or another model,
+    under any key name. Mapping keys that name a secret are redacted too, for
+    credentials that arrive already dumped to a plain dict.
+    """
     if obj is None:
       return None
+    if isinstance(obj, _CREDENTIAL_MODELS):
+      return _REDACTED
+    if depth > _MAX_WALK_DEPTH:
+      # Terminates a self-referential object. Only the type name survives, so
+      # reaching the bound cannot uncover a value.
+      return f"<{type(obj).__name__} ...>"
+    child_depth = depth + 1
+    if isinstance(obj, Enum):
+      # A member of a `str` or `int` subclass enum passes the scalar check
+      # below unchanged, and then reaches `yaml.dump` as a Python object,
+      # which writes a `!!python/object` tag that `yaml.safe_load` refuses.
+      return self._safe_serialize(obj.value, child_depth)
     if isinstance(obj, (str, int, float, bool)):
       return obj
+    if isinstance(obj, (date, time)):
+      return obj.isoformat()
     if isinstance(obj, (list, tuple)):
-      return [self._safe_serialize(item) for item in obj]
+      return [self._safe_serialize(item, child_depth) for item in obj]
     if isinstance(obj, dict):
-      return {k: self._safe_serialize(v) for k, v in obj.items()}
+      return {
+          k: (
+              _REDACTED
+              if _is_sensitive_key(k)
+              else self._safe_serialize(v, child_depth)
+          )
+          for k, v in obj.items()
+      }
     if isinstance(obj, BaseModel):
+      if _holds_credential(obj):
+        # Serialize the raw field values, so that the nested credential is
+        # still a model instance when it is reached. Dumping first would leave
+        # only its key name to go on, and that name is caller-chosen. The
+        # values skip `model_dump`, so each one is normalized on the way
+        # through the branches above rather than by pydantic.
+        return self._safe_serialize(
+            {
+                name: value
+                for name, value in _model_items(obj)
+                if value is not None
+            },
+            depth,
+        )
       try:
-        return obj.model_dump(mode="json", exclude_none=True)
+        dumped = obj.model_dump(mode="json", exclude_none=True)
       except Exception:
         return str(obj)
+      # Recurse so that credential-named keys within the dump are redacted.
+      return self._safe_serialize(dumped, depth)
     if isinstance(obj, bytes):
       return f"<bytes: {len(obj)} bytes>"
     try:
@@ -349,7 +508,22 @@ class DebugLoggingPlugin(BasePlugin):
     # Write to file as YAML
     try:
       output_data = state.model_dump(mode="json", exclude_none=True)
-      with self._output_path.open("a", encoding="utf-8") as f:
+      fd = os.open(
+          self._output_path,
+          os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+          _OUTPUT_FILE_MODE,
+      )
+      # The mode above only applies to a file this call creates. A file left
+      # behind by an earlier run keeps whatever mode it had, so say so rather
+      # than silently changing permissions the user may have chosen.
+      if not self._warned_about_output_mode and os.fstat(fd).st_mode & 0o077:
+        self._warned_about_output_mode = True
+        logger.warning(
+            "Debug output file %s is readable beyond its owner and holds"
+            " whole prompts and responses; restrict it to mode 600.",
+            self._output_path,
+        )
+      with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write("---\n")
         yaml.dump(
             output_data,

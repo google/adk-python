@@ -58,7 +58,6 @@ from .events.event_actions import EventActions
 from .flows.llm_flows import contents
 from .flows.llm_flows.agent_transfer import _get_transfer_targets
 from .flows.llm_flows.functions import _collect_function_call_ids
-from .flows.llm_flows.functions import find_event_by_function_call_id
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
 from .platform.thread import create_thread
@@ -539,36 +538,33 @@ class Runner:
       invocation_id: Optional[str],
   ) -> Optional[str]:
     """Infers invocation_id from new_message if it is a function response."""
+    if new_message is None:
+      return invocation_id
     function_responses = _get_function_responses_from_content(new_message)
     if not function_responses:
       return invocation_id
 
-    function_response_id = function_responses[0].id
-    if not function_response_id:
+    if not function_responses[0].id:
       raise ValueError(
           'Function response id is required to resume an invocation.'
       )
-    fc_event = find_event_by_function_call_id(
-        session.events, function_response_id
+    # Resolve through the shared helper so every response in the message is
+    # checked, not just the first one. A message answering several calls at
+    # once (parallel tool calls) must resolve to a single invocation; taking
+    # `function_responses[0]` alone would silently attribute the rest of the
+    # responses to whichever invocation happened to come first.
+    resolved_invocation_id = self._resolve_invocation_id_from_fr(
+        session, new_message
     )
-    if not fc_event:
-      fr_id = function_responses[0].id
-      fr_name = function_responses[0].name
-      raise ValueError(
-          'Function call event not found for function response'
-          f' (id={fr_id!r}, name={fr_name!r}). Ensure the function'
-          ' call ID matches an existing function call in the session'
-          ' history.'
-      )
 
-    if invocation_id and invocation_id != fc_event.invocation_id:
+    if invocation_id and invocation_id != resolved_invocation_id:
       logger.warning(
           'Provided invocation_id %s is ignored because new_message has a '
           'function response with invocation_id %s.',
           invocation_id,
-          fc_event.invocation_id,
+          resolved_invocation_id,
       )
-    return fc_event.invocation_id
+    return resolved_invocation_id
 
   def _format_session_not_found_message(self, session_id: str) -> str:
     message = f'Session not found: {session_id}'
@@ -604,7 +600,9 @@ class Runner:
     async def _run() -> AsyncGenerator[Event, None]:
       nonlocal invocation_id, new_message, session
       with _instrumentation.record_invocation(
-          entrypoint_node=node or self.agent, conversation_id=session_id
+          entrypoint_node=node or self.agent,
+          conversation_id=session_id,
+          run_config=run_config or RunConfig(),
       ):
         # 1. Setup
         if session is None:
@@ -627,6 +625,16 @@ class Runner:
             if active_scope:
               _, inv_id = active_scope
               invocation_id = inv_id
+        elif invocation_id and new_message:
+          # A caller-supplied id is reconciled against the responses rather
+          # than trusted: resuming under an id that does not own the call
+          # means the call is not found and the response is dropped, losing
+          # the tool result. This is the same reconciliation the non-node
+          # path performs, through the same helper, so a root LlmAgent gets
+          # one answer no matter which path the runner picked for it.
+          invocation_id = self._resolve_invocation_id(
+              session, new_message, invocation_id
+          )
 
         ic = self._new_invocation_context(
             session,
@@ -646,8 +654,8 @@ class Runner:
         if resume_inputs or invocation_id:
           # Resume: recover the original user content. new_message here is a
           # function response (or None), so it can't populate user_content.
-          node_input = self._find_original_user_content(
-              ic.session, ic.invocation_id
+          node_input = self._find_user_message_for_invocation(
+              ic.session.events, ic.invocation_id
           )
           if node_input:
             ic.user_content = node_input
@@ -965,11 +973,18 @@ class Runner:
         session=ic.session, event=event
     )
 
-  def _find_original_user_content(
-      self, session: Session, invocation_id: str
+  def _find_user_message_for_invocation(
+      self, events: list[Event], invocation_id: str
   ) -> types.Content | None:
-    """Find the original user text message for a given invocation_id."""
-    for event in session.events:
+    """Finds the user message that started a specific invocation.
+
+    A part carrying text anywhere in the message qualifies, not just the first
+    one: a multimodal turn commonly leads with an image and puts the question
+    after it, and requiring text in ``parts[0]`` would miss it. Resuming such an
+    invocation used to fail outright, because the caller treats "not found" as
+    an error.
+    """
+    for event in events:
       if (
           event.invocation_id == invocation_id
           and event.author == 'user'
@@ -1373,7 +1388,9 @@ class Runner:
     ) -> AsyncGenerator[Event, None]:
       caller_ctx_trace = context.get_current()
       with _instrumentation.record_invocation(
-          entrypoint_node=root_agent, conversation_id=session_id
+          entrypoint_node=root_agent,
+          conversation_id=session_id,
+          run_config=run_config,
       ):
         session = await self._get_or_create_session(
             user_id=user_id,
@@ -2462,21 +2479,6 @@ class Runner:
             invocation_id=invocation_context.invocation_id,
         )
     return invocation_context
-
-  def _find_user_message_for_invocation(
-      self, events: list[Event], invocation_id: str
-  ) -> Optional[types.Content]:
-    """Finds the user message that started a specific invocation."""
-    for event in events:
-      if (
-          event.invocation_id == invocation_id
-          and event.author == 'user'
-          and event.content
-          and event.content.parts
-          and event.content.parts[0].text
-      ):
-        return event.content
-    return None
 
   def _create_invocation_context(self, **kwargs: object) -> InvocationContext:
     """Creates an InvocationContext instance."""

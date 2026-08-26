@@ -35,6 +35,7 @@ from ._content_compaction import _recover_compacted_function_calls
 from ._fencing import _is_other_agent_reply
 from ._fencing import _present_other_agent_message
 from ._invocation_utils import as_llm_agent
+from .functions import _collect_function_call_ids
 from .functions import AF_FUNCTION_CALL_ID_PREFIX
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -253,11 +254,7 @@ def _drop_orphaned_function_responses(
   Returns:
     The events with orphaned function_response parts removed.
   """
-  call_ids = set()
-  for event in events:
-    for function_call in event.get_function_calls():
-      if function_call.id:
-        call_ids.add(function_call.id)
+  call_ids = _collect_function_call_ids(events)
 
   orphaned_ids: list[str] = []
   result_events: list[Event] = []

@@ -36,8 +36,9 @@ from .functional._scenarios import run_agent_scenario
 from .functional._scenarios import TOOL_ERROR
 from .functional_test_cases import ALL_CASES
 from .functional_test_cases import MCP_CASE
+from .functional_test_cases import MCP_HTTP_CASE
 
-CASES = [*ALL_CASES, MCP_CASE]
+CASES = [*ALL_CASES, MCP_CASE, MCP_HTTP_CASE]
 
 
 @pytest.mark.parametrize(

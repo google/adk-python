@@ -210,6 +210,15 @@ def test_cli_create_cmd_invokes_run_cmd(
   assert rec.calls, "cli_create.run_cmd must be called"
 
 
+@pytest.mark.unmute_click
+def test_cli_create_help_shows_type_option() -> None:
+  """`adk create --help` should list the --type option."""
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["create", "--help"])
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert "--type" in result.output
+
+
 def test_cli_telemetry_captures_subcommand_flags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

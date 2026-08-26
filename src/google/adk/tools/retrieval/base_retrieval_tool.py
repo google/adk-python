@@ -23,6 +23,12 @@ from ..base_tool import BaseTool
 
 
 class BaseRetrievalTool(BaseTool):
+  """The base class for tools that retrieve data for a query.
+
+  Matching nothing is a normal outcome, not an error: `run_async` returns a
+  message saying no result was found rather than raising, so the model can act
+  on it and continue the turn.
+  """
 
   @override
   def _get_declaration(self) -> types.FunctionDeclaration:

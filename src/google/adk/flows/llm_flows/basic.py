@@ -17,11 +17,8 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
-from typing import Optional
-from typing import TypeVar
 
 from google.genai import types
-from pydantic import BaseModel
 from typing_extensions import override
 
 from ...agents.invocation_context import InvocationContext
@@ -30,6 +27,8 @@ from ...models.llm_request import LlmRequest
 from ...utils import model_name_utils
 from ._base_llm_processor import BaseLlmRequestProcessor
 from ._invocation_utils import as_llm_agent
+from ._invocation_utils import copy_http_options as _copy_http_options
+from ._invocation_utils import copy_or_none as _copy_or_none
 from ._invocation_utils import require_run_config
 
 
@@ -58,30 +57,6 @@ def _merge_run_config_http_options(
     value = getattr(run_config_http_options, field, None)
     if value is not None:
       setattr(config.http_options, field, value)
-
-
-def _copy_http_options(
-    http_options: types.HttpOptions,
-) -> types.HttpOptions:
-  """Copies http_options far enough that assembly cannot write through it.
-
-  Deliberately not a deep copy: the field can carry a live httpx or aiohttp
-  client and an SSL context, which raise ``TypeError: cannot pickle`` on a deep
-  copy. Only ``headers`` is mutated in place during assembly.
-  """
-  return http_options.model_copy(
-      update={'headers': dict(http_options.headers)}
-      if http_options.headers is not None
-      else {}
-  )
-
-
-_ModelT = TypeVar('_ModelT', bound=BaseModel)
-
-
-def _copy_or_none(model: Optional[_ModelT]) -> Optional[_ModelT]:
-  """Returns a deep copy of a RunConfig sub-model that assembly then mutates."""
-  return None if model is None else model.model_copy(deep=True)
 
 
 def _copy_request_scoped_fields(

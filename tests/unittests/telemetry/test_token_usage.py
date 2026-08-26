@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import _token_usage
 from google.genai import types
 import pytest
@@ -27,6 +28,58 @@ def fixture_usage_metadata() -> types.GenerateContentResponseUsageMetadata:
   m.thoughts_token_count = None
   m.cached_content_token_count = None
   return m
+
+
+def test_from_llm_responses_keeps_usage_a_trailing_response_omits():
+  """Tests from_llm_responses when the last response reports no usage."""
+  reported = LlmResponse(
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10, candidates_token_count=4
+      )
+  )
+  trailing = LlmResponse(partial=True)
+
+  token_usage = _token_usage.TokenUsage.from_llm_responses([reported, trailing])
+
+  assert token_usage is not None
+  assert token_usage.input_token_count == 10
+  assert token_usage.output_token_count == 4
+
+
+def test_from_llm_responses_takes_the_newest_report():
+  """Tests from_llm_responses when several responses report usage."""
+  first = LlmResponse(
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10, candidates_token_count=1
+      )
+  )
+  newest = LlmResponse(
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10, candidates_token_count=4
+      )
+  )
+
+  token_usage = _token_usage.TokenUsage.from_llm_responses([first, newest])
+
+  assert token_usage is not None
+  assert token_usage.output_token_count == 4
+
+
+def test_from_llm_responses_without_any_report():
+  """Tests from_llm_responses when no response reports usage."""
+  assert _token_usage.TokenUsage.from_llm_responses([]) is None
+  assert _token_usage.TokenUsage.from_llm_responses([LlmResponse()]) is None
+
+
+def test_from_llm_responses_report_counting_no_tokens():
+  """Tests from_llm_responses when the report counts neither direction."""
+  countless = LlmResponse(
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          total_token_count=7
+      )
+  )
+
+  assert _token_usage.TokenUsage.from_llm_responses([countless]) is None
 
 
 def test_input_token_count_all_present(

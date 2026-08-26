@@ -26,9 +26,9 @@ from typing import Any
 
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.sessions import _restricted_pickle
 from google.adk.sessions import _session_util
 from google.adk.sessions.migration import _schema_check_utils
-from google.adk.sessions.schemas import v0
 from google.adk.sessions.schemas import v1
 from google.genai import types
 import sqlalchemy
@@ -45,7 +45,7 @@ def _restricted_pickle_loads(
   """Load a pickle payload using the restricted unpickler by default."""
   if allow_unsafe_unpickling:
     return pickle.loads(data)
-  return v0._restricted_pickle_loads(data)
+  return _restricted_pickle.loads(data)
 
 
 def _to_datetime_obj(val: Any) -> datetime | Any:

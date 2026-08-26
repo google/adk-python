@@ -725,9 +725,9 @@ async def test_record_inference_telemetry_failure_labels_operation_duration(
 async def test_record_llm_response_keeps_every_response_in_arrival_order(
     telemetry: _Telemetry,
 ):
-  """Token usage is read off the last response on the assumption that
+  """Token usage is read off the newest response that reports any, so both
 
-  streaming usage is cumulative, so both retention and order matter.
+  retention and order matter.
   """
   agent = _agent()
   ctx = await _invocation_context(agent)

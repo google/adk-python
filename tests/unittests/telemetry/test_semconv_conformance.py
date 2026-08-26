@@ -62,6 +62,22 @@ _OPERATION_BY_METRIC: dict[str, str] = {
     "adk.experimental.invoke_agent.cache_read.input_tokens": "invoke_agent",
     "adk.experimental.invoke_agent.reasoning.output_tokens": "invoke_agent",
     "adk.experimental.invoke_agent.tool.input_tokens": "invoke_agent",
+    # The same spend summed over a whole workflow, so these cover the
+    # `invoke_workflow` operation its duration covers.
+    "adk.experimental.invoke_workflow.input_tokens": "invoke_workflow",
+    "adk.experimental.invoke_workflow.output_tokens": "invoke_workflow",
+    "adk.experimental.invoke_workflow.total_tokens": "invoke_workflow",
+    "adk.experimental.invoke_workflow.cache_read.input_tokens": (
+        "invoke_workflow"
+    ),
+    "adk.experimental.invoke_workflow.reasoning.output_tokens": (
+        "invoke_workflow"
+    ),
+    "adk.experimental.invoke_workflow.tool.input_tokens": "invoke_workflow",
+    # The per-agent call counts summed over a whole workflow, so these cover
+    # `invoke_workflow` just as the token totals beside them do.
+    "adk.experimental.invoke_workflow.inference_calls": "invoke_workflow",
+    "adk.experimental.invoke_workflow.tool_calls": "invoke_workflow",
 }
 
 # Attributes that split a histogram into series rather than state a fact about
@@ -70,6 +86,11 @@ _METRIC_ONLY_DIMENSIONS: dict[str, str] = {
     "gen_ai.token.type": (
         "one series per direction, while a span reports both directions at"
         " once under gen_ai.usage.*"
+    ),
+    "adk.experimental.root_agent.name": (
+        "one series per app, so a whole app's spend can be read without"
+        " summing its workflows; the span names the workflow it covers, not"
+        " the app the runner was built for"
     ),
 }
 

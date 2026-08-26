@@ -27,10 +27,14 @@ from unittest.mock import patch
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.platform import thread as platform_thread
+from google.adk.telemetry.context import ADK_EXPERIMENTAL_TELEMETRY
+from google.adk.telemetry.tracing import _ADK_CAPTURE_MCP_HTTP_BODIES
+from google.adk.tools.mcp_tool import mcp_session_manager as mcp_session_manager_module
 from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFactory
 from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
 from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
+from google.adk.tools.mcp_tool.mcp_session_manager import _sanitize_url
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_USE_PIN_WARN_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import _SharedAsyncTransport
@@ -2027,6 +2031,11 @@ class TestCheckableMcpHttpClientFactory:
 class TestDebugHttpxClientFactory:
   """Tests for _DebugHttpxClientFactory."""
 
+  @pytest.fixture(autouse=True)
+  def no_otel_reporting(self, monkeypatch):
+    """Keeps OTel reporting off, so only the legacy buffer is under test."""
+    monkeypatch.delenv(ADK_EXPERIMENTAL_TELEMETRY, raising=False)
+
   @pytest.mark.asyncio
   async def test_debug_factory_registers_hook(self):
     """Test that the debug factory registers the response hook on client creation."""
@@ -2190,3 +2199,283 @@ class TestDebugHttpxClientFactory:
     assert record["response_body"].startswith("b" * 1000)
 
     await base_client.aclose()
+
+
+class TestDebugHttpxClientFactoryOtelReporting:
+  """Tests that the response hook also reports exchanges to OpenTelemetry."""
+
+  # pylint: disable=protected-access
+  # pylint: disable=unused-argument
+
+  @pytest.fixture
+  def otel_reporting(self, monkeypatch):
+    """Turns OTel reporting on: the record is experimental telemetry."""
+    monkeypatch.setenv(ADK_EXPERIMENTAL_TELEMETRY, "true")
+
+  @pytest.fixture
+  def no_otel_reporting(self, monkeypatch):
+    """Leaves OTel reporting off, which is the default."""
+    monkeypatch.delenv(ADK_EXPERIMENTAL_TELEMETRY, raising=False)
+
+  @pytest.fixture
+  def capture_content(self, monkeypatch):
+    """Opts the OTel record into carrying bodies."""
+    monkeypatch.setenv(_ADK_CAPTURE_MCP_HTTP_BODIES, "true")
+
+  @pytest.fixture
+  def no_capture_content(self, monkeypatch):
+    """Leaves body capture off, which is the default."""
+    monkeypatch.delenv(_ADK_CAPTURE_MCP_HTTP_BODIES, raising=False)
+
+  @pytest.fixture
+  def mock_trace(self):
+    with patch.object(
+        mcp_session_manager_module.tracing, "_trace_mcp_http_exchange"
+    ) as mock_trace:
+      yield mock_trace
+
+  @pytest.fixture
+  def factory(self):
+    return _DebugHttpxClientFactory(Mock())
+
+  def _make_response(
+      self,
+      *,
+      url="https://example.com/messages?sessionId=sess-1",
+      status_code=200,
+      request_headers=None,
+      response_headers=None,
+  ):
+    mock_request = Mock(spec=httpx.Request)
+    mock_request.method = "POST"
+    mock_request.content = b"request body"
+    mock_request.headers = httpx.Headers(request_headers or {})
+
+    mock_response = Mock(spec=httpx.Response)
+    mock_response.url = httpx.URL(url)
+    mock_response.status_code = status_code
+    mock_response.request = mock_request
+    mock_response.headers = httpx.Headers(
+        response_headers or {"content-type": "application/json"}
+    )
+    mock_response.text = "response body"
+    mock_response.aread = AsyncMock()
+    return mock_response
+
+  async def _run_with_debug_list(self, factory, response):
+    """Runs the hook with the legacy buffer active and returns what it got."""
+    debug_list = []
+    token = _http_debug_var.set(debug_list)
+    try:
+      await factory._response_hook(response)
+    finally:
+      _http_debug_var.reset(token)
+    return debug_list
+
+  @pytest.mark.asyncio
+  async def test_reports_exchange_to_otel(
+      self, otel_reporting, capture_content, factory, mock_trace
+  ):
+    """Test that an exchange is reported with semconv attributes."""
+    response = self._make_response(
+        url="https://example.com:8443/messages?sessionId=sess-1",
+        status_code=403,
+        request_headers={"X-Req": "val"},
+    )
+
+    await factory._response_hook(response)
+
+    kwargs = mock_trace.call_args.kwargs
+    assert kwargs["method"] == "POST"
+    assert kwargs["server_address"] == "example.com"
+    assert kwargs["server_port"] == 8443
+    assert kwargs["status_code"] == 403
+    assert kwargs["mcp_session_id"] == "sess-1"
+    assert kwargs["request_body"] == "request body"
+    assert kwargs["response_body"] == "response body"
+    assert kwargs["request_headers"]["x-req"] == "val"
+    # The session id is reported as an attribute, not left in the URL.
+    assert (
+        kwargs["url"] == "https://example.com:8443/messages?sessionId=REDACTED"
+    )
+
+  @pytest.mark.asyncio
+  async def test_reports_without_a_debug_list(
+      self, otel_reporting, factory, mock_trace
+  ):
+    """Test that reporting works where the legacy sink cannot: no contextvar."""
+    await factory._response_hook(self._make_response())
+
+    mock_trace.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_populates_debug_list_when_otel_disabled(
+      self, no_otel_reporting, factory, mock_trace
+  ):
+    """Test that the legacy sink is untouched when OTel reporting is off."""
+    debug_list = await self._run_with_debug_list(factory, self._make_response())
+
+    mock_trace.assert_not_called()
+    # The legacy record keeps the query it has always carried.
+    assert (
+        debug_list[0]["url"] == "https://example.com/messages?sessionId=sess-1"
+    )
+
+  @pytest.mark.asyncio
+  async def test_does_nothing_when_both_sinks_are_off(
+      self, no_otel_reporting, factory, mock_trace
+  ):
+    """Test that the hook stays free when nobody is listening."""
+    response = self._make_response()
+
+    await factory._response_hook(response)
+
+    mock_trace.assert_not_called()
+    response.aread.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_redacts_sensitive_headers(
+      self, otel_reporting, factory, mock_trace
+  ):
+    """Test that credential-bearing headers never reach either sink."""
+    response = self._make_response(
+        request_headers={
+            "Authorization": "Bearer secret-token",
+            "X-Api-Key": "secret-key",
+            "Proxy-Authorization": "Basic secret",
+        },
+        response_headers={
+            "content-type": "application/json",
+            "Set-Cookie": "session=secret",
+        },
+    )
+
+    await factory._response_hook(response)
+
+    kwargs = mock_trace.call_args.kwargs
+    assert kwargs["request_headers"]["authorization"] == "<redacted>"
+    assert kwargs["request_headers"]["x-api-key"] == "<redacted>"
+    assert kwargs["request_headers"]["proxy-authorization"] == "<redacted>"
+    assert kwargs["response_headers"]["set-cookie"] == "<redacted>"
+
+  @pytest.mark.asyncio
+  async def test_reporting_failure_does_not_fail_the_request(
+      self, otel_reporting, factory, mock_trace
+  ):
+    """Test that a broken log pipeline cannot take the MCP request down."""
+    mock_trace.side_effect = RuntimeError("exporter exploded")
+
+    debug_list = await self._run_with_debug_list(factory, self._make_response())
+
+    # The legacy sink still got its record.
+    assert len(debug_list) == 1
+
+  @pytest.mark.asyncio
+  async def test_skips_sse_body_case_insensitively(
+      self, otel_reporting, capture_content, factory, mock_trace
+  ):
+    """Test that an SSE stream is never drained, whatever the header casing."""
+    response = self._make_response(
+        response_headers={"content-type": "Text/Event-Stream"}
+    )
+
+    await factory._response_hook(response)
+
+    assert mock_trace.call_args.kwargs["response_body"] == "<SSE stream>"
+    response.aread.assert_not_called()
+
+  # A streamable HTTP server returns `mcp-session-id` on the initialize
+  # response; from then on only the request carries it, which is where a
+  # `tools/call` has it.
+  @pytest.mark.parametrize("header_on", ["request", "response"])
+  @pytest.mark.asyncio
+  async def test_reports_the_session_id_from_a_header(
+      self, header_on, otel_reporting, factory, mock_trace
+  ):
+    """Test that streamable HTTP hops are attributed to their session."""
+    headers = {"mcp-session-id": "sess-2"}
+
+    await factory._response_hook(
+        self._make_response(
+            url="https://example.com/mcp",
+            request_headers=headers if header_on == "request" else None,
+            response_headers=headers if header_on == "response" else None,
+        )
+    )
+
+    assert mock_trace.call_args.kwargs["mcp_session_id"] == "sess-2"
+
+  @pytest.mark.parametrize("header_on", ["request", "response"])
+  @pytest.mark.asyncio
+  async def test_reports_the_protocol_version_from_a_header(
+      self, header_on, otel_reporting, factory, mock_trace
+  ):
+    """Test that the negotiated protocol version is reported as an attribute.
+
+    Read off the header rather than captured as one, so that having it costs
+    the consumer no entry in the header allowlist.
+    """
+    headers = {"mcp-protocol-version": "2025-06-18"}
+
+    await factory._response_hook(
+        self._make_response(
+            url="https://example.com/mcp",
+            request_headers=headers if header_on == "request" else None,
+            response_headers=headers if header_on == "response" else None,
+        )
+    )
+
+    assert mock_trace.call_args.kwargs["mcp_protocol_version"] == "2025-06-18"
+
+  @pytest.mark.asyncio
+  async def test_skips_the_body_read_when_content_capture_is_off(
+      self, otel_reporting, no_capture_content, factory, mock_trace
+  ):
+    """Test that a body no sink will keep is never read."""
+    response = self._make_response()
+
+    await factory._response_hook(response)
+
+    response.aread.assert_not_called()
+    kwargs = mock_trace.call_args.kwargs
+    assert kwargs["request_body"] is None
+    assert kwargs["response_body"] is None
+    # The exchange is still described; only the payload is skipped.
+    assert kwargs["status_code"] == 200
+    assert kwargs["mcp_session_id"] == "sess-1"
+
+  @pytest.mark.asyncio
+  async def test_reads_the_body_for_the_legacy_buffer_despite_capture_off(
+      self, otel_reporting, no_capture_content, factory, mock_trace
+  ):
+    """Test that the legacy sink keeps its payload; it predates the OTel knob."""
+    response = self._make_response()
+
+    debug_list = await self._run_with_debug_list(factory, response)
+
+    response.aread.assert_called_once()
+    assert debug_list[0]["response_body"] == "response body"
+
+
+@pytest.mark.parametrize(
+    "url,redact_query,expected",
+    [
+        # Userinfo is a credential, so it always goes.
+        ("https://user:pw@example.com/sse", False, "https://example.com/sse"),
+        (
+            "https://example.com/m?sessionId=abc&x=1",
+            False,
+            "https://example.com/m?sessionId=abc&x=1",
+        ),
+        # Redaction keeps the keys, which are diagnostic, and drops the values.
+        (
+            "https://example.com/m?sessionId=abc&x=1",
+            True,
+            "https://example.com/m?sessionId=REDACTED&x=REDACTED",
+        ),
+        ("https://example.com:8443/sse", True, "https://example.com:8443/sse"),
+    ],
+)
+def test_sanitize_url(url, redact_query, expected):
+  """Test that a URL is rendered for recording without its credentials."""
+  assert _sanitize_url(httpx.URL(url), redact_query=redact_query) == expected
