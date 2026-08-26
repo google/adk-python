@@ -569,14 +569,14 @@ async def test_get_session_pagination_keeps_client_open():
   session_data = {
       'name': (
           'projects/test-project/locations/test-location/'
-          'reasoningEngines/123/sessions/pagination_test'
+          'reasoningEngines/123/sessions/pagination-test'
       ),
       'update_time': '2024-12-12T12:12:12.123456Z',
       'user_id': 'pagination_user',
   }
-  page1_events = _generate_events_for_page('pagination_test', 0, 100)
-  page2_events = _generate_events_for_page('pagination_test', 100, 100)
-  page3_events = _generate_events_for_page('pagination_test', 200, 50)
+  page1_events = _generate_events_for_page('pagination-test', 0, 100)
+  page2_events = _generate_events_for_page('pagination-test', 100, 100)
+  page3_events = _generate_events_for_page('pagination-test', 200, 50)
 
   mock_client = MockAsyncClientWithPagination(
       session_data=session_data,
@@ -589,7 +589,7 @@ async def test_get_session_pagination_keeps_client_open():
       session_service, '_get_api_client', return_value=mock_client
   ):
     session = await session_service.get_session(
-        app_name='123', user_id='pagination_user', session_id='pagination_test'
+        app_name='123', user_id='pagination_user', session_id='pagination-test'
     )
 
   assert session is not None

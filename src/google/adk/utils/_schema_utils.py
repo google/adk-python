@@ -165,7 +165,10 @@ def validate_node_data(
 
   def _to_serializable(val: Any) -> Any:
     if isinstance(val, BaseModel):
-      return val.model_dump(exclude_none=True)
+      # mode="json" (not the default python mode) so Decimal, datetime,
+      # UUID, and non-str Enum members are converted to JSON-safe values
+      # and any serializer registered with when_used="json" actually runs.
+      return val.model_dump(exclude_none=True, mode="json")
     if isinstance(val, list):
       return [_to_serializable(item) for item in val]
     if isinstance(val, dict):
