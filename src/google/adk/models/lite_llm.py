@@ -2202,11 +2202,27 @@ def _function_declaration_to_tool_param(
   elif function_declaration.parameters_json_schema:
     parameters = function_declaration.parameters_json_schema
 
+  description = function_declaration.description or ""
+  # Most OpenAI-compatible providers have no dedicated field for a tool's
+  # result/output schema, unlike the Gemini path (see #2828). Rather than
+  # inventing a non-standard key that providers would ignore, surface the
+  # schema by appending it to the description, which is always forwarded.
+  output_schema_dict: Optional[dict[str, Any]] = None
+  if function_declaration.response_json_schema:
+    output_schema_dict = function_declaration.response_json_schema
+  elif function_declaration.response:
+    output_schema_dict = _schema_to_dict(function_declaration.response)
+  if output_schema_dict:
+    description = (
+        f"{description}\n\nResult schema:"
+        f" {json.dumps(output_schema_dict)}"
+    ).strip()
+
   tool_params: dict[str, Any] = {
       "type": "function",
       "function": {
           "name": function_declaration.name,
-          "description": function_declaration.description or "",
+          "description": description,
           "parameters": parameters,
       },
   }
@@ -2490,9 +2506,30 @@ def _message_to_generate_content_response(
     for tool_call in tool_calls:
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
+        try:
+          call_args = _parse_tool_call_arguments(tool_call.function.arguments)
+        except json.JSONDecodeError as e:
+          # Malformed/truncated tool-call arguments (e.g. a partial stream
+          # committed to the message) are a recoverable model error here,
+          # not a reason to abort the whole invocation. Log and fall back
+          # to an empty dict so the function-call Part still surfaces and
+          # downstream tool dispatch can retry/recover, instead of the
+          # JSONDecodeError propagating out of response parsing. (The
+          # streaming aggregation path has its own, more specific handling
+          # for arguments truncated by hitting max_output_tokens; this
+          # covers every other malformed-JSON case.)
+          logger.warning(
+              "Failed to parse tool call arguments as JSON for tool"
+              " %r, falling back to an empty dict. Raw arguments: %r."
+              " Error: %s",
+              tool_call.function.name,
+              tool_call.function.arguments,
+              e,
+          )
+          call_args = {}
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=_parse_tool_call_arguments(tool_call.function.arguments),
+            args=call_args,
         )
         function_call = part.function_call
         if function_call is None:
