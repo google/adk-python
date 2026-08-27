@@ -85,6 +85,87 @@ async def test_new_invocation_context_for_live_subagents_audio_transcription():
   assert ic.run_config.input_audio_transcription is not None
 
 
+def _multi_agent_runner() -> Runner:
+  parent_agent = _MockLiveAgent(name="parent")
+  parent_agent.sub_agents = [_MockLiveAgent(name="child")]
+  return Runner(
+      app_name="test_app",
+      agent=parent_agent,
+      session_service=InMemorySessionService(),
+  )
+
+
+@pytest.mark.asyncio
+async def test_new_invocation_context_for_live_respects_explicit_opt_out():
+  runner = _multi_agent_runner()
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  run_config = RunConfig(
+      response_modalities=[types.Modality.AUDIO],
+      output_audio_transcription=None,
+      input_audio_transcription=None,
+  )
+
+  ic = _runner_utils.new_invocation_context_for_live(
+      runner,
+      session,
+      live_request_queue=LiveRequestQueue(),
+      run_config=run_config,
+  )
+
+  assert ic.run_config.output_audio_transcription is None
+  assert ic.run_config.input_audio_transcription is None
+  # The caller's config object must not be mutated either.
+  assert run_config.output_audio_transcription is None
+  assert run_config.input_audio_transcription is None
+
+
+@pytest.mark.asyncio
+async def test_new_invocation_context_for_live_opt_out_without_modalities():
+  runner = _multi_agent_runner()
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  run_config = RunConfig(input_audio_transcription=None)
+
+  ic = _runner_utils.new_invocation_context_for_live(
+      runner,
+      session,
+      live_request_queue=LiveRequestQueue(),
+      run_config=run_config,
+  )
+
+  assert ic.run_config.input_audio_transcription is None
+
+
+@pytest.mark.asyncio
+async def test_new_invocation_context_for_live_without_subagents_passthrough():
+  runner = Runner(
+      app_name="test_app",
+      agent=_MockLiveAgent(name="solo"),
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  run_config = RunConfig(
+      response_modalities=[types.Modality.AUDIO],
+      output_audio_transcription=None,
+      input_audio_transcription=None,
+  )
+
+  ic = _runner_utils.new_invocation_context_for_live(
+      runner,
+      session,
+      live_request_queue=LiveRequestQueue(),
+      run_config=run_config,
+  )
+
+  assert ic.run_config.output_audio_transcription is None
+  assert ic.run_config.input_audio_transcription is None
+
+
 @pytest.mark.asyncio
 async def test_run_live_validates_required_arguments():
   agent = _MockLiveAgent()
