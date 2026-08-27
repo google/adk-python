@@ -126,26 +126,18 @@ def create_document(document: DocumentRequest) -> dict[str, str | int]:
   }
 
 
-def _required_env(name: str) -> str:
-  value = os.getenv(name)
-  if not value:
-    raise RuntimeError(
-        f"Set {name} before starting the sample. See README.md for setup."
-    )
-  return value
-
-
 def _build_model() -> BaseLlm:
   """Build the Azure Responses model used by this sample."""
   from google.adk.labs.openai import AzureOpenAIResponsesLlm
 
   endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
   if not endpoint:
-    resource_name = _required_env("AZURE_RESOURCE_NAME")
-    endpoint = f"https://{resource_name}.openai.azure.com"
+    resource_name = os.getenv("AZURE_RESOURCE_NAME")
+    if resource_name:
+      endpoint = f"https://{resource_name}.openai.azure.com"
   return AzureOpenAIResponsesLlm(
       model=os.getenv("AZURE_MODEL_DEPLOYMENT", "gpt-4o"),
-      api_key=_required_env("AZURE_API_KEY"),
+      api_key=os.getenv("AZURE_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY"),
       azure_endpoint=endpoint,
       include_response_metadata=True,
   )

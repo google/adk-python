@@ -669,7 +669,10 @@ def _function_call_part(
       name=name or '',
       args=parsed_arguments,
   )
-  part.function_call.id = _get_value(item, 'call_id') or _get_value(item, 'id')
+  if part.function_call:
+    part.function_call.id = _get_value(item, 'call_id') or _get_value(
+        item, 'id'
+    )
   return part
 
 
@@ -686,6 +689,7 @@ def _response_to_llm_response(
   has_invalid_function_call = False
 
   for item in _get_value(response, 'output', []) or []:
+    item_type: str | None = None
     if isinstance(item, ResponseOutputMessage):
       parts.extend(_message_content_parts(item))
       item_type = item.type
@@ -1182,10 +1186,11 @@ class _StreamAccumulator:
     else:
       parsed_arguments = {}
     part = types.Part.from_function_call(
-        name=call.get('name'),
+        name=call.get('name') or '',
         args=parsed_arguments,
     )
-    part.function_call.id = call.get('call_id')
+    if part.function_call:
+      part.function_call.id = call.get('call_id')
     return part
 
 
@@ -1299,6 +1304,8 @@ class OpenAIResponsesLlm(BaseLlm):
       kwargs['reasoning'] = reasoning
     tools: list[ToolParam] = []
     for tool in config.tools or []:
+      if not isinstance(tool, types.Tool):
+        continue
       for function_declaration in tool.function_declarations or []:
         tools.append(
             _function_declaration_to_response_tool(function_declaration)
@@ -1347,13 +1354,27 @@ class AzureOpenAIResponsesLlm(OpenAIResponsesLlm):
   azure_endpoint: str | None = None
 
   def _resolve_api_key(self) -> str | None:
-    return super()._resolve_api_key() or os.environ.get('AZURE_OPENAI_API_KEY')
+    return (
+        super()._resolve_api_key()
+        or os.environ.get('AZURE_OPENAI_API_KEY')
+        or os.environ.get('AZURE_API_KEY')
+    )
+
+  def _resolve_azure_endpoint(self) -> str | None:
+    if self.azure_endpoint:
+      return self.azure_endpoint
+    if endpoint := os.environ.get('AZURE_OPENAI_ENDPOINT'):
+      return endpoint
+    if resource_name := os.environ.get('AZURE_RESOURCE_NAME'):
+      return f'https://{resource_name}.openai.azure.com'
+    return None
 
   @cached_property
   def _openai_client(self) -> AsyncOpenAI:
     if self.client is not None:
       return self.client
     kwargs: dict[str, Any] = {'api_key': self._resolve_api_key()}
-    if self.azure_endpoint:
-      kwargs['base_url'] = self.azure_endpoint.rstrip('/') + '/openai/v1/'
+    endpoint = self._resolve_azure_endpoint()
+    if endpoint:
+      kwargs['base_url'] = endpoint.rstrip('/') + '/openai/v1/'
     return AsyncOpenAI(**kwargs)

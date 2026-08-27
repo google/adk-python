@@ -19,15 +19,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 
+from google.adk.agents._streaming_mode import StreamingMode
 from google.adk.agents.run_config import RunConfig
-from google.adk.agents.run_config import StreamingMode
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
 try:
   from .agent import root_agent
 except ImportError:
-  from agent import root_agent
+  from agent import root_agent  # type: ignore[no-redef]
 
 
 APP_NAME = "azure_responses_streaming_sample"
