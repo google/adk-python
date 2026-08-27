@@ -260,6 +260,78 @@
         "value": 325
       }
     ],
+    "adk.experimental.invoke_workflow.cache_read.input_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 100
+      }
+    ],
+    "adk.experimental.invoke_workflow.inference_calls": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 2
+      }
+    ],
+    "adk.experimental.invoke_workflow.input_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 250
+      }
+    ],
+    "adk.experimental.invoke_workflow.output_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 75
+      }
+    ],
+    "adk.experimental.invoke_workflow.reasoning.output_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 20
+      }
+    ],
+    "adk.experimental.invoke_workflow.tool.input_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 0
+      }
+    ],
+    "adk.experimental.invoke_workflow.tool_calls": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 1
+      }
+    ],
+    "adk.experimental.invoke_workflow.total_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 325
+      }
+    ],
     "gen_ai.client.operation.duration": [
       {
         "attributes": {

@@ -161,9 +161,9 @@ class Endpoint(TypedDict, total=False):
 
 
 def _is_google_api(url: str) -> bool:
-  """Checks if the given URL points to a Google API endpoint."""
+  """Checks if the given URL points to a Google API endpoint over https."""
   parsed_url = urlparse(url)
-  if not parsed_url.hostname:
+  if parsed_url.scheme != "https" or not parsed_url.hostname:
     return False
   return (
       parsed_url.hostname == "googleapis.com"

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import signal
 import sys
 import time
 from unittest.mock import MagicMock
@@ -21,6 +22,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
+from google.adk.integrations.cloud_run import _cloud_run_sandbox_code_executor
 from google.adk.integrations.cloud_run import CloudRunSandboxCodeExecutor
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
@@ -94,6 +96,7 @@ class TestCloudRunSandboxCodeExecutor:
     assert result.stdout == "hello world\n"
     assert result.stderr == ""
     assert result.output_files == []
+    assert result.exit_code == 0
 
     # Verify subprocess.run was called with correct arguments
     expected_python = sys.executable or "python3"
@@ -152,6 +155,7 @@ class TestCloudRunSandboxCodeExecutor:
 
     assert result.stdout == ""
     assert "ValueError: Test error" in result.stderr
+    assert result.exit_code == 1
 
   @patch("subprocess.run")
   def test_execute_code_timeout(
@@ -172,6 +176,9 @@ class TestCloudRunSandboxCodeExecutor:
 
     assert result.stdout == "partial stdout"
     assert result.stderr == "partial stderr"
+    assert (
+        result.exit_code == _cloud_run_sandbox_code_executor._TIMEOUT_EXIT_CODE
+    )
 
   @pytest.mark.skipif(
       sys.platform == "win32", reason="the sandbox binary is POSIX-only"
@@ -196,6 +203,7 @@ class TestCloudRunSandboxCodeExecutor:
     # Well under both the 120s sandbox and the 300s default.
     assert elapsed < 30
     assert "timed out after 1 seconds" in result.stderr
+    assert result.exit_code == -signal.SIGKILL
 
   @patch("subprocess.run")
   def test_execute_code_binary_not_found(
@@ -213,3 +221,18 @@ class TestCloudRunSandboxCodeExecutor:
     assert (
         'Sandbox binary "/usr/local/gcp/bin/sandbox" not found' in result.stderr
     )
+    assert result.exit_code is None
+
+  @patch("subprocess.run")
+  def test_execute_code_unexpected_error(
+      self, mock_run, mock_invocation_context: InvocationContext
+  ):
+    mock_run.side_effect = OSError("sandbox is unavailable")
+
+    executor = CloudRunSandboxCodeExecutor()
+    code_input = CodeExecutionInput(code='print("hello")')
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stdout == ""
+    assert "sandbox is unavailable" in result.stderr
+    assert result.exit_code is None

@@ -15,16 +15,20 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from collections.abc import Sequence
 import json
 import re
 from typing import Any
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
 
 from google.auth.credentials import Credentials
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
-from google.cloud.spanner_v1.database import Database
+from pydantic import TypeAdapter
+from pydantic import ValidationError
 
 from . import client
 from . import utils
@@ -169,6 +173,32 @@ _GOOGLESQL_PARAMETER_QUERY_EMBEDDING = "embedding"
 _POSTGRESQL_PARAMETER_QUERY_EMBEDDING = "1"
 
 
+# The options arrive from a model-generated tool call, so their values are
+# parsed rather than trusted: they end up in the generated SQL, and pydantic
+# accepts the numeric strings a model tends to emit while rejecting anything
+# that is not a number.
+_OPTIONAL_STR: TypeAdapter[Optional[str]] = TypeAdapter(Optional[str])
+_OPTIONAL_INT: TypeAdapter[Optional[int]] = TypeAdapter(Optional[int])
+
+
+def _optional_str_option(options: Mapping[str, object], key: str) -> str | None:
+  value = options.get(key)
+  try:
+    return _OPTIONAL_STR.validate_python(value)
+  except ValidationError as ex:
+    raise ValueError(f"Option {key!r} must be a string, got {value!r}.") from ex
+
+
+def _optional_int_option(options: Mapping[str, object], key: str) -> int | None:
+  value = options.get(key)
+  try:
+    return _OPTIONAL_INT.validate_python(value)
+  except ValidationError as ex:
+    raise ValueError(
+        f"Option {key!r} must be an integer, got {value!r}."
+    ) from ex
+
+
 def _generate_googlesql_for_embedding_query(
     spanner_gsql_embedding_model_name: str,
 ) -> str:
@@ -183,7 +213,7 @@ def _generate_googlesql_for_embedding_query(
 
 def _generate_postgresql_for_embedding_query(
     vertex_ai_embedding_model_endpoint: str,
-    output_dimensionality: Optional[int],
+    output_dimensionality: int | None,
 ) -> str:
   if output_dimensionality is not None:
     output_dimensionality = int(output_dimensionality)
@@ -222,28 +252,32 @@ def _generate_postgresql_for_embedding_query(
 
 
 def _get_embedding_for_query(
-    database: Database,
+    database: client._SpannerDatabase,
     dialect: DatabaseDialect,
-    spanner_gsql_embedding_model_name: Optional[str],
-    spanner_pg_vertex_ai_embedding_model_endpoint: Optional[str],
+    spanner_gsql_embedding_model_name: str | None,
+    spanner_pg_vertex_ai_embedding_model_endpoint: str | None,
     query: str,
-    output_dimensionality: Optional[int] = None,
-) -> List[float]:
+    output_dimensionality: int | None = None,
+) -> list[float]:
   """Gets the embedding for the query."""
   if dialect == DatabaseDialect.POSTGRESQL:
+    if spanner_pg_vertex_ai_embedding_model_endpoint is None:
+      raise ValueError("A PostgreSQL embedding model endpoint is required.")
     embedding_query = _generate_postgresql_for_embedding_query(
         spanner_pg_vertex_ai_embedding_model_endpoint,
         output_dimensionality,
     )
     params = {f"p{_POSTGRESQL_PARAMETER_TEXT_QUERY}": query}
   else:
+    if spanner_gsql_embedding_model_name is None:
+      raise ValueError("A GoogleSQL embedding model name is required.")
     embedding_query = _generate_googlesql_for_embedding_query(
         spanner_gsql_embedding_model_name
     )
     params = {_GOOGLESQL_PARAMETER_TEXT_QUERY: query}
   with database.snapshot() as snapshot:
     result_set = snapshot.execute_sql(embedding_query, params=params)
-    return result_set.one()[0]
+    return cast("list[float]", result_set.one()[0])
 
 
 def _get_postgresql_distance_function(distance_type: str) -> str:
@@ -272,8 +306,8 @@ def _generate_sql_for_knn(
     dialect: DatabaseDialect,
     table_name: str,
     embedding_column_to_search: str,
-    columns,
-    additional_filter: Optional[str],
+    columns: Sequence[str],
+    additional_filter: str | None,
     distance_type: str,
     top_k: int,
 ) -> str:
@@ -287,11 +321,14 @@ def _generate_sql_for_knn(
         distance_type, ann=False
     )
     embedding_parameter = f"@{_GOOGLESQL_PARAMETER_QUERY_EMBEDDING}"
-  columns = list(columns) + [f"""{distance_function}(
+  selected_columns = [
+      *columns,
+      f"""{distance_function}(
       {embedding_column_to_search},
       {embedding_parameter}) AS {_DISTANCE_ALIAS}
-  """]
-  columns = ", ".join(columns)
+  """,
+  ]
+  columns_sql = ", ".join(selected_columns)
   if additional_filter is None:
     additional_filter = "1=1"
 
@@ -299,7 +336,7 @@ def _generate_sql_for_knn(
   if top_k > 0:
     optional_limit_clause = f"""LIMIT {top_k}"""
   return f"""
-    SELECT {columns}
+    SELECT {columns_sql}
     FROM {table_name}
     WHERE {additional_filter}
     ORDER BY {_DISTANCE_ALIAS}
@@ -311,12 +348,12 @@ def _generate_sql_for_ann(
     dialect: DatabaseDialect,
     table_name: str,
     embedding_column_to_search: str,
-    columns,
-    additional_filter: Optional[str],
+    columns: Sequence[str],
+    additional_filter: str | None,
     distance_type: str,
     top_k: int,
     num_leaves_to_search: int,
-):
+) -> str:
   """Generates a SQL query for ANN search."""
   top_k = int(top_k)
   num_leaves_to_search = int(num_leaves_to_search)
@@ -326,19 +363,22 @@ def _generate_sql_for_ann(
         " dialect."
     )
   distance_function = _get_googlesql_distance_function(distance_type, ann=True)
-  columns = list(columns) + [f"""{distance_function}(
+  selected_columns = [
+      *columns,
+      f"""{distance_function}(
       {embedding_column_to_search},
       @{_GOOGLESQL_PARAMETER_QUERY_EMBEDDING},
       options => JSON '{{"num_leaves_to_search": {num_leaves_to_search}}}'
   ) AS {_DISTANCE_ALIAS}
-  """]
-  columns = ", ".join(columns)
+  """,
+  ]
+  columns_sql = ", ".join(selected_columns)
   query_filter = f"{embedding_column_to_search} IS NOT NULL"
   if additional_filter is not None:
     query_filter = f"{query_filter} AND {additional_filter}"
 
   return f"""
-    SELECT {columns}
+    SELECT {columns_sql}
     FROM {table_name}
     WHERE {query_filter}
     ORDER BY {_DISTANCE_ALIAS}
@@ -406,9 +446,9 @@ async def similarity_search(
           the name of the text embedding model.
           If specified, embedding generation is performed using Spanner's
           `spanner.ML_PREDICT_ROW` function.
-        - output_dimensionality: Optional. The output dimensionality of the
-          embedding. If not specified, the embedding model's default output
-          dimensionality will be used.
+        - output_dimensionality: Optional. An integer. The output
+          dimensionality of the embedding. If not specified, the embedding
+          model's default output dimensionality will be used.
       credentials (Credentials): The credentials to use for the request.
       additional_filter (Optional[str]): An optional filter to apply to the
         search query. If provided, this will be added to the WHERE clause of the
@@ -422,8 +462,8 @@ async def similarity_search(
         Values must be numbers, single-quoted strings (without backslashes), booleans, or NULL.
       search_options (Optional[Dict[str, Any]]): A dictionary of options to use
         for the similarity search. The following options are supported:
-        - top_k: The number of most similar documents to return. The
-          default value is 4.
+        - top_k: An integer. The number of most similar documents to return.
+          The default value is 4.
         - distance_type: The distance type to use to perform the
           similarity search. Valid values include "COSINE",
           "EUCLIDEAN", and "DOT_PRODUCT". Default value is
@@ -432,7 +472,7 @@ async def similarity_search(
           algorithm to use. Valid values include "EXACT_NEAREST_NEIGHBORS"
           and "APPROXIMATE_NEAREST_NEIGHBORS". Default value is
           "EXACT_NEAREST_NEIGHBORS".
-        - num_leaves_to_search: (Only applies when the
+        - num_leaves_to_search: An integer. (Only applies when the
           nearest_neighbors_algorithm is APPROXIMATE_NEAREST_NEIGHBORS.)
           The number of leaves to search in the vector index.
 
@@ -546,7 +586,7 @@ async def _similarity_search_internal(
   try:
 
     # Get Spanner client
-    spanner_client = client.get_spanner_client(
+    spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
     )
     instance = spanner_client.instance(instance_id)
@@ -559,10 +599,8 @@ async def _similarity_search_internal(
         "Unsupported database dialect: %s" % database.database_dialect
     )
 
-    if embedding_options is None:
-      embedding_options = {}
-    if search_options is None:
-      search_options = {}
+    embedding_options = embedding_options or {}
+    search_options = search_options or {}
 
     exclusive_embedding_model_keys = {
         _VERTEX_AI_EMBEDDING_MODEL_NAME,
@@ -579,14 +617,14 @@ async def _similarity_search_internal(
     ):
       raise ValueError("Exactly one embedding model option must be specified.")
 
-    vertex_ai_embedding_model_name = embedding_options.get(
-        _VERTEX_AI_EMBEDDING_MODEL_NAME
+    vertex_ai_embedding_model_name = _optional_str_option(
+        embedding_options, _VERTEX_AI_EMBEDDING_MODEL_NAME
     )
-    spanner_gsql_embedding_model_name = embedding_options.get(
-        _SPANNER_GSQL_EMBEDDING_MODEL_NAME
+    spanner_gsql_embedding_model_name = _optional_str_option(
+        embedding_options, _SPANNER_GSQL_EMBEDDING_MODEL_NAME
     )
-    spanner_pg_vertex_ai_embedding_model_endpoint = embedding_options.get(
-        _SPANNER_PG_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT
+    spanner_pg_vertex_ai_embedding_model_endpoint = _optional_str_option(
+        embedding_options, _SPANNER_PG_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT
     )
     if (
         database.database_dialect == DatabaseDialect.GOOGLE_STANDARD_SQL
@@ -608,15 +646,9 @@ async def _similarity_search_internal(
           f" embedding_options['{_SPANNER_PG_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT}']"
           " must be specified for PostgreSQL dialect Spanner database."
       )
-    output_dimensionality = embedding_options.get(_OUTPUT_DIMENSIONALITY)
-    if output_dimensionality is not None:
-      try:
-        output_dimensionality = int(output_dimensionality)
-      except (ValueError, TypeError):
-        raise ValueError(
-            f"Invalid value for {_OUTPUT_DIMENSIONALITY}:"
-            f" {output_dimensionality!r}. Must be an integer."
-        )
+    output_dimensionality = _optional_int_option(
+        embedding_options, _OUTPUT_DIMENSIONALITY
+    )
     if (
         output_dimensionality is not None
         and spanner_gsql_embedding_model_name is not None
@@ -630,18 +662,18 @@ async def _similarity_search_internal(
       )
 
     # Use cosine distance by default.
-    distance_type = search_options.get(_DISTANCE_TYPE)
-    if distance_type is None:
-      distance_type = "COSINE"
+    distance_type = (
+        _optional_str_option(search_options, _DISTANCE_TYPE) or "COSINE"
+    )
 
-    top_k = search_options.get(_TOP_K)
+    top_k = _optional_int_option(search_options, _TOP_K)
     if top_k is None:
       top_k = 4
 
     # Use EXACT_NEAREST_NEIGHBORS (i.e. kNN) by default.
-    nearest_neighbors_algorithm = search_options.get(
-        _NEAREST_NEIGHBORS_ALGORITHM,
-        EXACT_NEAREST_NEIGHBORS,
+    nearest_neighbors_algorithm = (
+        _optional_str_option(search_options, _NEAREST_NEIGHBORS_ALGORITHM)
+        or EXACT_NEAREST_NEIGHBORS
     )
     if nearest_neighbors_algorithm not in (
         EXACT_NEAREST_NEIGHBORS,
@@ -683,7 +715,9 @@ async def _similarity_search_internal(
           top_k,
       )
     else:
-      num_leaves_to_search = search_options.get(_NUM_LEAVES_TO_SEARCH)
+      num_leaves_to_search = _optional_int_option(
+          search_options, _NUM_LEAVES_TO_SEARCH
+      )
       if num_leaves_to_search is None:
         num_leaves_to_search = 1000
       sql = _generate_sql_for_ann(
@@ -702,10 +736,10 @@ async def _similarity_search_internal(
     else:
       params = {_GOOGLESQL_PARAMETER_QUERY_EMBEDDING: embedding}
 
-    def _execute_sql():
+    def _execute_sql() -> dict[str, Any]:
       with database.snapshot() as snapshot:
         result_set = snapshot.execute_sql(sql, params=params)
-        rows = []
+        rows: list[object] = []
         for row in result_set:
           try:
             # If the json serialization of the row succeeds, use it as is
@@ -774,8 +808,10 @@ async def vector_store_similarity_search(
     if not settings or not settings.vector_store_settings:
       raise ValueError("Spanner vector store settings are not set.")
 
-    # Get the embedding model settings.
-    embedding_options = {
+    # Get the embedding model settings. The output dimensionality is an
+    # integer, so this is wider than the string values `similarity_search`
+    # declares; it is passed as declared rather than reshaped.
+    embedding_options: Dict[str, Any] = {
         _VERTEX_AI_EMBEDDING_MODEL_NAME: (
             settings.vector_store_settings.vertex_ai_embedding_model_name
         ),
@@ -783,7 +819,7 @@ async def vector_store_similarity_search(
     }
 
     # Get the search settings.
-    search_options = {
+    search_options: Dict[str, Any] = {
         _TOP_K: settings.vector_store_settings.top_k,
         _DISTANCE_TYPE: settings.vector_store_settings.distance_type,
         _NEAREST_NEIGHBORS_ALGORITHM: (

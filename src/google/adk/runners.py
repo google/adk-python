@@ -36,12 +36,10 @@ from google.genai import types
 from opentelemetry import context
 from typing_extensions import Self
 
-from .agents.base_agent import _with_caller_context
 from .agents.base_agent import BaseAgent
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
-from .agents.live_request_queue import LiveRequestQueue
 from .agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from .agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
@@ -59,6 +57,8 @@ from .flows.llm_flows import contents
 from .flows.llm_flows.agent_transfer import _get_transfer_targets
 from .flows.llm_flows.functions import _collect_function_call_ids
 from .flows.llm_flows.functions import find_matching_function_call
+from .live import _runner_utils as _live_runner_utils
+from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
 from .platform.thread import create_thread
 from .plugins.base_plugin import BasePlugin
@@ -70,6 +70,8 @@ from .telemetry import _instrumentation
 from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
 from .utils._debug_output import print_event
+from .utils._runner_utils import _notify_run_error
+from .utils._runner_utils import _with_caller_context
 
 if TYPE_CHECKING:
   from .apps.app import App
@@ -86,28 +88,6 @@ _ = tracer
 
 # App names already told that agent transfer runs without a context cache.
 _UNCACHED_TRANSFER_APPS: set[str] = set()
-
-
-async def _notify_run_error(
-    plugin_manager: PluginManager,
-    invocation_context: InvocationContext,
-    error: Exception,
-) -> None:
-  """Best-effort on_run_error notification; never masks the original error.
-
-  on_run_error_callback is notification-only: the triggering exception is
-  always re-raised by the caller, so any exception from the callback itself
-  (or from a test double that does not implement it) is logged and suppressed.
-  """
-  try:
-    await plugin_manager.run_on_run_error_callback(
-        invocation_context=invocation_context, error=error
-    )
-  except Exception:  # pylint: disable=broad-except
-    logger.exception(
-        'on_run_error_callback raised; suppressing so the original run error'
-        ' propagates.'
-    )
 
 
 def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
@@ -600,7 +580,9 @@ class Runner:
     async def _run() -> AsyncGenerator[Event, None]:
       nonlocal invocation_id, new_message, session
       with _instrumentation.record_invocation(
-          entrypoint_node=node or self.agent, conversation_id=session_id
+          entrypoint_node=node or self.agent,
+          conversation_id=session_id,
+          run_config=run_config or RunConfig(),
       ):
         # 1. Setup
         if session is None:
@@ -623,6 +605,16 @@ class Runner:
             if active_scope:
               _, inv_id = active_scope
               invocation_id = inv_id
+        elif invocation_id and new_message:
+          # A caller-supplied id is reconciled against the responses rather
+          # than trusted: resuming under an id that does not own the call
+          # means the call is not found and the response is dropped, losing
+          # the tool result. This is the same reconciliation the non-node
+          # path performs, through the same helper, so a root LlmAgent gets
+          # one answer no matter which path the runner picked for it.
+          invocation_id = self._resolve_invocation_id(
+              session, new_message, invocation_id
+          )
 
         ic = self._new_invocation_context(
             session,
@@ -744,6 +736,7 @@ class Runner:
                   except DynamicNodeFailError as e:
                     raise e.error
                 finally:
+                  assert ic._event_queue is not None
                   await ic._event_queue.put((done_sentinel, None))
 
               task = asyncio.create_task(_drive_root_node())
@@ -799,61 +792,16 @@ class Runner:
       run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     """Run a non-agent BaseNode in live mode."""
-    from .agents.context import Context
-    from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
-    from .workflow._errors import DynamicNodeFailError
-    from .workflow._errors import NodeInterruptedError
-    from .workflow._workflow import _LoopState
-    from .workflow._workflow import Workflow
-
-    ic = self._new_invocation_context_for_live(
-        session,
-        live_request_queue=live_request_queue,
-        run_config=run_config or RunConfig(),
-    )
-    ic._event_queue = asyncio.Queue()
-
-    root_ctx = Context(ic)
-    root_agent = self.agent
-    is_workflow = isinstance(root_agent, Workflow)
-
-    done_sentinel = object()
-
-    async def _drive_root_node() -> None:
-      try:
-        if is_workflow:
-          scheduler = DynamicNodeScheduler(state=_LoopState())
-          root_ctx._workflow_scheduler = scheduler
-
-        try:
-          await root_ctx.run_node(
-              root_agent,
-              node_input=None,
-          )
-        except NodeInterruptedError:
-          pass
-        except DynamicNodeFailError as e:
-          raise e.error
-      finally:
-        await ic._event_queue.put((done_sentinel, None))
-
-    task = asyncio.create_task(_drive_root_node())
-
-    try:
-      try:
-        async with aclosing(
-            self._consume_event_queue(ic, done_sentinel)
-        ) as agen:
-          async for event in agen:
-            yield event
-      finally:
-        # _cleanup_root_task re-raises a root-node Exception (if any).
-        await self._cleanup_root_task(task, self.agent.name)
-    except Exception as e:
-      # An unhandled exception escaped live runner execution. Notify plugins
-      # (notification-only) and re-raise.
-      await _notify_run_error(ic.plugin_manager, ic, e)
-      raise
+    async with aclosing(
+        _live_runner_utils.run_node_live(
+            self,
+            session=session,
+            live_request_queue=live_request_queue,
+            run_config=run_config,
+        )
+    ) as agen:
+      async for event in agen:
+        yield event
 
   def _extract_resume_inputs(
       self, message: Optional[types.Content]
@@ -1376,7 +1324,9 @@ class Runner:
     ) -> AsyncGenerator[Event, None]:
       caller_ctx_trace = context.get_current()
       with _instrumentation.record_invocation(
-          entrypoint_node=root_agent, conversation_id=session_id
+          entrypoint_node=root_agent,
+          conversation_id=session_id,
+          run_config=run_config,
       ):
         session = await self._get_or_create_session(
             user_id=user_id,
@@ -1913,99 +1863,15 @@ class Runner:
     .. NOTE::
         Either `session` or both `user_id` and `session_id` must be provided.
     """
-    run_config = run_config or RunConfig()
-    # Some native audio models requires the modality to be set. So we set it to
-    # AUDIO by default.
-    #
-    # The default goes on a copy rather than on the caller's own RunConfig: a
-    # config that asked for nothing in particular would otherwise come back out
-    # of the run pinned to AUDIO, and a config reused for a later run would
-    # carry that choice into it. The copy is shallow on purpose. Deep copying a
-    # RunConfig raises `TypeError: cannot pickle` when `http_options` holds a
-    # live httpx client, and nothing here writes through into a sub-model.
-    if run_config.response_modalities is None:
-      run_config = run_config.model_copy()
-      run_config.response_modalities = [types.Modality.AUDIO]
-
-    caller_ctx = context.get_current()
-    if session is None and (user_id is None or session_id is None):
-      raise ValueError(
-          'Either session or user_id and session_id must be provided.'
-      )
-    if live_request_queue is None:
-      raise ValueError('live_request_queue is required for run_live.')
-    if session is not None:
-      warnings.warn(
-          'The `session` parameter is deprecated. Please use `user_id` and'
-          ' `session_id` instead.',
-          DeprecationWarning,
-          stacklevel=2,
-      )
-    if session is None:
-      if user_id is None or session_id is None:
-        raise ValueError(
-            'user_id and session_id are required when session is not provided.'
-        )
-      session = await self._get_or_create_session(
-          user_id=user_id,
-          session_id=session_id,
-          get_session_config=run_config.get_session_config,
-      )
-
-    from .agents.base_agent import BaseAgent
-    from .workflow._base_node import BaseNode
-
-    if isinstance(self.agent, BaseNode) and not isinstance(
-        self.agent, BaseAgent
-    ):
-      async with aclosing(
-          self._run_node_live(
-              session=session,
-              live_request_queue=live_request_queue,
-              run_config=run_config,
-          )
-      ) as agen:
-        async for event in agen:
-          yield event
-      return
-    root_agent = self._require_root_agent()
-    invocation_context = self._new_invocation_context_for_live(
-        session,
-        live_request_queue=live_request_queue,
-        run_config=run_config,
-    )
-    # A streaming tool emits its user-facing events here instead of returning
-    # them inline; without a queue those enqueues raise.
-    invocation_context._event_queue = asyncio.Queue()
-
-    invocation_context.agent = self._find_agent_to_run(
-        invocation_context.session, root_agent
-    )
-    if invocation_context.agent and invocation_context.agent is not root_agent:
-      self._restore_branch_from_history(
-          invocation_context, invocation_context.agent, root=root_agent
-      )
-
-    async def execute(ctx: InvocationContext) -> AsyncGenerator[Event, None]:
-      active_agent = ctx.agent
-      if not isinstance(active_agent, BaseAgent):
-        raise RuntimeError('Live agent execution has no active BaseAgent.')
-      async with aclosing(active_agent.run_live(ctx)) as agen:
-        async for event in agen:
-          yield event
 
     async with aclosing(
-        self._merge_live_event_streams(
-            invocation_context,
-            _with_caller_context(
-                self._exec_with_plugin(
-                    invocation_context=invocation_context,
-                    session=invocation_context.session,
-                    execute_fn=execute,
-                    is_live_call=True,
-                ),
-                caller_ctx,
-            ),
+        _live_runner_utils.run_live(
+            self,
+            user_id=user_id,
+            session_id=session_id,
+            live_request_queue=live_request_queue,
+            run_config=run_config,
+            session=session,
         )
     ) as agen:
       async for event in agen:
@@ -2533,23 +2399,13 @@ class Runner:
       live_request_queue: LiveRequestQueue,
       run_config: Optional[RunConfig] = None,
   ) -> InvocationContext:
-    """Creates a new invocation context for live multi-agent."""
-    run_config = run_config or RunConfig()
+    """Creates a new invocation context for live multi-agent.
 
-    # For live multi-agents system, we need model's text transcription as
-    # context for the transferred agent.
-    if hasattr(self.agent, 'sub_agents') and self.agent.sub_agents:
-      if (
-          run_config.response_modalities
-          and types.Modality.AUDIO in run_config.response_modalities
-      ):
-        if not run_config.output_audio_transcription:
-          run_config.output_audio_transcription = (
-              types.AudioTranscriptionConfig()
-          )
-      if not run_config.input_audio_transcription:
-        run_config.input_audio_transcription = types.AudioTranscriptionConfig()
-    return self._new_invocation_context(
+    TODO: Deprecate or remove in follow-up CLs as live runner logic is
+    extracted.
+    """
+    return _live_runner_utils.new_invocation_context_for_live(
+        self,
         session,
         live_request_queue=live_request_queue,
         run_config=run_config,

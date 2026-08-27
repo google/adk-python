@@ -16,6 +16,7 @@
 
 from unittest import mock
 
+from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _metrics
 from google.adk.telemetry import _token_usage
 from google.genai import types
@@ -38,6 +39,14 @@ def _mock_meter_setup(monkeypatch):
   cache_read_input_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
   reasoning_output_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
   tool_input_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  workflow_input_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  workflow_output_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  workflow_total_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  workflow_cache_read_input_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  workflow_reasoning_output_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  workflow_tool_input_tokens_hist = mock.MagicMock(spec=metrics.Histogram)
+  workflow_inference_calls_hist = mock.MagicMock(spec=metrics.Histogram)
+  workflow_tool_calls_hist = mock.MagicMock(spec=metrics.Histogram)
 
   agent_duration_hist.name = "agent_invocation_duration"
   workflow_duration_hist.name = "workflow_invocation_duration"
@@ -50,6 +59,16 @@ def _mock_meter_setup(monkeypatch):
   cache_read_input_tokens_hist.name = "invoke_agent_cache_read_input_tokens"
   reasoning_output_tokens_hist.name = "invoke_agent_reasoning_output_tokens"
   tool_input_tokens_hist.name = "invoke_agent_tool_input_tokens"
+  workflow_input_tokens_hist.name = "invoke_workflow_input_tokens"
+  workflow_output_tokens_hist.name = "invoke_workflow_output_tokens"
+  workflow_total_tokens_hist.name = "invoke_workflow_total_tokens"
+  workflow_cache_read_input_tokens_hist.name = (
+      "invoke_workflow_cache_read_input_tokens"
+  )
+  workflow_reasoning_output_tokens_hist.name = (
+      "invoke_workflow_reasoning_output_tokens"
+  )
+  workflow_tool_input_tokens_hist.name = "invoke_workflow_tool_input_tokens"
 
   def create_histogram_side_effect(name, **_kwargs):
     if name == "gen_ai.invoke_agent.duration":
@@ -74,6 +93,18 @@ def _mock_meter_setup(monkeypatch):
       return reasoning_output_tokens_hist
     elif name == "adk.experimental.invoke_agent.tool.input_tokens":
       return tool_input_tokens_hist
+    elif name == "adk.experimental.invoke_workflow.input_tokens":
+      return workflow_input_tokens_hist
+    elif name == "adk.experimental.invoke_workflow.output_tokens":
+      return workflow_output_tokens_hist
+    elif name == "adk.experimental.invoke_workflow.total_tokens":
+      return workflow_total_tokens_hist
+    elif name == "adk.experimental.invoke_workflow.cache_read.input_tokens":
+      return workflow_cache_read_input_tokens_hist
+    elif name == "adk.experimental.invoke_workflow.reasoning.output_tokens":
+      return workflow_reasoning_output_tokens_hist
+    elif name == "adk.experimental.invoke_workflow.tool.input_tokens":
+      return workflow_tool_input_tokens_hist
     raise ValueError(f"Unknown metric name: {name}")
 
   mock_meter.create_histogram.side_effect = create_histogram_side_effect
@@ -109,6 +140,38 @@ def _mock_meter_setup(monkeypatch):
   monkeypatch.setattr(
       _metrics, "_invoke_agent_tool_input_tokens", tool_input_tokens_hist
   )
+  monkeypatch.setattr(
+      _metrics, "_invoke_workflow_input_tokens", workflow_input_tokens_hist
+  )
+  monkeypatch.setattr(
+      _metrics, "_invoke_workflow_output_tokens", workflow_output_tokens_hist
+  )
+  monkeypatch.setattr(
+      _metrics, "_invoke_workflow_total_tokens", workflow_total_tokens_hist
+  )
+  monkeypatch.setattr(
+      _metrics,
+      "_invoke_workflow_cache_read_input_tokens",
+      workflow_cache_read_input_tokens_hist,
+  )
+  monkeypatch.setattr(
+      _metrics,
+      "_invoke_workflow_reasoning_output_tokens",
+      workflow_reasoning_output_tokens_hist,
+  )
+  monkeypatch.setattr(
+      _metrics,
+      "_invoke_workflow_tool_input_tokens",
+      workflow_tool_input_tokens_hist,
+  )
+  monkeypatch.setattr(
+      _metrics,
+      "_invoke_workflow_inference_calls",
+      workflow_inference_calls_hist,
+  )
+  monkeypatch.setattr(
+      _metrics, "_invoke_workflow_tool_calls", workflow_tool_calls_hist
+  )
 
   return {
       "meter": mock_meter,
@@ -123,6 +186,14 @@ def _mock_meter_setup(monkeypatch):
       "cache_read_input_tokens": cache_read_input_tokens_hist,
       "reasoning_output_tokens": reasoning_output_tokens_hist,
       "tool_input_tokens": tool_input_tokens_hist,
+      "workflow_input_tokens": workflow_input_tokens_hist,
+      "workflow_output_tokens": workflow_output_tokens_hist,
+      "workflow_total_tokens": workflow_total_tokens_hist,
+      "workflow_cache_read_input_tokens": workflow_cache_read_input_tokens_hist,
+      "workflow_reasoning_output_tokens": workflow_reasoning_output_tokens_hist,
+      "workflow_tool_input_tokens": workflow_tool_input_tokens_hist,
+      "workflow_inference_calls": workflow_inference_calls_hist,
+      "workflow_tool_calls": workflow_tool_calls_hist,
   }
 
 
@@ -463,3 +534,171 @@ def test_record_invoke_agent_token_usage(mock_meter_setup):
     assert kwargs["attributes"] == {
         "gen_ai.agent.name": "sub_agent"
     }, f"wrong attributes for {bucket}"
+
+
+def test_record_invoke_workflow_token_usage(mock_meter_setup):
+  """Each token bucket is recorded once, keyed by root agent and entrypoint."""
+  # The two differ here because a sticky `transfer_to_agent` routed the turn
+  # straight to a specialist, which is the common case after the first turn.
+  input_tokens = 5000
+  output_tokens = 900
+  cache_read_input_tokens = 3200
+  reasoning_output_tokens = 400
+  tool_input_tokens = 650
+  _metrics.record_invoke_workflow_token_usage(
+      root_agent_name="root_agent",
+      workflow_name="specialist",
+      totals=_token_usage.InvocationTokenTotals(
+          input_tokens=input_tokens,
+          output_tokens=output_tokens,
+          cache_read_input_tokens=cache_read_input_tokens,
+          reasoning_output_tokens=reasoning_output_tokens,
+          tool_input_tokens=tool_input_tokens,
+      ),
+      nested=False,
+  )
+
+  want = {
+      "workflow_input_tokens": input_tokens,
+      "workflow_output_tokens": output_tokens,
+      "workflow_total_tokens": input_tokens + output_tokens,
+      "workflow_cache_read_input_tokens": cache_read_input_tokens,
+      "workflow_reasoning_output_tokens": reasoning_output_tokens,
+      "workflow_tool_input_tokens": tool_input_tokens,
+  }
+  for bucket, want_value in want.items():
+    hist = mock_meter_setup[bucket]
+    hist.record.assert_called_once()
+    args, kwargs = hist.record.call_args
+    assert args[0] == want_value, f"wrong value for {bucket}"
+    # No agent dimension: the value spans every agent in the turn.
+    assert kwargs["attributes"] == {
+        "adk.experimental.root_agent.name": "root_agent",
+        "gen_ai.workflow.name": "specialist",
+    }, f"wrong attributes for {bucket}"
+
+
+def test_record_invoke_workflow_token_usage_omits_unset_workflow_name(
+    mock_meter_setup,
+):
+  """An unstamped entrypoint drops the attribute rather than sending empty."""
+  _metrics.record_invoke_workflow_token_usage(
+      root_agent_name="root_agent",
+      workflow_name=None,
+      totals=_token_usage.InvocationTokenTotals(
+          input_tokens=10, output_tokens=5
+      ),
+      nested=False,
+  )
+
+  hist = mock_meter_setup["workflow_input_tokens"]
+  _, kwargs = hist.record.call_args
+  assert kwargs["attributes"] == {
+      "adk.experimental.root_agent.name": "root_agent"
+  }
+
+
+def test_record_invoke_workflow_call_counts(mock_meter_setup):
+  """Call counts carry both names and record even at zero."""
+  _metrics.record_invoke_workflow_inference_calls(
+      root_agent_name="root_agent",
+      workflow_name="specialist",
+      count=4,
+      nested=False,
+  )
+  _metrics.record_invoke_workflow_tool_calls(
+      root_agent_name="root_agent",
+      workflow_name="specialist",
+      count=0,
+      nested=False,
+  )
+
+  want_attributes = {
+      "adk.experimental.root_agent.name": "root_agent",
+      "gen_ai.workflow.name": "specialist",
+  }
+  for hist, want_value in (
+      (mock_meter_setup["workflow_inference_calls"], 4),
+      (mock_meter_setup["workflow_tool_calls"], 0),
+  ):
+    hist.record.assert_called_once()
+    args, kwargs = hist.record.call_args
+    assert args[0] == want_value
+    assert kwargs["attributes"] == want_attributes
+
+
+@pytest.fixture(name="skill_script_counter")
+def _skill_script_counter(monkeypatch):
+  """Redirects the skill script execution counter."""
+  counter = mock.MagicMock(spec=metrics.Counter)
+  counter.name = "skill_script_executions"
+  monkeypatch.setattr(_metrics, "_skill_script_executions", counter)
+  return counter
+
+
+def test_record_skill_script_execution(skill_script_counter):
+  """One count per run, dimensioned by agent, skill and script."""
+  _metrics.record_skill_script_execution(
+      "test_agent",
+      _hallucination.ConfirmedNotHallucinated("my_skill"),
+      _hallucination.ConfirmedNotHallucinated("scripts/run.py"),
+      0,
+  )
+
+  skill_script_counter.add.assert_called_once()
+  args, kwargs = skill_script_counter.add.call_args
+  assert args[0] == 1
+  assert kwargs["attributes"] == {
+      "gen_ai.agent.name": "test_agent",
+      "adk.experimental.skill.name": "my_skill",
+      "adk.experimental.skill.script.path": "scripts/run.py",
+      "adk.experimental.skill.script.ended_with_error": False,
+  }
+
+
+@pytest.mark.parametrize("exit_code", [1, 2, 127, 255, -1])
+def test_record_skill_script_execution_collapses_the_exit_code_to_a_flag(
+    skill_script_counter, exit_code
+):
+  """Every failing code lands in the same series.
+
+  An exit code has 256 possible values, and one series per value is a
+  cardinality bill nobody wants for a fact that error-rate views read as a
+  yes/no. The code itself stays on the span, where it costs nothing.
+  """
+  _metrics.record_skill_script_execution(
+      "test_agent",
+      _hallucination.ConfirmedNotHallucinated("my_skill"),
+      _hallucination.ConfirmedNotHallucinated("scripts/run.py"),
+      exit_code,
+  )
+
+  _, kwargs = skill_script_counter.add.call_args
+  attributes = kwargs["attributes"]
+  assert attributes["adk.experimental.skill.script.ended_with_error"] is True
+  assert "adk.experimental.skill.script.exit_code" not in attributes
+
+
+def test_record_skill_script_execution_with_unconfirmed_names(
+    skill_script_counter,
+):
+  """A name no lookup confirmed is reduced to the placeholder.
+
+  Whatever the model wrote is still on the span. The counter takes the
+  placeholder instead, because an unconfirmed name may be invented, and
+  invented names come from no bounded set.
+  """
+  _metrics.record_skill_script_execution(
+      "test_agent",
+      _hallucination.MaybeHallucinated("hallucinated_skill_name"),
+      _hallucination.MaybeHallucinated("scripts/run.py"),
+      0,
+  )
+
+  _, kwargs = skill_script_counter.add.call_args
+  assert kwargs["attributes"] == {
+      "gen_ai.agent.name": "test_agent",
+      "adk.experimental.skill.name": "<hallucinated>",
+      "adk.experimental.skill.script.path": "<hallucinated>",
+      "adk.experimental.skill.script.ended_with_error": False,
+  }

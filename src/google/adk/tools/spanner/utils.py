@@ -19,6 +19,7 @@ import itertools
 import json
 import logging
 from typing import Any
+from typing import cast
 from typing import Generator
 from typing import Iterable
 from typing import Optional
@@ -26,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from google.auth.credentials import Credentials
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
+from google.genai import types as genai_types
 
 from . import client
 from ...features import experimental
@@ -79,7 +81,7 @@ def execute_sql(
 
   try:
     # Get Spanner client
-    spanner_client = client.get_spanner_client(
+    spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
     )
     instance = spanner_client.instance(instance_id)
@@ -103,10 +105,11 @@ def execute_sql(
           if settings and settings.max_executed_query_result_rows > 0
           else DEFAULT_MAX_EXECUTED_QUERY_RESULT_ROWS
       )
+      rows_to_read: Iterable[object] = result_set
       if settings and settings.query_result_mode is QueryResultMode.DICT_LIST:
-        result_set = result_set.to_dict_list()
+        rows_to_read = result_set.to_dict_list()
 
-      for row in result_set:
+      for row in rows_to_read:
         try:
           # if the json serialization of the row succeeds, use it as is
           json.dumps(row)
@@ -118,7 +121,7 @@ def execute_sql(
         if counter <= 0:
           break
 
-      result = {"status": "SUCCESS", "rows": rows}
+      result: dict[str, Any] = {"status": "SUCCESS", "rows": rows}
       if counter <= 0:
         result["result_is_likely_truncated"] = True
       return result
@@ -138,18 +141,21 @@ def embed_contents(
   """Embed the given contents into list of vectors using the Vertex AI embedding model endpoint."""
   try:
     from google.genai import Client
-    from google.genai.types import EmbedContentConfig
 
     genai_client = genai_client or Client()
-    config = EmbedContentConfig()
+    config = genai_types.EmbedContentConfig()
     if output_dimensionality:
       config.output_dimensionality = output_dimensionality
+    embedding_contents: list[genai_types.PartUnion] = list(contents)
     response = genai_client.models.embed_content(
         model=vertex_ai_embedding_model_name,
-        contents=contents,
+        contents=embedding_contents,
         config=config,
     )
-    return [list(e.values) for e in response.embeddings]
+    return [
+        list(cast(list[float], e.values))
+        for e in cast(list[Any], response.embeddings)
+    ]
   except Exception as ex:
     raise RuntimeError(f"Failed to embed content: {ex!r}") from ex
 
@@ -163,18 +169,21 @@ async def embed_contents_async(
   """Embed the given contents into list of vectors using the Vertex AI embedding model endpoint."""
   try:
     from google.genai import Client
-    from google.genai.types import EmbedContentConfig
 
     genai_client = genai_client or Client()
-    config = EmbedContentConfig()
+    config = genai_types.EmbedContentConfig()
     if output_dimensionality:
       config.output_dimensionality = output_dimensionality
+    embedding_contents: list[genai_types.PartUnion] = list(contents)
     response = await genai_client.aio.models.embed_content(
         model=vertex_ai_embedding_model_name,
-        contents=contents,
+        contents=embedding_contents,
         config=config,
     )
-    return [list(e.values) for e in response.embeddings]
+    return [
+        list(cast(list[float], e.values))
+        for e in cast(list[Any], response.embeddings)
+    ]
   except Exception as ex:
     raise RuntimeError(f"Failed to embed content: {ex!r}") from ex
 
@@ -220,12 +229,12 @@ class SpannerVectorStore:
     self._settings = settings
 
     if not spanner_client:
-      self._spanner_client = client.get_spanner_client(
+      self._spanner_client = client._get_typed_spanner_client(
           project=self._vector_store_settings.project_id,
           credentials=credentials,
       )
     else:
-      self._spanner_client = spanner_client
+      self._spanner_client = cast(client._SpannerClient, spanner_client)
       client_user_agent = self._spanner_client._client_info.user_agent
       if not client_user_agent:
         self._spanner_client._client_info.user_agent = client.USER_AGENT
@@ -234,7 +243,7 @@ class SpannerVectorStore:
             [client_user_agent, client.USER_AGENT]
         )
     self._spanner_client._client_info.user_agent = " ".join([
-        self._spanner_client._client_info.user_agent,
+        self._spanner_client._client_info.user_agent or "",
         self.SPANNER_VECTOR_STORE_USER_AGENT,
     ])
 

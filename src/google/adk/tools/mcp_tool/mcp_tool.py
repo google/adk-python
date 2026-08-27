@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 from collections.abc import Awaitable
 import inspect
@@ -30,7 +29,6 @@ from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
 from mcp import ClientSession
 from mcp.shared.exceptions import McpError
-from mcp.shared.session import ProgressFnT
 from mcp.types import Tool as McpBaseTool
 from opentelemetry import propagate
 from typing_extensions import override
@@ -102,6 +100,40 @@ def _read_field(model: Any, *names: str) -> Any:
       f"{type(model).__name__} defines none of {names}. This usually means the"
       " installed MCP SDK renamed the field again."
   )
+
+
+def _is_async_callable(target: Any) -> bool:
+  """Whether calling ``target`` returns a coroutine.
+
+  Functions are callable objects, but not all callable objects are functions:
+  ``iscoroutinefunction`` is False for an instance whose ``__call__`` is async,
+  so check that too.
+  """
+  return inspect.iscoroutinefunction(target) or (
+      hasattr(target, "__call__")
+      and inspect.iscoroutinefunction(target.__call__)
+  )
+
+
+class ProgressFnT(Protocol):
+  """The call signature a progress callback must have.
+
+  This copies the SDK's `ProgressFnT` rather than importing it. The SDK keeps
+  that protocol in `mcp.shared.session`, a module that exists to hold the
+  session base class; a release that reorganizes it takes this import with it,
+  and every MCP tool fails to import. Structural typing means a callback
+  written against either declaration satisfies both.
+
+  The three parameters are positional because the SDK calls them positionally.
+  """
+
+  async def __call__(
+      self,
+      progress: float,
+      total: float | None,
+      message: str | None,
+  ) -> None:
+    ...
 
 
 @runtime_checkable
@@ -321,14 +353,7 @@ class McpTool(BaseAuthenticatedTool):
   ) -> Any:
     """Invokes a callable, handling both sync and async cases."""
 
-    # Functions are callable objects, but not all callable objects are functions
-    # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine function
-    is_async = inspect.iscoroutinefunction(target) or (
-        hasattr(target, "__call__")
-        and inspect.iscoroutinefunction(target.__call__)
-    )
-    if is_async:
+    if _is_async_callable(target):
       return await target(**args_to_call)
     else:
       return target(**args_to_call)
@@ -585,19 +610,21 @@ class McpTool(BaseAuthenticatedTool):
     ):
       return None
 
-    # Determine if callback is a factory by checking if it's a coroutine
-    # function. ProgressFnT is an async function, while ProgressCallbackFactory
-    # is a sync function that returns an async function.
-    if asyncio.iscoroutinefunction(self._progress_callback):
-      return self._progress_callback
+    # A ProgressFnT is an async callable; a ProgressCallbackFactory is a plain
+    # one that returns an async callable.
+    #
+    # The casts carry that decision to the type checker, which cannot narrow a
+    # union on a call like this. They became necessary once ADK declared
+    # `ProgressFnT` itself: while it came from the SDK the annotation resolved
+    # to `Any` here and every branch type-checked vacuously.
+    if _is_async_callable(self._progress_callback):
+      return cast(ProgressFnT, self._progress_callback)
 
-    # If it's a regular callable (not async), treat it as a factory
-    if callable(self._progress_callback) and not inspect.iscoroutinefunction(
-        self._progress_callback
-    ):
-      return self._progress_callback(self.name, callback_context=tool_context)
+    if callable(self._progress_callback):
+      factory = cast(ProgressCallbackFactory, self._progress_callback)
+      return factory(self.name, callback_context=tool_context)
 
-    return self._progress_callback
+    return cast(ProgressFnT, self._progress_callback)
 
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential

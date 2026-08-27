@@ -15,7 +15,7 @@
 """Tests for the tool-result buffer and its Antigravity SDK hook binding.
 
 Two concerns: that the buffer keeps and hands back the results the converter
-needs, and that the hook the SDK is handed is one the SDK will accept.
+needs, and that the hook handed over is one the Antigravity SDK will accept.
 """
 
 from __future__ import annotations
@@ -30,18 +30,18 @@ import pytest
 
 
 def _result(call_id: str | None, value=None, error=None, name='reviewer'):
-  """Builds an SDK ToolResult as the post-tool-call hook would receive one."""
+  """An Antigravity SDK ToolResult as the post-tool-call hook receives one."""
   return sdk_types.ToolResult(name=name, id=call_id, result=value, error=error)
 
 
 class _ToolFailure(RuntimeError):
-  """Stands in for the SDK's ``ToolExecutionError``.
+  """Stands in for the Antigravity SDK's ``ToolExecutionError``.
 
-  Structural, not the SDK class, for the same reason the capture reads a
-  ``ToolError`` protocol rather than that class: a structurally identical copy
-  of it exists, and ``google-antigravity`` on PyPI does not export one at all
-  yet. Testing against the shape is what the production code actually depends
-  on.
+  Structural, not the Antigravity SDK class, for the same reason the capture
+  reads a ``ToolError`` protocol rather than that class: a structurally
+  identical copy of it exists, and ``google-antigravity`` on PyPI does not
+  export one at all yet. Testing against the shape is what the production code
+  actually depends on.
   """
 
   def __init__(self, message: str, tool_name: str, call_id: str | None = None):
@@ -71,7 +71,8 @@ def test_the_real_sdk_error_satisfies_the_protocol():
 def test_the_capture_is_accepted_by_the_sdk_hook_runner():
   """A mis-based hook raises `Unknown hook type` from inside `__aenter__`.
 
-  Every other test in this package fakes the SDK `Agent`, so this is the only
+  Every other test in this package fakes the Antigravity SDK `Agent`, so this
+  is the only
   place the base class is checked at all.
   """
   capture = _tool_result_capture.ToolResultCapture()
@@ -114,7 +115,7 @@ def test_the_two_captures_register_on_separate_hook_lists():
 
 
 def test_the_bare_buffer_is_not_a_hook():
-  """A second SDK binding subclasses it, so it must not already be a hook."""
+  """A second Antigravity SDK binding subclasses it: not already a hook."""
   bare = _tool_result_capture.ToolResultBuffer()
 
   assert not isinstance(bare, sdk_hooks.PostToolCallHook)

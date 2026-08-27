@@ -26,6 +26,7 @@ from pydantic import model_validator
 from typing_extensions import override
 
 from . import _automatic_function_calling_util
+from ..agents._streaming_mode import StreamingMode
 from ..agents.common_configs import AgentRefConfig
 from ..events._branch_path import _BranchPath
 from ..features import FeatureName
@@ -300,6 +301,17 @@ class AgentTool(BaseTool):
       # at all unless its model happens to be a Gemini 2 one.
       nested_run_config = nested_run_config.model_copy(
           update={'support_cfc': False}
+      )
+    if (
+        nested_run_config is not None
+        and nested_run_config.streaming_mode != StreamingMode.NONE
+    ):
+      # The nested run's events are not forwarded to the caller; only the last
+      # event's content becomes the response. That is complete in unary mode and
+      # in aggregated streaming, but a caller streaming without aggregation
+      # would leave only a partial chunk in the last event, so always run unary.
+      nested_run_config = nested_run_config.model_copy(
+          update={'streaming_mode': StreamingMode.NONE}
       )
 
     last_content = None

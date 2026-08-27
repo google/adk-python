@@ -94,6 +94,26 @@ class LlmResponse(BaseModel):
   Only used for streaming mode.
   """
 
+  interaction_status: Optional[types.InteractionStatus] = None
+  """The activity status of the live session, reported with `turn_complete`.
+
+  Newer live models may answer a single user prompt with several model turns, so
+  `turn_complete` alone no longer means the model is done. This field
+  disambiguates the two:
+
+  * `IN_PROGRESS`: the model is still working on the user's prompt; more turns
+    will follow, so the app should not treat the interaction as finished (e.g.
+    should not re-enable the microphone yet).
+  * `IDLE`: the model has finished processing the user's prompt and is waiting
+    for further user input.
+
+  It stays `None` for models that don't report it. Callers building a
+  turn-taking UI should fall back to treating `turn_complete == True` as
+  terminal whenever `interaction_status` is `None`.
+
+  NOTE: this is not related to the Interactions API InteractionStatusUpdate.
+  """
+
   finish_reason: Optional[types.FinishReason] = None
   """The finish reason of the response."""
 

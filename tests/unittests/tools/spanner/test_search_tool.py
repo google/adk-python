@@ -581,3 +581,117 @@ async def test_vector_store_similarity_search_bypass_validation(
   )
   assert result["status"] == "SUCCESS", result
   assert result["rows"] == [("result1",), ("result2",)]
+
+
+@pytest.mark.parametrize(
+    ("embedding_options", "search_options", "expected_error"),
+    [
+        pytest.param(
+            {
+                "vertex_ai_embedding_model_name": "test-model",
+                "output_dimensionality": "many",
+            },
+            None,
+            "Option 'output_dimensionality' must be an integer, got 'many'.",
+            id="output_dimensionality_not_a_number",
+        ),
+        pytest.param(
+            {"vertex_ai_embedding_model_name": "test-model"},
+            {"top_k": "10; DROP TABLE t"},
+            "Option 'top_k' must be an integer, got '10; DROP TABLE t'.",
+            id="top_k_carrying_sql",
+        ),
+        pytest.param(
+            {"vertex_ai_embedding_model_name": "test-model"},
+            {"top_k": 3.5},
+            "Option 'top_k' must be an integer, got 3.5.",
+            id="top_k_not_a_whole_number",
+        ),
+        pytest.param(
+            {"vertex_ai_embedding_model_name": 123},
+            None,
+            "Option 'vertex_ai_embedding_model_name' must be a string, got"
+            " 123.",
+            id="embedding_model_name_as_int",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+@mock.patch.object(client, "get_spanner_client")
+async def test_similarity_search_wrongly_typed_option_error(
+    mock_get_spanner_client,
+    mock_spanner_ids,
+    mock_credentials,
+    embedding_options,
+    search_options,
+    expected_error,
+):
+  """Test similarity_search rejects an option whose value has the wrong type."""
+  mock_spanner_client = MagicMock()
+  mock_instance = MagicMock()
+  mock_database = MagicMock()
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  result = await search_tool.similarity_search(
+      project_id=mock_spanner_ids["project_id"],
+      instance_id=mock_spanner_ids["instance_id"],
+      database_id=mock_spanner_ids["database_id"],
+      table_name=mock_spanner_ids["table_name"],
+      query="test query",
+      embedding_column_to_search="embedding_col",
+      columns=["col1"],
+      embedding_options=embedding_options,
+      credentials=mock_credentials,
+      search_options=search_options,
+  )
+  assert result["status"] == "ERROR"
+  assert expected_error in result["error_details"]
+
+
+@pytest.mark.asyncio
+@mock.patch.object(client, "get_spanner_client")
+async def test_similarity_search_numeric_string_options(
+    mock_get_spanner_client, mock_spanner_ids, mock_credentials
+):
+  """Test similarity_search accepts numeric options given as strings."""
+  mock_spanner_client = MagicMock()
+  mock_instance = MagicMock()
+  mock_database = MagicMock()
+  mock_snapshot = MagicMock()
+  mock_embedding_result = MagicMock()
+  mock_embedding_result.one.return_value = ([0.1, 0.2, 0.3],)
+  mock_snapshot.execute_sql.side_effect = [
+      mock_embedding_result,
+      iter([("ann_result1",)]),
+  ]
+  mock_database.snapshot.return_value.__enter__.return_value = mock_snapshot
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  result = await search_tool.similarity_search(
+      project_id=mock_spanner_ids["project_id"],
+      instance_id=mock_spanner_ids["instance_id"],
+      database_id=mock_spanner_ids["database_id"],
+      table_name=mock_spanner_ids["table_name"],
+      query="test query",
+      embedding_column_to_search="embedding_col",
+      columns=["col1"],
+      embedding_options={
+          "spanner_googlesql_embedding_model_name": "test_model"
+      },
+      credentials=mock_credentials,
+      search_options={
+          "nearest_neighbors_algorithm": "APPROXIMATE_NEAREST_NEIGHBORS",
+          "top_k": "10",
+          "num_leaves_to_search": "500",
+      },
+  )
+  assert result["status"] == "SUCCESS", result
+  sql = mock_snapshot.execute_sql.call_args.args[0]
+  assert "LIMIT 10" in sql
+  assert '"num_leaves_to_search": 500' in sql

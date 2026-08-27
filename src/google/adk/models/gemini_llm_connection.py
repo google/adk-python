@@ -368,9 +368,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
-                turn_complete_reason=getattr(
-                    message.server_content, 'turn_complete_reason', None
-                ),
+                turn_complete_reason=message.server_content.turn_complete_reason,
             )
 
           if content and content.parts:
@@ -379,9 +377,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                 interrupted=message.server_content.interrupted,
                 model_version=self._model_version,
                 live_session_id=live_session_id,
-                turn_complete_reason=getattr(
-                    message.server_content, 'turn_complete_reason', None
-                ),
+                turn_complete_reason=message.server_content.turn_complete_reason,
             )
             # grounding_metadata is yielded again at turn_complete,
             # so avoid duplicating it here if turn_complete is true.
@@ -592,9 +588,12 @@ class GeminiLlmConnection(BaseLlmConnection):
                 ),
                 model_version=self._model_version,
                 live_session_id=live_session_id,
-                turn_complete_reason=getattr(
-                    message.server_content, 'turn_complete_reason', None
-                ),
+                turn_complete_reason=message.server_content.turn_complete_reason,
+                # Sent alongside turn_complete by models that answer one user
+                # prompt with several turns; tells the app whether the model is
+                # really done (IDLE) or still working on the prompt
+                # (IN_PROGRESS).
+                interaction_status=message.server_content.interaction_status,
             )
             last_grounding_metadata = None  # Reset after yielding
             break
