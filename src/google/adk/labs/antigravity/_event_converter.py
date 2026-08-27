@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 
 def _build_tool_call_id(step: sdk_types.Step, call: sdk_types.ToolCall) -> str:
-  """Derives a stable id for a tool call, falling back when the SDK omits one."""
+  """A stable tool-call id, synthesized when the Antigravity SDK omits one."""
   return call.id or f'{step.step_index}-{call.name}'
 
 
@@ -73,7 +73,7 @@ def _convert_partial_deltas(
 
   Only called in SSE streaming mode. ``thinking_delta`` and ``content_delta``
   are independent (a step may carry either or both); thinking is emitted first,
-  matching the SDK's own chunk ordering.
+  matching the Antigravity SDK's own chunk ordering.
   """
   if step.source != sdk_types.StepSource.MODEL:
     return []
@@ -104,7 +104,8 @@ def _convert_model_text(
 ) -> list[Event]:
   """Converts a completed model text response into one final model text event.
 
-  The SDK re-broadcasts the cumulative ``content`` on every step transition as
+  The Antigravity SDK re-broadcasts the cumulative ``content`` on every step
+  transition as
   the response grows, so emitting on each transition would record the same
   message many times. We emit only when ``is_complete_response`` is set, using
   the final cumulative ``content``. Partial streaming is handled separately by
@@ -239,7 +240,8 @@ def _convert_function_responses(
   if not is_tool_response:
     return []
 
-  # A client-side tool: the SDK blanks its ``tool_calls`` and ``Step`` has no
+  # A client-side tool: the Antigravity SDK blanks its ``tool_calls`` and
+  # ``Step`` has no
   # field for a result, so the step names nothing and holds nothing.
   if not step.tool_calls:
     return drain_tool_results(
@@ -250,16 +252,18 @@ def _convert_function_responses(
     )
 
   # The hook fires for these tools too, but its copy is keyed by an id this
-  # side never sees: the SDK gives a built-in's ``ToolCall.id`` the step id
+  # side never sees: the Antigravity SDK gives a built-in's ``ToolCall.id``
+  # the step id
   # ``f'{trajectory_id}:{step_index}'``, while the hook is handed the model's
   # own call id, or a SHA-256 of that step id when there is none
   # (``localharness/tool_metadata.go``, ``ResolveStepCallID``). That copy
   # therefore cannot be dropped by id here -- and need not be: the same
   # mismatch keeps it out of ``drain_tool_results``, which only takes ids in
   # ``seen_tool_calls``. The turn clears the buffer at its end.
-  # ``ToolResult.step_id`` would be the key that does match -- at head the SDK
+  # ``ToolResult.step_id`` would be the key that does match -- at head the
+  # Antigravity SDK
   # already sets it to that same ``f'{trajectory_id}:{step_index}'`` -- but the
-  # SDK vendored here predates the field.
+  # copy vendored here predates the field.
   events = []
   for call in step.tool_calls:
     call_id = _build_tool_call_id(step, call)

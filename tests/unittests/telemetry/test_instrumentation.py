@@ -24,6 +24,7 @@ from google.adk.events.event import Event
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _instrumentation
 from google.adk.telemetry import _metrics
 from google.adk.telemetry import tracing
@@ -141,9 +142,7 @@ async def test_record_skill_load_reaches_the_enclosing_tool_execution():
       invocation_context=mock.MagicMock(),
   ) as tel_ctx:
     skill_telemetry = _instrumentation.track_skill_load("sample_skill")
-    skill_telemetry.skill_name = "sample_skill"
-    skill_telemetry.skill = mock.MagicMock()
-    skill_telemetry.cache_hit = True
+    skill_telemetry.confirm_skill(mock.MagicMock())
 
   assert isinstance(
       tel_ctx.skill_telemetry, _instrumentation.SkillLoadTelemetry
@@ -168,10 +167,37 @@ async def test_record_skill_resource_load_reaches_the_enclosing_tool_execution()
     skill_telemetry = _instrumentation.track_skill_resource_load(
         "sample_skill", "sample_path"
     )
-    skill_telemetry.resource_path = "sample_path"
+    skill_telemetry.confirm_resource_path()
 
   assert isinstance(
       tel_ctx.skill_telemetry, _instrumentation.SkillResourceLoadTelemetry
+  )
+  assert tel_ctx.skill_telemetry == skill_telemetry
+
+
+@pytest.mark.asyncio
+async def test_record_skill_script_execution_reaches_the_enclosing_tool_execution():
+  """A skill script run is reported to the tool execution that wraps it."""
+  tool = mock.MagicMock()
+  tool.name = "run_skill_script"
+  agent = mock.MagicMock()
+  agent.name = "sample_agent"
+
+  async with _instrumentation.record_tool_execution(
+      tool=tool,
+      agent=agent,
+      function_args={},
+      invocation_context=mock.MagicMock(),
+  ) as tel_ctx:
+    skill_telemetry = _instrumentation.track_skill_script_execution(
+        "sample_skill", "scripts/sample.py"
+    )
+    # The exit code is only known once the script has run, so the tool keeps
+    # the object the tracker handed it and fills this in afterwards.
+    skill_telemetry.script_exit_code = 0
+
+  assert isinstance(
+      tel_ctx.skill_telemetry, _instrumentation.SkillScriptExecutionTelemetry
   )
   assert tel_ctx.skill_telemetry == skill_telemetry
 
@@ -181,6 +207,22 @@ def test_record_skill_load_outside_tool_execution_is_a_noop():
   _instrumentation.track_skill_load("sample_skill")
 
   assert _instrumentation._active_tool_execution_tel_ctx() is None
+
+
+def test_record_skill_script_execution_outside_tool_execution_is_a_noop():
+  """The tool still gets an object to record the exit code on."""
+  skill_telemetry = _instrumentation.track_skill_script_execution(
+      "sample_skill", "scripts/sample.py"
+  )
+
+  assert _instrumentation._active_tool_execution_tel_ctx() is None
+  # Unconfirmed until the tool resolves them: nothing has looked either up yet.
+  assert skill_telemetry.skill_name == _hallucination.MaybeHallucinated(
+      "sample_skill"
+  )
+  assert skill_telemetry.script_path == _hallucination.MaybeHallucinated(
+      "scripts/sample.py"
+  )
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +270,11 @@ class _Telemetry:
     return spans[0]
 
   def points(self, metric_name: str):
-    """``(attributes, recorded sum)`` for each point of ``metric_name``."""
+    """``(attributes, recorded total)`` for each point of ``metric_name``.
+
+    A histogram point carries its total as ``sum`` and a counter point as
+    ``value``; both mean the same thing here.
+    """
     if self._points is None:
       self._points = {}
       data = self._metric_reader.get_metrics_data()
@@ -236,8 +282,11 @@ class _Telemetry:
         for scope_metric in resource_metric.scope_metrics:
           for metric in scope_metric.metrics:
             for point in metric.data.data_points:
+              total = getattr(point, "sum", None)
+              if total is None:
+                total = getattr(point, "value", None)
               self._points.setdefault(metric.name, []).append(
-                  (dict(point.attributes), point.sum)
+                  (dict(point.attributes), total)
               )
     return self._points.get(metric_name, [])
 
@@ -572,6 +621,174 @@ async def test_record_tool_execution_reported_error_labels_span_and_metric(
       "gen_ai.tool.type": "_EchoTool",
       "error.type": "HTTP_ERROR",
   }]
+
+
+# --- skill script execution, on the execute_tool span ----------------------
+#
+# The exit code is only known after the script has run, so the tool fills it
+# in on the object the tracker handed it and the tool execution block stamps
+# both signals as it closes. These run through that block rather than calling
+# the tracing helper directly: the point is that the span and the counter end
+# up agreeing about the same run.
+
+_SKILL_SCRIPT_EXECUTIONS = "adk.experimental.skill.script.executions"
+
+
+def _script_tool() -> _EchoTool:
+  return _EchoTool(name="run_skill_script", description="runs a skill script")
+
+
+def _loaded_skill(uri: str | None = "file:/skills/sample") -> mock.MagicMock:
+  """A stand-in for a loaded skill; only its source URI is read off it."""
+  skill = mock.MagicMock()
+  skill._uri = uri
+  return skill
+
+
+@pytest.mark.asyncio
+async def test_skill_script_execution_stamps_the_span_and_counts_the_run(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """A script that exited cleanly is described on the span and counted once."""
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_tool_execution(
+      _script_tool(), agent, {}, ctx
+  ):
+    skill_telemetry = _instrumentation.track_skill_script_execution(
+        "sample_skill", "scripts/sample.py"
+    )
+    skill_telemetry.confirm_skill(_loaded_skill())
+    skill_telemetry.confirm_script_path()
+    skill_telemetry.script_exit_code = 0
+
+  span = telemetry.only_span()
+  attributes = dict(span.attributes)
+  assert attributes["adk.experimental.skill.name"] == "sample_skill"
+  assert attributes["adk.experimental.skill.script.path"] == "scripts/sample.py"
+  assert attributes["adk.experimental.skill.script.exit_code"] == 0
+  assert (
+      attributes["adk.experimental.skill.source.uri"] == "file:/skills/sample"
+  )
+  assert span.status.status_code is StatusCode.UNSET
+  assert "error.type" not in attributes
+  assert telemetry.points(_SKILL_SCRIPT_EXECUTIONS) == [(
+      {
+          "gen_ai.agent.name": "root_agent",
+          "adk.experimental.skill.name": "sample_skill",
+          "adk.experimental.skill.script.path": "scripts/sample.py",
+          "adk.experimental.skill.script.ended_with_error": False,
+      },
+      1,
+  )]
+
+
+@pytest.mark.asyncio
+async def test_skill_script_failure_fails_the_span_and_flags_the_count(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """A non-zero exit is a failure even though the tool call itself returned.
+
+  Nothing raised -- the tool handed back a result describing the failure -- so
+  the exit code is the only thing that can mark the span failed.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_tool_execution(
+      _script_tool(), agent, {}, ctx
+  ):
+    skill_telemetry = _instrumentation.track_skill_script_execution(
+        "sample_skill", "scripts/sample.py"
+    )
+    skill_telemetry.confirm_skill(_loaded_skill())
+    skill_telemetry.confirm_script_path()
+    skill_telemetry.script_exit_code = 3
+
+  span = telemetry.only_span()
+  attributes = dict(span.attributes)
+  assert span.status.status_code is StatusCode.ERROR
+  assert attributes["error.type"] == "SKILL_SCRIPT_EXECUTION_ERROR"
+  # The span keeps the code the metric collapses into a flag.
+  assert attributes["adk.experimental.skill.script.exit_code"] == 3
+  assert telemetry.point_attributes(_SKILL_SCRIPT_EXECUTIONS) == [{
+      "gen_ai.agent.name": "root_agent",
+      "adk.experimental.skill.name": "sample_skill",
+      "adk.experimental.skill.script.path": "scripts/sample.py",
+      "adk.experimental.skill.script.ended_with_error": True,
+  }]
+
+
+@pytest.mark.asyncio
+async def test_skill_script_execution_that_never_ran_reports_no_exit_code(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """The tracker runs before the script does, so the code can stay unknown.
+
+  An unknown script, an unsupported extension or a registry failure all end
+  the tool call before anything executes. Reporting a zero there would read as
+  a clean run, and reporting a non-zero would invent a failure the script
+  never had, so the attribute is simply absent -- the tool call's own
+  ``error.type`` already says what went wrong.
+
+  Nothing resolved the skill or the script either, so the counter takes the
+  placeholder for both: a name that named nothing is the model's invention,
+  and the series must not grow one label per invention.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_tool_execution(
+      _script_tool(), agent, {}, ctx
+  ):
+    _instrumentation.track_skill_script_execution(
+        "sample_skill", "scripts/sample.py"
+    )
+
+  span = telemetry.only_span()
+  attributes = dict(span.attributes)
+  assert "adk.experimental.skill.script.exit_code" not in attributes
+  assert span.status.status_code is StatusCode.UNSET
+  assert "error.type" not in attributes
+  # The span keeps what the model actually asked for.
+  assert attributes["adk.experimental.skill.name"] == "sample_skill"
+  assert attributes["adk.experimental.skill.script.path"] == "scripts/sample.py"
+  # The attempt still happened, so it is still counted -- just without a
+  # verdict on how it ended, and without the unconfirmed names.
+  assert telemetry.point_attributes(_SKILL_SCRIPT_EXECUTIONS) == [{
+      "gen_ai.agent.name": "root_agent",
+      "adk.experimental.skill.name": "<hallucinated>",
+      "adk.experimental.skill.script.path": "<hallucinated>",
+  }]
+
+
+@pytest.mark.asyncio
+async def test_skill_script_execution_is_silent_without_the_experimental_opt_in(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """These attributes are experimental, so nothing is emitted by default."""
+  monkeypatch.delenv("ADK_EXPERIMENTAL_TELEMETRY", raising=False)
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_tool_execution(
+      _script_tool(), agent, {}, ctx
+  ):
+    skill_telemetry = _instrumentation.track_skill_script_execution(
+        "sample_skill", "scripts/sample.py"
+    )
+    skill_telemetry.script_exit_code = 3
+
+  span = telemetry.only_span()
+  assert not [
+      key for key in span.attributes if key.startswith("adk.experimental")
+  ]
+  assert span.status.status_code is StatusCode.UNSET
+  assert telemetry.points(_SKILL_SCRIPT_EXECUTIONS) == []
 
 
 # --- record_inference_telemetry + TelemetryContext.record_llm_response ------

@@ -54,8 +54,10 @@ from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 from ...utils.variant_utils import GoogleLLMVariant
 from ._invocation_utils import as_llm_agent as _as_llm_agent
+from ._invocation_utils import copy_http_options
 from ._invocation_utils import require_agent as _require_agent
 from ._invocation_utils import require_run_config as _require_run_config
+from ._invocation_utils import run_config_for_new_live_session
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
 
@@ -805,11 +807,9 @@ class BaseLlmFlow(ABC):
                     child_ctx.live_session_resumption_handle = None
 
                     if child_ctx.run_config:
-                      child_ctx.run_config = child_ctx.run_config.model_copy(
-                          deep=True
+                      child_ctx.run_config = run_config_for_new_live_session(
+                          child_ctx.run_config
                       )
-                      if child_ctx.run_config.session_resumption:
-                        child_ctx.run_config.session_resumption.handle = None
 
                     async with Aclosing(
                         agent_to_run.run_live(child_ctx)
@@ -848,11 +848,9 @@ class BaseLlmFlow(ABC):
               restart_context = invocation_context.model_copy()
               restart_context.live_session_resumption_handle = None
               if restart_context.run_config:
-                restart_context.run_config = (
-                    restart_context.run_config.model_copy(deep=True)
+                restart_context.run_config = run_config_for_new_live_session(
+                    restart_context.run_config
                 )
-                if restart_context.run_config.session_resumption:
-                  restart_context.run_config.session_resumption.handle = None
               async with Aclosing(self.run_live(restart_context)) as agen:
                 async for item in agen:
                   yield item
@@ -1395,12 +1393,14 @@ class BaseLlmFlow(ABC):
       )
 
     # Request defaults; _BasicLlmRequestProcessor merges them onto agent config.
+    # Copied rather than deep copied: http_options can carry a live httpx or
+    # aiohttp client and an SSL context, none of which a deep copy survives.
     if (
         invocation_context.run_config
         and invocation_context.run_config.http_options
     ):
-      llm_request.config.http_options = (
-          invocation_context.run_config.http_options.model_copy(deep=True)
+      llm_request.config.http_options = copy_http_options(
+          invocation_context.run_config.http_options
       )
 
     # Runs processors.

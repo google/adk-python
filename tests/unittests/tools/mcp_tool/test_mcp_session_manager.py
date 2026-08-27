@@ -23,6 +23,7 @@ from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
+import urllib.parse
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
@@ -1913,8 +1914,15 @@ class TestMCPGracefulErrorHandlingFlagContract:
 class TestRefreshableAsyncCredentials:
 
   @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.parametrize(
+      "url",
+      [
+          "https://example.googleapis.com/mcp",
+          "https://example.mtls.googleapis.com/mcp",
+      ],
+  )
   @pytest.mark.asyncio
-  async def test_before_request_refreshes_and_injects_token(self):
+  async def test_before_request_refreshes_and_injects_token(self, url):
     mock_creds = Mock()
     mock_creds.expired = True
     mock_creds.token = "new_token"
@@ -1929,9 +1937,52 @@ class TestRefreshableAsyncCredentials:
     credentials = _RefreshableAsyncCredentials(mock_creds)
     headers = {}
 
-    await credentials.before_request(None, "GET", "http://example.com", headers)
+    await credentials.before_request(None, "GET", url, headers)
 
     assert headers["Authorization"] == "Bearer refreshed_token"
+
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.parametrize(
+      "url",
+      [
+          "https://mcp.example.com/sse",
+          "https://localhost:3000/sse",
+          "https://example.googleapis.com.not-google.example/sse",
+          "https://example.googleapis.com@not-google.example/sse",
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_before_request_skips_token_for_non_google_host(
+      self, url, caplog
+  ):
+    mock_creds = Mock()
+    mock_creds.expired = True
+    mock_creds.token = "new_token"
+    mock_creds.refresh = Mock()
+
+    target_host = urllib.parse.urlparse(url).netloc
+    credentials = _RefreshableAsyncCredentials(
+        mock_creds, target_host=target_host
+    )
+    headers = {}
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="google_adk.google.adk.tools.mcp_tool.mcp_session_manager",
+    ):
+      await credentials.before_request(None, "GET", url, headers)
+      await credentials.before_request(None, "GET", url, headers)
+
+    mock_creds.refresh.assert_not_called()
+    assert headers == {}
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "non-Google host" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert urllib.parse.urlparse(url).hostname in warnings[0].getMessage()
 
   @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
   @pytest.mark.parametrize(
@@ -1950,7 +2001,9 @@ class TestRefreshableAsyncCredentials:
     credentials = _RefreshableAsyncCredentials(mock_creds)
     headers = {existing_header_key: "Bearer existing_token"}
 
-    await credentials.before_request(None, "GET", "http://example.com", headers)
+    await credentials.before_request(
+        None, "GET", "https://example.googleapis.com/mcp", headers
+    )
 
     mock_creds.refresh.assert_not_called()
     assert headers == {existing_header_key: "Bearer existing_token"}

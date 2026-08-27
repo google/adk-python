@@ -16,6 +16,7 @@
 
 import asyncio
 import logging
+import ssl
 from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -31,6 +32,8 @@ from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.flows.llm_flows._invocation_utils import copy_http_options
+from google.adk.flows.llm_flows._invocation_utils import run_config_for_new_live_session
 from google.adk.flows.llm_flows.base_llm_flow import _finalize_dynamic_instructions
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
@@ -48,6 +51,7 @@ from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.utils.context_utils import Aclosing
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+import httpx
 import pytest
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
@@ -1376,6 +1380,83 @@ async def test_run_live_server_handle_supersedes_run_config_handle():
           second_request.live_connect_config.session_resumption.handle
           == 'server_handle'
       )
+
+
+@pytest.mark.asyncio
+async def test_preprocess_stages_run_config_http_options_holding_a_live_client():
+  """RunConfig http_options can hold a live client, which no deep copy survives."""
+
+  http_options = types.HttpOptions(
+      headers={'RunConfig-Header': 'run-val'},
+      httpx_client=httpx.Client(),
+      client_args={'verify': ssl.create_default_context()},
+  )
+  agent = Agent(name='test_agent', model=Gemini())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, run_config=RunConfig(http_options=http_options)
+  )
+  llm_request = LlmRequest()
+
+  flow = BaseLlmFlowForTesting()
+  async for _ in flow._preprocess_async(invocation_context, llm_request):
+    pass
+
+  staged = llm_request.config.http_options
+  assert staged.headers == {'RunConfig-Header': 'run-val'}
+  # The client is the caller's own, so it is shared rather than copied.
+  assert staged.httpx_client is http_options.httpx_client
+  # Nothing downstream -- including a before-model callback, which is handed
+  # this config -- can write back into the caller's RunConfig.
+  staged.headers['Injected'] = 'x'
+  staged.client_args['Injected'] = 'x'
+  assert 'Injected' not in http_options.headers
+  assert 'Injected' not in http_options.client_args
+
+
+def test_copy_http_options_copies_containers_but_shares_the_live_client():
+  """Every mutable container is copied; the caller's client is not."""
+  original = types.HttpOptions(
+      headers={'H': '1'},
+      extra_body={'k': 'v'},
+      client_args={'verify': ssl.create_default_context()},
+      async_client_args={'verify': ssl.create_default_context()},
+      retry_options=types.HttpRetryOptions(attempts=3),
+      httpx_client=httpx.Client(),
+  )
+
+  copied = copy_http_options(original)
+
+  for field in (
+      'headers',
+      'extra_body',
+      'client_args',
+      'async_client_args',
+      'retry_options',
+  ):
+    assert getattr(copied, field) is not getattr(original, field), field
+  # A live client cannot be copied, and the caller supplied it to be used.
+  assert copied.httpx_client is original.httpx_client
+
+
+def test_run_config_for_new_live_session_survives_a_live_client():
+  """A fresh live session must not deep copy the caller's RunConfig.
+
+  `RunConfig.http_options` can hold a live client, so a deep copy of the whole
+  config raises `TypeError: cannot pickle` once the session is already open.
+  """
+  run_config = RunConfig(
+      http_options=types.HttpOptions(
+          client_args={'verify': ssl.create_default_context()}
+      ),
+      session_resumption=types.SessionResumptionConfig(handle='parent-handle'),
+  )
+
+  fresh = run_config_for_new_live_session(run_config)
+
+  assert fresh.session_resumption.handle is None
+  # The parent keeps its own handle, and the options are passed through.
+  assert run_config.session_resumption.handle == 'parent-handle'
+  assert fresh.http_options is run_config.http_options
 
 
 @pytest.mark.asyncio

@@ -401,6 +401,20 @@ def test_get_auth_scheme_name_empty_requirement():
   assert parser.get_auth_scheme_name() == ''
 
 
+def test_get_auth_scheme_name_optional_security_listed_first():
+  """An empty requirement makes auth optional, so no scheme is required."""
+  operation = Operation(responses={}, security=[{}, {'apiKey': []}])
+  parser = OperationParser(operation)
+  assert parser.get_auth_scheme_name() == ''
+
+
+def test_get_auth_scheme_name_optional_security_listed_last():
+  """The empty requirement makes auth optional wherever it appears."""
+  operation = Operation(responses={}, security=[{'apiKey': []}, {}])
+  parser = OperationParser(operation)
+  assert parser.get_auth_scheme_name() == ''
+
+
 def test_get_pydoc_string(sample_operation):
   """Test get_pydoc_string method."""
   parser = OperationParser(sample_operation)

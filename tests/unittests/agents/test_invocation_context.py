@@ -26,6 +26,7 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.genai.types import Content
 from google.genai.types import FunctionCall
+from google.genai.types import FunctionResponse
 from google.genai.types import Part
 import pytest
 
@@ -794,3 +795,131 @@ class TestIncrementLlmCallCount:
 
     with pytest.raises(LlmCallsLimitExceededError):
       second.increment_llm_call_count()
+
+
+def _ctx_on_branch(branch, events):
+  """An InvocationContext on `branch` over a session holding `events`."""
+  return InvocationContext(
+      session_service=Mock(spec=BaseSessionService),
+      agent=Mock(spec=BaseAgent),
+      invocation_id='inv_1',
+      branch=branch,
+      session=Mock(spec=Session, events=events),
+  )
+
+
+def test_get_events_current_branch_includes_user_event_on_sub_branch():
+  """A user event from a descendant sub-branch belongs to this subtree."""
+  user_on_child = Event(
+      invocation_id='inv_1', author='user', branch='agent_1.child'
+  )
+  ctx = _ctx_on_branch('agent_1', [user_on_child])
+
+  assert ctx._get_events(current_branch=True) == [user_on_child]
+
+
+def test_get_events_current_branch_excludes_agent_event_on_sub_branch():
+  """A non-user event from a descendant sub-branch is not returned.
+
+  This is asymmetric with the user case above on purpose: widening it would
+  hand every caller a descendant's internal events. Pinned here so the
+  asymmetry is a stated contract rather than an accident.
+  """
+  agent_on_child = Event(
+      invocation_id='inv_1', author='some_agent', branch='agent_1.child'
+  )
+  ctx = _ctx_on_branch('agent_1', [agent_on_child])
+
+  assert ctx._get_events(current_branch=True) == []
+
+
+def test_get_events_current_branch_excludes_sibling_branch():
+  """A sibling branch is never part of this subtree."""
+  user_on_sibling = Event(
+      invocation_id='inv_1', author='user', branch='agent_2'
+  )
+  ctx = _ctx_on_branch('agent_1', [user_on_sibling])
+
+  assert ctx._get_events(current_branch=True) == []
+
+
+def test_get_events_empty_branch_does_not_match_every_branched_event():
+  """An empty branch must not behave like "match everything".
+
+  An empty string is a real branch value in the workflow code, and a bare
+  descendant test would treat every branched event as its descendant.
+  """
+  user_on_branch = Event(invocation_id='inv_1', author='user', branch='agent_1')
+  ctx = _ctx_on_branch('', [user_on_branch])
+
+  assert ctx._get_events(current_branch=True) == []
+
+
+def _call_event(branch, call_id):
+  """A non-user event issuing function call `call_id` on `branch`."""
+  return Event(
+      invocation_id='inv_1',
+      author='some_agent',
+      branch=branch,
+      content=Content(
+          parts=[Part(function_call=FunctionCall(id=call_id, name='t'))]
+      ),
+  )
+
+
+def _user_response_event(branch, call_id):
+  """A user event answering function call `call_id` on `branch`."""
+  return Event(
+      invocation_id='inv_1',
+      author='user',
+      branch=branch,
+      content=Content(
+          parts=[
+              Part(
+                  function_response=FunctionResponse(
+                      id=call_id, name='t', response={}
+                  )
+              )
+          ]
+      ),
+  )
+
+
+def test_get_events_current_branch_keeps_user_response_to_a_call_here():
+  """A reply answering a call issued in this subtree is returned."""
+  call_here = _call_event('agent_1.child', 'fc_1')
+  reply = _user_response_event('agent_1', 'fc_1')
+  ctx = _ctx_on_branch('agent_1', [call_here, reply])
+
+  assert ctx._get_events(current_branch=True) == [reply]
+
+
+def test_get_events_current_branch_drops_user_response_to_a_call_elsewhere():
+  """Sitting on this branch is not enough for a reply to a foreign call.
+
+  The function-response gate is the only difference from the test above, so a
+  reply that answers a parallel tree's call is dropped even though its own
+  branch matches exactly.
+  """
+  call_elsewhere = _call_event('agent_2', 'fc_1')
+  reply = _user_response_event('agent_1', 'fc_1')
+  ctx = _ctx_on_branch('agent_1', [call_elsewhere, reply])
+
+  assert ctx._get_events(current_branch=True) == []
+
+
+def test_get_events_without_a_branch_matches_every_user_event():
+  """A context with no branch sees user events wherever they sit.
+
+  Non-user events stay on the strict rule, so this also pins the asymmetry:
+  the agent event beside it is not returned.
+  """
+  user_elsewhere = Event(
+      invocation_id='inv_1', author='user', branch='agent_2.child'
+  )
+  agent_elsewhere = Event(
+      invocation_id='inv_1', author='some_agent', branch='agent_2.child'
+  )
+  ctx = _ctx_on_branch(None, [user_elsewhere, agent_elsewhere])
+
+  assert ctx._get_events(current_branch=True) == [user_elsewhere]

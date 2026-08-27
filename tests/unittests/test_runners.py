@@ -3588,5 +3588,92 @@ async def test_resolve_invocation_id_accepts_responses_from_one_invocation():
   assert runner._resolve_invocation_id(session, both, None) == "inv_a"
 
 
+@pytest.mark.asyncio
+async def test_run_node_prefers_the_response_owner_over_a_supplied_invocation_id():
+  """A caller-supplied invocation id is reconciled against the response.
+
+  Resuming under an id that does not own the call means the call is not found
+  and the tool result is discarded. `run_async` already prefers the response's
+  own invocation; the node path must agree.
+  """
+  session_service = InMemorySessionService()
+  node_agent = MockLlmAgent("solo")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node_agent),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s"
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_real",
+          author="solo",
+          content=types.Content(parts=[_fc_part("t", "fc-1")]),
+      ),
+  )
+
+  used: dict[str, str] = {}
+  original = runner._new_invocation_context
+
+  def _capture(*args, **kwargs):
+    ctx = original(*args, **kwargs)
+    used.setdefault("invocation_id", ctx.invocation_id)
+    return ctx
+
+  runner._new_invocation_context = _capture
+
+  async for _ in runner._run_node_async(
+      user_id="u",
+      session_id="s",
+      invocation_id="inv_wrong",
+      new_message=types.Content(role="user", parts=[_fr_part("t", "fc-1")]),
+      node=node_agent,
+  ):
+    pass
+
+  assert used["invocation_id"] == "inv_real"
+
+
+@pytest.mark.asyncio
+async def test_run_node_rejects_responses_straddling_two_invocations():
+  """A supplied id does not buy leniency the no-id path does not give.
+
+  Taking only the first response's owner would silently resume under one
+  invocation and discard the other tool result.
+  """
+  session_service = InMemorySessionService()
+  node_agent = MockLlmAgent("solo")
+  runner = Runner(
+      app=App(name="test_app", root_agent=node_agent),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u", session_id="s"
+  )
+  for invocation_id, call_id in (("inv_a", "fc-1"), ("inv_b", "fc-2")):
+    await session_service.append_event(
+        session,
+        Event(
+            invocation_id=invocation_id,
+            author="solo",
+            content=types.Content(parts=[_fc_part("t", call_id)]),
+        ),
+    )
+
+  with pytest.raises(ValueError, match="multiple"):
+    async for _ in runner._run_node_async(
+        user_id="u",
+        session_id="s",
+        invocation_id="inv_wrong",
+        new_message=types.Content(
+            role="user", parts=[_fr_part("t", "fc-1"), _fr_part("t", "fc-2")]
+        ),
+        node=node_agent,
+    ):
+      pass
+
+
 if __name__ == "__main__":
   pytest.main([__file__])

@@ -34,6 +34,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 import pytest
 from typing_extensions import assert_never
 
+from ...conftest import ENV_SETUPS
 from ..functional_test_goldens import load_divergences
 from ..functional_test_goldens import load_golden
 from ._digests import TelemetryDigest
@@ -93,6 +94,8 @@ class FunctionalTestCase:
   experimental_telemetry: bool = False
   loaded_skills: list[SkillType] = field(default_factory=list)
   loaded_resources: list[SkillResourceType] = field(default_factory=list)
+  script_return_exit_codes: list[int] = field(default_factory=list)
+  """0 - by success, 1 - by exception, 10 - by sys.exit, rest is invalid"""
   # The ``mcp`` scenario only: the tool call is also posted to a canned MCP
   # server over ADK's instrumented httpx client, so the case records the
   # transport as well as the tools it resolved.
@@ -138,6 +141,12 @@ class FunctionalTestCase:
     monkeypatch.setenv(
         ADK_EXPERIMENTAL_TELEMETRY, str(self.experimental_telemetry).lower()
     )
+
+    # Make sure the goldens and tests have matching env vars to avoid local
+    # env leaking causing false negatives.
+    for key, value in ENV_SETUPS["GOOGLE_AI"].items():
+      monkeypatch.setenv(key, value)
+
     for name, value in self.env.items():
       monkeypatch.setenv(name, value)
 
@@ -233,7 +242,11 @@ def _turns(case: FunctionalTestCase) -> tuple[Turn, ...]:
   """The canned conversation the case's scenario is driven with."""
   match case.scenario:
     case "skill":
-      return skill_turns(case.loaded_skills, case.loaded_resources)
+      return skill_turns(
+          case.loaded_skills,
+          case.loaded_resources,
+          case.script_return_exit_codes,
+      )
     case "multi_agent":
       return MULTI_AGENT_TURNS
     case "agent_tool":

@@ -19,6 +19,7 @@ This script is used as a pre-commit hook and in CI to enforce coding standards.
 """
 
 import argparse
+import ast
 import os
 import re
 import sys
@@ -85,6 +86,16 @@ def check_cli_import(content: str, filename: str) -> bool:
   return not pattern.search(content)
 
 
+# An internal shortlink resolves for nobody reading this repository. Anchored
+# so that a public URL with a '/go/' path segment, or a Go file name, is not
+# mistaken for one.
+_INTERNAL_LINK_RE = re.compile(r'(?<![/.\w])go/[a-z0-9][-a-z0-9_]*')
+
+
+def check_internal_links(content: str) -> bool:
+  return not _INTERNAL_LINK_RE.search(content)
+
+
 def check_mtls(content: str, filename: str) -> bool:
   if filename in _EXCLUDED_FROM_MTLS:
     return True
@@ -99,6 +110,81 @@ def check_mtls(content: str, filename: str) -> bool:
   if non_scope_urls:
     return '.mtls.googleapis.com' in content
   return True
+
+
+# Methods on a FastAPI app or router that register a request handler.
+_ROUTE_DECORATOR_METHODS = frozenset({
+    'api_route',
+    'delete',
+    'get',
+    'head',
+    'options',
+    'patch',
+    'post',
+    'put',
+    'trace',
+    'websocket',
+    'websocket_route',
+})
+
+
+def _is_route_decorator(node: ast.expr) -> bool:
+  """Reports whether a decorator registers a FastAPI route."""
+  if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+    return False
+  if node.func.attr not in _ROUTE_DECORATOR_METHODS:
+    return False
+  # A routing decorator always takes the path as its first argument. Requiring
+  # one keeps unrelated calls such as @cache.get('key') out of the check.
+  return (
+      bool(node.args)
+      and isinstance(node.args[0], ast.Constant)
+      and isinstance(node.args[0].value, str)
+      and node.args[0].value.startswith('/')
+  )
+
+
+def _decorator_label(node: ast.expr) -> str:
+  """The dotted name of a decorator, without its arguments."""
+  return ast.unparse(node.func if isinstance(node, ast.Call) else node)
+
+
+def check_route_decorator_order(content: str) -> list[tuple[int, str]]:
+  """Finds decorators stacked above a FastAPI routing decorator.
+
+  Decorators apply bottom-up, and a routing decorator registers the handler it
+  receives and then returns it unchanged. Anything above one therefore wraps a
+  function the route no longer refers to, so it never runs for a request. A
+  guard written that way is silently absent.
+
+  Returns:
+    One (line number, decorator name) pair per offending decorator.
+  """
+  try:
+    tree = ast.parse(content)
+  except SyntaxError:
+    # The formatter and the type checker both report syntax errors already.
+    return []
+
+  offenders: list[tuple[int, str]] = []
+  for node in ast.walk(tree):
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+      continue
+    route_index = next(
+        (
+            i
+            for i, decorator in enumerate(node.decorator_list)
+            if _is_route_decorator(decorator)
+        ),
+        None,
+    )
+    if route_index is None:
+      continue
+    offenders.extend(
+        (decorator.lineno, _decorator_label(decorator))
+        for decorator in node.decorator_list[:route_index]
+    )
+  return offenders
 
 
 def main() -> None:
@@ -142,6 +228,21 @@ def main() -> None:
       print(
           f'❌ {f}: Found hardcoded googleapis.com endpoints without mTLS'
           ' support.'
+      )
+      failed = True
+
+    if not check_internal_links(content):
+      print(
+          f'❌ {f}: Found an internal shortlink, which resolves for nobody'
+          ' reading this repository. Say what it says in plain words instead.'
+      )
+      failed = True
+
+    for lineno, decorator in check_route_decorator_order(content):
+      print(
+          f'❌ {f}:{lineno}: @{decorator} sits above a FastAPI routing'
+          ' decorator, so it never runs for a request. Move the routing'
+          ' decorator to the top of the stack.'
       )
       failed = True
 

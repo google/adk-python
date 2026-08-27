@@ -35,6 +35,7 @@ from typing import Sequence
 from typing import TYPE_CHECKING
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.code_executors import UnsafeLocalCodeExecutor
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_response import LlmResponse
@@ -51,6 +52,7 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFactory
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.skill_toolset import SkillToolset
 from google.adk.workflow._base_node import START
@@ -65,7 +67,6 @@ from google.genai.types import Part
 import httpx
 from mcp import ClientSession as McpClientSession
 from mcp import StdioServerParameters
-from mcp.shared.session import ProgressFnT
 from mcp.types import CallToolResult
 from mcp.types import ListToolsResult
 from mcp.types import PaginatedRequestParams
@@ -138,6 +139,8 @@ class HistogramSpec(NamedTuple):
   attr: str
   metric_name: str
 
+
+CounterSpec = HistogramSpec
 
 # Histograms recorded by ADK. Each test redirects these onto an in-memory
 # reader so the recorded points can be asserted.
@@ -251,6 +254,14 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
     ),
 )
 
+_PATCHED_COUNTERS: tuple[CounterSpec, ...] = (
+    CounterSpec(
+        module=_metrics,
+        attr="_skill_script_executions",
+        metric_name="adk.experimental.skill.script.executions",
+    ),
+)
+
 
 @dataclass(frozen=True)
 class TelemetryProviders:
@@ -305,6 +316,11 @@ def install_telemetry(
   for spec in _PATCHED_HISTOGRAMS:
     monkeypatch.setattr(
         spec.module, spec.attr, meter.create_histogram(spec.metric_name)
+    )
+
+  for spec in _PATCHED_COUNTERS:
+    monkeypatch.setattr(
+        spec.module, spec.attr, meter.create_counter(spec.metric_name)
     )
 
   return TelemetryProviders(
@@ -1049,7 +1065,12 @@ def _make_skill(
       resources=Resources(
           references={"ref1": "ref1_content"},
           assets={"deeply/hidden/asset1": "asset1_content"},
-          scripts={"script1": Script(src="script1_content")},
+          scripts={
+              "script1": Script(src="script1_content"),
+              "ec_0.py": Script(src="print(':D')"),
+              "ec_1.py": Script(src="foo = 1/0"),
+              "ec_10.py": Script(src="import sys; sys.exit(10)"),
+          },
       ),
   )
   if source == "registry":
@@ -1107,8 +1128,20 @@ _SKILL_RESOURCE_PARTS: dict[SkillResourceType, Part] = {
 }
 
 
+def _run_script(exit_code: int) -> Part:
+  return Part.from_function_call(
+      name="run_skill_script",
+      args={
+          "skill_name": REGISTRY_SKILL_NAME,
+          "file_path": f"scripts/ec_{exit_code}.py",
+      },
+  )
+
+
 def skill_turns(
-    skills: Sequence[SkillType], resources: Sequence[SkillResourceType] = ()
+    skills: Sequence[SkillType],
+    resources: Sequence[SkillResourceType] = (),
+    scripts_return_exit_codes: Sequence[int] = (),
 ) -> tuple[Turn, ...]:
   """The canned conversation for the skill scenario.
 
@@ -1124,6 +1157,10 @@ def skill_turns(
           (_SKILL_RESOURCE_PARTS[resource], FIRST_TURN_USAGE)
           for resource in resources
       ),
+      *(
+          (_run_script(exit_code), FIRST_TURN_USAGE)
+          for exit_code in scripts_return_exit_codes
+      ),
       (Part.from_text(text=FINAL_TEXT), SECOND_TURN_USAGE),
   )
 
@@ -1134,7 +1171,9 @@ def build_skill_test_runner(model: BaseLlm) -> TestInMemoryRunner:
       _make_skill(name=REGISTRY_SKILL_NAME, source="registry"),
   )
   toolset = SkillToolset(
-      [_make_skill(additional_tools=["foo", "bar"])], registry=registry
+      [_make_skill(additional_tools=["foo", "bar"])],
+      registry=registry,
+      code_executor=UnsafeLocalCodeExecutor(),
   )
   test_agent = Agent(
       name=AGENT_NAME,

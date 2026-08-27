@@ -27,11 +27,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from datetime import timezone
-import io
 import json
 import logging
 import pickle
-from types import SimpleNamespace
 from typing import Any
 from typing import cast
 from typing import Optional
@@ -57,6 +55,7 @@ from sqlalchemy.types import String
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.types import TypeEngine
 
+from .. import _restricted_pickle
 from .. import _session_util
 from ...events.event import Event
 from ...events.event_actions import EventActions
@@ -95,103 +94,14 @@ def _truncate_str(value: Optional[str], max_length: int) -> Optional[str]:
   return value
 
 
-_ALLOWED_PICKLE_GLOBALS: set[tuple[str, str]] = {
-    # Builtin containers/primitives.
-    ("builtins", "dict"),
-    ("builtins", "list"),
-    ("builtins", "set"),
-    ("builtins", "tuple"),
-    ("builtins", "str"),
-    ("builtins", "bytes"),
-    ("builtins", "bytearray"),
-    ("builtins", "int"),
-    ("builtins", "float"),
-    ("builtins", "bool"),
-    ("datetime", "datetime"),
-    ("datetime", "timedelta"),
-    ("datetime", "timezone"),
-    # Expected pickled payload for v0 session schema events.
-    ("fastapi.openapi.models", "APIKey"),
-    ("fastapi.openapi.models", "APIKeyIn"),
-    ("fastapi.openapi.models", "HTTPBase"),
-    ("fastapi.openapi.models", "HTTPBearer"),
-    ("fastapi.openapi.models", "OAuth2"),
-    ("fastapi.openapi.models", "OAuthFlow"),
-    ("fastapi.openapi.models", "OAuthFlowAuthorizationCode"),
-    ("fastapi.openapi.models", "OAuthFlowClientCredentials"),
-    ("fastapi.openapi.models", "OAuthFlowImplicit"),
-    ("fastapi.openapi.models", "OAuthFlowPassword"),
-    ("fastapi.openapi.models", "OAuthFlows"),
-    ("fastapi.openapi.models", "OpenIdConnect"),
-    ("fastapi.openapi.models", "SecurityBase"),
-    ("fastapi.openapi.models", "SecurityScheme"),
-    ("fastapi.openapi.models", "SecuritySchemeType"),
-    ("google.adk.auth.auth_credential", "AuthCredential"),
-    ("google.adk.auth.auth_credential", "AuthCredentialTypes"),
-    ("google.adk.auth.auth_credential", "HttpAuth"),
-    ("google.adk.auth.auth_credential", "HttpCredentials"),
-    ("google.adk.auth.auth_credential", "OAuth2Auth"),
-    ("google.adk.auth.auth_credential", "ServiceAccountCredential"),
-    ("google.adk.auth.auth_schemes", "CustomAuthScheme"),
-    ("google.adk.auth.auth_schemes", "ExtendedOAuth2"),
-    ("google.adk.auth.auth_schemes", "OAuthGrantType"),
-    ("google.adk.auth.auth_schemes", "OpenIdConnectWithConfig"),
-    ("google.adk.auth.auth_tool", "AuthConfig"),
-    ("google.adk.events.event_actions", "EventActions"),
-    ("google.adk.events.event_actions", "EventCompaction"),
-    ("google.adk.events.ui_widget", "UiWidget"),
-    ("google.adk.tools.tool_confirmation", "ToolConfirmation"),
-    ("google.genai.types", "Blob"),
-    ("google.genai.types", "CodeExecutionResult"),
-    ("google.genai.types", "Content"),
-    ("google.genai.types", "ExecutableCode"),
-    ("google.genai.types", "FileData"),
-    ("google.genai.types", "FunctionCall"),
-    ("google.genai.types", "FunctionResponse"),
-    ("google.genai.types", "FunctionResponseBlob"),
-    ("google.genai.types", "FunctionResponseFileData"),
-    ("google.genai.types", "FunctionResponsePart"),
-    ("google.genai.types", "Part"),
-    ("google.genai.types", "PartMediaResolution"),
-    ("google.genai.types", "VideoMetadata"),
-}
-
-
-class _RestrictedUnpickler(pickle.Unpickler):
-  """Restricted unpickler for the legacy v0 schema actions blob.
-
-  The v0 session schema stored `EventActions` as a pickled blob. The raw bytes
-  read back from the database are treated as untrusted input, so only the
-  minimum set of globals needed to reconstruct `EventActions` may be resolved.
-  """
-
-  def find_class(self, module: str, name: str) -> Any:
-    if (module, name) in _ALLOWED_PICKLE_GLOBALS:
-      return super().find_class(module, name)
-    raise pickle.UnpicklingError(
-        f"Blocked global while unpickling event actions: {module}.{name}"
-    )
-
-
-def _restricted_pickle_loads(data: bytes | bytearray) -> Any:
-  """Loads a pickled v0 actions blob with the global allowlist enforced."""
-  return _RestrictedUnpickler(io.BytesIO(data)).load()
-
-
 class DynamicPickleType(TypeDecorator[object]):  # type: ignore[misc]
   """Represents a type that can be pickled.
 
-  Values are written with the standard pickler, but reading one back only
-  resolves the globals on the allowlist above.
+  Values read back from the database are untrusted input, so they are always
+  unpickled through the restricted unpickler.
   """
 
-  # `PickleType` takes any object exposing pickle-compatible `dumps` and
-  # `loads`, which is how the read direction gets restricted.
-  impl = PickleType(
-      pickler=SimpleNamespace(
-          dumps=pickle.dumps, loads=_restricted_pickle_loads
-      )
-  )
+  impl = PickleType(pickler=_restricted_pickle)
   # Behavior depends only on the dialect, which the compiled cache already
   # keys on, so statements using this type are safe to cache.
   cache_ok = True
@@ -220,7 +130,7 @@ class DynamicPickleType(TypeDecorator[object]):  # type: ignore[misc]
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
       if dialect.name in ("spanner+spanner", "mysql"):
-        decoded: object = _restricted_pickle_loads(
+        decoded: object = _restricted_pickle.loads(
             cast("bytes | bytearray", value)
         )
         return decoded

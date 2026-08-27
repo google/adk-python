@@ -379,6 +379,7 @@ google-api-core==2.32.0
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
     #   google-cloud-logging
+    #   google-cloud-modelarmor
     #   google-cloud-monitoring
     #   google-cloud-parametermanager
     #   google-cloud-pubsub
@@ -416,6 +417,7 @@ google-auth==2.56.0
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
     #   google-cloud-logging
+    #   google-cloud-modelarmor
     #   google-cloud-monitoring
     #   google-cloud-parametermanager
     #   google-cloud-pubsub
@@ -508,6 +510,10 @@ google-cloud-logging==3.16.1
     #   -c constraints-3.14.txt.stable.tmp
     #   google-cloud-aiplatform
     #   opentelemetry-exporter-gcp-logging
+google-cloud-modelarmor==0.7.1
+    # via
+    #   -c constraints-3.14.txt.stable.tmp
+    #   google-adk (pyproject.toml)
 google-cloud-monitoring==2.31.0
     # via
     #   -c constraints-3.14.txt.stable.tmp
@@ -633,6 +639,7 @@ grpcio==1.82.1
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
     #   google-cloud-logging
+    #   google-cloud-modelarmor
     #   google-cloud-monitoring
     #   google-cloud-parametermanager
     #   google-cloud-pubsub
@@ -1229,6 +1236,7 @@ proto-plus==1.28.1
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
     #   google-cloud-logging
+    #   google-cloud-modelarmor
     #   google-cloud-monitoring
     #   google-cloud-parametermanager
     #   google-cloud-pubsub
@@ -1259,6 +1267,7 @@ protobuf==6.33.6
     #   google-cloud-iam
     #   google-cloud-iamconnectorcredentials
     #   google-cloud-logging
+    #   google-cloud-modelarmor
     #   google-cloud-monitoring
     #   google-cloud-parametermanager
     #   google-cloud-pubsub
