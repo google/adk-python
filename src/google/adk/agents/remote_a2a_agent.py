@@ -810,7 +810,11 @@ class RemoteA2aAgent(BaseAgent):
           timeout=httpx.Timeout(timeout=self._timeout)
       )
       self._httpx_client_needs_cleanup = True
-      if self._a2a_client_factory:
+      # Rebuilding a subclass would discard its custom create behavior.
+      if (
+          self._a2a_client_factory
+          and self._a2a_client_factory.__class__ is A2AClientFactory
+      ):
         self._a2a_client_factory = _compat.rebind_client_factory_httpx(
             self._a2a_client_factory, self._httpx_client
         )

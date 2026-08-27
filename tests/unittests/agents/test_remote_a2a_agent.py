@@ -442,6 +442,32 @@ class TestRemoteA2aAgentResolution:
     assert agent._httpx_client_needs_cleanup is True
     assert agent._a2a_client_factory._config.httpx_client == client
 
+  async def test_ensure_resolved_uses_custom_factory(self):
+    """A caller-provided factory subclass creates the remote client."""
+
+    class CustomFactory(ClientFactory):
+
+      def create(self, *args, **kwargs):
+        del args, kwargs
+        return custom_client
+
+    custom_client = Mock(spec=A2AClient)
+    factory = CustomFactory(ClientConfig(httpx_client=None))
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+        a2a_client_factory=factory,
+    )
+
+    client = await agent._ensure_resolved()
+
+    try:
+      assert client is custom_client
+      assert agent._a2a_client_factory is factory
+    finally:
+      await agent._httpx_client.aclose()
+      await factory._httpx_client.aclose()
+
   @pytest.mark.asyncio
   async def test_ensure_httpx_client_reregisters_transports_with_new_client(
       self,
